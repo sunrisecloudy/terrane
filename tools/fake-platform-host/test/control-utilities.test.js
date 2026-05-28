@@ -32,12 +32,41 @@ test("fake-host exposes common control utility tools", async () => {
     assert.equal(stopped.ok, true);
     assert.equal(stopped.status, "stopped");
 
+    const reload = await host.runControlCommand("platform.reload_runtime", {});
+    assert.deepEqual(reload, { ok: true, target: "fake-host", status: "reloaded" });
+
+    const webapps = await host.runControlCommand("platform.list_webapps", {});
+    assert.equal(webapps.apps.some((app) => app.appId === "notes-lite" && app.installed === true), true);
+    assert.equal(webapps.apps.some((app) => app.appId === "api-dashboard" && app.bundled === true), true);
+
+    const drag = await host.runControlCommand("runtime.drag", {
+      appId: "notes-lite",
+      testId: "new-note-button",
+    });
+    assert.equal(drag.ok, true);
+
     const set = await host.runControlCommand("runtime.storage_set", {
       appId: "notes-lite",
       key: "notes-lite:notes",
       value: [{ title: "Utility test" }],
     });
     assert.equal(set.ok, true);
+
+    const storageAssertion = await host.runControlCommand("runtime.assert_storage", {
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      value: [{ title: "Utility test" }],
+    });
+    assert.equal(storageAssertion.ok, true);
+
+    const toast = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "notification.toast",
+      params: { message: "Saved" },
+    });
+    assert.equal(toast.ok, true);
+    const notifications = await host.runControlCommand("runtime.notification_capture", { appId: "notes-lite" });
+    assert.equal(notifications.notifications.some((notification) => notification.message === "Saved"), true);
 
     const bridgeAssertion = await host.runControlCommand("runtime.assert_bridge_call", {
       appId: "notes-lite",
@@ -52,6 +81,20 @@ test("fake-host exposes common control utility tools", async () => {
 
     const advanced = await host.runControlCommand("runtime.timer_advance", { ms: 250 });
     assert.deepEqual(advanced, { ok: true, advancedMs: 250 });
+
+    const fault = await host.runControlCommand("runtime.fault_inject", { appId: "notes-lite", kind: "storage.write" });
+    assert.equal(fault.ok, false);
+    assert.equal(fault.status, "not-run");
+
+    const networkMock = await host.runControlCommand("runtime.network_mock_set", {
+      appId: "notes-lite",
+      method: "GET",
+      urlPattern: "https://example.test/*",
+      response: { status: 200, body: "ok" },
+    });
+    assert.equal(networkMock.ok, true);
+    const resetNetworkMocks = await host.runControlCommand("runtime.network_mock_reset", { appId: "notes-lite" });
+    assert.equal(resetNetworkMocks.cleared, 1);
 
     const coreStep = await host.runControlCommand("runtime.core_step", {
       appId: "task-workbench",
@@ -74,6 +117,13 @@ test("fake-host exposes common control utility tools", async () => {
     const eventLog = await host.runControlCommand("runtime.event_log", { appId: "task-workbench" });
     assert.equal(eventLog.coreEvents.length, 1);
     assert.equal(JSON.parse(eventLog.coreEvents[0].event_json).type, "task.created");
+
+    const coreAction = await host.runControlCommand("runtime.assert_core_action", {
+      appId: "task-workbench",
+      type: "EventAccepted",
+      match: { eventType: "task.created" },
+    });
+    assert.equal(coreAction.ok, true);
 
     const consoleLogs = await host.runControlCommand("runtime.console_logs", { appId: "task-workbench" });
     assert.deepEqual(consoleLogs, { appId: "task-workbench", logs: [] });
@@ -104,6 +154,15 @@ test("fake-host exposes common control utility tools", async () => {
     const repair = await host.runControlCommand("platform.run_repair_loop", {});
     assert.equal(repair.ok, false);
     assert.equal(repair.status, "not-run");
+
+    await assert.rejects(
+      () => host.runControlCommand("platform.uninstall_webapp", { appId: "task-workbench" }),
+      /requires confirm/,
+    );
+    const uninstall = await host.runControlCommand("platform.uninstall_webapp", { appId: "task-workbench", confirm: true });
+    assert.equal(uninstall.status, "uninstalled");
+    const withUninstalled = await host.runControlCommand("platform.list_webapps", { includeUninstalled: true });
+    assert.equal(withUninstalled.apps.some((app) => app.appId === "task-workbench" && app.status === "uninstalled"), true);
 
     const reset = await host.runControlCommand("platform.reset_webapp", { appId: "notes-lite" });
     assert.equal(reset.ok, true);

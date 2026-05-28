@@ -261,6 +261,17 @@ export class FakePlatformHost {
     return { ok: true, text };
   }
 
+  assertRuntimeStorage(args) {
+    const appId = requiredArg(args, "appId");
+    const key = requiredArg(args, "key");
+    const expected = requiredArg(args, "value");
+    const actual = this.database.storageGet(appId, key, null);
+    if (canonicalJson(actual) !== canonicalJson(expected)) {
+      throw new PlatformError("storage.assert_failed", "Storage value did not match expected JSON", { appId, key, expected, actual });
+    }
+    return { ok: true, appId, key, value: actual };
+  }
+
   accessibilitySnapshot(appId) {
     const pkg = this.activeRuntimePackage(appId);
     return accessibilitySnapshotFromHtml(appId, pkg.files.get("index.html") ?? "");
@@ -300,6 +311,20 @@ export class FakePlatformHost {
       });
     }
     return { ok: true, appId: report.appId, rule, report };
+  }
+
+  assertCoreAction(args) {
+    const appId = requiredArg(args, "appId");
+    const expectedType = args.type ?? null;
+    const expectedMatch = args.match ?? {};
+    const matches = this.database
+      .queryCoreActions(appId)
+      .map((row) => ({ row, action: JSON.parse(row.action_json) }))
+      .filter(({ action }) => (!expectedType || action.type === expectedType) && matchesJsonSubset(action, expectedMatch));
+    if (matches.length === 0) {
+      throw new PlatformError("core_action.not_found", "Expected core action was not found", { appId, type: expectedType, match: expectedMatch });
+    }
+    return { ok: true, appId, count: matches.length, actions: matches.map((match) => match.action) };
   }
 
   compareSnapshots(args) {
@@ -357,6 +382,28 @@ export class FakePlatformHost {
     });
   }
 
+  listWebapps(args = {}) {
+    const installed = this.database.listWebapps({ includeUninstalled: args.includeUninstalled === true });
+    const installedIds = new Set(installed.map((app) => app.appId));
+    const bundled = this.exampleManifestList()
+      .filter((app) => !installedIds.has(app.id))
+      .map((app) => ({
+        appId: app.id,
+        name: app.name,
+        version: app.version,
+        description: app.description,
+        status: "bundled",
+        bundled: true,
+        installed: false,
+      }));
+    return {
+      apps: [
+        ...installed.map((app) => ({ ...app, bundled: false, installed: true })),
+        ...bundled,
+      ],
+    };
+  }
+
   activeRuntimePackage(appId) {
     this.verifyInstalledApp(appId);
     const pkg = this.database.activeInstallPackage(appId);
@@ -382,6 +429,8 @@ export class FakePlatformHost {
         return { ok: true, target: args.target ?? "fake-host", status: "running", url: `http://127.0.0.1:${args.port ?? 7878}` };
       case "platform.stop":
         return { ok: true, target: args.target ?? "fake-host", status: "stopped" };
+      case "platform.reload_runtime":
+        return { ok: true, target: args.target ?? "fake-host", status: "reloaded" };
       case "runtime.capabilities":
         return fakeHostCapabilities(args.appId ?? null);
       case "platform.validate_package":
@@ -396,6 +445,10 @@ export class FakePlatformHost {
         return this.installPackage(packagePathArg(args), {
           trustLevel: args.trustLevel ?? "developer",
         });
+      case "platform.list_webapps":
+        return this.listWebapps(args);
+      case "platform.uninstall_webapp":
+        return this.database.uninstallWebapp(requiredArg(args, "appId"), { confirm: args.confirm === true, actor: args.actor ?? "codex" });
       case "platform.list_webapp_versions":
         return this.database.listWebappVersions(requiredArg(args, "appId"));
       case "platform.rollback_webapp":
@@ -430,11 +483,14 @@ export class FakePlatformHost {
       case "runtime.type":
       case "runtime.set_value":
       case "runtime.press_key":
+      case "runtime.drag":
         return this.validateRuntimeTarget(tool, args);
       case "runtime.wait_for":
         return { ok: true, kind: args.kind ?? "idle" };
       case "runtime.timer_advance":
         return { ok: true, advancedMs: args.ms ?? args.milliseconds ?? 0 };
+      case "runtime.fault_inject":
+        return { ok: false, status: "not-run", reason: "Fault injection is declared but not implemented in the static fake host yet." };
       case "runtime.assert_visible":
         return this.assertRuntimeVisible(args);
       case "runtime.assert_text":
@@ -445,6 +501,10 @@ export class FakePlatformHost {
         return this.runAccessibilityAudit(requiredArg(args, "appId"));
       case "runtime.assert_accessibility":
         return this.assertAccessibility(args);
+      case "runtime.assert_storage":
+        return this.assertRuntimeStorage(args);
+      case "runtime.assert_core_action":
+        return this.assertCoreAction(args);
       case "platform.reset_webapp":
       case "runtime.storage_reset":
         return this.database.resetWebapp(requiredArg(args, "appId"));
@@ -467,6 +527,11 @@ export class FakePlatformHost {
         });
       case "runtime.assert_no_console_errors":
         return { ok: true, errors: 0 };
+      case "runtime.call_bridge":
+        return this.bridge.dispatch(
+          { id: args.id ?? "control_call_bridge", method: requiredArg(args, "method"), params: args.params ?? {} },
+          { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
+        );
       case "runtime.core_step":
         return this.bridge.dispatch(
           { id: args.id ?? "control_core_step", method: "core.step", params: { event: requiredArg(args, "event") } },
@@ -514,9 +579,16 @@ export class FakePlatformHost {
       case "runtime.network_mock_set":
         this.database.addNetworkMock(normalizeNetworkMockArgs(args));
         return { ok: true };
+      case "runtime.network_mock_reset":
+        return this.database.resetNetworkMocks({ sessionId: args.sessionId ?? null, appId: args.appId ?? null });
       case "runtime.dialog_mock_set":
         this.database.addDialogMock(normalizeDialogMockArgs(args));
         return { ok: true };
+      case "runtime.notification_capture":
+        return {
+          appId: args.appId ?? null,
+          notifications: this.bridge.notifications.filter((notification) => !args.appId || notification.appId === args.appId),
+        };
       case "db.snapshot":
         return this.database.snapshot();
       case "db.export_backup":
@@ -1057,6 +1129,16 @@ function parseAttrs(attrsText) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesJsonSubset(actual, expected) {
+  if (expected === undefined || expected === null) return true;
+  if (Array.isArray(expected)) return canonicalJson(actual) === canonicalJson(expected);
+  if (expected && typeof expected === "object") {
+    if (!actual || typeof actual !== "object") return false;
+    return Object.entries(expected).every(([key, value]) => matchesJsonSubset(actual[key], value));
+  }
+  return Object.is(actual, expected);
 }
 
 function summarizeValidation(result) {

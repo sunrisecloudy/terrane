@@ -697,6 +697,29 @@ export class PlatformDatabase {
     return this.get("SELECT active_install_id FROM apps WHERE id = ?", appId)?.active_install_id ?? null;
   }
 
+  listWebapps({ includeUninstalled = false } = {}) {
+    const sql = [
+      "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version, a.created_at, a.updated_at, v.runtime_version, v.trust_level",
+      "FROM apps a LEFT JOIN app_versions v ON v.install_id = a.active_install_id",
+      includeUninstalled ? "" : "WHERE a.status <> 'uninstalled'",
+      "ORDER BY a.id",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return this.all(sql).map((row) => ({
+      appId: row.id,
+      name: row.name,
+      status: row.status,
+      activeInstallId: row.active_install_id,
+      activeVersion: row.active_version,
+      dataVersion: row.data_version,
+      runtimeVersion: row.runtime_version,
+      trustLevel: row.trust_level,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   approvedPermissions(appId) {
     const active = this.activeInstall(appId);
     if (!active) {
@@ -775,6 +798,41 @@ export class PlatformDatabase {
       throw new Error(`Control session not found: ${controlSessionId}`);
     }
     return { ok: true, controlSessionId, status: "ended", endedAt };
+  }
+
+  uninstallWebapp(appId, { confirm = false, actor = "codex" } = {}) {
+    if (confirm !== true) {
+      throw new PlatformError("confirmation_required", "platform.uninstall_webapp requires confirm: true", { appId });
+    }
+    const app = this.get("SELECT id, active_install_id FROM apps WHERE id = ?", appId);
+    if (!app) {
+      throw new PlatformError("app_not_installed", `App is not installed: ${appId}`, { appId });
+    }
+    const snapshot = this.createSnapshot({ appId, type: "manual" });
+    const clearedStorageKeys = this.get("SELECT COUNT(*) AS count FROM app_storage WHERE app_id = ?", appId)?.count ?? 0;
+    const createdAt = nowIso();
+    this.transaction(() => {
+      this.run("DELETE FROM app_storage WHERE app_id = ?", appId);
+      this.run("UPDATE app_versions SET status = 'uninstalled' WHERE app_id = ?", appId);
+      this.run(
+        "UPDATE apps SET status = 'uninstalled', active_install_id = NULL, active_version = NULL, updated_at = ? WHERE id = ?",
+        createdAt,
+        appId,
+      );
+      if (app.active_install_id) {
+        this.run(
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'uninstall', ?, ?, ?, ?)",
+          id("installation"),
+          appId,
+          app.active_install_id,
+          app.active_install_id,
+          actor,
+          createdAt,
+          prettyJson({ snapshotId: snapshot.snapshotId, clearedStorageKeys }),
+        );
+      }
+    });
+    return { ok: true, appId, status: "uninstalled", snapshotId: snapshot.snapshotId, clearedStorageKeys };
   }
 
   logControlCommand({
@@ -917,6 +975,19 @@ export class PlatformDatabase {
     );
     const row = rows.find((candidate) => urlMatches(candidate.url_pattern, url));
     return row ? JSON.parse(row.response_json) : null;
+  }
+
+  resetNetworkMocks({ sessionId = null, appId = null } = {}) {
+    if (sessionId && appId) {
+      return { ok: true, cleared: this.run("DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?", sessionId, appId).changes };
+    }
+    if (sessionId) {
+      return { ok: true, cleared: this.run("DELETE FROM network_mocks WHERE session_id = ?", sessionId).changes };
+    }
+    if (appId) {
+      return { ok: true, cleared: this.run("DELETE FROM network_mocks WHERE app_id = ?", appId).changes };
+    }
+    return { ok: true, cleared: this.run("DELETE FROM network_mocks").changes };
   }
 
   addDialogMock({ sessionId = null, appId = null, dialogType, response }) {
@@ -1170,6 +1241,13 @@ export class PlatformDatabase {
       return this.all("SELECT * FROM core_events WHERE app_id = ? ORDER BY created_at", appId);
     }
     return this.all("SELECT * FROM core_events ORDER BY created_at");
+  }
+
+  queryCoreActions(appId = null) {
+    if (appId) {
+      return this.all("SELECT * FROM core_actions WHERE app_id = ? ORDER BY created_at", appId);
+    }
+    return this.all("SELECT * FROM core_actions ORDER BY created_at");
   }
 
   queryTestRuns(appId = null) {
