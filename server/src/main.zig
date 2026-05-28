@@ -339,59 +339,74 @@ fn handleDbControlEndpoint(
     body: []const u8,
     provided_token: ?[]const u8,
 ) !void {
+    const audit_tool = controlToolForDbPath(path);
     requireControlToken(allocator, provided_token) catch {
+        auditControlCommand(allocator, path, audit_tool, "rejected", "control_auth_required", null, null);
         return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
     };
 
     const args = parseControlArgs(allocator, body) catch {
+        auditControlCommand(allocator, path, audit_tool, "rejected", "invalid_request", null, null);
         return writeControlError(allocator, stream, 400, "invalid_request", "Control request body must be a JSON object");
     };
     defer if (args) |*parsed| parsed.deinit();
     const root = if (args) |parsed| parsed.value else null;
     const app_id = if (root) |value| valueString(value.object.get("appId")) else null;
+    const args_json = try controlArgsJsonForAudit(allocator, body);
+    defer allocator.free(args_json);
 
     if (std.mem.eql(u8, path, "/db/snapshot") or std.mem.eql(u8, path, "/control/db/snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/app-storage") or std.mem.eql(u8, path, "/control/db/app-storage")) {
         const actual_app_id = app_id orelse {
+            auditControlCommand(allocator, path, audit_tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_storage requires appId");
         };
         const result_json = try queryAppStorageRowsJson(allocator, actual_app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/bridge-calls") or std.mem.eql(u8, path, "/control/db/bridge-calls")) {
         const result_json = try queryBridgeCallsRowsJson(allocator, app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/app-versions") or std.mem.eql(u8, path, "/control/db/app-versions")) {
         const actual_app_id = app_id orelse {
+            auditControlCommand(allocator, path, audit_tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
         };
         const result_json = try queryAppVersionsRowsJson(allocator, actual_app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/core-events") or std.mem.eql(u8, path, "/control/db/core-events")) {
         const result_json = try queryCoreEventsRowsJson(allocator, app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/test-runs") or std.mem.eql(u8, path, "/control/db/test-runs")) {
         const result_json = try queryTestRunsRowsJson(allocator, app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
 
+    auditControlCommand(allocator, path, audit_tool, "rejected", "not_found", args_json, null);
     return writeControlError(allocator, stream, 404, "not_found", "Control route not found");
 }
 
@@ -402,79 +417,102 @@ fn handleControlCommand(
     provided_token: ?[]const u8,
 ) !void {
     requireControlToken(allocator, provided_token) catch {
+        auditControlCommand(allocator, "/control/command", "control.command", "rejected", "control_auth_required", null, null);
         return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
     };
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        auditControlCommand(allocator, "/control/command", "control.command", "rejected", "invalid_request", null, null);
         return writeControlError(allocator, stream, 400, "invalid_request", "Control command body must be valid JSON");
     };
     defer parsed.deinit();
 
     const root = parsed.value;
     if (root != .object) {
+        auditControlCommand(allocator, "/control/command", "control.command", "rejected", "invalid_request", null, null);
         return writeControlError(allocator, stream, 400, "invalid_request", "Control command body must be an object");
     }
 
     const tool = valueString(root.object.get("tool")) orelse {
+        auditControlCommand(allocator, "/control/command", "control.command", "rejected", "invalid_request", null, null);
         return writeControlError(allocator, stream, 400, "invalid_request", "Control command requires tool");
     };
     const args = if (root.object.get("args")) |args_value| args_value else null;
     if (args) |args_value| {
         if (args_value != .object) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", null, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "Control command args must be an object");
         }
     }
+    const args_json = if (args) |args_value|
+        try jsonValueAlloc(allocator, args_value)
+    else
+        try allocator.dupe(u8, "{}");
+    defer allocator.free(args_json);
 
     if (std.mem.eql(u8, tool, "platform.health")) {
-        return writeControlOkRaw(allocator, stream, "{\"name\":\"zig-server\",\"version\":\"0.1.0\",\"targets\":[\"zig-server\"],\"db\":\"sqlite\"}");
+        const result_json = "{\"name\":\"zig-server\",\"version\":\"0.1.0\",\"targets\":[\"zig-server\"],\"db\":\"sqlite\"}";
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "runtime.capabilities")) {
         const result_json = try serverCapabilitiesJson(allocator);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_app_storage")) {
         const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_storage requires appId");
         };
         const result_json = try queryAppStorageRowsJson(allocator, app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_bridge_calls") or std.mem.eql(u8, tool, "runtime.bridge_calls")) {
         const result_json = try queryBridgeCallsRowsJson(allocator, controlStringArg(args, "appId"));
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_app_versions")) {
         const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
         };
         const result_json = try queryAppVersionsRowsJson(allocator, app_id);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_core_events")) {
         const result_json = try queryCoreEventsRowsJson(allocator, controlStringArg(args, "appId"));
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_test_runs")) {
         const result_json = try queryTestRunsRowsJson(allocator, controlStringArg(args, "appId"));
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
 
+    auditControlCommand(allocator, "/control/command", tool, "rejected", "unknown_tool", args_json, null);
     return writeControlError(allocator, stream, 400, "unknown_tool", "Unknown control tool");
 }
 
@@ -493,6 +531,23 @@ fn parseControlArgs(allocator: std.mem.Allocator, body: []const u8) !?std.json.P
     errdefer parsed.deinit();
     if (parsed.value != .object) return error.InvalidControlArgs;
     return parsed;
+}
+
+fn controlArgsJsonForAudit(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (trimmed.len == 0) return allocator.dupe(u8, "{}");
+    return allocator.dupe(u8, trimmed);
+}
+
+fn controlToolForDbPath(path: []const u8) []const u8 {
+    if (std.mem.eql(u8, path, "/db/snapshot") or std.mem.eql(u8, path, "/control/db/snapshot")) return "db.snapshot";
+    if (std.mem.eql(u8, path, "/db/app-storage") or std.mem.eql(u8, path, "/control/db/app-storage")) return "db.query_app_storage";
+    if (std.mem.eql(u8, path, "/db/app-versions") or std.mem.eql(u8, path, "/control/db/app-versions")) return "db.query_app_versions";
+    if (std.mem.eql(u8, path, "/db/bridge-calls") or std.mem.eql(u8, path, "/control/db/bridge-calls")) return "db.query_bridge_calls";
+    if (std.mem.eql(u8, path, "/db/core-events") or std.mem.eql(u8, path, "/control/db/core-events")) return "db.query_core_events";
+    if (std.mem.eql(u8, path, "/db/test-runs") or std.mem.eql(u8, path, "/control/db/test-runs")) return "db.query_test_runs";
+    if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) return "db.export_debug_bundle";
+    return "control.db";
 }
 
 fn controlStringArg(args: ?std.json.Value, name: []const u8) ?[]const u8 {
@@ -1333,6 +1388,69 @@ fn ensureAppRecord(db: *sqlite.sqlite3, app_id: []const u8) !void {
     }
 }
 
+fn auditControlCommand(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    tool: []const u8,
+    decision: []const u8,
+    error_code: ?[]const u8,
+    args_json: ?[]const u8,
+    result_json: ?[]const u8,
+) void {
+    const db = openPlatformDb(allocator) catch |err| {
+        std.debug.print("control audit open failed: {}\n", .{err});
+        return;
+    };
+    defer _ = sqlite.sqlite3_close(db);
+
+    ensureServerControlSession(db) catch |err| {
+        std.debug.print("control audit session failed: {}\n", .{err});
+        return;
+    };
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO control_commands (command_id, control_session_id, runtime_session_id, tool, http_method, path, decision, error_code, args_json, result_json, error_json, created_at, duration_ms) " ++
+            "VALUES ('command_' || lower(hex(randomblob(16))), 'server-control-audit', NULL, ?, 'POST', ?, ?, ?, ?, ?, NULL, datetime('now'), 0)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        std.debug.print("control audit prepare failed\n", .{});
+        return;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    bindText(statement, 1, tool);
+    bindText(statement, 2, path);
+    bindText(statement, 3, decision);
+    bindNullableText(statement, 4, error_code);
+    bindNullableText(statement, 5, args_json);
+    bindNullableText(statement, 6, result_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        std.debug.print("control audit write failed\n", .{});
+    }
+}
+
+fn ensureServerControlSession(db: *sqlite.sqlite3) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR IGNORE INTO control_sessions (control_session_id, target, actor, started_at, status, metadata_json) " ++
+            "VALUES ('server-control-audit', 'zig-server', 'codex', datetime('now'), 'running', '{\"source\":\"server-control\"}')",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
 fn ensureRuntimeSession(db: *sqlite.sqlite3, session_id: []const u8, app_id: []const u8) !void {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
@@ -1364,6 +1482,14 @@ fn appLogParamsJson(allocator: std.mem.Allocator, level: []const u8, message: []
 
 fn bindText(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: []const u8) void {
     _ = sqlite.sqlite3_bind_text(statement, index, value.ptr, @intCast(value.len), null);
+}
+
+fn bindNullableText(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: ?[]const u8) void {
+    if (value) |actual| {
+        bindText(statement, index, actual);
+        return;
+    }
+    _ = sqlite.sqlite3_bind_null(statement, index);
 }
 
 fn sqliteColumnText(statement: ?*sqlite.sqlite3_stmt, index: c_int) []const u8 {
