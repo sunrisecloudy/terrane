@@ -103,18 +103,14 @@ fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []co
         return writeBridgeError(allocator, stream, "unknown", "invalid_request", "Bridge request body must be an object");
     }
 
-    const id = valueString(root.object.get("id")) orelse "unknown";
-    const method = valueString(root.object.get("method")) orelse {
-        return writeBridgeError(allocator, stream, id, "invalid_request", "Bridge request method must be a string");
+    validateBridgeRequest(root) catch |err| {
+        return writeBridgeError(allocator, stream, bridgeRequestIdOrUnknown(root), "invalid_request", bridgeValidationMessage(err));
     };
+    const id = valueString(root.object.get("id")).?;
+    const method = valueString(root.object.get("method")).?;
+    const params = root.object.get("params").?;
 
     if (std.mem.eql(u8, method, "core.step")) {
-        const params = root.object.get("params") orelse {
-            return writeBridgeError(allocator, stream, id, "invalid_request", "core.step requires params");
-        };
-        if (params != .object) {
-            return writeBridgeError(allocator, stream, id, "invalid_request", "core.step params must be an object");
-        }
         if (valueString(params.object.get("app"))) |requested_app| {
             if (!std.mem.eql(u8, requested_app, channel_app_id)) {
                 return writeBridgeError(allocator, stream, id, "permission_denied", "core.step app field does not match the channel-derived app id");
@@ -141,6 +137,61 @@ fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []co
     }
 
     return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
+}
+
+const BridgeValidationError = error{
+    UnknownTopLevelField,
+    InvalidId,
+    InvalidMethod,
+    InvalidParams,
+    InvalidTimestamp,
+};
+
+fn validateBridgeRequest(root: std.json.Value) BridgeValidationError!void {
+    var iterator = root.object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "id") or
+            std.mem.eql(u8, key, "method") or
+            std.mem.eql(u8, key, "params") or
+            std.mem.eql(u8, key, "timestamp"))
+        {
+            continue;
+        }
+        return error.UnknownTopLevelField;
+    }
+
+    const id = root.object.get("id") orelse return error.InvalidId;
+    if (id != .string or id.string.len == 0) return error.InvalidId;
+
+    const method = root.object.get("method") orelse return error.InvalidMethod;
+    if (method != .string) return error.InvalidMethod;
+
+    const params = root.object.get("params") orelse return error.InvalidParams;
+    if (params != .object) return error.InvalidParams;
+
+    if (root.object.get("timestamp")) |timestamp| {
+        if (timestamp != .integer and timestamp != .float) return error.InvalidTimestamp;
+    }
+}
+
+fn bridgeRequestIdOrUnknown(root: std.json.Value) []const u8 {
+    if (root == .object) {
+        if (valueString(root.object.get("id"))) |id| {
+            if (id.len > 0) return id;
+        }
+    }
+    return "unknown";
+}
+
+fn bridgeValidationMessage(err: BridgeValidationError) []const u8 {
+    return switch (err) {
+        error.UnknownTopLevelField => "Bridge request contains unknown top-level fields",
+        error.InvalidId => "Bridge request id must be a non-empty string",
+        error.InvalidMethod => "Bridge request method must be a string",
+        error.InvalidParams => "Bridge request params must be an object",
+        error.InvalidTimestamp => "Bridge request timestamp must be a number",
+    };
 }
 
 fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, body: []const u8) !void {

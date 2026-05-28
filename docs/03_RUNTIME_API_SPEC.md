@@ -176,7 +176,7 @@ The host must enforce `manifest.networkPolicy` (docs/24). Disallowed origins, me
 // request
 {}
 // response
-{ "platform": "macos", "runtimeVersion": "0.1.0", "features": { "dialog.saveFile": true, "network.request": true, "snapshot": false }, "appId": "notes-lite" }
+{ "platform": "macos", "target": "macos", "runtimeVersion": "0.1.0", "devMode": true, "features": { "dialog.saveFile": true, "network.request": true, "snapshot": false }, "limits": { "maxPackageBytes": 1048576 } }
 ```
 
 Response validates against `schemas/runtime-capabilities.schema.json`. See §9.
