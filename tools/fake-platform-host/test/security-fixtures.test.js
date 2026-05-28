@@ -9,8 +9,10 @@ const cases = [
   ["uses-fetch", "forbidden_network_api"],
   ["uses-local-storage", "forbidden_storage_api"],
   ["remote-script", "forbidden_remote_script"],
+  ["remote-css-import", "forbidden_css_import"],
   ["nested-iframe", "forbidden_embedded_context"],
   ["unknown-bridge-method", "forbidden_bridge_method"],
+  ["parent-window-access", "forbidden_parent_access"],
 ];
 
 test("malicious package fixtures are rejected with stable policy codes", () => {

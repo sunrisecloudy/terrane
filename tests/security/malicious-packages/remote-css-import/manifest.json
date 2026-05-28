@@ -1,0 +1,28 @@
+{
+  "id": "remote-css-import",
+  "name": "Remote CSS Import",
+  "version": "0.1.0",
+  "runtimeVersion": "0.1.0",
+  "entry": "index.html",
+  "description": "Invalid fixture that imports remote CSS.",
+  "permissions": [],
+  "storagePrefix": "remote-css-import:",
+  "dataVersion": 1,
+  "capabilities": {
+    "required": [],
+    "optional": []
+  },
+  "resourceBudget": {
+    "maxDomNodes": 100,
+    "maxStorageBytes": 1024,
+    "maxBridgeCallsPerMinute": 10,
+    "maxNetworkRequestsPerMinute": 0,
+    "maxTimers": 1,
+    "maxLogLinesPerMinute": 10,
+    "maxPackageBytes": 1048576,
+    "maxFileBytes": 524288
+  },
+  "networkPolicy": {
+    "allow": []
+  }
+}

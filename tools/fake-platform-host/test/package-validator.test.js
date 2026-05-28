@@ -23,6 +23,7 @@ test("forbidden JS source snippets are rejected with policy codes", () => {
     ["forbidden_eval", "eval('1 + 1')"],
     ["forbidden_storage_api", "localStorage.setItem('x', 'y')"],
     ["forbidden_native_bridge", "webkit.messageHandlers.bridge.postMessage({})"],
+    ["forbidden_parent_access", "window.parent.postMessage({}, '*')"],
   ];
 
   for (const [code, source] of cases) {
@@ -105,6 +106,27 @@ test("interactive HTML elements must declare data-testid", () => {
   const result = validatePackage(dir);
   assert.equal(result.ok, false);
   assert.equal(result.errors.some((error) => error.code === "missing_testid"), true);
+});
+
+test("remote stylesheet links and CSS imports are rejected", () => {
+  const remoteStylesheet = copyExamplePackage("notes-lite");
+  const remoteIndexPath = path.join(remoteStylesheet, "index.html");
+  fs.writeFileSync(
+    remoteIndexPath,
+    fs.readFileSync(remoteIndexPath, "utf8").replace('href="styles.css"', 'href="https://cdn.example.test/styles.css"'),
+  );
+
+  const remoteResult = validatePackage(remoteStylesheet);
+  assert.equal(remoteResult.ok, false);
+  assert.equal(remoteResult.errors.some((error) => error.code === "forbidden_remote_stylesheet"), true);
+
+  const importStylesheet = copyExamplePackage("notes-lite");
+  const cssPath = path.join(importStylesheet, "styles.css");
+  fs.writeFileSync(cssPath, `@import url(https://cdn.example.test/theme.css);\n${fs.readFileSync(cssPath, "utf8")}`);
+
+  const importResult = validatePackage(importStylesheet);
+  assert.equal(importResult.ok, false);
+  assert.equal(importResult.errors.some((error) => error.code === "forbidden_css_import"), true);
 });
 
 test("dataVersion increases require consecutive migration files", () => {

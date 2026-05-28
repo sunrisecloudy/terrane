@@ -2469,17 +2469,21 @@ fn collectWebappPackageErrors(
     if (findPackageFile(files, "index.html")) |html| {
         if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
         if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
+        if (containsAny(html, &.{ "href=\"http://", "href=\"https://", "href='http://", "href='https://" })) try errors.append(allocator, "forbidden_remote_stylesheet");
         if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
-        if (containsAny(css, &.{ "@import", "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
+        if (containsAny(css, &.{ "@import" })) try errors.append(allocator, "forbidden_css_import");
+        if (containsAny(css, &.{ "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
     }
     if (findPackageFile(files, "app.js")) |js| {
         if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
         if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
         if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
-        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "shell.exec", "native.exec" })) try errors.append(allocator, "forbidden_bridge_method");
+        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec" })) try errors.append(allocator, "forbidden_native_bridge");
+        if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
+        if (containsAny(js, &.{ "shell.exec" })) try errors.append(allocator, "forbidden_bridge_method");
         if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
     }
 }

@@ -6,8 +6,10 @@ Package fixtures here intentionally violate generated-app policy:
 - `uses-fetch/`
 - `uses-local-storage/`
 - `remote-script/`
+- `remote-css-import/`
 - `cross-app-storage/`
 - `unknown-bridge-method/`
+- `parent-window-access/`
 - `huge-storage-write/`
 - `nested-iframe/`
 

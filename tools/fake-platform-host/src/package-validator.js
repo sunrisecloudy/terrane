@@ -307,6 +307,19 @@ function validateHtml(source, errors) {
   if (/javascript:/i.test(source)) {
     errors.push(issue("forbidden_javascript_url", "javascript: URLs are forbidden", {}));
   }
+  for (const match of source.matchAll(/<link\b([^>]*)>/gi)) {
+    const attrs = match[1] ?? "";
+    const rel = htmlAttr(attrs, "rel") ?? "";
+    if (!rel.toLowerCase().split(/\s+/).includes("stylesheet")) {
+      continue;
+    }
+    const href = htmlAttr(attrs, "href") ?? "";
+    if (/^https?:\/\//i.test(href)) {
+      errors.push(issue("forbidden_remote_stylesheet", "remote stylesheets are forbidden", {}));
+    } else if (href !== "styles.css") {
+      errors.push(issue("forbidden_stylesheet_href", "index.html may only load styles.css", { href }));
+    }
+  }
   for (const match of source.matchAll(/<(button|input|select|textarea|a)\b([^>]*)>/gi)) {
     const tag = match[1].toLowerCase();
     const attrs = match[2] ?? "";
@@ -314,6 +327,11 @@ function validateHtml(source, errors) {
       errors.push(issue("missing_testid", "Interactive HTML elements must declare data-testid", { tag }));
     }
   }
+}
+
+function htmlAttr(attrs, name) {
+  const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i"));
+  return match?.[1] ?? null;
 }
 
 function validateCss(source, errors) {
