@@ -137,7 +137,7 @@ Status snapshot: **2026-05-28**.
 
 ## CI
 
-No CI is wired yet. `docs/12_RELEASE_AND_CI.md` describes the matrix. First CI to enable:
+No remote CI is wired yet. `tools/check-repo.mjs` provides a local dependency-free gate for the first checks, and `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI to enable:
 
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.
