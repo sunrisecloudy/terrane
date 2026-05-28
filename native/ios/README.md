@@ -22,6 +22,7 @@ Implemented now:
 - Creates a `WKWebView` and registers `NativeAIPlatformBridge` through `WKScriptMessageHandlerWithReply`.
 - Uses a non-persistent web data store for the runtime WebView.
 - Derives `appId` and storage prefix from the sandbox frame URL instead of request bodies.
+- Accepts runtime-owned bridge envelopes from the main WKWebView frame and derives native permissions/policy from the envelope app id.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.

@@ -38,6 +38,7 @@ Current implementation status:
 - Implements SQLite-backed `storage.*`.
 - Implements native open/save dialogs and toast logging.
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
+- Accepts runtime-owned bridge envelopes from the main WKWebView frame and derives native permissions/policy from the envelope app id.
 - Returns structured `platform_unsupported` for unfinished `core.step` wiring.
 
 

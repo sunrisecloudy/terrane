@@ -15,11 +15,35 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
     ) {
         guard let body = message.body as? [String: Any] else {
-            replyHandler(BridgeResponse.failure(id: nil, code: "invalid_request", message: "Bridge message body must be an object"), nil)
+            replyHandler(BridgeResponse.failure(id: nil, code: "invalid_request", message: "Bridge message body must be an object").asDictionary(), nil)
             return
         }
 
-        let request = BridgeRequest(body: body, context: AppSandboxContext(message: message))
+        let envelope = BridgeEnvelope(body: body)
+        if envelope.isRuntimeEnvelope && !message.frameInfo.isMainFrame {
+            replyHandler(
+                BridgeResponse.failure(
+                    id: envelope.requestId,
+                    code: "bridge.unauthorized_channel",
+                    message: "Runtime bridge envelope must come from the main runtime frame"
+                ).asDictionary(),
+                nil
+            )
+            return
+        }
+        if envelope.isRuntimeEnvelope && !envelope.hasValidContext {
+            replyHandler(
+                BridgeResponse.failure(
+                    id: envelope.requestId,
+                    code: "invalid_request",
+                    message: "Runtime bridge envelope requires appId, mountToken, and request"
+                ).asDictionary(),
+                nil
+            )
+            return
+        }
+
+        let request = BridgeRequest(body: envelope.requestBody, context: AppSandboxContext(message: message, envelope: envelope))
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
             replyHandler(
@@ -104,6 +128,31 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 }
 
+struct BridgeEnvelope {
+    let appId: String?
+    let mountToken: String?
+    let requestBody: [String: Any]
+    let isRuntimeEnvelope: Bool
+    private let hasRequestBody: Bool
+
+    init(body: [String: Any]) {
+        self.appId = body["appId"] as? String
+        self.mountToken = body["mountToken"] as? String
+        let request = body["request"] as? [String: Any]
+        self.requestBody = request ?? body
+        self.hasRequestBody = request != nil
+        self.isRuntimeEnvelope = body["request"] != nil || body["mountToken"] != nil || body["appId"] != nil
+    }
+
+    var hasValidContext: Bool {
+        appId?.isEmpty == false && mountToken?.isEmpty == false && hasRequestBody
+    }
+
+    var requestId: String? {
+        requestBody["id"] as? String
+    }
+}
+
 struct BridgeRequest {
     let id: String?
     let method: String
@@ -123,15 +172,18 @@ struct AppSandboxContext {
     let storagePrefix: String
     let approvedPermissions: Set<String>
     let networkPolicy: [NetworkPolicyRule]
+    let mountToken: String?
 
     @MainActor
-    init(message: WKScriptMessage) {
-        let appId = AppSandboxContext.appId(from: message.frameInfo.request.url) ?? "unknown"
+    init(message: WKScriptMessage, envelope: BridgeEnvelope) {
+        let envelopeAppId = message.frameInfo.isMainFrame ? envelope.appId : nil
+        let appId = envelopeAppId ?? AppSandboxContext.appId(from: message.frameInfo.request.url) ?? "unknown"
         let manifest = AppSandboxContext.manifest(for: appId)
         self.appId = appId
         self.storagePrefix = "\(appId):"
         self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
         self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
+        self.mountToken = envelope.mountToken
     }
 
     private static func appId(from url: URL?) -> String? {

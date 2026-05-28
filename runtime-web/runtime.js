@@ -202,15 +202,7 @@
       }
       addBridgeLog(portMount.appId, request.method, "pending");
       try {
-        const response = await fetchJson("/bridge", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-app-id": portMount.appId,
-            "x-mount-token": portMount.mountToken,
-          },
-          body: JSON.stringify(request),
-        });
+        const response = await dispatchBridgeRequest(request, portMount);
         addBridgeLog(portMount.appId, request.method, response.ok ? "ok" : response.error.code);
         channel.port1.postMessage(response);
       } catch (error) {
@@ -223,6 +215,54 @@
       }
     };
     event.source.postMessage({ type: "runtime.port" }, "*", [channel.port2]);
+  }
+
+  async function dispatchBridgeRequest(request, mount) {
+    const webkitHandler = webkitNativeBridgeHandler();
+    if (webkitHandler) {
+      const response = await webkitHandler.postMessage({
+        appId: mount.appId,
+        mountToken: mount.mountToken,
+        request: request,
+      });
+      return normalizeHostBridgeResponse(response, request.id);
+    }
+
+    return fetchJson("/bridge", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-app-id": mount.appId,
+        "x-mount-token": mount.mountToken,
+      },
+      body: JSON.stringify(request),
+    });
+  }
+
+  function webkitNativeBridgeHandler() {
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    const handler = handlers && handlers.NativeAIPlatformBridge;
+    if (!handler || typeof handler.postMessage !== "function") return null;
+    return handler;
+  }
+
+  function normalizeHostBridgeResponse(response, requestId) {
+    const parsed = typeof response === "string" ? parseJsonOrNull(response) : response;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        id: requestId,
+        ok: false,
+        error: bridgeError("invalid_response", "Host bridge response must be an object"),
+      };
+    }
+    if (typeof parsed.ok !== "boolean") {
+      return {
+        id: requestId,
+        ok: false,
+        error: bridgeError("invalid_response", "Host bridge response must include ok"),
+      };
+    }
+    return parsed;
   }
 
   function validateRuntimeBridgeRequest(app, request) {
@@ -450,6 +490,14 @@
     const response = await fetch(url, options);
     if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
     return response.json();
+  }
+
+  function parseJsonOrNull(text) {
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
   }
 
   async function fetchText(url) {

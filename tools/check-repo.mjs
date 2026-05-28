@@ -219,6 +219,11 @@ function checkRuntimeStatic() {
     "validateMethodParams",
     "validateNetworkRequest",
     "validateAndRecordBudget",
+    "dispatchBridgeRequest",
+    "webkitNativeBridgeHandler",
+    "NativeAIPlatformBridge",
+    "normalizeHostBridgeResponse",
+    "invalid_response",
     "permissionForBridgeMethod",
     "isKnownRuntimeBridgeMethod",
     "Bridge request contains unknown top-level fields",
@@ -230,8 +235,8 @@ function checkRuntimeStatic() {
     "mountsByFrame",
     "mountsByPort",
     "bridge.unauthorized_channel",
-    '"x-app-id": portMount.appId',
-    '"x-mount-token": portMount.mountToken',
+    '"x-app-id": mount.appId',
+    '"x-mount-token": mount.mountToken',
     "body: JSON.stringify(request)",
   ];
   for (const snippet of required) {
@@ -242,7 +247,7 @@ function checkRuntimeStatic() {
   if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
     throw new Error("runtime bridge request body must not include appId");
   }
-  return "bridge=messagechannel,nonce-bound request=no-appid permission,policy,budget=runtime-preflight";
+  return "bridge=messagechannel,nonce-bound,webkit-adapter request=no-appid permission,policy,budget=runtime-preflight";
 }
 
 function checkServerStatic() {
@@ -331,6 +336,9 @@ function checkNativeStatic() {
     '"network.request": true',
     '"core.step": false',
     "struct AppSandboxContext",
+    "struct BridgeEnvelope",
+    "message.frameInfo.isMainFrame",
+    "mountToken",
     "networkPolicy",
     "permissionForBridgeMethod",
     "approvedPermissions.contains(permission)",
@@ -380,6 +388,9 @@ function checkNativeStatic() {
     [iosBridge, '"limits":'],
     [iosBridge, '"network.request": true'],
     [iosBridge, '"core.step": false'],
+    [iosBridge, "struct BridgeEnvelope"],
+    [iosBridge, "message.frameInfo.isMainFrame"],
+    [iosBridge, "mountToken"],
     [iosBridge, "struct AppSandboxContext"],
     [iosBridge, "networkPolicy"],
     [iosBridge, "permissionForBridgeMethod"],

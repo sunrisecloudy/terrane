@@ -10,6 +10,7 @@ Runtime responsibilities:
 - Sandboxed generated app execution.
 - `AppRuntime.call` bridge object.
 - Per-mount bridge nonce and `MessagePort` context binding.
+- WebKit native host dispatch through a runtime-owned `{ appId, mountToken, request }` envelope.
 - Permission checks.
 - Storage-prefix enforcement.
 - Network policy preflight.
