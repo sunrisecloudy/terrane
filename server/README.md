@@ -28,6 +28,7 @@ Implemented endpoints:
 
 - `GET /health`
 - `POST /core/step`
+- `POST /bridge` for `core.step`, `runtime.capabilities`, and structured bridge errors
 - `GET /webapps/examples`
 
 ## v0.4 persistence requirement
