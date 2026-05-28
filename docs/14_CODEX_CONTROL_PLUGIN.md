@@ -225,6 +225,7 @@ The plugin still uses normal project tests and shell commands for build/lint/uni
 | `platform.sign_webapp_package` | Canonicalize, hash, and sign a validated source package. |
 | `platform.install_report` | Return the latest install report for an app/version. |
 | `platform.list_webapp_versions` | List immutable installed versions and statuses. |
+| `platform.approve_webapp_update` | Activate an installed version whose report requires user approval. |
 | `platform.rollback_webapp` | Roll back active app to a previous version. |
 | `platform.quarantine_webapp` | Mark an installed version unsafe. |
 

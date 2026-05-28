@@ -31,6 +31,7 @@ export const TOOL_NAMES = [
   "platform.sign_webapp_package",
   "platform.install_report",
   "platform.list_webapp_versions",
+  "platform.approve_webapp_update",
   "platform.rollback_webapp",
   "platform.quarantine_webapp",
   "platform.create_snapshot",

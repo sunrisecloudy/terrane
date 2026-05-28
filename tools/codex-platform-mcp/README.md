@@ -19,7 +19,7 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 ## Required tool groups
 
 - Lifecycle: `platform.health`, `platform.list_targets`, `platform.launch`, `platform.stop`.
-- App packages: `platform.validate_package`, `platform.install_webapp_package`, `platform.open_webapp`, `platform.reset_webapp`.
+- App packages: `platform.validate_package`, `platform.install_webapp_package`, `platform.open_webapp`, `platform.approve_webapp_update`, `platform.reset_webapp`.
 - UI: `runtime.snapshot`, `runtime.query`, `runtime.click`, `runtime.type`, `runtime.set_value`, `runtime.press_key`, `runtime.wait_for`, `runtime.screenshot`.
 - Logs: `runtime.console_logs`, `runtime.bridge_calls`, `runtime.event_log`, `runtime.clear_logs`.
 - Effects: `runtime.storage_get`, `runtime.storage_set`, `runtime.storage_reset`, `runtime.network_mock_set`, `runtime.dialog_mock_set`, `runtime.timer_advance`.

@@ -37,6 +37,7 @@ export class PlatformDatabase {
     trustLevel = "developer",
     smokeTest = { status: "not-run" },
     compatibility = { ok: true },
+    approval = { requiresUserApproval: false, reasons: [] },
     activate = true,
     versionStatus = activate ? "enabled" : "quarantined",
     reportStatus = activate ? "accepted" : "failed",
@@ -113,7 +114,13 @@ export class PlatformDatabase {
         reportStatus,
         prettyJson(validation),
         prettyJson({ ok: true, signature, contentHashes: contentHashesDocument }),
-        prettyJson({ approved: activate ? manifest.permissions : [], requested: manifest.permissions }),
+        prettyJson({
+          approved: activate ? manifest.permissions : [],
+          requested: manifest.permissions,
+          requiresUserApproval: approval.requiresUserApproval === true,
+          approvalReasons: approval.reasons ?? [],
+          previousInstallId: approval.previousInstallId ?? null,
+        }),
         prettyJson(compatibility),
         prettyJson(smokeTest),
         hashes.contentHash,
@@ -149,7 +156,7 @@ export class PlatformDatabase {
           createdAt,
           manifest.id,
         );
-      } else {
+      } else if (versionStatus === "quarantined") {
         this.run(
           "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'quarantine', 'fake-host', ?, ?, ?)",
           id("install_event"),
@@ -157,7 +164,7 @@ export class PlatformDatabase {
           installId,
           reportId,
           createdAt,
-          prettyJson({ previousInstallId, reason: "bundled smoke tests failed" }),
+          prettyJson({ previousInstallId, reason: "install gate failed" }),
         );
       }
     });
@@ -234,6 +241,65 @@ export class PlatformDatabase {
     return { appId, activeInstallId: target, rolledBackInstallId: active.installId };
   }
 
+  approveWebappUpdate(appId, installId) {
+    const target = this.installedPackageByInstallId(installId);
+    if (!target || target.appId !== appId) {
+      throw new Error(`Install not found for app: ${appId}`);
+    }
+    if (target.status === "quarantined" || target.status === "uninstalled") {
+      throw new Error(`Install cannot be approved from status: ${target.status}`);
+    }
+    const report = this.installReport(appId, installId);
+    if (!report || report.status !== "requires-approval") {
+      throw new Error(`Install does not require approval: ${installId}`);
+    }
+
+    const active = this.activeInstall(appId);
+    const createdAt = nowIso();
+    this.transaction(() => {
+      if (active?.installId && active.installId !== installId) {
+        this.run("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", active.installId);
+      }
+      this.run("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", createdAt, installId);
+      this.run(
+        "UPDATE app_permissions SET approved = 1, approved_at = ?, reason = 'approved update' WHERE install_id = ?",
+        createdAt,
+        installId,
+      );
+      this.run(
+        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+        installId,
+        target.version,
+        target.manifest.dataVersion,
+        createdAt,
+        appId,
+      );
+      this.run(
+        "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
+        prettyJson({
+          ...(report.permissions ?? {}),
+          approved: target.manifest.permissions,
+          requiresUserApproval: true,
+          approvalGranted: true,
+          approvedAt: createdAt,
+        }),
+        report.reportId,
+      );
+      this.run(
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'activate', ?, 'fake-host', ?, ?, ?)",
+        id("install_event"),
+        appId,
+        installId,
+        active?.installId ?? null,
+        report.reportId,
+        createdAt,
+        prettyJson({ approved: true, previousInstallId: active?.installId ?? null }),
+      );
+    });
+
+    return { appId, installId, status: "enabled", previousInstallId: active?.installId ?? null };
+  }
+
   quarantineWebapp(appId, installId = null, reason = "manual quarantine") {
     const active = this.activeInstall(appId);
     const target = installId ?? active?.installId;
@@ -265,6 +331,7 @@ export class PlatformDatabase {
       ? this.get("SELECT * FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1", appId, installId)
       : this.get("SELECT * FROM app_install_reports WHERE app_id = ? ORDER BY created_at DESC LIMIT 1", appId);
     if (!row) return null;
+    const permissions = row.permissions_json ? JSON.parse(row.permissions_json) : null;
     return {
       reportId: row.report_id,
       appId: row.app_id,
@@ -272,7 +339,8 @@ export class PlatformDatabase {
       status: row.status,
       validation: row.validation_json ? JSON.parse(row.validation_json) : null,
       security: row.security_json ? JSON.parse(row.security_json) : null,
-      permissions: row.permissions_json ? JSON.parse(row.permissions_json) : null,
+      permissions,
+      requiresUserApproval: permissions?.requiresUserApproval === true,
       compatibility: row.compatibility_json ? JSON.parse(row.compatibility_json) : null,
       smokeTest: row.smoke_test_json ? JSON.parse(row.smoke_test_json) : null,
       contentHash: row.content_hash,

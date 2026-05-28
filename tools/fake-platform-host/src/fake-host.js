@@ -8,7 +8,7 @@ import { packageHashes, readPackage, validatePackage } from "./package-validator
 import { PlatformDatabase } from "./platform-database.js";
 import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "./signing.js";
 import { TestRunner } from "./test-runner.js";
-import { prettyJson } from "./util.js";
+import { canonicalJson, prettyJson } from "./util.js";
 
 export class FakePlatformHost {
   constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me", runtimeVersion = "0.1.0", allowRuntimeMismatch = false } = {}) {
@@ -45,7 +45,9 @@ export class FakePlatformHost {
     const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
     const smokeTest = this.evaluateBundledSmokeTests(pkg);
     const compatibility = this.evaluateRuntimeCompatibility(pkg.manifest.runtimeVersion);
-    const canActivate = smokeTest.ok && compatibility.ok;
+    const approval = this.evaluateUpdateApproval(pkg.manifest);
+    const canActivate = smokeTest.ok && compatibility.ok && !approval.requiresUserApproval;
+    const blockedByFailure = !smokeTest.ok || !compatibility.ok;
     const install = this.database.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
@@ -56,9 +58,10 @@ export class FakePlatformHost {
       trustLevel,
       smokeTest,
       compatibility,
+      approval,
       activate: canActivate,
-      versionStatus: canActivate ? "enabled" : "quarantined",
-      reportStatus: canActivate ? "accepted" : "failed",
+      versionStatus: canActivate ? "enabled" : blockedByFailure ? "quarantined" : "installed",
+      reportStatus: canActivate ? "accepted" : blockedByFailure ? "failed" : "requires-approval",
     });
     this.database.recordTestRun({
       microTestId: `smoke:${pkg.manifest.id}`,
@@ -70,9 +73,10 @@ export class FakePlatformHost {
     });
     return {
       ...install,
-      status: canActivate ? "enabled" : "quarantined",
+      status: canActivate ? "enabled" : blockedByFailure ? "quarantined" : "requires-approval",
       smokeTest,
       compatibility,
+      approval,
     };
   }
 
@@ -151,6 +155,29 @@ export class FakePlatformHost {
     };
   }
 
+  evaluateUpdateApproval(manifest) {
+    const active = this.database.activeInstall(manifest.id);
+    if (!active) {
+      return { requiresUserApproval: false, reasons: [] };
+    }
+    const previous = active.manifest;
+    const checks = [
+      ["permissions", sortedStrings(previous.permissions), sortedStrings(manifest.permissions)],
+      ["networkPolicy", previous.networkPolicy ?? {}, manifest.networkPolicy ?? {}],
+      ["resourceBudget", previous.resourceBudget ?? {}, manifest.resourceBudget ?? {}],
+      ["capabilities", previous.capabilities ?? {}, manifest.capabilities ?? {}],
+      ["dataVersion", previous.dataVersion, manifest.dataVersion],
+    ];
+    const reasons = checks
+      .filter(([, before, after]) => canonicalJson(before) !== canonicalJson(after))
+      .map(([field]) => field);
+    return {
+      requiresUserApproval: reasons.length > 0,
+      reasons,
+      previousInstallId: active.installId,
+    };
+  }
+
   async dispatchBridge(request, context) {
     return this.bridge.dispatch(request, context);
   }
@@ -177,6 +204,8 @@ export class FakePlatformHost {
         return this.database.listWebappVersions(requiredArg(args, "appId"));
       case "platform.rollback_webapp":
         return this.database.rollbackWebapp(requiredArg(args, "appId"), args.installId ?? null);
+      case "platform.approve_webapp_update":
+        return this.database.approveWebappUpdate(requiredArg(args, "appId"), requiredArg(args, "installId"));
       case "platform.quarantine_webapp":
         return this.database.quarantineWebapp(requiredArg(args, "appId"), args.installId ?? null, args.reason ?? "manual quarantine");
       case "platform.install_report":
@@ -434,6 +463,10 @@ function parseSemver(version) {
     minor: Number(match[2]),
     patch: Number(match[3]),
   };
+}
+
+function sortedStrings(values) {
+  return [...new Set(Array.isArray(values) ? values : [])].sort();
 }
 
 function summarizeValidation(result) {
