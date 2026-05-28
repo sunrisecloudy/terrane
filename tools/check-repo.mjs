@@ -9,6 +9,7 @@ import { validatePackage } from "./fake-platform-host/src/package-validator.js";
 const checks = [];
 
 await runCheck("json.parse", checkJsonParse);
+await runCheck("schema.fixtures", checkSchemaFixtures);
 await runCheck("sqlite.migrate", checkSqliteMigrations);
 await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
@@ -39,6 +40,43 @@ function checkJsonParse() {
     JSON.parse(fs.readFileSync(filePath, "utf8"));
   }
   return `files=${files.length}`;
+}
+
+function checkSchemaFixtures() {
+  const validator = createSchemaValidator(path.join(repoRoot, "schemas"));
+  const fixtureGroups = [
+    ["manifest.schema.json", walk(repoRoot).filter((filePath) => path.basename(filePath) === "manifest.json" && isExamplePath(filePath))],
+    ["app-migration.schema.json", walk(examplesDir).filter((filePath) => /\/migrations\/\d+_to_\d+\.json$/.test(filePath))],
+    ["micro-test.schema.json", jsonFiles(path.join(repoRoot, "tests", "micro"))],
+    ["micro-test.schema.json", jsonFiles(path.join(repoRoot, "tests", "accessibility")).filter((filePath) => filePath.endsWith(".microtest.json"))],
+    ["mutation-fixture.schema.json", jsonFiles(path.join(repoRoot, "tests", "mutation")).filter((filePath) => filePath.endsWith(".mutation.json"))],
+    ["bridge-contract-fixture.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "bridge"))],
+    ["core-step.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "core"))],
+    ["accessibility-report.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "accessibility"))],
+    ["app-version-record.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "app-version"))],
+    ["runtime-capabilities.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "capabilities"))],
+    ["dev-control-response.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "control-plane"))],
+    ["install-report.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "install-report"))],
+    ["app-signature.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "signatures"))],
+    ["runtime-snapshot.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "snapshots"))],
+    ["db-app-records.schema.json", [path.join(repoRoot, "tests", "fixtures", "db", "app-install-records.fixture.json")]],
+    ["backup-export.schema.json", [path.join(repoRoot, "tests", "fixtures", "db", "backup-export.fixture.json")]],
+    ["db-runtime-records.schema.json", [path.join(repoRoot, "tests", "fixtures", "db", "runtime-records.fixture.json")]],
+    ["db-test-records.schema.json", [path.join(repoRoot, "tests", "fixtures", "db", "test-records.fixture.json")]],
+  ];
+
+  let count = 0;
+  for (const [schemaName, files] of fixtureGroups) {
+    for (const filePath of files.filter((candidate) => fs.existsSync(candidate))) {
+      const errors = validator.validate(readJson(filePath), schemaName);
+      if (errors.length > 0) {
+        throw new Error(`${relative(filePath)} failed ${schemaName}: ${errors.slice(0, 3).join("; ")}`);
+      }
+      count += 1;
+    }
+  }
+
+  return `files=${count}`;
 }
 
 function checkSqliteMigrations() {
@@ -146,6 +184,132 @@ function checkSecurityLint() {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function jsonFiles(root) {
+  return walk(root).filter((filePath) => filePath.endsWith(".json"));
+}
+
+function isExamplePath(filePath) {
+  const rel = relative(filePath);
+  return rel.startsWith("webapps/examples/") || rel.startsWith("examples/");
+}
+
+function createSchemaValidator(schemaDir) {
+  const schemaCache = new Map();
+
+  function loadSchema(schemaName) {
+    if (!schemaCache.has(schemaName)) {
+      schemaCache.set(schemaName, readJson(path.join(schemaDir, schemaName)));
+    }
+    return schemaCache.get(schemaName);
+  }
+
+  function validate(value, schemaName) {
+    const schema = loadSchema(schemaName);
+    return validateValue(value, schema, "$", schema);
+  }
+
+  function validateValue(value, schema, valuePath, rootSchema) {
+    if (!schema || Object.keys(schema).length === 0) return [];
+
+    if (schema.$ref) {
+      const { schema: resolved, root } = resolveRef(schema.$ref, rootSchema);
+      return validateValue(value, resolved, valuePath, root);
+    }
+
+    if (schema.oneOf) {
+      const matches = schema.oneOf.filter((candidate) => validateValue(value, candidate, valuePath, rootSchema).length === 0);
+      return matches.length === 1 ? [] : [`${valuePath} must match exactly one schema option`];
+    }
+
+    const errors = [];
+    if (schema.const !== undefined && !sameJson(value, schema.const)) {
+      errors.push(`${valuePath} must equal ${JSON.stringify(schema.const)}`);
+    }
+    if (schema.enum && !schema.enum.some((allowed) => sameJson(value, allowed))) {
+      errors.push(`${valuePath} must be one of ${schema.enum.map((item) => JSON.stringify(item)).join(", ")}`);
+    }
+    if (schema.type && !typeMatches(value, schema.type)) {
+      errors.push(`${valuePath} must be ${Array.isArray(schema.type) ? schema.type.join(" or ") : schema.type}`);
+      return errors;
+    }
+    if (typeof value === "string") {
+      if (Number.isInteger(schema.minLength) && value.length < schema.minLength) errors.push(`${valuePath} is shorter than ${schema.minLength}`);
+      if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) errors.push(`${valuePath} is longer than ${schema.maxLength}`);
+      if (schema.pattern && !new RegExp(schema.pattern).test(value)) errors.push(`${valuePath} does not match ${schema.pattern}`);
+      if (schema.format === "date-time" && Number.isNaN(Date.parse(value))) errors.push(`${valuePath} must be a date-time string`);
+    }
+    if (typeof value === "number") {
+      if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${valuePath} must be >= ${schema.minimum}`);
+      if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${valuePath} must be <= ${schema.maximum}`);
+    }
+    if (Array.isArray(value)) {
+      if (Number.isInteger(schema.minItems) && value.length < schema.minItems) errors.push(`${valuePath} must contain at least ${schema.minItems} items`);
+      if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) errors.push(`${valuePath} must contain at most ${schema.maxItems} items`);
+      if (schema.uniqueItems) {
+        const seen = new Set(value.map((item) => JSON.stringify(item)));
+        if (seen.size !== value.length) errors.push(`${valuePath} must contain unique items`);
+      }
+      if (schema.items) {
+        value.forEach((item, index) => errors.push(...validateValue(item, schema.items, `${valuePath}[${index}]`, rootSchema)));
+      }
+    }
+    if (isPlainObject(value)) {
+      const properties = schema.properties ?? {};
+      for (const required of schema.required ?? []) {
+        if (!(required in value)) errors.push(`${valuePath}.${required} is required`);
+      }
+      for (const [key, item] of Object.entries(value)) {
+        if (key in properties) {
+          errors.push(...validateValue(item, properties[key], `${valuePath}.${key}`, rootSchema));
+        } else if (schema.additionalProperties === false) {
+          errors.push(`${valuePath}.${key} is not allowed`);
+        } else if (isPlainObject(schema.additionalProperties)) {
+          errors.push(...validateValue(item, schema.additionalProperties, `${valuePath}.${key}`, rootSchema));
+        }
+      }
+    }
+    return errors;
+  }
+
+  function resolveRef(ref, rootSchema) {
+    if (ref.startsWith("#/")) {
+      return { schema: resolveJsonPointer(rootSchema, ref.slice(1)), root: rootSchema };
+    }
+    const [schemaName, pointer] = ref.split("#");
+    const root = loadSchema(schemaName);
+    return { schema: pointer ? resolveJsonPointer(root, pointer) : root, root };
+  }
+
+  return { validate };
+}
+
+function resolveJsonPointer(root, pointer) {
+  return pointer
+    .split("/")
+    .filter(Boolean)
+    .reduce((value, segment) => value?.[segment.replace(/~1/g, "/").replace(/~0/g, "~")], root);
+}
+
+function typeMatches(value, type) {
+  const types = Array.isArray(type) ? type : [type];
+  return types.some((candidate) => {
+    if (candidate === "array") return Array.isArray(value);
+    if (candidate === "object") return isPlainObject(value);
+    if (candidate === "integer") return Number.isInteger(value);
+    if (candidate === "number") return typeof value === "number";
+    if (candidate === "null") return value === null;
+    return typeof value === candidate;
+  });
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function walk(root) {
