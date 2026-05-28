@@ -85,7 +85,7 @@ Status snapshot: **2026-05-28**.
 |---|---|---|
 | `runtime-web/` | partial | Launcher HTML/CSS/JS exists; fake host serves it and proxies sandbox `AppRuntime.call` messages to `/bridge` |
 | `zig-core/` | partial | Zig 0.15.2 static library package with C FFI header, deterministic JSON core.step behavior, and unit tests |
-| `server/` | partial | Minimal Zig HTTP server with `/health`, `/core/step`, `/bridge` for core/capabilities, `/webapps/validate`, `/webapps/examples`, and `zig build run-server`; uses Zig core FFI |
+| `server/` | partial | Minimal Zig HTTP server with `/health`, `/core/step`, `/bridge` for core/capabilities/storage/app.log, `/webapps/validate`, `/webapps/examples`, and `zig build run-server`; uses Zig core FFI and SQLite-backed dev app_storage |
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, session/command/package/app/db control HTTP surface, package validation/install with smoke-test, runtime-compatibility, and update-approval gating, Ed25519 signing, verified mount gate, version rollback/quarantine, snapshots, migrations, backup export/import, bridge dispatch with resource-budget checks, static runtime controls, static smoke/micro-test runner, and focused tests |
 | `tools/codex-platform-mcp/` | partial | Dependency-free MCP stdio JSON-RPC server forwards declared tools to fake-host/dev control plane; node:test coverage present |
 | `native/ios/` | partial | SwiftPM/UIKit/WKWebView scaffold with WKScriptMessageHandlerWithReply, SQLite-backed storage, native permission checks, and structured unsupported responses for unfinished platform services |

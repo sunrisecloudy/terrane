@@ -1,5 +1,8 @@
 const std = @import("std");
 const core_api = @import("zig_core");
+const sqlite = @cImport({
+    @cInclude("sqlite3.h");
+});
 
 const max_request_bytes = 1024 * 1024;
 const runtime_version = "0.1.0";
@@ -132,6 +135,14 @@ fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []co
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
+    if (std.mem.startsWith(u8, method, "storage.")) {
+        return handleStorageBridge(allocator, stream, id, method, params, channel_app_id);
+    }
+
+    if (std.mem.eql(u8, method, "app.log")) {
+        return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
+    }
+
     if (isKnownUnsupportedBridgeMethod(method)) {
         return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
     }
@@ -192,6 +203,73 @@ fn bridgeValidationMessage(err: BridgeValidationError) []const u8 {
         error.InvalidParams => "Bridge request params must be an object",
         error.InvalidTimestamp => "Bridge request timestamp must be a number",
     };
+}
+
+fn handleStorageBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    app_id: []const u8,
+) !void {
+    const prefix = try std.fmt.allocPrint(allocator, "{s}:", .{app_id});
+    defer allocator.free(prefix);
+
+    if (std.mem.eql(u8, method, "storage.get")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "storage.get requires key");
+        };
+        if (!std.mem.startsWith(u8, key, prefix)) {
+            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const result_json = try storageGetResultJson(allocator, app_id, key, params.object.get("defaultValue"));
+        defer allocator.free(result_json);
+        return writeBridgeOkRaw(allocator, stream, id, result_json);
+    }
+
+    if (std.mem.eql(u8, method, "storage.set")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "storage.set requires key");
+        };
+        if (!std.mem.startsWith(u8, key, prefix)) {
+            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const value = if (params.object.get("value")) |value_param|
+            try jsonValueAlloc(allocator, value_param)
+        else
+            try allocator.dupe(u8, "null");
+        defer allocator.free(value);
+        try storageSet(app_id, key, value);
+        const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"bytesWritten\":{d}}}", .{value.len});
+        defer allocator.free(result_json);
+        return writeBridgeOkRaw(allocator, stream, id, result_json);
+    }
+
+    if (std.mem.eql(u8, method, "storage.remove")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "storage.remove requires key");
+        };
+        if (!std.mem.startsWith(u8, key, prefix)) {
+            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        try storageRemove(app_id, key);
+        return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, method, "storage.list")) {
+        const prefix_param = valueString(params.object.get("prefix")) orelse {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "storage.list requires prefix");
+        };
+        if (!std.mem.startsWith(u8, prefix_param, prefix)) {
+            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const result_json = try storageListResultJson(allocator, app_id, prefix_param);
+        defer allocator.free(result_json);
+        return writeBridgeOkRaw(allocator, stream, id, result_json);
+    }
+
+    return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown storage method");
 }
 
 fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, body: []const u8) !void {
@@ -336,6 +414,147 @@ fn coreStepAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     return allocator.dupe(u8, output.ptr[0..output.len]);
 }
 
+fn openStorageDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
+    const raw_path = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_DB") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, "server-platform.sqlite"),
+        else => return err,
+    };
+    defer allocator.free(raw_path);
+    const path_z = try allocator.dupeZ(u8, raw_path);
+    defer allocator.free(path_z);
+
+    var db: ?*sqlite.sqlite3 = null;
+    if (sqlite.sqlite3_open(path_z.ptr, &db) != sqlite.SQLITE_OK) {
+        return error.StorageOpenFailed;
+    }
+    errdefer _ = sqlite.sqlite3_close(db);
+
+    const schema =
+        "CREATE TABLE IF NOT EXISTS app_storage (" ++
+        "app_id TEXT NOT NULL, " ++
+        "key TEXT NOT NULL, " ++
+        "value_json TEXT, " ++
+        "updated_at TEXT NOT NULL, " ++
+        "PRIMARY KEY(app_id, key)" ++
+        ");";
+    if (sqlite.sqlite3_exec(db, schema, null, null, null) != sqlite.SQLITE_OK) {
+        return error.StorageSchemaFailed;
+    }
+    return db.?;
+}
+
+fn storageGetResultJson(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    key: []const u8,
+    default_value: ?std.json.Value,
+) ![]u8 {
+    const db = try openStorageDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+
+    if (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const value_json = sqliteColumnText(statement, 0);
+        return std.fmt.allocPrint(allocator, "{{\"value\":{s}}}", .{if (value_json.len == 0) "null" else value_json});
+    }
+
+    if (default_value) |value| {
+        const default_json = try jsonValueAlloc(allocator, value);
+        defer allocator.free(default_json);
+        return std.fmt.allocPrint(allocator, "{{\"value\":{s}}}", .{default_json});
+    }
+    return allocator.dupe(u8, "{\"value\":null}");
+}
+
+fn storageSet(app_id: []const u8, key: []const u8, value_json: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const db = try openStorageDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, datetime('now')) " ++
+            "ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    bindText(statement, 3, value_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
+fn storageRemove(app_id: []const u8, key: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const db = try openStorageDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
+fn storageListResultJson(allocator: std.mem.Allocator, app_id: []const u8, prefix: []const u8) ![]u8 {
+    const db = try openStorageDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    const like_prefix = try std.fmt.allocPrint(allocator, "{s}%", .{prefix});
+    defer allocator.free(like_prefix);
+    bindText(statement, 2, like_prefix);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"keys\":[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const key = sqliteColumnText(statement, 0);
+        const escaped = try escapeJsonString(allocator, key);
+        defer allocator.free(escaped);
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.print("\"{s}\"", .{escaped});
+        count += 1;
+    }
+    try out.writer.writeAll("]}");
+    return out.toOwnedSlice();
+}
+
+fn bindText(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: []const u8) void {
+    _ = sqlite.sqlite3_bind_text(statement, index, value.ptr, @intCast(value.len), null);
+}
+
+fn sqliteColumnText(statement: ?*sqlite.sqlite3_stmt, index: c_int) []const u8 {
+    const raw = sqlite.sqlite3_column_text(statement, index) orelse return "";
+    const len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, index));
+    return @as([*]const u8, @ptrCast(raw))[0..len];
+}
+
 const ParsedRequest = struct {
     method: []const u8,
     path: []const u8,
@@ -436,7 +655,7 @@ fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":false,\"storage.set\":false,\"storage.remove\":false,\"storage.list\":false,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":false,\"network.request\":false,\"app.log\":false}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":false,\"network.request\":false,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
         .{runtime_version},
     );
 }
@@ -512,15 +731,10 @@ fn tagStartsAt(html: []const u8, start: usize, tag: []const u8) bool {
 
 fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
     const methods = [_][]const u8{
-        "storage.get",
-        "storage.set",
-        "storage.remove",
-        "storage.list",
         "dialog.openFile",
         "dialog.saveFile",
         "notification.toast",
         "network.request",
-        "app.log",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;

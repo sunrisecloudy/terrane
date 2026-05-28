@@ -28,10 +28,12 @@ Implemented endpoints:
 
 - `GET /health`
 - `POST /core/step`
-- `POST /bridge` for `core.step`, `runtime.capabilities`, and structured bridge errors
+- `POST /bridge` for `core.step`, `runtime.capabilities`, `storage.*`, `app.log`, and structured bridge errors
 - `POST /webapps/validate` for server-side package shape and static policy validation
 - `GET /webapps/examples`
 
 ## v0.4 persistence requirement
 
-Implement the platform database layer for this target. Native/fake hosts use SQLite. The server supports SQLite in dev and the Postgres-compatible logical schema in production. The target must run migrations, persist app registry/package/storage/log/test records, and expose safe DB inspection through the dev control plane.
+Server dev storage uses SQLite through the `app_storage(app_id, key, value_json)` table. By default it writes `server-platform.sqlite` in the current working directory; set `NATIVE_AI_SERVER_DB=/path/to/platform.sqlite` to choose another file.
+
+Remaining persistence work: full app registry/package/install/test/control records, migrations, safe DB inspection tools, and the Postgres production adapter.

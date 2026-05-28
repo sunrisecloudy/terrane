@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .root_module = server_module,
     });
     server.linkLibC();
+    server.linkSystemLibrary("sqlite3");
     b.installArtifact(server);
 
     const run_server = b.addRunArtifact(server);
@@ -37,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .root_module = server_module,
     });
     tests.linkLibC();
+    tests.linkSystemLibrary("sqlite3");
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Build and run server unit tests");
     test_step.dependOn(&run_tests.step);

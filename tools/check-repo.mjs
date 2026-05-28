@@ -247,6 +247,11 @@ function checkServerStatic() {
     "fn handleExampleAsset",
     "fn writeStatic",
     "fn validateBridgeRequest",
+    "fn handleStorageBridge",
+    "sqlite3_open",
+    "app_storage",
+    "storage.get\\\":true",
+    "app.log\\\":true",
     "Bridge request contains unknown top-level fields",
     'headerValue(headers, "x-app-id")',
     "\"core.step\"",
@@ -265,7 +270,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
