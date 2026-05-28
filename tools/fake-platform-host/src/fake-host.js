@@ -41,7 +41,8 @@ export class FakePlatformHost {
   installPackage(packageDir, { trustLevel = "developer" } = {}) {
     const pkg = readPackage(packageDir);
     const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
-    return this.database.insertInstalledPackage({
+    const smokeTest = this.evaluateBundledSmokeTests(pkg);
+    const install = this.database.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
       hashes: signed.hashes,
@@ -49,7 +50,24 @@ export class FakePlatformHost {
       signature: signed.signature,
       contentHashesDocument: signed.contentHashesDocument,
       trustLevel,
+      smokeTest,
+      activate: smokeTest.ok,
+      versionStatus: smokeTest.ok ? "enabled" : "quarantined",
+      reportStatus: smokeTest.ok ? "accepted" : "failed",
     });
+    this.database.recordTestRun({
+      microTestId: `smoke:${pkg.manifest.id}`,
+      name: `${pkg.manifest.id} bundled smoke tests`,
+      appId: pkg.manifest.id,
+      spec: smokeTest.spec ?? [],
+      status: smokeTest.ok ? "passed" : "failed",
+      result: smokeTest,
+    });
+    return {
+      ...install,
+      status: smokeTest.ok ? "enabled" : "quarantined",
+      smokeTest,
+    };
   }
 
   signPackage(packageDir, { trustLevel = "developer" } = {}) {
@@ -76,6 +94,39 @@ export class FakePlatformHost {
   validatePackage(packageDir) {
     const result = validatePackage(packageDir);
     return summarizeValidation(result);
+  }
+
+  evaluateBundledSmokeTests(pkg) {
+    const smokeText = pkg.files.get("smoke-tests.json");
+    if (!smokeText) {
+      return {
+        ok: true,
+        status: "not-run",
+        appId: pkg.manifest.id,
+        total: 0,
+        failures: [],
+        spec: [],
+      };
+    }
+    try {
+      const tests = JSON.parse(smokeText);
+      const result = this.testRunner.evaluateSmokeTests({
+        appId: pkg.manifest.id,
+        tests,
+        html: pkg.files.get("index.html") ?? "",
+        appJs: pkg.files.get("app.js") ?? "",
+      });
+      return { ...result, status: result.ok ? "passed" : "failed", spec: tests };
+    } catch (error) {
+      return {
+        ok: false,
+        status: "failed",
+        appId: pkg.manifest.id,
+        total: 0,
+        failures: [{ code: "package.invalid", message: error.message, path: "smoke-tests.json" }],
+        spec: [],
+      };
+    }
   }
 
   async dispatchBridge(request, context) {

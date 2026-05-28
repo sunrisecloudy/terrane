@@ -27,28 +27,43 @@ export class PlatformDatabase {
     this.db.close();
   }
 
-  insertInstalledPackage({ manifest, files, hashes, validation, signature, contentHashesDocument, trustLevel = "developer" }) {
+  insertInstalledPackage({
+    manifest,
+    files,
+    hashes,
+    validation,
+    signature,
+    contentHashesDocument,
+    trustLevel = "developer",
+    smokeTest = { status: "not-run" },
+    activate = true,
+    versionStatus = activate ? "enabled" : "quarantined",
+    reportStatus = activate ? "accepted" : "failed",
+  }) {
     const createdAt = nowIso();
     const installId = `install_${manifest.id}_${manifest.version}_${createdAt.replace(/[-:.]/g, "").slice(0, 15)}_${hashes.contentHash.replace("sha256:", "").slice(0, 12)}_${id("v").slice(2, 10)}`;
     const reportId = id("report");
     const previousInstallId = this.activeInstallId(manifest.id);
+    const existingApp = this.get("SELECT id, status, data_version FROM apps WHERE id = ?", manifest.id);
+    const appStatus = activate || previousInstallId ? "enabled" : "quarantined";
 
     this.transaction(() => {
       this.run(
-        "INSERT INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = 'enabled', data_version = excluded.data_version, updated_at = excluded.updated_at",
+        "INSERT INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status, data_version = excluded.data_version, updated_at = excluded.updated_at",
         manifest.id,
         manifest.name,
-        manifest.dataVersion,
+        existingApp && !activate ? existingApp.status : appStatus,
+        activate || !existingApp ? manifest.dataVersion : existingApp.data_version,
         createdAt,
         createdAt,
       );
 
-      if (previousInstallId) {
+      if (previousInstallId && activate) {
         this.run("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", previousInstallId);
       }
 
       this.run(
-        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)",
+        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         installId,
         manifest.id,
         manifest.version,
@@ -59,8 +74,9 @@ export class PlatformDatabase {
         hashes.contentHash,
         prettyJson(signature),
         trustLevel,
+        versionStatus,
         createdAt,
-        createdAt,
+        activate ? createdAt : null,
       );
 
       for (const [filePath, content] of files.entries()) {
@@ -78,24 +94,27 @@ export class PlatformDatabase {
 
       for (const permission of manifest.permissions) {
         this.run(
-          "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, 1, 1, ?, 'dev install approved')",
+          "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, 1, ?, ?, ?)",
           installId,
           manifest.id,
           permission,
-          createdAt,
+          activate ? 1 : 0,
+          activate ? createdAt : null,
+          activate ? "dev install approved" : "pending until quarantined version is repaired",
         );
       }
 
       this.run(
-        "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) VALUES (?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         reportId,
         manifest.id,
         installId,
+        reportStatus,
         prettyJson(validation),
         prettyJson({ ok: true, signature, contentHashes: contentHashesDocument }),
-        prettyJson({ approved: manifest.permissions }),
+        prettyJson({ approved: activate ? manifest.permissions : [], requested: manifest.permissions }),
         prettyJson({ ok: true, runtimeVersion: manifest.runtimeVersion }),
-        prettyJson({ status: "not-run" }),
+        prettyJson(smokeTest),
         hashes.contentHash,
         createdAt,
       );
@@ -107,27 +126,39 @@ export class PlatformDatabase {
         installId,
         reportId,
         createdAt,
-        prettyJson({ trustLevel }),
+        prettyJson({ trustLevel, status: versionStatus }),
       );
 
-      this.run(
-        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'activate', 'fake-host', ?, ?, ?)",
-        id("install_event"),
-        manifest.id,
-        installId,
-        reportId,
-        createdAt,
-        prettyJson({ previousInstallId }),
-      );
+      if (activate) {
+        this.run(
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'activate', 'fake-host', ?, ?, ?)",
+          id("install_event"),
+          manifest.id,
+          installId,
+          reportId,
+          createdAt,
+          prettyJson({ previousInstallId }),
+        );
 
-      this.run(
-        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, updated_at = ? WHERE id = ?",
-        installId,
-        manifest.version,
-        manifest.dataVersion,
-        createdAt,
-        manifest.id,
-      );
+        this.run(
+          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+          installId,
+          manifest.version,
+          manifest.dataVersion,
+          createdAt,
+          manifest.id,
+        );
+      } else {
+        this.run(
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'quarantine', 'fake-host', ?, ?, ?)",
+          id("install_event"),
+          manifest.id,
+          installId,
+          reportId,
+          createdAt,
+          prettyJson({ previousInstallId, reason: "bundled smoke tests failed" }),
+        );
+      }
     });
 
     return { installId, reportId, appId: manifest.id, version: manifest.version, contentHash: hashes.contentHash };

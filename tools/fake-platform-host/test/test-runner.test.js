@@ -18,7 +18,7 @@ test("checked-in example smoke tests run and persist test_runs", async () => {
     }
 
     const runs = await host.runControlCommand("db.query_test_runs", {});
-    assert.equal(runs.length, apps.length);
+    assert.equal(runs.length, apps.length * 2);
     assert.equal(runs.every((run) => run.status === "passed"), true);
   } finally {
     host.close();
@@ -39,10 +39,11 @@ test("checked-in microtests execute setup, validate statically, and persist runs
       assert.equal(run.result.setup.ok, true);
       assert.equal(run.result.teardown.ok, true);
 
-      const appId = JSON.parse(fs.readFileSync(path.join(microtestsDir, fileName), "utf8")).targetApps[0];
+      const spec = JSON.parse(fs.readFileSync(path.join(microtestsDir, fileName), "utf8"));
+      const appId = spec.targetApps[0];
       const persisted = await host.runControlCommand("db.query_test_runs", { appId });
-      assert.equal(persisted.length, 1);
-      assert.equal(persisted[0].status, "passed");
+      assert.equal(persisted.some((run) => run.micro_test_id === spec.id), true);
+      assert.equal(persisted.every((run) => run.status === "passed"), true);
     } finally {
       host.close();
     }
@@ -70,8 +71,7 @@ test("microtest failures are reported with stable repair codes", async () => {
     assert.equal(run.status, "failed");
     assert.deepEqual(run.result.failures.map((failure) => failure.code), ["selector.not_found"]);
     const persisted = await host.runControlCommand("db.query_test_runs", { appId: "notes-lite" });
-    assert.equal(persisted.length, 1);
-    assert.equal(persisted[0].status, "failed");
+    assert.equal(persisted.some((row) => row.status === "failed" && row.micro_test_id === "notes-lite-missing-selector"), true);
   } finally {
     host.close();
   }
