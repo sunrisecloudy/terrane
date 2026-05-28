@@ -48,7 +48,7 @@ std::optional<std::wstring> WebBridge::permissionForBridgeMethod(std::wstring co
     return L"storage.write";
   }
   if (method == L"dialog.openFile" || method == L"dialog.saveFile" || method == L"notification.toast" ||
-      method == L"network.request" || method == L"core.step" || method == L"app.log") {
+      method == L"network.request" || method == L"core.step") {
     return method;
   }
   return std::nullopt;

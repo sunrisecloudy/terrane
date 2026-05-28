@@ -96,7 +96,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return "storage.read"
         case "storage.set", "storage.remove":
             return "storage.write"
-        case "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step", "app.log":
+        case "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step":
             return method
         default:
             return nil

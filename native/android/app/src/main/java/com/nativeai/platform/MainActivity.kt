@@ -29,7 +29,7 @@ class MainActivity : Activity() {
                 AppSandboxContext(
                     appId = "notes-lite",
                     storagePrefix = "notes-lite:",
-                    approvedPermissions = setOf("storage.read", "storage.write", "notification.toast", "app.log"),
+                    approvedPermissions = setOf("storage.read", "storage.write", "notification.toast"),
                 )
             },
         )

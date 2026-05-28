@@ -9,7 +9,7 @@ static const gchar *permission_for_bridge_method(const gchar *method) {
   }
   if (g_strcmp0(method, "dialog.openFile") == 0 || g_strcmp0(method, "dialog.saveFile") == 0 ||
       g_strcmp0(method, "notification.toast") == 0 || g_strcmp0(method, "network.request") == 0 ||
-      g_strcmp0(method, "core.step") == 0 || g_strcmp0(method, "app.log") == 0) {
+      g_strcmp0(method, "core.step") == 0) {
     return method;
   }
   return NULL;

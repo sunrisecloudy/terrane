@@ -309,6 +309,18 @@ function checkNativeStatic() {
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
   }
+  const forbiddenAppLogPermissionChecks = [
+    [macBridge, '"network.request", "core.step", "app.log"'],
+    [iosBridge, '"network.request", "core.step", "app.log"'],
+    [androidBridge, '"network.request", "core.step", "app.log" -> method'],
+    [windowsBridge, 'method == L"network.request" || method == L"core.step" || method == L"app.log"'],
+    [linuxBridge, 'g_strcmp0(method, "core.step") == 0 || g_strcmp0(method, "app.log") == 0'],
+  ];
+  for (const [source, snippet] of forbiddenAppLogPermissionChecks) {
+    if (source.includes(snippet)) {
+      throw new Error("native bridges must keep app.log permission-less");
+    }
+  }
   const iosRequired = [
     [iosBridge, "WKScriptMessageHandlerWithReply"],
     [iosHost, "contentController.addScriptMessageHandler"],

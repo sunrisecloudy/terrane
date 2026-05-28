@@ -49,7 +49,7 @@ class NativeBridge(
     private fun permissionForBridgeMethod(method: String): String? = when (method) {
         "storage.get", "storage.list" -> "storage.read"
         "storage.set", "storage.remove" -> "storage.write"
-        "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step", "app.log" -> method
+        "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step" -> method
         else -> null
     }
 
