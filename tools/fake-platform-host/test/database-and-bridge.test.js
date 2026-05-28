@@ -6,16 +6,20 @@ import { CoreEngine } from "../src/core.js";
 import { examplesDir } from "../src/paths.js";
 import { readPackage, packageHashes } from "../src/package-validator.js";
 import { PlatformDatabase } from "../src/platform-database.js";
+import { createPlatformKeypair, signPackage } from "../src/signing.js";
 
 test("sqlite migrations apply and generated packages install transactionally", () => {
   const db = new PlatformDatabase();
   const pkg = readPackage(path.join(examplesDir, "notes-lite"));
   const hashes = packageHashes(pkg.manifest, pkg.files);
+  const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, keypair: createPlatformKeypair() });
   const install = db.insertInstalledPackage({
     manifest: pkg.manifest,
     files: pkg.files,
     hashes,
     validation: pkg.validation,
+    signature: signed.signature,
+    contentHashesDocument: signed.contentHashesDocument,
   });
 
   assert.equal(install.appId, "notes-lite");
@@ -26,13 +30,17 @@ test("sqlite migrations apply and generated packages install transactionally", (
 
 test("bridge dispatch enforces permissions and storage prefixes", async () => {
   const db = new PlatformDatabase();
+  const keypair = createPlatformKeypair();
   for (const app of ["notes-lite", "task-workbench", "api-dashboard", "file-transformer"]) {
     const pkg = readPackage(path.join(examplesDir, app));
+    const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, keypair });
     db.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
-      hashes: packageHashes(pkg.manifest, pkg.files),
+      hashes: signed.hashes,
       validation: pkg.validation,
+      signature: signed.signature,
+      contentHashesDocument: signed.contentHashesDocument,
     });
   }
   const dispatcher = new BridgeDispatcher({ database: db, core: new CoreEngine() });

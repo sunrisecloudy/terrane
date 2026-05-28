@@ -6,6 +6,7 @@ import { PlatformError } from "./errors.js";
 import { examplesDir, resolveInside, runtimeWebDir } from "./paths.js";
 import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
+import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "./signing.js";
 import { prettyJson } from "./util.js";
 
 export class FakePlatformHost {
@@ -13,6 +14,7 @@ export class FakePlatformHost {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
     this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
+    this.keypair = createPlatformKeypair();
     this.controlToken = controlToken;
     this.dbFile = dbFile;
   }
@@ -26,19 +28,43 @@ export class FakePlatformHost {
       ok: true,
       version: "0.1.0",
       db: this.dbFile === ":memory:" ? "sqlite-mem" : "sqlite-file",
+      keyId: this.keypair.keyId,
       capabilities: fakeHostCapabilities(),
     };
   }
 
-  installPackage(packageDir, { trustLevel = "local-dev" } = {}) {
+  installPackage(packageDir, { trustLevel = "developer" } = {}) {
     const pkg = readPackage(packageDir);
-    const hashes = packageHashes(pkg.manifest, pkg.files);
+    const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
     return this.database.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
-      hashes,
+      hashes: signed.hashes,
       validation: summarizeValidation(pkg.validation),
+      signature: signed.signature,
+      contentHashesDocument: signed.contentHashesDocument,
       trustLevel,
+    });
+  }
+
+  signPackage(packageDir, { trustLevel = "developer" } = {}) {
+    const pkg = readPackage(packageDir);
+    return signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
+  }
+
+  verifyInstalledApp(appId) {
+    const installed = this.database.activeInstallPackage(appId);
+    if (!installed) {
+      throw new PlatformError("app_not_installed", `App is not installed: ${appId}`, { appId });
+    }
+    if (installed.status === "quarantined") {
+      throw new PlatformError("package_quarantined", `App is quarantined: ${appId}`, { appId });
+    }
+    return verifyInstalledPackage({
+      manifest: installed.manifest,
+      files: installed.files,
+      signature: installed.signature,
+      publicKey: this.keypair.publicKey,
     });
   }
 
@@ -59,13 +85,20 @@ export class FakePlatformHost {
         return fakeHostCapabilities(args.appId ?? null);
       case "platform.validate_package":
         return this.validatePackage(requiredArg(args, "packagePath"));
+      case "platform.sign_webapp_package":
+        return this.signPackage(requiredArg(args, "packagePath"), {
+          trustLevel: args.trustLevel ?? "developer",
+        });
+      case "platform.run_policy_audit":
+        return this.validatePackage(requiredArg(args, "packagePath"));
       case "platform.install_webapp_package":
         return this.installPackage(requiredArg(args, "packagePath"), {
-          trustLevel: args.trustLevel ?? "local-dev",
+          trustLevel: args.trustLevel ?? "developer",
         });
       case "platform.open_webapp":
+        this.verifyInstalledApp(requiredArg(args, "appId"));
         return {
-          sessionId: this.database.createRuntimeSession({ appId: requiredArg(args, "appId") }),
+          sessionId: this.database.createRuntimeSession({ appId: args.appId }),
           appId: args.appId,
         };
       case "runtime.core_step":

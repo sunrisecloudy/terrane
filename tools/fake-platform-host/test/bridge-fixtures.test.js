@@ -5,17 +5,21 @@ import test from "node:test";
 import { BridgeDispatcher } from "../src/bridge-dispatcher.js";
 import { CoreEngine } from "../src/core.js";
 import { examplesDir, repoRoot } from "../src/paths.js";
-import { packageHashes, readPackage } from "../src/package-validator.js";
+import { readPackage } from "../src/package-validator.js";
 import { PlatformDatabase } from "../src/platform-database.js";
+import { createPlatformKeypair, signPackage } from "../src/signing.js";
 
 test("checked-in bridge fixtures match fake-host response codes", async () => {
   const db = new PlatformDatabase();
   const pkg = readPackage(path.join(examplesDir, "notes-lite"));
+  const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, keypair: createPlatformKeypair() });
   db.insertInstalledPackage({
     manifest: pkg.manifest,
     files: pkg.files,
-    hashes: packageHashes(pkg.manifest, pkg.files),
+    hashes: signed.hashes,
     validation: pkg.validation,
+    signature: signed.signature,
+    contentHashesDocument: signed.contentHashesDocument,
   });
 
   const dispatcher = new BridgeDispatcher({ database: db, core: new CoreEngine() });

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PlatformError } from "./errors.js";
-import { canonicalJson, readJsonFile, sha256 } from "./util.js";
+import { canonicalPackageHashes } from "./signing.js";
+import { readJsonFile } from "./util.js";
 
 const REQUIRED_FILES = ["manifest.json", "index.html", "styles.css", "app.js"];
 const OPTIONAL_FILES = new Set(["smoke-tests.json", "README.md"]);
@@ -118,15 +119,7 @@ export function validateSourceSnippet(source) {
 }
 
 export function packageHashes(manifest, files) {
-  const normalizedManifest = canonicalJson(manifest);
-  const fileEntries = [...files.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([filePath, content]) => [filePath, sha256(content)]);
-  return {
-    manifestHash: sha256(normalizedManifest),
-    contentHash: sha256(canonicalJson(fileEntries)),
-    fileHashes: Object.fromEntries(fileEntries),
-  };
+  return canonicalPackageHashes(manifest, files);
 }
 
 function readPackageFiles(packageDir) {

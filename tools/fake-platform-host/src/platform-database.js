@@ -27,9 +27,9 @@ export class PlatformDatabase {
     this.db.close();
   }
 
-  insertInstalledPackage({ manifest, files, hashes, validation, trustLevel = "local-dev" }) {
+  insertInstalledPackage({ manifest, files, hashes, validation, signature, contentHashesDocument, trustLevel = "developer" }) {
     const createdAt = nowIso();
-    const installId = `install_${manifest.id}_${manifest.version}_${hashes.contentHash.slice(0, 12)}`;
+    const installId = `install_${manifest.id}_${manifest.version}_${hashes.contentHash.replace("sha256:", "").slice(0, 12)}`;
     const reportId = id("report");
 
     this.transaction(() => {
@@ -52,7 +52,7 @@ export class PlatformDatabase {
         prettyJson(manifest),
         hashes.manifestHash,
         hashes.contentHash,
-        prettyJson(devSignature(manifest, hashes)),
+        prettyJson(signature),
         trustLevel,
         createdAt,
         createdAt,
@@ -87,7 +87,7 @@ export class PlatformDatabase {
         manifest.id,
         installId,
         prettyJson(validation),
-        prettyJson({ ok: true, mode: "dev-none-signature" }),
+        prettyJson({ ok: true, signature, contentHashes: contentHashesDocument }),
         prettyJson({ approved: manifest.permissions }),
         prettyJson({ ok: true, runtimeVersion: manifest.runtimeVersion }),
         prettyJson({ status: "not-run" }),
@@ -130,7 +130,7 @@ export class PlatformDatabase {
 
   activeInstall(appId) {
     const row = this.get(
-      "SELECT apps.id AS app_id, apps.active_install_id, apps.active_version, app_versions.manifest_json FROM apps LEFT JOIN app_versions ON app_versions.install_id = apps.active_install_id WHERE apps.id = ?",
+      "SELECT apps.id AS app_id, apps.active_install_id, apps.active_version, app_versions.manifest_json, app_versions.signature_json, app_versions.status FROM apps LEFT JOIN app_versions ON app_versions.install_id = apps.active_install_id WHERE apps.id = ?",
       appId,
     );
     if (!row || !row.active_install_id) {
@@ -141,6 +141,26 @@ export class PlatformDatabase {
       installId: row.active_install_id,
       version: row.active_version,
       manifest: JSON.parse(row.manifest_json),
+      signature: row.signature_json ? JSON.parse(row.signature_json) : null,
+      status: row.status,
+    };
+  }
+
+  activeInstallPackage(appId) {
+    const active = this.activeInstall(appId);
+    if (!active) {
+      return null;
+    }
+
+    const files = new Map(
+      this.all("SELECT path, content_text FROM app_files WHERE install_id = ? ORDER BY path", active.installId).map(
+        (row) => [row.path, row.content_text ?? ""],
+      ),
+    );
+
+    return {
+      ...active,
+      files,
     };
   }
 
@@ -282,7 +302,7 @@ export class PlatformDatabase {
 
   queryAppVersions(appId) {
     return this.all(
-      "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, trust_level, status, created_at, activated_at FROM app_versions WHERE app_id = ? ORDER BY created_at",
+      "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions WHERE app_id = ? ORDER BY created_at",
       appId,
     );
   }
@@ -331,16 +351,6 @@ export class PlatformDatabase {
       throw error;
     }
   }
-}
-
-function devSignature(manifest, hashes) {
-  return {
-    algorithm: "none-dev",
-    appId: manifest.id,
-    version: manifest.version,
-    manifestHash: hashes.manifestHash,
-    contentHash: hashes.contentHash,
-  };
 }
 
 function mimeForPath(filePath) {
