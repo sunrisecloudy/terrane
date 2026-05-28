@@ -565,6 +565,8 @@ function checkNativeStatic() {
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
+  const windowsCore = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.cpp"), "utf8");
+  const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.h"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
@@ -701,6 +703,7 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, ".networkPolicy"],
+    [windowsBridge, 'features.Insert(L"core.step", json::JsonValue::CreateBooleanValue(core_.IsAvailable()))'],
     [windowsStorage, "request.context.appId"],
     [windowsStorage, "request.context.storagePrefix"],
     [windowsStorage, "storagePrefixFailure"],
@@ -720,6 +723,16 @@ function checkNativeStatic() {
   }
   if (windowsNetwork.includes("platform_unsupported")) {
     throw new Error("Windows network.request must not remain a platform_unsupported stub");
+  }
+  for (const snippet of ["LoadLibraryW", "GetProcAddress", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_DLL", "core.step app field does not match the channel-derived app id"]) {
+    if (!windowsCore.includes(snippet)) {
+      throw new Error(`Windows Zig core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["bool IsAvailable() const", "CoreStepJsonFn", "CoreFreeFn"]) {
+    if (!windowsCoreHeader.includes(snippet)) {
+      throw new Error(`Windows Zig core bridge header missing ${snippet}`);
+    }
   }
   if (!windowsCmake.includes("winhttp")) {
     throw new Error("Windows network bridge must link winhttp");
@@ -816,7 +829,7 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {

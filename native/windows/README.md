@@ -26,7 +26,9 @@ Implemented now:
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
-- Returns structured `platform_unsupported` responses for dialogs and Zig core until those services are wired.
+- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `NATIVE_AI_ZIG_CORE_DLL` first and then repo-local/executable candidate paths.
+- Reports `core.step` in `runtime.capabilities` from the actual Zig DLL load status and returns structured `platform_unsupported` when the DLL is absent.
+- Returns structured `platform_unsupported` responses for dialogs until those services are wired.
 
 MVP acceptance:
 
