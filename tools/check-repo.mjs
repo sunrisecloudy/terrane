@@ -362,7 +362,10 @@ function checkServerStatic() {
     "fn writeStatic",
     "fn validateBridgeRequest",
     "fn handleStorageBridge",
+    "fn handleNotificationToastBridge",
     "fn handleAppLogBridge",
+    "fn bridgePermissionApproved",
+    "fn permissionForBridgeMethod",
     "fn handleControlCommand",
     "fn enforceProductionStartupRules",
     "fn isDevControlPath",
@@ -485,6 +488,7 @@ function checkServerStatic() {
     "app_install_reports",
     "backup_exports",
     "storage.get\\\":true",
+    "notification.toast\\\":true",
     "app.log\\\":true",
     "Bridge request contains unknown top-level fields",
     'headerValue(headers, "x-app-id")',
@@ -507,7 +511,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,notification,app.log permissions=active-install control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

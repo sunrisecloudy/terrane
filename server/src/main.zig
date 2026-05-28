@@ -204,6 +204,20 @@ fn handleBridge(
     const method = valueString(root.object.get("method")).?;
     const params = root.object.get("params").?;
 
+    if (permissionForBridgeMethod(method)) |permission| {
+        const params_json = try jsonValueAlloc(allocator, params);
+        defer allocator.free(params_json);
+        const permitted = bridgePermissionApproved(allocator, channel_app_id, permission) catch false;
+        if (!permitted) {
+            const error_json = try bridgeErrorJsonAlloc(allocator, "permission_denied", "Bridge method requires an approved app permission");
+            defer allocator.free(error_json);
+            logBridgeCall(allocator, channel_app_id, session_id, method, params_json, null, error_json) catch |err| {
+                std.debug.print("bridge audit write failed: {}\n", .{err});
+            };
+            return writeBridgeError(allocator, stream, id, "permission_denied", "Bridge method requires an approved app permission");
+        }
+    }
+
     if (std.mem.eql(u8, method, "core.step")) {
         if (valueString(params.object.get("app"))) |requested_app| {
             if (!std.mem.eql(u8, requested_app, channel_app_id)) {
@@ -247,6 +261,10 @@ fn handleBridge(
 
     if (std.mem.eql(u8, method, "app.log")) {
         return handleAppLogBridge(allocator, stream, id, params, channel_app_id, session_id);
+    }
+
+    if (std.mem.eql(u8, method, "notification.toast")) {
+        return handleNotificationToastBridge(allocator, stream, id, params, channel_app_id, session_id);
     }
 
     if (isKnownUnsupportedBridgeMethod(method)) {
@@ -424,6 +442,34 @@ fn handleAppLogBridge(
         return writeBridgeError(allocator, stream, id, "storage_error", "app.log failed");
     };
     std.debug.print("[app.log] {s} {s}: {s}\n", .{ app_id, level, message });
+    return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
+}
+
+fn handleNotificationToastBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    params: std.json.Value,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+) !void {
+    _ = valueString(params.object.get("message")) orelse {
+        return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast requires message");
+    };
+    if (params.object.get("level")) |level_value| {
+        const level = valueString(level_value) orelse {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be a string");
+        };
+        if (!isToastLevel(level)) {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be info, success, warn, or error");
+        }
+    }
+
+    const params_json = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json);
+    logBridgeCall(allocator, app_id, session_id, "notification.toast", params_json, "{\"ok\":true}", null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
     return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
 }
 
@@ -3995,6 +4041,30 @@ fn queryBridgeCallsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) !
     return out.toOwnedSlice();
 }
 
+fn bridgePermissionApproved(allocator: std.mem.Allocator, app_id: []const u8, permission: []const u8) !bool {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT 1 FROM apps " ++
+            "JOIN app_versions ON app_versions.install_id = apps.active_install_id " ++
+            "JOIN app_permissions ON app_permissions.install_id = apps.active_install_id " ++
+            "WHERE apps.id = ? AND apps.status = 'enabled' AND app_versions.status = 'enabled' " ++
+            "AND app_permissions.permission = ? AND app_permissions.approved = 1 LIMIT 1",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, permission);
+    return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
 fn logBridgeCall(
     allocator: std.mem.Allocator,
     app_id: []const u8,
@@ -4525,6 +4595,18 @@ fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
     return writeJson(stream, 200, body);
 }
 
+fn bridgeErrorJsonAlloc(allocator: std.mem.Allocator, code: []const u8, message: []const u8) ![]u8 {
+    const escaped_code = try escapeJsonString(allocator, code);
+    defer allocator.free(escaped_code);
+    const escaped_message = try escapeJsonString(allocator, message);
+    defer allocator.free(escaped_message);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}",
+        .{ escaped_code, escaped_message },
+    );
+}
+
 fn writeControlOkRaw(allocator: std.mem.Allocator, stream: std.net.Stream, result_json: []const u8) !void {
     const body = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"result\":{s}}}", .{result_json});
     defer allocator.free(body);
@@ -4548,7 +4630,7 @@ fn writeControlError(allocator: std.mem.Allocator, stream: std.net.Stream, statu
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":false,\"network.request\":false,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":true,\"network.request\":false,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
         .{runtime_version},
     );
 }
@@ -4589,6 +4671,14 @@ fn isValidAppId(app_id: []const u8) bool {
 
 fn isLogLevel(level: []const u8) bool {
     const levels = [_][]const u8{ "debug", "info", "warn", "error" };
+    for (levels) |candidate| {
+        if (std.mem.eql(u8, level, candidate)) return true;
+    }
+    return false;
+}
+
+fn isToastLevel(level: []const u8) bool {
+    const levels = [_][]const u8{ "info", "success", "warn", "error" };
     for (levels) |candidate| {
         if (std.mem.eql(u8, level, candidate)) return true;
     }
@@ -4652,13 +4742,30 @@ fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
     const methods = [_][]const u8{
         "dialog.openFile",
         "dialog.saveFile",
-        "notification.toast",
         "network.request",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;
     }
     return false;
+}
+
+fn permissionForBridgeMethod(method: []const u8) ?[]const u8 {
+    const mappings = [_]struct { method: []const u8, permission: []const u8 }{
+        .{ .method = "core.step", .permission = "core.step" },
+        .{ .method = "storage.get", .permission = "storage.read" },
+        .{ .method = "storage.list", .permission = "storage.read" },
+        .{ .method = "storage.set", .permission = "storage.write" },
+        .{ .method = "storage.remove", .permission = "storage.write" },
+        .{ .method = "dialog.openFile", .permission = "dialog.openFile" },
+        .{ .method = "dialog.saveFile", .permission = "dialog.saveFile" },
+        .{ .method = "notification.toast", .permission = "notification.toast" },
+        .{ .method = "network.request", .permission = "network.request" },
+    };
+    for (mappings) |mapping| {
+        if (std.mem.eql(u8, method, mapping.method)) return mapping.permission;
+    }
+    return null;
 }
 
 fn hasUnknownRuntimeBridgeCall(source: []const u8) bool {
