@@ -490,7 +490,7 @@ export class FakePlatformHost {
       case "runtime.timer_advance":
         return { ok: true, advancedMs: args.ms ?? args.milliseconds ?? 0 };
       case "runtime.fault_inject":
-        return { ok: false, status: "not-run", reason: "Fault injection is declared but not implemented in the static fake host yet." };
+        return this.bridge.addFault(normalizeFaultArgs(args));
       case "runtime.assert_visible":
         return this.assertRuntimeVisible(args);
       case "runtime.assert_text":
@@ -936,6 +936,34 @@ function normalizeDialogMockArgs(args) {
       cancelled: args.cancelled ?? false,
     },
   };
+}
+
+function normalizeFaultArgs(args) {
+  return {
+    appId: args.appId ?? null,
+    method: args.method ?? methodForFaultKind(args.kind),
+    code: args.code ?? "fault_injected",
+    message: args.message ?? "Injected bridge fault",
+    details: args.details ?? { kind: args.kind ?? null },
+    once: args.once ?? true,
+  };
+}
+
+function methodForFaultKind(kind) {
+  switch (kind) {
+    case "storage.read":
+      return "storage.get";
+    case "storage.write":
+      return "storage.set";
+    case "network":
+    case "network.request":
+      return "network.request";
+    case "core":
+    case "core.step":
+      return "core.step";
+    default:
+      return kind;
+  }
 }
 
 function parseControlSessionRoute(pathname) {

@@ -82,9 +82,26 @@ test("fake-host exposes common control utility tools", async () => {
     const advanced = await host.runControlCommand("runtime.timer_advance", { ms: 250 });
     assert.deepEqual(advanced, { ok: true, advancedMs: 250 });
 
-    const fault = await host.runControlCommand("runtime.fault_inject", { appId: "notes-lite", kind: "storage.write" });
-    assert.equal(fault.ok, false);
-    assert.equal(fault.status, "not-run");
+    const fault = await host.runControlCommand("runtime.fault_inject", {
+      appId: "notes-lite",
+      kind: "storage.write",
+      code: "storage.injected",
+      message: "Injected storage write failure",
+    });
+    assert.equal(fault.ok, true);
+    const failedWrite = await host.runControlCommand("runtime.storage_set", {
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      value: [{ title: "Should fail" }],
+    });
+    assert.equal(failedWrite.ok, false);
+    assert.equal(failedWrite.error.code, "storage.injected");
+    const recoveredWrite = await host.runControlCommand("runtime.storage_set", {
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      value: [{ title: "Utility test" }],
+    });
+    assert.equal(recoveredWrite.ok, true);
 
     const networkMock = await host.runControlCommand("runtime.network_mock_set", {
       appId: "notes-lite",

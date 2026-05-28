@@ -1,5 +1,6 @@
 import { fakeHostCapabilities } from "./capabilities.js";
 import { bridgeError, bridgeOk, errorBody, PlatformError } from "./errors.js";
+import { id as makeId } from "./util.js";
 
 const METHOD_PERMISSION = new Map([
   ["core.step", "core.step"],
@@ -18,6 +19,27 @@ export class BridgeDispatcher {
     this.database = database;
     this.core = core;
     this.notifications = [];
+    this.faults = [];
+  }
+
+  addFault({ appId = null, method, code = "fault_injected", message = "Injected bridge fault", details = {}, once = true } = {}) {
+    if (typeof method !== "string" || method.length === 0) {
+      throw new PlatformError("invalid_request", "runtime.fault_inject requires a bridge method", { method });
+    }
+    if (!isKnownMethod(method)) {
+      throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
+    }
+    const fault = {
+      faultId: makeId("fault"),
+      appId,
+      method,
+      code,
+      message,
+      details,
+      once: once !== false,
+    };
+    this.faults.push(fault);
+    return { ok: true, ...fault };
   }
 
   async dispatch(request, context = {}) {
@@ -69,6 +91,7 @@ export class BridgeDispatcher {
       throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
     }
 
+    this.throwInjectedFault(method, context);
     this.assertPermission(method, context);
     this.assertResourceBudget(method, params, context);
 
@@ -148,6 +171,21 @@ export class BridgeDispatcher {
         requiredPermission: permission,
       });
     }
+  }
+
+  throwInjectedFault(method, context) {
+    const index = this.faults.findIndex((fault) => fault.method === method && (!fault.appId || fault.appId === context.appId));
+    if (index === -1) return;
+    const fault = this.faults[index];
+    if (fault.once) {
+      this.faults.splice(index, 1);
+    }
+    throw new PlatformError(fault.code, fault.message, {
+      ...fault.details,
+      faultId: fault.faultId,
+      appId: context.appId,
+      method,
+    });
   }
 
   assertResourceBudget(method, params, context) {
