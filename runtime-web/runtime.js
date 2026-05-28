@@ -206,6 +206,10 @@
     port = event.ports[0];
     port.onmessage = function (portEvent) {
       var response = portEvent.data;
+      if (response && response.type === "runtime.event") {
+        emit(response.eventName, response.payload || {});
+        return;
+      }
       var waiter = pending.get(response.id);
       if (!waiter) return;
       pending.delete(response.id);
@@ -347,7 +351,7 @@
         return;
       }
       const request = portEvent.data;
-      const runtimeError = validateRuntimeBridgeRequest(portMount.app, request);
+      const runtimeError = validateRuntimeBridgeRequest(portMount.app, request, channel.port1);
       if (runtimeError) {
         addBridgeLog(portMount.appId, request && request.method ? request.method : "unknown", runtimeError.code);
         channel.port1.postMessage({
@@ -518,7 +522,7 @@
     return parsed;
   }
 
-  function validateRuntimeBridgeRequest(app, request) {
+  function validateRuntimeBridgeRequest(app, request, eventPort) {
     if (!request || typeof request !== "object" || Array.isArray(request)) {
       return bridgeError("invalid_request", "Bridge request must be an object");
     }
@@ -550,7 +554,7 @@
     }
     const paramsError = validateMethodParams(app, request.method, request.params);
     if (paramsError) return paramsError;
-    const budgetError = validateAndRecordBudget(app, request.method);
+    const budgetError = validateAndRecordBudget(app, request.method, eventPort);
     if (budgetError) return budgetError;
     return null;
   }
@@ -655,7 +659,7 @@
     return null;
   }
 
-  function validateAndRecordBudget(app, method) {
+  function validateAndRecordBudget(app, method, eventPort) {
     const budget = app.resourceBudget || {};
     const usage = usageForApp(app.id);
     const now = Date.now();
@@ -697,16 +701,39 @@
       }
     }
     usage.bridgeCalls.push(now);
-    if (method === "network.request") usage.networkCalls.push(now);
-    if (method === "app.log") usage.logLines.push(now);
+    maybeWarnRuntimeBudget(usage, eventPort, app.id, "maxBridgeCallsPerMinute", usage.bridgeCalls.length, bridgeLimit);
+    if (method === "network.request") {
+      usage.networkCalls.push(now);
+      maybeWarnRuntimeBudget(usage, eventPort, app.id, "maxNetworkRequestsPerMinute", usage.networkCalls.length, budget.maxNetworkRequestsPerMinute);
+    }
+    if (method === "app.log") {
+      usage.logLines.push(now);
+      maybeWarnRuntimeBudget(usage, eventPort, app.id, "maxLogLinesPerMinute", usage.logLines.length, budget.maxLogLinesPerMinute);
+    }
     return null;
   }
 
   function usageForApp(appId) {
     if (!usageByApp.has(appId)) {
-      usageByApp.set(appId, { bridgeCalls: [], networkCalls: [], logLines: [] });
+      usageByApp.set(appId, { bridgeCalls: [], networkCalls: [], logLines: [], budgetWarnings: new Set() });
     }
     return usageByApp.get(appId);
+  }
+
+  function maybeWarnRuntimeBudget(usage, eventPort, appId, budget, current, max) {
+    if (!Number.isInteger(max) || max <= 0 || !eventPort || typeof eventPort.postMessage !== "function") return;
+    const warningAt = Math.ceil(max * 0.8);
+    if (current < warningAt) {
+      usage.budgetWarnings.delete(budget);
+      return;
+    }
+    if (usage.budgetWarnings.has(budget)) return;
+    usage.budgetWarnings.add(budget);
+    eventPort.postMessage({
+      type: "runtime.event",
+      eventName: "app.budget_warning",
+      payload: { budget: budget, current: current, max: max, appId: appId },
+    });
   }
 
   function createMountToken() {
