@@ -560,6 +560,17 @@
   }
 
   function validateMethodParams(app, method, params) {
+    if (method === "core.step") {
+      if ("app" in params && typeof params.app !== "string") {
+        return bridgeError("invalid_request", "core.step app field must be a string when present");
+      }
+      if (typeof params.app === "string" && params.app !== app.id) {
+        return bridgeError("permission_denied", "core.step app field does not match the channel-derived app id", {
+          requestedApp: params.app,
+          channelApp: app.id,
+        });
+      }
+    }
     if (method === "storage.get" || method === "storage.set" || method === "storage.remove") {
       if (typeof params.key !== "string") {
         return bridgeError("invalid_request", `${method} requires key`);

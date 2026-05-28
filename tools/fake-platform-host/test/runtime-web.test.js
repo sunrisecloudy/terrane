@@ -12,22 +12,7 @@ const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
   const harness = createRuntimeHarness();
   try {
-    const runtimeSource = fs.readFileSync(runtimePath, "utf8");
-    vm.runInContext(runtimeSource, harness.parentContext);
-
-    await flushAsync();
-    const firstAppButton = harness.document.getElementById("app-list").children[0];
-    assert.ok(firstAppButton, "runtime launcher should render app buttons");
-    firstAppButton.dispatch("click");
-    await flushAsync();
-
-    const frame = harness.document.getElementById("app-frame-wrap").children[0];
-    assert.ok(frame, "runtime launcher should mount the selected app iframe");
-    const bootstrapSource = extractBootstrapScript(frame.srcdoc);
-    frame.contentWindow.__budgetWarnings = [];
-    vm.runInContext(bootstrapSource, frame.contentWindow.context);
-
-    await flushAsync();
+    const frame = await mountFirstApp(harness);
     vm.runInContext(
       'window.AppRuntime.on("app.budget_warning", function (payload) { window.__budgetWarnings.push(payload); });',
       frame.contentWindow.context,
@@ -61,6 +46,53 @@ test("runtime bridge budget warnings are delivered through AppRuntime.on", async
   }
 });
 
+test("runtime rejects mismatched core.step app before host dispatch", async () => {
+  const harness = createRuntimeHarness();
+  try {
+    const frame = await mountFirstApp(harness);
+
+    await assert.rejects(
+      vm.runInContext(
+        'window.AppRuntime.call("core.step", { app: "other-app", event: { type: "Probe" } })',
+        frame.contentWindow.context,
+      ),
+      (error) => {
+        assert.equal(error.code, "permission_denied");
+        assert.equal(error.message, "core.step app field does not match the channel-derived app id");
+        assert.deepEqual(error.details, {
+          requestedApp: "other-app",
+          channelApp: "notes-lite",
+        });
+        return true;
+      },
+    );
+
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.method === "core.step"), false);
+  } finally {
+    harness.close();
+  }
+});
+
+async function mountFirstApp(harness) {
+  const runtimeSource = fs.readFileSync(runtimePath, "utf8");
+  vm.runInContext(runtimeSource, harness.parentContext);
+
+  await flushAsync();
+  const firstAppButton = harness.document.getElementById("app-list").children[0];
+  assert.ok(firstAppButton, "runtime launcher should render app buttons");
+  firstAppButton.dispatch("click");
+  await flushAsync();
+
+  const frame = harness.document.getElementById("app-frame-wrap").children[0];
+  assert.ok(frame, "runtime launcher should mount the selected app iframe");
+  const bootstrapSource = extractBootstrapScript(frame.srcdoc);
+  frame.contentWindow.__budgetWarnings = [];
+  vm.runInContext(bootstrapSource, frame.contentWindow.context);
+
+  await flushAsync();
+  return frame;
+}
+
 function createRuntimeHarness() {
   let parentWindow;
   const messageChannels = [];
@@ -77,6 +109,7 @@ function createRuntimeHarness() {
     parentWindow.dispatch("message", event);
   };
 
+  const fetchState = { bridgeRequests: [] };
   const parentContext = vm.createContext({
     MessageChannel: HarnessMessageChannel,
     TextEncoder,
@@ -87,7 +120,7 @@ function createRuntimeHarness() {
     console,
     crypto: webcrypto,
     document,
-    fetch: fakeFetch,
+    fetch: (url, options) => fakeFetch(url, options, fetchState),
     setInterval,
     setTimeout,
     window: parentWindow,
@@ -101,6 +134,7 @@ function createRuntimeHarness() {
       }
     },
     document,
+    fetchState,
     parentContext,
     parentWindow,
   };
@@ -260,14 +294,14 @@ class FakeElement {
   }
 }
 
-async function fakeFetch(url, options = {}) {
+async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
   if (url.endsWith("/manifest.json")) {
     return jsonResponse({
       id: "notes-lite",
       name: "Notes Lite",
       version: "0.1.0",
       description: "Budget warning probe app.",
-      permissions: ["storage.read"],
+      permissions: ["core.step", "storage.read"],
       storagePrefix: "notes-lite:",
       capabilities: [],
       dataVersion: "1.0.0",
@@ -280,6 +314,7 @@ async function fakeFetch(url, options = {}) {
   }
   if (url === "/bridge") {
     const request = JSON.parse(options.body);
+    state.bridgeRequests.push(request);
     return jsonResponse({
       id: request.id,
       ok: true,

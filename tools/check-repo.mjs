@@ -443,6 +443,7 @@ function checkRuntimeStatic() {
     "function on(eventName, handler)",
     "emitAppError",
     "maybeWarnRuntimeBudget",
+    "core.step app field does not match the channel-derived app id",
     "validateRuntimeBridgeRequest",
     "validateMethodParams",
     "validateNetworkRequest",
