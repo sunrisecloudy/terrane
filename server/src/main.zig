@@ -1260,6 +1260,10 @@ fn handleControlCommand(
                 auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
                 return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
             },
+            error.CapabilityUnavailable => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "capability_unavailable", args_json, null);
+                return writeControlError(allocator, stream, 400, "capability_unavailable", "Required runtime capability is unavailable on server");
+            },
             else => return err,
         };
         defer allocator.free(result_json);
@@ -4947,6 +4951,9 @@ fn openWebappControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
     defer allocator.free(started_at);
     const capabilities = try serverCapabilitiesJson(allocator);
     defer allocator.free(capabilities);
+    const manifest_json = try activeManifestJsonInDbAlloc(allocator, db, app_id);
+    defer allocator.free(manifest_json);
+    try assertServerRequiredCapabilitiesAvailable(allocator, manifest_json);
 
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
@@ -8675,7 +8682,10 @@ fn networkPolicyAllowsRequest(
 fn activeManifestJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
+    return activeManifestJsonInDbAlloc(allocator, db, app_id);
+}
 
+fn activeManifestJsonInDbAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) ![]u8 {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
         db,
@@ -8690,6 +8700,40 @@ fn activeManifestJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]
     bindText(statement, 1, app_id);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.AppNotInstalled;
     return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn assertServerRequiredCapabilitiesAvailable(allocator: std.mem.Allocator, manifest_json: []const u8) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{}) catch return error.InvalidWebappPackage;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidWebappPackage;
+    const capabilities = parsed.value.object.get("capabilities") orelse return error.InvalidWebappPackage;
+    if (capabilities != .object) return error.InvalidWebappPackage;
+    const required = capabilities.object.get("required") orelse return error.InvalidWebappPackage;
+    if (required != .array) return error.InvalidWebappPackage;
+    for (required.array.items) |capability| {
+        const capability_name = valueString(capability) orelse return error.InvalidWebappPackage;
+        if (!serverCapabilityAvailable(capability_name)) return error.CapabilityUnavailable;
+    }
+}
+
+fn serverCapabilityAvailable(capability: []const u8) bool {
+    const capabilities = [_][]const u8{
+        "core.step",
+        "storage.read",
+        "storage.write",
+        "dialog.openFile",
+        "dialog.saveFile",
+        "notification.toast",
+        "network.request",
+        "app.log",
+        "runtime.capabilities",
+        "runtime.snapshot",
+        "runtime.replay",
+    };
+    for (capabilities) |candidate| {
+        if (std.mem.eql(u8, capability, candidate)) return true;
+    }
+    return false;
 }
 
 fn stringArrayContains(value: std.json.Value, needle: []const u8) bool {
@@ -9589,7 +9633,7 @@ fn writeControlBanError(allocator: std.mem.Allocator, stream: std.net.Stream, re
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"runtime.snapshot\":true,\"runtime.replay\":true,\"storage.read\":true,\"storage.write\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxBodyBytes\":1048576,\"maxStorageBytes\":5242880,\"maxBridgeCallsPerMinute\":600,\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
         .{runtime_version},
     );
 }
