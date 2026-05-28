@@ -789,6 +789,32 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.migration_dry_run") or std.mem.eql(u8, tool, "platform.migration_apply")) {
+        const migration_value = if (args) |args_value| args_value.object.get("migration") else null;
+        const migration = migration_value orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Migration command requires migration object");
+        };
+        if (migration != .object) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Migration must be an object");
+        }
+        const mode = if (std.mem.eql(u8, tool, "platform.migration_apply")) "apply" else "dry-run";
+        const result_json = runStorageMigration(allocator, migration, mode) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.InvalidMigration => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_migration", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_migration", "Migration is invalid or unsupported");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
@@ -1747,6 +1773,428 @@ fn isAllowedSnapshotType(snapshot_type: []const u8) bool {
         if (std.mem.eql(u8, snapshot_type, candidate)) return true;
     }
     return false;
+}
+
+const MigrationChange = struct {
+    key: []u8,
+    value_json: ?[]u8,
+};
+
+const MigrationPreview = struct {
+    changes: []MigrationChange,
+    changed_keys_json: []u8,
+    operation_counts_json: []u8,
+};
+
+fn runStorageMigration(allocator: std.mem.Allocator, migration: std.json.Value, mode: []const u8) ![]u8 {
+    const app_id = valueString(migration.object.get("appId")) orelse return error.InvalidMigration;
+    const from_data_version = valueI64(migration.object.get("fromDataVersion")) orelse return error.InvalidMigration;
+    const to_data_version = valueI64(migration.object.get("toDataVersion")) orelse return error.InvalidMigration;
+    if (from_data_version < 1 or to_data_version != from_data_version + 1) return error.InvalidMigration;
+    const steps = migration.object.get("steps") orelse return error.InvalidMigration;
+    if (steps != .array) return error.InvalidMigration;
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const current_data_version = try appDataVersion(db, app_id);
+    const actual_data_version = current_data_version orelse return error.AppNotInstalled;
+    if (actual_data_version != from_data_version) return error.InvalidMigration;
+
+    const snapshot_json = try createRuntimeSnapshot(allocator, app_id, "pre-migration", null);
+    defer allocator.free(snapshot_json);
+    const snapshot_id = try snapshotIdFromJsonAlloc(allocator, snapshot_json);
+    defer allocator.free(snapshot_id);
+
+    const preview = try previewStorageMigration(allocator, db, app_id, steps.array.items);
+    defer freeMigrationPreview(allocator, preview);
+    const migration_json = try jsonValueAlloc(allocator, migration);
+    defer allocator.free(migration_json);
+    const migration_hash = try sha256PrefixedAlloc(allocator, migration_json);
+    defer allocator.free(migration_hash);
+    const migration_id = try std.fmt.allocPrint(allocator, "migration_{s}_{d}_to_{d}", .{ app_id, from_data_version, to_data_version });
+    defer allocator.free(migration_id);
+    const run_id = try randomDbIdAlloc(allocator, db, "mrun_");
+    defer allocator.free(run_id);
+    const started_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(started_at);
+    const report_json = try migrationReportJsonAlloc(allocator, preview.changed_keys_json, preview.operation_counts_json);
+    defer allocator.free(report_json);
+
+    try insertAppMigrationRecord(db, migration_id, app_id, from_data_version, to_data_version, migration_json, migration_hash, started_at);
+
+    if (std.mem.eql(u8, mode, "apply")) {
+        try execDb(db, "BEGIN IMMEDIATE");
+        errdefer execDb(db, "ROLLBACK") catch {};
+        try applyMigrationChanges(db, preview.changes, started_at, app_id);
+        try updateAppDataVersion(db, app_id, to_data_version, started_at);
+        try insertMigrationRun(db, run_id, migration_id, app_id, null, mode, "passed", snapshot_id, report_json, started_at, started_at);
+        const result_json = try migrationResultJsonAlloc(allocator, run_id, mode, snapshot_id, preview.changed_keys_json, preview.operation_counts_json);
+        errdefer allocator.free(result_json);
+        try execDb(db, "COMMIT");
+        return result_json;
+    }
+
+    if (!std.mem.eql(u8, mode, "dry-run")) return error.InvalidMigration;
+    try insertMigrationRun(db, run_id, migration_id, app_id, null, mode, "passed", snapshot_id, report_json, started_at, started_at);
+    return migrationResultJsonAlloc(allocator, run_id, mode, snapshot_id, preview.changed_keys_json, preview.operation_counts_json);
+}
+
+fn previewStorageMigration(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    steps: []std.json.Value,
+) !MigrationPreview {
+    var changes: std.ArrayList(MigrationChange) = .empty;
+    errdefer {
+        freeMigrationChanges(allocator, changes.items);
+        changes.deinit(allocator);
+    }
+    var changed_keys: std.ArrayList([]u8) = .empty;
+    errdefer {
+        freeStringList(allocator, changed_keys.items);
+        changed_keys.deinit(allocator);
+    }
+    var operation_counts = std.StringArrayHashMap(usize).init(allocator);
+    defer operation_counts.deinit();
+
+    for (steps) |step| {
+        if (step != .object) return error.InvalidMigration;
+        const op = valueString(step.object.get("op")) orelse return error.InvalidMigration;
+        try incrementOperationCount(&operation_counts, op);
+
+        if (std.mem.eql(u8, op, "setDefault")) {
+            const key = valueString(step.object.get("key")) orelse return error.InvalidMigration;
+            const field = valueString(step.object.get("to")) orelse return error.InvalidMigration;
+            const default_value = step.object.get("value") orelse std.json.Value.null;
+            const current_json = try migrationCurrentValueJsonAlloc(allocator, db, app_id, changes.items, key);
+            defer allocator.free(current_json);
+            var parsed = std.json.parseFromSlice(std.json.Value, allocator, current_json, .{}) catch return error.InvalidMigration;
+            defer parsed.deinit();
+            try setDefaultMigrationValue(&parsed.value, field, default_value);
+            const next_json = try jsonValueAlloc(allocator, parsed.value);
+            defer allocator.free(next_json);
+            try appendMigrationChange(allocator, &changes, key, next_json);
+            try appendChangedKey(allocator, &changed_keys, key);
+        } else if (std.mem.eql(u8, op, "renameKey") or std.mem.eql(u8, op, "moveStorageKey")) {
+            const from = valueString(step.object.get("from")) orelse return error.InvalidMigration;
+            const to = valueString(step.object.get("to")) orelse return error.InvalidMigration;
+            const value_json = try migrationCurrentValueJsonAlloc(allocator, db, app_id, changes.items, from);
+            defer allocator.free(value_json);
+            try appendMigrationDelete(allocator, &changes, from);
+            try appendMigrationChange(allocator, &changes, to, value_json);
+            try appendChangedKey(allocator, &changed_keys, from);
+            try appendChangedKey(allocator, &changed_keys, to);
+        } else if (std.mem.eql(u8, op, "deleteKey") or std.mem.eql(u8, op, "deleteStorageKey")) {
+            const key = valueString(step.object.get("key")) orelse return error.InvalidMigration;
+            try appendMigrationDelete(allocator, &changes, key);
+            try appendChangedKey(allocator, &changed_keys, key);
+        } else if (std.mem.eql(u8, op, "copyKey")) {
+            const from = valueString(step.object.get("from")) orelse return error.InvalidMigration;
+            const to = valueString(step.object.get("to")) orelse return error.InvalidMigration;
+            const value_json = try migrationCurrentValueJsonAlloc(allocator, db, app_id, changes.items, from);
+            defer allocator.free(value_json);
+            try appendMigrationChange(allocator, &changes, to, value_json);
+            try appendChangedKey(allocator, &changed_keys, to);
+        } else {
+            return error.InvalidMigration;
+        }
+    }
+
+    const changed_keys_json = try stringListJsonAlloc(allocator, changed_keys.items);
+    errdefer allocator.free(changed_keys_json);
+    const operation_counts_json = try operationCountsJsonAlloc(allocator, operation_counts);
+    errdefer allocator.free(operation_counts_json);
+    const owned_changes = try changes.toOwnedSlice(allocator);
+    changes = .empty;
+    freeStringList(allocator, changed_keys.items);
+    changed_keys.deinit(allocator);
+    return .{
+        .changes = owned_changes,
+        .changed_keys_json = changed_keys_json,
+        .operation_counts_json = operation_counts_json,
+    };
+}
+
+fn freeMigrationPreview(allocator: std.mem.Allocator, preview: MigrationPreview) void {
+    freeMigrationChanges(allocator, preview.changes);
+    allocator.free(preview.changes);
+    allocator.free(preview.changed_keys_json);
+    allocator.free(preview.operation_counts_json);
+}
+
+fn freeMigrationChanges(allocator: std.mem.Allocator, changes: []MigrationChange) void {
+    for (changes) |change| {
+        allocator.free(change.key);
+        if (change.value_json) |value| allocator.free(value);
+    }
+}
+
+fn freeStringList(allocator: std.mem.Allocator, items: []const []u8) void {
+    for (items) |item| allocator.free(item);
+}
+
+fn incrementOperationCount(counts: *std.StringArrayHashMap(usize), op: []const u8) !void {
+    const entry = try counts.getOrPut(op);
+    if (!entry.found_existing) entry.value_ptr.* = 0;
+    entry.value_ptr.* += 1;
+}
+
+fn setDefaultMigrationValue(value: *std.json.Value, field: []const u8, default_value: std.json.Value) !void {
+    switch (value.*) {
+        .object => |*object| {
+            if (object.get(field) == null) {
+                try object.put(field, default_value);
+            }
+        },
+        .array => |*array| {
+            for (array.items) |*item| {
+                try setDefaultMigrationValue(item, field, default_value);
+            }
+        },
+        else => {},
+    }
+}
+
+fn migrationCurrentValueJsonAlloc(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    changes: []const MigrationChange,
+    key: []const u8,
+) ![]u8 {
+    var index = changes.len;
+    while (index > 0) {
+        index -= 1;
+        const change = changes[index];
+        if (std.mem.eql(u8, change.key, key)) {
+            if (change.value_json) |value| return allocator.dupe(u8, value);
+            return allocator.dupe(u8, "null");
+        }
+    }
+    const stored = try storageValueJsonForKeyAlloc(allocator, db, app_id, key);
+    return stored orelse try allocator.dupe(u8, "null");
+}
+
+fn storageValueJsonForKeyAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, key: []const u8) !?[]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const value_json = sqliteColumnNullableText(statement, 0) orelse "null";
+    const owned_value = try allocator.dupe(u8, if (value_json.len == 0) "null" else value_json);
+    return owned_value;
+}
+
+fn appendMigrationChange(allocator: std.mem.Allocator, changes: *std.ArrayList(MigrationChange), key: []const u8, value_json: []const u8) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    const owned_value = try allocator.dupe(u8, value_json);
+    errdefer allocator.free(owned_value);
+    try changes.append(allocator, .{ .key = owned_key, .value_json = owned_value });
+}
+
+fn appendMigrationDelete(allocator: std.mem.Allocator, changes: *std.ArrayList(MigrationChange), key: []const u8) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    try changes.append(allocator, .{ .key = owned_key, .value_json = null });
+}
+
+fn appendChangedKey(allocator: std.mem.Allocator, changed_keys: *std.ArrayList([]u8), key: []const u8) !void {
+    for (changed_keys.items) |existing| {
+        if (std.mem.eql(u8, existing, key)) return;
+    }
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    try changed_keys.append(allocator, owned_key);
+}
+
+fn stringListJsonAlloc(allocator: std.mem.Allocator, items: []const []u8) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    for (items, 0..) |item, index| {
+        if (index > 0) try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, item);
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn operationCountsJsonAlloc(allocator: std.mem.Allocator, counts: std.StringArrayHashMap(usize)) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{");
+    var iterator = counts.iterator();
+    var index: usize = 0;
+    while (iterator.next()) |entry| : (index += 1) {
+        if (index > 0) try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, entry.key_ptr.*);
+        try out.writer.print(":{d}", .{entry.value_ptr.*});
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn applyMigrationChanges(db: *sqlite.sqlite3, changes: []const MigrationChange, updated_at: []const u8, app_id: []const u8) !void {
+    for (changes) |change| {
+        if (change.value_json) |value_json| {
+            try upsertMigrationStorageValue(db, app_id, change.key, value_json, updated_at);
+        } else {
+            try deleteStorageKey(db, app_id, change.key);
+        }
+    }
+}
+
+fn upsertMigrationStorageValue(db: *sqlite.sqlite3, app_id: []const u8, key: []const u8, value_json: []const u8, updated_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    bindText(statement, 3, value_json);
+    bindText(statement, 4, updated_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn deleteStorageKey(db: *sqlite.sqlite3, app_id: []const u8, key: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn updateAppDataVersion(db: *sqlite.sqlite3, app_id: []const u8, data_version: i64, updated_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "UPDATE apps SET data_version = ?, updated_at = ? WHERE id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    _ = sqlite.sqlite3_bind_int64(statement, 1, data_version);
+    bindText(statement, 2, updated_at);
+    bindText(statement, 3, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertAppMigrationRecord(
+    db: *sqlite.sqlite3,
+    migration_id: []const u8,
+    app_id: []const u8,
+    from_data_version: i64,
+    to_data_version: i64,
+    migration_json: []const u8,
+    content_hash: []const u8,
+    created_at: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, migration_id);
+    bindText(statement, 2, app_id);
+    _ = sqlite.sqlite3_bind_int64(statement, 3, from_data_version);
+    _ = sqlite.sqlite3_bind_int64(statement, 4, to_data_version);
+    bindText(statement, 5, migration_json);
+    bindText(statement, 6, content_hash);
+    bindText(statement, 7, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertMigrationRun(
+    db: *sqlite.sqlite3,
+    run_id: []const u8,
+    migration_id: []const u8,
+    app_id: []const u8,
+    install_id: ?[]const u8,
+    mode: []const u8,
+    status: []const u8,
+    pre_snapshot_id: []const u8,
+    report_json: []const u8,
+    started_at: []const u8,
+    finished_at: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO migration_runs (migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, report_json, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, run_id);
+    bindText(statement, 2, migration_id);
+    bindText(statement, 3, app_id);
+    bindNullableText(statement, 4, install_id);
+    bindText(statement, 5, mode);
+    bindText(statement, 6, status);
+    bindText(statement, 7, pre_snapshot_id);
+    bindText(statement, 8, report_json);
+    bindText(statement, 9, started_at);
+    bindText(statement, 10, finished_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn migrationReportJsonAlloc(allocator: std.mem.Allocator, changed_keys_json: []const u8, operation_counts_json: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"changedKeys\":{s},\"operationCounts\":{s}}}",
+        .{ changed_keys_json, operation_counts_json },
+    );
+}
+
+fn migrationResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    run_id: []const u8,
+    mode: []const u8,
+    snapshot_id: []const u8,
+    changed_keys_json: []const u8,
+    operation_counts_json: []const u8,
+) ![]u8 {
+    const escaped_run_id = try escapeJsonString(allocator, run_id);
+    defer allocator.free(escaped_run_id);
+    const escaped_mode = try escapeJsonString(allocator, mode);
+    defer allocator.free(escaped_mode);
+    const escaped_snapshot_id = try escapeJsonString(allocator, snapshot_id);
+    defer allocator.free(escaped_snapshot_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"runId\":\"{s}\",\"mode\":\"{s}\",\"status\":\"passed\",\"snapshotId\":\"{s}\",\"changedKeys\":{s},\"operationCounts\":{s}}}",
+        .{ escaped_run_id, escaped_mode, escaped_snapshot_id, changed_keys_json, operation_counts_json },
+    );
+}
+
+fn snapshotIdFromJsonAlloc(allocator: std.mem.Allocator, snapshot_json: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{}) catch return error.SnapshotInvalid;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.SnapshotInvalid;
+    const snapshot_id = valueString(parsed.value.object.get("snapshotId")) orelse return error.SnapshotInvalid;
+    return allocator.dupe(u8, snapshot_id);
+}
+
+fn valueI64(value: ?std.json.Value) ?i64 {
+    const actual = value orelse return null;
+    if (actual != .integer) return null;
+    return actual.integer;
 }
 
 fn packageFilesAlloc(allocator: std.mem.Allocator, files_value: std.json.Value) ![]PackageFile {

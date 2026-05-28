@@ -296,6 +296,8 @@ function checkServerStatic() {
     '"platform.rollback_webapp"',
     '"platform.create_snapshot"',
     '"platform.restore_snapshot"',
+    '"platform.migration_dry_run"',
+    '"platform.migration_apply"',
     '"platform.list_webapps"',
     '"platform.install_report"',
     '"db.query_app_storage"',
@@ -334,6 +336,11 @@ function checkServerStatic() {
     "fn restoreSnapshotStorage",
     "fn snapshotResourceUsageJsonAlloc",
     "fn snapshotContentHashByIdAlloc",
+    "fn runStorageMigration",
+    "fn previewStorageMigration",
+    "fn insertAppMigrationRecord",
+    "fn insertMigrationRun",
+    "fn applyMigrationChanges",
     "action, previous_install_id",
     "fn insertInstallationEvent",
     "fn queryRowsJson",
@@ -400,7 +407,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
