@@ -11,7 +11,7 @@ import { TestRunner } from "./test-runner.js";
 import { prettyJson } from "./util.js";
 
 export class FakePlatformHost {
-  constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me" } = {}) {
+  constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me", runtimeVersion = "0.1.0", allowRuntimeMismatch = false } = {}) {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
     this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
@@ -22,6 +22,8 @@ export class FakePlatformHost {
     this.keypair = createPlatformKeypair();
     this.controlToken = controlToken;
     this.dbFile = dbFile;
+    this.runtimeVersion = runtimeVersion;
+    this.allowRuntimeMismatch = allowRuntimeMismatch;
   }
 
   close() {
@@ -31,7 +33,7 @@ export class FakePlatformHost {
   health() {
     return {
       ok: true,
-      version: "0.1.0",
+      version: this.runtimeVersion,
       db: this.dbFile === ":memory:" ? "sqlite-mem" : "sqlite-file",
       keyId: this.keypair.keyId,
       capabilities: fakeHostCapabilities(),
@@ -42,6 +44,8 @@ export class FakePlatformHost {
     const pkg = readPackage(packageDir);
     const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
     const smokeTest = this.evaluateBundledSmokeTests(pkg);
+    const compatibility = this.evaluateRuntimeCompatibility(pkg.manifest.runtimeVersion);
+    const canActivate = smokeTest.ok && compatibility.ok;
     const install = this.database.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
@@ -51,9 +55,10 @@ export class FakePlatformHost {
       contentHashesDocument: signed.contentHashesDocument,
       trustLevel,
       smokeTest,
-      activate: smokeTest.ok,
-      versionStatus: smokeTest.ok ? "enabled" : "quarantined",
-      reportStatus: smokeTest.ok ? "accepted" : "failed",
+      compatibility,
+      activate: canActivate,
+      versionStatus: canActivate ? "enabled" : "quarantined",
+      reportStatus: canActivate ? "accepted" : "failed",
     });
     this.database.recordTestRun({
       microTestId: `smoke:${pkg.manifest.id}`,
@@ -65,8 +70,9 @@ export class FakePlatformHost {
     });
     return {
       ...install,
-      status: smokeTest.ok ? "enabled" : "quarantined",
+      status: canActivate ? "enabled" : "quarantined",
       smokeTest,
+      compatibility,
     };
   }
 
@@ -82,6 +88,10 @@ export class FakePlatformHost {
     }
     if (installed.status === "quarantined") {
       throw new PlatformError("package_quarantined", `App is quarantined: ${appId}`, { appId });
+    }
+    const compatibility = this.evaluateRuntimeCompatibility(installed.manifest.runtimeVersion);
+    if (!compatibility.ok && !this.allowRuntimeMismatch) {
+      throw new PlatformError("runtime_version_incompatible", "App runtimeVersion is not compatible with the fake-host runtime", compatibility);
     }
     return verifyInstalledPackage({
       manifest: installed.manifest,
@@ -127,6 +137,18 @@ export class FakePlatformHost {
         spec: [],
       };
     }
+  }
+
+  evaluateRuntimeCompatibility(appRuntimeVersion) {
+    const runtime = parseSemver(this.runtimeVersion);
+    const app = parseSemver(appRuntimeVersion);
+    const ok = Boolean(runtime && app && app.major === runtime.major && app.minor <= runtime.minor);
+    return {
+      ok,
+      runtimeVersion: this.runtimeVersion,
+      appRuntimeVersion,
+      allowRuntimeMismatch: this.allowRuntimeMismatch,
+    };
   }
 
   async dispatchBridge(request, context) {
@@ -401,6 +423,16 @@ function normalizeDialogMockArgs(args) {
       selectedPath: args.selectedPath ?? null,
       cancelled: args.cancelled ?? false,
     },
+  };
+}
+
+function parseSemver(version) {
+  const match = String(version ?? "").match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
   };
 }
 
