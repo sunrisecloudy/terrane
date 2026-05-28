@@ -71,7 +71,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "dialog.openFile": false,
                     "dialog.saveFile": false,
                     "notification.toast": true,
-                    "network.request": false,
+                    "network.request": true,
                     "core.step": false,
                     "runtime.capabilities": true,
                     "app.log": true
@@ -121,13 +121,16 @@ struct AppSandboxContext {
     let appId: String
     let storagePrefix: String
     let approvedPermissions: Set<String>
+    let networkPolicy: [NetworkPolicyRule]
 
     @MainActor
     init(message: WKScriptMessage) {
         let appId = AppSandboxContext.appId(from: message.frameInfo.request.url) ?? "unknown"
+        let manifest = AppSandboxContext.manifest(for: appId)
         self.appId = appId
         self.storagePrefix = "\(appId):"
-        self.approvedPermissions = AppSandboxContext.permissions(for: appId)
+        self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
+        self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
     }
 
     private static func appId(from url: URL?) -> String? {
@@ -141,14 +144,18 @@ struct AppSandboxContext {
         return nil
     }
 
-    private static func permissions(for appId: String) -> Set<String> {
+    private static func manifest(for appId: String) -> [String: Any] {
         guard let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: appId),
               let data = try? Data(contentsOf: manifestURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let permissions = json["permissions"] as? [String]
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return []
+            return [:]
         }
+        return json
+    }
+
+    private static func permissions(from manifest: [String: Any]) -> Set<String> {
+        guard let permissions = manifest["permissions"] as? [String] else { return [] }
         return Set(permissions)
     }
 }

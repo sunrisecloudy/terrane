@@ -24,7 +24,8 @@ Implemented now:
 - Derives `appId` and storage prefix from the sandbox frame URL instead of request bodies.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
-- Returns structured `platform_unsupported` responses for dialogs, network, and Zig core until those services are wired.
+- Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
+- Returns structured `platform_unsupported` responses for dialogs and Zig core until those services are wired.
 
 MVP acceptance:
 

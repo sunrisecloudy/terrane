@@ -285,6 +285,7 @@ function checkNativeStatic() {
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
+  const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
@@ -348,9 +349,10 @@ function checkNativeStatic() {
     [iosBridge, '"target": "ios-simulator"'],
     [iosBridge, '"devMode": true'],
     [iosBridge, '"limits":'],
-    [iosBridge, '"network.request": false'],
+    [iosBridge, '"network.request": true'],
     [iosBridge, '"core.step": false'],
     [iosBridge, "struct AppSandboxContext"],
+    [iosBridge, "networkPolicy"],
     [iosBridge, "permissionForBridgeMethod"],
     [iosBridge, "approvedPermissions.contains(permission)"],
     [iosStorage, "request.context.appId"],
@@ -364,6 +366,14 @@ function checkNativeStatic() {
   }
   if (iosStorage.includes("appId(for:")) {
     throw new Error("iOS storage must not derive app id from storage key");
+  }
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection"]) {
+    if (!iosNetwork.includes(snippet)) {
+      throw new Error(`iOS network missing policy enforcement: ${snippet}`);
+    }
+  }
+  if (iosNetwork.includes("platform_unsupported")) {
+    throw new Error("iOS network.request must not remain a platform_unsupported stub");
   }
   const windowsRequired = [
     [windowsHost, "SetVirtualHostNameToFolderMapping"],
