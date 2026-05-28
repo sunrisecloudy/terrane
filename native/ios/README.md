@@ -29,7 +29,7 @@ Implemented now:
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
 - Loads statically linked Zig core symbols when present and falls back to `libzig_core.dylib` for simulator/dev `core.step`, using `NATIVE_AI_ZIG_CORE_DYLIB` first.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
-- Returns structured `platform_unsupported` responses for dialogs until those services are wired.
+- Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
 
 MVP acceptance:
 

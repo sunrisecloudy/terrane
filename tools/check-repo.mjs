@@ -561,6 +561,7 @@ function checkNativeStatic() {
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
+  const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
   const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "ZigCoreBridge.swift"), "utf8");
   const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
@@ -665,11 +666,18 @@ function checkNativeStatic() {
     [iosBridge, "WKScriptMessageHandlerWithReply"],
     [iosHost, "contentController.addScriptMessageHandler"],
     [iosHost, "websiteDataStore = .nonPersistent()"],
+    [iosHost, "setDialogPresenterProvider"],
+    [iosHost, "presentingViewController(from:"],
     [iosBridge, '"target": "ios-simulator"'],
     [iosBridge, '"devMode": true'],
     [iosBridge, '"limits":'],
     [iosBridge, '"network.request": true'],
+    [iosBridge, '"dialog.openFile": true'],
+    [iosBridge, '"dialog.saveFile": true'],
     [iosBridge, '"core.step": core.isAvailable'],
+    [iosBridge, "typealias BridgeReply"],
+    [iosBridge, "dispatch(request) { response in"],
+    [iosBridge, "dialogs.openFile(request, reply: reply)"],
     [iosBridge, "struct BridgeEnvelope"],
     [iosBridge, "message.frameInfo.isMainFrame"],
     [iosBridge, "mountToken"],
@@ -696,6 +704,14 @@ function checkNativeStatic() {
   }
   if (iosNetwork.includes("platform_unsupported")) {
     throw new Error("iOS network.request must not remain a platform_unsupported stub");
+  }
+  for (const snippet of ["UIDocumentPickerViewController", "forOpeningContentTypes", "forExporting", "UIDocumentPickerDelegate", "startAccessingSecurityScopedResource", "dialog_cancelled"]) {
+    if (!iosDialogs.includes(snippet)) {
+      throw new Error(`iOS dialogs missing ${snippet}`);
+    }
+  }
+  if (iosDialogs.includes("is not available in the iOS host yet") || iosBridge.includes('"dialog.openFile": false')) {
+    throw new Error("iOS dialogs must not remain placeholder stubs or disabled capabilities");
   }
   for (const snippet of [
     "import CZigCoreBridge",
@@ -919,7 +935,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {

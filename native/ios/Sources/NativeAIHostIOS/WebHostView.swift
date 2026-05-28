@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 struct WebHostView: UIViewRepresentable {
@@ -12,6 +13,10 @@ struct WebHostView: UIViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        bridge.setDialogPresenterProvider { [weak webView] in
+            guard let webView else { return nil }
+            return Self.presentingViewController(from: webView)
+        }
         webView.loadFileURL(RuntimeResourceLocator.runtimeIndexURL(), allowingReadAccessTo: RuntimeResourceLocator.runtimeReadAccessURL())
         return webView
     }
@@ -25,6 +30,18 @@ struct WebHostView: UIViewRepresentable {
     @MainActor
     final class Coordinator {
         let bridge = WebBridge()
+    }
+
+    @MainActor
+    private static func presentingViewController(from view: UIView) -> UIViewController? {
+        var responder: UIResponder? = view
+        while let current = responder {
+            if let viewController = current as? UIViewController {
+                return viewController
+            }
+            responder = current.next
+        }
+        return view.window?.rootViewController
     }
 }
 

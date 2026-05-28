@@ -1,5 +1,8 @@
 import Foundation
+import UIKit
 import WebKit
+
+typealias BridgeReply = @MainActor @Sendable (BridgeResponse) -> Void
 
 @MainActor
 final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
@@ -8,6 +11,10 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let notifications = PlatformNotifications()
     private let network = PlatformNetwork()
     private let core = ZigCoreBridge()
+
+    func setDialogPresenterProvider(_ provider: @escaping @MainActor () -> UIViewController?) {
+        dialogs.presenterProvider = provider
+    }
 
     func userContentController(
         _ userContentController: WKUserContentController,
@@ -58,31 +65,33 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
 
-        replyHandler(dispatch(request).asDictionary(), nil)
+        dispatch(request) { response in
+            replyHandler(response.asDictionary(), nil)
+        }
     }
 
-    private func dispatch(_ request: BridgeRequest) -> BridgeResponse {
+    private func dispatch(_ request: BridgeRequest, reply: @escaping BridgeReply) {
         switch request.method {
         case "storage.get":
-            return storage.get(request)
+            reply(storage.get(request))
         case "storage.set":
-            return storage.set(request)
+            reply(storage.set(request))
         case "storage.remove":
-            return storage.remove(request)
+            reply(storage.remove(request))
         case "storage.list":
-            return storage.list(request)
+            reply(storage.list(request))
         case "dialog.openFile":
-            return dialogs.openFile(request)
+            dialogs.openFile(request, reply: reply)
         case "dialog.saveFile":
-            return dialogs.saveFile(request)
+            dialogs.saveFile(request, reply: reply)
         case "notification.toast":
-            return notifications.toast(request)
+            reply(notifications.toast(request))
         case "network.request":
-            return network.request(request)
+            reply(network.request(request))
         case "core.step":
-            return core.step(request)
+            reply(core.step(request))
         case "runtime.capabilities":
-            return .success(id: request.id, result: [
+            reply(.success(id: request.id, result: [
                 "platform": "ios",
                 "target": "ios-simulator",
                 "runtimeVersion": "0.1.0",
@@ -92,8 +101,8 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "storage.set": true,
                     "storage.remove": true,
                     "storage.list": true,
-                    "dialog.openFile": false,
-                    "dialog.saveFile": false,
+                    "dialog.openFile": true,
+                    "dialog.saveFile": true,
                     "notification.toast": true,
                     "network.request": true,
                     "core.step": core.isAvailable,
@@ -104,12 +113,12 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "maxPackageBytes": 1_048_576,
                     "maxFileBytes": 524_288
                 ]
-            ])
+            ]))
         case "app.log":
             NSLog("Generated app log: \(request.params)")
-            return .success(id: request.id, result: ["ok": true])
+            reply(.success(id: request.id, result: ["ok": true]))
         default:
-            return .failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)")
+            reply(.failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)"))
         }
     }
 
