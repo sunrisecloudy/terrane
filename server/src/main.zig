@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const core_api = @import("zig_core");
 const sqlite = @cImport({
     @cInclude("sqlite3.h");
@@ -14,6 +15,12 @@ const control_auth_max_clients = 16;
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
     try enforceProductionStartupRules(allocator);
+    const production_mode = isProductionMode(allocator);
+    var control_token_config = if (production_mode)
+        ControlTokenConfig{ .token = try allocator.dupe(u8, "") }
+    else
+        try initControlToken(allocator);
+    defer control_token_config.deinit(allocator);
     const port = try parsePort(allocator);
     const address = try std.net.Address.parseIp("127.0.0.1", port);
     var server = try address.listen(.{ .reuse_address = true });
@@ -21,11 +28,14 @@ pub fn main() !void {
     var control_auth_tracker = ControlAuthTracker{};
 
     std.debug.print("native-ai zig server listening on http://127.0.0.1:{d}\n", .{port});
+    if (control_token_config.token_file) |token_file| {
+        std.debug.print("control token file: {s}\n", .{token_file});
+    }
 
     while (true) {
         var connection = try server.accept();
         defer connection.stream.close();
-        handleConnection(allocator, connection.stream, connection.address, &control_auth_tracker) catch |err| {
+        handleConnection(allocator, connection.stream, connection.address, &control_auth_tracker, control_token_config.token) catch |err| {
             std.debug.print("server connection error: {}\n", .{err});
         };
     }
@@ -44,6 +54,117 @@ fn parsePort(allocator: std.mem.Allocator) !u16 {
     }
 
     return 8088;
+}
+
+const ControlTokenConfig = struct {
+    token: []u8,
+    token_file: ?[]u8 = null,
+
+    fn deinit(self: *ControlTokenConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.token);
+        if (self.token_file) |token_file| allocator.free(token_file);
+    }
+};
+
+fn initControlToken(allocator: std.mem.Allocator) !ControlTokenConfig {
+    const token = (try configuredControlTokenAlloc(allocator)) orelse try generateControlToken(allocator);
+    errdefer allocator.free(token);
+    const token_file = try controlTokenFilePath(allocator);
+    errdefer allocator.free(token_file);
+    try writeControlTokenFile(token_file, token);
+    return .{ .token = token, .token_file = token_file };
+}
+
+fn configuredControlTokenAlloc(allocator: std.mem.Allocator) !?[]u8 {
+    if (try envVarNonEmptyAlloc(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN")) |token| return token;
+    return envVarNonEmptyAlloc(allocator, "PLATFORM_CONTROL_TOKEN");
+}
+
+fn controlTokenFilePath(allocator: std.mem.Allocator) ![]u8 {
+    if (try argValueAlloc(allocator, "--token-file")) |path| return path;
+    if (try envVarNonEmptyAlloc(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN_FILE")) |path| return path;
+    if (try envVarNonEmptyAlloc(allocator, "PLATFORM_CONTROL_TOKEN_FILE")) |path| return path;
+
+    if (builtin.os.tag == .windows) {
+        const local_app_data = (try envVarNonEmptyAlloc(allocator, "LOCALAPPDATA")) orelse try homeRelativePath(allocator, &.{ "AppData", "Local" });
+        defer allocator.free(local_app_data);
+        return std.fs.path.join(allocator, &.{ local_app_data, "native-ai-webapp", "control.token" });
+    }
+
+    if (builtin.os.tag == .macos) {
+        return homeRelativePath(allocator, &.{ "Library", "Application Support", "native-ai-webapp", "control.token" });
+    }
+
+    const runtime_dir = (try envVarNonEmptyAlloc(allocator, "XDG_RUNTIME_DIR")) orelse return error.ControlTokenPathRequired;
+    defer allocator.free(runtime_dir);
+    return std.fs.path.join(allocator, &.{ runtime_dir, "native-ai-webapp", "control.token" });
+}
+
+fn homeRelativePath(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    const home = (try envVarNonEmptyAlloc(allocator, "HOME")) orelse return error.ControlTokenPathRequired;
+    defer allocator.free(home);
+
+    var segments = try allocator.alloc([]const u8, parts.len + 1);
+    defer allocator.free(segments);
+    segments[0] = home;
+    for (parts, 0..) |part, index| {
+        segments[index + 1] = part;
+    }
+    return std.fs.path.join(allocator, segments);
+}
+
+fn argValueAlloc(allocator: std.mem.Allocator, flag: []const u8) !?[]u8 {
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], flag)) {
+            if (index + 1 >= args.len) return error.MissingControlTokenFileValue;
+            return allocator.dupe(u8, args[index + 1]);
+        }
+        if (std.mem.startsWith(u8, args[index], flag) and args[index].len > flag.len and args[index][flag.len] == '=') {
+            return allocator.dupe(u8, args[index][flag.len + 1 ..]);
+        }
+    }
+    return null;
+}
+
+fn envVarNonEmptyAlloc(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return err,
+    };
+    if (value.len == 0) {
+        allocator.free(value);
+        return null;
+    }
+    return value;
+}
+
+fn generateControlToken(allocator: std.mem.Allocator) ![]u8 {
+    var random_bytes: [32]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+    return base64UrlNoPadAlloc(allocator, &random_bytes);
+}
+
+fn base64UrlNoPadAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const output = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(input.len));
+    _ = std.base64.url_safe_no_pad.Encoder.encode(output, input);
+    return output;
+}
+
+fn writeControlTokenFile(token_file: []const u8, token: []const u8) !void {
+    if (std.fs.path.dirname(token_file)) |parent| {
+        try std.fs.cwd().makePath(parent);
+    }
+    var file = try std.fs.cwd().createFile(token_file, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    if (builtin.os.tag != .windows) {
+        try file.chmod(0o600);
+    }
+    try file.writeAll(token);
+    try file.writeAll("\n");
 }
 
 fn enforceProductionStartupRules(allocator: std.mem.Allocator) !void {
@@ -93,6 +214,7 @@ fn handleConnection(
     stream: std.net.Stream,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
     var buffer: [max_request_bytes + 4096]u8 = undefined;
     const read_len = try stream.read(&buffer);
@@ -124,27 +246,27 @@ fn handleConnection(
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/install")) {
-        return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker);
+        return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker, expected_control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and
         (std.mem.startsWith(u8, parsed.path, "/packages/") or std.mem.startsWith(u8, parsed.path, "/control/packages/")))
     {
-        return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
+        return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker, expected_control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and appIdFromRollbackPath(parsed.path) != null) {
-        return handleAppRollbackEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
+        return handleAppRollbackEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker, expected_control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
-        return handleControlCommand(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker);
+        return handleControlCommand(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker, expected_control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and
         (std.mem.startsWith(u8, parsed.path, "/db/") or std.mem.startsWith(u8, parsed.path, "/control/db/")))
     {
-        return handleDbControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
+        return handleDbControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker, expected_control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/webapps/examples")) {
@@ -759,8 +881,9 @@ fn handleWebappInstall(
     provided_token: ?[]const u8,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
-    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+    authorizeControlRequest(control_auth_tracker, client_address, expected_control_token, provided_token) catch |err| {
         return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, "/webapps/install", "platform.install_webapp_package", err);
     };
 
@@ -800,9 +923,10 @@ fn handlePackageControlEndpoint(
     provided_token: ?[]const u8,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
     const tool = controlToolForPackagePath(path);
-    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+    authorizeControlRequest(control_auth_tracker, client_address, expected_control_token, provided_token) catch |err| {
         return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, tool, err);
     };
 
@@ -850,9 +974,10 @@ fn handleAppRollbackEndpoint(
     provided_token: ?[]const u8,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
     const tool = "platform.rollback_webapp";
-    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+    authorizeControlRequest(control_auth_tracker, client_address, expected_control_token, provided_token) catch |err| {
         return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, tool, err);
     };
 
@@ -911,9 +1036,10 @@ fn handleDbControlEndpoint(
     provided_token: ?[]const u8,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
     const audit_tool = controlToolForDbPath(path);
-    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+    authorizeControlRequest(control_auth_tracker, client_address, expected_control_token, provided_token) catch |err| {
         return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, audit_tool, err);
     };
 
@@ -992,8 +1118,9 @@ fn handleControlCommand(
     provided_token: ?[]const u8,
     client_address: std.net.Address,
     control_auth_tracker: *ControlAuthTracker,
+    expected_control_token: []const u8,
 ) !void {
-    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+    authorizeControlRequest(control_auth_tracker, client_address, expected_control_token, provided_token) catch |err| {
         return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, "/control/command", "control.command", err);
     };
 
@@ -1366,17 +1493,13 @@ const ControlAuthTracker = struct {
 };
 
 fn authorizeControlRequest(
-    allocator: std.mem.Allocator,
     tracker: *ControlAuthTracker,
     client_address: std.net.Address,
+    expected_token: []const u8,
     provided_token: ?[]const u8,
 ) !void {
     const key = controlClientKey(client_address);
-    const expected = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN") catch {
-        return authorizeControlTokenValue(tracker, key, "", provided_token, std.time.milliTimestamp());
-    };
-    defer allocator.free(expected);
-    return authorizeControlTokenValue(tracker, key, expected, provided_token, std.time.milliTimestamp());
+    return authorizeControlTokenValue(tracker, key, expected_token, provided_token, std.time.milliTimestamp());
 }
 
 fn authorizeControlTokenValue(
@@ -5741,4 +5864,39 @@ test "control auth tracker bans repeated failures and clears after expiry" {
 
     try authorizeControlTokenValue(&tracker, key, "expected-token", "expected-token", control_auth_ban_ms + 3);
     try std.testing.expectEqual(@as(i64, 0), tracker.retryAfterSeconds(key, control_auth_ban_ms + 3));
+}
+
+test "generated control tokens are url-safe unpadded base64" {
+    const token = try generateControlToken(std.testing.allocator);
+    defer std.testing.allocator.free(token);
+
+    try std.testing.expectEqual(@as(usize, 43), token.len);
+    for (token) |char| {
+        try std.testing.expect((char >= 'A' and char <= 'Z') or
+            (char >= 'a' and char <= 'z') or
+            (char >= '0' and char <= '9') or
+            char == '-' or
+            char == '_');
+    }
+}
+
+test "control token writer creates private token file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const token_file = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "nested", "control.token" });
+    defer std.testing.allocator.free(token_file);
+
+    try writeControlTokenFile(token_file, "test-token");
+
+    const contents = try std.fs.cwd().readFileAlloc(std.testing.allocator, token_file, 128);
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqualStrings("test-token\n", contents);
+
+    if (builtin.os.tag != .windows) {
+        const file = try std.fs.cwd().openFile(token_file, .{});
+        defer file.close();
+        const stat = try file.stat();
+        try std.testing.expectEqual(@as(std.fs.File.Mode, 0o600), stat.mode & 0o777);
+    }
 }

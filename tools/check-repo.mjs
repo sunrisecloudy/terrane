@@ -416,6 +416,11 @@ function checkServerStatic() {
     "ControlAuthTracker",
     "control_connection_banned",
     "retryAfterSeconds",
+    "fn initControlToken",
+    "fn generateControlToken",
+    "fn writeControlTokenFile",
+    "control.token",
+    "PLATFORM_CONTROL_TOKEN_FILE",
     "NATIVE_AI_SERVER_CONTROL_TOKEN",
     'headerValue(headers, "x-platform-control-token")',
     '"/control/command"',
@@ -561,7 +566,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-gated,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
