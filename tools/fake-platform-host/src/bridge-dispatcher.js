@@ -139,7 +139,7 @@ export class BridgeDispatcher {
     }
 
     if (method === "network.request") {
-      this.assertNetworkPolicy(params, context);
+      const policyEntry = this.assertNetworkPolicy(params, context);
       const mock = this.database.findNetworkMock({
         sessionId: context.sessionId,
         appId: context.appId,
@@ -150,7 +150,8 @@ export class BridgeDispatcher {
         method: params.method ?? "GET",
         url: params.url,
       });
-      return mock;
+      this.assertNetworkResponsePolicy(mock, policyEntry, params, context);
+      return networkResponsePayload(mock);
     }
 
     if (method === "app.log") {
@@ -314,12 +315,7 @@ export class BridgeDispatcher {
 
     const method = (params.method ?? "GET").toUpperCase();
     const allow = context.active?.manifest?.networkPolicy?.allow ?? [];
-    const matching = allow.find((entry) => {
-      if (entry.origin !== url.origin) return false;
-      if (!entry.methods.includes(method)) return false;
-      if (entry.pathPrefix && !url.pathname.startsWith(entry.pathPrefix)) return false;
-      return true;
-    });
+    const matching = findMatchingNetworkPolicy(allow, url, method);
 
     if (!matching) {
       throw new PlatformError("network_policy_denied", "network.request is outside manifest.networkPolicy", {
@@ -327,6 +323,16 @@ export class BridgeDispatcher {
         method,
       });
     }
+
+    assertNetworkHeaders(params.headers ?? {}, matching);
+    assertNetworkRequestBody(params.body, matching);
+    return matching;
+  }
+
+  assertNetworkResponsePolicy(response, policyEntry, params, context) {
+    assertNetworkTimeout(response, policyEntry, params);
+    assertNetworkResponseSize(response, policyEntry, context);
+    assertNetworkRedirect(response, context.active?.manifest?.networkPolicy?.allow ?? [], params);
   }
 }
 
@@ -379,4 +385,117 @@ function assertBridgeRequestShape(request) {
   if ("timestamp" in request && !Number.isFinite(request.timestamp)) {
     throw new PlatformError("invalid_request", "Bridge request timestamp must be a finite number");
   }
+}
+
+function findMatchingNetworkPolicy(allow, url, method) {
+  return allow.find((entry) => {
+    if (entry.origin !== url.origin) return false;
+    if (!entry.methods.includes(method)) return false;
+    if (entry.pathPrefix && !url.pathname.startsWith(entry.pathPrefix)) return false;
+    return true;
+  });
+}
+
+function assertNetworkHeaders(headers, policyEntry) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    throw new PlatformError("invalid_request", "network.request headers must be an object", {});
+  }
+  const allowed = new Set((policyEntry.allowedHeaders ?? []).map((header) => String(header).toLowerCase()));
+  for (const name of Object.keys(headers)) {
+    if (!allowed.has(name.toLowerCase())) {
+      throw new PlatformError("network_policy_denied", "network.request header is outside manifest.networkPolicy", {
+        header: name,
+        allowedHeaders: [...allowed],
+      });
+    }
+  }
+}
+
+function assertNetworkRequestBody(body, policyEntry) {
+  if (!Number.isInteger(policyEntry.maxRequestBytes)) return;
+  const bytes = payloadBytes(body);
+  if (bytes > policyEntry.maxRequestBytes) {
+    throw new PlatformError("network_policy_denied", "network.request body exceeds manifest.networkPolicy.maxRequestBytes", {
+      maxRequestBytes: policyEntry.maxRequestBytes,
+      bytes,
+    });
+  }
+}
+
+function assertNetworkTimeout(response, policyEntry, params) {
+  if ("timeoutMs" in params && (!Number.isInteger(params.timeoutMs) || params.timeoutMs <= 0)) {
+    throw new PlatformError("invalid_request", "network.request timeoutMs must be a positive integer", { timeoutMs: params.timeoutMs });
+  }
+  if (!Number.isInteger(response?.delayMs)) return;
+
+  const policyTimeout = Number.isInteger(policyEntry.timeoutMs) ? policyEntry.timeoutMs : null;
+  const requestedTimeout = Number.isInteger(params.timeoutMs) ? params.timeoutMs : null;
+  const effectiveTimeout = policyTimeout && requestedTimeout
+    ? Math.min(policyTimeout, requestedTimeout)
+    : policyTimeout ?? requestedTimeout;
+  if (effectiveTimeout && response.delayMs > effectiveTimeout) {
+    throw new PlatformError("timeout", "network.request timed out", {
+      timeoutMs: effectiveTimeout,
+      delayMs: response.delayMs,
+    });
+  }
+}
+
+function assertNetworkResponseSize(response, policyEntry, context) {
+  const policyLimit = Number.isInteger(policyEntry.maxResponseBytes) ? policyEntry.maxResponseBytes : null;
+  const budgetLimit = Number.isInteger(context.active?.manifest?.resourceBudget?.maxNetworkResponseBytes)
+    ? context.active.manifest.resourceBudget.maxNetworkResponseBytes
+    : null;
+  const limit = policyLimit !== null && budgetLimit !== null ? Math.min(policyLimit, budgetLimit) : policyLimit ?? budgetLimit;
+  if (!Number.isInteger(limit)) return;
+
+  const bytes = payloadBytes(response?.bodyText ?? response?.body ?? "");
+  if (bytes > limit) {
+    throw new PlatformError("network_policy_denied", "network.response exceeds allowed byte limit", {
+      maxResponseBytes: limit,
+      bytes,
+    });
+  }
+}
+
+function assertNetworkRedirect(response, allow, params) {
+  const status = Number(response?.status ?? 0);
+  if (status < 300 || status >= 400) return;
+  const location = headerValue(response?.headers, "location");
+  if (!location) return;
+
+  let redirectUrl;
+  try {
+    redirectUrl = new URL(location, params.url);
+  } catch {
+    throw new PlatformError("network_policy_denied", "network.response redirect location is invalid", { location });
+  }
+  const method = (params.method ?? "GET").toUpperCase();
+  if (!findMatchingNetworkPolicy(allow, redirectUrl, method)) {
+    throw new PlatformError("network_policy_denied", "network.response redirect is outside manifest.networkPolicy", {
+      origin: redirectUrl.origin,
+      method,
+    });
+  }
+}
+
+function headerValue(headers, name) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return null;
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) return String(value);
+  }
+  return null;
+}
+
+function payloadBytes(value) {
+  if (value == null) return 0;
+  if (typeof value === "string") return Buffer.byteLength(value);
+  return Buffer.byteLength(JSON.stringify(value));
+}
+
+function networkResponsePayload(response) {
+  if (!response || typeof response !== "object" || Array.isArray(response)) return response;
+  const { delayMs, ...payload } = response;
+  return payload;
 }
