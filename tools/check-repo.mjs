@@ -453,6 +453,8 @@ function checkRuntimeStatic() {
     "maxDomNodes",
     "maxTimers",
     "dispatchBridgeRequest",
+    "__APP_RUNTIME_DEV_MOCK__",
+    "dispatchDevMockBridgeRequest",
     "webkitNativeBridgeHandler",
     "androidNativeBridgeHandler",
     "webview2NativeBridgeHandler",

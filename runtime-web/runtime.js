@@ -32,6 +32,8 @@
   const webview2BridgePending = new Map();
   let webview2BridgeHandlerAttached = false;
   const usageByApp = new Map();
+  const devMockStorageByApp = new Map();
+  const devMockCoreVersions = new Map();
   const minuteMs = 60 * 1000;
 
   refreshButton.addEventListener("click", loadApps);
@@ -379,6 +381,10 @@
   }
 
   async function dispatchBridgeRequest(request, mount) {
+    if (window.__APP_RUNTIME_DEV_MOCK__ === true) {
+      return dispatchDevMockBridgeRequest(request, mount);
+    }
+
     const webkitHandler = webkitNativeBridgeHandler();
     if (webkitHandler) {
       const response = await webkitHandler.postMessage({
@@ -418,6 +424,163 @@
       },
       body: JSON.stringify(request),
     });
+  }
+
+  async function dispatchDevMockBridgeRequest(request, mount) {
+    const result = devMockBridgeResult(request, mount);
+    if (result && result.error) {
+      return { id: request.id, ok: false, error: result.error };
+    }
+    return { id: request.id, ok: true, result: result };
+  }
+
+  function devMockBridgeResult(request, mount) {
+    const method = request.method;
+    const params = request.params || {};
+    if (method === "runtime.capabilities") {
+      return {
+        runtimeVersion: "0.1.0",
+        platform: "browser",
+        target: "runtime-dev-mock",
+        devMode: true,
+        features: {
+          "core.step": true,
+          "runtime.capabilities": true,
+          "storage.read": true,
+          "storage.write": true,
+          "storage.get": true,
+          "storage.set": true,
+          "storage.remove": true,
+          "storage.list": true,
+          "dialog.openFile": true,
+          "dialog.saveFile": true,
+          "notification.toast": true,
+          "network.request": true,
+          "app.log": true,
+        },
+        limits: {
+          maxBodyBytes: 1048576,
+          maxStorageBytes: 5242880,
+          maxBridgeCallsPerMinute: 600,
+          maxPackageBytes: 1048576,
+          maxFileBytes: 524288,
+        },
+      };
+    }
+    if (method === "core.step") {
+      return devMockCoreStep(mount.appId, params.event);
+    }
+    if (method === "storage.get") {
+      const storage = devMockStorageForApp(mount.appId);
+      return { value: storage.has(params.key) ? cloneJson(storage.get(params.key)) : cloneJson(params.defaultValue) };
+    }
+    if (method === "storage.set") {
+      const storage = devMockStorageForApp(mount.appId);
+      const value = "value" in params ? params.value : null;
+      storage.set(params.key, cloneJson(value));
+      return { ok: true, bytesWritten: utf8Bytes(JSON.stringify(value)) };
+    }
+    if (method === "storage.remove") {
+      devMockStorageForApp(mount.appId).delete(params.key);
+      return { ok: true };
+    }
+    if (method === "storage.list") {
+      const keys = Array.from(devMockStorageForApp(mount.appId).keys())
+        .filter(function (key) { return key.startsWith(params.prefix); })
+        .sort();
+      return { keys: keys };
+    }
+    if (method === "dialog.openFile") {
+      return { error: bridgeError("dialog.mock_missing", "No dialog.openFile mock is registered") };
+    }
+    if (method === "dialog.saveFile") {
+      return { ok: true };
+    }
+    if (method === "notification.toast") {
+      return { ok: true };
+    }
+    if (method === "network.request") {
+      return { status: 200, headers: {}, bodyText: "{}" };
+    }
+    if (method === "app.log") {
+      if (params.level === "error") console.error("[app.log]", mount.appId, params.message);
+      else console.log("[app.log]", mount.appId, params.message);
+      return { ok: true };
+    }
+    return { error: bridgeError("unknown_method", `Unknown bridge method: ${method}`, { method: method }) };
+  }
+
+  function devMockCoreStep(appId, event) {
+    const validationError = validateDevMockCoreEvent(event);
+    if (validationError) {
+      return { ok: false, error: validationError, actions: [] };
+    }
+    const stateVersion = (devMockCoreVersions.get(appId) || 0) + 1;
+    devMockCoreVersions.set(appId, stateVersion);
+    return {
+      ok: true,
+      stateVersion: stateVersion,
+      actions: devMockActionsForEvent(event),
+    };
+  }
+
+  function validateDevMockCoreEvent(event) {
+    if (event === undefined) return { code: "invalid_event", message: "core.step input requires event" };
+    if (!event || typeof event !== "object" || Array.isArray(event)) return { code: "invalid_event", message: "event must be an object" };
+    if (!("type" in event)) return { code: "invalid_event", message: "event.type is required" };
+    if (typeof event.type !== "string") return { code: "invalid_event", message: "event.type must be a string" };
+    return null;
+  }
+
+  function devMockActionsForEvent(event) {
+    if (event.type === "CreateTask") {
+      const payload = event.payload || {};
+      return [
+        {
+          type: "TaskAccepted",
+          title: typeof payload.title === "string" ? payload.title : "",
+          priority: typeof payload.priority === "string" ? payload.priority : "medium",
+        },
+        { type: "Toast", message: "Task accepted" },
+      ];
+    }
+    if (event.type === "ToggleTask") {
+      const payload = event.payload || {};
+      return [{ type: "TaskToggled", id: payload.id || null }];
+    }
+    if (event.type === "TransformText") {
+      const payload = event.payload || {};
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const mode = typeof payload.mode === "string" ? payload.mode : "uppercase";
+      return [{ type: "TransformText", text: devMockTransformText(text, mode) }];
+    }
+    if (event.type === "NetworkSnapshotReceived") {
+      return [{ type: "NetworkSnapshotStored", received: true }];
+    }
+    return [{ type: "EventAccepted", eventType: event.type || "UnknownEvent" }];
+  }
+
+  function devMockTransformText(text, mode) {
+    if (mode === "lowercase") return text.toLowerCase();
+    if (mode === "reverse-lines") return text.split(/\r?\n/).reverse().join("\n");
+    if (mode === "word-count") {
+      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      const lines = text ? text.split(/\r?\n/).length : 0;
+      return `Words: ${words}\nLines: ${lines}\nCharacters: ${text.length}`;
+    }
+    return text.toUpperCase();
+  }
+
+  function devMockStorageForApp(appId) {
+    if (!devMockStorageByApp.has(appId)) {
+      devMockStorageByApp.set(appId, new Map());
+    }
+    return devMockStorageByApp.get(appId);
+  }
+
+  function cloneJson(value) {
+    if (value === undefined) return undefined;
+    return JSON.parse(JSON.stringify(value));
   }
 
   function webkitNativeBridgeHandler() {

@@ -73,6 +73,44 @@ test("runtime rejects mismatched core.step app before host dispatch", async () =
   }
 });
 
+test("runtime dev mock handles bridge calls without host dispatch", async () => {
+  const harness = createRuntimeHarness({ devMock: true });
+  try {
+    const frame = await mountFirstApp(harness);
+
+    const setResult = await vm.runInContext(
+      'window.AppRuntime.call("storage.set", { key: "notes-lite:notes", value: [{ title: "Mocked" }] })',
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(setResult, { ok: true, bytesWritten: 20 });
+
+    const getResult = await vm.runInContext(
+      'window.AppRuntime.call("storage.get", { key: "notes-lite:notes", defaultValue: [] })',
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(getResult, { value: [{ title: "Mocked" }] });
+
+    const coreResult = await vm.runInContext(
+      [
+        'window.AppRuntime.call("core.step", {',
+        '  app: "notes-lite",',
+        '  event: { type: "TransformText", payload: { text: "Hello", mode: "lowercase" } }',
+        "})",
+      ].join("\n"),
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(coreResult, {
+      ok: true,
+      stateVersion: 1,
+      actions: [{ type: "TransformText", text: "hello" }],
+    });
+
+    assert.equal(harness.fetchState.bridgeRequests.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
 async function mountFirstApp(harness) {
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
   vm.runInContext(runtimeSource, harness.parentContext);
@@ -93,7 +131,7 @@ async function mountFirstApp(harness) {
   return frame;
 }
 
-function createRuntimeHarness() {
+function createRuntimeHarness(options = {}) {
   let parentWindow;
   const messageChannels = [];
   function HarnessMessageChannel() {
@@ -105,6 +143,7 @@ function createRuntimeHarness() {
   parentWindow = createWindow();
   parentWindow.document = document;
   parentWindow.crypto = webcrypto;
+  parentWindow.__APP_RUNTIME_DEV_MOCK__ = options.devMock === true;
   parentWindow.dispatchMessage = function (event) {
     parentWindow.dispatch("message", event);
   };
@@ -301,7 +340,7 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
       name: "Notes Lite",
       version: "0.1.0",
       description: "Budget warning probe app.",
-      permissions: ["core.step", "storage.read"],
+      permissions: ["core.step", "storage.read", "storage.write"],
       storagePrefix: "notes-lite:",
       capabilities: [],
       dataVersion: "1.0.0",
