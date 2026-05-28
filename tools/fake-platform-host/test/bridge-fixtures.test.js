@@ -35,7 +35,8 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
   for (const [fileName, ok, code] of cases) {
     const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, fileName), "utf8"));
     assertBridgeFixtureShape(fixture, fileName);
-    const response = await dispatcher.dispatch(fixture, { appId: fixture.appId, sessionId });
+    const { context, ...request } = fixture;
+    const response = await dispatcher.dispatch(request, { appId: context.appId, sessionId });
     assert.equal(response.ok, ok, fileName);
     if (code) {
       assert.equal(response.error.code, code, fileName);
@@ -47,7 +48,7 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
 
 function assertBridgeFixtureShape(fixture, fileName) {
   assert.equal(typeof fixture.id, "string", fileName);
-  assert.match(fixture.appId, /^[a-z][a-z0-9-]{2,63}$/, fileName);
+  assert.match(fixture.context.appId, /^[a-z][a-z0-9-]{2,63}$/, fileName);
   assert.equal(typeof fixture.method, "string", fileName);
   assert.equal(typeof fixture.params, "object", fileName);
   assert.equal(Array.isArray(fixture.params), false, fileName);

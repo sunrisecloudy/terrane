@@ -44,19 +44,19 @@ export class BridgeDispatcher {
 
   async dispatch(request, context = {}) {
     const started = Date.now();
-    const id = request?.id ?? null;
-    const appId = context.appId ?? request?.appId;
+    const id = request && typeof request === "object" && !Array.isArray(request) && typeof request.id === "string" ? request.id : null;
+    const appId = context.appId ?? null;
     const sessionId = context.sessionId ?? this.database.createRuntimeSession({ appId });
-    const method = request?.method;
-    const params = request?.params ?? {};
+    let method = "unknown";
+    let params = {};
     const active = appId ? this.database.activeInstall(appId) : null;
 
     try {
+      assertBridgeRequestShape(request);
+      method = request.method;
+      params = request.params;
       if (!appId) {
         throw new PlatformError("bridge.unauthorized_channel", "Bridge calls require a channel-derived app id");
-      }
-      if (typeof method !== "string") {
-        throw new PlatformError("invalid_request", "Bridge request method must be a string");
       }
 
       const result = await this.call(method, params, { appId, sessionId, active });
@@ -304,4 +304,29 @@ function isKnownMethod(method) {
     method === "app.log" ||
     method === "runtime.capabilities"
   );
+}
+
+function assertBridgeRequestShape(request) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new PlatformError("invalid_request", "Bridge request must be an object");
+  }
+
+  const allowed = new Set(["id", "method", "params", "timestamp"]);
+  const extra = Object.keys(request).filter((key) => !allowed.has(key));
+  if (extra.length > 0) {
+    throw new PlatformError("invalid_request", "Bridge request contains unknown top-level fields", { fields: extra });
+  }
+
+  if (typeof request.id !== "string" || request.id.length === 0) {
+    throw new PlatformError("invalid_request", "Bridge request id must be a non-empty string");
+  }
+  if (typeof request.method !== "string") {
+    throw new PlatformError("invalid_request", "Bridge request method must be a string");
+  }
+  if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) {
+    throw new PlatformError("invalid_request", "Bridge request params must be an object");
+  }
+  if ("timestamp" in request && !Number.isFinite(request.timestamp)) {
+    throw new PlatformError("invalid_request", "Bridge request timestamp must be a finite number");
+  }
 }

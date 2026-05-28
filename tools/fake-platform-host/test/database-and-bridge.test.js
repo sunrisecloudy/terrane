@@ -73,6 +73,26 @@ test("bridge dispatch enforces permissions and storage prefixes", async () => {
   assert.equal(unknown.ok, false);
   assert.equal(unknown.error.code, "unknown_method");
 
+  const bodyAppId = await dispatcher.dispatch(
+    { id: "req_body_app", appId: "notes-lite", method: "storage.get", params: { key: "notes-lite:notes" } },
+    { appId: "notes-lite", sessionId },
+  );
+  assert.equal(bodyAppId.ok, false);
+  assert.equal(bodyAppId.error.code, "invalid_request");
+
+  const noChannel = await dispatcher.dispatch(
+    { id: "req_no_channel", method: "storage.get", params: { key: "notes-lite:notes" } },
+  );
+  assert.equal(noChannel.ok, false);
+  assert.equal(noChannel.error.code, "bridge.unauthorized_channel");
+
+  const extraField = await dispatcher.dispatch(
+    { id: "req_extra", method: "storage.get", params: { key: "notes-lite:notes" }, debug: true },
+    { appId: "notes-lite", sessionId },
+  );
+  assert.equal(extraField.ok, false);
+  assert.equal(extraField.error.code, "invalid_request");
+
   const networkDenied = await dispatcher.dispatch(
     {
       id: "req_network",

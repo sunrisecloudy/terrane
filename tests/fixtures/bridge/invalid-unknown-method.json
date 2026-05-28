@@ -1,6 +1,8 @@
 {
   "id": "req_2",
-  "appId": "notes-lite",
+  "context": {
+    "appId": "notes-lite"
+  },
   "method": "native.exec",
   "params": {
     "cmd": "ls"
