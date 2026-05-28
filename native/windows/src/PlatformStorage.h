@@ -1,0 +1,30 @@
+#pragma once
+
+#include "BridgeTypes.h"
+
+#include <filesystem>
+#include <winsqlite/winsqlite3.h>
+
+namespace nativeai {
+
+class PlatformStorage {
+ public:
+  explicit PlatformStorage(std::filesystem::path databasePath);
+  ~PlatformStorage();
+
+  PlatformStorage(PlatformStorage const&) = delete;
+  PlatformStorage& operator=(PlatformStorage const&) = delete;
+
+  winrt::Windows::Data::Json::JsonObject Get(BridgeRequest const& request);
+  winrt::Windows::Data::Json::JsonObject Set(BridgeRequest const& request);
+  winrt::Windows::Data::Json::JsonObject Remove(BridgeRequest const& request);
+  winrt::Windows::Data::Json::JsonObject List(BridgeRequest const& request);
+
+ private:
+  winrt::Windows::Data::Json::JsonObject storagePrefixFailure(BridgeRequest const& request, std::wstring const& key);
+  bool HasStoragePrefix(BridgeRequest const& request, std::wstring const& key) const;
+
+  sqlite3* db_ = nullptr;
+};
+
+}  // namespace nativeai

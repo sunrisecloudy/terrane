@@ -1,11 +1,11 @@
-# Windows Host Skeleton Target
+# Windows Host Target
 
-Codex should implement this as a C++/WinRT desktop app using WebView2.
+Current implementation status: partial.
 
-Minimum files to create:
+The scaffold is a C++/WinRT desktop host using WebView2 and `winsqlite3`. It is intentionally parallel to the fake host/native bridge contract:
 
 ```text
-NativeAIWebappHost.sln
+CMakeLists.txt
 src/main.cpp
 src/WebViewHost.cpp
 src/WebBridge.cpp
@@ -17,6 +17,15 @@ src/PlatformNetwork.cpp
 src/resources/runtime/
 src/resources/examples/
 ```
+
+Implemented now:
+
+- Initializes WebView2 and maps the repo runtime through `SetVirtualHostNameToFolderMapping`.
+- Receives bridge payloads through `WebMessageReceived` and checks the internal runtime origin before dispatch.
+- Derives `appId` and storage prefix from the WebView source URL instead of request bodies.
+- Applies native-side permission checks before dispatching bridge calls.
+- Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
+- Returns structured `platform_unsupported` responses for dialogs, network, and Zig core until those services are wired.
 
 MVP acceptance:
 

@@ -1,0 +1,152 @@
+#include "WebViewHost.h"
+
+#include <ShlObj.h>
+#include <fstream>
+#include <winrt/Windows.Data.Json.h>
+#include <wrl/event.h>
+
+namespace nativeai {
+namespace json = winrt::Windows::Data::Json;
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
+
+namespace {
+constexpr wchar_t kRuntimeHost[] = L"runtime.local.platform";
+constexpr wchar_t kRuntimeOrigin[] = L"https://runtime.local.platform/";
+
+std::wstring ReadTextFile(std::filesystem::path const& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  return Utf8ToWide(text);
+}
+}  // namespace
+
+WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath())) {}
+
+void WebViewHost::Initialize() {
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr,
+      nullptr,
+      nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [this](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
+            if (FAILED(result) || environment == nullptr) {
+              return result;
+            }
+            environment->CreateCoreWebView2Controller(
+                window_,
+                Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                    [this](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+                      if (FAILED(controllerResult) || controller == nullptr) {
+                        return controllerResult;
+                      }
+                      controller_ = controller;
+                      controller_->get_CoreWebView2(&webview_);
+
+                      RECT bounds{};
+                      GetClientRect(window_, &bounds);
+                      controller_->put_Bounds(bounds);
+
+                      webview_->SetVirtualHostNameToFolderMapping(
+                          kRuntimeHost,
+                          RuntimeRoot().wstring().c_str(),
+                          COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
+
+                      EventRegistrationToken token{};
+                      webview_->add_WebMessageReceived(
+                          Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                              [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                OnWebMessage(args);
+                                return S_OK;
+                              })
+                              .Get(),
+                          &token);
+
+                      webview_->Navigate(L"https://runtime.local.platform/runtime/index.html");
+                      return S_OK;
+                    })
+                    .Get());
+            return S_OK;
+          })
+          .Get());
+}
+
+void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
+  PWSTR source = nullptr;
+  args->get_Source(&source);
+  std::wstring sourceText = source == nullptr ? L"" : source;
+  CoTaskMemFree(source);
+  if (sourceText.rfind(kRuntimeOrigin, 0) != 0) {
+    return;
+  }
+
+  PWSTR rawMessage = nullptr;
+  args->TryGetWebMessageAsString(&rawMessage);
+  auto response = bridge_->HandleJson(rawMessage == nullptr ? L"" : rawMessage, SandboxContextFromSource(sourceText));
+  CoTaskMemFree(rawMessage);
+  webview_->PostWebMessageAsString(response.c_str());
+}
+
+AppSandboxContext WebViewHost::SandboxContextFromSource(std::wstring const& source) const {
+  auto appId = AppIdFromSource(source);
+  return AppSandboxContext{
+      .appId = appId,
+      .storagePrefix = appId + L":",
+      .approvedPermissions = PermissionsForApp(appId),
+  };
+}
+
+std::wstring WebViewHost::AppIdFromSource(std::wstring const& source) const {
+  for (std::wstring marker : {L"/webapps/examples/", L"/examples/"}) {
+    auto markerIndex = source.find(marker);
+    if (markerIndex == std::wstring::npos) {
+      continue;
+    }
+    auto start = markerIndex + marker.size();
+    auto end = source.find(L"/", start);
+    return source.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
+  }
+  return L"unknown";
+}
+
+std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId) const {
+  auto manifest = ReadTextFile(RepoRoot() / L"webapps" / L"examples" / appId / L"manifest.json");
+  json::JsonObject parsed{nullptr};
+  if (manifest.empty() || !json::JsonObject::TryParse(manifest, parsed) || !parsed.HasKey(L"permissions")) {
+    return {};
+  }
+
+  std::set<std::wstring> permissions;
+  for (auto const& value : parsed.GetNamedArray(L"permissions")) {
+    permissions.insert(std::wstring(value.GetString().c_str()));
+  }
+  return permissions;
+}
+
+std::filesystem::path WebViewHost::RepoRoot() {
+  auto current = std::filesystem::current_path();
+  for (int depth = 0; depth < 5; ++depth) {
+    if (std::filesystem::exists(current / L"docs" / L"00_PRD.md")) {
+      return current;
+    }
+    current = current.parent_path();
+  }
+  return std::filesystem::current_path();
+}
+
+std::filesystem::path WebViewHost::RuntimeRoot() {
+  return RepoRoot();
+}
+
+std::filesystem::path WebViewHost::DatabasePath() {
+  PWSTR localAppData = nullptr;
+  SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppData);
+  std::filesystem::path path(localAppData == nullptr ? L"." : localAppData);
+  CoTaskMemFree(localAppData);
+  return path / L"NativeAIWebappPlatform" / L"platform.sqlite";
+}
+
+}  // namespace nativeai

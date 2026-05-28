@@ -91,7 +91,7 @@ Status snapshot: **2026-05-28**.
 | `native/ios/` | partial | SwiftPM/UIKit/WKWebView scaffold with WKScriptMessageHandlerWithReply, SQLite-backed storage, native permission checks, and structured unsupported responses for unfinished platform services |
 | `native/macos/` | partial | SwiftPM AppKit/WKWebView host scaffold with SQLite storage, dialogs, toast logging, and structured bridge responses |
 | `native/android/` | partial | Kotlin Android scaffold with WebViewAssetLoader, WebViewCompat message bridge with origin allowlist, SQLite-backed storage, native permission checks, and structured unsupported responses for unfinished platform services |
-| `native/windows/` | skeleton | README only |
+| `native/windows/` | partial | C++/WinRT/WebView2 scaffold with virtual-host loading, WebMessageReceived origin checks, SQLite-backed storage, native permission checks, and structured unsupported responses for unfinished platform services |
 | `native/linux/` | skeleton | README only |
 | `codex-plugin/platform-control/` | partial | `plugin.json`, `.mcp.json`, skills present; local MCP path resolves to the repo server |
 | `devtools/control-plane/` | partial | `openapi.json` + README |
