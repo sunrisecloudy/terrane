@@ -21,9 +21,7 @@ MVP acceptance:
 Current local run command:
 
 ```sh
-mkdir -p zig-out
-zig build-exe -target aarch64-macos.15.0 -lc --dep zig_core -Mroot=src/main.zig -target aarch64-macos.15.0 -Mzig_core=../zig-core/src/lib.zig -femit-bin=zig-out/server
-./zig-out/server --port 8088
+zig build run-server -- --port 8088
 ```
 
 Implemented endpoints:
