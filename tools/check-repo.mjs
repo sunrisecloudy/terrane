@@ -439,6 +439,9 @@ function checkServerStatic() {
     '"platform.sign_webapp_package"',
     '"platform.install_webapp_package"',
     '"platform.rollback_webapp"',
+    '"platform.uninstall_webapp"',
+    '"platform.approve_webapp_update"',
+    '"platform.quarantine_webapp"',
     '"platform.create_snapshot"',
     '"platform.restore_snapshot"',
     '"platform.migration_dry_run"',
@@ -496,6 +499,10 @@ function checkServerStatic() {
     "quarantined",
     "rolled-back",
     "fn rollbackWebappPackage",
+    "fn uninstallWebappControl",
+    "fn approveWebappUpdateControl",
+    "fn quarantineWebappControl",
+    "fn insertLifecycleInstallationEvent",
     "fn insertRollbackInstallationEvent",
     "rollback_data_version_incompatible",
     "fn restoreSnapshotStorageIntoDb",
@@ -600,7 +607,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

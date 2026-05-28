@@ -1312,6 +1312,79 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.uninstall_webapp")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.uninstall_webapp requires appId");
+        };
+        const confirm = controlBoolArg(args, "confirm") orelse false;
+        const result_json = uninstallWebappControl(allocator, app_id, confirm, controlStringArg(args, "actor") orelse "codex") catch |err| switch (err) {
+            error.ConfirmationRequired => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "confirmation_required", args_json, null);
+                return writeControlError(allocator, stream, 400, "confirmation_required", "platform.uninstall_webapp requires confirm: true");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.approve_webapp_update")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.approve_webapp_update requires appId");
+        };
+        const install_id = controlStringArg(args, "installId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.approve_webapp_update requires installId");
+        };
+        const result_json = approveWebappUpdateControl(allocator, app_id, install_id) catch |err| switch (err) {
+            error.InstallNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "install_not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "install_not_found", "Install was not found for app");
+            },
+            error.InstallStatusInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "install_status_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "install_status_invalid", "Install cannot be approved from its current status");
+            },
+            error.ApprovalNotRequired => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "approval_not_required", args_json, null);
+                return writeControlError(allocator, stream, 400, "approval_not_required", "Install does not require approval");
+            },
+            error.InvalidMigration => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_migration", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_migration", "Pending update migration is invalid or incomplete");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.quarantine_webapp")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.quarantine_webapp requires appId");
+        };
+        const result_json = quarantineWebappControl(allocator, app_id, controlStringArg(args, "installId"), controlStringArg(args, "reason") orelse "manual quarantine") catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.InstallNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "install_not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "install_not_found", "Install was not found for app");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "platform.create_snapshot")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -2399,6 +2472,125 @@ fn rollbackWebappPackage(
     return result_json;
 }
 
+fn uninstallWebappControl(allocator: std.mem.Allocator, app_id: []const u8, confirm: bool, actor: []const u8) ![]u8 {
+    if (!confirm) return error.ConfirmationRequired;
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    if (!(try appExists(db, app_id))) return error.AppNotInstalled;
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    const active_install_id = try activeInstallIdAlloc(allocator, db, app_id);
+    defer if (active_install_id) |active| allocator.free(active);
+
+    var snapshot_id: ?[]u8 = null;
+    if (active_install_id != null) {
+        const snapshot_json = try createRuntimeSnapshotInDb(allocator, db, app_id, "manual", null);
+        defer allocator.free(snapshot_json);
+        snapshot_id = try snapshotIdFromJsonAlloc(allocator, snapshot_json);
+    }
+    defer if (snapshot_id) |actual_snapshot_id| allocator.free(actual_snapshot_id);
+
+    const cleared_storage_keys = try int64QueryDb(db, "SELECT COUNT(*) FROM app_storage WHERE app_id = ?", app_id);
+    try deleteRowsForApp(db, "DELETE FROM app_storage WHERE app_id = ?", app_id);
+    try markAllAppVersionsStatus(db, app_id, "uninstalled");
+    try markAppUninstalled(db, app_id);
+    if (active_install_id) |active| {
+        const details_json = try uninstallDetailsJsonAlloc(allocator, snapshot_id, cleared_storage_keys);
+        defer allocator.free(details_json);
+        try insertLifecycleInstallationEvent(db, allocator, app_id, active, "uninstall", active, null, actor, created_at, details_json);
+    }
+
+    const result_json = try uninstallResultJsonAlloc(allocator, app_id, snapshot_id, cleared_storage_keys);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn approveWebappUpdateControl(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const target = try installedVersionByInstallIdAlloc(allocator, db, app_id, install_id);
+    const target_version = target orelse return error.InstallNotFound;
+    defer freeInstalledVersion(allocator, target_version);
+    if (std.mem.eql(u8, target_version.status, "quarantined") or std.mem.eql(u8, target_version.status, "uninstalled")) {
+        return error.InstallStatusInvalid;
+    }
+    const report = try latestInstallReportAlloc(allocator, db, app_id, install_id);
+    const report_details = report orelse return error.ApprovalNotRequired;
+    defer freeInstallReportDetails(allocator, report_details);
+    if (!std.mem.eql(u8, report_details.status, "requires-approval")) return error.ApprovalNotRequired;
+
+    const active = try activeInstallDetailsAlloc(allocator, db, app_id);
+    defer if (active) |active_version| freeInstalledVersion(allocator, active_version);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+
+    var migration_runs: usize = 0;
+    if (active) |active_version| {
+        if (!std.mem.eql(u8, active_version.install_id, target_version.install_id)) {
+            if (target_version.data_version < active_version.data_version) return error.InvalidMigration;
+            if (target_version.data_version > active_version.data_version) {
+                const package_files = try packageFilesForInstallAlloc(allocator, db, install_id);
+                defer freeOwnedPackageFiles(allocator, package_files);
+                try applyPackagedMigrationChainForInstall(allocator, db, app_id, install_id, package_files, active_version.data_version, target_version.data_version, created_at);
+                migration_runs = @intCast(target_version.data_version - active_version.data_version);
+            }
+            try markVersionStatus(db, active_version.install_id, "installed", null);
+        }
+    }
+
+    try markVersionStatus(db, install_id, "enabled", created_at);
+    try approveInstallPermissions(db, install_id, created_at);
+    try activateInstalledApp(db, app_id, install_id, target_version.version, target_version.data_version, created_at);
+    try updateInstallReportApproved(db, allocator, report_details.report_id, created_at);
+    const details_json = try approvalDetailsJsonAlloc(allocator, if (active) |active_version| active_version.install_id else null, migration_runs, created_at);
+    defer allocator.free(details_json);
+    try insertLifecycleInstallationEvent(db, allocator, app_id, install_id, "activate", if (active) |active_version| active_version.install_id else null, report_details.report_id, "zig-server", created_at, details_json);
+
+    const result_json = try approveResultJsonAlloc(allocator, app_id, install_id, if (active) |active_version| active_version.install_id else null, migration_runs);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn quarantineWebappControl(allocator: std.mem.Allocator, app_id: []const u8, install_id: ?[]const u8, reason: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const active_install_id = try activeInstallIdAlloc(allocator, db, app_id);
+    defer if (active_install_id) |active| allocator.free(active);
+    const target_install_id = if (install_id) |explicit_install| explicit_install else active_install_id orelse return error.AppNotInstalled;
+    if (!(try installBelongsToApp(db, app_id, target_install_id))) return error.InstallNotFound;
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+
+    try markVersionStatus(db, target_install_id, "quarantined", null);
+    if (active_install_id) |active| {
+        if (std.mem.eql(u8, active, target_install_id)) {
+            try markAppStatus(db, app_id, "quarantined", created_at);
+        }
+    }
+    const details_json = try quarantineDetailsJsonAlloc(allocator, reason);
+    defer allocator.free(details_json);
+    try insertLifecycleInstallationEvent(db, allocator, app_id, target_install_id, "quarantine", null, null, "zig-server", created_at, details_json);
+
+    const result_json = try quarantineResultJsonAlloc(allocator, app_id, target_install_id, reason);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
 fn activeInstallDetailsAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) !?InstalledVersion {
     return installedVersionFromQueryAlloc(
         allocator,
@@ -2467,6 +2659,279 @@ fn freeInstalledVersion(allocator: std.mem.Allocator, version: InstalledVersion)
     allocator.free(version.install_id);
     allocator.free(version.version);
     allocator.free(version.status);
+}
+
+const InstallReportDetails = struct {
+    report_id: []u8,
+    status: []u8,
+};
+
+fn freeInstallReportDetails(allocator: std.mem.Allocator, report: InstallReportDetails) void {
+    allocator.free(report.report_id);
+    allocator.free(report.status);
+}
+
+fn installedVersionByInstallIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, install_id: []const u8) !?InstalledVersion {
+    return installedVersionFromQueryAlloc(
+        allocator,
+        db,
+        "SELECT install_id, version, data_version, status FROM app_versions WHERE app_id = ? AND install_id = ?",
+        app_id,
+        install_id,
+    );
+}
+
+fn latestInstallReportAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, install_id: []const u8) !?InstallReportDetails {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT report_id, status FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, install_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const report_id = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+    errdefer allocator.free(report_id);
+    const status = try allocator.dupe(u8, sqliteColumnText(statement, 1));
+    errdefer allocator.free(status);
+    return .{ .report_id = report_id, .status = status };
+}
+
+fn packageFilesForInstallAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, install_id: []const u8) ![]PackageFile {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT path, COALESCE(content_text, ''), content_hash FROM app_files WHERE install_id = ? ORDER BY path",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, install_id);
+
+    var files: std.ArrayList(PackageFile) = .empty;
+    errdefer {
+        for (files.items) |file| {
+            allocator.free(file.path);
+            allocator.free(file.content);
+            allocator.free(file.content_hash);
+        }
+        files.deinit(allocator);
+    }
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const path = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+        errdefer allocator.free(path);
+        const content = try allocator.dupe(u8, sqliteColumnText(statement, 1));
+        errdefer allocator.free(content);
+        const content_hash = try allocator.dupe(u8, sqliteColumnText(statement, 2));
+        errdefer allocator.free(content_hash);
+        try files.append(allocator, .{ .path = path, .content = content, .content_hash = content_hash });
+    }
+    return files.toOwnedSlice(allocator);
+}
+
+fn freeOwnedPackageFiles(allocator: std.mem.Allocator, files: []PackageFile) void {
+    for (files) |file| {
+        allocator.free(file.path);
+        allocator.free(file.content);
+        allocator.free(file.content_hash);
+    }
+    allocator.free(files);
+}
+
+fn appExists(db: *sqlite.sqlite3, app_id: []const u8) !bool {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT 1 FROM apps WHERE id = ? AND status != 'uninstalled' LIMIT 1", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
+fn installBelongsToApp(db: *sqlite.sqlite3, app_id: []const u8, install_id: []const u8) !bool {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT 1 FROM app_versions WHERE app_id = ? AND install_id = ? LIMIT 1", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, install_id);
+    return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
+fn markAllAppVersionsStatus(db: *sqlite.sqlite3, app_id: []const u8, status: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "UPDATE app_versions SET status = ? WHERE app_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, status);
+    bindText(statement, 2, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn markAppUninstalled(db: *sqlite.sqlite3, app_id: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE apps SET status = 'uninstalled', active_install_id = NULL, active_version = NULL, updated_at = datetime('now') WHERE id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn markAppStatus(db: *sqlite.sqlite3, app_id: []const u8, status: []const u8, updated_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "UPDATE apps SET status = ?, updated_at = ? WHERE id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, status);
+    bindText(statement, 2, updated_at);
+    bindText(statement, 3, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn approveInstallPermissions(db: *sqlite.sqlite3, install_id: []const u8, approved_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE app_permissions SET approved = 1, approved_at = ?, reason = 'approved update' WHERE install_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, approved_at);
+    bindText(statement, 2, install_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn updateInstallReportApproved(db: *sqlite.sqlite3, allocator: std.mem.Allocator, report_id: []const u8, approved_at: []const u8) !void {
+    const permissions_json = try approvalPermissionsJsonAlloc(allocator, approved_at);
+    defer allocator.free(permissions_json);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, permissions_json);
+    bindText(statement, 2, report_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertLifecycleInstallationEvent(
+    db: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    install_id: []const u8,
+    action: []const u8,
+    previous_install_id: ?[]const u8,
+    report_id: ?[]const u8,
+    actor: []const u8,
+    created_at: []const u8,
+    details_json: []const u8,
+) !void {
+    const event_id = try randomDbIdAlloc(allocator, db, "install_event_");
+    defer allocator.free(event_id);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, event_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, install_id);
+    bindText(statement, 4, action);
+    bindNullableText(statement, 5, previous_install_id);
+    bindText(statement, 6, actor);
+    bindNullableText(statement, 7, report_id);
+    bindText(statement, 8, created_at);
+    bindText(statement, 9, details_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn uninstallDetailsJsonAlloc(allocator: std.mem.Allocator, snapshot_id: ?[]const u8, cleared_storage_keys: i64) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"snapshotId\":");
+    try appendJsonNullableString(allocator, &out, snapshot_id);
+    try out.writer.print(",\"clearedStorageKeys\":{d}}}", .{cleared_storage_keys});
+    return out.toOwnedSlice();
+}
+
+fn uninstallResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, snapshot_id: ?[]const u8, cleared_storage_keys: i64) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"ok\":true,\"appId\":\"{s}\",\"status\":\"uninstalled\",\"snapshotId\":", .{escaped_app_id});
+    try appendJsonNullableString(allocator, &out, snapshot_id);
+    try out.writer.print(",\"clearedStorageKeys\":{d}}}", .{cleared_storage_keys});
+    return out.toOwnedSlice();
+}
+
+fn approvalPermissionsJsonAlloc(allocator: std.mem.Allocator, approved_at: []const u8) ![]u8 {
+    const escaped = try escapeJsonString(allocator, approved_at);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(allocator, "{{\"requiresUserApproval\":true,\"approvalGranted\":true,\"approvedAt\":\"{s}\"}}", .{escaped});
+}
+
+fn approvalDetailsJsonAlloc(allocator: std.mem.Allocator, previous_install_id: ?[]const u8, migration_runs: usize, approved_at: []const u8) ![]u8 {
+    const escaped_approved_at = try escapeJsonString(allocator, approved_at);
+    defer allocator.free(escaped_approved_at);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"approved\":true,\"previousInstallId\":");
+    try appendJsonNullableString(allocator, &out, previous_install_id);
+    try out.writer.print(",\"migrationRuns\":{d},\"approvedAt\":\"{s}\"}}", .{ migration_runs, escaped_approved_at });
+    return out.toOwnedSlice();
+}
+
+fn approveResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8, previous_install_id: ?[]const u8, migration_runs: usize) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, install_id);
+    defer allocator.free(escaped_install_id);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"status\":\"enabled\",\"previousInstallId\":", .{ escaped_app_id, escaped_install_id });
+    try appendJsonNullableString(allocator, &out, previous_install_id);
+    try out.writer.print(",\"migrationRuns\":{d}}}", .{migration_runs});
+    return out.toOwnedSlice();
+}
+
+fn quarantineDetailsJsonAlloc(allocator: std.mem.Allocator, reason: []const u8) ![]u8 {
+    const escaped_reason = try escapeJsonString(allocator, reason);
+    defer allocator.free(escaped_reason);
+    return std.fmt.allocPrint(allocator, "{{\"reason\":\"{s}\"}}", .{escaped_reason});
+}
+
+fn quarantineResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8, reason: []const u8) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, install_id);
+    defer allocator.free(escaped_install_id);
+    const escaped_reason = try escapeJsonString(allocator, reason);
+    defer allocator.free(escaped_reason);
+    return std.fmt.allocPrint(allocator, "{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"status\":\"quarantined\",\"reason\":\"{s}\"}}", .{ escaped_app_id, escaped_install_id, escaped_reason });
 }
 
 fn rollbackResultJsonAlloc(
