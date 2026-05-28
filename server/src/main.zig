@@ -1607,7 +1607,9 @@ fn installWebappPackage(
     defer allocator.free(security_json);
     const validation_json = try validationReportAlloc(allocator, &.{});
     defer allocator.free(validation_json);
-    const compatibility_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"runtimeVersion\":\"{s}\",\"appRuntimeVersion\":\"{s}\"}}", .{ runtime_version, app_runtime_version });
+    const allow_runtime_mismatch = allowRuntimeMismatch(allocator);
+    const compatibility_ok = runtimeVersionsCompatible(runtime_version, app_runtime_version) or allow_runtime_mismatch;
+    const compatibility_json = try runtimeCompatibilityJsonAlloc(allocator, app_runtime_version, compatibility_ok, allow_runtime_mismatch);
     defer allocator.free(compatibility_json);
     const smoke_test = try evaluateSmokeTestsAlloc(allocator, package_root, app_id);
     defer freeSmokeTestEvaluation(allocator, smoke_test);
@@ -1619,12 +1621,14 @@ fn installWebappPackage(
     defer if (previous_install_id) |previous| allocator.free(previous);
     const existing_data_version = try appDataVersion(db, app_id);
     const requires_approval = try packageAddsPermissions(db, permissions, previous_install_id);
-    const activate = activate_requested and !requires_approval and smoke_test.ok;
+    const activate = activate_requested and !requires_approval and smoke_test.ok and compatibility_ok;
     const blocked_by_smoke = !smoke_test.ok;
-    const version_status = if (activate) "enabled" else if (blocked_by_smoke) "quarantined" else "installed";
-    const app_status = if (activate or previous_install_id != null) "enabled" else if (blocked_by_smoke) "quarantined" else "disabled";
+    const blocked_by_compatibility = !compatibility_ok;
+    const blocked_by_failure = blocked_by_smoke or blocked_by_compatibility;
+    const version_status = if (activate) "enabled" else if (blocked_by_failure) "quarantined" else "installed";
+    const app_status = if (activate or previous_install_id != null) "enabled" else if (blocked_by_failure) "quarantined" else "disabled";
     const stored_data_version = if (activate or previous_install_id == null) data_version else existing_data_version orelse data_version;
-    const report_status = if (blocked_by_smoke) "failed" else if (requires_approval) "requires-approval" else "accepted";
+    const report_status = if (blocked_by_failure) "failed" else if (requires_approval) "requires-approval" else "accepted";
     const permissions_json = try permissionsReportJsonAlloc(allocator, permissions, activate, requires_approval, previous_install_id);
     defer allocator.free(permissions_json);
 
@@ -1649,8 +1653,9 @@ fn installWebappPackage(
         }
         try insertInstallationEvent(db, allocator, app_id, install_id, "activate", previous_install_id, report_id, created_at, "zig-server", "active");
         try activateInstalledApp(db, app_id, install_id, app_version, data_version, created_at);
-    } else if (blocked_by_smoke) {
-        try insertInstallationEvent(db, allocator, app_id, install_id, "quarantine", previous_install_id, report_id, created_at, "zig-server", "smoke-test failed");
+    } else if (blocked_by_failure) {
+        const reason = if (blocked_by_compatibility) "runtime compatibility failed" else "smoke-test failed";
+        try insertInstallationEvent(db, allocator, app_id, install_id, "quarantine", previous_install_id, report_id, created_at, "zig-server", reason);
     }
 
     const result_json = try installResultJsonAlloc(allocator, app_id, install_id, report_id, app_version, version_status, activate, requires_approval, hashes.content_hash);
@@ -1685,6 +1690,77 @@ fn installResultJsonAlloc(
         "{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"reportId\":\"{s}\",\"version\":\"{s}\",\"status\":\"{s}\",\"activated\":{},\"requiresUserApproval\":{},\"contentHash\":\"{s}\"}}",
         .{ escaped_app_id, escaped_install_id, escaped_report_id, escaped_version, version_status, activated, requires_approval, escaped_content_hash },
     );
+}
+
+fn runtimeCompatibilityJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_runtime_version: []const u8,
+    ok: bool,
+    allow_runtime_mismatch: bool,
+) ![]u8 {
+    const escaped_runtime = try escapeJsonString(allocator, runtime_version);
+    defer allocator.free(escaped_runtime);
+    const escaped_app_runtime = try escapeJsonString(allocator, app_runtime_version);
+    defer allocator.free(escaped_app_runtime);
+    if (ok) {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"ok\":true,\"runtimeVersion\":\"{s}\",\"appRuntimeVersion\":\"{s}\",\"allowRuntimeMismatch\":{}}}",
+            .{ escaped_runtime, escaped_app_runtime, allow_runtime_mismatch },
+        );
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":false,\"errorCode\":\"runtime_version_incompatible\",\"runtimeVersion\":\"{s}\",\"appRuntimeVersion\":\"{s}\",\"allowRuntimeMismatch\":{}}}",
+        .{ escaped_runtime, escaped_app_runtime, allow_runtime_mismatch },
+    );
+}
+
+const Semver = struct {
+    major: u64,
+    minor: u64,
+    patch: u64,
+};
+
+fn runtimeVersionsCompatible(host_version: []const u8, app_runtime_version: []const u8) bool {
+    const host = parseSemver(host_version) orelse return false;
+    const app = parseSemver(app_runtime_version) orelse return false;
+    return app.major == host.major and app.minor <= host.minor;
+}
+
+fn parseSemver(version: []const u8) ?Semver {
+    var parts = std.mem.splitScalar(u8, version, '.');
+    const major_text = parts.next() orelse return null;
+    const minor_text = parts.next() orelse return null;
+    const patch_raw = parts.next() orelse return null;
+    if (parts.next() != null) return null;
+    const patch_end = semverNumberPrefixLen(patch_raw);
+    if (patch_end == 0) return null;
+    return .{
+        .major = std.fmt.parseInt(u64, major_text, 10) catch return null,
+        .minor = std.fmt.parseInt(u64, minor_text, 10) catch return null,
+        .patch = std.fmt.parseInt(u64, patch_raw[0..patch_end], 10) catch return null,
+    };
+}
+
+fn semverNumberPrefixLen(value: []const u8) usize {
+    var index: usize = 0;
+    while (index < value.len and value[index] >= '0' and value[index] <= '9') {
+        index += 1;
+    }
+    if (index == value.len) return index;
+    if (value[index] == '-' or value[index] == '+') return index;
+    return 0;
+}
+
+fn allowRuntimeMismatch(allocator: std.mem.Allocator) bool {
+    const args = std.process.argsAlloc(allocator) catch return false;
+    defer std.process.argsFree(allocator, args);
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--allow-runtime-mismatch")) return true;
+        if (std.mem.startsWith(u8, arg, "--allow-runtime-mismatch=")) return true;
+    }
+    return false;
 }
 
 const InstalledVersion = struct {
