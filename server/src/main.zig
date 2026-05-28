@@ -98,6 +98,15 @@ fn handleCoreStep(allocator: std.mem.Allocator, stream: std.net.Stream, body: []
     };
     defer allocator.free(output);
 
+    const audit = coreAuditContextAlloc(allocator, body) catch null;
+    if (audit) |ctx| {
+        defer allocator.free(ctx.event_json);
+        defer if (ctx.app_id) |app_id| allocator.free(app_id);
+        recordCoreStep(allocator, ctx.app_id, null, ctx.event_json, output) catch |err| {
+            std.debug.print("core audit write failed: {}\n", .{err});
+        };
+    }
+
     return writeJson(stream, 200, output);
 }
 
@@ -146,6 +155,15 @@ fn handleBridge(
             return writeBridgeError(allocator, stream, id, "core_error", "core.step failed");
         };
         defer allocator.free(result_json);
+        const event_json = if (params.object.get("event")) |event_value|
+            try jsonValueAlloc(allocator, event_value)
+        else
+            try allocator.dupe(u8, "{}");
+        defer allocator.free(event_json);
+        const actual_session_id = session_id orelse "server-dev-session";
+        recordCoreStep(allocator, channel_app_id, actual_session_id, event_json, result_json) catch |err| {
+            std.debug.print("core audit write failed: {}\n", .{err});
+        };
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
@@ -690,6 +708,32 @@ fn coreStepAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     defer core_api.core_free(output);
 
     return allocator.dupe(u8, output.ptr[0..output.len]);
+}
+
+const CoreAuditContext = struct {
+    app_id: ?[]u8,
+    event_json: []u8,
+};
+
+fn coreAuditContextAlloc(allocator: std.mem.Allocator, body: []const u8) !CoreAuditContext {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return .{ .app_id = null, .event_json = try allocator.dupe(u8, body) };
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        return .{ .app_id = null, .event_json = try allocator.dupe(u8, body) };
+    }
+
+    const app_id = if (valueString(parsed.value.object.get("app"))) |app|
+        try allocator.dupe(u8, app)
+    else
+        null;
+    const event_json = if (parsed.value.object.get("event")) |event_value|
+        try jsonValueAlloc(allocator, event_value)
+    else
+        try allocator.dupe(u8, body);
+    return .{ .app_id = app_id, .event_json = event_json };
 }
 
 fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
@@ -1388,6 +1432,144 @@ fn ensureAppRecord(db: *sqlite.sqlite3, app_id: []const u8) !void {
     }
 }
 
+fn recordCoreStep(
+    allocator: std.mem.Allocator,
+    app_id: ?[]const u8,
+    session_id: ?[]const u8,
+    event_json: []const u8,
+    result_json: []const u8,
+) !void {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    if (app_id) |actual_app_id| {
+        try ensureAppRecord(db, actual_app_id);
+        if (session_id) |actual_session_id| {
+            try ensureRuntimeSession(db, actual_session_id, actual_app_id);
+        }
+    }
+
+    try execDb(db, "BEGIN IMMEDIATE;");
+    errdefer _ = sqlite.sqlite3_exec(db, "ROLLBACK;", null, null, null);
+
+    const event_id = try randomDbIdAlloc(allocator, db, "core_event_");
+    defer allocator.free(event_id);
+    const state_version_before = coreStateVersionBefore(result_json);
+    try insertCoreEvent(db, event_id, session_id, app_id, state_version_before, event_json);
+    try insertCoreActions(allocator, db, event_id, session_id, app_id, result_json);
+
+    try execDb(db, "COMMIT;");
+}
+
+fn insertCoreEvent(
+    db: *sqlite.sqlite3,
+    event_id: []const u8,
+    session_id: ?[]const u8,
+    app_id: ?[]const u8,
+    state_version_before: ?i64,
+    event_json: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at) VALUES (?, ?, ?, NULL, ?, ?, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, event_id);
+    bindNullableText(statement, 2, session_id);
+    bindNullableText(statement, 3, app_id);
+    bindNullableInt64(statement, 4, state_version_before);
+    bindText(statement, 5, event_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
+fn insertCoreActions(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    event_id: []const u8,
+    session_id: ?[]const u8,
+    app_id: ?[]const u8,
+    result_json: []const u8,
+) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, result_json, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const actions = parsed.value.object.get("actions") orelse return;
+    if (actions != .array) return;
+
+    for (actions.array.items) |action| {
+        const action_id = try randomDbIdAlloc(allocator, db, "core_action_");
+        defer allocator.free(action_id);
+        const action_json = try jsonValueAlloc(allocator, action);
+        defer allocator.free(action_json);
+        try insertCoreAction(db, action_id, event_id, session_id, app_id, action_json);
+    }
+}
+
+fn insertCoreAction(
+    db: *sqlite.sqlite3,
+    action_id: []const u8,
+    event_id: []const u8,
+    session_id: ?[]const u8,
+    app_id: ?[]const u8,
+    action_json: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, action_id);
+    bindText(statement, 2, event_id);
+    bindNullableText(statement, 3, session_id);
+    bindNullableText(statement, 4, app_id);
+    bindText(statement, 5, action_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
+fn coreStateVersionBefore(result_json: []const u8) ?i64 {
+    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, result_json, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const state_version = parsed.value.object.get("stateVersion") orelse return null;
+    if (state_version != .integer) return null;
+    if (state_version.integer <= 0) return 0;
+    return state_version.integer - 1;
+}
+
+fn randomDbIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, prefix: []const u8) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT lower(hex(randomblob(16)))", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) {
+        return error.StorageQueryFailed;
+    }
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, sqliteColumnText(statement, 0) });
+}
+
+fn execDb(db: *sqlite.sqlite3, sql: [*:0]const u8) !void {
+    if (sqlite.sqlite3_exec(db, sql, null, null, null) != sqlite.SQLITE_OK) {
+        return error.StorageWriteFailed;
+    }
+}
+
 fn auditControlCommand(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -1487,6 +1669,14 @@ fn bindText(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: []const u8) v
 fn bindNullableText(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: ?[]const u8) void {
     if (value) |actual| {
         bindText(statement, index, actual);
+        return;
+    }
+    _ = sqlite.sqlite3_bind_null(statement, index);
+}
+
+fn bindNullableInt64(statement: ?*sqlite.sqlite3_stmt, index: c_int, value: ?i64) void {
+    if (value) |actual| {
+        _ = sqlite.sqlite3_bind_int64(statement, index, actual);
         return;
     }
     _ = sqlite.sqlite3_bind_null(statement, index);
