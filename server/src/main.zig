@@ -970,6 +970,13 @@ const PackageHashes = struct {
     file_hashes_json: []u8,
 };
 
+const SmokeTestEvaluation = struct {
+    ok: bool,
+    status: []const u8,
+    result_json: []u8,
+    spec_json: []u8,
+};
+
 fn signWebappPackage(
     allocator: std.mem.Allocator,
     package_root: std.json.Value,
@@ -1051,8 +1058,8 @@ fn installWebappPackage(
     defer allocator.free(validation_json);
     const compatibility_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"runtimeVersion\":\"{s}\",\"appRuntimeVersion\":\"{s}\"}}", .{ runtime_version, app_runtime_version });
     defer allocator.free(compatibility_json);
-    const smoke_test_json = try smokeTestsReportJsonAlloc(allocator, package_root);
-    defer allocator.free(smoke_test_json);
+    const smoke_test = try evaluateSmokeTestsAlloc(allocator, package_root, app_id);
+    defer freeSmokeTestEvaluation(allocator, smoke_test);
 
     try execDb(db, "BEGIN IMMEDIATE");
     errdefer execDb(db, "ROLLBACK") catch {};
@@ -1061,11 +1068,12 @@ fn installWebappPackage(
     defer if (previous_install_id) |previous| allocator.free(previous);
     const existing_data_version = try appDataVersion(db, app_id);
     const requires_approval = try packageAddsPermissions(db, permissions, previous_install_id);
-    const activate = activate_requested and !requires_approval;
-    const version_status = if (activate) "enabled" else "installed";
-    const app_status = if (activate or previous_install_id != null) "enabled" else "disabled";
+    const activate = activate_requested and !requires_approval and smoke_test.ok;
+    const blocked_by_smoke = !smoke_test.ok;
+    const version_status = if (activate) "enabled" else if (blocked_by_smoke) "quarantined" else "installed";
+    const app_status = if (activate or previous_install_id != null) "enabled" else if (blocked_by_smoke) "quarantined" else "disabled";
     const stored_data_version = if (activate or previous_install_id == null) data_version else existing_data_version orelse data_version;
-    const report_status = if (requires_approval) "requires-approval" else "accepted";
+    const report_status = if (blocked_by_smoke) "failed" else if (requires_approval) "requires-approval" else "accepted";
     const permissions_json = try permissionsReportJsonAlloc(allocator, permissions, activate, requires_approval, previous_install_id);
     defer allocator.free(permissions_json);
 
@@ -1078,11 +1086,14 @@ fn installWebappPackage(
         try insertAppFile(db, install_id, file, created_at);
     }
     try insertAppPermissions(db, install_id, app_id, permissions, activate, created_at);
-    try insertInstallReport(db, report_id, app_id, install_id, report_status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, hashes.content_hash, created_at);
+    try insertInstallReport(db, report_id, app_id, install_id, report_status, validation_json, security_json, permissions_json, compatibility_json, smoke_test.result_json, hashes.content_hash, created_at);
+    try insertSmokeTestRun(db, allocator, app_id, smoke_test.status, smoke_test.spec_json, smoke_test.result_json, created_at);
     try insertInstallationEvent(db, allocator, app_id, install_id, "install", null, report_id, created_at, "zig-server", version_status);
     if (activate) {
         try insertInstallationEvent(db, allocator, app_id, install_id, "activate", previous_install_id, report_id, created_at, "zig-server", "active");
         try activateInstalledApp(db, app_id, install_id, app_version, data_version, created_at);
+    } else if (blocked_by_smoke) {
+        try insertInstallationEvent(db, allocator, app_id, install_id, "quarantine", previous_install_id, report_id, created_at, "zig-server", "smoke-test failed");
     }
 
     const result_json = try installResultJsonAlloc(allocator, app_id, install_id, report_id, app_version, version_status, activate, requires_approval, hashes.content_hash);
@@ -1351,14 +1362,206 @@ fn contentHashesDocumentJsonAlloc(allocator: std.mem.Allocator, hashes: PackageH
     );
 }
 
-fn smokeTestsReportJsonAlloc(allocator: std.mem.Allocator, package_root: std.json.Value) ![]u8 {
+fn evaluateSmokeTestsAlloc(allocator: std.mem.Allocator, package_root: std.json.Value, app_id: []const u8) !SmokeTestEvaluation {
     const files = package_root.object.get("files").?;
-    if (findPackageFile(files, "smoke-tests.json")) |smoke_tests| {
-        const escaped = try escapeJsonString(allocator, smoke_tests);
-        defer allocator.free(escaped);
-        return std.fmt.allocPrint(allocator, "{{\"status\":\"recorded\",\"source\":\"package\",\"smokeTestsJson\":\"{s}\"}}", .{escaped});
+    const smoke_tests = findPackageFile(files, "smoke-tests.json") orelse {
+        return .{
+            .ok = true,
+            .status = "not-run",
+            .result_json = try smokeResultJsonAlloc(allocator, app_id, true, "not-run", 0, 0, "[]", "[]"),
+            .spec_json = try allocator.dupe(u8, "[]"),
+        };
+    };
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, smoke_tests, .{}) catch {
+        return smokeInvalidResultAlloc(allocator, app_id, "package.invalid", "smoke-tests.json must parse as JSON");
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .array) {
+        return smokeInvalidResultAlloc(allocator, app_id, "invalid_smoke_shape", "smoke-tests.json must be an array");
     }
-    return allocator.dupe(u8, "{\"status\":\"not-run\",\"reason\":\"no smoke-tests.json\"}");
+
+    const html = findPackageFile(files, "index.html") orelse "";
+    const app_js = findPackageFile(files, "app.js") orelse "";
+    var dynamic_text: std.ArrayList([]const u8) = .empty;
+    defer dynamic_text.deinit(allocator);
+    var failures: std.io.Writer.Allocating = .init(allocator);
+    errdefer failures.deinit();
+    try failures.writer.writeAll("[");
+    var failure_count: usize = 0;
+    var assertions: usize = 0;
+
+    for (parsed.value.array.items) |test_value| {
+        if (test_value != .object) {
+            try appendSmokeFailure(allocator, &failures, &failure_count, "unnamed", "invalid_smoke_test", "message", "Smoke test must be an object");
+            continue;
+        }
+        const test_name = valueString(test_value.object.get("name")) orelse "unnamed";
+        if (test_value.object.get("steps")) |steps| {
+            if (steps != .array) {
+                try appendSmokeFailure(allocator, &failures, &failure_count, test_name, "invalid_smoke_steps", "message", "Smoke test steps must be an array");
+            } else {
+                assertions += steps.array.items.len;
+                for (steps.array.items) |step_value| {
+                    if (step_value != .object) continue;
+                    if (valueString(step_value.object.get("selector"))) |selector| {
+                        if (!try selectorExists(allocator, html, selector)) {
+                            try appendSmokeFailure(allocator, &failures, &failure_count, test_name, "selector.not_found", "selector", selector);
+                        }
+                    }
+                    const step_type = valueString(step_value.object.get("type")) orelse "";
+                    if ((std.mem.eql(u8, step_type, "fill") or std.mem.eql(u8, step_type, "select"))) {
+                        if (valueString(step_value.object.get("value"))) |value| {
+                            try dynamic_text.append(allocator, value);
+                        }
+                    }
+                }
+            }
+        }
+        if (test_value.object.get("expected")) |expected| {
+            if (expected != .object) {
+                try appendSmokeFailure(allocator, &failures, &failure_count, test_name, "invalid_smoke_expected", "message", "Smoke test expected must be an object");
+            } else {
+                assertions += expected.object.count();
+                if (expected.object.get("bridgeCallsInclude")) |methods| {
+                    if (methods == .array) {
+                        for (methods.array.items) |method_value| {
+                            const method = valueString(method_value) orelse continue;
+                            if (!try bridgeMethodReferenced(allocator, app_js, method)) {
+                                try appendSmokeFailure(allocator, &failures, &failure_count, test_name, "bridge.call_missing", "method", method);
+                            }
+                        }
+                    }
+                }
+                if (valueString(expected.object.get("textIncludes"))) |text| {
+                    if (!textCanAppear(html, dynamic_text.items, text)) {
+                        try appendSmokeFailure(allocator, &failures, &failure_count, test_name, "text.not_found", "text", text);
+                    }
+                }
+            }
+        }
+    }
+
+    try failures.writer.writeAll("]");
+    const failures_json = try failures.toOwnedSlice();
+    defer allocator.free(failures_json);
+    const spec_json = try allocator.dupe(u8, smoke_tests);
+    errdefer allocator.free(spec_json);
+    const ok = failure_count == 0;
+    return .{
+        .ok = ok,
+        .status = if (ok) "passed" else "failed",
+        .result_json = try smokeResultJsonAlloc(allocator, app_id, ok, if (ok) "passed" else "failed", parsed.value.array.items.len, assertions, failures_json, smoke_tests),
+        .spec_json = spec_json,
+    };
+}
+
+fn freeSmokeTestEvaluation(allocator: std.mem.Allocator, evaluation: SmokeTestEvaluation) void {
+    allocator.free(evaluation.result_json);
+    allocator.free(evaluation.spec_json);
+}
+
+fn smokeInvalidResultAlloc(allocator: std.mem.Allocator, app_id: []const u8, code: []const u8, message: []const u8) !SmokeTestEvaluation {
+    var failures: std.io.Writer.Allocating = .init(allocator);
+    errdefer failures.deinit();
+    try failures.writer.writeAll("[");
+    var failure_count: usize = 0;
+    try appendSmokeFailure(allocator, &failures, &failure_count, "smoke-tests.json", code, "message", message);
+    try failures.writer.writeAll("]");
+    const failures_json = try failures.toOwnedSlice();
+    defer allocator.free(failures_json);
+    return .{
+        .ok = false,
+        .status = "failed",
+        .result_json = try smokeResultJsonAlloc(allocator, app_id, false, "failed", 0, 0, failures_json, "[]"),
+        .spec_json = try allocator.dupe(u8, "[]"),
+    };
+}
+
+fn smokeResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    ok: bool,
+    status: []const u8,
+    total: usize,
+    assertions: usize,
+    failures_json: []const u8,
+    spec_json: []const u8,
+) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_status = try escapeJsonString(allocator, status);
+    defer allocator.free(escaped_status);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":{},\"status\":\"{s}\",\"appId\":\"{s}\",\"total\":{d},\"assertions\":{d},\"failures\":{s},\"spec\":{s}}}",
+        .{ ok, escaped_status, escaped_app_id, total, assertions, failures_json, spec_json },
+    );
+}
+
+fn appendSmokeFailure(
+    allocator: std.mem.Allocator,
+    out: *std.io.Writer.Allocating,
+    count: *usize,
+    test_name: []const u8,
+    code: []const u8,
+    detail_key: []const u8,
+    detail_value: []const u8,
+) !void {
+    if (count.* > 0) try out.writer.writeAll(",");
+    try out.writer.writeAll("{\"test\":");
+    try appendJsonString(allocator, out, test_name);
+    try out.writer.writeAll(",\"code\":");
+    try appendJsonString(allocator, out, code);
+    try out.writer.writeAll(",");
+    try appendJsonString(allocator, out, detail_key);
+    try out.writer.writeAll(":");
+    try appendJsonString(allocator, out, detail_value);
+    try out.writer.writeAll("}");
+    count.* += 1;
+}
+
+fn selectorExists(allocator: std.mem.Allocator, html: []const u8, selector: []const u8) !bool {
+    if (std.mem.startsWith(u8, selector, "#")) {
+        return htmlAttrValueExists(allocator, html, "id", selector[1..]);
+    }
+    if (std.mem.indexOf(u8, selector, "data-testid=")) |start| {
+        const value_start = start + "data-testid=".len;
+        if (value_start < selector.len and (selector[value_start] == '"' or selector[value_start] == '\'')) {
+            const quote = selector[value_start];
+            const actual_start = value_start + 1;
+            const actual_end = std.mem.indexOfScalarPos(u8, selector, actual_start, quote) orelse selector.len;
+            return htmlAttrValueExists(allocator, html, "data-testid", selector[actual_start..actual_end]);
+        }
+    }
+    return std.mem.indexOf(u8, html, selector) != null;
+}
+
+fn htmlAttrValueExists(allocator: std.mem.Allocator, html: []const u8, attr: []const u8, value: []const u8) !bool {
+    const double = try std.fmt.allocPrint(allocator, "{s}=\"{s}\"", .{ attr, value });
+    defer allocator.free(double);
+    if (std.mem.indexOf(u8, html, double) != null) return true;
+    const single = try std.fmt.allocPrint(allocator, "{s}='{s}'", .{ attr, value });
+    defer allocator.free(single);
+    return std.mem.indexOf(u8, html, single) != null;
+}
+
+fn bridgeMethodReferenced(allocator: std.mem.Allocator, app_js: []const u8, method: []const u8) !bool {
+    const double = try std.fmt.allocPrint(allocator, "\"{s}\"", .{method});
+    defer allocator.free(double);
+    if (std.mem.indexOf(u8, app_js, double) != null) return true;
+    const single = try std.fmt.allocPrint(allocator, "'{s}'", .{method});
+    defer allocator.free(single);
+    return std.mem.indexOf(u8, app_js, single) != null;
+}
+
+fn textCanAppear(html: []const u8, dynamic_text: []const []const u8, text: []const u8) bool {
+    if (std.mem.indexOf(u8, html, text) != null) return true;
+    for (dynamic_text) |value| {
+        if (std.mem.indexOf(u8, value, text) != null) return true;
+    }
+    return false;
 }
 
 fn permissionsReportJsonAlloc(
@@ -1578,6 +1781,61 @@ fn insertInstallReport(
     bindText(statement, 10, content_hash);
     bindText(statement, 11, created_at);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertSmokeTestRun(
+    db: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    smoke_status: []const u8,
+    spec_json: []const u8,
+    result_json: []const u8,
+    created_at: []const u8,
+) !void {
+    const micro_test_id = try std.fmt.allocPrint(allocator, "smoke:{s}", .{app_id});
+    defer allocator.free(micro_test_id);
+    const name = try std.fmt.allocPrint(allocator, "{s} bundled smoke tests", .{app_id});
+    defer allocator.free(name);
+
+    var micro_statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " ++
+            "ON CONFLICT(micro_test_id) DO UPDATE SET app_id = excluded.app_id, name = excluded.name, spec_json = excluded.spec_json, updated_at = excluded.updated_at",
+        -1,
+        &micro_statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(micro_statement);
+    bindText(micro_statement, 1, micro_test_id);
+    bindText(micro_statement, 2, app_id);
+    bindText(micro_statement, 3, name);
+    bindText(micro_statement, 4, spec_json);
+    bindText(micro_statement, 5, created_at);
+    bindText(micro_statement, 6, created_at);
+    if (sqlite.sqlite3_step(micro_statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+
+    const test_run_id = try randomDbIdAlloc(allocator, db, "testrun_");
+    defer allocator.free(test_run_id);
+    const run_status = if (std.mem.eql(u8, smoke_status, "failed")) "failed" else if (std.mem.eql(u8, smoke_status, "not-run")) "skipped" else "passed";
+    var run_statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO test_runs (test_run_id, micro_test_id, app_id, status, started_at, finished_at, result_json, diagnostics_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &run_statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(run_statement);
+    bindText(run_statement, 1, test_run_id);
+    bindText(run_statement, 2, micro_test_id);
+    bindText(run_statement, 3, app_id);
+    bindText(run_statement, 4, run_status);
+    bindText(run_statement, 5, created_at);
+    bindText(run_statement, 6, created_at);
+    bindText(run_statement, 7, result_json);
+    bindText(run_statement, 8, "{\"runner\":\"zig-server-static-smoke\"}");
+    if (sqlite.sqlite3_step(run_statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
 }
 
 fn insertInstallationEvent(
