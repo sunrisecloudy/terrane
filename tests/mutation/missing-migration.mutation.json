@@ -1,0 +1,8 @@
+{
+  "id": "missing-migration",
+  "expectedError": "migration_missing",
+  "description": "Increasing dataVersion requires a consecutive migration file.",
+  "manifestPatch": {
+    "dataVersion": 2
+  }
+}

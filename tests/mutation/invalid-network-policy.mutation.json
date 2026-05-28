@@ -1,0 +1,17 @@
+{
+  "id": "invalid-network-policy",
+  "expectedError": "invalid_network_origin",
+  "description": "Network policy origins must be HTTPS origins.",
+  "manifestPatch": {
+    "networkPolicy": {
+      "allow": [
+        {
+          "origin": "http://api.example.com",
+          "methods": [
+            "GET"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -47,6 +47,13 @@ async function runMutationFixture(fixture) {
     }
     return validatePackage(packageDir).errors.map((error) => error.code);
   }
+  if (fixture.manifestPatch) {
+    const packageDir = copyExample("notes-lite");
+    const manifestPath = path.join(packageDir, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, ...fixture.manifestPatch }, null, 2));
+    return validatePackage(packageDir).errors.map((error) => error.code);
+  }
   if (fixture.id === "missing-manifest-field") {
     const packageDir = copyExample("notes-lite");
     const manifestPath = path.join(packageDir, "manifest.json");

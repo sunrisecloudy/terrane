@@ -30,6 +30,9 @@
     "bridgeCall": {
       "type": "object"
     },
+    "manifestPatch": {
+      "type": "object"
+    },
     "files": {
       "type": "array"
     },
