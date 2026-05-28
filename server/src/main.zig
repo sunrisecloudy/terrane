@@ -6,6 +6,7 @@ const sqlite = @cImport({
 
 const max_request_bytes = 1024 * 1024;
 const runtime_version = "0.1.0";
+const signature_prefix = "native-ai-webapp/sig/v1";
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -68,6 +69,12 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/install")) {
         return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token);
+    }
+
+    if (std.mem.eql(u8, parsed.method, "POST") and
+        (std.mem.startsWith(u8, parsed.path, "/packages/") or std.mem.startsWith(u8, parsed.path, "/control/packages/")))
+    {
+        return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
@@ -410,6 +417,55 @@ fn handleWebappInstall(
     return writeControlOkRaw(allocator, stream, result_json);
 }
 
+fn handlePackageControlEndpoint(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    path: []const u8,
+    body: []const u8,
+    provided_token: ?[]const u8,
+) !void {
+    const tool = controlToolForPackagePath(path);
+    requireControlToken(allocator, provided_token) catch {
+        auditControlCommand(allocator, path, tool, "rejected", "control_auth_required", null, null);
+        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    };
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        auditControlCommand(allocator, path, tool, "rejected", "invalid_request", null, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Package control body must be valid JSON");
+    };
+    defer parsed.deinit();
+
+    const package_root = packageRootValue(parsed.value) orelse {
+        auditControlCommand(allocator, path, tool, "rejected", "invalid_request", body, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Package control request requires an inline package object");
+    };
+
+    if (std.mem.eql(u8, tool, "platform.validate_package") or std.mem.eql(u8, tool, "platform.run_policy_audit")) {
+        const result_json = try validateWebappPackageValue(allocator, package_root);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, path, tool, "accepted", null, body, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+
+    if (std.mem.eql(u8, tool, "platform.sign_webapp_package")) {
+        const trust_level = controlStringArg(parsed.value, "trustLevel") orelse "developer";
+        const result_json = signWebappPackage(allocator, package_root, trust_level) catch |err| switch (err) {
+            error.InvalidWebappPackage => {
+                auditControlCommand(allocator, path, tool, "rejected", "invalid_package", body, null);
+                return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, path, tool, "accepted", null, body, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+
+    auditControlCommand(allocator, path, tool, "rejected", "not_found", body, null);
+    return writeControlError(allocator, stream, 404, "not_found", "Package control route not found");
+}
+
 fn handleDbControlEndpoint(
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -552,6 +608,23 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.sign_webapp_package")) {
+        const package_root = (if (args) |args_value| packageRootValue(args_value) else null) orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Package signing requires an inline package object");
+        };
+        const trust_level = controlStringArg(args, "trustLevel") orelse "developer";
+        const result_json = signWebappPackage(allocator, package_root, trust_level) catch |err| switch (err) {
+            error.InvalidWebappPackage => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_package", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "platform.install_webapp_package")) {
         const package_root = (if (args) |args_value| packageRootValue(args_value) else null) orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -686,6 +759,13 @@ fn controlToolForDbPath(path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "/db/test-runs") or std.mem.eql(u8, path, "/control/db/test-runs")) return "db.query_test_runs";
     if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) return "db.export_debug_bundle";
     return "control.db";
+}
+
+fn controlToolForPackagePath(path: []const u8) []const u8 {
+    if (std.mem.eql(u8, path, "/packages/validate") or std.mem.eql(u8, path, "/control/packages/validate")) return "platform.validate_package";
+    if (std.mem.eql(u8, path, "/packages/sign") or std.mem.eql(u8, path, "/control/packages/sign")) return "platform.sign_webapp_package";
+    if (std.mem.eql(u8, path, "/packages/policy-audit") or std.mem.eql(u8, path, "/control/packages/policy-audit")) return "platform.run_policy_audit";
+    return "control.packages";
 }
 
 fn controlStringArg(args: ?std.json.Value, name: []const u8) ?[]const u8 {
@@ -887,7 +967,43 @@ const PackageHashes = struct {
     permissions_hash: []u8,
     policy_hash: []u8,
     file_records_json: []u8,
+    file_hashes_json: []u8,
 };
+
+fn signWebappPackage(
+    allocator: std.mem.Allocator,
+    package_root: std.json.Value,
+    trust_level: []const u8,
+) ![]u8 {
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(allocator);
+    try collectWebappPackageErrors(allocator, package_root, &errors);
+    if (errors.items.len > 0) return error.InvalidWebappPackage;
+
+    const manifest = package_root.object.get("manifest").?;
+    const permissions = manifest.object.get("permissions").?;
+    const files_value = package_root.object.get("files").?;
+    const actual_trust_level = if (isTrustLevel(trust_level)) trust_level else "developer";
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const signed_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(signed_at);
+    const manifest_json = try jsonValueAlloc(allocator, manifest);
+    defer allocator.free(manifest_json);
+    const package_files = try packageFilesAlloc(allocator, files_value);
+    defer freePackageFiles(allocator, package_files);
+    const hashes = try packageHashesAlloc(allocator, manifest, manifest_json, permissions, package_files);
+    defer freePackageHashes(allocator, hashes);
+    const signature_json = try serverSignatureJsonAlloc(allocator, manifest, actual_trust_level, hashes, signed_at);
+    defer allocator.free(signature_json);
+    const content_hashes_json = try contentHashesDocumentJsonAlloc(allocator, hashes);
+    defer allocator.free(content_hashes_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"signature\":{s},\"hashes\":{{\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\",\"permissionsHash\":\"{s}\",\"policyHash\":\"{s}\",\"fileHashes\":{s},\"fileRecords\":{s}}},\"contentHashesDocument\":{s}}}",
+        .{ signature_json, hashes.manifest_hash, hashes.content_hash, hashes.permissions_hash, hashes.policy_hash, hashes.file_hashes_json, hashes.file_records_json, content_hashes_json },
+    );
+}
 
 fn installWebappPackage(
     allocator: std.mem.Allocator,
@@ -925,7 +1041,7 @@ fn installWebappPackage(
     defer freePackageFiles(allocator, package_files);
     const hashes = try packageHashesAlloc(allocator, manifest, manifest_json, permissions, package_files);
     defer freePackageHashes(allocator, hashes);
-    const signature_json = try devSignatureJsonAlloc(allocator, manifest, actual_trust_level, hashes, created_at);
+    const signature_json = try serverSignatureJsonAlloc(allocator, manifest, actual_trust_level, hashes, created_at);
     defer allocator.free(signature_json);
     const content_hashes_json = try contentHashesDocumentJsonAlloc(allocator, hashes);
     defer allocator.free(content_hashes_json);
@@ -1058,22 +1174,32 @@ fn packageHashesAlloc(
     errdefer content_bytes.deinit();
     var records: std.io.Writer.Allocating = .init(allocator);
     errdefer records.deinit();
+    var file_hashes: std.io.Writer.Allocating = .init(allocator);
+    errdefer file_hashes.deinit();
     try records.writer.writeAll("[");
+    try file_hashes.writer.writeAll("{");
     for (files, 0..) |file, index| {
         try content_bytes.writer.print("{s}\n{s}\n", .{ file.path, file.content_hash });
         if (index > 0) try records.writer.writeAll(",");
+        if (index > 0) try file_hashes.writer.writeAll(",");
         try records.writer.writeAll("{\"path\":");
         try appendJsonString(allocator, &records, file.path);
         try records.writer.writeAll(",\"hash\":");
         try appendJsonString(allocator, &records, file.content_hash);
         try records.writer.writeAll("}");
+        try appendJsonString(allocator, &file_hashes, file.path);
+        try file_hashes.writer.writeAll(":");
+        try appendJsonString(allocator, &file_hashes, file.content_hash);
     }
     try records.writer.writeAll("]");
+    try file_hashes.writer.writeAll("}");
     const content_slice = try content_bytes.toOwnedSlice();
     defer allocator.free(content_slice);
     const content_hash = try sha256PrefixedAlloc(allocator, content_slice);
     errdefer allocator.free(content_hash);
     const file_records_json = try records.toOwnedSlice();
+    errdefer allocator.free(file_records_json);
+    const file_hashes_json = try file_hashes.toOwnedSlice();
 
     return .{
         .manifest_hash = manifest_hash,
@@ -1081,6 +1207,7 @@ fn packageHashesAlloc(
         .permissions_hash = permissions_hash,
         .policy_hash = policy_hash,
         .file_records_json = file_records_json,
+        .file_hashes_json = file_hashes_json,
     };
 }
 
@@ -1090,6 +1217,7 @@ fn freePackageHashes(allocator: std.mem.Allocator, hashes: PackageHashes) void {
     allocator.free(hashes.permissions_hash);
     allocator.free(hashes.policy_hash);
     allocator.free(hashes.file_records_json);
+    allocator.free(hashes.file_hashes_json);
 }
 
 fn permissionsArrayJsonAlloc(allocator: std.mem.Allocator, permissions: std.json.Value) ![]u8 {
@@ -1132,13 +1260,24 @@ fn policyJsonAlloc(allocator: std.mem.Allocator, manifest: std.json.Value) ![]u8
     );
 }
 
-fn devSignatureJsonAlloc(
+fn serverSignatureJsonAlloc(
     allocator: std.mem.Allocator,
     manifest: std.json.Value,
     trust_level: []const u8,
     hashes: PackageHashes,
     signed_at: []const u8,
 ) ![]u8 {
+    const key_pair = try serverSigningKeyPair(allocator);
+    const public_key_bytes = key_pair.public_key.toBytes();
+    const key_id = try serverSigningKeyIdAlloc(allocator, &public_key_bytes);
+    defer allocator.free(key_id);
+    const payload = try signaturePayloadAlloc(allocator, manifest, trust_level, key_id, hashes, signed_at);
+    defer allocator.free(payload);
+    const signature = try key_pair.sign(payload, null);
+    const signature_bytes = signature.toBytes();
+    const signature_b64 = try base64Alloc(allocator, &signature_bytes);
+    defer allocator.free(signature_b64);
+
     const app_id = valueString(manifest.object.get("id")).?;
     const version = valueString(manifest.object.get("version")).?;
     const app_runtime_version = valueString(manifest.object.get("runtimeVersion")).?;
@@ -1151,11 +1290,57 @@ fn devSignatureJsonAlloc(
     defer allocator.free(escaped_runtime_version);
     const escaped_trust_level = try escapeJsonString(allocator, trust_level);
     defer allocator.free(escaped_trust_level);
+    const escaped_key_id = try escapeJsonString(allocator, key_id);
+    defer allocator.free(escaped_key_id);
+    const escaped_signature = try escapeJsonString(allocator, signature_b64);
+    defer allocator.free(escaped_signature);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"appId\":\"{s}\",\"appVersion\":\"{s}\",\"dataVersion\":{d},\"runtimeVersion\":\"{s}\",\"trustLevel\":\"{s}\",\"algorithm\":\"none-dev\",\"keyId\":\"zig-server-dev\",\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\",\"permissionsHash\":\"{s}\",\"policyHash\":\"{s}\",\"signedAt\":\"{s}\",\"signedBy\":\"zig-server\",\"signature\":\"none-dev\"}}",
-        .{ escaped_app_id, escaped_version, data_version, escaped_runtime_version, escaped_trust_level, hashes.manifest_hash, hashes.content_hash, hashes.permissions_hash, hashes.policy_hash, signed_at },
+        "{{\"appId\":\"{s}\",\"appVersion\":\"{s}\",\"dataVersion\":{d},\"runtimeVersion\":\"{s}\",\"trustLevel\":\"{s}\",\"algorithm\":\"ed25519\",\"keyId\":\"{s}\",\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\",\"permissionsHash\":\"{s}\",\"policyHash\":\"{s}\",\"signedAt\":\"{s}\",\"signedBy\":\"zig-server\",\"signature\":\"{s}\"}}",
+        .{ escaped_app_id, escaped_version, data_version, escaped_runtime_version, escaped_trust_level, escaped_key_id, hashes.manifest_hash, hashes.content_hash, hashes.permissions_hash, hashes.policy_hash, signed_at, escaped_signature },
     );
+}
+
+fn signaturePayloadAlloc(
+    allocator: std.mem.Allocator,
+    manifest: std.json.Value,
+    trust_level: []const u8,
+    key_id: []const u8,
+    hashes: PackageHashes,
+    signed_at: []const u8,
+) ![]u8 {
+    const app_id = valueString(manifest.object.get("id")).?;
+    const version = valueString(manifest.object.get("version")).?;
+    const app_runtime_version = valueString(manifest.object.get("runtimeVersion")).?;
+    const data_version = manifest.object.get("dataVersion").?.integer;
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n{s}\n{s}\n{d}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}",
+        .{ signature_prefix, app_id, version, data_version, app_runtime_version, trust_level, key_id, hashes.manifest_hash, hashes.content_hash, hashes.permissions_hash, hashes.policy_hash, signed_at },
+    );
+}
+
+fn serverSigningKeyPair(allocator: std.mem.Allocator) !std.crypto.sign.Ed25519.KeyPair {
+    const seed_source = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_SIGNING_SEED") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, "native-ai-zig-server-dev-signing-key-v0.4"),
+        else => return err,
+    };
+    defer allocator.free(seed_source);
+    var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(seed_source, &seed, .{});
+    return std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+}
+
+fn serverSigningKeyIdAlloc(allocator: std.mem.Allocator, public_key: []const u8) ![]u8 {
+    const public_hash = try sha256HexAlloc(allocator, public_key);
+    defer allocator.free(public_hash);
+    return std.fmt.allocPrint(allocator, "platform-host:zig-server:{s}", .{public_hash[0..16]});
+}
+
+fn base64Alloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const output = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(input.len));
+    _ = std.base64.standard.Encoder.encode(output, input);
+    return output;
 }
 
 fn contentHashesDocumentJsonAlloc(allocator: std.mem.Allocator, hashes: PackageHashes) ![]u8 {
