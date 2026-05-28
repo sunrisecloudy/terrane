@@ -43,7 +43,7 @@ The fake host does not bind any non-loopback address by default. `--bind 0.0.0.0
 
 - SQLite in-memory database.
 - All `db/sqlite/*.sql` migrations applied at startup.
-- Empty `apps`, `app_versions`, etc., except for any bundled apps preloaded via `--seed-bundled`.
+- Programmatic test startup begins with empty `apps`, `app_versions`, etc. The CLI dev server preloads bundled apps by default so the visual launcher exercises installed packages.
 
 ### 4.2 File-backed mode
 
@@ -125,7 +125,8 @@ Options:
   --port <n>               default 7878
   --bind <addr>            default 127.0.0.1
   --db-file <path>         use file-backed SQLite instead of :memory:
-  --seed-bundled           preload bundled example apps with trustLevel="bundled"
+  --seed-bundled           preload bundled example apps with trustLevel="bundled" (CLI default)
+  --no-seed-bundled        start the CLI with an empty app registry
   --allow-runtime-mismatch dev override for runtime version compat
   --allow-real-network     allow network.request to perform real fetches (dangerous)
   --token-file <path>      where to write the per-launch control token

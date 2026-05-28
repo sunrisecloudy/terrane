@@ -191,6 +191,30 @@ test("fake host writes a per-launch control token file", async () => {
   }
 });
 
+test("seeded bundled apps can use bridge permissions through HTTP", async () => {
+  const started = await startFakePlatformHost({ port: 0, controlToken: "test-token", seedBundled: true });
+  try {
+    const response = await fetch(`${started.url}/bridge`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-app-id": "notes-lite",
+        "x-mount-token": "test-mount-token",
+      },
+      body: JSON.stringify({
+        id: "req_storage",
+        method: "storage.get",
+        params: { key: "notes-lite:notes", defaultValue: [] },
+      }),
+    }).then((result) => result.json());
+
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.result.value, []);
+  } finally {
+    await started.close();
+  }
+});
+
 test("repeated control auth failures trigger a temporary ban and audit row", async () => {
   const started = await startFakePlatformHost({ port: 0, controlToken: "test-token" });
   try {

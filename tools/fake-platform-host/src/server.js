@@ -47,7 +47,7 @@ function parseArgs(args) {
     dbFile: ":memory:",
     controlToken: process.env.PLATFORM_CONTROL_TOKEN ?? generateControlToken(),
     tokenFile: controlTokenPath({ env: process.env }),
-    seedBundled: false,
+    seedBundled: true,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -58,6 +58,7 @@ function parseArgs(args) {
     else if (arg === "--token-file") options.tokenFile = args[++index];
     else if (arg === "--control-token") options.controlToken = args[++index];
     else if (arg === "--seed-bundled") options.seedBundled = true;
+    else if (arg === "--no-seed-bundled") options.seedBundled = false;
     else throw new Error(`Unknown option: ${arg}`);
   }
 
