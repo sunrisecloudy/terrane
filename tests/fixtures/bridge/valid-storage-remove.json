@@ -1,0 +1,14 @@
+{
+  "id": "req_storage_remove",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "storage.remove",
+  "params": {
+    "key": "notes-lite:notes"
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true
+  }
+}

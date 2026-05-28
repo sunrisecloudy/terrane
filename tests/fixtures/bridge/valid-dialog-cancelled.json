@@ -1,0 +1,28 @@
+{
+  "id": "req_dialog_cancelled",
+  "context": {
+    "appId": "file-transformer"
+  },
+  "preconditions": {
+    "dialogMocks": [
+      {
+        "dialogType": "openFile",
+        "response": {
+          "cancelled": true,
+          "files": []
+        }
+      }
+    ]
+  },
+  "method": "dialog.openFile",
+  "params": {
+    "accept": [
+      "text/plain"
+    ],
+    "multiple": false
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true
+  }
+}

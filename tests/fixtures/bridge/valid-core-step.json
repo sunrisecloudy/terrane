@@ -1,0 +1,21 @@
+{
+  "id": "req_core_step",
+  "context": {
+    "appId": "file-transformer"
+  },
+  "method": "core.step",
+  "params": {
+    "app": "file-transformer",
+    "event": {
+      "type": "TransformText",
+      "payload": {
+        "text": "Hello",
+        "mode": "lowercase"
+      }
+    }
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "req_network_policy_denied",
+  "context": {
+    "appId": "api-dashboard"
+  },
+  "method": "network.request",
+  "params": {
+    "url": "https://blocked.example.com/status",
+    "method": "GET",
+    "headers": {},
+    "body": null
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "network_policy_denied"
+  }
+}

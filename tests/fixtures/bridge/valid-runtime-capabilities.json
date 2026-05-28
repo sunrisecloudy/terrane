@@ -1,0 +1,12 @@
+{
+  "id": "req_runtime_capabilities",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "runtime.capabilities",
+  "params": {},
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true
+  }
+}

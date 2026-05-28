@@ -45,6 +45,48 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "networkMocks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "urlPattern",
+              "response"
+            ],
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "urlPattern": {
+                "type": "string",
+                "minLength": 1
+              },
+              "response": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "dialogMocks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dialogType",
+              "response"
+            ],
+            "properties": {
+              "dialogType": {
+                "type": "string"
+              },
+              "response": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     },

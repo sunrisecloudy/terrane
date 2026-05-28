@@ -14,8 +14,18 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
 
   const cases = [
     ["valid-storage-get.json", true, null],
+    ["valid-storage-set.json", true, null],
+    ["valid-storage-list.json", true, null],
+    ["valid-storage-remove.json", true, null],
     ["invalid-storage-prefix.json", false, "permission_denied"],
+    ["invalid-permission-denied.json", false, "permission_denied"],
     ["invalid-unknown-method.json", false, "unknown_method"],
+    ["valid-core-step.json", true, null],
+    ["valid-network-request-mocked.json", true, null],
+    ["valid-network-policy-denied.json", false, "network_policy_denied"],
+    ["valid-dialog-open-mocked.json", true, null],
+    ["valid-dialog-cancelled.json", true, null],
+    ["valid-runtime-capabilities.json", true, null],
     ["budget-exceeded-bridge-calls.json", false, "resource_budget_exceeded"],
   ];
 
@@ -24,7 +34,7 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
     try {
       const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, fileName), "utf8"));
       assertBridgeFixtureShape(fixture, fileName);
-      const pkg = readPackage(path.join(examplesDir, "notes-lite"));
+      const pkg = readPackage(path.join(examplesDir, fixture.context.appId));
       const manifest = {
         ...pkg.manifest,
         resourceBudget: {
@@ -44,6 +54,7 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
 
       const dispatcher = new BridgeDispatcher({ database: db, core: new CoreEngine() });
       const sessionId = db.createRuntimeSession({ appId: fixture.context.appId });
+      applyBridgeFixturePreconditions(db, fixture, sessionId);
       const { context, preconditions: _preconditions, expected: _expected, ...request } = fixture;
       const response = await dispatcher.dispatch(request, { appId: context.appId, sessionId });
       assert.equal(response.ok, fixture.expected?.ok ?? ok, fileName);
@@ -56,6 +67,27 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
     }
   }
 });
+
+function applyBridgeFixturePreconditions(db, fixture, sessionId) {
+  const appId = fixture.context.appId;
+  for (const mock of fixture.preconditions?.networkMocks ?? []) {
+    db.addNetworkMock({
+      sessionId,
+      appId,
+      method: mock.method ?? "GET",
+      urlPattern: mock.urlPattern,
+      response: mock.response,
+    });
+  }
+  for (const mock of fixture.preconditions?.dialogMocks ?? []) {
+    db.addDialogMock({
+      sessionId,
+      appId,
+      dialogType: mock.dialogType,
+      response: mock.response,
+    });
+  }
+}
 
 function assertBridgeFixtureShape(fixture, fileName) {
   assert.equal(typeof fixture.id, "string", fileName);

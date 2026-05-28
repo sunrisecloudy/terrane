@@ -1,0 +1,33 @@
+{
+  "id": "req_dialog_open",
+  "context": {
+    "appId": "file-transformer"
+  },
+  "preconditions": {
+    "dialogMocks": [
+      {
+        "dialogType": "openFile",
+        "response": {
+          "files": [
+            {
+              "name": "input.txt",
+              "mimeType": "text/plain",
+              "text": "Hello from fixture"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "method": "dialog.openFile",
+  "params": {
+    "accept": [
+      "text/plain"
+    ],
+    "multiple": false
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true
+  }
+}
