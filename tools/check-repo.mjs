@@ -247,6 +247,9 @@ function checkNativeStatic() {
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
+  const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
+  const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
+  const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
@@ -320,6 +323,26 @@ function checkNativeStatic() {
   if (windowsStorage.includes("appIdFor")) {
     throw new Error("Windows storage must not derive app id from storage key");
   }
+  const linuxRequired = [
+    [linuxHost, "webkit_security_manager_register_uri_scheme_as_secure"],
+    [linuxHost, "webkit_user_content_manager_register_script_message_handler"],
+    [linuxHost, "script-message-received::NativeAIPlatformBridge"],
+    [linuxHost, "app-runtime://runtime-web/index.html"],
+    [linuxHost, "sandbox_context_from_uri"],
+    [linuxBridge, "permission_for_bridge_method"],
+    [linuxBridge, "approved_permissions_contains"],
+    [linuxStorage, "request->context.app_id"],
+    [linuxStorage, "request->context.storage_prefix"],
+    [linuxStorage, "storage_prefix_failure"],
+  ];
+  for (const [source, snippet] of linuxRequired) {
+    if (!source.includes(snippet)) {
+      throw new Error(`Linux host missing ${snippet}`);
+    }
+  }
+  if (linuxStorage.includes("app_id_for_key")) {
+    throw new Error("Linux storage must not derive app id from storage key");
+  }
   const androidRequired = [
     [androidMain, "WebViewCompat.addWebMessageListener"],
     [androidMain, "https://appassets.androidplatform.net"],
@@ -335,7 +358,7 @@ function checkNativeStatic() {
       throw new Error(`Android host missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {

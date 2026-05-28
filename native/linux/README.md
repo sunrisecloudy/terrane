@@ -1,8 +1,8 @@
-# Linux Host Skeleton Target
+# Linux Host Target
 
-Codex should implement this as a C GTK4 app using WebKitGTK.
+Current implementation status: partial.
 
-Minimum files to create:
+The scaffold is a C GTK4/WebKitGTK host using JSON-GLib and SQLite. It follows the same bridge boundary as the fake host and native scaffolds:
 
 ```text
 meson.build
@@ -17,6 +17,16 @@ src/platform_network.c
 resources/runtime/
 resources/examples/
 ```
+
+Implemented now:
+
+- Creates a GTK application window with a WebKitGTK runtime view.
+- Registers `app-runtime` as a secure custom scheme and loads the runtime through it.
+- Receives runtime bridge payloads through `WebKitUserContentManager` script-message handling.
+- Derives `appId` and storage prefix from the WebView URI instead of request bodies.
+- Applies native-side permission checks before dispatching bridge calls.
+- Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
+- Returns structured `platform_unsupported` responses for dialogs, network, and Zig core until those services are wired.
 
 MVP acceptance:
 
