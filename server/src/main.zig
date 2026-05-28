@@ -67,6 +67,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return writeJson(stream, 200, "{\"ok\":true,\"examples\":[\"notes-lite\",\"task-workbench\",\"file-transformer\",\"api-dashboard\",\"core-replay-lab\"]}");
     }
 
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/webapps/examples.json")) {
+        return writeJson(stream, 200, "{\"ok\":true,\"examples\":[{\"id\":\"api-dashboard\",\"name\":\"API Dashboard\"},{\"id\":\"core-replay-lab\",\"name\":\"Core Replay Lab\"},{\"id\":\"file-transformer\",\"name\":\"File Transformer\"},{\"id\":\"notes-lite\",\"name\":\"Notes Lite\"},{\"id\":\"task-workbench\",\"name\":\"Task Workbench\"}]}");
+    }
+
     const examples_prefix = "/webapps/examples/";
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.startsWith(u8, parsed.path, examples_prefix)) {
         return handleExampleAsset(allocator, stream, parsed.path[examples_prefix.len..]);
