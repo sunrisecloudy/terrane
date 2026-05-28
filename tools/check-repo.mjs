@@ -211,7 +211,9 @@ function checkServerStatic() {
   const source = fs.readFileSync(path.join(repoRoot, "server", "src", "main.zig"), "utf8");
   const required = [
     "POST\") and std.mem.eql(u8, parsed.path, \"/bridge\")",
+    "POST\") and std.mem.eql(u8, parsed.path, \"/webapps/validate\")",
     "fn handleBridge",
+    "fn handleWebappValidate",
     "\"core.step\"",
     "\"runtime.capabilities\"",
     "\"bridge.unauthorized_channel\"",
@@ -222,7 +224,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities";
+  return "bridge=core.step,runtime.capabilities validate=package-policy";
 }
 
 function readJson(filePath) {

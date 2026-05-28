@@ -59,6 +59,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return handleBridge(allocator, stream, parsed.body, parsed.app_id);
     }
 
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/validate")) {
+        return handleWebappValidate(allocator, stream, parsed.body);
+    }
+
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/webapps/examples")) {
         return writeJson(stream, 200, "{\"ok\":true,\"examples\":[\"notes-lite\",\"task-workbench\",\"file-transformer\",\"api-dashboard\",\"core-replay-lab\"]}");
     }
@@ -124,6 +128,114 @@ fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []co
     }
 
     return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
+}
+
+fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, body: []const u8) !void {
+    const report = try validateWebappPackage(allocator, body);
+    defer allocator.free(report);
+    return writeJson(stream, 200, report);
+}
+
+fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(allocator);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        try errors.append(allocator, "invalid_package_json");
+        return validationReportAlloc(allocator, errors.items);
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) {
+        try errors.append(allocator, "invalid_package_shape");
+        return validationReportAlloc(allocator, errors.items);
+    }
+
+    const manifest = root.object.get("manifest") orelse {
+        try errors.append(allocator, "missing_manifest");
+        return validationReportAlloc(allocator, errors.items);
+    };
+    if (manifest != .object) {
+        try errors.append(allocator, "invalid_manifest");
+        return validationReportAlloc(allocator, errors.items);
+    }
+
+    const files = root.object.get("files") orelse {
+        try errors.append(allocator, "missing_files");
+        return validationReportAlloc(allocator, errors.items);
+    };
+    if (files != .array) {
+        try errors.append(allocator, "invalid_files");
+        return validationReportAlloc(allocator, errors.items);
+    }
+
+    const required_files = [_][]const u8{ "manifest.json", "index.html", "styles.css", "app.js" };
+    for (required_files) |file_path| {
+        if (findPackageFile(files, file_path) == null) {
+            try errors.append(allocator, "missing_required_file");
+        }
+    }
+
+    const required_manifest_fields = [_][]const u8{
+        "id",
+        "name",
+        "version",
+        "runtimeVersion",
+        "dataVersion",
+        "entry",
+        "description",
+        "permissions",
+        "storagePrefix",
+        "capabilities",
+        "resourceBudget",
+        "networkPolicy",
+    };
+    for (required_manifest_fields) |field| {
+        if (manifest.object.get(field) == null) {
+            try errors.append(allocator, "missing_manifest_field");
+        }
+    }
+
+    if (manifest.object.get("networkAllowlist") != null) {
+        try errors.append(allocator, "removed_manifest_field");
+    }
+    if (valueString(manifest.object.get("entry"))) |entry| {
+        if (!std.mem.eql(u8, entry, "index.html")) {
+            try errors.append(allocator, "invalid_entry");
+        }
+    }
+    if (valueString(manifest.object.get("id"))) |app_id| {
+        if (valueString(manifest.object.get("storagePrefix"))) |prefix| {
+            const expected = try std.fmt.allocPrint(allocator, "{s}:", .{app_id});
+            defer allocator.free(expected);
+            if (!std.mem.eql(u8, prefix, expected)) {
+                try errors.append(allocator, "invalid_storage_prefix");
+            }
+        }
+    }
+    if (manifest.object.get("dataVersion")) |data_version| {
+        if (data_version != .integer or data_version.integer < 1) {
+            try errors.append(allocator, "invalid_data_version");
+        }
+    }
+
+    if (findPackageFile(files, "index.html")) |html| {
+        if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
+        if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
+        if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
+    }
+    if (findPackageFile(files, "styles.css")) |css| {
+        if (containsAny(css, &.{ "@import", "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
+    }
+    if (findPackageFile(files, "app.js")) |js| {
+        if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
+        if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
+        if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
+        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "shell.exec", "native.exec" })) try errors.append(allocator, "forbidden_bridge_method");
+    }
+
+    return validationReportAlloc(allocator, errors.items);
 }
 
 fn coreStepAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
@@ -231,10 +343,46 @@ fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     );
 }
 
+fn validationReportAlloc(allocator: std.mem.Allocator, errors: []const []const u8) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const ok = errors.len == 0;
+    try out.writer.print(
+        "{{\"ok\":{},\"status\":\"{s}\",\"checks\":[{{\"name\":\"package-policy\",\"status\":\"{s}\"}}],\"errors\":[",
+        .{ ok, if (ok) "accepted" else "rejected", if (ok) "pass" else "fail" },
+    );
+    for (errors, 0..) |validation_error, index| {
+        if (index > 0) try out.writer.writeAll(",");
+        const escaped = try escapeJsonString(allocator, validation_error);
+        defer allocator.free(escaped);
+        try out.writer.print("\"{s}\"", .{escaped});
+    }
+    try out.writer.writeAll("],\"warnings\":[]}");
+    return out.toOwnedSlice();
+}
+
 fn valueString(value: ?std.json.Value) ?[]const u8 {
     const actual = value orelse return null;
     if (actual != .string) return null;
     return actual.string;
+}
+
+fn findPackageFile(files: std.json.Value, file_path: []const u8) ?[]const u8 {
+    if (files != .array) return null;
+    for (files.array.items) |file| {
+        if (file != .object) continue;
+        const path = valueString(file.object.get("path")) orelse continue;
+        if (!std.mem.eql(u8, path, file_path)) continue;
+        return valueString(file.object.get("content"));
+    }
+    return null;
+}
+
+fn containsAny(source: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.indexOf(u8, source, needle) != null) return true;
+    }
+    return false;
 }
 
 fn jsonValueAlloc(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
