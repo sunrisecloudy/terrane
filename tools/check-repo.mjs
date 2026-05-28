@@ -570,6 +570,7 @@ function checkNativeStatic() {
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
+  const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "zig_core_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
   const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
@@ -741,6 +742,8 @@ function checkNativeStatic() {
     [linuxBridge, "permission_for_bridge_method"],
     [linuxBridge, "approved_permissions_contains"],
     [linuxBridge, '"network.request"'],
+    [linuxBridge, "zig_core_bridge_init"],
+    [linuxBridge, "zig_core_bridge_is_available(&bridge->core)"],
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
@@ -761,8 +764,15 @@ function checkNativeStatic() {
   if (linuxNetwork.includes("platform_unsupported")) {
     throw new Error("Linux network.request must not remain a platform_unsupported stub");
   }
-  if (!linuxMeson.includes("libsoup-3.0")) {
-    throw new Error("Linux network bridge must link libsoup-3.0");
+  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_SO", "core.step app field does not match the channel-derived app id"]) {
+    if (!linuxCore.includes(snippet)) {
+      throw new Error(`Linux Zig core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["libsoup-3.0", "find_library('dl'", "dl_dep"]) {
+    if (!linuxMeson.includes(snippet)) {
+      throw new Error(`Linux native bridge missing Meson dependency ${snippet}`);
+    }
   }
   const androidRequired = [
     [androidMain, "WebViewCompat.addWebMessageListener"],
@@ -806,7 +816,7 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {

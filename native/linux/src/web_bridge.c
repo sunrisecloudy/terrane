@@ -19,7 +19,7 @@ static gboolean approved_permissions_contains(AppSandboxContext *context, const 
   return context->approved_permissions != NULL && g_hash_table_contains(context->approved_permissions, permission);
 }
 
-static JsonNode *capabilities_response(const BridgeRequest *request) {
+static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *request) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
   json_builder_set_member_name(builder, "platform");
@@ -37,11 +37,13 @@ static JsonNode *capabilities_response(const BridgeRequest *request) {
     json_builder_set_member_name(builder, enabled[index]);
     json_builder_add_boolean_value(builder, TRUE);
   }
-  const gchar *disabled[] = {"dialog.openFile", "dialog.saveFile", "core.step"};
+  const gchar *disabled[] = {"dialog.openFile", "dialog.saveFile"};
   for (gsize index = 0; index < G_N_ELEMENTS(disabled); ++index) {
     json_builder_set_member_name(builder, disabled[index]);
     json_builder_add_boolean_value(builder, FALSE);
   }
+  json_builder_set_member_name(builder, "core.step");
+  json_builder_add_boolean_value(builder, zig_core_bridge_is_available(&bridge->core));
   json_builder_end_object(builder);
   json_builder_set_member_name(builder, "limits");
   json_builder_begin_object(builder);
@@ -83,7 +85,7 @@ static JsonNode *dispatch(WebBridge *bridge, const BridgeRequest *request) {
     return zig_core_bridge_step(&bridge->core, request);
   }
   if (g_strcmp0(request->method, "runtime.capabilities") == 0) {
-    return capabilities_response(request);
+    return capabilities_response(bridge, request);
   }
   if (g_strcmp0(request->method, "app.log") == 0) {
     JsonBuilder *builder = json_builder_new();
@@ -99,6 +101,7 @@ static JsonNode *dispatch(WebBridge *bridge, const BridgeRequest *request) {
 WebBridge *web_bridge_new(const gchar *database_path) {
   WebBridge *bridge = g_new0(WebBridge, 1);
   bridge->storage = platform_storage_new(database_path);
+  zig_core_bridge_init(&bridge->core);
   return bridge;
 }
 
@@ -106,6 +109,7 @@ void web_bridge_free(WebBridge *bridge) {
   if (bridge == NULL) {
     return;
   }
+  zig_core_bridge_clear(&bridge->core);
   platform_storage_free(bridge->storage);
   g_free(bridge);
 }

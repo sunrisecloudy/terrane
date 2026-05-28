@@ -27,7 +27,9 @@ Implemented now:
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
-- Returns structured `platform_unsupported` responses for dialogs and Zig core until those services are wired.
+- Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first and then repo-local/install candidate paths.
+- Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
+- Returns structured `platform_unsupported` responses for dialogs until those services are wired.
 
 MVP acceptance:
 
