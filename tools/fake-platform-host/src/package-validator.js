@@ -42,6 +42,15 @@ const ALLOWED_METHODS = new Set([
   "app.log",
   "runtime.capabilities",
 ]);
+const MIGRATION_OPS = new Set([
+  "renameKey",
+  "setDefault",
+  "deleteKey",
+  "copyKey",
+  "transformEnum",
+  "moveStorageKey",
+  "deleteStorageKey",
+]);
 
 const JS_POLICY = [
   ["forbidden_eval", /\beval\s*\(/],
@@ -91,6 +100,7 @@ export function validatePackage(packageDir) {
   if (manifest) {
     validateBridgePermissions(manifest, bridgeMethods, errors);
     validateBudgets(manifest, files, errors);
+    validateMigrations(manifest, files, errors);
   }
 
   return validationResult(errors, warnings, manifest, files, bridgeMethods);
@@ -375,6 +385,86 @@ function validateBudgets(manifest, files, errors) {
       bytes: packageBytes,
       maxPackageBytes: budget.maxPackageBytes,
     }));
+  }
+}
+
+function validateMigrations(manifest, files, errors) {
+  const migrations = new Map(
+    [...files.entries()]
+      .filter(([filePath]) => filePath.startsWith("migrations/") && filePath.endsWith(".json"))
+      .map(([filePath, content]) => [filePath, parseMigration(filePath, content, errors)])
+      .filter(([, migration]) => migration),
+  );
+
+  for (let from = 1; from < manifest.dataVersion; from += 1) {
+    const filePath = `migrations/${from}_to_${from + 1}.json`;
+    if (!migrations.has(filePath)) {
+      errors.push(issue("migration_missing", "dataVersion increase requires a consecutive migration file", {
+        path: filePath,
+        dataVersion: manifest.dataVersion,
+      }));
+    }
+  }
+
+  for (const [filePath, migration] of migrations.entries()) {
+    const versionMatch = filePath.match(/^migrations\/(\d+)_to_(\d+)\.json$/);
+    if (!versionMatch) {
+      errors.push(issue("invalid_migration_filename", "Migration filename must be migrations/<from>_to_<to>.json", { path: filePath }));
+      continue;
+    }
+    const from = Number(versionMatch[1]);
+    const to = Number(versionMatch[2]);
+    if (migration.appId !== manifest.id) {
+      errors.push(issue("invalid_migration_app", "Migration appId must match manifest.id", { path: filePath, appId: migration.appId }));
+    }
+    if (migration.fromDataVersion !== from || migration.toDataVersion !== to || to !== from + 1) {
+      errors.push(issue("invalid_migration_version", "Migration filename and dataVersion fields must describe one consecutive step", {
+        path: filePath,
+        fromDataVersion: migration.fromDataVersion,
+        toDataVersion: migration.toDataVersion,
+      }));
+    }
+    validateMigrationSteps(manifest, filePath, migration, errors);
+  }
+}
+
+function parseMigration(filePath, content, errors) {
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    errors.push(issue("invalid_migration_json", "Migration file must parse as JSON", { path: filePath, message: error.message }));
+    return null;
+  }
+}
+
+function validateMigrationSteps(manifest, filePath, migration, errors) {
+  if (!Array.isArray(migration.steps)) {
+    errors.push(issue("invalid_migration", "Migration steps must be an array", { path: filePath }));
+    return;
+  }
+  for (const [index, step] of migration.steps.entries()) {
+    if (!step || typeof step !== "object" || Array.isArray(step)) {
+      errors.push(issue("invalid_migration", "Migration step must be an object", { path: filePath, index }));
+      continue;
+    }
+    if (!MIGRATION_OPS.has(step.op)) {
+      errors.push(issue("invalid_migration_op", "Migration step uses an unknown op", { path: filePath, index, op: step.op }));
+    }
+    const storageKeyFields = ["key", "keyPattern"];
+    if (["renameKey", "moveStorageKey", "copyKey"].includes(step.op)) {
+      storageKeyFields.push("from", "to");
+    }
+    for (const field of storageKeyFields) {
+      if (typeof step[field] === "string" && !step[field].startsWith(manifest.storagePrefix)) {
+        errors.push(issue("invalid_migration_prefix", "Migration storage keys must stay inside manifest.storagePrefix", {
+          path: filePath,
+          index,
+          field,
+          value: step[field],
+          storagePrefix: manifest.storagePrefix,
+        }));
+      }
+    }
   }
 }
 

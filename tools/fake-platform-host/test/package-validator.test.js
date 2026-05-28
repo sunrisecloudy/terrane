@@ -106,3 +106,43 @@ test("interactive HTML elements must declare data-testid", () => {
   assert.equal(result.ok, false);
   assert.equal(result.errors.some((error) => error.code === "missing_testid"), true);
 });
+
+test("dataVersion increases require consecutive migration files", () => {
+  const dir = copyExamplePackage("notes-lite");
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.dataVersion = 2;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "migration_missing"), true);
+});
+
+test("migration steps cannot escape the app storage prefix", () => {
+  const dir = copyExamplePackage("notes-lite");
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.dataVersion = 2;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  fs.mkdirSync(path.join(dir, "migrations"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "migrations", "1_to_2.json"),
+    JSON.stringify({
+      appId: "notes-lite",
+      fromDataVersion: 1,
+      toDataVersion: 2,
+      steps: [{ op: "renameKey", from: "notes-lite:notes", to: "other-app:notes" }],
+    }),
+  );
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "invalid_migration_prefix"), true);
+});
+
+function copyExamplePackage(name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
+  fs.cpSync(path.join(examplesDir, name), dir, { recursive: true });
+  return dir;
+}
