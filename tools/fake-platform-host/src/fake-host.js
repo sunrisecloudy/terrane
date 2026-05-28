@@ -497,6 +497,16 @@ export class FakePlatformHost {
         return this.handleControlSessionRoute(req, res, sessionRoute);
       }
 
+      const directRoute = parseDirectControlRoute(url.pathname);
+      if (directRoute) {
+        try {
+          this.requireControlToken(req);
+        } catch (error) {
+          return sendJson(res, 401, controlError(error));
+        }
+        return this.handleDirectControlRoute(req, res, directRoute);
+      }
+
       if (req.method === "POST" && url.pathname === "/control/command") {
         try {
           this.requireControlToken(req);
@@ -515,6 +525,19 @@ export class FakePlatformHost {
       return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Route not found", details: {} } });
     } catch (error) {
       return sendJson(res, 500, controlError(error));
+    }
+  }
+
+  async handleDirectControlRoute(req, res, route) {
+    if (req.method !== "POST") {
+      return sendJson(res, 404, controlError(new PlatformError("not_found", "Control route not found", {})));
+    }
+    try {
+      const body = await readBodyJson(req);
+      const result = await this.runControlCommand(route.tool, body);
+      return sendJson(res, 200, controlResponse(result));
+    } catch (error) {
+      return sendJson(res, 400, controlError(error));
     }
   }
 
@@ -698,6 +721,26 @@ function parseControlSessionRoute(pathname) {
     controlSessionId: decodeURIComponent(match[1]),
     subresource: match[2] ? decodeURIComponent(match[2]) : null,
   };
+}
+
+function parseDirectControlRoute(pathname) {
+  const normalized = pathname.startsWith("/control/")
+    ? pathname.replace(/^\/control/, "")
+    : pathname;
+  const tools = new Map([
+    ["/packages/validate", "platform.validate_package"],
+    ["/packages/sign", "platform.sign_webapp_package"],
+    ["/packages/policy-audit", "platform.run_policy_audit"],
+    ["/db/snapshot", "db.snapshot"],
+    ["/db/app-storage", "db.query_app_storage"],
+    ["/db/app-versions", "db.query_app_versions"],
+    ["/db/export-debug-bundle", "db.export_debug_bundle"],
+    ["/db/bridge-calls", "db.query_bridge_calls"],
+    ["/db/core-events", "db.query_core_events"],
+    ["/db/test-runs", "db.query_test_runs"],
+  ]);
+  const tool = tools.get(normalized);
+  return tool ? { tool } : null;
 }
 
 function parseSemver(version) {

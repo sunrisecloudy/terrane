@@ -39,6 +39,17 @@ test("http health and token-protected control command work", async () => {
     assert.equal(validate.ok, true);
     assert.equal(validate.result.ok, true);
 
+    const directValidate = await fetch(`${started.url}/packages/validate`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-token",
+      },
+      body: JSON.stringify({ packagePath: path.join(examplesDir, "notes-lite") }),
+    }).then((response) => response.json());
+    assert.equal(directValidate.ok, true);
+    assert.equal(directValidate.result.ok, true);
+
     const install = await fetch(`${started.url}/control/command`, {
       method: "POST",
       headers: {
@@ -89,6 +100,17 @@ test("http health and token-protected control command work", async () => {
     }).then((response) => response.json());
     assert.equal(ended.ok, true);
     assert.equal(ended.result.status, "ended");
+
+    const dbSnapshot = await fetch(`${started.url}/db/snapshot`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-token",
+      },
+      body: JSON.stringify({}),
+    }).then((response) => response.json());
+    assert.equal(dbSnapshot.ok, true);
+    assert.equal(Array.isArray(dbSnapshot.result.apps), true);
   } finally {
     await started.close();
   }
