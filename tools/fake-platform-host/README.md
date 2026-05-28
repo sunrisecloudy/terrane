@@ -14,6 +14,10 @@ Minimum behavior:
 
 It does not need to perfectly emulate WKWebView/WebView2/WebKitGTK. Native hosts still need platform smoke tests.
 
+## Control token
+
+When launched from `src/server.js`, the fake host generates a fresh 32-byte URL-safe control token and writes it to the documented `control.token` path unless `--token-file` is provided. Tests may pass `controlToken` explicitly, but checked-in plugin config must not contain a shared token.
+
 ## Browser-backed smoke tests
 
 `runtime.run_smoke_tests` accepts `runner: "browser"` to execute an installed app's `index.html`, `styles.css`, and `app.js` in headless Chrome. The runner injects the documented `AppRuntime.call` surface, sends bridge calls through the fake-host dispatcher, records bridge calls/errors, and drives the bundled `smoke-tests.json` click/fill/select steps against the real DOM.

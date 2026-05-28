@@ -257,10 +257,11 @@ function checkPluginMcp() {
       throw new Error(`${name} MCP script missing: ${path.relative(repoRoot, resolved)}`);
     }
   }
+  const tokenHelper = fs.readFileSync(path.join(repoRoot, "tools", "control-token.js"), "utf8");
   const mcpConfig = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "config.js"), "utf8");
   const mcpServer = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "server.js"), "utf8");
   for (const snippet of ["PLATFORM_CONTROL_TOKEN_FILE", "control.token", "Control token file not found", "DEFAULT_CONTROL_URL"]) {
-    if (!mcpConfig.includes(snippet)) {
+    if (!(mcpConfig.includes(snippet) || tokenHelper.includes(snippet))) {
       throw new Error(`codex MCP config missing token-file behavior: ${snippet}`);
     }
   }
@@ -272,6 +273,7 @@ function checkPluginMcp() {
 
 function checkFakeHostStatic() {
   const fakeHost = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "fake-host.js"), "utf8");
+  const fakeServer = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "server.js"), "utf8");
   const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "bridge-dispatcher.js"), "utf8");
   const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
   const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
@@ -296,13 +298,16 @@ function checkFakeHostStatic() {
     [browserRunner, "window.AppRuntime"],
     [browserRunner, "window.__smokeRuntime.calls"],
     [browserRunner, "dispatchBridge(request"],
+    [fakeServer, "generateControlToken"],
+    [fakeServer, "writeControlTokenFile"],
+    [fakeServer, "controlTokenPath"],
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {
       throw new Error(`fake-host browser smoke support missing ${snippet}`);
     }
   }
-  return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events";
+  return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events control-token=file";
 }
 
 function checkRuntimeStatic() {

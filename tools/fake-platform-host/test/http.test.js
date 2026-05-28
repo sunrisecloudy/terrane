@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { examplesDir } from "../src/paths.js";
@@ -159,6 +161,29 @@ test("http health and token-protected control command work", async () => {
       true,
     );
     assert.equal(auditRows.some((row) => row.tool === "db.snapshot" && row.path === "/db/snapshot" && row.decision === "accepted"), true);
+  } finally {
+    await started.close();
+  }
+});
+
+test("fake host writes a per-launch control token file", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-token-"));
+  const tokenFile = path.join(dir, "control.token");
+  const started = await startFakePlatformHost({ port: 0, tokenFile });
+  try {
+    const token = fs.readFileSync(tokenFile, "utf8").trim();
+    assert.equal(token, started.controlToken);
+    assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+
+    const health = await fetch(`${started.url}/control/command`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-platform-control-token": token,
+      },
+      body: JSON.stringify({ tool: "platform.health", args: {} }),
+    }).then((response) => response.json());
+    assert.equal(health.ok, true);
   } finally {
     await started.close();
   }

@@ -1,11 +1,13 @@
 import http from "node:http";
 import fs from "node:fs";
+import { controlTokenPath, generateControlToken, writeControlTokenFile } from "../../control-token.js";
 import { FakePlatformHost } from "./fake-host.js";
 
 export async function startFakePlatformHost(options = {}) {
+  const controlToken = options.controlToken ?? generateControlToken();
   const host = new FakePlatformHost({
     dbFile: options.dbFile ?? ":memory:",
-    controlToken: options.controlToken ?? "dev-token-change-me",
+    controlToken,
   });
 
   if (options.seedBundled) {
@@ -14,10 +16,15 @@ export async function startFakePlatformHost(options = {}) {
 
   const server = http.createServer((req, res) => host.handleHttp(req, res));
   await new Promise((resolve) => server.listen(options.port ?? 7878, options.bind ?? "127.0.0.1", resolve));
+  if (options.tokenFile) {
+    writeControlTokenFile(controlToken, options.tokenFile);
+  }
 
   return {
     host,
     server,
+    controlToken,
+    tokenFile: options.tokenFile ?? null,
     url: `http://${options.bind ?? "127.0.0.1"}:${server.address().port}`,
     close: async () => {
       await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -28,11 +35,9 @@ export async function startFakePlatformHost(options = {}) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const options = parseArgs(process.argv.slice(2));
-  if (options.tokenFile) {
-    fs.writeFileSync(options.tokenFile, options.controlToken, { mode: 0o600 });
-  }
   const started = await startFakePlatformHost(options);
   console.error(`fake-platform-host listening on ${started.url}`);
+  console.error(`control token file: ${started.tokenFile}`);
 }
 
 function parseArgs(args) {
@@ -40,7 +45,8 @@ function parseArgs(args) {
     port: 7878,
     bind: "127.0.0.1",
     dbFile: ":memory:",
-    controlToken: process.env.PLATFORM_CONTROL_TOKEN ?? "dev-token-change-me",
+    controlToken: process.env.PLATFORM_CONTROL_TOKEN ?? generateControlToken(),
+    tokenFile: controlTokenPath({ env: process.env }),
     seedBundled: false,
   };
 
