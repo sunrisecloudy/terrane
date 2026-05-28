@@ -11,8 +11,10 @@ let package = Package(
         .executable(name: "NativeAIHostMac", targets: ["NativeAIHostMac"])
     ],
     targets: [
+        .target(name: "CZigCoreBridge"),
         .executableTarget(
             name: "NativeAIHostMac",
+            dependencies: ["CZigCoreBridge"],
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]

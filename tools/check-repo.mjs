@@ -554,6 +554,9 @@ function checkServerStatic() {
 
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
+  const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "ZigCoreBridge.swift"), "utf8");
+  const macCoreShim = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
+  const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
@@ -579,7 +582,7 @@ function checkNativeStatic() {
     '"devMode": true',
     '"limits":',
     '"network.request": true',
-    '"core.step": false',
+    '"core.step": core.isAvailable',
     "struct AppSandboxContext",
     "struct BridgeEnvelope",
     "message.frameInfo.isMainFrame",
@@ -611,6 +614,27 @@ function checkNativeStatic() {
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
+  }
+  for (const snippet of [
+    "import CZigCoreBridge",
+    "NATIVE_AI_ZIG_CORE_DYLIB",
+    "RuntimeResourceLocator.repoRootURL()",
+    "native_ai_zig_core_step_json",
+    "native_ai_zig_core_free_output",
+    "core.step app field does not match the channel-derived app id",
+    "platform_unsupported",
+  ]) {
+    if (!macCore.includes(snippet)) {
+      throw new Error(`macOS core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
+    if (!macCoreShim.includes(snippet)) {
+      throw new Error(`macOS C Zig core shim missing ${snippet}`);
+    }
+  }
+  if (!macPackage.includes('.target(name: "CZigCoreBridge")') || !macPackage.includes('dependencies: ["CZigCoreBridge"]')) {
+    throw new Error("macOS package must include the C Zig core bridge target");
   }
   const forbiddenAppLogPermissionChecks = [
     [macBridge, '"network.request", "core.step", "app.log"'],
@@ -782,7 +806,7 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  return "macos.capabilities=schema-shaped storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {

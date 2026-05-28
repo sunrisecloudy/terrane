@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const module = b.createModule(.{
+    const static_module = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
@@ -12,11 +12,25 @@ pub fn build(b: *std.Build) void {
 
     const lib = b.addLibrary(.{
         .name = "zig_core",
-        .root_module = module,
+        .root_module = static_module,
         .linkage = .static,
     });
     lib.linkLibC();
     b.installArtifact(lib);
+
+    const dynamic_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const dylib = b.addLibrary(.{
+        .name = "zig_core",
+        .root_module = dynamic_module,
+        .linkage = .dynamic,
+    });
+    dylib.linkLibC();
+    b.installArtifact(dylib);
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{

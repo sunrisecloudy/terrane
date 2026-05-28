@@ -23,7 +23,8 @@ MVP acceptance:
 Current local verification command:
 
 ```sh
-zig test src/lib.zig -target aarch64-macos.15.0 -lc
+zig test -target aarch64-macos.15.0.0 -lc src/lib.zig
+zig build-lib -target aarch64-macos.15.0.0 src/lib.zig -dynamic -lc -femit-bin=zig-out/lib/libzig_core.dylib
 ```
 
 On this macOS 26 host, `zig build test` currently fails before evaluating

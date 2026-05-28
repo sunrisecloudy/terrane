@@ -97,7 +97,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "dialog.saveFile": true,
                     "notification.toast": true,
                     "network.request": true,
-                    "core.step": false,
+                    "core.step": core.isAvailable,
                     "runtime.capabilities": true,
                     "app.log": true
                 ],
