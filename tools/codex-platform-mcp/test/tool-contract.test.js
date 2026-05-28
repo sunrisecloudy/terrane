@@ -11,6 +11,8 @@ test("core micro-test and database tools are exposed", () => {
     "runtime.run_microtest",
     "runtime.bridge_calls",
     "runtime.replay_events",
+    "platform.migration_dry_run",
+    "platform.migration_apply",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",

@@ -103,6 +103,14 @@ export class FakePlatformHost {
         return this.database.quarantineWebapp(requiredArg(args, "appId"), args.installId ?? null, args.reason ?? "manual quarantine");
       case "platform.install_report":
         return this.database.installReport(requiredArg(args, "appId"), args.installId ?? null);
+      case "platform.create_snapshot":
+        return this.database.createSnapshot({ appId: requiredArg(args, "appId"), type: args.type ?? "manual", sessionId: args.sessionId ?? null });
+      case "platform.restore_snapshot":
+        return this.database.restoreSnapshot(requiredArg(args, "snapshotId"));
+      case "platform.migration_dry_run":
+        return this.database.runMigration({ migration: requiredArg(args, "migration"), mode: "dry-run" });
+      case "platform.migration_apply":
+        return this.database.runMigration({ migration: requiredArg(args, "migration"), mode: "apply" });
       case "platform.open_webapp":
         this.verifyInstalledApp(requiredArg(args, "appId"));
         return {

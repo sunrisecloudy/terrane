@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { sqliteMigrationsDir } from "./paths.js";
-import { id, nowIso, prettyJson } from "./util.js";
+import { canonicalJson, id, nowIso, prettyJson, sha256 } from "./util.js";
 
 export class PlatformDatabase {
   constructor({ dbFile = ":memory:", migrationsDir = sqliteMigrationsDir } = {}) {
@@ -248,6 +248,187 @@ export class PlatformDatabase {
     };
   }
 
+  createSnapshot({ appId, type = "manual", sessionId = null } = {}) {
+    const active = appId ? this.activeInstall(appId) : null;
+    const snapshot = {
+      appId,
+      activeInstallId: active?.installId ?? null,
+      activeVersion: active?.version ?? null,
+      dataVersion: active?.manifest?.dataVersion ?? null,
+      storage: appId ? this.queryAppStorage(appId) : [],
+      createdAt: nowIso(),
+    };
+    const snapshotId = id("snapshot");
+    this.run(
+      "INSERT INTO runtime_snapshots (snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      snapshotId,
+      sessionId,
+      appId,
+      active?.installId ?? null,
+      type,
+      prettyJson(snapshot),
+      `sha256:${sha256(canonicalJson(snapshot))}`,
+      snapshot.createdAt,
+    );
+    return { snapshotId, ...snapshot };
+  }
+
+  restoreSnapshot(snapshotId) {
+    const row = this.get("SELECT snapshot_json FROM runtime_snapshots WHERE snapshot_id = ?", snapshotId);
+    if (!row) {
+      throw new Error(`Snapshot not found: ${snapshotId}`);
+    }
+    const snapshot = JSON.parse(row.snapshot_json);
+    this.transaction(() => {
+      if (snapshot.appId) {
+        this.run("DELETE FROM app_storage WHERE app_id = ?", snapshot.appId);
+      }
+      for (const item of snapshot.storage ?? []) {
+        this.run(
+          "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+          item.app_id,
+          item.key,
+          item.value_json,
+          nowIso(),
+        );
+      }
+      if (snapshot.appId && snapshot.activeInstallId) {
+        this.run(
+          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+          snapshot.activeInstallId,
+          snapshot.activeVersion,
+          snapshot.dataVersion,
+          nowIso(),
+          snapshot.appId,
+        );
+      }
+    });
+    return { ok: true, snapshotId, appId: snapshot.appId };
+  }
+
+  runMigration({ migration, mode = "dry-run" }) {
+    if (!migration || typeof migration !== "object") {
+      throw new Error("Migration must be an object");
+    }
+    if (!["dry-run", "apply"].includes(mode)) {
+      throw new Error(`Unsupported migration mode: ${mode}`);
+    }
+    if (migration.toDataVersion !== migration.fromDataVersion + 1) {
+      throw new Error("Migration toDataVersion must equal fromDataVersion + 1");
+    }
+
+    const active = this.activeInstall(migration.appId);
+    if (!active) {
+      throw new Error(`App is not installed: ${migration.appId}`);
+    }
+
+    const migrationId = `migration_${migration.appId}_${migration.fromDataVersion}_to_${migration.toDataVersion}`;
+    const runId = id("mrun");
+    const startedAt = nowIso();
+    const preSnapshot = this.createSnapshot({ appId: migration.appId, type: "pre-migration" });
+    const preview = this.previewMigration(migration);
+
+    this.run(
+      "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      migrationId,
+      migration.appId,
+      migration.fromDataVersion,
+      migration.toDataVersion,
+      prettyJson(migration),
+      `sha256:${sha256(canonicalJson(migration))}`,
+      startedAt,
+    );
+
+    if (mode === "dry-run") {
+      this.run(
+        "INSERT INTO migration_runs (migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, report_json, started_at, finished_at) VALUES (?, ?, ?, ?, 'dry-run', 'passed', ?, ?, ?, ?)",
+        runId,
+        migrationId,
+        migration.appId,
+        active.installId,
+        preSnapshot.snapshotId,
+        prettyJson({ changedKeys: preview.changedKeys, operationCounts: preview.operationCounts }),
+        startedAt,
+        nowIso(),
+      );
+      return { runId, mode, status: "passed", snapshotId: preSnapshot.snapshotId, ...preview };
+    }
+
+    this.transaction(() => {
+      for (const change of preview.changes) {
+        if (change.delete) {
+          this.run("DELETE FROM app_storage WHERE app_id = ? AND key = ?", migration.appId, change.key);
+        } else {
+          this.run(
+            "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            migration.appId,
+            change.key,
+            prettyJson(change.value),
+            nowIso(),
+          );
+        }
+      }
+      this.run("UPDATE apps SET data_version = ?, updated_at = ? WHERE id = ?", migration.toDataVersion, nowIso(), migration.appId);
+      this.run(
+        "INSERT INTO migration_runs (migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, report_json, started_at, finished_at) VALUES (?, ?, ?, ?, 'apply', 'passed', ?, ?, ?, ?)",
+        runId,
+        migrationId,
+        migration.appId,
+        active.installId,
+        preSnapshot.snapshotId,
+        prettyJson({ changedKeys: preview.changedKeys, operationCounts: preview.operationCounts }),
+        startedAt,
+        nowIso(),
+      );
+    });
+
+    return { runId, mode, status: "passed", snapshotId: preSnapshot.snapshotId, ...preview };
+  }
+
+  previewMigration(migration) {
+    const rows = this.queryAppStorage(migration.appId);
+    const values = new Map(rows.map((row) => [row.key, JSON.parse(row.value_json)]));
+    const changes = [];
+    const operationCounts = {};
+
+    for (const step of migration.steps ?? []) {
+      operationCounts[step.op] = (operationCounts[step.op] ?? 0) + 1;
+      if (step.op === "setDefault") {
+        const key = requiredStepField(step, "key");
+        const field = requiredStepField(step, "to");
+        const next = setDefault(cloneJson(values.get(key)), field, step.value);
+        values.set(key, next);
+        changes.push({ key, value: next });
+      } else if (step.op === "renameKey" || step.op === "moveStorageKey") {
+        const from = requiredStepField(step, "from");
+        const to = requiredStepField(step, "to");
+        const value = cloneJson(values.get(from));
+        values.delete(from);
+        values.set(to, value);
+        changes.push({ key: from, delete: true });
+        changes.push({ key: to, value });
+      } else if (step.op === "deleteKey" || step.op === "deleteStorageKey") {
+        const key = requiredStepField(step, "key");
+        values.delete(key);
+        changes.push({ key, delete: true });
+      } else if (step.op === "copyKey") {
+        const from = requiredStepField(step, "from");
+        const to = requiredStepField(step, "to");
+        const value = cloneJson(values.get(from));
+        values.set(to, value);
+        changes.push({ key: to, value });
+      } else {
+        throw new Error(`Unsupported migration op: ${step.op}`);
+      }
+    }
+
+    return {
+      changedKeys: [...new Set(changes.map((change) => change.key))].sort(),
+      operationCounts,
+      changes,
+    };
+  }
+
   activeInstall(appId) {
     const row = this.get(
       "SELECT apps.id AS app_id, apps.active_install_id, apps.active_version, app_versions.manifest_json, app_versions.signature_json, app_versions.status FROM apps LEFT JOIN app_versions ON app_versions.install_id = apps.active_install_id WHERE apps.id = ?",
@@ -412,6 +593,9 @@ export class PlatformDatabase {
       app_storage: this.all("SELECT * FROM app_storage ORDER BY app_id, key"),
       bridge_calls: this.all("SELECT * FROM bridge_calls ORDER BY created_at"),
       runtime_sessions: this.all("SELECT * FROM runtime_sessions ORDER BY started_at"),
+      runtime_snapshots: this.all("SELECT * FROM runtime_snapshots ORDER BY created_at"),
+      app_migrations: this.all("SELECT * FROM app_migrations ORDER BY created_at"),
+      migration_runs: this.all("SELECT * FROM migration_runs ORDER BY started_at"),
       test_runs: this.all("SELECT * FROM test_runs ORDER BY started_at"),
     };
   }
@@ -485,4 +669,28 @@ function urlMatches(pattern, url) {
   if (pattern === url) return true;
   if (pattern.endsWith("*")) return url.startsWith(pattern.slice(0, -1));
   return false;
+}
+
+function requiredStepField(step, field) {
+  if (!(field in step)) {
+    throw new Error(`Migration step ${step.op} requires ${field}`);
+  }
+  return step[field];
+}
+
+function cloneJson(value) {
+  return value === undefined ? null : JSON.parse(JSON.stringify(value));
+}
+
+function setDefault(value, field, defaultValue) {
+  if (Array.isArray(value)) {
+    return value.map((item) => setDefault(item, field, defaultValue));
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (!(field in value)) {
+      return { ...value, [field]: defaultValue };
+    }
+    return value;
+  }
+  return value;
 }

@@ -35,6 +35,8 @@ export const TOOL_NAMES = [
   "platform.quarantine_webapp",
   "platform.create_snapshot",
   "platform.restore_snapshot",
+  "platform.migration_dry_run",
+  "platform.migration_apply",
   "platform.run_policy_audit",
   "platform.run_repair_loop",
   "runtime.capabilities",
