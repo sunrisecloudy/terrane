@@ -2470,15 +2470,22 @@ fn collectWebappPackageErrors(
         if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
         if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
         if (containsAny(html, &.{ "href=\"http://", "href=\"https://", "href='http://", "href='https://" })) try errors.append(allocator, "forbidden_remote_stylesheet");
+        if (containsAny(html, &.{ "http-equiv=\"refresh\"", "http-equiv='refresh'" })) try errors.append(allocator, "forbidden_meta_refresh");
+        if (containsAny(html, &.{ "<base" })) try errors.append(allocator, "forbidden_base_href");
+        if (containsAny(html, &.{ "action=\"http://", "action=\"https://", "action=\"/", "action='http://", "action='https://", "action='/" })) try errors.append(allocator, "forbidden_form_action");
         if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
         if (containsAny(css, &.{ "@import" })) try errors.append(allocator, "forbidden_css_import");
+        if (containsAny(css, &.{ "@font-face" })) try errors.append(allocator, "forbidden_external_font");
+        if (containsAny(css, &.{ "position:fixed", "position: fixed" })) try errors.append(allocator, "forbidden_fixed_position");
         if (containsAny(css, &.{ "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
     }
     if (findPackageFile(files, "app.js")) |js| {
         if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
+        if (containsAny(js, &.{ "navigator.serviceWorker", "serviceWorker.register" })) try errors.append(allocator, "forbidden_service_worker");
+        if (containsAny(js, &.{ "trustedTypes.createPolicy" })) try errors.append(allocator, "forbidden_trusted_types_policy");
         if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
         if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
         if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec" })) try errors.append(allocator, "forbidden_native_bridge");

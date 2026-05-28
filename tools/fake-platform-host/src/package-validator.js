@@ -56,6 +56,8 @@ const JS_POLICY = [
   ["forbidden_eval", /\beval\s*\(/],
   ["forbidden_function_constructor", /\bnew\s+Function\s*\(/],
   ["forbidden_dynamic_import", /\bimport\s*\(/],
+  ["forbidden_service_worker", /\bnavigator\.serviceWorker\b|\bserviceWorker\.register\b/],
+  ["forbidden_trusted_types_policy", /\btrustedTypes\.createPolicy\s*\(/],
   ["forbidden_network_api", /\bfetch\s*\(/],
   ["forbidden_network_api", /\bXMLHttpRequest\b/],
   ["forbidden_network_api", /\bWebSocket\b|\bEventSource\b/],
@@ -307,6 +309,21 @@ function validateHtml(source, errors) {
   if (/javascript:/i.test(source)) {
     errors.push(issue("forbidden_javascript_url", "javascript: URLs are forbidden", {}));
   }
+  if (/<meta\b[^>]*\bhttp-equiv\s*=\s*["']refresh["']/i.test(source)) {
+    errors.push(issue("forbidden_meta_refresh", "meta refresh is forbidden", {}));
+  }
+  for (const match of source.matchAll(/<base\b([^>]*)>/gi)) {
+    const href = htmlAttr(match[1] ?? "", "href") ?? "";
+    if (!href || /^(?:https?:|data:|javascript:|\/\/|\/)/i.test(href)) {
+      errors.push(issue("forbidden_base_href", "base href must not escape package-relative URLs", { href }));
+    }
+  }
+  for (const match of source.matchAll(/<form\b([^>]*)>/gi)) {
+    const action = htmlAttr(match[1] ?? "", "action");
+    if (action && action !== "#") {
+      errors.push(issue("forbidden_form_action", "generated app forms must not submit directly", { action }));
+    }
+  }
   for (const match of source.matchAll(/<link\b([^>]*)>/gi)) {
     const attrs = match[1] ?? "";
     const rel = htmlAttr(attrs, "rel") ?? "";
@@ -337,6 +354,12 @@ function htmlAttr(attrs, name) {
 function validateCss(source, errors) {
   if (/@import\b/i.test(source)) {
     errors.push(issue("forbidden_css_import", "remote CSS imports are forbidden", {}));
+  }
+  if (/@font-face\b/i.test(source)) {
+    errors.push(issue("forbidden_external_font", "external fonts are forbidden before v0.5", {}));
+  }
+  if (/\bposition\s*:\s*fixed\b/i.test(source)) {
+    errors.push(issue("forbidden_fixed_position", "generated app CSS must not escape the host viewport", {}));
   }
   if (/url\(\s*["']?(?:https?:|data:|\/)/i.test(source)) {
     errors.push(issue("forbidden_css_url", "CSS url() may only reference relative package files", {}));

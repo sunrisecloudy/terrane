@@ -24,6 +24,8 @@ test("forbidden JS source snippets are rejected with policy codes", () => {
     ["forbidden_storage_api", "localStorage.setItem('x', 'y')"],
     ["forbidden_native_bridge", "webkit.messageHandlers.bridge.postMessage({})"],
     ["forbidden_parent_access", "window.parent.postMessage({}, '*')"],
+    ["forbidden_service_worker", "navigator.serviceWorker.register('/sw.js')"],
+    ["forbidden_trusted_types_policy", "trustedTypes.createPolicy('app', {})"],
   ];
 
   for (const [code, source] of cases) {
@@ -127,6 +129,37 @@ test("remote stylesheet links and CSS imports are rejected", () => {
   const importResult = validatePackage(importStylesheet);
   assert.equal(importResult.ok, false);
   assert.equal(importResult.errors.some((error) => error.code === "forbidden_css_import"), true);
+});
+
+test("document policy rejects navigation and viewport escape hatches", () => {
+  const htmlCases = [
+    ["forbidden_meta_refresh", '<meta http-equiv="refresh" content="0;url=https://example.test">'],
+    ["forbidden_base_href", '<base href="https://example.test/">'],
+    ["forbidden_form_action", '<form action="https://example.test/submit"><button data-testid="submit-button">Send</button></form>'],
+  ];
+
+  for (const [code, snippet] of htmlCases) {
+    const dir = copyExamplePackage("notes-lite");
+    const indexPath = path.join(dir, "index.html");
+    fs.writeFileSync(indexPath, fs.readFileSync(indexPath, "utf8").replace("</head>", `${snippet}</head>`));
+    const result = validatePackage(dir);
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.some((error) => error.code === code), true, code);
+  }
+
+  const cssCases = [
+    ["forbidden_external_font", "@font-face { font-family: Bad; src: url(font.woff2); }"],
+    ["forbidden_fixed_position", ".escape { position: fixed; inset: 0; }"],
+  ];
+
+  for (const [code, snippet] of cssCases) {
+    const dir = copyExamplePackage("notes-lite");
+    const cssPath = path.join(dir, "styles.css");
+    fs.writeFileSync(cssPath, `${snippet}\n${fs.readFileSync(cssPath, "utf8")}`);
+    const result = validatePackage(dir);
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.some((error) => error.code === code), true, code);
+  }
 });
 
 test("dataVersion increases require consecutive migration files", () => {
