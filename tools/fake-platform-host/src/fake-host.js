@@ -17,12 +17,13 @@ export class FakePlatformHost {
     controlToken = "dev-token-change-me",
     runtimeVersion = "0.1.0",
     allowRuntimeMismatch = false,
+    capabilityOverrides = {},
     browserSmokeRunner = null,
     smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static",
   } = {}) {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
-    this.bridge = new BridgeDispatcher({ database: this.database, core: this.core, runtimeVersion, allowRuntimeMismatch });
+    this.bridge = new BridgeDispatcher({ database: this.database, core: this.core, runtimeVersion, allowRuntimeMismatch, capabilityOverrides });
     this.testRunner = new TestRunner({
       database: this.database,
       runControlCommand: (tool, args) => this.runControlCommand(tool, args),
@@ -39,6 +40,7 @@ export class FakePlatformHost {
     this.dbFile = dbFile;
     this.runtimeVersion = runtimeVersion;
     this.allowRuntimeMismatch = allowRuntimeMismatch;
+    this.capabilityOverrides = capabilityOverrides;
     this.auditControlSessionId = null;
     this.controlAuthFailures = new Map();
   }
@@ -53,8 +55,16 @@ export class FakePlatformHost {
       version: this.runtimeVersion,
       db: this.dbFile === ":memory:" ? "sqlite-mem" : "sqlite-file",
       keyId: this.keypair.keyId,
-      capabilities: fakeHostCapabilities(),
+      capabilities: this.capabilities(),
     };
+  }
+
+  capabilities(appId = null) {
+    return fakeHostCapabilities({
+      appId,
+      runtimeVersion: this.runtimeVersion,
+      featureOverrides: this.capabilityOverrides,
+    });
   }
 
   installPackage(packageDir, { trustLevel = "developer" } = {}) {
@@ -114,7 +124,7 @@ export class FakePlatformHost {
     if (!compatibility.ok && !this.allowRuntimeMismatch) {
       throw new PlatformError("runtime_version_incompatible", "App runtimeVersion is not compatible with the fake-host runtime", compatibility);
     }
-    const missingCapabilities = missingRequiredCapabilities(installed.manifest, fakeHostCapabilities(appId));
+    const missingCapabilities = missingRequiredCapabilities(installed.manifest, this.capabilities(appId));
     if (missingCapabilities.length > 0) {
       throw new PlatformError("capability_unavailable", "Required runtime capability is unavailable on fake-host", {
         appId,

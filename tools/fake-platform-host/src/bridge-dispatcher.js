@@ -15,11 +15,12 @@ const METHOD_PERMISSION = new Map([
 ]);
 
 export class BridgeDispatcher {
-  constructor({ database, core, runtimeVersion = "0.1.0", allowRuntimeMismatch = false }) {
+  constructor({ database, core, runtimeVersion = "0.1.0", allowRuntimeMismatch = false, capabilityOverrides = {} }) {
     this.database = database;
     this.core = core;
     this.runtimeVersion = runtimeVersion;
     this.allowRuntimeMismatch = allowRuntimeMismatch;
+    this.capabilityOverrides = capabilityOverrides;
     this.notifications = [];
     this.faults = [];
   }
@@ -96,6 +97,7 @@ export class BridgeDispatcher {
     this.assertRuntimeCompatibility(context);
     this.throwInjectedFault(method, context);
     this.assertPermission(method, context);
+    this.assertCapability(method, context);
     this.assertResourceBudget(method, params, context);
 
     if (method.startsWith("storage.")) {
@@ -156,10 +158,18 @@ export class BridgeDispatcher {
     }
 
     if (method === "runtime.capabilities") {
-      return fakeHostCapabilities(context.appId);
+      return this.capabilities(context.appId);
     }
 
     throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
+  }
+
+  capabilities(appId = null) {
+    return fakeHostCapabilities({
+      appId,
+      runtimeVersion: this.runtimeVersion,
+      featureOverrides: this.capabilityOverrides,
+    });
   }
 
   assertRuntimeCompatibility(context) {
@@ -187,6 +197,18 @@ export class BridgeDispatcher {
         appId: context.appId,
         method,
         requiredPermission: permission,
+      });
+    }
+  }
+
+  assertCapability(method, context) {
+    const features = this.capabilities(context.appId).features ?? {};
+    const capability = METHOD_PERMISSION.get(method) ?? method;
+    if (features[capability] === false) {
+      throw new PlatformError("capability_unavailable", `${capability} is unavailable on fake-host`, {
+        appId: context.appId,
+        method,
+        capability,
       });
     }
   }

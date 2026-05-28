@@ -117,3 +117,42 @@ test("mount gate rejects apps with missing required capabilities", async () => {
     host.close();
   }
 });
+
+test("missing optional capabilities mount but fail when called", async () => {
+  const host = new FakePlatformHost({ capabilityOverrides: { "dialog.saveFile": false } });
+  const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "optional-capability-package-"));
+  try {
+    fs.cpSync(path.join(examplesDir, "notes-lite"), packageDir, { recursive: true });
+    const manifestPath = path.join(packageDir, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.id = "optional-capability-app";
+    manifest.name = "Optional Capability App";
+    manifest.storagePrefix = "optional-capability-app:";
+    manifest.permissions = [...new Set([...manifest.permissions, "dialog.saveFile"])];
+    manifest.capabilities.optional = [...new Set([...(manifest.capabilities.optional ?? []), "dialog.saveFile"])];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const install = host.installPackage(packageDir);
+    assert.equal(install.status, "enabled");
+
+    const opened = await host.runControlCommand("platform.open_webapp", { appId: "optional-capability-app" });
+    assert.equal(opened.appId, "optional-capability-app");
+
+    const caps = await host.dispatchBridge(
+      { id: "req_caps", method: "runtime.capabilities", params: {} },
+      { appId: "optional-capability-app" },
+    );
+    assert.equal(caps.ok, true);
+    assert.equal(caps.result.features["dialog.saveFile"], false);
+
+    const response = await host.dispatchBridge(
+      { id: "req_save", method: "dialog.saveFile", params: {} },
+      { appId: "optional-capability-app" },
+    );
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "capability_unavailable");
+    assert.equal(response.error.details.capability, "dialog.saveFile");
+  } finally {
+    host.close();
+  }
+});
