@@ -1,15 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import { BrowserSmokeRunner } from "./browser-smoke-runner.js";
 import { PlatformError } from "./errors.js";
 import { repoRoot, resolveInside } from "./paths.js";
 
 export class TestRunner {
-  constructor({ database, runControlCommand = null }) {
+  constructor({ database, runControlCommand = null, browserSmokeRunner = null, smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static" }) {
     this.database = database;
     this.runControlCommand = runControlCommand;
+    this.browserSmokeRunner = browserSmokeRunner;
+    this.smokeRunner = smokeRunner;
   }
 
-  runSmokeTests(appId) {
+  async runSmokeTests(appId, { runner = this.smokeRunner } = {}) {
     const installed = this.database.activeInstallPackage(appId);
     if (!installed) {
       throw new PlatformError("app_not_installed", `App is not installed: ${appId}`, { appId });
@@ -20,12 +23,48 @@ export class TestRunner {
     }
 
     const tests = JSON.parse(smokeText);
-    const result = this.evaluateSmokeTests({
-      appId,
-      tests,
-      html: installed.files.get("index.html") ?? "",
-      appJs: installed.files.get("app.js") ?? "",
-    });
+    const normalizedRunner = normalizeSmokeRunner(runner);
+    let result;
+    if (normalizedRunner === "browser" || normalizedRunner === "auto") {
+      try {
+        const browserRunner = this.browserSmokeRunner ?? new BrowserSmokeRunner({ database: this.database });
+        result = await browserRunner.run({
+          appId,
+          installId: installed.installId,
+          tests,
+          files: installed.files,
+        });
+      } catch (error) {
+        if (normalizedRunner === "browser") {
+          throw error;
+        }
+        const fallback = this.evaluateSmokeTests({
+          appId,
+          tests,
+          html: installed.files.get("index.html") ?? "",
+          appJs: installed.files.get("app.js") ?? "",
+        });
+        result = {
+          ...fallback,
+          runner: "static",
+          fallback: {
+            from: "browser",
+            code: error.code ?? "browser_smoke_unavailable",
+            message: error.message,
+          },
+        };
+      }
+    } else {
+      result = {
+        ...this.evaluateSmokeTests({
+          appId,
+          tests,
+          html: installed.files.get("index.html") ?? "",
+          appJs: installed.files.get("app.js") ?? "",
+        }),
+        runner: "static",
+      };
+    }
 
     return this.database.recordTestRun({
       microTestId: `smoke:${appId}`,
@@ -234,6 +273,13 @@ export class TestRunner {
       };
     }
   }
+}
+
+function normalizeSmokeRunner(runner) {
+  if (runner === "browser" || runner === "auto" || runner === "static") {
+    return runner;
+  }
+  return "static";
 }
 
 function readMicrotest(microtestPath) {

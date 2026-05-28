@@ -17,6 +17,7 @@ await runCheck("examples.validate", checkExamplePackages);
 await runCheck("manifests.sync", checkManifestSync);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("plugin.mcp", checkPluginMcp);
+await runCheck("fake-host.static", checkFakeHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
 await runCheck("server.static", checkServerStatic);
 await runCheck("native.static", checkNativeStatic);
@@ -267,6 +268,31 @@ function checkPluginMcp() {
     }
   }
   return `servers=${servers.length}`;
+}
+
+function checkFakeHostStatic() {
+  const fakeHost = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "fake-host.js"), "utf8");
+  const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
+  const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
+  const required = [
+    [fakeHost, "new BrowserSmokeRunner"],
+    [fakeHost, 'runner: args.runner ?? args.mode'],
+    [testRunner, "NATIVE_AI_SMOKE_RUNNER"],
+    [testRunner, 'runner: "static"'],
+    [testRunner, 'from: "browser"'],
+    [browserRunner, "class BrowserSmokeRunner"],
+    [browserRunner, "Chrome DevTools"],
+    [browserRunner, "chrome-cdp"],
+    [browserRunner, "window.AppRuntime"],
+    [browserRunner, "window.__smokeRuntime.calls"],
+    [browserRunner, "dispatchBridge(request"],
+  ];
+  for (const [source, snippet] of required) {
+    if (!source.includes(snippet)) {
+      throw new Error(`fake-host browser smoke support missing ${snippet}`);
+    }
+  }
+  return "smoke=static,browser-cdp";
 }
 
 function checkRuntimeStatic() {

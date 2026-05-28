@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { BrowserSmokeRunner } from "../src/browser-smoke-runner.js";
+import { PlatformError } from "../src/errors.js";
 import { FakePlatformHost } from "../src/fake-host.js";
 import { examplesDir, repoRoot } from "../src/paths.js";
 
@@ -24,6 +26,77 @@ test("checked-in example smoke tests run and persist test_runs", async () => {
     host.close();
   }
 });
+
+test("runtime.run_smoke_tests can delegate to browser-backed runner", async () => {
+  let called = false;
+  const host = new FakePlatformHost({
+    browserSmokeRunner: {
+      async run({ appId, tests, files }) {
+        called = true;
+        assert.equal(appId, "notes-lite");
+        assert.equal(files.has("index.html"), true);
+        return {
+          ok: true,
+          appId,
+          total: tests.length,
+          assertions: 7,
+          failures: [],
+          runner: "browser",
+          browser: { engine: "stub" },
+          bridgeCalls: [{ method: "storage.set", id: "stub_req" }],
+        };
+      },
+    },
+  });
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    const run = await host.runControlCommand("runtime.run_smoke_tests", { appId: "notes-lite", runner: "browser" });
+    assert.equal(called, true);
+    assert.equal(run.status, "passed");
+    assert.equal(run.result.runner, "browser");
+
+    const persisted = await host.runControlCommand("db.query_test_runs", { appId: "notes-lite" });
+    assert.equal(persisted.some((row) => row.micro_test_id === "smoke:notes-lite" && row.status === "passed"), true);
+  } finally {
+    host.close();
+  }
+});
+
+test("runtime.run_smoke_tests auto mode falls back when browser is unavailable", async () => {
+  const host = new FakePlatformHost({
+    browserSmokeRunner: {
+      async run() {
+        throw new PlatformError("browser_smoke_unavailable", "No test browser", {});
+      },
+    },
+  });
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    const run = await host.runControlCommand("runtime.run_smoke_tests", { appId: "notes-lite", runner: "auto" });
+    assert.equal(run.status, "passed");
+    assert.equal(run.result.runner, "static");
+    assert.equal(run.result.fallback.code, "browser_smoke_unavailable");
+  } finally {
+    host.close();
+  }
+});
+
+test(
+  "runtime.run_smoke_tests browser mode executes notes-lite in a real browser",
+  { skip: process.env.NATIVE_AI_ENABLE_BROWSER_SMOKE_TESTS !== "1" || !BrowserSmokeRunner.isAvailable() },
+  async () => {
+    const host = new FakePlatformHost();
+    try {
+      host.installPackage(path.join(examplesDir, "notes-lite"));
+      const run = await host.runControlCommand("runtime.run_smoke_tests", { appId: "notes-lite", runner: "browser" });
+      assert.equal(run.status, "passed", JSON.stringify(run.result.failures));
+      assert.equal(run.result.runner, "browser");
+      assert.equal(run.result.bridgeCalls.some((call) => call.method === "storage.set"), true);
+    } finally {
+      host.close();
+    }
+  },
+);
 
 test("checked-in microtests execute setup, validate statically, and persist runs", async () => {
   const microtestsDir = path.join(repoRoot, "tests", "micro");

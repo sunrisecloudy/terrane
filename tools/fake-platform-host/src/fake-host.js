@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { BrowserSmokeRunner } from "./browser-smoke-runner.js";
 import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispatcher.js";
 import { fakeHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
@@ -11,13 +12,27 @@ import { TestRunner } from "./test-runner.js";
 import { canonicalJson, prettyJson, sha256 } from "./util.js";
 
 export class FakePlatformHost {
-  constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me", runtimeVersion = "0.1.0", allowRuntimeMismatch = false } = {}) {
+  constructor({
+    dbFile = ":memory:",
+    controlToken = "dev-token-change-me",
+    runtimeVersion = "0.1.0",
+    allowRuntimeMismatch = false,
+    browserSmokeRunner = null,
+    smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static",
+  } = {}) {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
     this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
     this.testRunner = new TestRunner({
       database: this.database,
       runControlCommand: (tool, args) => this.runControlCommand(tool, args),
+      browserSmokeRunner:
+        browserSmokeRunner ??
+        new BrowserSmokeRunner({
+          database: this.database,
+          dispatchBridge: (request, context) => this.dispatchBridge(request, context),
+        }),
+      smokeRunner,
     });
     this.keypair = createPlatformKeypair();
     this.controlToken = controlToken;
@@ -457,7 +472,7 @@ export class FakePlatformHost {
 
       let smokeOk = true;
       if (args.runSmokeTests !== false) {
-        const smoke = this.testRunner.runSmokeTests(appId);
+        const smoke = await this.testRunner.runSmokeTests(appId, { runner: args.smokeRunner ?? args.runner });
         testsRun.push(smoke.microTestId);
         smokeOk = smoke.status === "passed";
         steps.push(repairStep("runtime.run_smoke_tests", smokeOk ? "passed" : "failed", smoke));
@@ -672,7 +687,7 @@ export class FakePlatformHost {
       case "db.query_bridge_calls":
         return this.database.queryBridgeCalls(args.appId ?? null);
       case "runtime.run_smoke_tests":
-        return this.testRunner.runSmokeTests(requiredArg(args, "appId"));
+        return this.testRunner.runSmokeTests(requiredArg(args, "appId"), { runner: args.runner ?? args.mode });
       case "runtime.run_microtest":
         return this.testRunner.runMicroTest({ spec: args.spec, microtestPath: args.microtestPath });
       case "platform.run_platform_smoke":
