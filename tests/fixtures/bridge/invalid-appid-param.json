@@ -1,0 +1,20 @@
+{
+  "id": "req_appid_param",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "storage.get",
+  "params": {
+    "appId": "other-app",
+    "key": "notes-lite:notes",
+    "defaultValue": []
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "invalid_request",
+    "errorDetailsSubset": {
+      "field": "appId"
+    }
+  }
+}

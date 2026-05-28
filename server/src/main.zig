@@ -335,6 +335,9 @@ fn handleBridge(
     const id = valueString(root.object.get("id")).?;
     const method = valueString(root.object.get("method")).?;
     const params = root.object.get("params").?;
+    if (params.object.get("appId") != null) {
+        return writeBridgeError(allocator, stream, id, "invalid_request", "Bridge params must not include appId; app id is channel-derived");
+    }
     const params_json_for_audit = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json_for_audit);
 
@@ -5291,6 +5294,9 @@ fn callBridgeControl(
     const params = params_opt orelse empty_params.value;
     const params_json = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json);
+    if (params.object.get("appId") != null) {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "Bridge params must not include appId; app id is channel-derived");
+    }
 
     if (!isAllowedRuntimeBridgeMethod(method)) {
         if (isKnownUnsupportedBridgeMethod(method)) {

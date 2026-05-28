@@ -704,6 +704,11 @@
     if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) {
       return bridgeError("invalid_request", "Bridge request params must be an object");
     }
+    if ("appId" in request.params) {
+      return bridgeError("invalid_request", "Bridge params must not include appId; app id is channel-derived", {
+        field: "appId",
+      });
+    }
     if ("timestamp" in request && !Number.isFinite(request.timestamp)) {
       return bridgeError("invalid_request", "Bridge request timestamp must be a finite number");
     }

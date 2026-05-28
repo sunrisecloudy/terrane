@@ -73,6 +73,30 @@ test("runtime rejects mismatched core.step app before host dispatch", async () =
   }
 });
 
+test("runtime rejects appId params before host dispatch", async () => {
+  const harness = createRuntimeHarness();
+  try {
+    const frame = await mountFirstApp(harness);
+
+    await assert.rejects(
+      vm.runInContext(
+        'window.AppRuntime.call("storage.get", { appId: "other-app", key: "notes-lite:notes", defaultValue: [] })',
+        frame.contentWindow.context,
+      ),
+      (error) => {
+        assert.equal(error.code, "invalid_request");
+        assert.equal(error.message, "Bridge params must not include appId; app id is channel-derived");
+        assert.deepEqual(error.details, { field: "appId" });
+        return true;
+      },
+    );
+
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.params.appId === "other-app"), false);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime dev mock handles bridge calls without host dispatch", async () => {
   const harness = createRuntimeHarness({ devMock: true });
   try {

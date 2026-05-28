@@ -58,6 +58,7 @@ export class BridgeDispatcher {
       assertBridgeRequestShape(request);
       method = request.method;
       params = request.params;
+      assertNoAppIdParam(params);
       if (!appId) {
         throw new PlatformError("bridge.unauthorized_channel", "Bridge calls require a channel-derived app id");
       }
@@ -443,6 +444,14 @@ function assertBridgeRequestShape(request) {
   }
   if ("timestamp" in request && !Number.isFinite(request.timestamp)) {
     throw new PlatformError("invalid_request", "Bridge request timestamp must be a finite number");
+  }
+}
+
+function assertNoAppIdParam(params) {
+  if (Object.prototype.hasOwnProperty.call(params, "appId")) {
+    throw new PlatformError("invalid_request", "Bridge params must not include appId; app id is channel-derived", {
+      field: "appId",
+    });
   }
 }
 
