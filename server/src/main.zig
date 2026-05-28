@@ -531,6 +531,8 @@ fn enforceBridgeResourceBudget(
         else => return err,
     };
     defer allocator.free(manifest_json);
+    const active_install_id = activeInstallIdForAppAlloc(allocator, app_id) catch null;
+    defer if (active_install_id) |install_id| allocator.free(install_id);
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{}) catch {
         return error.InvalidResourceBudget;
@@ -538,7 +540,7 @@ fn enforceBridgeResourceBudget(
     defer parsed.deinit();
 
     if (resourceBudgetLimit(parsed.value, "maxBridgeCallsPerMinute")) |limit| {
-        const count = try countBridgeCallsSince(allocator, app_id, null);
+        const count = try countBridgeCallsSince(allocator, app_id, active_install_id, null);
         if (count >= limit) {
             return .{ .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute" };
         }
@@ -546,7 +548,7 @@ fn enforceBridgeResourceBudget(
 
     if (std.mem.eql(u8, method, "network.request")) {
         if (resourceBudgetLimit(parsed.value, "maxNetworkRequestsPerMinute")) |limit| {
-            const count = try countBridgeCallsSince(allocator, app_id, "network.request");
+            const count = try countBridgeCallsSince(allocator, app_id, active_install_id, "network.request");
             if (count >= limit) {
                 return .{ .message = "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute" };
             }
@@ -555,7 +557,7 @@ fn enforceBridgeResourceBudget(
 
     if (std.mem.eql(u8, method, "app.log")) {
         if (resourceBudgetLimit(parsed.value, "maxLogLinesPerMinute")) |limit| {
-            const count = try countBridgeCallsSince(allocator, app_id, "app.log");
+            const count = try countBridgeCallsSince(allocator, app_id, active_install_id, "app.log");
             if (count >= limit) {
                 return .{ .message = "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute" };
             }
@@ -589,13 +591,17 @@ fn resourceBudgetLimit(manifest: std.json.Value, field: []const u8) ?i64 {
     return limit;
 }
 
-fn countBridgeCallsSince(allocator: std.mem.Allocator, app_id: []const u8, method: ?[]const u8) !i64 {
+fn countBridgeCallsSince(allocator: std.mem.Allocator, app_id: []const u8, install_id: ?[]const u8, method: ?[]const u8) !i64 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
 
     var statement: ?*sqlite.sqlite3_stmt = null;
-    const sql: [*:0]const u8 = if (method != null)
+    const sql: [*:0]const u8 = if (method != null and install_id != null)
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND install_id = ? AND method = ? AND julianday(created_at) >= julianday('now','-60 seconds')"
+    else if (method != null)
         "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND julianday(created_at) >= julianday('now','-60 seconds')"
+    else if (install_id != null)
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND install_id = ? AND julianday(created_at) >= julianday('now','-60 seconds')"
     else
         "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND julianday(created_at) >= julianday('now','-60 seconds')";
     if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
@@ -603,9 +609,37 @@ fn countBridgeCallsSince(allocator: std.mem.Allocator, app_id: []const u8, metho
     }
     defer _ = sqlite.sqlite3_finalize(statement);
     bindText(statement, 1, app_id);
-    if (method) |actual_method| {
+    if (install_id) |actual_install_id| {
+        bindText(statement, 2, actual_install_id);
+        if (method) |actual_method| bindText(statement, 3, actual_method);
+    } else if (method) |actual_method| {
         bindText(statement, 2, actual_method);
     }
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn countBridgeErrorsSince(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8, code: []const u8) !i64 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const pattern = try std.fmt.allocPrint(allocator, "%\"code\":\"{s}\"%", .{code});
+    defer allocator.free(pattern);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND install_id = ? AND error_json LIKE ? AND julianday(created_at) >= julianday('now','-60 seconds')",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, install_id);
+    bindText(statement, 3, pattern);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
     return sqlite.sqlite3_column_int64(statement, 0);
 }
@@ -2480,26 +2514,26 @@ fn collectWebappPackageErrors(
         if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
         if (containsAny(html, &.{ "href=\"http://", "href=\"https://", "href='http://", "href='https://" })) try errors.append(allocator, "forbidden_remote_stylesheet");
         if (containsAny(html, &.{ "http-equiv=\"refresh\"", "http-equiv='refresh'" })) try errors.append(allocator, "forbidden_meta_refresh");
-        if (containsAny(html, &.{ "<base" })) try errors.append(allocator, "forbidden_base_href");
+        if (containsAny(html, &.{"<base"})) try errors.append(allocator, "forbidden_base_href");
         if (containsAny(html, &.{ "action=\"http://", "action=\"https://", "action=\"/", "action='http://", "action='https://", "action='/" })) try errors.append(allocator, "forbidden_form_action");
         if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
-        if (containsAny(css, &.{ "@import" })) try errors.append(allocator, "forbidden_css_import");
-        if (containsAny(css, &.{ "@font-face" })) try errors.append(allocator, "forbidden_external_font");
+        if (containsAny(css, &.{"@import"})) try errors.append(allocator, "forbidden_css_import");
+        if (containsAny(css, &.{"@font-face"})) try errors.append(allocator, "forbidden_external_font");
         if (containsAny(css, &.{ "position:fixed", "position: fixed" })) try errors.append(allocator, "forbidden_fixed_position");
         if (containsAny(css, &.{ "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
     }
     if (findPackageFile(files, "app.js")) |js| {
         if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
         if (containsAny(js, &.{ "navigator.serviceWorker", "serviceWorker.register" })) try errors.append(allocator, "forbidden_service_worker");
-        if (containsAny(js, &.{ "trustedTypes.createPolicy" })) try errors.append(allocator, "forbidden_trusted_types_policy");
+        if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
         if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
         if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
         if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec" })) try errors.append(allocator, "forbidden_native_bridge");
         if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
-        if (containsAny(js, &.{ "shell.exec" })) try errors.append(allocator, "forbidden_bridge_method");
+        if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
         if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
     }
 }
@@ -2911,6 +2945,17 @@ fn approveWebappUpdateControl(allocator: std.mem.Allocator, app_id: []const u8, 
 }
 
 fn quarantineWebappControl(allocator: std.mem.Allocator, app_id: []const u8, install_id: ?[]const u8, reason: []const u8) ![]u8 {
+    return quarantineWebappPackage(allocator, app_id, install_id, reason, false, "zig-server");
+}
+
+fn quarantineWebappPackage(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    install_id: ?[]const u8,
+    reason: []const u8,
+    restore_previous: bool,
+    actor: []const u8,
+) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
 
@@ -2921,18 +2966,32 @@ fn quarantineWebappControl(allocator: std.mem.Allocator, app_id: []const u8, ins
     defer if (active_install_id) |active| allocator.free(active);
     const target_install_id = if (install_id) |explicit_install| explicit_install else active_install_id orelse return error.AppNotInstalled;
     if (!(try installBelongsToApp(db, app_id, target_install_id))) return error.InstallNotFound;
+    const restore_target = if (restore_previous and active_install_id != null and std.mem.eql(u8, active_install_id.?, target_install_id))
+        try rollbackTargetAlloc(allocator, db, app_id, target_install_id, null)
+    else
+        null;
+    defer if (restore_target) |version| freeInstalledVersion(allocator, version);
     const created_at = try sqliteNowIsoAlloc(allocator, db);
     defer allocator.free(created_at);
 
     try markVersionStatus(db, target_install_id, "quarantined", null);
-    if (active_install_id) |active| {
+    if (restore_target) |version| {
+        try markVersionStatus(db, version.install_id, "enabled", created_at);
+        try activateInstalledApp(db, app_id, version.install_id, version.version, version.data_version, created_at);
+    } else if (active_install_id) |active| {
         if (std.mem.eql(u8, active, target_install_id)) {
             try markAppStatus(db, app_id, "quarantined", created_at);
         }
     }
-    const details_json = try quarantineDetailsJsonAlloc(allocator, reason);
+    const restored_install_id = if (restore_target) |version| version.install_id else null;
+    const details_json = try quarantineDetailsJsonAlloc(allocator, reason, restored_install_id);
     defer allocator.free(details_json);
-    try insertLifecycleInstallationEvent(db, allocator, app_id, target_install_id, "quarantine", null, null, "zig-server", created_at, details_json);
+    try insertLifecycleInstallationEvent(db, allocator, app_id, target_install_id, "quarantine", restored_install_id, null, actor, created_at, details_json);
+    if (restore_target) |version| {
+        const rollback_details = try automaticRollbackDetailsJsonAlloc(allocator, target_install_id);
+        defer allocator.free(rollback_details);
+        try insertLifecycleInstallationEvent(db, allocator, app_id, version.install_id, "rollback", target_install_id, null, actor, created_at, rollback_details);
+    }
 
     const result_json = try quarantineResultJsonAlloc(allocator, app_id, target_install_id, reason);
     errdefer allocator.free(result_json);
@@ -3267,10 +3326,25 @@ fn approveResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, inst
     return out.toOwnedSlice();
 }
 
-fn quarantineDetailsJsonAlloc(allocator: std.mem.Allocator, reason: []const u8) ![]u8 {
+fn quarantineDetailsJsonAlloc(allocator: std.mem.Allocator, reason: []const u8, restored_install_id: ?[]const u8) ![]u8 {
     const escaped_reason = try escapeJsonString(allocator, reason);
     defer allocator.free(escaped_reason);
-    return std.fmt.allocPrint(allocator, "{{\"reason\":\"{s}\"}}", .{escaped_reason});
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"reason\":\"{s}\",\"restoredInstallId\":", .{escaped_reason});
+    try appendJsonNullableString(allocator, &out, restored_install_id);
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn automaticRollbackDetailsJsonAlloc(allocator: std.mem.Allocator, quarantined_install_id: []const u8) ![]u8 {
+    const escaped_install_id = try escapeJsonString(allocator, quarantined_install_id);
+    defer allocator.free(escaped_install_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"reason\":\"automatic rollback after quarantine\",\"quarantinedInstallId\":\"{s}\"}}",
+        .{escaped_install_id},
+    );
 }
 
 fn quarantineResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8, reason: []const u8) ![]u8 {
@@ -6771,6 +6845,12 @@ fn activeInstallIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_i
     return if (sqliteColumnNullableText(statement, 0)) |value| try allocator.dupe(u8, value) else null;
 }
 
+fn activeInstallIdForAppAlloc(allocator: std.mem.Allocator, app_id: []const u8) !?[]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    return activeInstallIdAlloc(allocator, db, app_id);
+}
+
 fn appDataVersion(db: *sqlite.sqlite3, app_id: []const u8) !?i64 {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(db, "SELECT data_version FROM apps WHERE id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
@@ -9022,12 +9102,14 @@ fn logBridgeCall(
     const actual_session_id = session_id orelse "server-dev-session";
     try ensureAppRecord(db, app_id);
     try ensureRuntimeSession(db, actual_session_id, app_id);
+    const active_install_id = try activeInstallIdAlloc(allocator, db, app_id);
+    defer if (active_install_id) |install_id| allocator.free(install_id);
 
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
         db,
         "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) " ++
-            "VALUES ('bridge_' || lower(hex(randomblob(16))), ?, ?, NULL, ?, ?, ?, ?, 0, datetime('now'))",
+            "VALUES ('bridge_' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))",
         -1,
         &statement,
         null,
@@ -9037,16 +9119,43 @@ fn logBridgeCall(
     defer _ = sqlite.sqlite3_finalize(statement);
     bindText(statement, 1, actual_session_id);
     bindText(statement, 2, app_id);
-    bindText(statement, 3, method);
-    bindText(statement, 4, params_json);
-    bindNullableText(statement, 5, result_json);
-    bindNullableText(statement, 6, error_json);
+    bindNullableText(statement, 3, active_install_id);
+    bindText(statement, 4, method);
+    bindText(statement, 5, params_json);
+    bindNullableText(statement, 6, result_json);
+    bindNullableText(statement, 7, error_json);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
         return error.StorageWriteFailed;
     }
     const usage_json = try snapshotResourceUsageJsonAlloc(allocator, db, app_id);
     defer allocator.free(usage_json);
     try updateRuntimeSessionResourceHighWater(db, actual_session_id, usage_json);
+    if (active_install_id) |install_id| {
+        maybeQuarantineAfterBudgetError(allocator, app_id, install_id, error_json) catch |err| {
+            std.debug.print("budget quarantine check failed: {}\n", .{err});
+        };
+    }
+}
+
+fn maybeQuarantineAfterBudgetError(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    install_id: []const u8,
+    error_json: ?[]const u8,
+) !void {
+    const raw_error = error_json orelse return;
+    if (std.mem.indexOf(u8, raw_error, "\"code\":\"resource_budget_exceeded\"") == null) return;
+
+    const count = try countBridgeErrorsSince(allocator, app_id, install_id, "resource_budget_exceeded");
+    if (count < 3) return;
+
+    const active_install_id = try activeInstallIdForAppAlloc(allocator, app_id);
+    defer if (active_install_id) |active| allocator.free(active);
+    const active = active_install_id orelse return;
+    if (!std.mem.eql(u8, active, install_id)) return;
+
+    const result_json = try quarantineWebappPackage(allocator, app_id, install_id, "resource_budget_exceeded", true, "zig-server-runtime");
+    defer allocator.free(result_json);
 }
 
 fn recordBackupExport(allocator: std.mem.Allocator, export_json: []const u8) !void {
