@@ -37,7 +37,8 @@ Current implementation status:
 - Bridge uses `WebViewCompat.addWebMessageListener` with an origin allowlist.
 - SQLite-backed `storage.*` uses host-derived app context and storage-prefix checks.
 - Native bridge applies manifest-style permission checks before dispatch.
-- Dialog, network, and Zig core paths currently return structured `platform_unsupported`.
+- `network.request` uses `HttpURLConnection` with manifest `networkPolicy` checks.
+- Dialog and Zig core paths currently return structured `platform_unsupported`.
 
 ## Dev control plane
 

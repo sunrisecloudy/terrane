@@ -68,7 +68,7 @@ class NativeBridge(
                     "dialog.openFile" to false,
                     "dialog.saveFile" to false,
                     "notification.toast" to true,
-                    "network.request" to false,
+                    "network.request" to true,
                     "core.step" to false,
                     "runtime.capabilities" to true,
                     "app.log" to true,
@@ -83,6 +83,7 @@ data class AppSandboxContext(
     val appId: String,
     val storagePrefix: String,
     val approvedPermissions: Set<String>,
+    val networkPolicy: List<NetworkPolicyRule> = emptyList(),
 )
 
 class BridgeRequest(body: JSONObject, val context: AppSandboxContext) {

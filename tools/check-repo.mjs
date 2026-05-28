@@ -295,6 +295,7 @@ function checkNativeStatic() {
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
+  const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
   const macRequired = [
     '"target": "macos"',
     '"devMode": true',
@@ -421,6 +422,8 @@ function checkNativeStatic() {
     [androidMain, "allowFileAccess = false"],
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
+    [androidBridge, '"network.request" to true'],
+    [androidBridge, "networkPolicy"],
     [androidStorage, "SQLiteOpenHelper"],
     [androidStorage, "request.context.appId"],
     [androidStorage, "request.context.storagePrefix"],
@@ -429,6 +432,14 @@ function checkNativeStatic() {
     if (!source.includes(snippet)) {
       throw new Error(`Android host missing ${snippet}`);
     }
+  }
+  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch"]) {
+    if (!androidNetwork.includes(snippet)) {
+      throw new Error(`Android network missing policy enforcement: ${snippet}`);
+    }
+  }
+  if (androidNetwork.includes("platform_unsupported")) {
+    throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
   return "macos.capabilities=schema-shaped storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked linux.webkit=scheme-checked android.webmessage=origin-checked";
 }
