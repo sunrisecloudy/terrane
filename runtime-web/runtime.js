@@ -24,6 +24,9 @@
   let apps = [];
   let activeApp = null;
   let activeFrame = null;
+  let activeMount = null;
+  const mountsByFrame = new WeakMap();
+  const mountsByPort = new WeakMap();
   const usageByApp = new Map();
   const minuteMs = 60 * 1000;
 
@@ -37,8 +40,16 @@
 
   window.addEventListener("message", function (event) {
     if (!activeFrame || event.source !== activeFrame.contentWindow) return;
-    if (!event.data || event.data.type !== "runtime.ready_for_port") return;
-    attachBridgePort(event, activeApp.id);
+    if (!event.data || event.data.type !== "runtime.ready_for_port") {
+      addBridgeLog(activeMount ? activeMount.appId : "unknown", "postMessage", "bridge.unauthorized_channel");
+      return;
+    }
+    const mount = mountsByFrame.get(activeFrame);
+    if (!mount || !activeMount || mount.mountToken !== activeMount.mountToken) {
+      addBridgeLog(mount ? mount.appId : "unknown", "runtime.ready_for_port", "bridge.unauthorized_channel");
+      return;
+    }
+    attachBridgePort(event, mount);
   });
 
   loadApps();
@@ -73,7 +84,14 @@
   }
 
   async function mountApp(app) {
+    const mount = {
+      app: app,
+      appId: app.id,
+      mountToken: createMountToken(),
+      createdAt: Date.now(),
+    };
     activeApp = app;
+    activeMount = mount;
     renderAppList();
     reloadButton.disabled = false;
     activeTitle.textContent = app.name;
@@ -92,6 +110,7 @@
     frameWrap.textContent = "";
     frameWrap.appendChild(frame);
     activeFrame = frame;
+    mountsByFrame.set(frame, mount);
     setStatus(`Mounted ${app.id}`);
   }
 
@@ -156,13 +175,24 @@
     return `${bootstrap}${html}`;
   }
 
-  function attachBridgePort(event, appId) {
+  function attachBridgePort(event, mount) {
     const channel = new MessageChannel();
+    mountsByPort.set(channel.port1, mount);
     channel.port1.onmessage = async function (portEvent) {
+      const portMount = mountsByPort.get(channel.port1);
+      if (!portMount || portMount.mountToken !== mount.mountToken) {
+        addBridgeLog(mount.appId, "port.message", "bridge.unauthorized_channel");
+        channel.port1.postMessage({
+          id: portEvent.data && typeof portEvent.data.id === "string" ? portEvent.data.id : null,
+          ok: false,
+          error: bridgeError("bridge.unauthorized_channel", "Bridge message arrived on an unauthorized channel"),
+        });
+        return;
+      }
       const request = portEvent.data;
-      const runtimeError = validateRuntimeBridgeRequest(activeApp, request);
+      const runtimeError = validateRuntimeBridgeRequest(portMount.app, request);
       if (runtimeError) {
-        addBridgeLog(appId, request && request.method ? request.method : "unknown", runtimeError.code);
+        addBridgeLog(portMount.appId, request && request.method ? request.method : "unknown", runtimeError.code);
         channel.port1.postMessage({
           id: request && typeof request.id === "string" ? request.id : null,
           ok: false,
@@ -170,20 +200,21 @@
         });
         return;
       }
-      addBridgeLog(appId, request.method, "pending");
+      addBridgeLog(portMount.appId, request.method, "pending");
       try {
         const response = await fetchJson("/bridge", {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-app-id": appId,
+            "x-app-id": portMount.appId,
+            "x-mount-token": portMount.mountToken,
           },
           body: JSON.stringify(request),
         });
-        addBridgeLog(appId, request.method, response.ok ? "ok" : response.error.code);
+        addBridgeLog(portMount.appId, request.method, response.ok ? "ok" : response.error.code);
         channel.port1.postMessage(response);
       } catch (error) {
-        addBridgeLog(appId, request.method, "runtime_error");
+        addBridgeLog(portMount.appId, request.method, "runtime_error");
         channel.port1.postMessage({
           id: request.id,
           ok: false,
@@ -374,6 +405,17 @@
       usageByApp.set(appId, { bridgeCalls: [], networkCalls: [], logLines: [] });
     }
     return usageByApp.get(appId);
+  }
+
+  function createMountToken() {
+    const bytes = new Uint8Array(16);
+    if (!window.crypto || !window.crypto.getRandomValues) {
+      throw new Error("Web Crypto getRandomValues is required for runtime mount tokens");
+    }
+    window.crypto.getRandomValues(bytes);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   }
 
   function pruneUsage(items, now) {

@@ -9,6 +9,7 @@ Runtime responsibilities:
 - Manifest/package validation.
 - Sandboxed generated app execution.
 - `AppRuntime.call` bridge object.
+- Per-mount bridge nonce and `MessagePort` context binding.
 - Permission checks.
 - Storage-prefix enforcement.
 - Network policy preflight.

@@ -226,7 +226,12 @@ function checkRuntimeStatic() {
     "unknown_method",
     "network_policy_denied",
     "resource_budget_exceeded",
-    '"x-app-id": appId',
+    "createMountToken",
+    "mountsByFrame",
+    "mountsByPort",
+    "bridge.unauthorized_channel",
+    '"x-app-id": portMount.appId',
+    '"x-mount-token": portMount.mountToken',
     "body: JSON.stringify(request)",
   ];
   for (const snippet of required) {
@@ -237,7 +242,7 @@ function checkRuntimeStatic() {
   if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
     throw new Error("runtime bridge request body must not include appId");
   }
-  return "bridge=messagechannel request=no-appid permission,policy,budget=runtime-preflight";
+  return "bridge=messagechannel,nonce-bound request=no-appid permission,policy,budget=runtime-preflight";
 }
 
 function checkServerStatic() {
