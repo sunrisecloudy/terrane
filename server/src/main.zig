@@ -66,6 +66,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return handleWebappValidate(allocator, stream, parsed.body);
     }
 
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
+        return handleControlCommand(allocator, stream, parsed.body, parsed.control_token);
+    }
+
     if (std.mem.eql(u8, parsed.method, "POST") and
         (std.mem.startsWith(u8, parsed.path, "/db/") or std.mem.startsWith(u8, parsed.path, "/control/db/")))
     {
@@ -385,6 +389,83 @@ fn handleDbControlEndpoint(
     return writeControlError(allocator, stream, 404, "not_found", "Control route not found");
 }
 
+fn handleControlCommand(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    body: []const u8,
+    provided_token: ?[]const u8,
+) !void {
+    requireControlToken(allocator, provided_token) catch {
+        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    };
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        return writeControlError(allocator, stream, 400, "invalid_request", "Control command body must be valid JSON");
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) {
+        return writeControlError(allocator, stream, 400, "invalid_request", "Control command body must be an object");
+    }
+
+    const tool = valueString(root.object.get("tool")) orelse {
+        return writeControlError(allocator, stream, 400, "invalid_request", "Control command requires tool");
+    };
+    const args = if (root.object.get("args")) |args_value| args_value else null;
+    if (args) |args_value| {
+        if (args_value != .object) {
+            return writeControlError(allocator, stream, 400, "invalid_request", "Control command args must be an object");
+        }
+    }
+
+    if (std.mem.eql(u8, tool, "platform.health")) {
+        return writeControlOkRaw(allocator, stream, "{\"name\":\"zig-server\",\"version\":\"0.1.0\",\"targets\":[\"zig-server\"],\"db\":\"sqlite\"}");
+    }
+    if (std.mem.eql(u8, tool, "runtime.capabilities")) {
+        const result_json = try serverCapabilitiesJson(allocator);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "db.snapshot")) {
+        const result_json = try dbSnapshotJson(allocator);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "db.query_app_storage")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_storage requires appId");
+        };
+        const result_json = try queryAppStorageRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "db.query_bridge_calls") or std.mem.eql(u8, tool, "runtime.bridge_calls")) {
+        const result_json = try queryBridgeCallsRowsJson(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "db.query_app_versions")) {
+        if (controlStringArg(args, "appId") == null) {
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
+        }
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, tool, "db.query_core_events")) {
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, tool, "db.query_test_runs")) {
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
+        const result_json = try dbDebugBundleJson(allocator);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+
+    return writeControlError(allocator, stream, 400, "unknown_tool", "Unknown control tool");
+}
+
 fn requireControlToken(allocator: std.mem.Allocator, provided_token: ?[]const u8) !void {
     const expected = try std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN");
     defer allocator.free(expected);
@@ -400,6 +481,12 @@ fn parseControlArgs(allocator: std.mem.Allocator, body: []const u8) !?std.json.P
     errdefer parsed.deinit();
     if (parsed.value != .object) return error.InvalidControlArgs;
     return parsed;
+}
+
+fn controlStringArg(args: ?std.json.Value, name: []const u8) ?[]const u8 {
+    const value = args orelse return null;
+    if (value != .object) return null;
+    return valueString(value.object.get(name));
 }
 
 fn handleExampleAsset(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8) !void {
