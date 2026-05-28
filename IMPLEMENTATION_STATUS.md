@@ -137,7 +137,7 @@ Status snapshot: **2026-05-28**.
 
 ## CI
 
-No remote CI is wired yet. `tools/check-repo.mjs` provides a local dependency-free gate for the first checks, and `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI to enable:
+Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-repo.mjs`, fake-host tests, and Codex MCP contract tests. `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI gates:
 
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.

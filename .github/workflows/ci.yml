@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  platform-contracts:
+    name: Platform Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Repository checks
+        run: node --no-warnings tools/check-repo.mjs
+
+      - name: Fake host tests
+        working-directory: tools/fake-platform-host
+        run: npm test
+
+      - name: Codex MCP tests
+        working-directory: tools/codex-platform-mcp
+        run: npm test
+
+      - name: Codex MCP tool contract
+        working-directory: tools/codex-platform-mcp
+        run: npm run build
