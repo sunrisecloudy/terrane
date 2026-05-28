@@ -568,6 +568,8 @@ function checkNativeStatic() {
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
+  const windowsDialogs = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.cpp"), "utf8");
+  const windowsDialogHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.h"), "utf8");
   const windowsCore = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.cpp"), "utf8");
   const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.h"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
@@ -731,6 +733,9 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, ".networkPolicy"],
+    [windowsHost, "std::make_unique<WebBridge>(DatabasePath(), window)"],
+    [windowsBridge, 'features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(true))'],
+    [windowsBridge, 'features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"core.step", json::JsonValue::CreateBooleanValue(core_.IsAvailable()))'],
     [windowsStorage, "request.context.appId"],
     [windowsStorage, "request.context.storagePrefix"],
@@ -752,6 +757,17 @@ function checkNativeStatic() {
   if (windowsNetwork.includes("platform_unsupported")) {
     throw new Error("Windows network.request must not remain a platform_unsupported stub");
   }
+  for (const snippet of ["IFileOpenDialog", "IFileSaveDialog", "FOS_FORCEFILESYSTEM", "dialog_cancelled", "ReadTextFile", "WriteTextFile"]) {
+    if (!windowsDialogs.includes(snippet)) {
+      throw new Error(`Windows dialogs missing ${snippet}`);
+    }
+  }
+  if (windowsDialogs.includes("will be wired")) {
+    throw new Error("Windows dialogs must not remain placeholder stubs");
+  }
+  if (!windowsDialogHeader.includes("explicit PlatformDialogs(HWND ownerWindow")) {
+    throw new Error("Windows dialogs must accept an owner HWND");
+  }
   for (const snippet of ["LoadLibraryW", "GetProcAddress", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_DLL", "core.step app field does not match the channel-derived app id"]) {
     if (!windowsCore.includes(snippet)) {
       throw new Error(`Windows Zig core bridge missing ${snippet}`);
@@ -762,8 +778,10 @@ function checkNativeStatic() {
       throw new Error(`Windows Zig core bridge header missing ${snippet}`);
     }
   }
-  if (!windowsCmake.includes("winhttp")) {
-    throw new Error("Windows network bridge must link winhttp");
+  for (const snippet of ["winhttp", "ole32"]) {
+    if (!windowsCmake.includes(snippet)) {
+      throw new Error(`Windows native bridge must link ${snippet}`);
+    }
   }
   const linuxRequired = [
     [linuxHost, "webkit_security_manager_register_uri_scheme_as_secure"],
@@ -873,7 +891,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked core=jni-so";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked core=jni-so";
 }
 
 function readJson(filePath) {

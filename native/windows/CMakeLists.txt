@@ -18,4 +18,4 @@ add_executable(NativeAIWebappHost WIN32
 )
 
 target_compile_definitions(NativeAIWebappHost PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(NativeAIWebappHost PRIVATE windowsapp winsqlite3 shell32 winhttp)
+target_link_libraries(NativeAIWebappHost PRIVATE windowsapp winsqlite3 shell32 winhttp ole32)

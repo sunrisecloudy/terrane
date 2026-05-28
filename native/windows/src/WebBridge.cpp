@@ -3,7 +3,8 @@
 namespace nativeai {
 namespace json = winrt::Windows::Data::Json;
 
-WebBridge::WebBridge(std::filesystem::path databasePath) : storage_(std::move(databasePath)) {}
+WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
+    : storage_(std::move(databasePath)), dialogs_(ownerWindow) {}
 
 std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext const& context) {
   BridgeRequest request;
@@ -99,8 +100,8 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   features.Insert(L"storage.set", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"storage.remove", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"storage.list", json::JsonValue::CreateBooleanValue(true));
-  features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(false));
-  features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(false));
+  features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(true));
+  features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"notification.toast", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"core.step", json::JsonValue::CreateBooleanValue(core_.IsAvailable()));

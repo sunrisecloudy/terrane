@@ -81,7 +81,7 @@ std::wstring ToLower(std::wstring value) {
 }
 }  // namespace
 
-WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath())) {}
+WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
 
 void WebViewHost::Initialize() {
   CreateCoreWebView2EnvironmentWithOptions(

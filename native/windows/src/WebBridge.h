@@ -7,13 +7,14 @@
 #include "PlatformStorage.h"
 #include "ZigCoreBridge.h"
 
+#include <Windows.h>
 #include <optional>
 
 namespace nativeai {
 
 class WebBridge {
  public:
-  explicit WebBridge(std::filesystem::path databasePath);
+  WebBridge(std::filesystem::path databasePath, HWND ownerWindow);
 
   std::wstring HandleJson(std::wstring const& body, AppSandboxContext const& context);
 
