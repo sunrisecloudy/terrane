@@ -1,0 +1,124 @@
+{
+  "id": "task-workbench-core-storage",
+  "description": "Create a task through core.step, persist it, and verify the task renders.",
+  "targetApps": [
+    "task-workbench"
+  ],
+  "platforms": [
+    "fake-host",
+    "macos",
+    "linux",
+    "windows",
+    "android-emulator",
+    "ios-simulator"
+  ],
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "task-workbench"
+      }
+    },
+    {
+      "tool": "runtime.wait_for",
+      "args": {
+        "kind": "idle"
+      }
+    },
+    {
+      "tool": "runtime.capabilities",
+      "args": {}
+    }
+  ],
+  "steps": [
+    {
+      "tool": "runtime.assert_visible",
+      "args": {
+        "text": "Task Workbench"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "task-title-input",
+        "value": "Ship platform contract"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "task-priority-select",
+        "value": "high"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "add-task-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "storage.set"
+      }
+    },
+    {
+      "tool": "runtime.assert_text",
+      "args": {
+        "text": "Ship platform contract"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ],
+  "teardown": [
+    {
+      "tool": "runtime.resource_usage",
+      "args": {}
+    },
+    {
+      "tool": "runtime.run_accessibility_audit",
+      "args": {}
+    },
+    {
+      "tool": "platform.create_snapshot",
+      "args": {
+        "type": "post-test"
+      }
+    },
+    {
+      "tool": "platform.reset_webapp",
+      "args": {
+        "appId": "task-workbench",
+        "confirm": true
+      }
+    }
+  ]
+}

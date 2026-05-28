@@ -128,7 +128,7 @@ Status snapshot: **2026-05-28**.
 | `tests/fixtures/db/` | partial |
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |
-| `tests/micro/` | fixtures (4 micro-tests, one missing for task-workbench) |
+| `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
 | `tests/mutation/` | partial (10 mutations now exercised by fake-host validator/runtime tests) |
 | `tests/accessibility/` | fixtures |
 | `tests/security/malicious-packages/` | skeleton (directory exists, no fixtures yet) |
