@@ -393,12 +393,14 @@ fn handleBridge(
         return writeBridgeError(allocator, stream, id, "resource_budget_unavailable", "Resource budget could not be evaluated");
     };
     if (budget_violation) |violation| {
-        const error_json = try bridgeErrorJsonAlloc(allocator, "resource_budget_exceeded", violation.message);
+        const details_json = try resourceBudgetDetailsJsonAlloc(allocator, violation);
+        defer allocator.free(details_json);
+        const error_json = try bridgeErrorJsonWithDetailsAlloc(allocator, "resource_budget_exceeded", violation.message, details_json);
         defer allocator.free(error_json);
         logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
             std.debug.print("bridge audit write failed: {}\n", .{err});
         };
-        return writeBridgeError(allocator, stream, id, "resource_budget_exceeded", violation.message);
+        return writeBridgeErrorWithDetails(allocator, stream, id, "resource_budget_exceeded", violation.message, details_json);
     }
 
     if (std.mem.eql(u8, method, "core.step")) {
@@ -518,6 +520,9 @@ fn bridgeValidationMessage(err: BridgeValidationError) []const u8 {
 
 const ResourceBudgetViolation = struct {
     message: []const u8,
+    budget: []const u8,
+    current: i64,
+    max: i64,
 };
 
 fn enforceBridgeResourceBudget(
@@ -542,7 +547,12 @@ fn enforceBridgeResourceBudget(
     if (resourceBudgetLimit(parsed.value, "maxBridgeCallsPerMinute")) |limit| {
         const count = try countBridgeCallsSince(allocator, app_id, active_install_id, null);
         if (count >= limit) {
-            return .{ .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute" };
+            return .{
+                .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+                .budget = "maxBridgeCallsPerMinute",
+                .current = count + 1,
+                .max = limit,
+            };
         }
     }
 
@@ -550,7 +560,12 @@ fn enforceBridgeResourceBudget(
         if (resourceBudgetLimit(parsed.value, "maxNetworkRequestsPerMinute")) |limit| {
             const count = try countBridgeCallsSince(allocator, app_id, active_install_id, "network.request");
             if (count >= limit) {
-                return .{ .message = "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute" };
+                return .{
+                    .message = "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+                    .budget = "maxNetworkRequestsPerMinute",
+                    .current = count + 1,
+                    .max = limit,
+                };
             }
         }
     }
@@ -559,7 +574,12 @@ fn enforceBridgeResourceBudget(
         if (resourceBudgetLimit(parsed.value, "maxLogLinesPerMinute")) |limit| {
             const count = try countBridgeCallsSince(allocator, app_id, active_install_id, "app.log");
             if (count >= limit) {
-                return .{ .message = "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute" };
+                return .{
+                    .message = "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+                    .budget = "maxLogLinesPerMinute",
+                    .current = count + 1,
+                    .max = limit,
+                };
             }
         }
     }
@@ -574,7 +594,12 @@ fn enforceBridgeResourceBudget(
             defer allocator.free(value_json);
             const projected_bytes = try storageBytesAfterSet(allocator, app_id, key, value_json);
             if (projected_bytes > limit) {
-                return .{ .message = "Storage write exceeds manifest.resourceBudget.maxStorageBytes" };
+                return .{
+                    .message = "Storage write exceeds manifest.resourceBudget.maxStorageBytes",
+                    .budget = "maxStorageBytes",
+                    .current = projected_bytes,
+                    .max = limit,
+                };
             }
         }
     }
@@ -3347,6 +3372,16 @@ fn automaticRollbackDetailsJsonAlloc(allocator: std.mem.Allocator, quarantined_i
     );
 }
 
+fn resourceBudgetDetailsJsonAlloc(allocator: std.mem.Allocator, violation: ResourceBudgetViolation) ![]u8 {
+    const escaped_budget = try escapeJsonString(allocator, violation.budget);
+    defer allocator.free(escaped_budget);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"budget\":\"{s}\",\"current\":{d},\"max\":{d},\"limit\":{d}}}",
+        .{ escaped_budget, violation.current, violation.max, violation.max },
+    );
+}
+
 fn quarantineResultJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, install_id: []const u8, reason: []const u8) ![]u8 {
     const escaped_app_id = try escapeJsonString(allocator, app_id);
     defer allocator.free(escaped_app_id);
@@ -5292,7 +5327,9 @@ fn callBridgeControl(
         return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "resource_budget_unavailable", "Resource budget could not be evaluated");
     };
     if (budget_violation) |violation| {
-        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "resource_budget_exceeded", violation.message);
+        const details_json = try resourceBudgetDetailsJsonAlloc(allocator, violation);
+        defer allocator.free(details_json);
+        return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "resource_budget_exceeded", violation.message, details_json);
     }
 
     if (std.mem.eql(u8, method, "core.step")) {
@@ -9663,6 +9700,17 @@ fn bridgeOkJsonAlloc(allocator: std.mem.Allocator, id: []const u8, result_json: 
 }
 
 fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []const u8, code: []const u8, message: []const u8) !void {
+    return writeBridgeErrorWithDetails(allocator, stream, id, code, message, "{}");
+}
+
+fn writeBridgeErrorWithDetails(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    code: []const u8,
+    message: []const u8,
+    details_json: []const u8,
+) !void {
     const escaped_id = try escapeJsonString(allocator, id);
     defer allocator.free(escaped_id);
     const escaped_code = try escapeJsonString(allocator, code);
@@ -9671,14 +9719,24 @@ fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
     defer allocator.free(escaped_message);
     const body = try std.fmt.allocPrint(
         allocator,
-        "{{\"id\":\"{s}\",\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}}}",
-        .{ escaped_id, escaped_code, escaped_message },
+        "{{\"id\":\"{s}\",\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{s}}}}}",
+        .{ escaped_id, escaped_code, escaped_message, details_json },
     );
     defer allocator.free(body);
     return writeJson(stream, 200, body);
 }
 
 fn bridgeErrorResponseJsonAlloc(allocator: std.mem.Allocator, id: []const u8, code: []const u8, message: []const u8) ![]u8 {
+    return bridgeErrorResponseJsonWithDetailsAlloc(allocator, id, code, message, "{}");
+}
+
+fn bridgeErrorResponseJsonWithDetailsAlloc(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    code: []const u8,
+    message: []const u8,
+    details_json: []const u8,
+) ![]u8 {
     const escaped_id = try escapeJsonString(allocator, id);
     defer allocator.free(escaped_id);
     const escaped_code = try escapeJsonString(allocator, code);
@@ -9687,8 +9745,8 @@ fn bridgeErrorResponseJsonAlloc(allocator: std.mem.Allocator, id: []const u8, co
     defer allocator.free(escaped_message);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"id\":\"{s}\",\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}}}",
-        .{ escaped_id, escaped_code, escaped_message },
+        "{{\"id\":\"{s}\",\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{s}}}}}",
+        .{ escaped_id, escaped_code, escaped_message, details_json },
     );
 }
 
@@ -9702,23 +9760,41 @@ fn bridgeControlErrorResponse(
     code: []const u8,
     message: []const u8,
 ) ![]u8 {
-    const error_json = try bridgeErrorJsonAlloc(allocator, code, message);
+    return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, code, message, "{}");
+}
+
+fn bridgeControlErrorResponseWithDetails(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+    code: []const u8,
+    message: []const u8,
+    details_json: []const u8,
+) ![]u8 {
+    const error_json = try bridgeErrorJsonWithDetailsAlloc(allocator, code, message, details_json);
     defer allocator.free(error_json);
     logBridgeCall(allocator, app_id, session_id, method, params_json, null, error_json) catch |err| {
         std.debug.print("bridge audit write failed: {}\n", .{err});
     };
-    return bridgeErrorResponseJsonAlloc(allocator, id, code, message);
+    return bridgeErrorResponseJsonWithDetailsAlloc(allocator, id, code, message, details_json);
 }
 
 fn bridgeErrorJsonAlloc(allocator: std.mem.Allocator, code: []const u8, message: []const u8) ![]u8 {
+    return bridgeErrorJsonWithDetailsAlloc(allocator, code, message, "{}");
+}
+
+fn bridgeErrorJsonWithDetailsAlloc(allocator: std.mem.Allocator, code: []const u8, message: []const u8, details_json: []const u8) ![]u8 {
     const escaped_code = try escapeJsonString(allocator, code);
     defer allocator.free(escaped_code);
     const escaped_message = try escapeJsonString(allocator, message);
     defer allocator.free(escaped_message);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}",
-        .{ escaped_code, escaped_message },
+        "{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{s}}}",
+        .{ escaped_code, escaped_message, details_json },
     );
 }
 
@@ -10381,6 +10457,27 @@ test "control token writer creates private token file" {
 test "control storage helpers enforce app storage prefix" {
     try std.testing.expect(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "notes-lite:notes"));
     try std.testing.expect(!(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "other:notes")));
+}
+
+test "resource budget bridge errors include repair details" {
+    const details = try resourceBudgetDetailsJsonAlloc(std.testing.allocator, .{
+        .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+        .budget = "maxBridgeCallsPerMinute",
+        .current = 601,
+        .max = 600,
+    });
+    defer std.testing.allocator.free(details);
+    try std.testing.expectEqualStrings("{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600,\"limit\":600}", details);
+
+    const response = try bridgeErrorResponseJsonWithDetailsAlloc(
+        std.testing.allocator,
+        "req_budget",
+        "resource_budget_exceeded",
+        "maxBridgeCallsPerMinute exceeded",
+        details,
+    );
+    defer std.testing.allocator.free(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"details\":{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600") != null);
 }
 
 test "network policy helper matches URL method headers and string body bytes" {
