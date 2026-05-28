@@ -20,6 +20,9 @@ test("all canonical example packages validate", () => {
 test("forbidden JS source snippets are rejected with policy codes", () => {
   const cases = [
     ["forbidden_network_api", "fetch('https://example.com')"],
+    ["forbidden_network_api", "new XMLHttpRequest()"],
+    ["forbidden_network_api", "new WebSocket('wss://example.com')"],
+    ["forbidden_network_api", "new EventSource('https://example.com/events')"],
     ["forbidden_eval", "eval('1 + 1')"],
     ["forbidden_storage_api", "localStorage.setItem('x', 'y')"],
     ["forbidden_native_bridge", "webkit.messageHandlers.bridge.postMessage({})"],

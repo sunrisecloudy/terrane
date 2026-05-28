@@ -7,7 +7,7 @@ Required mutation categories:
 - missing required manifest field;
 - invalid permission;
 - forbidden bridge method;
-- direct `fetch`;
+- direct network APIs (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`);
 - `eval` or `new Function`;
 - remote script or stylesheet;
 - invalid storage prefix;

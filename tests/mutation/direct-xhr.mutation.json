@@ -1,0 +1,6 @@
+{
+  "id": "direct-xhr",
+  "description": "Generated apps must not use XMLHttpRequest directly.",
+  "expectedError": "forbidden_network_api",
+  "source": "new XMLHttpRequest()"
+}
