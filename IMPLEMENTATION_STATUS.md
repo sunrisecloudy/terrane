@@ -130,6 +130,7 @@ Status snapshot: **2026-05-29**.
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
 | `tests/mutation/` | partial (10 mutations now exercised by fake-host validator/runtime tests) |
 | `tests/accessibility/` | fixtures |
+| `tests/performance/` | partial (fake-host latency harness reports p50/p95 for storage and core bridge round-trips) |
 | `tests/security/malicious-packages/` | partial (static validator fixtures exercised by fake-host tests) |
 | `tests/db/` | fixtures (DB test fixtures) |
 | `tests/platform-smoke/` | fixtures (cross-platform suite now exercised by fake-host runner) |
