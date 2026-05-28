@@ -118,6 +118,9 @@
     const bootstrap = `<base href="/webapps/examples/${appId}/">
 <script>
 (function () {
+  var runtimeAppId = ${JSON.stringify(appId)};
+  var knownEvents = new Set(["runtime.ready", "runtime.suspend", "runtime.resume", "app.error", "app.budget_warning", "app.permission_revoked"]);
+  var eventHandlers = new Map();
   var nextId = 1;
   var port = null;
   var pending = new Map();
@@ -140,15 +143,51 @@
       else queued.push(message);
     });
   }
+  function on(eventName, handler) {
+    if (!knownEvents.has(eventName) || typeof handler !== "function") {
+      return function () {};
+    }
+    if (!eventHandlers.has(eventName)) {
+      eventHandlers.set(eventName, new Set());
+    }
+    var handlers = eventHandlers.get(eventName);
+    handlers.add(handler);
+    return function () {
+      handlers.delete(handler);
+    };
+  }
+  function emit(eventName, payload) {
+    var handlers = eventHandlers.get(eventName);
+    if (!handlers || !handlers.size) return;
+    Array.from(handlers).forEach(function (handler) {
+      try {
+        handler(payload);
+      } catch (error) {
+        console.error("AppRuntime event handler failed", error);
+      }
+    });
+  }
+  function emitAppError(error, source) {
+    emit("app.error", {
+      code: error && error.code ? error.code : "runtime_error",
+      message: error && error.message ? error.message : String(error || "Unknown runtime error"),
+      source: source
+    });
+  }
   window.AppRuntime = {
     call: call,
     capabilities: function () {
       return call("runtime.capabilities", {});
     },
-    on: function () {
-      return function () {};
-    }
+    on: on
   };
+  window.addEventListener("error", function (event) {
+    emitAppError({ code: "app.error", message: event.message || "Unhandled app error" }, "window.error");
+  });
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason || {};
+    emitAppError({ code: reason.code || "app.unhandled_rejection", message: reason.message || String(reason) }, "unhandledrejection");
+  });
   window.addEventListener("message", function (event) {
     if (!event.data || event.data.type !== "runtime.port" || !event.ports || !event.ports[0]) return;
     port = event.ports[0];
@@ -158,9 +197,21 @@
       if (!waiter) return;
       pending.delete(response.id);
       if (response.ok) waiter.resolve(response.result);
-      else waiter.reject(response.error);
+      else {
+        emitAppError(response.error, "bridge");
+        waiter.reject(response.error);
+      }
     };
     while (queued.length) send(queued.shift());
+    call("runtime.capabilities", {}).then(function (capabilities) {
+      emit("runtime.ready", {
+        runtimeVersion: capabilities.runtimeVersion || "0.1.0",
+        appId: runtimeAppId,
+        capabilities: capabilities
+      });
+    }).catch(function (error) {
+      emitAppError(error, "runtime.ready");
+    });
   });
   function send(message) {
     port.postMessage(message);

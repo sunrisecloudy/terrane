@@ -215,6 +215,11 @@ function checkRuntimeStatic() {
     "new MessageChannel()",
     "window.AppRuntime = {",
     "capabilities: function",
+    "knownEvents",
+    "runtime.ready",
+    "app.error",
+    "function on(eventName, handler)",
+    "emitAppError",
     "validateRuntimeBridgeRequest",
     "validateMethodParams",
     "validateNetworkRequest",
@@ -246,6 +251,9 @@ function checkRuntimeStatic() {
   }
   if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
     throw new Error("runtime bridge request body must not include appId");
+  }
+  if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
+    throw new Error("runtime AppRuntime.on must not be a no-op");
   }
   return "bridge=messagechannel,nonce-bound,webkit-adapter request=no-appid permission,policy,budget=runtime-preflight";
 }
