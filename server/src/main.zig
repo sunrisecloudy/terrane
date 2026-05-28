@@ -5440,8 +5440,10 @@ fn networkRequestBridgeControl(
     const url = valueString(params.object.get("url")) orelse {
         return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request requires url");
     };
-    const request_method = valueString(params.object.get("method")) orelse "GET";
-    const allowed = networkPolicyAllowsRequest(allocator, app_id, request_method, url, params) catch |err| switch (err) {
+    const request_method_raw = valueString(params.object.get("method")) orelse "GET";
+    const request_method = try upperAsciiAlloc(allocator, request_method_raw);
+    defer allocator.free(request_method);
+    const allowed = networkPolicyAllowsRequest(allocator, app_id, url, request_method, params) catch |err| switch (err) {
         error.InvalidNetworkUrl => {
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request url must be absolute");
         },
@@ -8663,20 +8665,30 @@ fn networkPolicyAllowsRequest(
     if (allow != .array) return false;
 
     for (allow.array.items) |entry| {
-        if (entry != .object) continue;
-        const origin = valueString(entry.object.get("origin")) orelse continue;
-        if (!std.mem.eql(u8, origin, parts.origin)) continue;
-        const methods = entry.object.get("methods") orelse continue;
-        if (!stringArrayContains(methods, method)) continue;
-        if (entry.object.get("pathPrefix")) |path_prefix_value| {
-            const path_prefix = valueString(path_prefix_value) orelse return false;
-            if (!std.mem.startsWith(u8, parts.path, path_prefix)) continue;
-        }
-        if (!headersAllowed(params.object.get("headers"), entry.object.get("allowedHeaders"))) continue;
-        if (!(try requestBodyAllowed(allocator, params.object.get("body"), entry.object.get("maxRequestBytes")))) continue;
-        return true;
+        if (try networkPolicyEntryAllowsRequest(allocator, entry, parts, method, params)) return true;
     }
     return false;
+}
+
+fn networkPolicyEntryAllowsRequest(
+    allocator: std.mem.Allocator,
+    entry: std.json.Value,
+    parts: UrlParts,
+    method: []const u8,
+    params: std.json.Value,
+) !bool {
+    if (entry != .object) return false;
+    const origin = valueString(entry.object.get("origin")) orelse return false;
+    if (!std.mem.eql(u8, origin, parts.origin)) return false;
+    const methods = entry.object.get("methods") orelse return false;
+    if (!stringArrayContains(methods, method)) return false;
+    if (entry.object.get("pathPrefix")) |path_prefix_value| {
+        const path_prefix = valueString(path_prefix_value) orelse return false;
+        if (!std.mem.startsWith(u8, parts.path, path_prefix)) return false;
+    }
+    if (!headersAllowed(params.object.get("headers"), entry.object.get("allowedHeaders"))) return false;
+    if (!(try requestBodyAllowed(allocator, params.object.get("body"), entry.object.get("maxRequestBytes")))) return false;
+    return true;
 }
 
 fn activeManifestJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
@@ -8764,6 +8776,7 @@ fn requestBodyAllowed(allocator: std.mem.Allocator, body_value: ?std.json.Value,
     if (max != .integer) return false;
     const body = body_value orelse return true;
     if (body == .null) return true;
+    if (body == .string) return body.string.len <= @as(usize, @intCast(max.integer));
     const body_json = try jsonValueAlloc(allocator, body);
     defer allocator.free(body_json);
     return body_json.len <= @as(usize, @intCast(max.integer));
@@ -10259,4 +10272,50 @@ test "control token writer creates private token file" {
 test "control storage helpers enforce app storage prefix" {
     try std.testing.expect(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "notes-lite:notes"));
     try std.testing.expect(!(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "other:notes")));
+}
+
+test "network policy helper matches URL method headers and string body bytes" {
+    var entry_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "origin": "https://api.example.com",
+        \\  "methods": ["POST"],
+        \\  "pathPrefix": "/v1/",
+        \\  "allowedHeaders": ["content-type"],
+        \\  "maxRequestBytes": 4
+        \\}
+    ,
+        .{},
+    );
+    defer entry_json.deinit();
+    var params_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "headers": {"content-type": "application/json"},
+        \\  "body": "1234"
+        \\}
+    ,
+        .{},
+    );
+    defer params_json.deinit();
+
+    const parts = try parseNetworkUrlAlloc(std.testing.allocator, "https://api.example.com/v1/status");
+    defer freeUrlParts(std.testing.allocator, parts);
+    try std.testing.expect(try networkPolicyEntryAllowsRequest(std.testing.allocator, entry_json.value, parts, "POST", params_json.value));
+    try std.testing.expect(!(try networkPolicyEntryAllowsRequest(std.testing.allocator, entry_json.value, parts, "GET", params_json.value)));
+
+    var large_body_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "headers": {"content-type": "application/json"},
+        \\  "body": "12345"
+        \\}
+    ,
+        .{},
+    );
+    defer large_body_json.deinit();
+    try std.testing.expect(!(try networkPolicyEntryAllowsRequest(std.testing.allocator, entry_json.value, parts, "POST", large_body_json.value)));
 }
