@@ -25,9 +25,7 @@ CREATE TABLE IF NOT EXISTS app_versions (
   trust_level TEXT NOT NULL DEFAULT 'user-generated',
   status TEXT NOT NULL DEFAULT 'installed' CHECK (status IN ('installed','enabled','disabled','quarantined','rolled-back','uninstalled')),
   created_at TEXT NOT NULL,
-  activated_at TEXT,
-  UNIQUE(app_id, version),
-  UNIQUE(app_id, content_hash)
+  activated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS app_files (

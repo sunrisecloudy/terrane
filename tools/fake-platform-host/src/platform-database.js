@@ -29,8 +29,9 @@ export class PlatformDatabase {
 
   insertInstalledPackage({ manifest, files, hashes, validation, signature, contentHashesDocument, trustLevel = "developer" }) {
     const createdAt = nowIso();
-    const installId = `install_${manifest.id}_${manifest.version}_${hashes.contentHash.replace("sha256:", "").slice(0, 12)}`;
+    const installId = `install_${manifest.id}_${manifest.version}_${createdAt.replace(/[-:.]/g, "").slice(0, 15)}_${hashes.contentHash.replace("sha256:", "").slice(0, 12)}_${id("v").slice(2, 10)}`;
     const reportId = id("report");
+    const previousInstallId = this.activeInstallId(manifest.id);
 
     this.transaction(() => {
       this.run(
@@ -42,8 +43,12 @@ export class PlatformDatabase {
         createdAt,
       );
 
+      if (previousInstallId) {
+        this.run("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", previousInstallId);
+      }
+
       this.run(
-        "INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)",
+        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)",
         installId,
         manifest.id,
         manifest.version,
@@ -112,7 +117,7 @@ export class PlatformDatabase {
         installId,
         reportId,
         createdAt,
-        prettyJson({ previousInstallId: this.activeInstallId(manifest.id) }),
+        prettyJson({ previousInstallId }),
       );
 
       this.run(
@@ -126,6 +131,121 @@ export class PlatformDatabase {
     });
 
     return { installId, reportId, appId: manifest.id, version: manifest.version, contentHash: hashes.contentHash };
+  }
+
+  listWebappVersions(appId) {
+    return this.all(
+      "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions WHERE app_id = ? ORDER BY created_at DESC",
+      appId,
+    ).map((row) => ({
+      appId: row.app_id,
+      appVersion: row.version,
+      installId: row.install_id,
+      status: row.status,
+      installedAt: row.created_at,
+      manifestHash: row.manifest_hash,
+      contentHash: row.content_hash,
+      dataVersion: row.data_version,
+      signature: row.signature_json ? JSON.parse(row.signature_json) : null,
+      activatedAt: row.activated_at,
+      trustLevel: row.trust_level,
+      runtimeVersion: row.runtime_version,
+    }));
+  }
+
+  rollbackWebapp(appId, targetInstallId = null) {
+    const active = this.activeInstall(appId);
+    if (!active) {
+      throw new Error(`App is not installed: ${appId}`);
+    }
+
+    const target =
+      targetInstallId ??
+      this.get(
+        "SELECT install_id FROM app_versions WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') ORDER BY created_at DESC LIMIT 1",
+        appId,
+        active.installId,
+      )?.install_id;
+
+    if (!target) {
+      throw new Error(`No rollback target exists for ${appId}`);
+    }
+
+    const targetRow = this.get("SELECT version, data_version FROM app_versions WHERE app_id = ? AND install_id = ?", appId, target);
+    if (!targetRow) {
+      throw new Error(`Rollback target not found: ${target}`);
+    }
+
+    const createdAt = nowIso();
+    this.transaction(() => {
+      this.run("UPDATE app_versions SET status = 'rolled-back' WHERE install_id = ?", active.installId);
+      this.run("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", createdAt, target);
+      this.run(
+        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+        target,
+        targetRow.version,
+        targetRow.data_version,
+        createdAt,
+        appId,
+      );
+      this.run(
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'rollback', ?, 'fake-host', ?, ?)",
+        id("install_event"),
+        appId,
+        target,
+        active.installId,
+        createdAt,
+        prettyJson({ targetInstallId: target, rolledBackInstallId: active.installId }),
+      );
+    });
+
+    return { appId, activeInstallId: target, rolledBackInstallId: active.installId };
+  }
+
+  quarantineWebapp(appId, installId = null, reason = "manual quarantine") {
+    const active = this.activeInstall(appId);
+    const target = installId ?? active?.installId;
+    if (!target) {
+      throw new Error(`App is not installed: ${appId}`);
+    }
+
+    const createdAt = nowIso();
+    this.transaction(() => {
+      this.run("UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?", appId, target);
+      if (active?.installId === target) {
+        this.run("UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?", createdAt, appId);
+      }
+      this.run(
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, created_at, details_json) VALUES (?, ?, ?, 'quarantine', 'fake-host', ?, ?)",
+        id("install_event"),
+        appId,
+        target,
+        createdAt,
+        prettyJson({ reason }),
+      );
+    });
+
+    return { appId, installId: target, status: "quarantined", reason };
+  }
+
+  installReport(appId, installId = null) {
+    const row = installId
+      ? this.get("SELECT * FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1", appId, installId)
+      : this.get("SELECT * FROM app_install_reports WHERE app_id = ? ORDER BY created_at DESC LIMIT 1", appId);
+    if (!row) return null;
+    return {
+      reportId: row.report_id,
+      appId: row.app_id,
+      installId: row.install_id,
+      status: row.status,
+      validation: row.validation_json ? JSON.parse(row.validation_json) : null,
+      security: row.security_json ? JSON.parse(row.security_json) : null,
+      permissions: row.permissions_json ? JSON.parse(row.permissions_json) : null,
+      compatibility: row.compatibility_json ? JSON.parse(row.compatibility_json) : null,
+      smokeTest: row.smoke_test_json ? JSON.parse(row.smoke_test_json) : null,
+      contentHash: row.content_hash,
+      createdAt: row.created_at,
+    };
   }
 
   activeInstall(appId) {

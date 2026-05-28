@@ -95,6 +95,14 @@ export class FakePlatformHost {
         return this.installPackage(requiredArg(args, "packagePath"), {
           trustLevel: args.trustLevel ?? "developer",
         });
+      case "platform.list_webapp_versions":
+        return this.database.listWebappVersions(requiredArg(args, "appId"));
+      case "platform.rollback_webapp":
+        return this.database.rollbackWebapp(requiredArg(args, "appId"), args.installId ?? null);
+      case "platform.quarantine_webapp":
+        return this.database.quarantineWebapp(requiredArg(args, "appId"), args.installId ?? null, args.reason ?? "manual quarantine");
+      case "platform.install_report":
+        return this.database.installReport(requiredArg(args, "appId"), args.installId ?? null);
       case "platform.open_webapp":
         this.verifyInstalledApp(requiredArg(args, "appId"));
         return {
