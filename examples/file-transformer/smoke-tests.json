@@ -1,0 +1,27 @@
+[
+  {
+    "name": "open transform save",
+    "steps": [
+      {
+        "type": "click",
+        "selector": "#open"
+      },
+      {
+        "type": "click",
+        "selector": "#transform"
+      },
+      {
+        "type": "click",
+        "selector": "#save"
+      }
+    ],
+    "expected": {
+      "bridgeCallsInclude": [
+        "dialog.openFile",
+        "core.step",
+        "storage.set",
+        "dialog.saveFile"
+      ]
+    }
+  }
+]

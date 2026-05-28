@@ -1,0 +1,39 @@
+[
+  {
+    "name": "loads empty state",
+    "steps": [],
+    "expected": {
+      "textIncludes": "No notes yet"
+    }
+  },
+  {
+    "name": "creates note",
+    "steps": [
+      {
+        "type": "click",
+        "selector": "#new-note"
+      },
+      {
+        "type": "fill",
+        "selector": "#note-title",
+        "value": "Hello"
+      },
+      {
+        "type": "fill",
+        "selector": "#note-body",
+        "value": "World"
+      },
+      {
+        "type": "click",
+        "selector": "#save-note"
+      }
+    ],
+    "expected": {
+      "textIncludes": "Hello",
+      "bridgeCallsInclude": [
+        "storage.set",
+        "notification.toast"
+      ]
+    }
+  }
+]

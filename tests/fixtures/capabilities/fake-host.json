@@ -1,0 +1,22 @@
+{
+  "runtimeVersion": "0.1.0",
+  "platform": "fake",
+  "target": "fake-host",
+  "devMode": true,
+  "features": {
+    "core.step": true,
+    "storage.read": true,
+    "storage.write": true,
+    "dialog.openFile": true,
+    "dialog.saveFile": true,
+    "network.request": true,
+    "notification.toast": true,
+    "app.log": true,
+    "runtime.snapshot": true
+  },
+  "limits": {
+    "maxBodyBytes": 1048576,
+    "maxStorageBytes": 5242880,
+    "maxBridgeCallsPerMinute": 600
+  }
+}

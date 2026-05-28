@@ -1,0 +1,52 @@
+{
+  "id": "core-replay-lab",
+  "name": "Core Replay Lab",
+  "version": "0.1.0",
+  "runtimeVersion": "0.1.0",
+  "entry": "index.html",
+  "description": "Send events to Zig core, keep a replay log, and export the fixture.",
+  "permissions": [
+    "core.step",
+    "storage.read",
+    "storage.write",
+    "dialog.saveFile",
+    "notification.toast",
+    "app.log"
+  ],
+  "storagePrefix": "core-replay-lab:",
+  "dataVersion": 1,
+  "capabilities": {
+    "required": [
+      "core.step",
+      "storage.read",
+      "storage.write",
+      "dialog.saveFile"
+    ],
+    "optional": [
+      "notification.toast",
+      "app.log"
+    ]
+  },
+  "resourceBudget": {
+    "maxDomNodes": 2000,
+    "maxStorageBytes": 5242880,
+    "maxBridgeCallsPerMinute": 600,
+    "maxNetworkRequestsPerMinute": 60,
+    "maxTimers": 64,
+    "maxLogLinesPerMinute": 120,
+    "maxPackageBytes": 1048576,
+    "maxFileBytes": 524288
+  },
+  "networkPolicy": {
+    "allow": []
+  },
+  "trust": {
+    "level": "bundled",
+    "requiresUserApproval": false
+  },
+  "compatibility": {
+    "mode": "strict",
+    "minimumRuntimeVersion": "0.1.0"
+  },
+  "authorId": "example-fixture"
+}

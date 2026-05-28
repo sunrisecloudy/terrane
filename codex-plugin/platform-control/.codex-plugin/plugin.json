@@ -1,0 +1,25 @@
+{
+  "name": "ai-native-webview-platform-control",
+  "version": "0.1.0",
+  "description": "Control and micro-test the Native AI Webapp Platform from Codex through MCP.",
+  "author": {
+    "name": "Platform Team"
+  },
+  "license": "UNLICENSED",
+  "keywords": ["webview", "mcp", "micro-test", "zig", "generated-apps"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "AI Native WebView Platform Control",
+    "shortDescription": "Launch hosts, install generated apps, and run micro-tests.",
+    "longDescription": "Developer-only plugin for controlling the native WebView platform, validating generated app packages, inspecting bridge/core/runtime state, and running granular micro-tests through MCP.",
+    "developerName": "Platform Team",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write", "Test", "Control Dev Host"],
+    "defaultPrompt": [
+      "Use @platform-micro-test to run the example webapp suite on the fake host.",
+      "Use @generated-webapp-repair to install a generated package, run micro-tests, and repair failures.",
+      "Use @core-replay-debug to replay the latest core event log and find the mismatch."
+    ]
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/network-policy.schema.json",
+  "title": "NetworkPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "allow"
+  ],
+  "properties": {
+    "allow": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "origin",
+          "methods"
+        ],
+        "properties": {
+          "origin": {
+            "type": "string",
+            "pattern": "^https://[^/\\s]+(?::\\d+)?$"
+          },
+          "methods": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE"
+              ]
+            }
+          },
+          "pathPrefix": {
+            "type": "string"
+          },
+          "allowedHeaders": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxRequestBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxResponseBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120000
+          }
+        }
+      }
+    },
+    "denyPrivateNetwork": {
+      "type": "boolean"
+    },
+    "allowCredentials": {
+      "type": "boolean"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "add task through core",
+    "steps": [
+      {
+        "type": "fill",
+        "selector": "#title",
+        "value": "Implement bridge"
+      },
+      {
+        "type": "select",
+        "selector": "#priority",
+        "value": "high"
+      },
+      {
+        "type": "click",
+        "selector": "#add"
+      }
+    ],
+    "expected": {
+      "textIncludes": "Implement bridge",
+      "bridgeCallsInclude": [
+        "core.step",
+        "storage.set",
+        "notification.toast"
+      ]
+    }
+  }
+]

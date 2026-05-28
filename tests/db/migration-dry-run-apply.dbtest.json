@@ -1,0 +1,15 @@
+{
+  "name": "migration dry-run and apply",
+  "type": "migration",
+  "steps": [
+    "write v1 storage",
+    "install v2 migration",
+    "dry run",
+    "apply"
+  ],
+  "expected": [
+    "pre-migration snapshot exists",
+    "migration_runs rows exist",
+    "new dataVersion active"
+  ]
+}

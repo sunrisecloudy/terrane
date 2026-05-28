@@ -1,0 +1,40 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7fb;
+  --panel: #ffffff;
+  --text: #121826;
+  --muted: #667085;
+  --border: #dde2eb;
+  --accent: #315efb;
+  --danger: #b42318;
+  --shadow: 0 16px 50px rgba(16, 24, 40, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0c111d; --panel: #151b2c; --text: #eef2ff; --muted: #9aa4b2; --border: #293247; --accent: #8aa2ff; --danger: #ff8a80; --shadow: none; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+button, input, textarea { font: inherit; }
+button { border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; background: var(--panel); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); color: white; border-color: transparent; }
+button.danger { color: var(--danger); }
+.app-shell { width: min(980px, 100%); margin: 0 auto; padding: 22px; }
+.hero { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 18px; }
+h1 { margin: 0; font-size: clamp(28px, 5vw, 44px); }
+.eyebrow { margin: 0 0 6px; color: var(--accent); font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .08em; }
+.muted { color: var(--muted); margin: 8px 0 0; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 16px; box-shadow: var(--shadow); margin-bottom: 16px; }
+.editor { display: grid; gap: 12px; }
+.editor[hidden] { display: none; }
+label { display: grid; gap: 6px; font-weight: 650; }
+input, textarea { width: 100%; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 12px; padding: 11px 12px; }
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; }
+.toolbar input { flex: 1; }
+.row { display: flex; gap: 10px; }
+.empty { border: 1px dashed var(--border); color: var(--muted); padding: 28px; border-radius: 16px; text-align: center; }
+.notes { list-style: none; padding: 0; display: grid; gap: 10px; }
+.note { border: 1px solid var(--border); border-radius: 16px; padding: 14px; display: grid; gap: 8px; }
+.note-title { font-weight: 750; }
+.note-body { color: var(--muted); white-space: pre-wrap; }
+.note-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 680px) { .hero, .toolbar { flex-direction: column; align-items: stretch; } }

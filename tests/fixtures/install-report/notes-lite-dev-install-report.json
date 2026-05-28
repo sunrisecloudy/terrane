@@ -1,0 +1,23 @@
+{
+  "appId": "notes-lite",
+  "installId": "notes-lite-0.1.0-dev",
+  "status": "accepted",
+  "validatedAt": "2026-05-28T00:00:00Z",
+  "requiresUserApproval": false,
+  "checks": [
+    {
+      "name": "manifest-schema",
+      "status": "pass"
+    },
+    {
+      "name": "static-policy",
+      "status": "pass"
+    },
+    {
+      "name": "accessibility",
+      "status": "pass"
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}

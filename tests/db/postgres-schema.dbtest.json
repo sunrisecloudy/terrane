@@ -1,0 +1,20 @@
+{
+  "name": "postgres logical schema exists",
+  "type": "schema-static",
+  "database": "postgres",
+  "migrations": [
+    "db/postgres/001_initial.sql",
+    "db/postgres/002_runtime_debug.sql",
+    "db/postgres/003_codex_control.sql",
+    "db/postgres/004_migrations_and_snapshots.sql"
+  ],
+  "assertTables": [
+    "apps",
+    "app_versions",
+    "app_storage",
+    "bridge_calls",
+    "core_events",
+    "test_runs",
+    "app_install_reports"
+  ]
+}

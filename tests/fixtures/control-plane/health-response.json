@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "result": {
+    "name": "fake-platform-host",
+    "version": "0.1.0",
+    "targets": ["fake-host"]
+  }
+}

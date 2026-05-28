@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/bridge-request.schema.json",
+  "title": "Runtime Bridge Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "appId",
+    "method",
+    "params",
+    "timestamp"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "appId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "method": {
+      "type": "string"
+    },
+    "params": {},
+    "timestamp": {
+      "type": "number"
+    }
+  }
+}

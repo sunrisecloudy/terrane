@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/dev-control-command.schema.json",
+  "title": "DevControlCommand",
+  "type": "object",
+  "required": ["tool", "args"],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "pattern": "^(platform|runtime)\\.[a-z0-9_]+$"
+    },
+    "args": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

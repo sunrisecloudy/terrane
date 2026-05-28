@@ -1,0 +1,5 @@
+{
+  "id": "direct-fetch",
+  "expectedError": "forbidden_network_api",
+  "source": "fetch('https://example.com')"
+}

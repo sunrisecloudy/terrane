@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/backup-export.schema.json",
+  "title": "Portable Backup Export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "exportId",
+    "type",
+    "createdAt",
+    "runtimeVersion",
+    "source",
+    "apps",
+    "appVersions",
+    "appFiles",
+    "appPermissions",
+    "appStorage",
+    "runtimeCapabilities"
+  ],
+  "properties": {
+    "exportId": {
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "backup",
+        "debug-bundle",
+        "test-fixture"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "runtimeVersion": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform"
+      ],
+      "properties": {
+        "platform": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "deviceIdHash": {
+          "type": "string"
+        }
+      }
+    },
+    "apps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appVersions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appPermissions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appStorage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appMigrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "appInstallReports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "runtimeCapabilities": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "runtimeSessions": {
+          "type": "array"
+        },
+        "bridgeCalls": {
+          "type": "array"
+        },
+        "coreEvents": {
+          "type": "array"
+        },
+        "coreActions": {
+          "type": "array"
+        },
+        "runtimeSnapshots": {
+          "type": "array"
+        },
+        "testRuns": {
+          "type": "array"
+        }
+      }
+    },
+    "contentHash": {
+      "type": "string"
+    },
+    "signature": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

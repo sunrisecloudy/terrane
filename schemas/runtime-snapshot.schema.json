@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/runtime-snapshot.schema.json",
+  "title": "Runtime Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshotId",
+    "type",
+    "createdAt",
+    "platform",
+    "target",
+    "runtimeVersion",
+    "activeApp",
+    "capabilities",
+    "storage",
+    "bridgeCalls",
+    "coreEvents",
+    "console",
+    "resourceUsage"
+  ],
+  "properties": {
+    "snapshotId": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "bug-report",
+        "pre-install",
+        "pre-migration",
+        "post-test",
+        "golden"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "runtimeVersion": {
+      "type": "string"
+    },
+    "activeApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appId",
+        "installId",
+        "manifestHash",
+        "contentHash"
+      ],
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "installId": {
+          "type": "string"
+        },
+        "manifestHash": {
+          "type": "string"
+        },
+        "contentHash": {
+          "type": "string"
+        }
+      }
+    },
+    "capabilities": {
+      "$ref": "runtime-capabilities.schema.json"
+    },
+    "route": {
+      "type": "string"
+    },
+    "domSummary": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "accessibilityTree": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "bridgeCalls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "coreEvents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "console": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "mocks": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "resourceUsage": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "screenshotRef": {
+      "type": "string"
+    }
+  }
+}

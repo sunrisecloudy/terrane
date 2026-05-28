@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/manifest.schema.json",
+  "title": "Generated Webapp Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "version",
+    "runtimeVersion",
+    "dataVersion",
+    "entry",
+    "description",
+    "permissions",
+    "storagePrefix",
+    "networkPolicy",
+    "resourceBudget"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "runtimeVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "dataVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "entry": {
+      "type": "string",
+      "const": "index.html"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "core.step",
+          "storage.read",
+          "storage.write",
+          "dialog.openFile",
+          "dialog.saveFile",
+          "notification.toast",
+          "network.request",
+          "app.log"
+        ]
+      }
+    },
+    "storagePrefix": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}:$"
+    },
+    "networkPolicy": {
+      "$ref": "network-policy.schema.json"
+    },
+    "resourceBudget": {
+      "$ref": "resource-budget.schema.json"
+    },
+    "requiredCapabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "optional": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": [
+            "bundled",
+            "local-dev",
+            "user-generated",
+            "imported",
+            "untrusted"
+          ]
+        },
+        "requiresUserApproval": {
+          "type": "boolean"
+        }
+      }
+    },
+    "authorId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "strict",
+            "compatible",
+            "dev"
+          ]
+        },
+        "minimumRuntimeVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "maximumRuntimeVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      }
+    }
+  }
+}

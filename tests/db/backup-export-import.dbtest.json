@@ -1,0 +1,15 @@
+{
+  "name": "backup export/import round trip",
+  "type": "backup",
+  "steps": [
+    "install app",
+    "write storage",
+    "export backup",
+    "import clean db"
+  ],
+  "expected": [
+    "active app restored",
+    "storage restored",
+    "export schema valid"
+  ]
+}

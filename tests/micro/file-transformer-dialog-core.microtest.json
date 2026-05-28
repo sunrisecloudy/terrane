@@ -1,0 +1,122 @@
+{
+  "id": "file-transformer-dialog-core",
+  "description": "Mock a file picker, transform content through core.step, and save output through dialog bridge.",
+  "targetApps": [
+    "file-transformer"
+  ],
+  "platforms": [
+    "fake-host",
+    "macos",
+    "linux",
+    "windows",
+    "android-emulator",
+    "ios-simulator"
+  ],
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "file-transformer"
+      }
+    },
+    {
+      "tool": "runtime.dialog_mock_set",
+      "args": {
+        "method": "dialog.openFile",
+        "files": [
+          {
+            "name": "input.txt",
+            "mime": "text/plain",
+            "contentBase64": "SGVsbG8sIEFJ"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "runtime.wait_for",
+      "args": {
+        "kind": "idle"
+      }
+    },
+    {
+      "tool": "runtime.capabilities",
+      "args": {}
+    }
+  ],
+  "steps": [
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "open-file-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "dialog.openFile"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "transform-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "save-file-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "dialog.saveFile"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ],
+  "teardown": [
+    {
+      "tool": "runtime.resource_usage",
+      "args": {}
+    },
+    {
+      "tool": "runtime.run_accessibility_audit",
+      "args": {}
+    },
+    {
+      "tool": "platform.create_snapshot",
+      "args": {
+        "type": "post-test"
+      }
+    }
+  ]
+}

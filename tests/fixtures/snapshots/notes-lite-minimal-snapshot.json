@@ -1,0 +1,57 @@
+{
+  "snapshotId": "snap-notes-lite-001",
+  "type": "post-test",
+  "createdAt": "2026-05-28T00:00:00Z",
+  "platform": "fake",
+  "target": "fake-host",
+  "runtimeVersion": "0.1.0",
+  "activeApp": {
+    "appId": "notes-lite",
+    "installId": "notes-lite-0.1.0-dev",
+    "manifestHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "capabilities": {
+    "runtimeVersion": "0.1.0",
+    "platform": "fake",
+    "target": "fake-host",
+    "devMode": true,
+    "features": {
+      "core.step": true,
+      "storage.read": true,
+      "storage.write": true,
+      "dialog.openFile": true,
+      "dialog.saveFile": true,
+      "network.request": true,
+      "notification.toast": true,
+      "app.log": true,
+      "runtime.snapshot": true
+    },
+    "limits": {
+      "maxBodyBytes": 1048576,
+      "maxStorageBytes": 5242880,
+      "maxBridgeCallsPerMinute": 600
+    }
+  },
+  "route": "/",
+  "domSummary": {
+    "title": "Notes Lite",
+    "mainVisible": true
+  },
+  "accessibilityTree": {
+    "role": "main",
+    "name": "Notes Lite"
+  },
+  "storage": {
+    "notes-lite:notes": []
+  },
+  "bridgeCalls": [],
+  "coreEvents": [],
+  "console": [],
+  "mocks": {},
+  "resourceUsage": {
+    "domNodes": 42,
+    "storageBytes": 128,
+    "bridgeCalls": 0
+  }
+}

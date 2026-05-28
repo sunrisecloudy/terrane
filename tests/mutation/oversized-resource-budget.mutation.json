@@ -1,0 +1,6 @@
+{
+  "id": "oversized-resource-budget",
+  "expectedError": "quota_exceeded",
+  "resource": "app.js",
+  "bytes": 999999999
+}

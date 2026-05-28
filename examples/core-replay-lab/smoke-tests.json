@@ -1,0 +1,23 @@
+[
+  {
+    "name": "send and export event",
+    "steps": [
+      {
+        "type": "click",
+        "selector": "#send"
+      },
+      {
+        "type": "click",
+        "selector": "#export"
+      }
+    ],
+    "expected": {
+      "bridgeCallsInclude": [
+        "core.step",
+        "storage.set",
+        "dialog.saveFile",
+        "notification.toast"
+      ]
+    }
+  }
+]

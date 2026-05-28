@@ -1,0 +1,14 @@
+{
+  "expected": {
+    "status": "rejected",
+    "errorCode": "FORBIDDEN_DIRECT_NETWORK"
+  },
+  "files": [
+    {
+      "path": "app.js",
+      "content": "fetch('https://example.com')"
+    }
+  ],
+  "id": "forbidden-fetch",
+  "expectedError": "FORBIDDEN_DIRECT_NETWORK"
+}

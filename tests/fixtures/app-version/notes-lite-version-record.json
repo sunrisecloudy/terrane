@@ -1,0 +1,10 @@
+{
+  "appId": "notes-lite",
+  "appVersion": "0.1.0",
+  "installId": "notes-lite-0.1.0-dev",
+  "status": "enabled",
+  "installedAt": "2026-05-28T00:00:00Z",
+  "manifestHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "dataVersion": 1
+}

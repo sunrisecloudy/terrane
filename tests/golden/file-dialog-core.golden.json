@@ -1,0 +1,52 @@
+{
+  "id": "file-dialog-core",
+  "description": "Open file dialog mock, send transformed data through core.step, save file mock.",
+  "targetApps": [
+    "file-transformer"
+  ],
+  "platforms": [
+    "fake-host"
+  ],
+  "steps": [
+    {
+      "tool": "runtime.dialog_mock_set",
+      "args": {
+        "files": [
+          {
+            "name": "sample.txt",
+            "mime": "text/plain",
+            "text": "hello"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "file-transformer"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "selector": "[data-testid='open-file']"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "dialog.openFile"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ]
+}

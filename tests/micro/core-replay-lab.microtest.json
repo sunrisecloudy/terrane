@@ -1,0 +1,99 @@
+{
+  "id": "core-replay-lab-determinism",
+  "description": "Send events to core, capture event log, replay it, and compare final state.",
+  "targetApps": [
+    "core-replay-lab"
+  ],
+  "platforms": [
+    "fake-host",
+    "macos",
+    "linux",
+    "windows",
+    "android-emulator",
+    "ios-simulator",
+    "server"
+  ],
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "core-replay-lab"
+      }
+    },
+    {
+      "tool": "runtime.wait_for",
+      "args": {
+        "kind": "idle"
+      }
+    },
+    {
+      "tool": "runtime.capabilities",
+      "args": {}
+    }
+  ],
+  "steps": [
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "send-event-button"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "send-event-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.replay_events",
+      "args": {
+        "appId": "core-replay-lab",
+        "source": "current-event-log"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ],
+  "teardown": [
+    {
+      "tool": "runtime.resource_usage",
+      "args": {}
+    },
+    {
+      "tool": "runtime.run_accessibility_audit",
+      "args": {}
+    },
+    {
+      "tool": "platform.create_snapshot",
+      "args": {
+        "type": "post-test"
+      }
+    }
+  ]
+}

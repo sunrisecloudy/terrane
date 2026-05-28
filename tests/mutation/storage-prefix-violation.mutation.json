@@ -1,0 +1,11 @@
+{
+  "id": "storage-prefix-violation",
+  "expectedError": "storage_prefix_violation",
+  "bridgeCall": {
+    "method": "storage.set",
+    "params": {
+      "key": "other-app:data",
+      "value": 1
+    }
+  }
+}

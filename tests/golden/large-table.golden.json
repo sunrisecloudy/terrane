@@ -1,0 +1,33 @@
+{
+  "id": "large-table",
+  "description": "Virtual-list/table behavior and DOM-node budget enforcement.",
+  "targetApps": [
+    "task-workbench"
+  ],
+  "platforms": [
+    "fake-host"
+  ],
+  "steps": [
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "task-workbench"
+      }
+    },
+    {
+      "tool": "runtime.snapshot",
+      "args": {
+        "includeResourceUsage": true
+      },
+      "expect": {
+        "resourceUsage": {
+          "maxDomNodesBelow": 5000
+        }
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ]
+}

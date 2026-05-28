@@ -1,0 +1,16 @@
+{
+  "mcp_servers": {
+    "platform-control": {
+      "command": "node",
+      "args": ["./tools/codex-platform-mcp/dist/server.js"],
+      "env": {
+        "PLATFORM_CONTROL_URL": "http://127.0.0.1:29371",
+        "PLATFORM_CONTROL_TOKEN": "dev-token-change-me",
+        "PLATFORM_CONTROL_DEFAULT_TARGET": "fake-host"
+      },
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "prompt"
+    }
+  }
+}

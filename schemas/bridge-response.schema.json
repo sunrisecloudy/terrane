@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/bridge-response.schema.json",
+  "title": "Runtime Bridge Response",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ok",
+        "result"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ok": {
+          "const": true
+        },
+        "result": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "details": {}
+          }
+        }
+      }
+    }
+  ]
+}

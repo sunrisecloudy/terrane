@@ -1,0 +1,381 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Native AI Webapp Platform Dev Control Plane",
+    "version": "0.4.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Control plane health"
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Create or attach to a host session"
+          }
+        }
+      }
+    },
+    "/sessions/{id}": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Stop session"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/snapshot": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Session runtime snapshot"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/events": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Session event log"
+          }
+        }
+      }
+    },
+    "/command": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Execute a control command"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/capabilities": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Runtime capability document"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/resource-usage": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Runtime resource usage and budget status"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/accessibility": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Runtime accessibility report or tree"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/snapshots": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Create or list snapshots"
+          }
+        }
+      }
+    },
+    "/sessions/{id}/snapshots/{snapshotId}": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Restore or read a snapshot"
+          }
+        }
+      }
+    },
+    "/apps/{appId}/versions": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "List installed app versions"
+          }
+        }
+      }
+    },
+    "/apps/{appId}/rollback": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Rollback an app to a previous version"
+          }
+        }
+      }
+    },
+    "/apps/{appId}/install-report": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Latest app install report"
+          }
+        }
+      }
+    },
+    "/packages/validate": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Validate source package"
+          }
+        }
+      }
+    },
+    "/packages/sign": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Sign source package for install"
+          }
+        }
+      }
+    },
+    "/packages/policy-audit": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Run static package policy audit"
+          }
+        }
+      }
+    },
+    "/repair-loop": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Run Codex repair loop in dev mode"
+          }
+        }
+      }
+    },
+    "/db/snapshot": {
+      "post": {
+        "summary": "Return a sanitized platform database snapshot for the active session or target.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/app-storage": {
+      "post": {
+        "summary": "Query app_storage rows scoped by app id/prefix.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/app-versions": {
+      "post": {
+        "summary": "List installed versions for an app.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/bridge-calls": {
+      "post": {
+        "summary": "Query persisted bridge calls.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/core-events": {
+      "post": {
+        "summary": "Query persisted core events and optional actions.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/test-runs": {
+      "post": {
+        "summary": "Query persisted micro-test/test-run records.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/export-debug-bundle": {
+      "post": {
+        "summary": "Create a portable debug bundle export for Codex replay.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    }
+  }
+}

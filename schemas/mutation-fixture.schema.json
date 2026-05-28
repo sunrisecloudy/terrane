@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/mutation-fixture.schema.json",
+  "title": "MutationFixture",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "expectedError"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "expectedError": {
+      "type": "string"
+    },
+    "expected": {
+      "type": "object"
+    },
+    "source": {
+      "type": "string"
+    },
+    "html": {
+      "type": "string"
+    },
+    "bridgeCall": {
+      "type": "object"
+    },
+    "files": {
+      "type": "array"
+    },
+    "package": {
+      "type": "object"
+    },
+    "scenario": {
+      "type": "string"
+    }
+  }
+}

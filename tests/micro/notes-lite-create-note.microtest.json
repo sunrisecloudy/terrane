@@ -1,0 +1,117 @@
+{
+  "id": "notes-lite-create-note",
+  "description": "Create a note, persist it through the storage bridge, and verify it renders.",
+  "targetApps": [
+    "notes-lite"
+  ],
+  "platforms": [
+    "fake-host",
+    "macos",
+    "linux",
+    "windows",
+    "android-emulator",
+    "ios-simulator"
+  ],
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/notes-lite"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/notes-lite"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/notes-lite"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "notes-lite"
+      }
+    },
+    {
+      "tool": "runtime.wait_for",
+      "args": {
+        "kind": "idle"
+      }
+    },
+    {
+      "tool": "runtime.capabilities",
+      "args": {}
+    }
+  ],
+  "steps": [
+    {
+      "tool": "runtime.assert_visible",
+      "args": {
+        "text": "Notes"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "new-note-button"
+      }
+    },
+    {
+      "tool": "runtime.type",
+      "args": {
+        "testId": "note-title-input",
+        "text": "AI generated test note"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "save-note-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "storage.set"
+      }
+    },
+    {
+      "tool": "runtime.assert_text",
+      "args": {
+        "text": "AI generated test note"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ],
+  "teardown": [
+    {
+      "tool": "runtime.resource_usage",
+      "args": {}
+    },
+    {
+      "tool": "runtime.run_accessibility_audit",
+      "args": {}
+    },
+    {
+      "tool": "platform.create_snapshot",
+      "args": {
+        "type": "post-test"
+      }
+    },
+    {
+      "tool": "platform.reset_webapp",
+      "args": {
+        "appId": "notes-lite",
+        "confirm": true
+      }
+    }
+  ]
+}

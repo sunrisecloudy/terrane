@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/runtime-capabilities.schema.json",
+  "title": "Runtime Capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runtimeVersion",
+    "platform",
+    "target",
+    "devMode",
+    "features",
+    "limits"
+  ],
+  "properties": {
+    "runtimeVersion": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string",
+      "enum": [
+        "fake",
+        "ios",
+        "macos",
+        "android",
+        "windows",
+        "linux",
+        "server"
+      ]
+    },
+    "target": {
+      "type": "string"
+    },
+    "devMode": {
+      "type": "boolean"
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

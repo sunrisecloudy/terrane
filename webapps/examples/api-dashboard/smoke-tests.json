@@ -1,0 +1,19 @@
+[
+  {
+    "name": "send request",
+    "steps": [
+      {
+        "type": "click",
+        "selector": "#send"
+      }
+    ],
+    "expected": {
+      "bridgeCallsInclude": [
+        "network.request",
+        "storage.set",
+        "notification.toast"
+      ],
+      "textIncludes": "Status"
+    }
+  }
+]

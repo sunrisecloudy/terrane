@@ -1,0 +1,12 @@
+{
+  "ok": false,
+  "error": {
+    "code": "selector.not_found",
+    "message": "No element matched data-testid=missing-button"
+  },
+  "diagnostics": {
+    "target": "fake-host",
+    "sessionId": "session_test",
+    "appId": "notes-lite"
+  }
+}

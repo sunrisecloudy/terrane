@@ -1,0 +1,14 @@
+{
+  "app": "task-workbench",
+  "event": {
+    "type": "CreateTask",
+    "payload": {
+      "title": "Fixture task",
+      "priority": "high"
+    }
+  },
+  "context": {
+    "platform": "test",
+    "runtimeVersion": "0.1.0"
+  }
+}

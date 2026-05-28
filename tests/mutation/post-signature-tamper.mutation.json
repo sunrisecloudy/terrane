@@ -1,0 +1,9 @@
+{
+  "expected": {
+    "status": "rejected",
+    "errorCode": "SIGNATURE_CONTENT_HASH_MISMATCH"
+  },
+  "scenario": "Sign a valid package, mutate app.js, then attempt to mount.",
+  "id": "post-signature-tamper",
+  "expectedError": "SIGNATURE_CONTENT_HASH_MISMATCH"
+}

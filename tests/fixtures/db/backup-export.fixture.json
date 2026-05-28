@@ -1,0 +1,58 @@
+{
+  "exportId": "export_1",
+  "type": "debug-bundle",
+  "createdAt": "2026-05-28T00:00:00Z",
+  "runtimeVersion": "0.4.0",
+  "source": {
+    "platform": "fake",
+    "target": "fake-host"
+  },
+  "apps": [
+    {
+      "id": "notes-lite",
+      "name": "Notes Lite"
+    }
+  ],
+  "appVersions": [
+    {
+      "installId": "install_notes_lite_1",
+      "appId": "notes-lite",
+      "version": "1.0.0"
+    }
+  ],
+  "appFiles": [
+    {
+      "installId": "install_notes_lite_1",
+      "path": "index.html",
+      "contentText": "<main></main>"
+    }
+  ],
+  "appPermissions": [
+    {
+      "installId": "install_notes_lite_1",
+      "permission": "storage.read",
+      "approved": true
+    }
+  ],
+  "appStorage": [
+    {
+      "appId": "notes-lite",
+      "key": "notes-lite:notes",
+      "value": []
+    }
+  ],
+  "appMigrations": [],
+  "appInstallReports": [],
+  "runtimeCapabilities": {
+    "platform": "fake-host"
+  },
+  "debug": {
+    "runtimeSessions": [],
+    "bridgeCalls": [],
+    "coreEvents": [],
+    "coreActions": [],
+    "runtimeSnapshots": [],
+    "testRuns": []
+  },
+  "contentHash": "sha256:backup"
+}

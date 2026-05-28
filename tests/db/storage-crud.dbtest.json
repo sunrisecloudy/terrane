@@ -1,0 +1,15 @@
+{
+  "name": "storage bridge persists app_storage",
+  "type": "storage",
+  "steps": [
+    "storage.set",
+    "storage.get",
+    "storage.list",
+    "storage.remove"
+  ],
+  "expected": [
+    "key scoped by app_id",
+    "prefix enforced",
+    "cross-app read denied"
+  ]
+}

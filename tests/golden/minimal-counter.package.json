@@ -1,0 +1,68 @@
+{
+  "manifest": {
+    "id": "minimal-counter",
+    "name": "Minimal Counter",
+    "version": "0.1.0",
+    "runtimeVersion": "0.1.0",
+    "entry": "index.html",
+    "description": "Golden minimal counter fixture.",
+    "permissions": [
+      "app.log"
+    ],
+    "storagePrefix": "minimal-counter:",
+    "dataVersion": 1,
+    "resourceBudget": {
+      "maxStorageBytes": 5242880,
+      "maxBridgeCallsPerMinute": 600,
+      "maxNetworkRequestsPerMinute": 60,
+      "maxNetworkResponseBytes": 1048576,
+      "maxDomNodes": 2000,
+      "maxTimers": 64,
+      "maxLogEntriesPerMinute": 120,
+      "maxAppJsBytes": 262144,
+      "maxHtmlBytes": 262144,
+      "maxCssBytes": 262144
+    },
+    "networkPolicy": {
+      "allow": [],
+      "denyPrivateNetwork": true,
+      "allowCredentials": false
+    },
+    "authorId": "example-fixture",
+    "requiredCapabilities": [
+      "app.log"
+    ],
+    "trust": {
+      "level": "bundled",
+      "requiresUserApproval": false
+    },
+    "compatibility": {
+      "mode": "strict",
+      "minimumRuntimeVersion": "0.1.0"
+    },
+    "capabilities": {
+      "required": [
+        "app.log"
+      ],
+      "optional": []
+    }
+  },
+  "files": [
+    {
+      "path": "manifest.json",
+      "content": "<filled by fixture loader>"
+    },
+    {
+      "path": "index.html",
+      "content": "<button data-testid=inc>+</button><output data-testid=count>0</output><script src=app.js></script>"
+    },
+    {
+      "path": "styles.css",
+      "content": ":root{color-scheme:light dark}"
+    },
+    {
+      "path": "app.js",
+      "content": "let n=0;document.querySelector('[data-testid=inc]').onclick=()=>{n++;document.querySelector('[data-testid=count]').textContent=String(n)};"
+    }
+  ]
+}
