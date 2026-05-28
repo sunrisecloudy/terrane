@@ -57,6 +57,8 @@ export const TOOL_NAMES = [
   "db.query_bridge_calls",
   "db.query_core_events",
   "db.query_test_runs",
+  "db.export_backup",
+  "db.import_backup",
   "db.export_debug_bundle",
 ];
 

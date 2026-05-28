@@ -150,8 +150,13 @@ export class FakePlatformHost {
         this.database.addDialogMock(args);
         return { ok: true };
       case "db.snapshot":
-      case "db.export_debug_bundle":
         return this.database.snapshot();
+      case "db.export_backup":
+        return this.database.exportBackup({ type: "backup", runtimeCapabilities: fakeHostCapabilities() });
+      case "db.export_debug_bundle":
+        return this.database.exportBackup({ type: "debug-bundle", runtimeCapabilities: fakeHostCapabilities(), includeDebug: true });
+      case "db.import_backup":
+        return this.importBackup(requiredArg(args, "backup"));
       case "db.query_app_storage":
         return this.database.queryAppStorage(requiredArg(args, "appId"));
       case "db.query_app_versions":
@@ -246,6 +251,27 @@ export class FakePlatformHost {
     if (req.headers.authorization !== expected) {
       throw new PlatformError("control.unauthorized", "Missing or invalid control token", {});
     }
+  }
+
+  importBackup(backup) {
+    const result = this.database.importBackup(backup);
+    for (const version of backup.appVersions ?? []) {
+      const installId = version.install_id ?? version.installId;
+      const installed = this.database.installedPackageByInstallId(installId);
+      if (!installed) continue;
+      const signed = signPackage({
+        manifest: installed.manifest,
+        files: installed.files,
+        trustLevel: installed.trustLevel ?? "developer",
+        keypair: this.keypair,
+      });
+      this.database.updateInstalledSignature({
+        installId,
+        signature: signed.signature,
+        hashes: signed.hashes,
+      });
+    }
+    return result;
   }
 }
 

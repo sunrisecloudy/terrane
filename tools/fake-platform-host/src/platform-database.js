@@ -465,6 +465,41 @@ export class PlatformDatabase {
     };
   }
 
+  installedPackageByInstallId(installId) {
+    const row = this.get(
+      "SELECT install_id, app_id, version, manifest_json, signature_json, trust_level, status FROM app_versions WHERE install_id = ?",
+      installId,
+    );
+    if (!row) return null;
+    return {
+      installId: row.install_id,
+      appId: row.app_id,
+      version: row.version,
+      manifest: JSON.parse(row.manifest_json),
+      signature: row.signature_json ? JSON.parse(row.signature_json) : null,
+      trustLevel: row.trust_level,
+      status: row.status,
+      files: new Map(
+        this.all("SELECT path, content_text FROM app_files WHERE install_id = ? ORDER BY path", installId).map(
+          (file) => [file.path, file.content_text ?? ""],
+        ),
+      ),
+    };
+  }
+
+  updateInstalledSignature({ installId, signature, hashes }) {
+    this.run(
+      "UPDATE app_versions SET manifest_hash = ?, content_hash = ?, signature_json = ? WHERE install_id = ?",
+      hashes.manifestHash,
+      hashes.contentHash,
+      prettyJson(signature),
+      installId,
+    );
+    for (const [filePath, contentHash] of Object.entries(hashes.fileHashes)) {
+      this.run("UPDATE app_files SET content_hash = ? WHERE install_id = ? AND path = ?", contentHash, installId, filePath);
+    }
+  }
+
   activeInstallId(appId) {
     return this.get("SELECT active_install_id FROM apps WHERE id = ?", appId)?.active_install_id ?? null;
   }
@@ -597,6 +632,171 @@ export class PlatformDatabase {
       app_migrations: this.all("SELECT * FROM app_migrations ORDER BY created_at"),
       migration_runs: this.all("SELECT * FROM migration_runs ORDER BY started_at"),
       test_runs: this.all("SELECT * FROM test_runs ORDER BY started_at"),
+    };
+  }
+
+  exportBackup({ type = "backup", runtimeCapabilities = {}, includeDebug = false } = {}) {
+    const createdAt = nowIso();
+    const document = {
+      exportId: id("export"),
+      type,
+      createdAt,
+      runtimeVersion: "0.4.0",
+      source: { platform: "fake-host", target: "fake-host" },
+      apps: this.all("SELECT * FROM apps ORDER BY id"),
+      appVersions: this.all("SELECT * FROM app_versions ORDER BY app_id, created_at"),
+      appFiles: this.all("SELECT * FROM app_files ORDER BY install_id, path"),
+      appPermissions: this.all("SELECT * FROM app_permissions ORDER BY install_id, permission"),
+      appStorage: this.all("SELECT * FROM app_storage ORDER BY app_id, key"),
+      appMigrations: this.all("SELECT * FROM app_migrations ORDER BY app_id, from_data_version"),
+      appInstallReports: this.all("SELECT * FROM app_install_reports ORDER BY app_id, created_at"),
+      runtimeCapabilities,
+      debug: includeDebug
+        ? {
+            runtimeSessions: this.all("SELECT * FROM runtime_sessions ORDER BY started_at"),
+            bridgeCalls: this.all("SELECT * FROM bridge_calls ORDER BY created_at"),
+            coreEvents: this.all("SELECT * FROM core_events ORDER BY created_at"),
+            coreActions: this.all("SELECT * FROM core_actions ORDER BY created_at"),
+            runtimeSnapshots: this.all("SELECT * FROM runtime_snapshots ORDER BY created_at"),
+            testRuns: this.all("SELECT * FROM test_runs ORDER BY started_at"),
+          }
+        : {},
+    };
+    document.contentHash = `sha256:${sha256(canonicalJson(document))}`;
+    this.run(
+      "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) VALUES (?, ?, 'fake-host', ?, ?, ?, ?)",
+      document.exportId,
+      type,
+      document.runtimeVersion,
+      prettyJson(document),
+      document.contentHash,
+      createdAt,
+    );
+    return document;
+  }
+
+  importBackup(document) {
+    if (!document || typeof document !== "object") {
+      throw new Error("Backup document must be an object");
+    }
+    const createdAt = nowIso();
+    this.transaction(() => {
+      for (const app of document.apps ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          app.id,
+          app.name,
+          app.status ?? "enabled",
+          app.active_install_id ?? app.activeInstallId ?? null,
+          app.active_version ?? app.activeVersion ?? null,
+          app.data_version ?? app.dataVersion ?? 1,
+          app.created_at ?? app.createdAt ?? createdAt,
+          app.updated_at ?? app.updatedAt ?? createdAt,
+        );
+      }
+
+      for (const version of document.appVersions ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          version.install_id ?? version.installId,
+          version.app_id ?? version.appId,
+          version.version ?? version.appVersion,
+          version.runtime_version ?? version.runtimeVersion ?? "0.1.0",
+          version.data_version ?? version.dataVersion ?? 1,
+          version.manifest_json ?? version.manifestJson ?? prettyJson(version.manifest ?? {}),
+          version.manifest_hash ?? version.manifestHash ?? "",
+          version.content_hash ?? version.contentHash ?? "",
+          version.signature_json ?? version.signatureJson ?? (version.signature ? prettyJson(version.signature) : null),
+          version.trust_level ?? version.trustLevel ?? "developer",
+          version.status ?? "installed",
+          version.created_at ?? version.installedAt ?? createdAt,
+          version.activated_at ?? version.activatedAt ?? null,
+        );
+      }
+
+      for (const file of document.appFiles ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          file.install_id ?? file.installId,
+          file.path,
+          file.content_text ?? file.contentText ?? "",
+          file.content_hash ?? file.contentHash ?? "",
+          file.size_bytes ?? file.sizeBytes ?? Buffer.byteLength(file.content_text ?? file.contentText ?? ""),
+          file.mime ?? "text/plain",
+          file.created_at ?? file.createdAt ?? createdAt,
+        );
+      }
+
+      for (const permission of document.appPermissions ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          permission.install_id ?? permission.installId,
+          permission.app_id ?? permission.appId,
+          permission.permission,
+          permission.requested ?? 1,
+          permission.approved === true ? 1 : permission.approved ?? 0,
+          permission.approved_at ?? permission.approvedAt ?? null,
+          permission.reason ?? "imported",
+        );
+      }
+
+      for (const storage of document.appStorage ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+          storage.app_id ?? storage.appId,
+          storage.key,
+          storage.value_json ?? storage.valueJson ?? prettyJson(storage.value ?? null),
+          storage.updated_at ?? storage.updatedAt ?? createdAt,
+        );
+      }
+
+      for (const migration of document.appMigrations ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          migration.migration_id ?? migration.migrationId,
+          migration.app_id ?? migration.appId,
+          migration.from_data_version ?? migration.fromDataVersion,
+          migration.to_data_version ?? migration.toDataVersion,
+          migration.migration_json ?? migration.migrationJson ?? prettyJson(migration.migration ?? {}),
+          migration.content_hash ?? migration.contentHash ?? "",
+          migration.created_at ?? migration.createdAt ?? createdAt,
+        );
+      }
+
+      for (const report of document.appInstallReports ?? []) {
+        this.run(
+          "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          report.report_id ?? report.reportId,
+          report.app_id ?? report.appId,
+          report.install_id ?? report.installId,
+          report.status ?? "accepted",
+          report.validation_json ?? report.validationJson ?? null,
+          report.security_json ?? report.securityJson ?? null,
+          report.permissions_json ?? report.permissionsJson ?? null,
+          report.compatibility_json ?? report.compatibilityJson ?? null,
+          report.smoke_test_json ?? report.smokeTestJson ?? null,
+          report.content_hash ?? report.contentHash ?? null,
+          report.created_at ?? report.createdAt ?? createdAt,
+        );
+      }
+
+      this.run(
+        "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at) VALUES (?, 'import', ?, ?, ?, ?, ?, ?)",
+        id("import"),
+        document.source?.platform ?? "unknown",
+        document.runtimeVersion ?? "0.4.0",
+        prettyJson(document),
+        document.contentHash ?? `sha256:${sha256(canonicalJson(document))}`,
+        createdAt,
+        createdAt,
+      );
+    });
+
+    return {
+      ok: true,
+      apps: (document.apps ?? []).length,
+      appVersions: (document.appVersions ?? []).length,
+      appStorage: (document.appStorage ?? []).length,
     };
   }
 
