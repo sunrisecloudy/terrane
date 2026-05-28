@@ -87,7 +87,7 @@ Status snapshot: **2026-05-28**.
 | `zig-core/` | partial | Zig 0.15.2 static library package with C FFI header, deterministic JSON core.step behavior, and unit tests |
 | `server/` | partial | Minimal Zig HTTP server with `/health`, `/core/step`, and `/webapps/examples`; uses Zig core FFI |
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, health/control command HTTP surface, package validation/install, bridge dispatch, and focused tests |
-| `tools/codex-platform-mcp/` | skeleton | README + `package.json` + `tsconfig.json` only |
+| `tools/codex-platform-mcp/` | partial | Dependency-free MCP stdio JSON-RPC server forwards declared tools to fake-host/dev control plane; node:test coverage present |
 | `native/ios/` | skeleton | README only |
 | `native/macos/` | skeleton | README only |
 | `native/android/` | skeleton | README only |

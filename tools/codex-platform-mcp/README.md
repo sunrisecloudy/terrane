@@ -1,6 +1,6 @@
 # Codex Platform MCP Server
 
-This tool connects Codex to the platform dev control plane.
+This tool connects Codex to the platform dev control plane over MCP stdio.
 
 ## Responsibility
 
@@ -28,7 +28,19 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 
 ## Implementation notes
 
-Start with a fake host and contract tests. Then attach to real desktop hosts. Mobile simulator/emulator adapters can come later.
+The current implementation is dependency-free and speaks the MCP JSON-RPC
+stdio framing directly. Each declared tool forwards mechanically to
+`POST /control/command` on the configured platform control URL.
+
+Run:
+
+```sh
+npm test
+npm start
+```
+
+Start with a fake host and contract tests. Then attach to real desktop hosts.
+Mobile simulator/emulator adapters can come later.
 
 ## v0.4 database tool group
 
