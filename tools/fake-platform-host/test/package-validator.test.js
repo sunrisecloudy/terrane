@@ -26,6 +26,7 @@ test("forbidden JS source snippets are rejected with policy codes", () => {
     ["forbidden_eval", "eval('1 + 1')"],
     ["forbidden_storage_api", "localStorage.setItem('x', 'y')"],
     ["forbidden_native_bridge", "webkit.messageHandlers.bridge.postMessage({})"],
+    ["forbidden_native_bridge", "NativeAIPlatformBridge.postMessage({})"],
     ["forbidden_parent_access", "window.parent.postMessage({}, '*')"],
     ["forbidden_service_worker", "navigator.serviceWorker.register('/sw.js')"],
     ["forbidden_trusted_types_policy", "trustedTypes.createPolicy('app', {})"],

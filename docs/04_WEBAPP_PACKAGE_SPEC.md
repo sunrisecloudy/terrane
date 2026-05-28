@@ -122,7 +122,7 @@ Disallowed:
 - `localStorage` / `sessionStorage`.
 - IndexedDB.
 - Cookies.
-- Direct native bridge access (e.g., `webkit.messageHandlers`, `chrome.webview`, `Android.*`).
+- Direct native bridge access (e.g., `webkit.messageHandlers`, `chrome.webview`, `NativeAIPlatformBridge`, `Android.*`).
 - Accessing `window.parent`, `window.top`, or `window.opener` except through the runtime bridge.
 - Trusted Types policy creation outside the runtime's policy (see docs/07 §8).
 
