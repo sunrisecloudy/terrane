@@ -267,6 +267,10 @@ fn handleBridge(
         return handleNotificationToastBridge(allocator, stream, id, params, channel_app_id, session_id);
     }
 
+    if (std.mem.eql(u8, method, "network.request")) {
+        return handleNetworkRequestBridge(allocator, stream, id, params, channel_app_id, session_id);
+    }
+
     if (isKnownUnsupportedBridgeMethod(method)) {
         return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
     }
@@ -471,6 +475,53 @@ fn handleNotificationToastBridge(
         std.debug.print("bridge audit write failed: {}\n", .{err});
     };
     return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
+}
+
+fn handleNetworkRequestBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    params: std.json.Value,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+) !void {
+    const url = valueString(params.object.get("url")) orelse {
+        return writeBridgeError(allocator, stream, id, "invalid_request", "network.request requires url");
+    };
+    const method_raw = valueString(params.object.get("method")) orelse "GET";
+    const method = try upperAsciiAlloc(allocator, method_raw);
+    defer allocator.free(method);
+    const params_json = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json);
+
+    const policy_result = networkPolicyAllowsRequest(allocator, app_id, url, method, params) catch |err| switch (err) {
+        error.InvalidNetworkUrl => {
+            return writeBridgeError(allocator, stream, id, "invalid_request", "network.request url must be absolute");
+        },
+        else => return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request is outside manifest.networkPolicy"),
+    };
+    if (!policy_result) {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+    }
+
+    const result_json = (try networkMockResultJsonAlloc(allocator, app_id, session_id, method, url)) orelse {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "network.mock_missing", "No network mock is registered for request");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "network.mock_missing", "No network mock is registered for request");
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, "network.request", params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return writeBridgeOkRaw(allocator, stream, id, result_json);
 }
 
 fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, body: []const u8) !void {
@@ -911,6 +962,28 @@ fn handleControlCommand(
             },
             else => return err,
         };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.network_mock_set")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.network_mock_set requires args");
+        };
+        const result_json = insertNetworkMockControl(allocator, args_value) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.network_mock_set requires urlPattern or match.url and response");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.network_mock_reset")) {
+        const result_json = try resetNetworkMocksControl(allocator, args);
         defer allocator.free(result_json);
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
@@ -4041,6 +4114,241 @@ fn queryBridgeCallsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) !
     return out.toOwnedSlice();
 }
 
+const UrlParts = struct {
+    origin: []u8,
+    path: []u8,
+};
+
+fn freeUrlParts(allocator: std.mem.Allocator, parts: UrlParts) void {
+    allocator.free(parts.origin);
+    allocator.free(parts.path);
+}
+
+fn parseNetworkUrlAlloc(allocator: std.mem.Allocator, url: []const u8) !UrlParts {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return error.InvalidNetworkUrl;
+    if (scheme_end == 0) return error.InvalidNetworkUrl;
+    const authority_start = scheme_end + 3;
+    if (authority_start >= url.len) return error.InvalidNetworkUrl;
+    const path_start = std.mem.indexOfScalarPos(u8, url, authority_start, '/') orelse url.len;
+    if (path_start == authority_start) return error.InvalidNetworkUrl;
+    const origin = try allocator.dupe(u8, url[0..path_start]);
+    errdefer allocator.free(origin);
+    const path_part = if (path_start < url.len) url[path_start..] else "/";
+    const path_copy = try allocator.dupe(u8, path_part);
+    return .{ .origin = origin, .path = path_copy };
+}
+
+fn networkPolicyAllowsRequest(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    url: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+) !bool {
+    const parts = try parseNetworkUrlAlloc(allocator, url);
+    defer freeUrlParts(allocator, parts);
+
+    const manifest_json = try activeManifestJsonAlloc(allocator, app_id);
+    defer allocator.free(manifest_json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{});
+    defer parsed.deinit();
+
+    const network_policy = parsed.value.object.get("networkPolicy") orelse return false;
+    if (network_policy != .object) return false;
+    const allow = network_policy.object.get("allow") orelse return false;
+    if (allow != .array) return false;
+
+    for (allow.array.items) |entry| {
+        if (entry != .object) continue;
+        const origin = valueString(entry.object.get("origin")) orelse continue;
+        if (!std.mem.eql(u8, origin, parts.origin)) continue;
+        const methods = entry.object.get("methods") orelse continue;
+        if (!stringArrayContains(methods, method)) continue;
+        if (entry.object.get("pathPrefix")) |path_prefix_value| {
+            const path_prefix = valueString(path_prefix_value) orelse return false;
+            if (!std.mem.startsWith(u8, parts.path, path_prefix)) continue;
+        }
+        if (!headersAllowed(params.object.get("headers"), entry.object.get("allowedHeaders"))) continue;
+        if (!(try requestBodyAllowed(allocator, params.object.get("body"), entry.object.get("maxRequestBytes")))) continue;
+        return true;
+    }
+    return false;
+}
+
+fn activeManifestJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT v.manifest_json FROM apps a JOIN app_versions v ON v.install_id = a.active_install_id WHERE a.id = ? AND a.status = 'enabled' AND v.status = 'enabled'",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.AppNotInstalled;
+    return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn stringArrayContains(value: std.json.Value, needle: []const u8) bool {
+    if (value != .array) return false;
+    for (value.array.items) |item| {
+        const actual = valueString(item) orelse continue;
+        if (std.ascii.eqlIgnoreCase(actual, needle)) return true;
+    }
+    return false;
+}
+
+fn headersAllowed(headers_value: ?std.json.Value, allowed_value: ?std.json.Value) bool {
+    const headers = headers_value orelse return true;
+    if (headers == .null) return true;
+    if (headers != .object) return false;
+    const allowed = allowed_value orelse return headers.object.count() == 0;
+    if (allowed != .array) return false;
+
+    var iterator = headers.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!stringArrayContains(allowed, entry.key_ptr.*)) return false;
+    }
+    return true;
+}
+
+fn requestBodyAllowed(allocator: std.mem.Allocator, body_value: ?std.json.Value, max_value: ?std.json.Value) !bool {
+    const max = max_value orelse return true;
+    if (max != .integer) return false;
+    const body = body_value orelse return true;
+    if (body == .null) return true;
+    const body_json = try jsonValueAlloc(allocator, body);
+    defer allocator.free(body_json);
+    return body_json.len <= @as(usize, @intCast(max.integer));
+}
+
+fn networkMockResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    method: []const u8,
+    url: []const u8,
+) !?[]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT response_json, url_pattern FROM network_mocks WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) ORDER BY created_at DESC",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, method);
+    bindText(statement, 2, app_id);
+    bindNullableText(statement, 3, session_id);
+
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const response_json = sqliteColumnText(statement, 0);
+        const url_pattern = sqliteColumnText(statement, 1);
+        if (urlMatchesPattern(url_pattern, url)) {
+            const response_copy = try allocator.dupe(u8, response_json);
+            return response_copy;
+        }
+    }
+    return null;
+}
+
+fn urlMatchesPattern(pattern: []const u8, url: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    if (std.mem.eql(u8, pattern, url)) return true;
+    if (std.mem.endsWith(u8, pattern, "*")) {
+        return std.mem.startsWith(u8, url, pattern[0 .. pattern.len - 1]);
+    }
+    return false;
+}
+
+fn insertNetworkMockControl(allocator: std.mem.Allocator, args: std.json.Value) ![]u8 {
+    if (args != .object) return error.InvalidControlArgs;
+    const app_id = controlStringArg(args, "appId");
+    const session_id = controlStringArg(args, "sessionId");
+    const method_raw = controlStringArg(args, "method") orelse "GET";
+    const method = try upperAsciiAlloc(allocator, method_raw);
+    defer allocator.free(method);
+    const url_pattern = controlStringArg(args, "urlPattern") orelse blk: {
+        const match = args.object.get("match") orelse return error.InvalidControlArgs;
+        if (match != .object) return error.InvalidControlArgs;
+        break :blk valueString(match.object.get("urlPattern")) orelse valueString(match.object.get("url")) orelse return error.InvalidControlArgs;
+    };
+    const response = args.object.get("response") orelse return error.InvalidControlArgs;
+    const response_json = try jsonValueAlloc(allocator, response);
+    defer allocator.free(response_json);
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at) VALUES ('netmock_' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, 1, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindNullableText(statement, 1, session_id);
+    bindNullableText(statement, 2, app_id);
+    bindText(statement, 3, method);
+    bindText(statement, 4, url_pattern);
+    bindText(statement, 5, response_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    const escaped_url_pattern = try escapeJsonString(allocator, url_pattern);
+    defer allocator.free(escaped_url_pattern);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"method\":\"{s}\",\"urlPattern\":\"{s}\"}}",
+        .{ escaped_method, escaped_url_pattern },
+    );
+}
+
+fn resetNetworkMocksControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId");
+    const session_id = controlStringArg(args, "sessionId");
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    const sql: [*:0]const u8 = if (app_id != null and session_id != null)
+        "DELETE FROM network_mocks WHERE app_id = ? AND session_id = ?"
+    else if (app_id != null)
+        "DELETE FROM network_mocks WHERE app_id = ?"
+    else if (session_id != null)
+        "DELETE FROM network_mocks WHERE session_id = ?"
+    else
+        "DELETE FROM network_mocks";
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (app_id != null and session_id != null) {
+        bindText(statement, 1, app_id.?);
+        bindText(statement, 2, session_id.?);
+    } else if (app_id) |value| {
+        bindText(statement, 1, value);
+    } else if (session_id) |value| {
+        bindText(statement, 1, value);
+    }
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    const cleared = sqlite.sqlite3_changes(db);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"cleared\":{d}}}", .{cleared});
+}
+
 fn bridgePermissionApproved(allocator: std.mem.Allocator, app_id: []const u8, permission: []const u8) !bool {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
@@ -4630,7 +4938,7 @@ fn writeControlError(allocator: std.mem.Allocator, stream: std.net.Stream, statu
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":true,\"network.request\":false,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
         .{runtime_version},
     );
 }
@@ -4678,11 +4986,19 @@ fn isLogLevel(level: []const u8) bool {
 }
 
 fn isToastLevel(level: []const u8) bool {
-    const levels = [_][]const u8{ "info", "success", "warn", "error" };
+    const levels = [_][]const u8{ "info", "success", "warn", "warning", "error" };
     for (levels) |candidate| {
         if (std.mem.eql(u8, level, candidate)) return true;
     }
     return false;
+}
+
+fn upperAsciiAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    const out = try allocator.dupe(u8, value);
+    for (out) |*char| {
+        char.* = std.ascii.toUpper(char.*);
+    }
+    return out;
 }
 
 fn isTrustLevel(trust_level: []const u8) bool {
@@ -4742,7 +5058,6 @@ fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
     const methods = [_][]const u8{
         "dialog.openFile",
         "dialog.saveFile",
-        "network.request",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;

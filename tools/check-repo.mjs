@@ -363,9 +363,14 @@ function checkServerStatic() {
     "fn validateBridgeRequest",
     "fn handleStorageBridge",
     "fn handleNotificationToastBridge",
+    "fn handleNetworkRequestBridge",
     "fn handleAppLogBridge",
     "fn bridgePermissionApproved",
     "fn permissionForBridgeMethod",
+    "fn networkPolicyAllowsRequest",
+    "fn networkMockResultJsonAlloc",
+    "fn insertNetworkMockControl",
+    "fn resetNetworkMocksControl",
     "fn handleControlCommand",
     "fn enforceProductionStartupRules",
     "fn isDevControlPath",
@@ -396,6 +401,8 @@ function checkServerStatic() {
     '"platform.migration_apply"',
     '"platform.list_webapps"',
     '"platform.install_report"',
+    '"runtime.network_mock_set"',
+    '"runtime.network_mock_reset"',
     '"db.query_app_storage"',
     '"db.query_app_versions"',
     '"db.query_core_events"',
@@ -489,6 +496,7 @@ function checkServerStatic() {
     "backup_exports",
     "storage.get\\\":true",
     "notification.toast\\\":true",
+    "network.request\\\":true",
     "app.log\\\":true",
     "Bridge request contains unknown top-level fields",
     'headerValue(headers, "x-app-id")',
@@ -511,7 +519,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,notification,app.log permissions=active-install control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,notification,mock-network,app.log permissions=active-install control=command,rollback,snapshot,migration,network-mocks install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
