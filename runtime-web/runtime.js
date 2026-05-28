@@ -666,6 +666,9 @@
     if (Number.isInteger(bridgeLimit) && usage.bridgeCalls.length >= bridgeLimit) {
       return bridgeError("resource_budget_exceeded", "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute", {
         appId: app.id,
+        budget: "maxBridgeCallsPerMinute",
+        current: usage.bridgeCalls.length + 1,
+        max: bridgeLimit,
         limit: bridgeLimit,
       });
     }
@@ -674,6 +677,9 @@
       if (Number.isInteger(networkLimit) && usage.networkCalls.length >= networkLimit) {
         return bridgeError("resource_budget_exceeded", "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute", {
           appId: app.id,
+          budget: "maxNetworkRequestsPerMinute",
+          current: usage.networkCalls.length + 1,
+          max: networkLimit,
           limit: networkLimit,
         });
       }
@@ -683,6 +689,9 @@
       if (Number.isInteger(logLimit) && usage.logLines.length >= logLimit) {
         return bridgeError("resource_budget_exceeded", "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute", {
           appId: app.id,
+          budget: "maxLogLinesPerMinute",
+          current: usage.logLines.length + 1,
+          max: logLimit,
           limit: logLimit,
         });
       }

@@ -260,6 +260,9 @@ export class BridgeDispatcher {
       if (count >= bridgeLimit) {
         throw new PlatformError("resource_budget_exceeded", "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute", {
           appId: context.appId,
+          budget: "maxBridgeCallsPerMinute",
+          current: count + 1,
+          max: bridgeLimit,
           limit: bridgeLimit,
           count,
         });
@@ -276,6 +279,9 @@ export class BridgeDispatcher {
       if (count >= budget.maxNetworkRequestsPerMinute) {
         throw new PlatformError("resource_budget_exceeded", "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute", {
           appId: context.appId,
+          budget: "maxNetworkRequestsPerMinute",
+          current: count + 1,
+          max: budget.maxNetworkRequestsPerMinute,
           limit: budget.maxNetworkRequestsPerMinute,
           count,
         });
@@ -292,6 +298,9 @@ export class BridgeDispatcher {
       if (count >= budget.maxLogLinesPerMinute) {
         throw new PlatformError("resource_budget_exceeded", "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute", {
           appId: context.appId,
+          budget: "maxLogLinesPerMinute",
+          current: count + 1,
+          max: budget.maxLogLinesPerMinute,
           limit: budget.maxLogLinesPerMinute,
           count,
         });
@@ -304,6 +313,9 @@ export class BridgeDispatcher {
         throw new PlatformError("resource_budget_exceeded", "Storage write exceeds manifest.resourceBudget.maxStorageBytes", {
           appId: context.appId,
           key: params.key,
+          budget: "maxStorageBytes",
+          current: projectedBytes,
+          max: budget.maxStorageBytes,
           limit: budget.maxStorageBytes,
           projectedBytes,
         });

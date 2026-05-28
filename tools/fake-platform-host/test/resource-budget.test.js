@@ -21,6 +21,9 @@ test("storage.set rejects writes over manifest maxStorageBytes", async () => {
 
     assert.equal(response.ok, false);
     assert.equal(response.error.code, "resource_budget_exceeded");
+    assert.equal(response.error.details.budget, "maxStorageBytes");
+    assert.equal(response.error.details.current > 8, true);
+    assert.equal(response.error.details.max, 8);
     assert.equal(response.error.details.limit, 8);
   } finally {
     host.close();
@@ -48,6 +51,9 @@ test("bridge call budget rejects calls after the per-minute limit", async () => 
     });
     assert.equal(second.ok, false);
     assert.equal(second.error.code, "resource_budget_exceeded");
+    assert.equal(second.error.details.budget, "maxBridgeCallsPerMinute");
+    assert.equal(second.error.details.current, 2);
+    assert.equal(second.error.details.max, 1);
     assert.equal(second.error.details.limit, 1);
   } finally {
     host.close();
