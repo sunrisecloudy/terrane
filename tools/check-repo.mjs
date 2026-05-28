@@ -577,6 +577,7 @@ function checkNativeStatic() {
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
+  const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
   const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "zig_core_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
@@ -798,9 +799,12 @@ function checkNativeStatic() {
     [linuxHost, "mount_token"],
     [linuxHost, "network_policy_for_app"],
     [linuxHost, ".network_policy"],
+    [linuxHost, "web_bridge_new(db_path, GTK_WINDOW(host->window))"],
     [linuxBridge, "permission_for_bridge_method"],
     [linuxBridge, "approved_permissions_contains"],
     [linuxBridge, '"network.request"'],
+    [linuxBridge, '"dialog.openFile"'],
+    [linuxBridge, "platform_dialogs_init(&bridge->dialogs, owner_window)"],
     [linuxBridge, "zig_core_bridge_init"],
     [linuxBridge, "zig_core_bridge_is_available(&bridge->core)"],
     [linuxStorage, "request->context.app_id"],
@@ -822,6 +826,14 @@ function checkNativeStatic() {
   }
   if (linuxNetwork.includes("platform_unsupported")) {
     throw new Error("Linux network.request must not remain a platform_unsupported stub");
+  }
+  for (const snippet of ["GtkFileChooserNative", "gtk_native_dialog_show", "g_main_loop_run", "gtk_file_chooser_get_file", "g_file_get_contents", "g_file_set_contents", "dialog_cancelled"]) {
+    if (!linuxDialogs.includes(snippet)) {
+      throw new Error(`Linux dialogs missing ${snippet}`);
+    }
+  }
+  if (linuxDialogs.includes("will be wired") || linuxBridge.includes('json_builder_add_boolean_value(builder, FALSE);')) {
+    throw new Error("Linux dialogs must not remain placeholder stubs or disabled capabilities");
   }
   for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_SO", "core.step app field does not match the channel-derived app id"]) {
     if (!linuxCore.includes(snippet)) {
@@ -891,7 +903,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked core=jni-so";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked core=jni-so";
 }
 
 function readJson(filePath) {

@@ -274,7 +274,7 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(content_manager));
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));
   g_autofree gchar *db_path = database_path();
-  host->bridge = web_bridge_new(db_path);
+  host->bridge = web_bridge_new(db_path, GTK_WINDOW(host->window));
   webkit_web_view_load_uri(host->web_view, "app-runtime://runtime-web/index.html");
   return host;
 }

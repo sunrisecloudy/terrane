@@ -15,6 +15,6 @@ typedef struct {
   ZigCoreBridge core;
 } WebBridge;
 
-WebBridge *web_bridge_new(const gchar *database_path);
+WebBridge *web_bridge_new(const gchar *database_path, GtkWindow *owner_window);
 void web_bridge_free(WebBridge *bridge);
 gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxContext context);

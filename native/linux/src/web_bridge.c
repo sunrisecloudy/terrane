@@ -37,10 +37,10 @@ static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *r
     json_builder_set_member_name(builder, enabled[index]);
     json_builder_add_boolean_value(builder, TRUE);
   }
-  const gchar *disabled[] = {"dialog.openFile", "dialog.saveFile"};
-  for (gsize index = 0; index < G_N_ELEMENTS(disabled); ++index) {
-    json_builder_set_member_name(builder, disabled[index]);
-    json_builder_add_boolean_value(builder, FALSE);
+  const gchar *dialog_features[] = {"dialog.openFile", "dialog.saveFile"};
+  for (gsize index = 0; index < G_N_ELEMENTS(dialog_features); ++index) {
+    json_builder_set_member_name(builder, dialog_features[index]);
+    json_builder_add_boolean_value(builder, TRUE);
   }
   json_builder_set_member_name(builder, "core.step");
   json_builder_add_boolean_value(builder, zig_core_bridge_is_available(&bridge->core));
@@ -98,9 +98,10 @@ static JsonNode *dispatch(WebBridge *bridge, const BridgeRequest *request) {
   return bridge_failure(request, "unknown_method", "Unknown bridge method", NULL);
 }
 
-WebBridge *web_bridge_new(const gchar *database_path) {
+WebBridge *web_bridge_new(const gchar *database_path, GtkWindow *owner_window) {
   WebBridge *bridge = g_new0(WebBridge, 1);
   bridge->storage = platform_storage_new(database_path);
+  platform_dialogs_init(&bridge->dialogs, owner_window);
   zig_core_bridge_init(&bridge->core);
   return bridge;
 }
