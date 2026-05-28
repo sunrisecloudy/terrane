@@ -744,6 +744,51 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.create_snapshot")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.create_snapshot requires appId");
+        };
+        const snapshot_type = controlStringArg(args, "type") orelse "bug-report";
+        if (!isAllowedSnapshotType(snapshot_type)) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Unsupported snapshot type");
+        }
+        const result_json = createRuntimeSnapshot(allocator, app_id, snapshot_type, controlStringArg(args, "sessionId")) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.restore_snapshot")) {
+        const snapshot_id = controlStringArg(args, "snapshotId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.restore_snapshot requires snapshotId");
+        };
+        const result_json = restoreRuntimeSnapshot(allocator, snapshot_id) catch |err| switch (err) {
+            error.SnapshotNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_not_found", "Snapshot was not found");
+            },
+            error.SnapshotInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_invalid", "Snapshot cannot be restored");
+            },
+            error.RollbackTargetInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_target_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_target_invalid", "Snapshot target install is invalid");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
@@ -1348,6 +1393,360 @@ fn rollbackResultJsonAlloc(
         "{{\"appId\":\"{s}\",\"activeInstallId\":\"{s}\",\"rolledBackInstallId\":\"{s}\",\"activeVersion\":\"{s}\",\"dataVersion\":{d}}}",
         .{ escaped_app_id, escaped_active, escaped_rolled_back, escaped_version, data_version },
     );
+}
+
+const SnapshotActiveApp = struct {
+    app_id: []u8,
+    install_id: []u8,
+    manifest_hash: []u8,
+    content_hash: []u8,
+};
+
+fn createRuntimeSnapshot(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    snapshot_type: []const u8,
+    session_id: ?[]const u8,
+) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const active = try activeSnapshotAppAlloc(allocator, db, app_id);
+    const active_app = active orelse return error.AppNotInstalled;
+    defer freeSnapshotActiveApp(allocator, active_app);
+
+    const snapshot_id = try randomDbIdAlloc(allocator, db, "snapshot_");
+    defer allocator.free(snapshot_id);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    const capabilities = try serverCapabilitiesJson(allocator);
+    defer allocator.free(capabilities);
+    const storage = try snapshotStorageObjectJsonAlloc(allocator, db, app_id);
+    defer allocator.free(storage);
+    const bridge_calls = try queryBridgeCallsRowsJson(allocator, app_id);
+    defer allocator.free(bridge_calls);
+    const core_events = try queryCoreEventsRowsJson(allocator, app_id);
+    defer allocator.free(core_events);
+    const resource_usage = try snapshotResourceUsageJsonAlloc(allocator, db, app_id);
+    defer allocator.free(resource_usage);
+
+    const snapshot_json = try snapshotDocumentJsonAlloc(
+        allocator,
+        snapshot_id,
+        snapshot_type,
+        created_at,
+        active_app,
+        capabilities,
+        storage,
+        bridge_calls,
+        core_events,
+        resource_usage,
+    );
+    errdefer allocator.free(snapshot_json);
+    const content_hash = try sha256PrefixedAlloc(allocator, snapshot_json);
+    defer allocator.free(content_hash);
+    try insertRuntimeSnapshot(db, snapshot_id, session_id, active_app.app_id, active_app.install_id, snapshot_type, snapshot_json, content_hash, created_at);
+    return snapshot_json;
+}
+
+fn restoreRuntimeSnapshot(allocator: std.mem.Allocator, snapshot_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const snapshot_json = try snapshotJsonByIdAlloc(allocator, db, snapshot_id);
+    defer allocator.free(snapshot_json);
+    const stored_hash = try snapshotContentHashByIdAlloc(allocator, db, snapshot_id);
+    defer allocator.free(stored_hash);
+    const actual_hash = try sha256PrefixedAlloc(allocator, snapshot_json);
+    defer allocator.free(actual_hash);
+    if (!std.mem.eql(u8, stored_hash, actual_hash)) return error.SnapshotInvalid;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{}) catch return error.SnapshotInvalid;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.SnapshotInvalid;
+    const active_app_value = parsed.value.object.get("activeApp") orelse return error.SnapshotInvalid;
+    if (active_app_value != .object) return error.SnapshotInvalid;
+    const app_id = valueString(active_app_value.object.get("appId")) orelse return error.SnapshotInvalid;
+    const install_id = valueString(active_app_value.object.get("installId")) orelse return error.SnapshotInvalid;
+    const storage_value = parsed.value.object.get("storage") orelse return error.SnapshotInvalid;
+    if (storage_value != .object) return error.SnapshotInvalid;
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const target = try installedVersionFromQueryAlloc(
+        allocator,
+        db,
+        "SELECT install_id, version, data_version, status FROM app_versions WHERE app_id = ? AND install_id = ?",
+        app_id,
+        install_id,
+    );
+    const target_version = target orelse return error.SnapshotInvalid;
+    defer freeInstalledVersion(allocator, target_version);
+    if (std.mem.eql(u8, target_version.status, "quarantined") or std.mem.eql(u8, target_version.status, "uninstalled")) {
+        return error.RollbackTargetInvalid;
+    }
+
+    const current = try activeInstallDetailsAlloc(allocator, db, app_id);
+    defer if (current) |version| freeInstalledVersion(allocator, version);
+    if (current) |version| {
+        if (!std.mem.eql(u8, version.install_id, target_version.install_id)) {
+            try markVersionStatus(db, version.install_id, "installed", null);
+        }
+    }
+
+    const restored_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(restored_at);
+    try deleteAppStorageForApp(db, app_id);
+    const restored_keys = try restoreSnapshotStorage(allocator, db, app_id, storage_value, restored_at);
+    try markVersionStatus(db, target_version.install_id, "enabled", restored_at);
+    try activateInstalledApp(db, app_id, target_version.install_id, target_version.version, target_version.data_version, restored_at);
+
+    const result_json = try restoreSnapshotResultJsonAlloc(allocator, snapshot_id, app_id, target_version.install_id, restored_keys);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn activeSnapshotAppAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) !?SnapshotActiveApp {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT a.id, v.install_id, v.manifest_hash, v.content_hash FROM apps a JOIN app_versions v ON v.install_id = a.active_install_id WHERE a.id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const active_app_id = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+    errdefer allocator.free(active_app_id);
+    const install_id = try allocator.dupe(u8, sqliteColumnText(statement, 1));
+    errdefer allocator.free(install_id);
+    const manifest_hash = try allocator.dupe(u8, sqliteColumnText(statement, 2));
+    errdefer allocator.free(manifest_hash);
+    const content_hash = try allocator.dupe(u8, sqliteColumnText(statement, 3));
+    errdefer allocator.free(content_hash);
+    return .{
+        .app_id = active_app_id,
+        .install_id = install_id,
+        .manifest_hash = manifest_hash,
+        .content_hash = content_hash,
+    };
+}
+
+fn freeSnapshotActiveApp(allocator: std.mem.Allocator, app: SnapshotActiveApp) void {
+    allocator.free(app.app_id);
+    allocator.free(app.install_id);
+    allocator.free(app.manifest_hash);
+    allocator.free(app.content_hash);
+}
+
+fn snapshotDocumentJsonAlloc(
+    allocator: std.mem.Allocator,
+    snapshot_id: []const u8,
+    snapshot_type: []const u8,
+    created_at: []const u8,
+    active_app: SnapshotActiveApp,
+    capabilities: []const u8,
+    storage: []const u8,
+    bridge_calls: []const u8,
+    core_events: []const u8,
+    resource_usage: []const u8,
+) ![]u8 {
+    const escaped_snapshot_id = try escapeJsonString(allocator, snapshot_id);
+    defer allocator.free(escaped_snapshot_id);
+    const escaped_type = try escapeJsonString(allocator, snapshot_type);
+    defer allocator.free(escaped_type);
+    const escaped_created_at = try escapeJsonString(allocator, created_at);
+    defer allocator.free(escaped_created_at);
+    const escaped_app_id = try escapeJsonString(allocator, active_app.app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, active_app.install_id);
+    defer allocator.free(escaped_install_id);
+    const escaped_manifest_hash = try escapeJsonString(allocator, active_app.manifest_hash);
+    defer allocator.free(escaped_manifest_hash);
+    const escaped_content_hash = try escapeJsonString(allocator, active_app.content_hash);
+    defer allocator.free(escaped_content_hash);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"snapshotId\":\"{s}\",\"type\":\"{s}\",\"createdAt\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"runtimeVersion\":\"{s}\",\"activeApp\":{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\"}},\"capabilities\":{s},\"storage\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"console\":[],\"resourceUsage\":{s}}}",
+        .{ escaped_snapshot_id, escaped_type, escaped_created_at, runtime_version, escaped_app_id, escaped_install_id, escaped_manifest_hash, escaped_content_hash, capabilities, storage, bridge_calls, core_events, resource_usage },
+    );
+}
+
+fn snapshotStorageObjectJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT key, value_json FROM app_storage WHERE app_id = ? ORDER BY key", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.writeAll(":");
+        const value_json = sqliteColumnNullableText(statement, 1) orelse "null";
+        try out.writer.writeAll(if (value_json.len == 0) "null" else value_json);
+        count += 1;
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn snapshotResourceUsageJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) ![]u8 {
+    const storage_bytes = try int64QueryDb(db, "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?", app_id);
+    const bridge_calls = try int64QueryDb(db, "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?", app_id);
+    const core_events = try int64QueryDb(db, "SELECT COUNT(*) FROM core_events WHERE app_id = ?", app_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"storageBytes\":{d},\"bridgeCalls\":{d},\"coreEvents\":{d}}}",
+        .{ storage_bytes, bridge_calls, core_events },
+    );
+}
+
+fn int64QueryDb(db: *sqlite.sqlite3, sql: [*:0]const u8, bind_value: []const u8) !i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, bind_value);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn insertRuntimeSnapshot(
+    db: *sqlite.sqlite3,
+    snapshot_id: []const u8,
+    session_id: ?[]const u8,
+    app_id: []const u8,
+    install_id: []const u8,
+    snapshot_type: []const u8,
+    snapshot_json: []const u8,
+    content_hash: []const u8,
+    created_at: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO runtime_snapshots (snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, snapshot_id);
+    bindNullableText(statement, 2, session_id);
+    bindText(statement, 3, app_id);
+    bindText(statement, 4, install_id);
+    bindText(statement, 5, snapshot_type);
+    bindText(statement, 6, snapshot_json);
+    bindText(statement, 7, content_hash);
+    bindText(statement, 8, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn snapshotJsonByIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, snapshot_id: []const u8) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT snapshot_json FROM runtime_snapshots WHERE snapshot_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, snapshot_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.SnapshotNotFound;
+    return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn snapshotContentHashByIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, snapshot_id: []const u8) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT content_hash FROM runtime_snapshots WHERE snapshot_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, snapshot_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.SnapshotNotFound;
+    return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn deleteAppStorageForApp(db: *sqlite.sqlite3, app_id: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "DELETE FROM app_storage WHERE app_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn restoreSnapshotStorage(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    storage_value: std.json.Value,
+    restored_at: []const u8,
+) !usize {
+    if (storage_value != .object) return error.SnapshotInvalid;
+    var restored_keys: usize = 0;
+    var iterator = storage_value.object.iterator();
+    while (iterator.next()) |entry| {
+        const value_json = try jsonValueAlloc(allocator, entry.value_ptr.*);
+        defer allocator.free(value_json);
+        try insertRestoredStorageValue(db, app_id, entry.key_ptr.*, value_json, restored_at);
+        restored_keys += 1;
+    }
+    return restored_keys;
+}
+
+fn insertRestoredStorageValue(db: *sqlite.sqlite3, app_id: []const u8, key: []const u8, value_json: []const u8, restored_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    bindText(statement, 3, value_json);
+    bindText(statement, 4, restored_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn restoreSnapshotResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    snapshot_id: []const u8,
+    app_id: []const u8,
+    active_install_id: []const u8,
+    restored_keys: usize,
+) ![]u8 {
+    const escaped_snapshot_id = try escapeJsonString(allocator, snapshot_id);
+    defer allocator.free(escaped_snapshot_id);
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, active_install_id);
+    defer allocator.free(escaped_install_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"snapshotId\":\"{s}\",\"appId\":\"{s}\",\"activeInstallId\":\"{s}\",\"restoredStorageKeys\":{d}}}",
+        .{ escaped_snapshot_id, escaped_app_id, escaped_install_id, restored_keys },
+    );
+}
+
+fn isAllowedSnapshotType(snapshot_type: []const u8) bool {
+    const allowed = [_][]const u8{ "bug-report", "pre-install", "pre-migration", "post-test", "golden", "manual", "debug-bundle" };
+    for (allowed) |candidate| {
+        if (std.mem.eql(u8, snapshot_type, candidate)) return true;
+    }
+    return false;
 }
 
 fn packageFilesAlloc(allocator: std.mem.Allocator, files_value: std.json.Value) ![]PackageFile {
