@@ -441,6 +441,9 @@ fn handleDbControlEndpoint(
     if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
+        recordBackupExport(allocator, result_json) catch |err| {
+            std.debug.print("debug bundle export record failed: {}\n", .{err});
+        };
         auditControlCommand(allocator, path, audit_tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
@@ -547,6 +550,9 @@ fn handleControlCommand(
     if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
+        recordBackupExport(allocator, result_json) catch |err| {
+            std.debug.print("debug bundle export record failed: {}\n", .{err});
+        };
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
@@ -1168,6 +1174,12 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const export_id = try randomDbIdAlloc(allocator, db, "export_");
+    defer allocator.free(export_id);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
     const apps = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
     defer allocator.free(apps);
     const app_versions = try queryRowsJson(allocator, "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions ORDER BY app_id, version", null);
@@ -1178,6 +1190,12 @@ fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(app_permissions);
     const storage = try queryAppStorageRowsJson(allocator, null);
     defer allocator.free(storage);
+    const app_migrations = try queryRowsJson(allocator, "SELECT migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at FROM app_migrations ORDER BY app_id, from_data_version", null);
+    defer allocator.free(app_migrations);
+    const install_reports = try queryRowsJson(allocator, "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports ORDER BY app_id, created_at", null);
+    defer allocator.free(install_reports);
+    const capabilities = try serverCapabilitiesJson(allocator);
+    defer allocator.free(capabilities);
     const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
     defer allocator.free(bridge_calls);
     const runtime_sessions = try queryRuntimeSessionsRowsJson(allocator);
@@ -1191,11 +1209,15 @@ fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
     const test_runs = try queryTestRunsRowsJson(allocator, null);
     defer allocator.free(test_runs);
 
-    return std.fmt.allocPrint(
+    const base_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"exportId\":\"server-debug-bundle\",\"type\":\"debug-bundle\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s}}}}}",
-        .{ runtime_version, apps, app_versions, app_files, app_permissions, storage, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs },
+        "{{\"exportId\":\"{s}\",\"type\":\"debug-bundle\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s}}}}}",
+        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs },
     );
+    defer allocator.free(base_json);
+    const content_hash = try sha256HexAlloc(allocator, base_json);
+    defer allocator.free(content_hash);
+    return std.fmt.allocPrint(allocator, "{s},\"contentHash\":\"sha256:{s}\"}}", .{ base_json[0 .. base_json.len - 1], content_hash });
 }
 
 fn queryAppVersionsRowsJson(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
@@ -1436,6 +1458,46 @@ fn logBridgeCall(
     }
 }
 
+fn recordBackupExport(allocator: std.mem.Allocator, export_json: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, export_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidControlArgs;
+    const root = parsed.value.object;
+    const export_id = valueString(root.get("exportId")) orelse return error.InvalidControlArgs;
+    const export_type = valueString(root.get("type")) orelse return error.InvalidControlArgs;
+    const runtime = valueString(root.get("runtimeVersion")) orelse runtime_version;
+    const content_hash = valueString(root.get("contentHash")) orelse return error.InvalidControlArgs;
+    const created_at = valueString(root.get("createdAt")) orelse return error.InvalidControlArgs;
+    const source = root.get("source") orelse return error.InvalidControlArgs;
+    if (source != .object) return error.InvalidControlArgs;
+    const source_platform = valueString(source.object.get("platform")) orelse "server";
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, export_id);
+    bindText(statement, 2, export_type);
+    bindText(statement, 3, source_platform);
+    bindText(statement, 4, runtime);
+    bindText(statement, 5, export_json);
+    bindText(statement, 6, content_hash);
+    bindText(statement, 7, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
 fn logAppMessage(
     allocator: std.mem.Allocator,
     app_id: []const u8,
@@ -1622,6 +1684,30 @@ fn randomDbIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, prefix: []
         return error.StorageQueryFailed;
     }
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, sqliteColumnText(statement, 0) });
+}
+
+fn sqliteNowIsoAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) {
+        return error.StorageQueryFailed;
+    }
+    return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn sha256HexAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(input, &digest, .{});
+    const hex_chars = "0123456789abcdef";
+    const hex = try allocator.alloc(u8, digest.len * 2);
+    for (digest, 0..) |byte, index| {
+        hex[index * 2] = hex_chars[byte >> 4];
+        hex[index * 2 + 1] = hex_chars[byte & 0x0f];
+    }
+    return hex;
 }
 
 fn execDb(db: *sqlite.sqlite3, sql: [*:0]const u8) !void {
