@@ -432,6 +432,9 @@ function checkServerStatic() {
     "fn controlToolForPackagePath",
     "fn appIdFromRollbackPath",
     '"platform.health"',
+    '"platform.list_targets"',
+    '"platform.open_webapp"',
+    '"platform.reset_webapp"',
     '"platform.validate_package"',
     '"platform.sign_webapp_package"',
     '"platform.install_webapp_package"',
@@ -445,6 +448,14 @@ function checkServerStatic() {
     '"runtime.network_mock_set"',
     '"runtime.network_mock_reset"',
     '"runtime.dialog_mock_set"',
+    '"runtime.storage_get"',
+    '"runtime.storage_set"',
+    '"runtime.storage_reset"',
+    '"runtime.resource_usage"',
+    '"runtime.console_logs"',
+    '"runtime.event_log"',
+    '"runtime.clear_logs"',
+    '"runtime.assert_no_console_errors"',
     '"db.query_app_storage"',
     '"db.query_app_versions"',
     '"db.query_core_events"',
@@ -505,6 +516,11 @@ function checkServerStatic() {
     "fn queryBridgeCallsRowsJson",
     "fn queryCoreEventsRowsJson",
     "fn queryTestRunsRowsJson",
+    "fn runtimeEventLogControl",
+    "fn consoleLogsControl",
+    "fn clearRuntimeLogsControl",
+    "fn openWebappControl",
+    "fn resetWebappControl",
     "fn appendJsonColumnValue",
     "fn ensureAppRecord",
     "fn logBridgeCall",
@@ -567,7 +583,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

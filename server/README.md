@@ -34,7 +34,7 @@ Implemented endpoints:
 - `POST /packages/validate`, `/packages/sign`, and `/packages/policy-audit` for token-gated package control helpers
 - `POST /apps/{appId}/rollback` for token-gated package rollback to a previous installed version
 - `GET /webapps/examples`
-- `POST /control/command` for token-gated package validation/signing/install/rollback, snapshot create/restore, migration dry-run/apply, network mock setup/reset, dialog mock setup, app registry queries, `platform.health`, `runtime.capabilities`, and safe `db.*` inspection commands
+- `POST /control/command` for token-gated package validation/signing/install/rollback, snapshot create/restore, migration dry-run/apply, network mock setup/reset, dialog mock setup, app registry queries, runtime open/reset/storage/log/resource inspection, `platform.health`, `runtime.capabilities`, and safe `db.*` inspection commands
 - `POST /db/snapshot`, `/db/app-storage`, `/db/app-versions`, `/db/bridge-calls`, `/db/core-events`, `/db/test-runs`, and `/db/export-debug-bundle` for token-gated safe DB inspection
 
 ## v0.4 persistence requirement

@@ -1159,6 +1159,26 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.list_targets")) {
+        const result_json = "{\"targets\":[{\"id\":\"server\",\"platform\":\"server\",\"status\":\"available\",\"runtimeVersion\":\"0.1.0\"}]}";
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.launch")) {
+        const result_json = "{\"ok\":true,\"target\":\"server\",\"status\":\"running\"}";
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.stop")) {
+        const result_json = "{\"ok\":true,\"target\":\"server\",\"status\":\"running\",\"note\":\"server stop is managed by the owning process\"}";
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.reload_runtime")) {
+        const result_json = "{\"ok\":true,\"target\":\"server\",\"status\":\"reloaded\"}";
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.capabilities")) {
         const result_json = try serverCapabilitiesJson(allocator);
         defer allocator.free(result_json);
@@ -1216,6 +1236,22 @@ fn handleControlCommand(
     }
     if (std.mem.eql(u8, tool, "platform.list_webapps")) {
         const result_json = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.open_webapp")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.open_webapp requires appId");
+        };
+        const result_json = openWebappControl(allocator, app_id) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
         defer allocator.free(result_json);
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
@@ -1355,6 +1391,96 @@ fn handleControlCommand(
             },
             else => return err,
         };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.reset_webapp") or std.mem.eql(u8, tool, "runtime.storage_reset")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "reset requires appId");
+        };
+        const result_json = if (std.mem.eql(u8, tool, "platform.reset_webapp"))
+            try resetWebappControl(allocator, app_id)
+        else
+            try resetAppStorageControl(allocator, app_id);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.storage_get")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.storage_get requires appId");
+        };
+        const key = controlStringArg(args, "key") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.storage_get requires key");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "permission_denied", args_json, null);
+            return writeControlError(allocator, stream, 400, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const default_value = if (args) |args_value| args_value.object.get("defaultValue") else null;
+        const result_json = try storageGetResultJson(allocator, app_id, key, default_value);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.storage_set")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.storage_set requires appId");
+        };
+        const key = controlStringArg(args, "key") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.storage_set requires key");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "permission_denied", args_json, null);
+            return writeControlError(allocator, stream, 400, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const value_json = if (args) |args_value| blk: {
+            const value = args_value.object.get("value") orelse break :blk try allocator.dupe(u8, "null");
+            break :blk try jsonValueAlloc(allocator, value);
+        } else try allocator.dupe(u8, "null");
+        defer allocator.free(value_json);
+        try storageSet(app_id, key, value_json);
+        const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"bytesWritten\":{d}}}", .{value_json.len});
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.resource_usage requires appId");
+        };
+        const result_json = try runtimeResourceUsageControl(allocator, app_id);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.console_logs")) {
+        const result_json = try consoleLogsControl(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.event_log")) {
+        const result_json = try runtimeEventLogControl(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.clear_logs")) {
+        const result_json = try clearRuntimeLogsControl(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_no_console_errors")) {
+        const result_json = try assertNoConsoleErrorsControl(allocator, controlStringArg(args, "appId"));
         defer allocator.free(result_json);
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
@@ -2457,6 +2583,58 @@ fn snapshotResourceUsageJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqli
     );
 }
 
+fn runtimeResourceUsageControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    return snapshotResourceUsageJsonAlloc(allocator, db, app_id);
+}
+
+fn openWebappControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const active = try activeSnapshotAppAlloc(allocator, db, app_id);
+    const active_app = active orelse return error.AppNotInstalled;
+    defer freeSnapshotActiveApp(allocator, active_app);
+
+    const session_id = try randomDbIdAlloc(allocator, db, "session_");
+    defer allocator.free(session_id);
+    const started_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(started_at);
+    const capabilities = try serverCapabilitiesJson(allocator);
+    defer allocator.free(capabilities);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json) " ++
+            "VALUES (?, 'zig-server', 'server', ?, ?, ?, ?, 'running', ?, '{\"source\":\"control\"}')",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, session_id);
+    bindText(statement, 2, runtime_version);
+    bindText(statement, 3, app_id);
+    bindText(statement, 4, active_app.install_id);
+    bindText(statement, 5, started_at);
+    bindText(statement, 6, capabilities);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+
+    const escaped_session_id = try escapeJsonString(allocator, session_id);
+    defer allocator.free(escaped_session_id);
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, active_app.install_id);
+    defer allocator.free(escaped_install_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"sessionId\":\"{s}\",\"appId\":\"{s}\",\"installId\":\"{s}\"}}",
+        .{ escaped_session_id, escaped_app_id, escaped_install_id },
+    );
+}
+
 fn int64QueryDb(db: *sqlite.sqlite3, sql: [*:0]const u8, bind_value: []const u8) !i64 {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
@@ -2561,6 +2739,100 @@ fn deleteAppStorageForApp(db: *sqlite.sqlite3, app_id: []const u8) !void {
     defer _ = sqlite.sqlite3_finalize(statement);
     bindText(statement, 1, app_id);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn storageKeyHasAppPrefix(allocator: std.mem.Allocator, app_id: []const u8, key: []const u8) !bool {
+    const prefix = try std.fmt.allocPrint(allocator, "{s}:", .{app_id});
+    defer allocator.free(prefix);
+    return std.mem.startsWith(u8, key, prefix);
+}
+
+fn resetAppStorageControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const storage_rows = try deleteRowsForApp(db, "DELETE FROM app_storage WHERE app_id = ?", app_id);
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"appId\":\"{s}\",\"storageRowsDeleted\":{d}}}", .{ escaped_app_id, storage_rows });
+}
+
+fn resetWebappControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const storage_rows = try deleteRowsForApp(db, "DELETE FROM app_storage WHERE app_id = ?", app_id);
+    const bridge_rows = try deleteRowsForApp(db, "DELETE FROM bridge_calls WHERE app_id = ?", app_id);
+    const core_rows = try deleteRowsForApp(db, "DELETE FROM core_events WHERE app_id = ?", app_id);
+    const test_rows = try deleteRowsForApp(db, "DELETE FROM test_runs WHERE app_id = ?", app_id);
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"appId\":\"{s}\",\"storageRowsDeleted\":{d},\"bridgeCallsDeleted\":{d},\"coreEventsDeleted\":{d},\"testRunsDeleted\":{d}}}",
+        .{ escaped_app_id, storage_rows, bridge_rows, core_rows, test_rows },
+    );
+}
+
+fn clearRuntimeLogsControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const bridge_rows = if (app_id) |actual_app_id|
+        try deleteRowsForApp(db, "DELETE FROM bridge_calls WHERE app_id = ?", actual_app_id)
+    else
+        try deleteRows(db, "DELETE FROM bridge_calls");
+    const core_rows = if (app_id) |actual_app_id|
+        try deleteRowsForApp(db, "DELETE FROM core_events WHERE app_id = ?", actual_app_id)
+    else
+        try deleteRows(db, "DELETE FROM core_events");
+    const test_rows = if (app_id) |actual_app_id|
+        try deleteRowsForApp(db, "DELETE FROM test_runs WHERE app_id = ?", actual_app_id)
+    else
+        try deleteRows(db, "DELETE FROM test_runs");
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.print(",\"bridgeCallsDeleted\":{d},\"coreEventsDeleted\":{d},\"testRunsDeleted\":{d}}}", .{ bridge_rows, core_rows, test_rows });
+    return out.toOwnedSlice();
+}
+
+fn assertNoConsoleErrorsControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const errors = try countConsoleErrors(allocator, app_id);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":{},\"errors\":{d}}}", .{ errors == 0, errors });
+}
+
+fn countConsoleErrors(allocator: std.mem.Allocator, app_id: ?[]const u8) !i64 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const sql = if (app_id == null)
+        "SELECT COUNT(*) FROM bridge_calls WHERE method = 'app.log' AND params_json LIKE '%\"level\":\"error\"%'"
+    else
+        "SELECT COUNT(*) FROM bridge_calls WHERE method = 'app.log' AND params_json LIKE '%\"level\":\"error\"%' AND app_id = ?";
+    if (app_id) |actual_app_id| return int64QueryDb(db, sql, actual_app_id);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn deleteRowsForApp(db: *sqlite.sqlite3, sql: [*:0]const u8, app_id: []const u8) !i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    return sqlite.sqlite3_changes(db);
+}
+
+fn deleteRows(db: *sqlite.sqlite3, sql: [*:0]const u8) !i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    return sqlite.sqlite3_changes(db);
 }
 
 fn restoreSnapshotStorage(
@@ -4516,6 +4788,49 @@ fn queryTestRunsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u
     return queryRowsJson(allocator, sql, app_id);
 }
 
+fn queryCoreActionsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const sql = if (app_id == null)
+        "SELECT action_id, event_id, session_id, app_id, action_json, created_at FROM core_actions ORDER BY created_at"
+    else
+        "SELECT action_id, event_id, session_id, app_id, action_json, created_at FROM core_actions WHERE app_id = ? ORDER BY created_at";
+    return queryRowsJson(allocator, sql, app_id);
+}
+
+fn queryConsoleLogRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const sql = if (app_id == null)
+        "SELECT bridge_call_id, session_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at"
+    else
+        "SELECT bridge_call_id, session_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'app.log' AND app_id = ? ORDER BY created_at";
+    return queryRowsJson(allocator, sql, app_id);
+}
+
+fn runtimeEventLogControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const bridge_calls = try queryBridgeCallsRowsJson(allocator, app_id);
+    defer allocator.free(bridge_calls);
+    const core_events = try queryCoreEventsRowsJson(allocator, app_id);
+    defer allocator.free(core_events);
+    const core_actions = try queryCoreActionsRowsJson(allocator, app_id);
+    defer allocator.free(core_actions);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.print(",\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s}}}", .{ bridge_calls, core_events, core_actions });
+    return out.toOwnedSlice();
+}
+
+fn consoleLogsControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const logs = try queryConsoleLogRowsJson(allocator, app_id);
+    defer allocator.free(logs);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.print(",\"logs\":{s}}}", .{logs});
+    return out.toOwnedSlice();
+}
+
 fn queryRowsJson(allocator: std.mem.Allocator, sql: []const u8, bind_value: ?[]const u8) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
@@ -5900,4 +6215,9 @@ test "control token writer creates private token file" {
         const stat = try file.stat();
         try std.testing.expectEqual(@as(std.fs.File.Mode, 0o600), stat.mode & 0o777);
     }
+}
+
+test "control storage helpers enforce app storage prefix" {
+    try std.testing.expect(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "notes-lite:notes"));
+    try std.testing.expect(!(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "other:notes")));
 }
