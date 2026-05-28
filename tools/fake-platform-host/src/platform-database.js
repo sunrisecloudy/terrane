@@ -257,6 +257,7 @@ export class PlatformDatabase {
 
     const active = this.activeInstall(appId);
     const createdAt = nowIso();
+    const migrationRuns = this.applyPendingInstallMigrations({ active, target });
     this.transaction(() => {
       if (active?.installId && active.installId !== installId) {
         this.run("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", active.installId);
@@ -294,11 +295,28 @@ export class PlatformDatabase {
         active?.installId ?? null,
         report.reportId,
         createdAt,
-        prettyJson({ approved: true, previousInstallId: active?.installId ?? null }),
+        prettyJson({ approved: true, previousInstallId: active?.installId ?? null, migrationRuns }),
       );
     });
 
-    return { appId, installId, status: "enabled", previousInstallId: active?.installId ?? null };
+    return { appId, installId, status: "enabled", previousInstallId: active?.installId ?? null, migrationRuns };
+  }
+
+  applyPendingInstallMigrations({ active, target }) {
+    if (!active || target.manifest.dataVersion <= active.manifest.dataVersion) {
+      return [];
+    }
+    const runs = [];
+    for (let from = active.manifest.dataVersion; from < target.manifest.dataVersion; from += 1) {
+      const path = `migrations/${from}_to_${from + 1}.json`;
+      const content = target.files.get(path);
+      if (!content) {
+        throw new Error(`Missing migration file: ${path}`);
+      }
+      const migration = JSON.parse(content);
+      runs.push(this.runMigration({ migration, mode: "apply" }));
+    }
+    return runs;
   }
 
   quarantineWebapp(appId, installId = null, reason = "manual quarantine") {

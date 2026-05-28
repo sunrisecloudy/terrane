@@ -57,3 +57,57 @@ test("permission-changing update waits for approval before activation", async ()
     host.close();
   }
 });
+
+test("approving dataVersion update applies packaged migrations before activation", async () => {
+  const host = new FakePlatformHost();
+  const updatePackage = fs.mkdtempSync(path.join(os.tmpdir(), "approval-migration-package-"));
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    await host.runControlCommand("runtime.storage_set", {
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      value: [{ title: "Existing note" }],
+    });
+
+    fs.cpSync(path.join(examplesDir, "notes-lite"), updatePackage, { recursive: true });
+    const manifestPath = path.join(updatePackage, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.version = "0.2.0";
+    manifest.dataVersion = 2;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    fs.mkdirSync(path.join(updatePackage, "migrations"), { recursive: true });
+    fs.writeFileSync(
+      path.join(updatePackage, "migrations", "1_to_2.json"),
+      JSON.stringify(
+        {
+          appId: "notes-lite",
+          fromDataVersion: 1,
+          toDataVersion: 2,
+          steps: [{ op: "setDefault", key: "notes-lite:notes", to: "archived", value: false }],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const pending = host.installPackage(updatePackage);
+    assert.equal(pending.status, "requires-approval");
+    assert.deepEqual(pending.approval.reasons, ["dataVersion"]);
+
+    const approved = await host.runControlCommand("platform.approve_webapp_update", {
+      appId: "notes-lite",
+      installId: pending.installId,
+    });
+    assert.equal(approved.status, "enabled");
+    assert.equal(approved.migrationRuns.length, 1);
+
+    const migrated = await host.runControlCommand("runtime.storage_get", {
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      defaultValue: [],
+    });
+    assert.deepEqual(migrated.result.value, [{ title: "Existing note", archived: false }]);
+  } finally {
+    host.close();
+  }
+});
