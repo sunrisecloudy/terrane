@@ -1,6 +1,6 @@
-# macOS Host Skeleton Target
+# macOS Host Target
 
-Codex should implement this as a Swift macOS app using `WKWebView`.
+SwiftPM macOS host using `WKWebView`.
 
 Minimum files to create:
 
@@ -23,6 +23,21 @@ MVP acceptance:
 - Loads runtime and all example apps from bundle resources.
 - Implements storage, dialogs, network, toast fallback, and `core.step`.
 - Exposes a debug reload action during development.
+
+Current local check:
+
+```sh
+swift build
+```
+
+Current implementation status:
+
+- Launches an AppKit `WKWebView` window.
+- Loads `runtime-web/index.html` from the repo checkout for development.
+- Defines the native bridge response shape.
+- Implements SQLite-backed `storage.*`.
+- Implements native open/save dialogs and toast logging.
+- Returns structured `platform_unsupported` for unfinished `network.request` and `core.step` wiring.
 
 
 ## Dev control plane

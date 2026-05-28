@@ -3,6 +3,7 @@ dist/
 coverage/
 .zig-cache/
 zig-out/
+.build/
 .env
 .env.*
 *.db

@@ -89,7 +89,7 @@ Status snapshot: **2026-05-28**.
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, health/control command HTTP surface, package validation/install, bridge dispatch, and focused tests |
 | `tools/codex-platform-mcp/` | partial | Dependency-free MCP stdio JSON-RPC server forwards declared tools to fake-host/dev control plane; node:test coverage present |
 | `native/ios/` | skeleton | README only |
-| `native/macos/` | skeleton | README only |
+| `native/macos/` | partial | SwiftPM AppKit/WKWebView host scaffold with SQLite storage, dialogs, toast logging, and structured bridge responses |
 | `native/android/` | skeleton | README only |
 | `native/windows/` | skeleton | README only |
 | `native/linux/` | skeleton | README only |
