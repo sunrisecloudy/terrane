@@ -4,15 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/server.ts",
-    "test": "vitest run"
+    "dev": "node --no-warnings src/server.js",
+    "start": "node --no-warnings src/server.js",
+    "test": "node --test --no-warnings test/*.test.js"
   },
-  "dependencies": {
-    "ajv": "latest"
-  },
-  "devDependencies": {
-    "tsx": "latest",
-    "typescript": "latest",
-    "vitest": "latest"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }

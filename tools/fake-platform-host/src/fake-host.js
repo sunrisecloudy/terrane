@@ -1,0 +1,246 @@
+import fs from "node:fs";
+import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispatcher.js";
+import { fakeHostCapabilities } from "./capabilities.js";
+import { CoreEngine } from "./core.js";
+import { PlatformError } from "./errors.js";
+import { examplesDir, resolveInside, runtimeWebDir } from "./paths.js";
+import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
+import { PlatformDatabase } from "./platform-database.js";
+import { prettyJson } from "./util.js";
+
+export class FakePlatformHost {
+  constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me" } = {}) {
+    this.database = new PlatformDatabase({ dbFile });
+    this.core = new CoreEngine();
+    this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
+    this.controlToken = controlToken;
+    this.dbFile = dbFile;
+  }
+
+  close() {
+    this.database.close();
+  }
+
+  health() {
+    return {
+      ok: true,
+      version: "0.1.0",
+      db: this.dbFile === ":memory:" ? "sqlite-mem" : "sqlite-file",
+      capabilities: fakeHostCapabilities(),
+    };
+  }
+
+  installPackage(packageDir, { trustLevel = "local-dev" } = {}) {
+    const pkg = readPackage(packageDir);
+    const hashes = packageHashes(pkg.manifest, pkg.files);
+    return this.database.insertInstalledPackage({
+      manifest: pkg.manifest,
+      files: pkg.files,
+      hashes,
+      validation: summarizeValidation(pkg.validation),
+      trustLevel,
+    });
+  }
+
+  validatePackage(packageDir) {
+    const result = validatePackage(packageDir);
+    return summarizeValidation(result);
+  }
+
+  async dispatchBridge(request, context) {
+    return this.bridge.dispatch(request, context);
+  }
+
+  async runControlCommand(tool, args = {}) {
+    switch (tool) {
+      case "platform.health":
+        return this.health();
+      case "runtime.capabilities":
+        return fakeHostCapabilities(args.appId ?? null);
+      case "platform.validate_package":
+        return this.validatePackage(requiredArg(args, "packagePath"));
+      case "platform.install_webapp_package":
+        return this.installPackage(requiredArg(args, "packagePath"), {
+          trustLevel: args.trustLevel ?? "local-dev",
+        });
+      case "platform.open_webapp":
+        return {
+          sessionId: this.database.createRuntimeSession({ appId: requiredArg(args, "appId") }),
+          appId: args.appId,
+        };
+      case "runtime.core_step":
+        return this.bridge.dispatch(
+          { id: args.id ?? "control_core_step", method: "core.step", params: { event: requiredArg(args, "event") } },
+          { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
+        );
+      case "runtime.storage_get":
+        return this.bridge.dispatch(
+          {
+            id: args.id ?? "control_storage_get",
+            method: "storage.get",
+            params: { key: requiredArg(args, "key"), defaultValue: args.defaultValue ?? null },
+          },
+          { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
+        );
+      case "runtime.storage_set":
+        return this.bridge.dispatch(
+          {
+            id: args.id ?? "control_storage_set",
+            method: "storage.set",
+            params: { key: requiredArg(args, "key"), value: args.value },
+          },
+          { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
+        );
+      case "runtime.bridge_calls":
+      case "db.query_bridge_calls":
+        return this.database.queryBridgeCalls(args.appId ?? null);
+      case "runtime.network_mock_set":
+        this.database.addNetworkMock(args);
+        return { ok: true };
+      case "runtime.dialog_mock_set":
+        this.database.addDialogMock(args);
+        return { ok: true };
+      case "db.snapshot":
+      case "db.export_debug_bundle":
+        return this.database.snapshot();
+      case "db.query_app_storage":
+        return this.database.queryAppStorage(requiredArg(args, "appId"));
+      case "db.query_app_versions":
+        return this.database.queryAppVersions(requiredArg(args, "appId"));
+      case "db.query_core_events":
+        return this.database.queryCoreEvents(args.appId ?? null);
+      case "db.query_test_runs":
+        return this.database.queryTestRuns(args.appId ?? null);
+      default:
+        throw new PlatformError("unknown_tool", `Unknown control tool: ${tool}`, { tool });
+    }
+  }
+
+  async handleHttp(req, res) {
+    try {
+      const url = new URL(req.url, "http://127.0.0.1");
+
+      if (req.method === "GET" && url.pathname === "/health") {
+        return sendJson(res, 200, this.health());
+      }
+
+      if (req.method === "GET" && url.pathname === "/") {
+        return sendText(res, 200, runtimePlaceholder(), "text/html");
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/webapps/examples/")) {
+        return this.serveStatic(res, examplesDir, url.pathname.replace("/webapps/examples/", ""));
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/runtime/")) {
+        return this.serveStatic(res, runtimeWebDir, url.pathname.replace("/runtime/", ""));
+      }
+
+      if (req.method === "POST" && url.pathname === "/bridge") {
+        const body = await readBodyJson(req);
+        const appId = req.headers["x-app-id"];
+        const sessionId = req.headers["x-runtime-session-id"];
+        return sendJson(res, 200, await this.dispatchBridge(body, { appId, sessionId }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/control/command") {
+        try {
+          this.requireControlToken(req);
+        } catch (error) {
+          return sendJson(res, 401, controlError(error));
+        }
+        const body = await readBodyJson(req);
+        try {
+          const result = await this.runControlCommand(body.tool, body.args ?? {});
+          return sendJson(res, 200, controlResponse(result));
+        } catch (error) {
+          return sendJson(res, 400, controlError(error));
+        }
+      }
+
+      return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Route not found", details: {} } });
+    } catch (error) {
+      return sendJson(res, 500, controlError(error));
+    }
+  }
+
+  serveStatic(res, root, relPath) {
+    const filePath = resolveInside(root, relPath);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "File not found", details: {} } });
+    }
+    sendText(res, 200, fs.readFileSync(filePath, "utf8"), contentType(filePath));
+  }
+
+  requireControlToken(req) {
+    const expected = `Bearer ${this.controlToken}`;
+    if (req.headers.authorization !== expected) {
+      throw new PlatformError("control.unauthorized", "Missing or invalid control token", {});
+    }
+  }
+}
+
+export function sendJson(res, status, value) {
+  sendText(res, status, prettyJson(value), "application/json");
+}
+
+function sendText(res, status, body, contentTypeValue) {
+  res.writeHead(status, {
+    "content-type": `${contentTypeValue}; charset=utf-8`,
+    "content-length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+function contentType(filePath) {
+  if (filePath.endsWith(".html")) return "text/html";
+  if (filePath.endsWith(".css")) return "text/css";
+  if (filePath.endsWith(".js")) return "text/javascript";
+  if (filePath.endsWith(".json")) return "application/json";
+  return "text/plain";
+}
+
+async function readBodyJson(req) {
+  let body = "";
+  for await (const chunk of req) {
+    body += chunk;
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+function requiredArg(args, name) {
+  if (!(name in args)) {
+    throw new PlatformError("invalid_request", `Missing required argument: ${name}`, { name });
+  }
+  return args[name];
+}
+
+function summarizeValidation(result) {
+  return {
+    ok: result.ok,
+    errors: result.errors,
+    warnings: result.warnings,
+    manifest: result.manifest
+      ? {
+          id: result.manifest.id,
+          version: result.manifest.version,
+          runtimeVersion: result.manifest.runtimeVersion,
+          dataVersion: result.manifest.dataVersion,
+        }
+      : null,
+    bridgeMethods: result.bridgeMethods,
+  };
+}
+
+function runtimePlaceholder() {
+  return `<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Fake Platform Host</title></head>
+  <body>
+    <main>
+      <h1>Fake Platform Host</h1>
+      <p>The runtime-web launcher is not implemented yet. The fake host API is available.</p>
+    </main>
+  </body>
+</html>`;
+}

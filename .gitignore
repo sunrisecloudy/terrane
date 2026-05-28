@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.token
+*.tmp

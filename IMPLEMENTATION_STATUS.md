@@ -86,7 +86,7 @@ Status snapshot: **2026-05-28**.
 | `runtime-web/` | skeleton | README only; no `index.html` or `src/` yet |
 | `zig-core/` | skeleton | README only; no `build.zig` yet |
 | `server/` | skeleton | README only; no `build.zig` yet |
-| `tools/fake-platform-host/` | skeleton | README + `package.json` only |
+| `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, health/control command HTTP surface, package validation/install, bridge dispatch, and focused tests |
 | `tools/codex-platform-mcp/` | skeleton | README + `package.json` + `tsconfig.json` only |
 | `native/ios/` | skeleton | README only |
 | `native/macos/` | skeleton | README only |
