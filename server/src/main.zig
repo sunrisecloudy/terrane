@@ -67,6 +67,11 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return writeJson(stream, 200, "{\"ok\":true,\"examples\":[\"notes-lite\",\"task-workbench\",\"file-transformer\",\"api-dashboard\",\"core-replay-lab\"]}");
     }
 
+    const examples_prefix = "/webapps/examples/";
+    if (std.mem.eql(u8, parsed.method, "GET") and std.mem.startsWith(u8, parsed.path, examples_prefix)) {
+        return handleExampleAsset(allocator, stream, parsed.path[examples_prefix.len..]);
+    }
+
     return writeJson(stream, 404, "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"Route not found\",\"details\":{}}}");
 }
 
@@ -138,6 +143,22 @@ fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, bo
     const report = try validateWebappPackage(allocator, body);
     defer allocator.free(report);
     return writeJson(stream, 200, report);
+}
+
+fn handleExampleAsset(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8) !void {
+    if (rel_path.len == 0 or containsAny(rel_path, &.{ "..", "\\", "//" })) {
+        return writeJson(stream, 400, "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid example asset path\",\"details\":{}}}");
+    }
+
+    const file_path = try std.fs.path.join(allocator, &.{ "webapps", "examples", rel_path });
+    defer allocator.free(file_path);
+    const file = std.fs.cwd().openFile(file_path, .{}) catch {
+        return writeJson(stream, 404, "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"Example asset not found\",\"details\":{}}}");
+    };
+    defer file.close();
+    const body = try file.readToEndAlloc(allocator, max_request_bytes);
+    defer allocator.free(body);
+    return writeStatic(stream, 200, contentTypeForPath(rel_path), body);
 }
 
 fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
@@ -300,6 +321,14 @@ fn headerValue(headers: []const u8, name: []const u8) ?[]const u8 {
 }
 
 fn writeJson(stream: std.net.Stream, status: u16, body: []const u8) !void {
+    return writeBody(stream, status, "application/json; charset=utf-8", body);
+}
+
+fn writeStatic(stream: std.net.Stream, status: u16, content_type: []const u8, body: []const u8) !void {
+    return writeBody(stream, status, content_type, body);
+}
+
+fn writeBody(stream: std.net.Stream, status: u16, content_type: []const u8, body: []const u8) !void {
     const reason = switch (status) {
         200 => "OK",
         400 => "Bad Request",
@@ -310,11 +339,19 @@ fn writeJson(stream: std.net.Stream, status: u16, body: []const u8) !void {
     var header_buffer: [256]u8 = undefined;
     const header = try std.fmt.bufPrint(
         &header_buffer,
-        "HTTP/1.1 {d} {s}\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n",
-        .{ status, reason, body.len },
+        "HTTP/1.1 {d} {s}\r\ncontent-type: {s}\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n",
+        .{ status, reason, content_type, body.len },
     );
     try stream.writeAll(header);
     try stream.writeAll(body);
+}
+
+fn contentTypeForPath(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, ".html")) return "text/html; charset=utf-8";
+    if (std.mem.endsWith(u8, path, ".css")) return "text/css; charset=utf-8";
+    if (std.mem.endsWith(u8, path, ".js")) return "text/javascript; charset=utf-8";
+    if (std.mem.endsWith(u8, path, ".json")) return "application/json; charset=utf-8";
+    return "text/plain; charset=utf-8";
 }
 
 fn writeBridgeOkRaw(allocator: std.mem.Allocator, stream: std.net.Stream, id: []const u8, result_json: []const u8) !void {

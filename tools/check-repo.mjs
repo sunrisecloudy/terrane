@@ -213,8 +213,11 @@ function checkServerStatic() {
   const required = [
     "POST\") and std.mem.eql(u8, parsed.path, \"/bridge\")",
     "POST\") and std.mem.eql(u8, parsed.path, \"/webapps/validate\")",
+    "\"/webapps/examples/\"",
     "fn handleBridge",
     "fn handleWebappValidate",
+    "fn handleExampleAsset",
+    "fn writeStatic",
     "\"core.step\"",
     "\"runtime.capabilities\"",
     "\"bridge.unauthorized_channel\"",
@@ -231,7 +234,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities unsupported=platform_unsupported validate=package-policy,testids,methods";
+  return "bridge=core.step,runtime.capabilities unsupported=platform_unsupported validate=package-policy,testids,methods examples=static";
 }
 
 function checkNativeStatic() {
