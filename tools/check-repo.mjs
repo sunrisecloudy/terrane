@@ -284,13 +284,16 @@ function checkServerStatic() {
     'headerValue(headers, "x-platform-control-token")',
     '"/control/command"',
     '"/webapps/install"',
+    '"/rollback"',
     '"/packages/sign"',
     "fn handlePackageControlEndpoint",
     "fn controlToolForPackagePath",
+    "fn appIdFromRollbackPath",
     '"platform.health"',
     '"platform.validate_package"',
     '"platform.sign_webapp_package"',
     '"platform.install_webapp_package"',
+    '"platform.rollback_webapp"',
     '"platform.list_webapps"',
     '"platform.install_report"',
     '"db.query_app_storage"',
@@ -320,6 +323,10 @@ function checkServerStatic() {
     "zig-server-static-smoke",
     "smoke-tests.json",
     "quarantined",
+    "rolled-back",
+    "fn rollbackWebappPackage",
+    "fn insertRollbackInstallationEvent",
+    "action, previous_install_id",
     "fn insertInstallationEvent",
     "fn queryRowsJson",
     "fn queryAppStorageRowsJson",
@@ -385,7 +392,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

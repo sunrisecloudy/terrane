@@ -77,6 +77,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
     }
 
+    if (std.mem.eql(u8, parsed.method, "POST") and appIdFromRollbackPath(parsed.path) != null) {
+        return handleAppRollbackEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
+    }
+
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
         return handleControlCommand(allocator, stream, parsed.body, parsed.control_token);
     }
@@ -466,6 +470,53 @@ fn handlePackageControlEndpoint(
     return writeControlError(allocator, stream, 404, "not_found", "Package control route not found");
 }
 
+fn handleAppRollbackEndpoint(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    path: []const u8,
+    body: []const u8,
+    provided_token: ?[]const u8,
+) !void {
+    const tool = "platform.rollback_webapp";
+    requireControlToken(allocator, provided_token) catch {
+        auditControlCommand(allocator, path, tool, "rejected", "control_auth_required", null, null);
+        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    };
+
+    const app_id = appIdFromRollbackPath(path) orelse {
+        auditControlCommand(allocator, path, tool, "rejected", "invalid_request", body, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Rollback route requires app id");
+    };
+    const args = parseControlArgs(allocator, body) catch {
+        auditControlCommand(allocator, path, tool, "rejected", "invalid_request", null, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Rollback request body must be a JSON object");
+    };
+    defer if (args) |*parsed| parsed.deinit();
+    const root = if (args) |parsed| parsed.value else null;
+    const target_install_id = if (root) |value| valueString(value.object.get("installId")) else null;
+    const args_json = try controlArgsJsonForAudit(allocator, body);
+    defer allocator.free(args_json);
+
+    const result_json = rollbackWebappPackage(allocator, app_id, target_install_id) catch |err| switch (err) {
+        error.AppNotInstalled => {
+            auditControlCommand(allocator, path, tool, "rejected", "app_not_installed", args_json, null);
+            return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+        },
+        error.NoRollbackTarget => {
+            auditControlCommand(allocator, path, tool, "rejected", "no_rollback_target", args_json, null);
+            return writeControlError(allocator, stream, 400, "no_rollback_target", "No rollback target exists");
+        },
+        error.RollbackTargetInvalid => {
+            auditControlCommand(allocator, path, tool, "rejected", "rollback_target_invalid", args_json, null);
+            return writeControlError(allocator, stream, 400, "rollback_target_invalid", "Rollback target is invalid");
+        },
+        else => return err,
+    };
+    defer allocator.free(result_json);
+    auditControlCommand(allocator, path, tool, "accepted", null, args_json, result_json);
+    return writeControlOkRaw(allocator, stream, result_json);
+}
+
 fn handleDbControlEndpoint(
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -669,6 +720,30 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.rollback_webapp")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.rollback_webapp requires appId");
+        };
+        const result_json = rollbackWebappPackage(allocator, app_id, controlStringArg(args, "installId")) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.NoRollbackTarget => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "no_rollback_target", args_json, null);
+                return writeControlError(allocator, stream, 400, "no_rollback_target", "No rollback target exists");
+            },
+            error.RollbackTargetInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "rollback_target_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "rollback_target_invalid", "Rollback target is invalid");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
@@ -766,6 +841,15 @@ fn controlToolForPackagePath(path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "/packages/sign") or std.mem.eql(u8, path, "/control/packages/sign")) return "platform.sign_webapp_package";
     if (std.mem.eql(u8, path, "/packages/policy-audit") or std.mem.eql(u8, path, "/control/packages/policy-audit")) return "platform.run_policy_audit";
     return "control.packages";
+}
+
+fn appIdFromRollbackPath(path: []const u8) ?[]const u8 {
+    const prefix = "/apps/";
+    const suffix = "/rollback";
+    if (!std.mem.startsWith(u8, path, prefix) or !std.mem.endsWith(u8, path, suffix)) return null;
+    const app_id = path[prefix.len .. path.len - suffix.len];
+    if (app_id.len == 0 or std.mem.indexOfScalar(u8, app_id, '/') != null) return null;
+    return app_id;
 }
 
 fn controlStringArg(args: ?std.json.Value, name: []const u8) ?[]const u8 {
@@ -1127,6 +1211,142 @@ fn installResultJsonAlloc(
         allocator,
         "{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"reportId\":\"{s}\",\"version\":\"{s}\",\"status\":\"{s}\",\"activated\":{},\"requiresUserApproval\":{},\"contentHash\":\"{s}\"}}",
         .{ escaped_app_id, escaped_install_id, escaped_report_id, escaped_version, version_status, activated, requires_approval, escaped_content_hash },
+    );
+}
+
+const InstalledVersion = struct {
+    install_id: []u8,
+    version: []u8,
+    data_version: i64,
+    status: []u8,
+};
+
+fn rollbackWebappPackage(allocator: std.mem.Allocator, app_id: []const u8, target_install_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const active = try activeInstallDetailsAlloc(allocator, db, app_id);
+    const active_version = active orelse return error.AppNotInstalled;
+    defer freeInstalledVersion(allocator, active_version);
+
+    if (target_install_id) |explicit_target| {
+        if (std.mem.eql(u8, explicit_target, active_version.install_id)) return error.RollbackTargetInvalid;
+    }
+
+    const target = try rollbackTargetAlloc(allocator, db, app_id, active_version.install_id, target_install_id);
+    const target_version = target orelse return error.NoRollbackTarget;
+    defer freeInstalledVersion(allocator, target_version);
+
+    if (std.mem.eql(u8, target_version.status, "quarantined") or std.mem.eql(u8, target_version.status, "uninstalled")) {
+        return error.RollbackTargetInvalid;
+    }
+
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    try markVersionStatus(db, active_version.install_id, "rolled-back", null);
+    try markVersionStatus(db, target_version.install_id, "enabled", created_at);
+    try activateInstalledApp(db, app_id, target_version.install_id, target_version.version, target_version.data_version, created_at);
+    try insertRollbackInstallationEvent(db, allocator, app_id, target_version.install_id, active_version.install_id, created_at);
+
+    const result_json = try rollbackResultJsonAlloc(allocator, app_id, target_version.install_id, active_version.install_id, target_version.version, target_version.data_version);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn activeInstallDetailsAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) !?InstalledVersion {
+    return installedVersionFromQueryAlloc(
+        allocator,
+        db,
+        "SELECT v.install_id, v.version, v.data_version, v.status FROM apps a JOIN app_versions v ON v.install_id = a.active_install_id WHERE a.id = ?",
+        app_id,
+        null,
+    );
+}
+
+fn rollbackTargetAlloc(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    active_install_id: []const u8,
+    target_install_id: ?[]const u8,
+) !?InstalledVersion {
+    if (target_install_id) |target| {
+        return installedVersionFromQueryAlloc(
+            allocator,
+            db,
+            "SELECT install_id, version, data_version, status FROM app_versions WHERE app_id = ? AND install_id = ?",
+            app_id,
+            target,
+        );
+    }
+    return installedVersionFromQueryAlloc(
+        allocator,
+        db,
+        "SELECT install_id, version, data_version, status FROM app_versions WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') ORDER BY created_at DESC LIMIT 1",
+        app_id,
+        active_install_id,
+    );
+}
+
+fn installedVersionFromQueryAlloc(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    sql: [:0]const u8,
+    first: []const u8,
+    second: ?[]const u8,
+) !?InstalledVersion {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, first);
+    if (second) |value| bindText(statement, 2, value);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const install_id = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+    errdefer allocator.free(install_id);
+    const version = try allocator.dupe(u8, sqliteColumnText(statement, 1));
+    errdefer allocator.free(version);
+    const status = try allocator.dupe(u8, sqliteColumnText(statement, 3));
+    errdefer allocator.free(status);
+    return .{
+        .install_id = install_id,
+        .version = version,
+        .data_version = sqlite.sqlite3_column_int64(statement, 2),
+        .status = status,
+    };
+}
+
+fn freeInstalledVersion(allocator: std.mem.Allocator, version: InstalledVersion) void {
+    allocator.free(version.install_id);
+    allocator.free(version.version);
+    allocator.free(version.status);
+}
+
+fn rollbackResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    active_install_id: []const u8,
+    rolled_back_install_id: []const u8,
+    active_version: []const u8,
+    data_version: i64,
+) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_active = try escapeJsonString(allocator, active_install_id);
+    defer allocator.free(escaped_active);
+    const escaped_rolled_back = try escapeJsonString(allocator, rolled_back_install_id);
+    defer allocator.free(escaped_rolled_back);
+    const escaped_version = try escapeJsonString(allocator, active_version);
+    defer allocator.free(escaped_version);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"appId\":\"{s}\",\"activeInstallId\":\"{s}\",\"rolledBackInstallId\":\"{s}\",\"activeVersion\":\"{s}\",\"dataVersion\":{d}}}",
+        .{ escaped_app_id, escaped_active, escaped_rolled_back, escaped_version, data_version },
     );
 }
 
@@ -1664,6 +1884,24 @@ fn markPreviousVersionInstalled(db: *sqlite.sqlite3, install_id: []const u8) !vo
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
 }
 
+fn markVersionStatus(db: *sqlite.sqlite3, install_id: []const u8, status: []const u8, activated_at: ?[]const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE app_versions SET status = ?, activated_at = COALESCE(?, activated_at) WHERE install_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, status);
+    bindNullableText(statement, 2, activated_at);
+    bindText(statement, 3, install_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
 fn insertAppVersion(
     db: *sqlite.sqlite3,
     install_id: []const u8,
@@ -1836,6 +2074,45 @@ fn insertSmokeTestRun(
     bindText(run_statement, 7, result_json);
     bindText(run_statement, 8, "{\"runner\":\"zig-server-static-smoke\"}");
     if (sqlite.sqlite3_step(run_statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertRollbackInstallationEvent(
+    db: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    target_install_id: []const u8,
+    rolled_back_install_id: []const u8,
+    created_at: []const u8,
+) !void {
+    const event_id = try randomDbIdAlloc(allocator, db, "install_event_");
+    defer allocator.free(event_id);
+    const escaped_target = try escapeJsonString(allocator, target_install_id);
+    defer allocator.free(escaped_target);
+    const escaped_rolled_back = try escapeJsonString(allocator, rolled_back_install_id);
+    defer allocator.free(escaped_rolled_back);
+    const details_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"targetInstallId\":\"{s}\",\"rolledBackInstallId\":\"{s}\"}}",
+        .{ escaped_target, escaped_rolled_back },
+    );
+    defer allocator.free(details_json);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'rollback', ?, 'zig-server', ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, event_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, target_install_id);
+    bindText(statement, 4, rolled_back_install_id);
+    bindText(statement, 5, created_at);
+    bindText(statement, 6, details_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
 }
 
 fn insertInstallationEvent(
