@@ -7,6 +7,9 @@ const sqlite = @cImport({
 const max_request_bytes = 1024 * 1024;
 const runtime_version = "0.1.0";
 const signature_prefix = "native-ai-webapp/sig/v1";
+const control_auth_failure_limit = 3;
+const control_auth_ban_ms: i64 = 60 * std.time.ms_per_s;
+const control_auth_max_clients = 16;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -15,13 +18,14 @@ pub fn main() !void {
     const address = try std.net.Address.parseIp("127.0.0.1", port);
     var server = try address.listen(.{ .reuse_address = true });
     defer server.deinit();
+    var control_auth_tracker = ControlAuthTracker{};
 
     std.debug.print("native-ai zig server listening on http://127.0.0.1:{d}\n", .{port});
 
     while (true) {
         var connection = try server.accept();
         defer connection.stream.close();
-        handleConnection(allocator, connection.stream) catch |err| {
+        handleConnection(allocator, connection.stream, connection.address, &control_auth_tracker) catch |err| {
             std.debug.print("server connection error: {}\n", .{err});
         };
     }
@@ -84,7 +88,12 @@ fn isDevControlPath(path: []const u8) bool {
         appIdFromRollbackPath(path) != null;
 }
 
-fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void {
+fn handleConnection(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
+) !void {
     var buffer: [max_request_bytes + 4096]u8 = undefined;
     const read_len = try stream.read(&buffer);
     if (read_len == 0) return;
@@ -115,27 +124,27 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/install")) {
-        return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token);
+        return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and
         (std.mem.startsWith(u8, parsed.path, "/packages/") or std.mem.startsWith(u8, parsed.path, "/control/packages/")))
     {
-        return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
+        return handlePackageControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and appIdFromRollbackPath(parsed.path) != null) {
-        return handleAppRollbackEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
+        return handleAppRollbackEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
-        return handleControlCommand(allocator, stream, parsed.body, parsed.control_token);
+        return handleControlCommand(allocator, stream, parsed.body, parsed.control_token, client_address, control_auth_tracker);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and
         (std.mem.startsWith(u8, parsed.path, "/db/") or std.mem.startsWith(u8, parsed.path, "/control/db/")))
     {
-        return handleDbControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
+        return handleDbControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token, client_address, control_auth_tracker);
     }
 
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/webapps/examples")) {
@@ -748,10 +757,11 @@ fn handleWebappInstall(
     stream: std.net.Stream,
     body: []const u8,
     provided_token: ?[]const u8,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
 ) !void {
-    requireControlToken(allocator, provided_token) catch {
-        auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "control_auth_required", null, null);
-        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+        return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, "/webapps/install", "platform.install_webapp_package", err);
     };
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
@@ -788,11 +798,12 @@ fn handlePackageControlEndpoint(
     path: []const u8,
     body: []const u8,
     provided_token: ?[]const u8,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
 ) !void {
     const tool = controlToolForPackagePath(path);
-    requireControlToken(allocator, provided_token) catch {
-        auditControlCommand(allocator, path, tool, "rejected", "control_auth_required", null, null);
-        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+        return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, tool, err);
     };
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
@@ -837,11 +848,12 @@ fn handleAppRollbackEndpoint(
     path: []const u8,
     body: []const u8,
     provided_token: ?[]const u8,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
 ) !void {
     const tool = "platform.rollback_webapp";
-    requireControlToken(allocator, provided_token) catch {
-        auditControlCommand(allocator, path, tool, "rejected", "control_auth_required", null, null);
-        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+        return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, tool, err);
     };
 
     const app_id = appIdFromRollbackPath(path) orelse {
@@ -897,11 +909,12 @@ fn handleDbControlEndpoint(
     path: []const u8,
     body: []const u8,
     provided_token: ?[]const u8,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
 ) !void {
     const audit_tool = controlToolForDbPath(path);
-    requireControlToken(allocator, provided_token) catch {
-        auditControlCommand(allocator, path, audit_tool, "rejected", "control_auth_required", null, null);
-        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+        return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, path, audit_tool, err);
     };
 
     const args = parseControlArgs(allocator, body) catch {
@@ -977,10 +990,11 @@ fn handleControlCommand(
     stream: std.net.Stream,
     body: []const u8,
     provided_token: ?[]const u8,
+    client_address: std.net.Address,
+    control_auth_tracker: *ControlAuthTracker,
 ) !void {
-    requireControlToken(allocator, provided_token) catch {
-        auditControlCommand(allocator, "/control/command", "control.command", "rejected", "control_auth_required", null, null);
-        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    authorizeControlRequest(allocator, control_auth_tracker, client_address, provided_token) catch |err| {
+        return rejectControlAuth(allocator, stream, control_auth_tracker, client_address, "/control/command", "control.command", err);
     };
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
@@ -1301,9 +1315,143 @@ fn handleControlCommand(
     return writeControlError(allocator, stream, 400, "unknown_tool", "Unknown control tool");
 }
 
+const ControlClientKey = struct {
+    family: std.posix.sa_family_t = 0,
+    bytes: [16]u8 = [_]u8{0} ** 16,
+    len: u8 = 0,
+
+    fn eql(self: ControlClientKey, other: ControlClientKey) bool {
+        return self.family == other.family and
+            self.len == other.len and
+            std.mem.eql(u8, self.bytes[0..self.len], other.bytes[0..other.len]);
+    }
+};
+
+const ControlAuthEntry = struct {
+    key: ControlClientKey = .{},
+    failure_count: u8 = 0,
+    banned_until_ms: i64 = 0,
+};
+
+const ControlAuthTracker = struct {
+    entries: [control_auth_max_clients]ControlAuthEntry = [_]ControlAuthEntry{.{}} ** control_auth_max_clients,
+
+    fn entryFor(self: *ControlAuthTracker, key: ControlClientKey) *ControlAuthEntry {
+        for (&self.entries) |*entry| {
+            if (entry.key.eql(key)) return entry;
+        }
+        for (&self.entries) |*entry| {
+            if (entry.key.len == 0) {
+                entry.key = key;
+                return entry;
+            }
+        }
+        self.entries[0] = .{ .key = key };
+        return &self.entries[0];
+    }
+
+    fn find(self: *ControlAuthTracker, key: ControlClientKey) ?*ControlAuthEntry {
+        for (&self.entries) |*entry| {
+            if (entry.key.eql(key)) return entry;
+        }
+        return null;
+    }
+
+    fn retryAfterSeconds(self: *ControlAuthTracker, key: ControlClientKey, now_ms: i64) i64 {
+        const entry = self.find(key) orelse return 60;
+        if (entry.banned_until_ms <= now_ms) return 0;
+        const remaining_ms = entry.banned_until_ms - now_ms;
+        return @divTrunc(remaining_ms + std.time.ms_per_s - 1, std.time.ms_per_s);
+    }
+};
+
+fn authorizeControlRequest(
+    allocator: std.mem.Allocator,
+    tracker: *ControlAuthTracker,
+    client_address: std.net.Address,
+    provided_token: ?[]const u8,
+) !void {
+    const key = controlClientKey(client_address);
+    const expected = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN") catch {
+        return authorizeControlTokenValue(tracker, key, "", provided_token, std.time.milliTimestamp());
+    };
+    defer allocator.free(expected);
+    return authorizeControlTokenValue(tracker, key, expected, provided_token, std.time.milliTimestamp());
+}
+
+fn authorizeControlTokenValue(
+    tracker: *ControlAuthTracker,
+    key: ControlClientKey,
+    expected: []const u8,
+    provided_token: ?[]const u8,
+    now_ms: i64,
+) error{ ControlAuthRequired, ControlConnectionBanned }!void {
+    const entry = tracker.entryFor(key);
+    if (entry.banned_until_ms > now_ms) return error.ControlConnectionBanned;
+
+    requireControlTokenValue(expected, provided_token) catch {
+        if (entry.failure_count < std.math.maxInt(u8)) entry.failure_count += 1;
+        if (entry.failure_count >= control_auth_failure_limit) {
+            entry.banned_until_ms = now_ms + control_auth_ban_ms;
+            return error.ControlConnectionBanned;
+        }
+        return error.ControlAuthRequired;
+    };
+
+    entry.failure_count = 0;
+    entry.banned_until_ms = 0;
+}
+
+fn controlClientKey(address: std.net.Address) ControlClientKey {
+    var key = ControlClientKey{ .family = address.any.family };
+    switch (address.any.family) {
+        std.posix.AF.INET => {
+            const bytes: *const [4]u8 = @ptrCast(&address.in.sa.addr);
+            @memcpy(key.bytes[0..4], bytes[0..4]);
+            key.len = 4;
+        },
+        std.posix.AF.INET6 => {
+            @memcpy(key.bytes[0..16], address.in6.sa.addr[0..16]);
+            key.len = 16;
+        },
+        else => {
+            key.len = 1;
+            key.bytes[0] = 0;
+        },
+    }
+    return key;
+}
+
+fn rejectControlAuth(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    tracker: *ControlAuthTracker,
+    client_address: std.net.Address,
+    path: []const u8,
+    tool: []const u8,
+    auth_error: anyerror,
+) !void {
+    switch (auth_error) {
+        error.ControlConnectionBanned => {
+            const code = "control_connection_banned";
+            auditControlCommand(allocator, path, tool, "rejected", code, null, null);
+            const retry_after_seconds = tracker.retryAfterSeconds(controlClientKey(client_address), std.time.milliTimestamp());
+            return writeControlBanError(allocator, stream, retry_after_seconds);
+        },
+        else => {
+            auditControlCommand(allocator, path, tool, "rejected", "control_auth_required", null, null);
+            return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+        },
+    }
+}
+
 fn requireControlToken(allocator: std.mem.Allocator, provided_token: ?[]const u8) !void {
     const expected = try std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN");
     defer allocator.free(expected);
+    return requireControlTokenValue(expected, provided_token);
+}
+
+fn requireControlTokenValue(expected: []const u8, provided_token: ?[]const u8) error{ControlAuthRequired}!void {
     if (expected.len == 0) return error.ControlAuthRequired;
     const actual = provided_token orelse return error.ControlAuthRequired;
     if (!std.mem.eql(u8, actual, expected)) return error.ControlAuthRequired;
@@ -5242,6 +5390,7 @@ fn writeBody(stream: std.net.Stream, status: u16, content_type: []const u8, body
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         500 => "Internal Server Error",
         else => "OK",
@@ -5318,6 +5467,16 @@ fn writeControlError(allocator: std.mem.Allocator, stream: std.net.Stream, statu
     );
     defer allocator.free(body);
     return writeJson(stream, status, body);
+}
+
+fn writeControlBanError(allocator: std.mem.Allocator, stream: std.net.Stream, retry_after_seconds: i64) !void {
+    const body = try std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":false,\"error\":{{\"code\":\"control_connection_banned\",\"message\":\"Control connection is temporarily banned after repeated auth failures\",\"details\":{{\"retryAfterSeconds\":{d}}}}}}}",
+        .{retry_after_seconds},
+    );
+    defer allocator.free(body);
+    return writeJson(stream, 403, body);
 }
 
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
@@ -5452,8 +5611,7 @@ fn tagStartsAt(html: []const u8, start: usize, tag: []const u8) bool {
 }
 
 fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
-    const methods = [_][]const u8{
-    };
+    const methods = [_][]const u8{};
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;
     }
@@ -5567,4 +5725,20 @@ fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
         }
     }
     return out.toOwnedSlice(allocator);
+}
+
+test "control auth tracker bans repeated failures and clears after expiry" {
+    var tracker = ControlAuthTracker{};
+    var key = ControlClientKey{ .family = std.posix.AF.INET, .len = 4 };
+    key.bytes[0] = 127;
+    key.bytes[3] = 1;
+
+    try std.testing.expectError(error.ControlAuthRequired, authorizeControlTokenValue(&tracker, key, "expected-token", null, 0));
+    try std.testing.expectError(error.ControlAuthRequired, authorizeControlTokenValue(&tracker, key, "expected-token", "wrong-token", 1));
+    try std.testing.expectError(error.ControlConnectionBanned, authorizeControlTokenValue(&tracker, key, "expected-token", "wrong-token", 2));
+    try std.testing.expectError(error.ControlConnectionBanned, authorizeControlTokenValue(&tracker, key, "expected-token", "expected-token", 3));
+    try std.testing.expectEqual(@as(i64, 60), tracker.retryAfterSeconds(key, 2));
+
+    try authorizeControlTokenValue(&tracker, key, "expected-token", "expected-token", control_auth_ban_ms + 3);
+    try std.testing.expectEqual(@as(i64, 0), tracker.retryAfterSeconds(key, control_auth_ban_ms + 3));
 }
