@@ -238,6 +238,7 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
         if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
         if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
         if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "shell.exec", "native.exec" })) try errors.append(allocator, "forbidden_bridge_method");
+        if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
     }
 
     return validationReportAlloc(allocator, errors.items);
@@ -428,6 +429,45 @@ fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
         "notification.toast",
         "network.request",
         "app.log",
+    };
+    for (methods) |candidate| {
+        if (std.mem.eql(u8, method, candidate)) return true;
+    }
+    return false;
+}
+
+fn hasUnknownRuntimeBridgeCall(source: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, source, index, "AppRuntime.call")) |call_start| {
+        index = call_start + "AppRuntime.call".len;
+        const open = std.mem.indexOfScalarPos(u8, source, index, '(') orelse return false;
+        var cursor = open + 1;
+        while (cursor < source.len and (source[cursor] == ' ' or source[cursor] == '\t' or source[cursor] == '\n' or source[cursor] == '\r')) {
+            cursor += 1;
+        }
+        if (cursor >= source.len or (source[cursor] != '"' and source[cursor] != '\'')) continue;
+        const quote = source[cursor];
+        const method_start = cursor + 1;
+        const method_end = std.mem.indexOfScalarPos(u8, source, method_start, quote) orelse return true;
+        if (!isAllowedRuntimeBridgeMethod(source[method_start..method_end])) return true;
+        index = method_end + 1;
+    }
+    return false;
+}
+
+fn isAllowedRuntimeBridgeMethod(method: []const u8) bool {
+    const methods = [_][]const u8{
+        "core.step",
+        "storage.get",
+        "storage.set",
+        "storage.remove",
+        "storage.list",
+        "dialog.openFile",
+        "dialog.saveFile",
+        "notification.toast",
+        "network.request",
+        "app.log",
+        "runtime.capabilities",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;

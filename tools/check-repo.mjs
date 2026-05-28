@@ -222,6 +222,8 @@ function checkServerStatic() {
     "fn isKnownUnsupportedBridgeMethod",
     "fn hasInteractiveWithoutTestId",
     "\"missing_testid\"",
+    "fn hasUnknownRuntimeBridgeCall",
+    "fn isAllowedRuntimeBridgeMethod",
     "\"unknown_method\"",
   ];
   for (const snippet of required) {
@@ -229,7 +231,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities unsupported=platform_unsupported validate=package-policy,testids";
+  return "bridge=core.step,runtime.capabilities unsupported=platform_unsupported validate=package-policy,testids,methods";
 }
 
 function checkNativeStatic() {
