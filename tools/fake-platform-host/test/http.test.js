@@ -24,6 +24,8 @@ test("http health and token-protected control command work", async () => {
       body: JSON.stringify({ tool: "platform.health", args: {} }),
     });
     assert.equal(unauthorized.status, 401);
+    const unauthorizedBody = await unauthorized.json();
+    assert.equal(unauthorizedBody.error.code, "control_auth_required");
 
     const validate = await fetch(`${started.url}/control/command`, {
       method: "POST",
@@ -123,6 +125,17 @@ test("http health and token-protected control command work", async () => {
     }).then((response) => response.json());
     assert.equal(dbSnapshot.ok, true);
     assert.equal(Array.isArray(dbSnapshot.result.apps), true);
+
+    const auditRows = started.host.database.queryControlCommands();
+    assert.equal(
+      auditRows.some((row) => row.path === "/control/command" && row.decision === "rejected" && row.error_code === "control_auth_required"),
+      true,
+    );
+    assert.equal(
+      auditRows.some((row) => row.tool === "platform.validate_package" && row.path === "/control/command" && row.decision === "accepted"),
+      true,
+    );
+    assert.equal(auditRows.some((row) => row.tool === "db.snapshot" && row.path === "/db/snapshot" && row.decision === "accepted"), true);
   } finally {
     await started.close();
   }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispatcher.js";
 import { fakeHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
-import { PlatformError } from "./errors.js";
+import { errorBody, PlatformError } from "./errors.js";
 import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
 import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
@@ -24,6 +24,7 @@ export class FakePlatformHost {
     this.dbFile = dbFile;
     this.runtimeVersion = runtimeVersion;
     this.allowRuntimeMismatch = allowRuntimeMismatch;
+    this.auditControlSessionId = null;
   }
 
   close() {
@@ -316,6 +317,46 @@ export class FakePlatformHost {
     };
   }
 
+  controlAuditSession() {
+    if (!this.auditControlSessionId) {
+      this.auditControlSessionId = this.database.createControlSession({
+        target: "fake-host",
+        actor: "control-audit",
+        metadata: { implicit: true },
+      }).controlSessionId;
+    }
+    return this.auditControlSessionId;
+  }
+
+  resolveAuditControlSession(controlSessionId) {
+    if (controlSessionId) {
+      try {
+        return this.database.controlSession(controlSessionId);
+      } catch {
+        return this.database.controlSession(this.controlAuditSession());
+      }
+    }
+    return this.database.controlSession(this.controlAuditSession());
+  }
+
+  auditControlRequest({ req, path, tool, args = null, result = null, error = null, startedAt, controlSessionId = null, runtimeSessionId = null }) {
+    const session = this.resolveAuditControlSession(controlSessionId);
+    const errorPayload = error ? errorBody(error) : null;
+    this.database.logControlCommand({
+      controlSessionId: session.controlSessionId,
+      runtimeSessionId: runtimeSessionId ?? session.runtimeSessionId ?? null,
+      tool: tool ?? `${req.method} ${path}`,
+      args,
+      result,
+      error: errorPayload,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      httpMethod: req.method,
+      path,
+      decision: errorPayload ? "rejected" : "accepted",
+      errorCode: errorPayload?.code ?? null,
+    });
+  }
+
   activeRuntimePackage(appId) {
     this.verifyInstalledApp(appId);
     const pkg = this.database.activeInstallPackage(appId);
@@ -530,35 +571,44 @@ export class FakePlatformHost {
 
       const sessionRoute = parseControlSessionRoute(url.pathname);
       if (sessionRoute) {
+        const startedAt = Date.now();
         try {
           this.requireControlToken(req);
         } catch (error) {
+          this.auditControlRequest({ req, path: url.pathname, tool: `${req.method} ${url.pathname}`, error, startedAt });
           return sendJson(res, 401, controlError(error));
         }
-        return this.handleControlSessionRoute(req, res, sessionRoute);
+        return this.handleControlSessionRoute(req, res, sessionRoute, startedAt, url.pathname);
       }
 
       const directRoute = parseDirectControlRoute(url.pathname);
       if (directRoute) {
+        const startedAt = Date.now();
         try {
           this.requireControlToken(req);
         } catch (error) {
+          this.auditControlRequest({ req, path: url.pathname, tool: directRoute.tool, args: directRoute.args, error, startedAt });
           return sendJson(res, 401, controlError(error));
         }
-        return this.handleDirectControlRoute(req, res, directRoute);
+        return this.handleDirectControlRoute(req, res, directRoute, startedAt, url.pathname);
       }
 
       if (req.method === "POST" && url.pathname === "/control/command") {
+        const startedAt = Date.now();
         try {
           this.requireControlToken(req);
         } catch (error) {
+          this.auditControlRequest({ req, path: url.pathname, tool: "control.command", error, startedAt });
           return sendJson(res, 401, controlError(error));
         }
-        const body = await readBodyJson(req);
+        let body = {};
         try {
+          body = await readBodyJson(req);
           const result = await this.runControlCommand(body.tool, body.args ?? {});
+          this.auditControlRequest({ req, path: url.pathname, tool: body.tool, args: body.args ?? {}, result, startedAt });
           return sendJson(res, 200, controlResponse(result));
         } catch (error) {
+          this.auditControlRequest({ req, path: url.pathname, tool: body.tool ?? "control.command", args: body.args ?? {}, error, startedAt });
           return sendJson(res, 400, controlError(error));
         }
       }
@@ -569,20 +619,28 @@ export class FakePlatformHost {
     }
   }
 
-  async handleDirectControlRoute(req, res, route) {
+  async handleDirectControlRoute(req, res, route, startedAt = Date.now(), requestPath = null) {
+    const path = requestPath ?? new URL(req.url, "http://127.0.0.1").pathname;
     if (!route.methods.includes(req.method)) {
-      return sendJson(res, 404, controlError(new PlatformError("not_found", "Control route not found", {})));
+      const error = new PlatformError("not_found", "Control route not found", {});
+      this.auditControlRequest({ req, path, tool: route.tool, args: route.args, error, startedAt });
+      return sendJson(res, 404, controlError(error));
     }
+    let args = route.args;
     try {
       const body = req.method === "POST" ? await readBodyJson(req) : {};
-      const result = await this.runControlCommand(route.tool, { ...route.args, ...body });
+      args = { ...route.args, ...body };
+      const result = await this.runControlCommand(route.tool, args);
+      this.auditControlRequest({ req, path, tool: route.tool, args, result, startedAt });
       return sendJson(res, 200, controlResponse(result));
     } catch (error) {
+      this.auditControlRequest({ req, path, tool: route.tool, args, error, startedAt });
       return sendJson(res, 400, controlError(error));
     }
   }
 
-  async handleControlSessionRoute(req, res, route) {
+  async handleControlSessionRoute(req, res, route, startedAt = Date.now(), requestPath = null) {
+    const path = requestPath ?? new URL(req.url, "http://127.0.0.1").pathname;
     try {
       if (req.method === "POST" && route.kind === "collection") {
         const body = await readBodyJson(req);
@@ -593,35 +651,93 @@ export class FakePlatformHost {
           metadata: body.metadata ?? {},
           tokenHash: body.tokenHash ?? null,
         });
+        this.auditControlRequest({
+          req,
+          path,
+          tool: "control.sessions.create",
+          args: body,
+          result: session,
+          startedAt,
+          controlSessionId: session.controlSessionId,
+          runtimeSessionId: session.runtimeSessionId,
+        });
         return sendJson(res, 200, controlResponse(session));
       }
 
       if (req.method === "DELETE" && route.kind === "item") {
-        return sendJson(res, 200, controlResponse(this.database.endControlSession(route.controlSessionId)));
+        const session = this.resolveAuditControlSession(route.controlSessionId);
+        const result = this.database.endControlSession(route.controlSessionId);
+        this.auditControlRequest({
+          req,
+          path,
+          tool: "control.sessions.end",
+          args: { controlSessionId: route.controlSessionId },
+          result,
+          startedAt,
+          controlSessionId: route.controlSessionId,
+          runtimeSessionId: session.runtimeSessionId,
+        });
+        return sendJson(res, 200, controlResponse(result));
       }
 
       if (req.method === "GET" && route.kind === "subresource") {
         const session = this.database.controlSession(route.controlSessionId);
         if (route.subresource === "snapshot") {
           const snapshot = session.appId ? this.runtimeSnapshot(session.appId) : this.database.snapshot();
-          return sendJson(res, 200, controlResponse({ controlSessionId: session.controlSessionId, snapshot }));
+          const result = { controlSessionId: session.controlSessionId, snapshot };
+          this.auditControlRequest({
+            req,
+            path,
+            tool: "control.sessions.snapshot",
+            args: { controlSessionId: route.controlSessionId },
+            result,
+            startedAt,
+            controlSessionId: session.controlSessionId,
+            runtimeSessionId: session.runtimeSessionId,
+          });
+          return sendJson(res, 200, controlResponse(result));
         }
         if (route.subresource === "events") {
-          return sendJson(res, 200, controlResponse({
+          const result = {
             controlSessionId: session.controlSessionId,
             runtimeSessionId: session.runtimeSessionId,
             appId: session.appId,
             bridgeCalls: this.database.queryBridgeCalls(session.appId),
             coreEvents: this.database.queryCoreEvents(session.appId),
-          }));
+          };
+          this.auditControlRequest({
+            req,
+            path,
+            tool: "control.sessions.events",
+            args: { controlSessionId: route.controlSessionId },
+            result,
+            startedAt,
+            controlSessionId: session.controlSessionId,
+            runtimeSessionId: session.runtimeSessionId,
+          });
+          return sendJson(res, 200, controlResponse(result));
         }
         if (route.subresource === "capabilities") {
-          return sendJson(res, 200, controlResponse(fakeHostCapabilities(session.appId)));
+          const result = fakeHostCapabilities(session.appId);
+          this.auditControlRequest({
+            req,
+            path,
+            tool: "control.sessions.capabilities",
+            args: { controlSessionId: route.controlSessionId },
+            result,
+            startedAt,
+            controlSessionId: session.controlSessionId,
+            runtimeSessionId: session.runtimeSessionId,
+          });
+          return sendJson(res, 200, controlResponse(result));
         }
       }
 
-      return sendJson(res, 404, controlError(new PlatformError("not_found", "Control session route not found", {})));
+      const error = new PlatformError("not_found", "Control session route not found", {});
+      this.auditControlRequest({ req, path, tool: `${req.method} ${path}`, args: route, error, startedAt, controlSessionId: route.controlSessionId });
+      return sendJson(res, 404, controlError(error));
     } catch (error) {
+      this.auditControlRequest({ req, path, tool: `${req.method} ${path}`, args: route, error, startedAt, controlSessionId: route.controlSessionId });
       return sendJson(res, 400, controlError(error));
     }
   }
@@ -653,7 +769,7 @@ export class FakePlatformHost {
   requireControlToken(req) {
     const expected = `Bearer ${this.controlToken}`;
     if (req.headers.authorization !== expected) {
-      throw new PlatformError("control.unauthorized", "Missing or invalid control token", {});
+      throw new PlatformError("control_auth_required", "Missing or invalid control token", {});
     }
   }
 

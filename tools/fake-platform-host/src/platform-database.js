@@ -11,6 +11,7 @@ export class PlatformDatabase {
     this.db = new DatabaseSync(dbFile);
     this.db.exec("PRAGMA foreign_keys = ON");
     this.applyMigrations(migrationsDir);
+    this.ensureControlCommandAuditColumns();
   }
 
   applyMigrations(migrationsDir) {
@@ -21,6 +22,20 @@ export class PlatformDatabase {
 
     for (const migration of migrations) {
       this.db.exec(fs.readFileSync(path.join(migrationsDir, migration), "utf8"));
+    }
+  }
+
+  ensureControlCommandAuditColumns() {
+    const columns = new Set(this.all("PRAGMA table_info(control_commands)").map((row) => row.name));
+    for (const [name, type] of [
+      ["http_method", "TEXT"],
+      ["path", "TEXT"],
+      ["decision", "TEXT"],
+      ["error_code", "TEXT"],
+    ]) {
+      if (!columns.has(name)) {
+        this.db.exec(`ALTER TABLE control_commands ADD COLUMN ${name} ${type}`);
+      }
     }
   }
 
@@ -762,6 +777,37 @@ export class PlatformDatabase {
     return { ok: true, controlSessionId, status: "ended", endedAt };
   }
 
+  logControlCommand({
+    controlSessionId,
+    runtimeSessionId = null,
+    tool,
+    args = null,
+    result = null,
+    error = null,
+    durationMs = 0,
+    httpMethod = null,
+    path = null,
+    decision = null,
+    errorCode = null,
+  }) {
+    this.run(
+      "INSERT INTO control_commands (command_id, control_session_id, runtime_session_id, tool, http_method, path, decision, error_code, args_json, result_json, error_json, created_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      id("command"),
+      controlSessionId,
+      runtimeSessionId,
+      tool,
+      httpMethod,
+      path,
+      decision,
+      errorCode,
+      args ? prettyJson(args) : null,
+      result ? prettyJson(result) : null,
+      error ? prettyJson(error) : null,
+      nowIso(),
+      durationMs,
+    );
+  }
+
   logBridgeCall({ sessionId, appId, installId = null, method, params, result = null, error = null, durationMs = 0 }) {
     this.run(
       "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -901,6 +947,8 @@ export class PlatformDatabase {
       app_versions: this.all("SELECT * FROM app_versions ORDER BY app_id, version"),
       app_storage: this.all("SELECT * FROM app_storage ORDER BY app_id, key"),
       bridge_calls: this.all("SELECT * FROM bridge_calls ORDER BY created_at"),
+      control_sessions: this.all("SELECT * FROM control_sessions ORDER BY started_at"),
+      control_commands: this.queryControlCommands(),
       runtime_sessions: this.all("SELECT * FROM runtime_sessions ORDER BY started_at"),
       runtime_snapshots: this.all("SELECT * FROM runtime_snapshots ORDER BY created_at"),
       app_migrations: this.all("SELECT * FROM app_migrations ORDER BY created_at"),
@@ -929,6 +977,8 @@ export class PlatformDatabase {
         ? {
             runtimeSessions: this.all("SELECT * FROM runtime_sessions ORDER BY started_at"),
             bridgeCalls: this.all("SELECT * FROM bridge_calls ORDER BY created_at"),
+            controlSessions: this.all("SELECT * FROM control_sessions ORDER BY started_at"),
+            controlCommands: this.queryControlCommands(),
             coreEvents: this.all("SELECT * FROM core_events ORDER BY created_at"),
             coreActions: this.all("SELECT * FROM core_actions ORDER BY created_at"),
             runtimeSnapshots: this.all("SELECT * FROM runtime_snapshots ORDER BY created_at"),
@@ -1090,6 +1140,13 @@ export class PlatformDatabase {
       return this.all("SELECT * FROM bridge_calls WHERE app_id = ? ORDER BY created_at", appId);
     }
     return this.all("SELECT * FROM bridge_calls ORDER BY created_at");
+  }
+
+  queryControlCommands(controlSessionId = null) {
+    if (controlSessionId) {
+      return this.all("SELECT * FROM control_commands WHERE control_session_id = ? ORDER BY created_at", controlSessionId);
+    }
+    return this.all("SELECT * FROM control_commands ORDER BY created_at");
   }
 
   countBridgeCallsSince({ appId, since, method = null }) {
