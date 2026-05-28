@@ -70,6 +70,7 @@ export class BridgeDispatcher {
     }
 
     this.assertPermission(method, context);
+    this.assertResourceBudget(method, params, context);
 
     if (method.startsWith("storage.")) {
       return this.storage(method, params, context);
@@ -138,6 +139,56 @@ export class BridgeDispatcher {
         method,
         requiredPermission: permission,
       });
+    }
+  }
+
+  assertResourceBudget(method, params, context) {
+    const budget = context.active?.manifest?.resourceBudget ?? {};
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const bridgeLimit = budget.maxBridgeCallsPerMinute;
+    if (Number.isInteger(bridgeLimit)) {
+      const count = this.database.countBridgeCallsSince({ appId: context.appId, since });
+      if (count >= bridgeLimit) {
+        throw new PlatformError("resource_budget_exceeded", "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute", {
+          appId: context.appId,
+          limit: bridgeLimit,
+          count,
+        });
+      }
+    }
+
+    if (method === "network.request" && Number.isInteger(budget.maxNetworkRequestsPerMinute)) {
+      const count = this.database.countBridgeCallsSince({ appId: context.appId, since, method: "network.request" });
+      if (count >= budget.maxNetworkRequestsPerMinute) {
+        throw new PlatformError("resource_budget_exceeded", "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute", {
+          appId: context.appId,
+          limit: budget.maxNetworkRequestsPerMinute,
+          count,
+        });
+      }
+    }
+
+    if (method === "app.log" && Number.isInteger(budget.maxLogLinesPerMinute)) {
+      const count = this.database.countBridgeCallsSince({ appId: context.appId, since, method: "app.log" });
+      if (count >= budget.maxLogLinesPerMinute) {
+        throw new PlatformError("resource_budget_exceeded", "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute", {
+          appId: context.appId,
+          limit: budget.maxLogLinesPerMinute,
+          count,
+        });
+      }
+    }
+
+    if (method === "storage.set" && Number.isInteger(budget.maxStorageBytes)) {
+      const projectedBytes = this.database.storageBytesAfterSet(context.appId, params.key, params.value);
+      if (projectedBytes > budget.maxStorageBytes) {
+        throw new PlatformError("resource_budget_exceeded", "Storage write exceeds manifest.resourceBudget.maxStorageBytes", {
+          appId: context.appId,
+          key: params.key,
+          limit: budget.maxStorageBytes,
+          projectedBytes,
+        });
+      }
     }
   }
 

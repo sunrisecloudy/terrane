@@ -665,6 +665,20 @@ export class PlatformDatabase {
     return Buffer.byteLength(valueJson);
   }
 
+  storageBytesAfterSet(appId, key, value) {
+    const valueJson = prettyJson(value);
+    const current = this.get(
+      "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) AS bytes FROM app_storage WHERE app_id = ?",
+      appId,
+    )?.bytes ?? 0;
+    const existing = this.get(
+      "SELECT LENGTH(CAST(value_json AS BLOB)) AS bytes FROM app_storage WHERE app_id = ? AND key = ?",
+      appId,
+      key,
+    )?.bytes ?? 0;
+    return current - existing + Buffer.byteLength(valueJson);
+  }
+
   storageRemove(appId, key) {
     this.run("DELETE FROM app_storage WHERE app_id = ? AND key = ?", appId, key);
   }
@@ -916,6 +930,22 @@ export class PlatformDatabase {
       return this.all("SELECT * FROM bridge_calls WHERE app_id = ? ORDER BY created_at", appId);
     }
     return this.all("SELECT * FROM bridge_calls ORDER BY created_at");
+  }
+
+  countBridgeCallsSince({ appId, since, method = null }) {
+    if (method) {
+      return this.get(
+        "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND method = ? AND created_at >= ?",
+        appId,
+        method,
+        since,
+      )?.count ?? 0;
+    }
+    return this.get(
+      "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND created_at >= ?",
+      appId,
+      since,
+    )?.count ?? 0;
   }
 
   queryCoreEvents(appId = null) {
