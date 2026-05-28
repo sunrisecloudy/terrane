@@ -243,7 +243,17 @@ function normalizeControlStep(step, appId) {
     args.dialogType ??= args.method?.replace(/^dialog\./, "");
   } else if (step.tool === "platform.open_webapp" || step.tool === "platform.create_snapshot") {
     args.appId ??= appId;
-  } else if (step.tool === "runtime.capabilities" || step.tool === "runtime.run_smoke_tests") {
+  } else if (
+    [
+      "runtime.capabilities",
+      "runtime.run_smoke_tests",
+      "runtime.resource_usage",
+      "runtime.run_accessibility_audit",
+      "runtime.accessibility_snapshot",
+      "runtime.assert_accessibility",
+      "runtime.assert_no_console_errors",
+    ].includes(step.tool)
+  ) {
     args.appId ??= appId;
   }
 
@@ -255,6 +265,11 @@ function normalizeControlStep(step, appId) {
     "platform.create_snapshot",
     "runtime.capabilities",
     "runtime.run_smoke_tests",
+    "runtime.resource_usage",
+    "runtime.run_accessibility_audit",
+    "runtime.accessibility_snapshot",
+    "runtime.assert_accessibility",
+    "runtime.assert_no_console_errors",
     "runtime.network_mock_set",
     "runtime.dialog_mock_set",
   ]);
@@ -264,9 +279,6 @@ function normalizeControlStep(step, appId) {
 
   const noops = new Set([
     "runtime.wait_for",
-    "runtime.resource_usage",
-    "runtime.run_accessibility_audit",
-    "runtime.assert_no_console_errors",
     "platform.reset_webapp",
   ]);
   if (noops.has(step.tool)) {

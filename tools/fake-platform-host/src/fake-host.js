@@ -192,6 +192,7 @@ export class FakePlatformHost {
       title: html.match(/<title>([^<]+)<\/title>/i)?.[1] ?? pkg.manifest.name,
       testIds: extractTestIds(html),
       text: htmlToText(html),
+      accessibilityTree: accessibilitySnapshotFromHtml(appId, html),
       resourceUsage: this.database.resourceUsage(appId),
     };
   }
@@ -243,6 +244,47 @@ export class FakePlatformHost {
       throw new PlatformError("text.not_found", "Expected text was not found in installed package HTML", { appId, text });
     }
     return { ok: true, text };
+  }
+
+  accessibilitySnapshot(appId) {
+    const pkg = this.activeRuntimePackage(appId);
+    return accessibilitySnapshotFromHtml(appId, pkg.files.get("index.html") ?? "");
+  }
+
+  runAccessibilityAudit(appId) {
+    const snapshot = this.accessibilitySnapshot(appId);
+    const checks = [
+      accessibilityCheck("document_title", snapshot.title.length > 0, "Document must include a non-empty <title>."),
+      accessibilityCheck("main_landmark", snapshot.landmarks.some((landmark) => landmark.role === "main"), "Page must include a <main> landmark."),
+      accessibilityCheck("screen_title", snapshot.headings.some((heading) => heading.level === 1), "Page must include an h1 screen title."),
+      accessibilityCheck(
+        "no_unlabeled_controls",
+        snapshot.controls.every((control) => control.name.length > 0),
+        "Every interactive control must have an accessible name.",
+        snapshot.controls.find((control) => control.name.length === 0)?.selector,
+      ),
+    ];
+    const status = checks.some((check) => check.status === "fail") ? "fail" : checks.some((check) => check.status === "warn") ? "warn" : "pass";
+    return {
+      appId,
+      checkedAt: new Date().toISOString(),
+      status,
+      checks,
+    };
+  }
+
+  assertAccessibility(args) {
+    const report = this.runAccessibilityAudit(requiredArg(args, "appId"));
+    const rule = args.rule ?? null;
+    const failures = report.checks.filter((check) => check.status === "fail" && (!rule || check.id === rule));
+    if (failures.length > 0) {
+      throw new PlatformError("accessibility_failed", "Accessibility assertion failed", {
+        appId: report.appId,
+        rule,
+        failures,
+      });
+    }
+    return { ok: true, appId: report.appId, rule, report };
   }
 
   activeRuntimePackage(appId) {
@@ -319,6 +361,12 @@ export class FakePlatformHost {
         return this.assertRuntimeVisible(args);
       case "runtime.assert_text":
         return this.assertRuntimeText(args);
+      case "runtime.accessibility_snapshot":
+        return this.accessibilitySnapshot(requiredArg(args, "appId"));
+      case "runtime.run_accessibility_audit":
+        return this.runAccessibilityAudit(requiredArg(args, "appId"));
+      case "runtime.assert_accessibility":
+        return this.assertAccessibility(args);
       case "platform.reset_webapp":
       case "runtime.storage_reset":
         return this.database.resetWebapp(requiredArg(args, "appId"));
@@ -600,6 +648,10 @@ function queryMatches(html, args) {
   if (args.text) {
     return htmlToText(html).includes(args.text) ? [{ kind: "text", value: args.text }] : [];
   }
+  if (/^[a-z][a-z0-9-]*$/i.test(args.selector ?? "")) {
+    const tag = args.selector.toLowerCase();
+    return new RegExp(`<${escapeRegExp(tag)}\\b`, "i").test(html) ? [{ kind: "selector", value: args.selector, tag }] : [];
+  }
   return [];
 }
 
@@ -615,6 +667,95 @@ function htmlToText(html) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function accessibilitySnapshotFromHtml(appId, html) {
+  return {
+    appId,
+    title: html.match(/<title>([^<]+)<\/title>/i)?.[1]?.trim() ?? "",
+    landmarks: /<main\b/i.test(html) ? [{ role: "main", selector: "main" }] : [],
+    headings: [...html.matchAll(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi)].map((match) => ({
+      level: Number(match[1]),
+      name: htmlToText(match[2]),
+    })),
+    controls: extractControls(html),
+  };
+}
+
+function accessibilityCheck(id, ok, message, selector = undefined) {
+  return {
+    id,
+    status: ok ? "pass" : "fail",
+    message,
+    ...(selector ? { selector } : {}),
+  };
+}
+
+function extractControls(html) {
+  const controls = [];
+  const paired = /<(button|select|textarea|a)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let match;
+  while ((match = paired.exec(html))) {
+    const tag = match[1].toLowerCase();
+    const attrs = parseAttrs(match[2] ?? "");
+    controls.push(controlRecord({ html, tag, attrs, innerHtml: match[3] ?? "" }));
+  }
+  const inputs = /<input\b([^>]*)>/gi;
+  while ((match = inputs.exec(html))) {
+    const attrs = parseAttrs(match[1] ?? "");
+    const type = (attrs.type ?? "text").toLowerCase();
+    if (type === "hidden") continue;
+    controls.push(controlRecord({ html, tag: "input", attrs, innerHtml: "" }));
+  }
+  return controls.sort((a, b) => a.selector.localeCompare(b.selector));
+}
+
+function controlRecord({ html, tag, attrs, innerHtml }) {
+  const testId = attrs["data-testid"] ?? "";
+  const id = attrs.id ?? "";
+  const selector = testId ? `[data-testid="${testId}"]` : id ? `#${id}` : tag;
+  return {
+    tag,
+    type: attrs.type ?? null,
+    testId,
+    selector,
+    name: accessibleName({ html, tag, attrs, innerHtml }),
+  };
+}
+
+function accessibleName({ html, tag, attrs, innerHtml }) {
+  for (const attr of ["aria-label", "title"]) {
+    if (attrs[attr]?.trim()) return attrs[attr].trim();
+  }
+  if ((tag === "button" || tag === "a") && htmlToText(innerHtml).trim()) {
+    return htmlToText(innerHtml).trim();
+  }
+  if (attrs.id) {
+    const explicit = labelForId(html, attrs.id);
+    if (explicit) return explicit;
+    const wrapped = wrappingLabelForControl(html, tag, attrs.id);
+    if (wrapped) return wrapped;
+  }
+  return "";
+}
+
+function labelForId(html, id) {
+  const match = html.match(new RegExp(`<label\\b[^>]*\\bfor=["']${escapeRegExp(id)}["'][^>]*>([\\s\\S]*?)<\\/label>`, "i"));
+  return match ? htmlToText(match[1]).trim() : "";
+}
+
+function wrappingLabelForControl(html, tag, id) {
+  const match = html.match(new RegExp(`<label\\b[^>]*>([\\s\\S]*?<${tag}\\b[^>]*\\bid=["']${escapeRegExp(id)}["'][^>]*>[\\s\\S]*?)<\\/label>`, "i"));
+  if (!match) return "";
+  return htmlToText(match[1].replace(new RegExp(`<${tag}\\b[\\s\\S]*`, "i"), "")).trim();
+}
+
+function parseAttrs(attrsText) {
+  const attrs = {};
+  for (const match of attrsText.matchAll(/\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g)) {
+    attrs[match[1].toLowerCase()] = match[2] ?? match[3] ?? match[4] ?? "";
+  }
+  return attrs;
 }
 
 function escapeRegExp(value) {

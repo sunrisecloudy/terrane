@@ -14,8 +14,8 @@
     <section class="grid">
       <div class="panel">
         <h2>Event</h2>
-        <select id="event-type" data-testid="event-type-select"><option>CreateTask</option><option>TransformText</option><option>NetworkSnapshotReceived</option><option>CustomEvent</option></select>
-        <textarea id="payload" data-testid="event-payload-input" rows="10">{"title":"Demo task","priority":"medium"}</textarea>
+        <select id="event-type" data-testid="event-type-select" aria-label="Event type"><option>CreateTask</option><option>TransformText</option><option>NetworkSnapshotReceived</option><option>CustomEvent</option></select>
+        <textarea id="payload" data-testid="event-payload-input" aria-label="Event payload" rows="10">{"title":"Demo task","priority":"medium"}</textarea>
         <div class="row"><button id="send" data-testid="send-event-button" class="primary">Send event</button><button id="replay" data-testid="replay-events-button">Replay all</button><button id="clear" data-testid="clear-events-button">Clear</button></div>
       </div>
       <div class="panel">
