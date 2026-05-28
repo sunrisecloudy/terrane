@@ -1485,6 +1485,152 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.call_bridge")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.call_bridge requires args");
+        };
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.call_bridge requires appId");
+        };
+        const method = controlStringArg(args, "method") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.call_bridge requires method");
+        };
+        const id = controlStringArg(args, "id") orelse "control_call_bridge";
+        const params_value = if (args_value.object.get("params")) |params| blk: {
+            if (params != .object) {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.call_bridge params must be an object");
+            }
+            break :blk params;
+        } else null;
+        const result_json = try callBridgeControl(allocator, app_id, controlStringArg(args, "sessionId"), id, method, params_value);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.core_step")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.core_step requires args");
+        };
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.core_step requires appId");
+        };
+        const event_value = args_value.object.get("event") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.core_step requires event");
+        };
+        const result_json = try coreStepControl(allocator, app_id, controlStringArg(args, "sessionId"), controlStringArg(args, "id") orelse "control_core_step", event_value);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.core_snapshot")) {
+        const result_json = try coreSnapshotControl(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.replay_events")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.replay_events requires args");
+        };
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.replay_events requires appId");
+        };
+        const events = args_value.object.get("events") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.replay_events requires events");
+        };
+        if (events != .array) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.replay_events events must be an array");
+        }
+        const result_json = try replayEventsControl(allocator, app_id, events);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_storage")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_storage requires args");
+        };
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_storage requires appId");
+        };
+        const key = controlStringArg(args, "key") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_storage requires key");
+        };
+        const expected = args_value.object.get("value") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_storage requires value");
+        };
+        const result_json = assertStorageControl(allocator, app_id, key, expected) catch |err| switch (err) {
+            error.AssertionFailed => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "assertion_failed", args_json, null);
+                return writeControlError(allocator, stream, 400, "assertion_failed", "Expected storage value was not found");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_bridge_call")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_bridge_call requires appId");
+        };
+        const method = controlStringArg(args, "method") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_bridge_call requires method");
+        };
+        const result_json = assertBridgeCallControl(allocator, app_id, method) catch |err| switch (err) {
+            error.AssertionFailed => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "assertion_failed", args_json, null);
+                return writeControlError(allocator, stream, 400, "assertion_failed", "Expected bridge call was not found");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_core_action")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_core_action requires args");
+        };
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_core_action requires appId");
+        };
+        if (args_value.object.get("match")) |match| {
+            if (match != .object and match != .null) {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_core_action match must be an object");
+            }
+        }
+        const result_json = assertCoreActionControl(allocator, app_id, controlStringArg(args, "type"), args_value.object.get("match")) catch |err| switch (err) {
+            error.AssertionFailed => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "assertion_failed", args_json, null);
+                return writeControlError(allocator, stream, 400, "assertion_failed", "Expected core action was not found");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "platform.migration_dry_run") or std.mem.eql(u8, tool, "platform.migration_apply")) {
         const migration_value = if (args) |args_value| args_value.object.get("migration") else null;
         const migration = migration_value orelse {
@@ -2816,6 +2962,529 @@ fn countConsoleErrors(allocator: std.mem.Allocator, app_id: ?[]const u8) !i64 {
     defer _ = sqlite.sqlite3_finalize(statement);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
     return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn callBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params_opt: ?std.json.Value,
+) ![]u8 {
+    var empty_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer empty_params.deinit();
+    const params = params_opt orelse empty_params.value;
+    const params_json = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json);
+
+    if (!isAllowedRuntimeBridgeMethod(method)) {
+        if (isKnownUnsupportedBridgeMethod(method)) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "platform_unsupported", "Bridge method is not implemented on zig-server");
+        }
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown bridge method");
+    }
+
+    const compatible_runtime = bridgeRuntimeCompatible(allocator, app_id) catch {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "runtime_compatibility_unavailable", "Runtime compatibility could not be evaluated");
+    };
+    if (!compatible_runtime) {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "runtime_version_incompatible", "App runtimeVersion is not compatible with the zig-server runtime");
+    }
+
+    if (permissionForBridgeMethod(method)) |permission| {
+        const permitted = bridgePermissionApproved(allocator, app_id, permission) catch false;
+        if (!permitted) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Bridge method requires an approved app permission");
+        }
+    }
+
+    const budget_violation = enforceBridgeResourceBudget(allocator, app_id, method, params) catch {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "resource_budget_unavailable", "Resource budget could not be evaluated");
+    };
+    if (budget_violation) |violation| {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "resource_budget_exceeded", violation.message);
+    }
+
+    if (std.mem.eql(u8, method, "core.step")) {
+        if (valueString(params.object.get("app"))) |requested_app| {
+            if (!std.mem.eql(u8, requested_app, app_id)) {
+                return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "core.step app field does not match the channel-derived app id");
+            }
+        }
+        const result_json = coreStepAlloc(allocator, params_json) catch {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "core_error", "core.step failed");
+        };
+        defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        const event_json = if (params.object.get("event")) |event_value|
+            try jsonValueAlloc(allocator, event_value)
+        else
+            try allocator.dupe(u8, "{}");
+        defer allocator.free(event_json);
+        recordCoreStep(allocator, app_id, session_id orelse "server-dev-session", event_json, result_json) catch |err| {
+            std.debug.print("core audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, result_json);
+    }
+
+    if (std.mem.eql(u8, method, "runtime.capabilities")) {
+        const result_json = try serverCapabilitiesJson(allocator);
+        defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, "{}", result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, result_json);
+    }
+
+    if (std.mem.startsWith(u8, method, "storage.")) {
+        return storageBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
+    }
+    if (std.mem.eql(u8, method, "app.log")) {
+        return appLogBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
+    }
+    if (std.mem.eql(u8, method, "notification.toast")) {
+        return notificationToastBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
+    }
+    if (std.mem.eql(u8, method, "network.request")) {
+        return networkRequestBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
+    }
+    if (std.mem.eql(u8, method, "dialog.openFile") or std.mem.eql(u8, method, "dialog.saveFile")) {
+        return dialogBridgeControl(allocator, app_id, session_id, id, method, params_json);
+    }
+
+    return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown bridge method");
+}
+
+fn coreStepControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    event: std.json.Value,
+) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"event\":");
+    try std.json.Stringify.value(event, .{}, &out.writer);
+    try out.writer.writeAll("}");
+    const params_json = try out.toOwnedSlice();
+    defer allocator.free(params_json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_json, .{});
+    defer parsed.deinit();
+    return callBridgeControl(allocator, app_id, session_id, id, "core.step", parsed.value);
+}
+
+fn storageBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    params_json: []const u8,
+) ![]u8 {
+    if (std.mem.eql(u8, method, "storage.get")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.get requires key");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const result_json = storageGetResultJson(allocator, app_id, key, params.object.get("defaultValue")) catch {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.get failed");
+        };
+        defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, result_json);
+    }
+
+    if (std.mem.eql(u8, method, "storage.set")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.set requires key");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const value = if (params.object.get("value")) |value_param|
+            try jsonValueAlloc(allocator, value_param)
+        else
+            try allocator.dupe(u8, "null");
+        defer allocator.free(value);
+        storageSet(app_id, key, value) catch {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.set failed");
+        };
+        const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"bytesWritten\":{d}}}", .{value.len});
+        defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, result_json);
+    }
+
+    if (std.mem.eql(u8, method, "storage.remove")) {
+        const key = valueString(params.object.get("key")) orelse {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.remove requires key");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        storageRemove(app_id, key) catch {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.remove failed");
+        };
+        logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, method, "storage.list")) {
+        const prefix = valueString(params.object.get("prefix")) orelse {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.list requires prefix");
+        };
+        if (!(try storageKeyHasAppPrefix(allocator, app_id, prefix))) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+        }
+        const result_json = storageListResultJson(allocator, app_id, prefix) catch {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.list failed");
+        };
+        defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeOkJsonAlloc(allocator, id, result_json);
+    }
+
+    return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown storage method");
+}
+
+fn appLogBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    params_json: []const u8,
+) ![]u8 {
+    const level = valueString(params.object.get("level")) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "app.log requires level");
+    };
+    if (!isLogLevel(level)) {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "app.log level must be debug, info, warn, or error");
+    }
+    const message = valueString(params.object.get("message")) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "app.log requires message");
+    };
+    logAppMessage(allocator, app_id, session_id, level, message) catch {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "app.log failed");
+    };
+    return bridgeOkJsonAlloc(allocator, id, "{\"ok\":true}");
+}
+
+fn notificationToastBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    params_json: []const u8,
+) ![]u8 {
+    _ = valueString(params.object.get("message")) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast requires message");
+    };
+    if (params.object.get("level")) |level_value| {
+        const level = valueString(level_value) orelse {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be a string");
+        };
+        if (!isToastLevel(level)) {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be info, success, warn, or error");
+        }
+    }
+    logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return bridgeOkJsonAlloc(allocator, id, "{\"ok\":true}");
+}
+
+fn networkRequestBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    params_json: []const u8,
+) ![]u8 {
+    const url = valueString(params.object.get("url")) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request requires url");
+    };
+    const request_method = valueString(params.object.get("method")) orelse "GET";
+    const allowed = networkPolicyAllowsRequest(allocator, app_id, request_method, url, params) catch |err| switch (err) {
+        error.InvalidNetworkUrl => {
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request url must be absolute");
+        },
+        else => false,
+    };
+    if (!allowed) {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+    }
+    const result_json = (try networkMockResultJsonAlloc(allocator, app_id, session_id, request_method, url)) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network.mock_missing", "No network mock is registered for request");
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return bridgeOkJsonAlloc(allocator, id, result_json);
+}
+
+fn dialogBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+) ![]u8 {
+    const dialog_type = dialogTypeForBridgeMethod(method) orelse {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown dialog method");
+    };
+    const result_json = (try dialogMockResultJsonAlloc(allocator, app_id, session_id, dialog_type)) orelse {
+        if (std.mem.eql(u8, dialog_type, "saveFile")) {
+            logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
+                std.debug.print("bridge audit write failed: {}\n", .{err});
+            };
+            return bridgeOkJsonAlloc(allocator, id, "{\"ok\":true}");
+        }
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "dialog.mock_missing", "No dialog.openFile mock is registered");
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return bridgeOkJsonAlloc(allocator, id, result_json);
+}
+
+fn assertStorageControl(allocator: std.mem.Allocator, app_id: []const u8, key: []const u8, expected: std.json.Value) ![]u8 {
+    const actual_json = try appStorageValueJsonAlloc(allocator, app_id, key);
+    defer allocator.free(actual_json);
+    var parsed_actual = std.json.parseFromSlice(std.json.Value, allocator, if (actual_json.len == 0) "null" else actual_json, .{}) catch return error.AssertionFailed;
+    defer parsed_actual.deinit();
+    if (!jsonValuesEqual(parsed_actual.value, expected)) return error.AssertionFailed;
+
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_key = try escapeJsonString(allocator, key);
+    defer allocator.free(escaped_key);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"appId\":\"{s}\",\"key\":\"{s}\",\"value\":{s}}}", .{ escaped_app_id, escaped_key, actual_json });
+}
+
+fn assertBridgeCallControl(allocator: std.mem.Allocator, app_id: []const u8, method: []const u8) ![]u8 {
+    const count = try countBridgeCallsByMethod(allocator, app_id, method);
+    if (count == 0) return error.AssertionFailed;
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"appId\":\"{s}\",\"method\":\"{s}\",\"count\":{d}}}", .{ escaped_app_id, escaped_method, count });
+}
+
+fn assertCoreActionControl(allocator: std.mem.Allocator, app_id: []const u8, expected_type: ?[]const u8, expected_match: ?std.json.Value) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT action_json FROM core_actions WHERE app_id = ? ORDER BY created_at", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+
+    var actions: std.io.Writer.Allocating = .init(allocator);
+    errdefer actions.deinit();
+    try actions.writer.writeAll("[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const action_json = sqliteColumnText(statement, 0);
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, action_json, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        if (expected_type) |actual_expected_type| {
+            const action_type = valueString(parsed.value.object.get("type")) orelse continue;
+            if (!std.mem.eql(u8, action_type, actual_expected_type)) continue;
+        }
+        if (!jsonMatchesSubset(parsed.value, expected_match)) continue;
+        if (count > 0) try actions.writer.writeAll(",");
+        try actions.writer.writeAll(action_json);
+        count += 1;
+    }
+    try actions.writer.writeAll("]");
+    if (count == 0) return error.AssertionFailed;
+    const actions_json = try actions.toOwnedSlice();
+    defer allocator.free(actions_json);
+
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"ok\":true,\"appId\":\"{s}\",\"type\":", .{escaped_app_id});
+    try appendJsonNullableString(allocator, &out, expected_type);
+    try out.writer.print(",\"count\":{d},\"actions\":{s}}}", .{ count, actions_json });
+    return out.toOwnedSlice();
+}
+
+fn coreSnapshotControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    if (app_id) |actual_app_id| {
+        const state_version = try coreStateVersionForApp(db, actual_app_id);
+        const escaped_app_id = try escapeJsonString(allocator, actual_app_id);
+        defer allocator.free(escaped_app_id);
+        return std.fmt.allocPrint(allocator, "{{\"appId\":\"{s}\",\"stateVersion\":{d}}}", .{ escaped_app_id, state_version });
+    }
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT app_id, COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) AS state_version FROM core_events WHERE app_id IS NOT NULL GROUP BY app_id ORDER BY app_id",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"apps\":[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"appId\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.print(",\"stateVersion\":{d}}}", .{sqlite.sqlite3_column_int64(statement, 1)});
+        count += 1;
+    }
+    try out.writer.writeAll("]}");
+    return out.toOwnedSlice();
+}
+
+fn replayEventsControl(allocator: std.mem.Allocator, app_id: []const u8, events: std.json.Value) ![]u8 {
+    const core = core_api.core_create() orelse {
+        return error.CoreCreateFailed;
+    };
+    defer core_api.core_destroy(core);
+
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    var replay: std.io.Writer.Allocating = .init(allocator);
+    errdefer replay.deinit();
+    try replay.writer.print("{{\"ok\":true,\"appId\":\"{s}\",\"replay\":[", .{escaped_app_id});
+    for (events.array.items, 0..) |event, index| {
+        var body: std.io.Writer.Allocating = .init(allocator);
+        errdefer body.deinit();
+        try body.writer.writeAll("{\"event\":");
+        try std.json.Stringify.value(event, .{}, &body.writer);
+        try body.writer.writeAll("}");
+        const body_json = try body.toOwnedSlice();
+        defer allocator.free(body_json);
+        const result_json = try coreStepWithCoreAlloc(allocator, core, body_json);
+        defer allocator.free(result_json);
+        const event_json = try jsonValueAlloc(allocator, event);
+        defer allocator.free(event_json);
+        if (index > 0) try replay.writer.writeAll(",");
+        try replay.writer.print("{{\"event\":{s},\"result\":{s}}}", .{ event_json, result_json });
+    }
+    try replay.writer.writeAll("]}");
+    return replay.toOwnedSlice();
+}
+
+fn appStorageValueJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, key: []const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.AssertionFailed;
+    return allocator.dupe(u8, sqliteColumnNullableText(statement, 0) orelse "null");
+}
+
+fn countBridgeCallsByMethod(allocator: std.mem.Allocator, app_id: []const u8, method: []const u8) !i64 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, method);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn coreStateVersionForApp(db: *sqlite.sqlite3, app_id: []const u8) !i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn jsonValuesEqual(actual: std.json.Value, expected: std.json.Value) bool {
+    if (actual == .null or expected == .null) return actual == .null and expected == .null;
+    if (actual == .bool or expected == .bool) return actual == .bool and expected == .bool and actual.bool == expected.bool;
+    if (actual == .integer or expected == .integer) return actual == .integer and expected == .integer and actual.integer == expected.integer;
+    if (actual == .float or expected == .float) return actual == .float and expected == .float and actual.float == expected.float;
+    if (actual == .number_string or expected == .number_string) return actual == .number_string and expected == .number_string and std.mem.eql(u8, actual.number_string, expected.number_string);
+    if (actual == .string or expected == .string) return actual == .string and expected == .string and std.mem.eql(u8, actual.string, expected.string);
+    if (actual == .array or expected == .array) {
+        if (actual != .array or expected != .array) return false;
+        if (actual.array.items.len != expected.array.items.len) return false;
+        for (actual.array.items, expected.array.items) |actual_item, expected_item| {
+            if (!jsonValuesEqual(actual_item, expected_item)) return false;
+        }
+        return true;
+    }
+    if (actual == .object or expected == .object) {
+        if (actual != .object or expected != .object) return false;
+        if (actual.object.count() != expected.object.count()) return false;
+        var iterator = expected.object.iterator();
+        while (iterator.next()) |entry| {
+            const actual_value = actual.object.get(entry.key_ptr.*) orelse return false;
+            if (!jsonValuesEqual(actual_value, entry.value_ptr.*)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn jsonMatchesSubset(actual: std.json.Value, expected_opt: ?std.json.Value) bool {
+    const expected = expected_opt orelse return true;
+    if (expected == .null) return true;
+    if (expected == .object) {
+        if (actual != .object) return false;
+        var iterator = expected.object.iterator();
+        while (iterator.next()) |entry| {
+            const actual_value = actual.object.get(entry.key_ptr.*) orelse return false;
+            if (!jsonMatchesSubset(actual_value, entry.value_ptr.*)) return false;
+        }
+        return true;
+    }
+    return jsonValuesEqual(actual, expected);
 }
 
 fn deleteRowsForApp(db: *sqlite.sqlite3, sql: [*:0]const u8, app_id: []const u8) !i64 {
@@ -4218,6 +4887,10 @@ fn coreStepAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     };
     defer core_api.core_destroy(core);
 
+    return coreStepWithCoreAlloc(allocator, core, body);
+}
+
+fn coreStepWithCoreAlloc(allocator: std.mem.Allocator, core: *core_api.Core, body: []const u8) ![]u8 {
     var output: core_api.ZigCoreBuffer = undefined;
     const code = core_api.core_step_json(core, body.ptr, body.len, &output);
     if (code != 0) {
@@ -5860,6 +6533,12 @@ fn writeBridgeOkRaw(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
     return writeJson(stream, 200, body);
 }
 
+fn bridgeOkJsonAlloc(allocator: std.mem.Allocator, id: []const u8, result_json: []const u8) ![]u8 {
+    const escaped_id = try escapeJsonString(allocator, id);
+    defer allocator.free(escaped_id);
+    return std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"ok\":true,\"result\":{s}}}", .{ escaped_id, result_json });
+}
+
 fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []const u8, code: []const u8, message: []const u8) !void {
     const escaped_id = try escapeJsonString(allocator, id);
     defer allocator.free(escaped_id);
@@ -5874,6 +6553,38 @@ fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
     );
     defer allocator.free(body);
     return writeJson(stream, 200, body);
+}
+
+fn bridgeErrorResponseJsonAlloc(allocator: std.mem.Allocator, id: []const u8, code: []const u8, message: []const u8) ![]u8 {
+    const escaped_id = try escapeJsonString(allocator, id);
+    defer allocator.free(escaped_id);
+    const escaped_code = try escapeJsonString(allocator, code);
+    defer allocator.free(escaped_code);
+    const escaped_message = try escapeJsonString(allocator, message);
+    defer allocator.free(escaped_message);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"id\":\"{s}\",\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}}}",
+        .{ escaped_id, escaped_code, escaped_message },
+    );
+}
+
+fn bridgeControlErrorResponse(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+    code: []const u8,
+    message: []const u8,
+) ![]u8 {
+    const error_json = try bridgeErrorJsonAlloc(allocator, code, message);
+    defer allocator.free(error_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, null, error_json) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return bridgeErrorResponseJsonAlloc(allocator, id, code, message);
 }
 
 fn bridgeErrorJsonAlloc(allocator: std.mem.Allocator, code: []const u8, message: []const u8) ![]u8 {

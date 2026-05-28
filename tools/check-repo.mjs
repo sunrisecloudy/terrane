@@ -455,6 +455,13 @@ function checkServerStatic() {
     '"runtime.console_logs"',
     '"runtime.event_log"',
     '"runtime.clear_logs"',
+    '"runtime.call_bridge"',
+    '"runtime.core_step"',
+    '"runtime.core_snapshot"',
+    '"runtime.replay_events"',
+    '"runtime.assert_storage"',
+    '"runtime.assert_bridge_call"',
+    '"runtime.assert_core_action"',
     '"runtime.assert_no_console_errors"',
     '"db.query_app_storage"',
     '"db.query_app_versions"',
@@ -519,6 +526,16 @@ function checkServerStatic() {
     "fn runtimeEventLogControl",
     "fn consoleLogsControl",
     "fn clearRuntimeLogsControl",
+    "fn callBridgeControl",
+    "fn coreStepControl",
+    "fn coreSnapshotControl",
+    "fn replayEventsControl",
+    "fn assertStorageControl",
+    "fn assertBridgeCallControl",
+    "fn assertCoreActionControl",
+    "fn bridgeOkJsonAlloc",
+    "fn bridgeErrorResponseJsonAlloc",
+    "fn bridgeControlErrorResponse",
     "fn openWebappControl",
     "fn resetWebappControl",
     "fn appendJsonColumnValue",
@@ -583,7 +600,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
