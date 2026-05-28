@@ -39,6 +39,59 @@ static gchar *app_id_from_uri(const gchar *uri) {
   return g_strdup("unknown");
 }
 
+static gboolean is_known_example_app_id(const gchar *app_id) {
+  const gchar *known[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"};
+  for (gsize index = 0; index < G_N_ELEMENTS(known); ++index) {
+    if (g_strcmp0(app_id, known[index]) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static gboolean is_runtime_envelope(JsonObject *root) {
+  return json_object_has_member(root, "appId") || json_object_has_member(root, "mountToken") || json_object_has_member(root, "request");
+}
+
+static JsonObject *runtime_envelope_request(JsonObject *root) {
+  JsonNode *request = json_object_get_member(root, "request");
+  if (request == NULL || !JSON_NODE_HOLDS_OBJECT(request)) {
+    return NULL;
+  }
+  return json_node_get_object(request);
+}
+
+static gchar *runtime_envelope_request_id(JsonObject *root) {
+  JsonObject *request = runtime_envelope_request(root);
+  if (request == NULL || !json_object_has_member(request, "id")) {
+    return NULL;
+  }
+  return g_strdup(json_object_get_string_member(request, "id"));
+}
+
+static gboolean has_valid_runtime_envelope(JsonObject *root) {
+  const gchar *app_id = json_object_get_string_member_with_default(root, "appId", "");
+  const gchar *mount_token = json_object_get_string_member_with_default(root, "mountToken", "");
+  return app_id[0] != '\0' && mount_token[0] != '\0' && runtime_envelope_request(root) != NULL;
+}
+
+static gchar *json_node_to_string(JsonNode *node) {
+  JsonGenerator *generator = json_generator_new();
+  json_generator_set_root(generator, node);
+  gchar *text = json_generator_to_data(generator, NULL);
+  g_object_unref(generator);
+  return text;
+}
+
+static gchar *bridge_error_text(const gchar *request_id, const gchar *code, const gchar *message) {
+  BridgeRequest request = {
+      .id = (gchar *)request_id,
+      .has_id = request_id != NULL && request_id[0] != '\0',
+  };
+  JsonNode *response = bridge_failure(&request, code, message, NULL);
+  return bridge_response_to_string(response);
+}
+
 static GHashTable *permissions_for_app(const gchar *app_id) {
   GHashTable *permissions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
   g_autofree gchar *root = repo_root();
@@ -117,12 +170,23 @@ static GPtrArray *network_policy_for_app(const gchar *app_id) {
 }
 
 static AppSandboxContext sandbox_context_from_uri(const gchar *uri) {
-  gchar *app_id = app_id_from_uri(uri);
+  g_autofree gchar *app_id = app_id_from_uri(uri);
   return (AppSandboxContext){
       .app_id = g_strdup(app_id),
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
       .network_policy = network_policy_for_app(app_id),
+      .mount_token = NULL,
+  };
+}
+
+static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gchar *mount_token) {
+  return (AppSandboxContext){
+      .app_id = g_strdup(app_id),
+      .storage_prefix = g_strdup_printf("%s:", app_id),
+      .approved_permissions = permissions_for_app(app_id),
+      .network_policy = network_policy_for_app(app_id),
+      .mount_token = g_strdup(mount_token),
   };
 }
 
@@ -139,16 +203,56 @@ static void runtime_scheme_cb(WebKitURISchemeRequest *request, gpointer user_dat
   g_clear_object(&file);
 }
 
-static void on_script_message(WebKitUserContentManager *manager, WebKitJavascriptResult *result, gpointer user_data) {
+static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, JSCValue *value, WebKitScriptMessageReply *reply, gpointer user_data) {
   (void)manager;
   WebKitHost *host = user_data;
-  JSCValue *value = webkit_javascript_result_get_js_value(result);
-  g_autofree gchar *payload = jsc_value_to_string(value);
   const gchar *uri = webkit_web_view_get_uri(host->web_view);
-  AppSandboxContext context = sandbox_context_from_uri(uri == NULL ? "" : uri);
-  gchar *response = web_bridge_handle_json(host->bridge, payload, context);
-  webkit_web_view_evaluate_javascript(host->web_view, response, -1, NULL, NULL, NULL, NULL, NULL);
+  g_autofree gchar *payload = jsc_value_to_json(value, 0);
+  gchar *response = NULL;
+
+  if (uri == NULL || !g_str_has_prefix(uri, "app-runtime://runtime-web/")) {
+    response = bridge_error_text(NULL, "bridge.unauthorized_channel", "Runtime bridge envelope must come from the trusted runtime view");
+  } else if (payload == NULL) {
+    response = bridge_error_text(NULL, "invalid_request", "Runtime bridge envelope must be JSON");
+  } else {
+    JsonParser *parser = json_parser_new();
+    if (!json_parser_load_from_data(parser, payload, -1, NULL)) {
+      response = bridge_error_text(NULL, "invalid_request", "Runtime bridge envelope must be JSON");
+    } else {
+      JsonNode *root_node = json_parser_get_root(parser);
+      if (root_node == NULL || !JSON_NODE_HOLDS_OBJECT(root_node)) {
+        response = bridge_error_text(NULL, "invalid_request", "Runtime bridge envelope must be an object");
+      } else if (is_runtime_envelope(json_node_get_object(root_node))) {
+        JsonObject *root = json_node_get_object(root_node);
+        g_autofree gchar *request_id = runtime_envelope_request_id(root);
+        if (!has_valid_runtime_envelope(root)) {
+          response = bridge_error_text(request_id, "invalid_request", "Runtime bridge envelope requires appId, mountToken, and request");
+        } else {
+          const gchar *app_id = json_object_get_string_member(root, "appId");
+          const gchar *mount_token = json_object_get_string_member(root, "mountToken");
+          if (!is_known_example_app_id(app_id)) {
+            response = bridge_error_text(request_id, "invalid_request", "Runtime bridge envelope references an unknown app");
+          } else {
+            JsonNode *request_node = json_object_get_member(root, "request");
+            g_autofree gchar *request_body = json_node_to_string(request_node);
+            AppSandboxContext context = sandbox_context_for_app(app_id, mount_token);
+            response = web_bridge_handle_json(host->bridge, request_body, context);
+          }
+        }
+      } else {
+        AppSandboxContext context = sandbox_context_from_uri(uri);
+        response = web_bridge_handle_json(host->bridge, payload, context);
+      }
+    }
+    g_object_unref(parser);
+  }
+
+  JSCContext *js_context = jsc_value_get_context(value);
+  JSCValue *reply_value = jsc_value_new_from_json(js_context, response);
+  webkit_script_message_reply_return_value(reply, reply_value);
+  g_object_unref(reply_value);
   g_free(response);
+  return TRUE;
 }
 
 WebKitHost *webkit_host_new(GtkApplication *application) {
@@ -164,8 +268,8 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   webkit_web_context_register_uri_scheme(context, k_runtime_scheme, runtime_scheme_cb, NULL, NULL);
 
   WebKitUserContentManager *content_manager = webkit_user_content_manager_new();
-  webkit_user_content_manager_register_script_message_handler(content_manager, "NativeAIPlatformBridge");
-  g_signal_connect(content_manager, "script-message-received::NativeAIPlatformBridge", G_CALLBACK(on_script_message), host);
+  webkit_user_content_manager_register_script_message_handler_with_reply(content_manager, "NativeAIPlatformBridge", NULL);
+  g_signal_connect(content_manager, "script-message-with-reply-received::NativeAIPlatformBridge", G_CALLBACK(on_script_message_with_reply), host);
 
   host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(content_manager));
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));

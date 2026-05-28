@@ -79,6 +79,7 @@ void app_sandbox_context_clear(AppSandboxContext *context) {
   }
   g_clear_pointer(&context->app_id, g_free);
   g_clear_pointer(&context->storage_prefix, g_free);
+  g_clear_pointer(&context->mount_token, g_free);
   if (context->approved_permissions != NULL) {
     g_hash_table_unref(context->approved_permissions);
     context->approved_permissions = NULL;

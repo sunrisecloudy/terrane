@@ -22,8 +22,8 @@ Implemented now:
 
 - Creates a GTK application window with a WebKitGTK runtime view.
 - Registers `app-runtime` as a secure custom scheme and loads the runtime through it.
-- Receives runtime bridge payloads through `WebKitUserContentManager` script-message handling.
-- Derives `appId` and storage prefix from the WebView URI instead of request bodies.
+- Receives runtime bridge payloads through reply-capable `WebKitUserContentManager` script-message handling.
+- Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
