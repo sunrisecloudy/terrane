@@ -727,7 +727,7 @@ function checkNativeStatic() {
       throw new Error(`iOS core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["weak_import", "dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
+  for (const snippet of ["RTLD_DEFAULT", "dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
     if (!iosCoreShim.includes(snippet)) {
       throw new Error(`iOS C Zig core shim missing ${snippet}`);
     }

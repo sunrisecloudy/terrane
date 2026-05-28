@@ -21,16 +21,6 @@ typedef int32_t (*CoreStepJsonFn)(
 );
 typedef void (*CoreFreeFn)(ZigCoreBuffer buffer);
 
-extern ZigCore *core_create(void) __attribute__((weak_import));
-extern void core_destroy(ZigCore *core) __attribute__((weak_import));
-extern int32_t core_step_json(
-    ZigCore *core,
-    const uint8_t *input_ptr,
-    size_t input_len,
-    ZigCoreBuffer *output
-) __attribute__((weak_import));
-extern void core_free(ZigCoreBuffer buffer) __attribute__((weak_import));
-
 struct NativeAIZigCore {
     void *handle;
     ZigCore *core;
@@ -39,6 +29,26 @@ struct NativeAIZigCore {
     CoreFreeFn free_buffer;
     bool linked;
 };
+
+static NativeAIZigCore *open_with_symbols(
+    void *handle,
+    CoreCreateFn create,
+    CoreDestroyFn destroy,
+    CoreStepJsonFn step_json,
+    CoreFreeFn free_buffer,
+    bool linked
+);
+
+static NativeAIZigCore *open_with_default_symbols(void) {
+    return open_with_symbols(
+        NULL,
+        (CoreCreateFn)dlsym(RTLD_DEFAULT, "core_create"),
+        (CoreDestroyFn)dlsym(RTLD_DEFAULT, "core_destroy"),
+        (CoreStepJsonFn)dlsym(RTLD_DEFAULT, "core_step_json"),
+        (CoreFreeFn)dlsym(RTLD_DEFAULT, "core_free"),
+        true
+    );
+}
 
 static NativeAIZigCore *open_with_symbols(
     void *handle,
@@ -74,14 +84,7 @@ static NativeAIZigCore *open_with_symbols(
 
 NativeAIZigCore *native_ai_zig_core_open(const char *path) {
     if (path == NULL) {
-        return open_with_symbols(
-            NULL,
-            core_create,
-            core_destroy,
-            core_step_json,
-            core_free,
-            true
-        );
+        return open_with_default_symbols();
     }
 
     void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
