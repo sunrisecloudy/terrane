@@ -46,6 +46,9 @@ jobs:
         working-directory: tools/fake-platform-host
         run: npm test
 
+      - name: Fake host performance smoke
+        run: node --no-warnings tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --no-out
+
       - name: Codex MCP tests
         working-directory: tools/codex-platform-mcp
         run: npm test

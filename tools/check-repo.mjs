@@ -252,6 +252,7 @@ function checkCiWorkflow() {
     "zig build test",
     "tools/check-repo.mjs",
     "tools/fake-platform-host",
+    "tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --no-out",
     "tools/codex-platform-mcp",
   ];
   for (const snippet of required) {
@@ -259,7 +260,7 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=smoke";
 }
 
 function checkPerformanceHarness() {

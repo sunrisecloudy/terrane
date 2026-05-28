@@ -137,7 +137,7 @@ Status snapshot: **2026-05-29**.
 
 ## CI
 
-Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-repo.mjs`, Zig core/server tests, fake-host tests, and Codex MCP contract tests. `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI gates:
+Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-repo.mjs`, Zig core/server tests, fake-host tests, fake-host performance smoke, and Codex MCP contract tests. `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI gates:
 
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.
@@ -145,6 +145,7 @@ Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-rep
 4. **Canonical example packages** — `webapps/examples/` is the only generated app package source.
 5. **Spec lint** — section numbering contiguous; no `addJavascriptInterface` in native source; no `networkAllowlist` in manifests.
 6. **Zig tests** — install Zig 0.15.2 and SQLite headers, then run `zig build test` in `zig-core/` and `server/`.
+7. **Performance smoke** — run the fake-host latency harness with reduced CI samples to verify p50/p95 reporting and the storage/core control path.
 
 ## How to update this file
 
