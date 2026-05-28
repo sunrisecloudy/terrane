@@ -362,6 +362,16 @@ fn handleBridge(
         return writeBridgeError(allocator, stream, id, "runtime_version_incompatible", "App runtimeVersion is not compatible with the zig-server runtime");
     }
 
+    if (try takeInjectedFaultAlloc(allocator, channel_app_id, session_id, method)) |fault| {
+        defer freeFaultInjection(allocator, fault);
+        const error_json = try faultBridgeErrorJsonAlloc(allocator, fault, channel_app_id, method);
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, fault.code, fault.message);
+    }
+
     if (permissionForBridgeMethod(method)) |permission| {
         const permitted = bridgePermissionApproved(allocator, channel_app_id, permission) catch false;
         if (!permitted) {
@@ -1566,6 +1576,26 @@ fn handleControlCommand(
     }
     if (std.mem.eql(u8, tool, "runtime.timer_advance")) {
         const result_json = try timerAdvanceControl(allocator, args);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.fault_inject")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.fault_inject requires args");
+        };
+        const result_json = insertFaultInjectionControl(allocator, args_value) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.fault_inject requires a bridge method");
+            },
+            error.UnknownBridgeMethod => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "unknown_method", args_json, null);
+                return writeControlError(allocator, stream, 400, "unknown_method", "Unknown bridge method");
+            },
+            else => return err,
+        };
         defer allocator.free(result_json);
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
@@ -3522,6 +3552,16 @@ fn callBridgeControl(
     };
     if (!compatible_runtime) {
         return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "runtime_version_incompatible", "App runtimeVersion is not compatible with the zig-server runtime");
+    }
+
+    if (try takeInjectedFaultAlloc(allocator, app_id, session_id, method)) |fault| {
+        defer freeFaultInjection(allocator, fault);
+        const error_json = try faultBridgeErrorJsonAlloc(allocator, fault, app_id, method);
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return bridgeErrorResponseJsonAlloc(allocator, id, fault.code, fault.message);
     }
 
     if (permissionForBridgeMethod(method)) |permission| {
@@ -5670,11 +5710,24 @@ fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
         \\  enabled INTEGER NOT NULL DEFAULT 1,
         \\  created_at TEXT NOT NULL
         \\);
+        \\CREATE TABLE IF NOT EXISTS fault_injections (
+        \\  fault_id TEXT PRIMARY KEY,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE CASCADE,
+        \\  app_id TEXT,
+        \\  method TEXT NOT NULL,
+        \\  code TEXT NOT NULL,
+        \\  message TEXT NOT NULL,
+        \\  details_json TEXT,
+        \\  once INTEGER NOT NULL DEFAULT 1,
+        \\  enabled INTEGER NOT NULL DEFAULT 1,
+        \\  created_at TEXT NOT NULL
+        \\);
         \\CREATE INDEX IF NOT EXISTS idx_control_commands_session_created ON control_commands(control_session_id, created_at);
         \\CREATE INDEX IF NOT EXISTS idx_test_runs_session_started ON test_runs(session_id, started_at);
         \\CREATE INDEX IF NOT EXISTS idx_test_runs_app_started ON test_runs(app_id, started_at);
         \\CREATE INDEX IF NOT EXISTS idx_network_mocks_session_app ON network_mocks(session_id, app_id);
         \\CREATE INDEX IF NOT EXISTS idx_dialog_mocks_session_app ON dialog_mocks(session_id, app_id);
+        \\CREATE INDEX IF NOT EXISTS idx_fault_injections_method_app ON fault_injections(method, app_id, enabled);
         \\CREATE TABLE IF NOT EXISTS app_migrations (
         \\  migration_id TEXT PRIMARY KEY,
         \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
@@ -5865,11 +5918,13 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(core_events);
     const test_runs = try queryTestRunsRowsJson(allocator, null);
     defer allocator.free(test_runs);
+    const fault_injections = try queryRowsJson(allocator, "SELECT fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at FROM fault_injections ORDER BY created_at", null);
+    defer allocator.free(fault_injections);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s}}}",
-        .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs },
+        "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s},\"fault_injections\":{s}}}",
+        .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs, fault_injections },
     );
 }
 
@@ -6313,11 +6368,13 @@ fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(runtime_snapshots);
     const test_runs = try queryTestRunsRowsJson(allocator, null);
     defer allocator.free(test_runs);
+    const fault_injections = try queryRowsJson(allocator, "SELECT fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at FROM fault_injections ORDER BY created_at", null);
+    defer allocator.free(fault_injections);
 
     const base_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"exportId\":\"{s}\",\"type\":\"debug-bundle\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s}}}}}",
-        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs },
+        "{{\"exportId\":\"{s}\",\"type\":\"debug-bundle\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s},\"faultInjections\":{s}}}}}",
+        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs, fault_injections },
     );
     defer allocator.free(base_json);
     const content_hash = try sha256HexAlloc(allocator, base_json);
@@ -6489,6 +6546,147 @@ fn timerAdvanceControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u
     const requested_ms = controlI64Arg(args, "ms") orelse controlI64Arg(args, "milliseconds") orelse 0;
     const advanced_ms = @max(requested_ms, 0);
     return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"advancedMs\":{d}}}", .{advanced_ms});
+}
+
+fn insertFaultInjectionControl(allocator: std.mem.Allocator, args: std.json.Value) ![]u8 {
+    if (args != .object) return error.InvalidControlArgs;
+    const method = objectString(args, "method") orelse blk: {
+        const kind = objectString(args, "kind") orelse return error.InvalidControlArgs;
+        break :blk methodForFaultKind(kind);
+    };
+    if (!isAllowedRuntimeBridgeMethod(method)) return error.UnknownBridgeMethod;
+    const code = objectString(args, "code") orelse "fault_injected";
+    const message = objectString(args, "message") orelse "Injected bridge fault";
+    const once = if (args.object.get("once")) |once_value| if (once_value == .bool) once_value.bool else true else true;
+    const details_json = if (args.object.get("details")) |details|
+        try jsonValueAlloc(allocator, details)
+    else
+        try faultDetailsJsonAlloc(allocator, objectString(args, "kind"));
+    defer allocator.free(details_json);
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const fault_id = try randomDbIdAlloc(allocator, db, "fault_");
+    defer allocator.free(fault_id);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, fault_id);
+    bindNullableText(statement, 2, objectString(args, "sessionId"));
+    bindNullableText(statement, 3, objectString(args, "appId"));
+    bindText(statement, 4, method);
+    bindText(statement, 5, code);
+    bindText(statement, 6, message);
+    bindText(statement, 7, details_json);
+    _ = sqlite.sqlite3_bind_int64(statement, 8, if (once) 1 else 0);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+
+    const escaped_fault_id = try escapeJsonString(allocator, fault_id);
+    defer allocator.free(escaped_fault_id);
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    const escaped_code = try escapeJsonString(allocator, code);
+    defer allocator.free(escaped_code);
+    const escaped_message = try escapeJsonString(allocator, message);
+    defer allocator.free(escaped_message);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"ok\":true,\"faultId\":\"{s}\",\"appId\":", .{escaped_fault_id});
+    try appendJsonNullableString(allocator, &out, objectString(args, "appId"));
+    try out.writer.print(",\"method\":\"{s}\",\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{s},\"once\":{}}}", .{ escaped_method, escaped_code, escaped_message, details_json, once });
+    return out.toOwnedSlice();
+}
+
+fn faultDetailsJsonAlloc(allocator: std.mem.Allocator, kind: ?[]const u8) ![]u8 {
+    const actual_kind = kind orelse return allocator.dupe(u8, "{}");
+    const escaped_kind = try escapeJsonString(allocator, actual_kind);
+    defer allocator.free(escaped_kind);
+    return std.fmt.allocPrint(allocator, "{{\"kind\":\"{s}\"}}", .{escaped_kind});
+}
+
+fn methodForFaultKind(kind: []const u8) []const u8 {
+    if (std.mem.eql(u8, kind, "storage.read")) return "storage.get";
+    if (std.mem.eql(u8, kind, "storage.write")) return "storage.set";
+    if (std.mem.eql(u8, kind, "network") or std.mem.eql(u8, kind, "network.request")) return "network.request";
+    if (std.mem.eql(u8, kind, "core") or std.mem.eql(u8, kind, "core.step")) return "core.step";
+    return kind;
+}
+
+const FaultInjection = struct {
+    fault_id: []u8,
+    code: []u8,
+    message: []u8,
+    details_json: []u8,
+};
+
+fn freeFaultInjection(allocator: std.mem.Allocator, fault: FaultInjection) void {
+    allocator.free(fault.fault_id);
+    allocator.free(fault.code);
+    allocator.free(fault.message);
+    allocator.free(fault.details_json);
+}
+
+fn takeInjectedFaultAlloc(allocator: std.mem.Allocator, app_id: []const u8, session_id: ?[]const u8, method: []const u8) !?FaultInjection {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) ORDER BY created_at LIMIT 1",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, method);
+    bindText(statement, 2, app_id);
+    bindNullableText(statement, 3, session_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const fault_id = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+    errdefer allocator.free(fault_id);
+    const code = try allocator.dupe(u8, sqliteColumnText(statement, 1));
+    errdefer allocator.free(code);
+    const message = try allocator.dupe(u8, sqliteColumnText(statement, 2));
+    errdefer allocator.free(message);
+    const details_json = try allocator.dupe(u8, sqliteColumnText(statement, 3));
+    errdefer allocator.free(details_json);
+    const once = sqlite.sqlite3_column_int64(statement, 4) != 0;
+    if (once) try disableFaultInjection(db, fault_id);
+    return .{ .fault_id = fault_id, .code = code, .message = message, .details_json = details_json };
+}
+
+fn disableFaultInjection(db: *sqlite.sqlite3, fault_id: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, fault_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn faultBridgeErrorJsonAlloc(allocator: std.mem.Allocator, fault: FaultInjection, app_id: []const u8, method: []const u8) ![]u8 {
+    const escaped_code = try escapeJsonString(allocator, fault.code);
+    defer allocator.free(escaped_code);
+    const escaped_message = try escapeJsonString(allocator, fault.message);
+    defer allocator.free(escaped_message);
+    const escaped_fault_id = try escapeJsonString(allocator, fault.fault_id);
+    defer allocator.free(escaped_fault_id);
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{\"faultId\":\"{s}\",\"appId\":\"{s}\",\"method\":\"{s}\",\"injected\":{s}}}}}",
+        .{ escaped_code, escaped_message, escaped_fault_id, escaped_app_id, escaped_method, fault.details_json },
+    );
 }
 
 fn compareSnapshotControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {

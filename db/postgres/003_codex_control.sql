@@ -70,8 +70,22 @@ CREATE TABLE IF NOT EXISTS dialog_mocks (
   created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fault_injections (
+  fault_id TEXT PRIMARY KEY,
+  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE CASCADE,
+  app_id TEXT,
+  method TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  details_json JSONB,
+  once BOOLEAN NOT NULL DEFAULT TRUE,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_control_commands_session_created ON control_commands(control_session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_test_runs_session_started ON test_runs(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_test_runs_app_started ON test_runs(app_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_network_mocks_session_app ON network_mocks(session_id, app_id);
 CREATE INDEX IF NOT EXISTS idx_dialog_mocks_session_app ON dialog_mocks(session_id, app_id);
+CREATE INDEX IF NOT EXISTS idx_fault_injections_method_app ON fault_injections(method, app_id, enabled);
