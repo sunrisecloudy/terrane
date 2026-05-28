@@ -29,7 +29,7 @@ MVP acceptance:
 - Loads runtime from assets.
 - Lists and launches all five examples.
 - Implements storage and JNI `core.step`.
-- Handles unsupported dialog methods with structured errors until fully implemented.
+- Implements native file open/save dialogs through Android activity result contracts.
 
 Current implementation status:
 
@@ -41,9 +41,9 @@ Current implementation status:
 - The default sandbox context derives permissions, storage prefix, and network policy from the bundled app manifest instead of hardcoded bridge permissions.
 - Native bridge applies manifest-style permission checks before dispatch.
 - `network.request` uses `HttpURLConnection` with manifest `networkPolicy` checks.
+- `dialog.openFile` and `dialog.saveFile` use `ActivityResultContracts.OpenDocument`, `OpenMultipleDocuments`, and `CreateDocument` with asynchronous bridge replies.
 - `core.step` uses a JNI wrapper that loads packaged `libzig_core.so` and calls the shared Zig C ABI.
 - `runtime.capabilities` reports `core.step` from actual JNI/Zig core availability and returns structured `platform_unsupported` when unavailable.
-- Dialog paths currently return structured `platform_unsupported`.
 
 ## Dev control plane
 

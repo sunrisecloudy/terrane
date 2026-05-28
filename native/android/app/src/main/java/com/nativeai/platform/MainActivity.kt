@@ -1,13 +1,13 @@
 package com.nativeai.platform
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import org.json.JSONArray
@@ -15,10 +15,11 @@ import org.json.JSONObject
 import java.io.IOException
 import java.io.InputStream
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val exampleAppIds = setOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
     private lateinit var webView: WebView
     private lateinit var bridge: NativeBridge
+    private lateinit var dialogs: PlatformDialogs
     private lateinit var assetLoader: WebViewAssetLoader
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -29,8 +30,10 @@ class MainActivity : Activity() {
             .addPathHandler("/", AssetRootPathHandler(this))
             .build()
 
+        dialogs = PlatformDialogs(this)
         bridge = NativeBridge(
             context = this,
+            dialogs = dialogs,
             contextForApp = { appId -> sandboxContextFromManifest(appId) },
         )
 
@@ -49,7 +52,9 @@ class MainActivity : Activity() {
             "NativeAIPlatformBridge",
             setOf("https://appassets.androidplatform.net"),
         ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
-            replyProxy.postMessage(bridge.handleEnvelope(message.data ?: "{}", isMainFrame, sourceOrigin.toString()))
+            bridge.handleEnvelope(message.data ?: "{}", isMainFrame, sourceOrigin.toString()) { response ->
+                replyProxy.postMessage(response)
+            }
         }
 
         setContentView(webView)

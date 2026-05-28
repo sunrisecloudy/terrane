@@ -5,80 +5,87 @@ import org.json.JSONObject
 
 class NativeBridge(
     context: Context,
+    private val dialogs: PlatformDialogs,
     private val contextForApp: (String) -> AppSandboxContext,
 ) {
     private val storage = PlatformStorage(context)
-    private val dialogs = PlatformDialogs()
     private val notifications = PlatformNotifications()
     private val network = PlatformNetwork()
     private val core = ZigCoreBridge()
     private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
 
-    fun handleEnvelope(body: String, isMainFrame: Boolean, sourceOrigin: String): String {
+    fun handleEnvelope(body: String, isMainFrame: Boolean, sourceOrigin: String, respond: (String) -> Unit) {
         val envelope = try {
             JSONObject(body)
         } catch (error: Exception) {
-            return BridgeResponse.failure(null, "invalid_request", "Runtime bridge envelope must be JSON").toString()
+            respond(BridgeResponse.failure(null, "invalid_request", "Runtime bridge envelope must be JSON").toString())
+            return
         }
         val requestBody = envelope.optJSONObject("request")
         val requestId = requestBody?.optString("id")?.ifBlank { null }
 
         if (!isMainFrame || sourceOrigin != trustedRuntimeOrigin) {
-            return BridgeResponse.failure(
+            respond(BridgeResponse.failure(
                 requestId,
                 "bridge.unauthorized_channel",
                 "Runtime bridge envelope must come from the trusted main runtime frame",
-            ).toString()
+            ).toString())
+            return
         }
 
         val appId = envelope.optString("appId").ifBlank { null }
         val mountToken = envelope.optString("mountToken").ifBlank { null }
         if (appId == null || mountToken == null || requestBody == null) {
-            return BridgeResponse.failure(
+            respond(BridgeResponse.failure(
                 requestId,
                 "invalid_request",
                 "Runtime bridge envelope requires appId, mountToken, and request",
-            ).toString()
+            ).toString())
+            return
         }
 
         val context = try {
             contextForApp(appId).copy(mountToken = mountToken)
         } catch (error: Exception) {
-            return BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope references an unknown app").toString()
+            respond(BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope references an unknown app").toString())
+            return
         }
         if (context.appId != appId) {
-            return BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope appId does not match the manifest").toString()
+            respond(BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope appId does not match the manifest").toString())
+            return
         }
 
         val request = try {
             BridgeRequest(requestBody, context)
         } catch (error: Exception) {
-            return BridgeResponse.failure(requestId, "invalid_request", "Bridge request body must be JSON").toString()
+            respond(BridgeResponse.failure(requestId, "invalid_request", "Bridge request body must be JSON").toString())
+            return
         }
 
         val permission = permissionForBridgeMethod(request.method)
         if (permission != null && !request.context.approvedPermissions.contains(permission)) {
-            return BridgeResponse.failure(
+            respond(BridgeResponse.failure(
                 request.id,
                 "permission_denied",
                 "App ${request.context.appId} cannot call ${request.method}",
                 JSONObject(mapOf("appId" to request.context.appId, "method" to request.method, "requiredPermission" to permission)),
-            ).toString()
+            ).toString())
+            return
         }
 
-        return when (request.method) {
-            "storage.get" -> storage.get(request)
-            "storage.set" -> storage.set(request)
-            "storage.remove" -> storage.remove(request)
-            "storage.list" -> storage.list(request)
-            "dialog.openFile" -> dialogs.openFile(request)
-            "dialog.saveFile" -> dialogs.saveFile(request)
-            "notification.toast" -> notifications.toast(request)
-            "network.request" -> network.request(request)
-            "core.step" -> core.step(request)
-            "runtime.capabilities" -> BridgeResponse.success(request.id, capabilities()).toString()
-            "app.log" -> BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString()
-            else -> BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString()
+        when (request.method) {
+            "storage.get" -> respond(storage.get(request))
+            "storage.set" -> respond(storage.set(request))
+            "storage.remove" -> respond(storage.remove(request))
+            "storage.list" -> respond(storage.list(request))
+            "dialog.openFile" -> dialogs.openFile(request, respond)
+            "dialog.saveFile" -> dialogs.saveFile(request, respond)
+            "notification.toast" -> respond(notifications.toast(request))
+            "network.request" -> respond(network.request(request))
+            "core.step" -> respond(core.step(request))
+            "runtime.capabilities" -> respond(BridgeResponse.success(request.id, capabilities()).toString())
+            "app.log" -> respond(BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString())
+            else -> respond(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
         }
     }
 
@@ -101,8 +108,8 @@ class NativeBridge(
                     "storage.set" to true,
                     "storage.remove" to true,
                     "storage.list" to true,
-                    "dialog.openFile" to false,
-                    "dialog.saveFile" to false,
+                    "dialog.openFile" to true,
+                    "dialog.saveFile" to true,
                     "notification.toast" to true,
                     "network.request" to true,
                     "core.step" to core.isAvailable(),

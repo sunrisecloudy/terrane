@@ -589,6 +589,7 @@ function checkNativeStatic() {
   const androidCoreCmake = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "CMakeLists.txt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
+  const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDialogs.kt"), "utf8");
   const macRequired = [
     '"target": "macos"',
     '"devMode": true',
@@ -849,8 +850,11 @@ function checkNativeStatic() {
     [androidMain, "WebViewCompat.addWebMessageListener"],
     [androidMain, "https://appassets.androidplatform.net"],
     [androidMain, "allowFileAccess = false"],
+    [androidMain, "ComponentActivity"],
     [androidMain, "AssetRootPathHandler"],
     [androidMain, "sourceOrigin.toString()"],
+    [androidMain, "replyProxy.postMessage(response)"],
+    [androidMain, "PlatformDialogs(this)"],
     [androidMain, "sandboxContextFromManifest"],
     [androidMain, "exampleAppIds.contains(appId)"],
     [androidMain, "NetworkPolicyRule.fromManifest"],
@@ -862,7 +866,11 @@ function checkNativeStatic() {
     [androidBridge, "mountToken"],
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
+    [androidBridge, "respond: (String) -> Unit"],
+    [androidBridge, 'dialogs.openFile(request, respond)'],
     [androidBridge, '"network.request" to true'],
+    [androidBridge, '"dialog.openFile" to true'],
+    [androidBridge, '"dialog.saveFile" to true'],
     [androidBridge, '"core.step" to core.isAvailable()'],
     [androidBridge, "networkPolicy"],
     [androidStorage, "SQLiteOpenHelper"],
@@ -875,10 +883,18 @@ function checkNativeStatic() {
     }
   }
   const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");
-  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")']) {
+  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")', "androidx.activity:activity-ktx"]) {
     if (!androidGradle.includes(snippet)) {
       throw new Error(`Android Gradle asset sync missing ${snippet}`);
     }
+  }
+  for (const snippet of ["ActivityResultContracts.OpenDocument", "ActivityResultContracts.OpenMultipleDocuments", "ActivityResultContracts.CreateDocument", "openDocument.launch", "openDocuments.launch", "createDocument.launch", "contentResolver.openInputStream", "contentResolver.openOutputStream", "dialog_cancelled"]) {
+    if (!androidDialogs.includes(snippet)) {
+      throw new Error(`Android dialogs missing ${snippet}`);
+    }
+  }
+  if (androidDialogs.includes("is not implemented on Android yet") || androidBridge.includes('"dialog.openFile" to false')) {
+    throw new Error("Android dialogs must not remain placeholder stubs or disabled capabilities");
   }
   for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch"]) {
     if (!androidNetwork.includes(snippet)) {
@@ -903,7 +919,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked core=jni-so";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {
