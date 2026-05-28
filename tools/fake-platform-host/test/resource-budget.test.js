@@ -54,6 +54,31 @@ test("bridge call budget rejects calls after the per-minute limit", async () => 
   }
 });
 
+test("runtime sessions persist resource high-water marks", async () => {
+  const host = new FakePlatformHost();
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    const session = await host.runControlCommand("platform.open_webapp", { appId: "notes-lite" });
+
+    const response = await host.runControlCommand("runtime.storage_set", {
+      sessionId: session.sessionId,
+      appId: "notes-lite",
+      key: "notes-lite:notes",
+      value: [{ title: "High water" }],
+    });
+    assert.equal(response.ok, true);
+
+    const row = host.database.snapshot().runtime_sessions.find((candidate) => candidate.session_id === session.sessionId);
+    assert.ok(row);
+    const highWater = JSON.parse(row.resource_high_water_json);
+    assert.equal(highWater.appId, "notes-lite");
+    assert.equal(highWater.storageBytes > 0, true);
+    assert.equal(highWater.bridgeCallsLastMinute >= 1, true);
+  } finally {
+    host.close();
+  }
+});
+
 function copyExample(name) {
   const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-budget-package-`));
   fs.cpSync(path.join(examplesDir, name), packageDir, { recursive: true });

@@ -11,6 +11,10 @@
       "endedAt": null,
       "status": "running",
       "capabilities": {},
+      "resourceHighWater": {
+        "storageBytes": 128,
+        "bridgeCallsLastMinute": 1
+      },
       "metadata": {}
     }
   ],

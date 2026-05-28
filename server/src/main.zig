@@ -4939,8 +4939,8 @@ fn openWebappControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
         db,
-        "INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json) " ++
-            "VALUES (?, 'zig-server', 'server', ?, ?, ?, ?, 'running', ?, '{\"source\":\"control\"}')",
+        "INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, resource_high_water_json, metadata_json) " ++
+            "VALUES (?, 'zig-server', 'server', ?, ?, ?, ?, 'running', ?, '{\"storageBytes\":0,\"bridgeCalls\":0,\"coreEvents\":0}', '{\"source\":\"control\"}')",
         -1,
         &statement,
         null,
@@ -7247,6 +7247,7 @@ fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
         \\  ended_at TEXT,
         \\  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ended','failed')),
         \\  capabilities_json TEXT,
+        \\  resource_high_water_json TEXT,
         \\  metadata_json TEXT
         \\);
         \\CREATE TABLE IF NOT EXISTS bridge_calls (
@@ -7430,6 +7431,7 @@ fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
     if (sqlite.sqlite3_exec(db, schema, null, null, null) != sqlite.SQLITE_OK) {
         return error.StorageSchemaFailed;
     }
+    _ = sqlite.sqlite3_exec(db, "ALTER TABLE runtime_sessions ADD COLUMN resource_high_water_json TEXT;", null, null, null);
     return db.?;
 }
 
@@ -8501,7 +8503,7 @@ fn queryRuntimeSessionsRowsJson(allocator: std.mem.Allocator) ![]u8 {
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
         db,
-        "SELECT session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, ended_at, status, capabilities_json, metadata_json FROM runtime_sessions ORDER BY started_at",
+        "SELECT session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, ended_at, status, capabilities_json, resource_high_water_json, metadata_json FROM runtime_sessions ORDER BY started_at",
         -1,
         &statement,
         null,
@@ -8536,8 +8538,10 @@ fn queryRuntimeSessionsRowsJson(allocator: std.mem.Allocator) ![]u8 {
         try appendJsonString(allocator, &out, sqliteColumnText(statement, 8));
         try out.writer.writeAll(",\"capabilities_json\":");
         try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 9));
-        try out.writer.writeAll(",\"metadata_json\":");
+        try out.writer.writeAll(",\"resource_high_water_json\":");
         try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 10));
+        try out.writer.writeAll(",\"metadata_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 11));
         try out.writer.writeAll("}");
         count += 1;
     }
@@ -8971,6 +8975,9 @@ fn logBridgeCall(
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
         return error.StorageWriteFailed;
     }
+    const usage_json = try snapshotResourceUsageJsonAlloc(allocator, db, app_id);
+    defer allocator.free(usage_json);
+    try updateRuntimeSessionResourceHighWater(db, actual_session_id, usage_json);
 }
 
 fn recordBackupExport(allocator: std.mem.Allocator, export_json: []const u8) !void {
@@ -9045,6 +9052,28 @@ fn logAppMessage(
     bindText(statement, 1, actual_session_id);
     bindText(statement, 2, app_id);
     bindText(statement, 3, params_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+    const usage_json = try snapshotResourceUsageJsonAlloc(allocator, db, app_id);
+    defer allocator.free(usage_json);
+    try updateRuntimeSessionResourceHighWater(db, actual_session_id, usage_json);
+}
+
+fn updateRuntimeSessionResourceHighWater(db: *sqlite.sqlite3, session_id: []const u8, usage_json: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE runtime_sessions SET resource_high_water_json = ? WHERE session_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, usage_json);
+    bindText(statement, 2, session_id);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
         return error.StorageWriteFailed;
     }
@@ -9304,8 +9333,8 @@ fn ensureRuntimeSession(db: *sqlite.sqlite3, session_id: []const u8, app_id: []c
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
         db,
-        "INSERT OR IGNORE INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, started_at, status, capabilities_json, metadata_json) " ++
-            "VALUES (?, 'zig-server', 'server', ?, ?, datetime('now'), 'running', NULL, '{\"source\":\"bridge\"}')",
+        "INSERT OR IGNORE INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, started_at, status, capabilities_json, resource_high_water_json, metadata_json) " ++
+            "VALUES (?, 'zig-server', 'server', ?, ?, datetime('now'), 'running', NULL, '{\"storageBytes\":0,\"bridgeCalls\":0,\"coreEvents\":0}', '{\"source\":\"bridge\"}')",
         -1,
         &statement,
         null,

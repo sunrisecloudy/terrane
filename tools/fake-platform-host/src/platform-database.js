@@ -12,6 +12,7 @@ export class PlatformDatabase {
     this.db.exec("PRAGMA foreign_keys = ON");
     this.applyMigrations(migrationsDir);
     this.ensureControlCommandAuditColumns();
+    this.ensureRuntimeSessionColumns();
   }
 
   applyMigrations(migrationsDir) {
@@ -36,6 +37,13 @@ export class PlatformDatabase {
       if (!columns.has(name)) {
         this.db.exec(`ALTER TABLE control_commands ADD COLUMN ${name} ${type}`);
       }
+    }
+  }
+
+  ensureRuntimeSessionColumns() {
+    const columns = new Set(this.all("PRAGMA table_info(runtime_sessions)").map((row) => row.name));
+    if (!columns.has("resource_high_water_json")) {
+      this.db.exec("ALTER TABLE runtime_sessions ADD COLUMN resource_high_water_json TEXT");
     }
   }
 
@@ -445,6 +453,24 @@ export class PlatformDatabase {
     };
   }
 
+  recordResourceHighWater({ sessionId, appId }) {
+    if (!sessionId || !appId) return null;
+    const row = this.get("SELECT resource_high_water_json FROM runtime_sessions WHERE session_id = ?", sessionId);
+    if (!row) return null;
+    const current = this.resourceUsage(appId);
+    const previous = row.resource_high_water_json ? JSON.parse(row.resource_high_water_json) : {};
+    const highWater = {
+      appId,
+      storageBytes: Math.max(previous.storageBytes ?? 0, current.storageBytes),
+      bridgeCallsLastMinute: Math.max(previous.bridgeCallsLastMinute ?? 0, current.bridgeCallsLastMinute),
+      networkRequestsLastMinute: Math.max(previous.networkRequestsLastMinute ?? 0, current.networkRequestsLastMinute),
+      logLinesLastMinute: Math.max(previous.logLinesLastMinute ?? 0, current.logLinesLastMinute),
+      updatedAt: nowIso(),
+    };
+    this.run("UPDATE runtime_sessions SET resource_high_water_json = ? WHERE session_id = ?", prettyJson(highWater), sessionId);
+    return highWater;
+  }
+
   assertBridgeCall({ appId, method }) {
     const rows = this.queryBridgeCalls(appId).filter((row) => row.method === method);
     if (rows.length === 0) {
@@ -737,12 +763,13 @@ export class PlatformDatabase {
     const createdAt = nowIso();
     const active = appId ? this.activeInstall(appId) : null;
     this.run(
-      "INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json) VALUES (?, 'fake-host', 'fake-host', '0.1.0', ?, ?, ?, 'running', ?, ?)",
+      "INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, resource_high_water_json, metadata_json) VALUES (?, 'fake-host', 'fake-host', '0.1.0', ?, ?, ?, 'running', ?, ?, ?)",
       sessionId,
       appId,
       active?.installId ?? null,
       createdAt,
       prettyJson({ platform: "fake-host" }),
+      prettyJson(emptyResourceHighWater(appId)),
       prettyJson(metadata),
     );
     return sessionId;
@@ -880,6 +907,7 @@ export class PlatformDatabase {
       durationMs,
       nowIso(),
     );
+    this.recordResourceHighWater({ sessionId, appId });
   }
 
   logCoreStep({ sessionId, appId, installId = null, event, result }) {
@@ -1306,6 +1334,17 @@ export class PlatformDatabase {
       throw error;
     }
   }
+}
+
+function emptyResourceHighWater(appId) {
+  return {
+    appId,
+    storageBytes: 0,
+    bridgeCallsLastMinute: 0,
+    networkRequestsLastMinute: 0,
+    logLinesLastMinute: 0,
+    updatedAt: null,
+  };
 }
 
 function mimeForPath(filePath) {

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS runtime_sessions (
   ended_at TEXT,
   status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ended','failed')),
   capabilities_json TEXT,
+  resource_high_water_json TEXT,
   metadata_json TEXT
 );
 

@@ -121,7 +121,11 @@ function checkSqliteMigrations() {
     if (missing.length > 0) {
       throw new Error(`missing tables: ${missing.join(", ")}`);
     }
-    return `tables=${requiredTables.length}`;
+    const runtimeColumns = new Set(db.all("PRAGMA table_info(runtime_sessions)").map((row) => row.name));
+    if (!runtimeColumns.has("resource_high_water_json")) {
+      throw new Error("runtime_sessions missing resource_high_water_json");
+    }
+    return `tables=${requiredTables.length},runtime=resource-high-water`;
   } finally {
     db.close();
   }
@@ -725,6 +729,7 @@ function checkServerStatic() {
     "app_installations",
     "app_storage",
     "runtime_sessions",
+    "resource_high_water_json",
     "bridge_calls",
     "core_events",
     "runtime_snapshots",
