@@ -84,7 +84,7 @@ Status snapshot: **2026-05-28**.
 | Path | Status | Notes |
 |---|---|---|
 | `runtime-web/` | partial | Launcher HTML/CSS/JS exists; fake host serves it and proxies sandbox `AppRuntime.call` messages to `/bridge` |
-| `zig-core/` | skeleton | README only; no `build.zig` yet |
+| `zig-core/` | partial | Zig 0.15.2 static library package with C FFI header, deterministic JSON core.step behavior, and unit tests |
 | `server/` | skeleton | README only; no `build.zig` yet |
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, health/control command HTTP surface, package validation/install, bridge dispatch, and focused tests |
 | `tools/codex-platform-mcp/` | skeleton | README + `package.json` + `tsconfig.json` only |

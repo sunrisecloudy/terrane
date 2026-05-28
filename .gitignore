@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+.zig-cache/
+zig-out/
 .env
 .env.*
 *.db
