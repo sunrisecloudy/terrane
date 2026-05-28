@@ -1,8 +1,8 @@
-# iOS Host Skeleton Target
+# iOS Host Target
 
-Codex should implement this as a Swift iOS app using `WKWebView`.
+Current implementation status: partial.
 
-Minimum files to create:
+The scaffold is a SwiftPM/UIKit/WKWebView host module that mirrors the macOS bridge shape while staying iOS-specific:
 
 ```text
 App.swift
@@ -16,6 +16,15 @@ PlatformNetwork.swift
 Resources/runtime/
 Resources/examples/
 ```
+
+Implemented now:
+
+- Creates a `WKWebView` and registers `NativeAIPlatformBridge` through `WKScriptMessageHandlerWithReply`.
+- Uses a non-persistent web data store for the runtime WebView.
+- Derives `appId` and storage prefix from the sandbox frame URL instead of request bodies.
+- Applies native-side permission checks before dispatching bridge calls.
+- Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
+- Returns structured `platform_unsupported` responses for dialogs, network, and Zig core until those services are wired.
 
 MVP acceptance:
 

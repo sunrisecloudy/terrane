@@ -241,10 +241,13 @@ function checkServerStatic() {
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
+  const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
+  const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
+  const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
-  const required = [
+  const macRequired = [
     '"target": "macos"',
     '"devMode": true',
     '"limits":',
@@ -254,7 +257,7 @@ function checkNativeStatic() {
     "permissionForBridgeMethod",
     "approvedPermissions.contains(permission)",
   ];
-  for (const snippet of required) {
+  for (const snippet of macRequired) {
     if (!macBridge.includes(snippet)) {
       throw new Error(`macOS runtime.capabilities missing ${snippet}`);
     }
@@ -269,6 +272,30 @@ function checkNativeStatic() {
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
+  }
+  const iosRequired = [
+    [iosBridge, "WKScriptMessageHandlerWithReply"],
+    [iosHost, "contentController.addScriptMessageHandler"],
+    [iosHost, "websiteDataStore = .nonPersistent()"],
+    [iosBridge, '"target": "ios-simulator"'],
+    [iosBridge, '"devMode": true'],
+    [iosBridge, '"limits":'],
+    [iosBridge, '"network.request": false'],
+    [iosBridge, '"core.step": false'],
+    [iosBridge, "struct AppSandboxContext"],
+    [iosBridge, "permissionForBridgeMethod"],
+    [iosBridge, "approvedPermissions.contains(permission)"],
+    [iosStorage, "request.context.appId"],
+    [iosStorage, "request.context.storagePrefix"],
+    [iosStorage, "storagePrefixFailure"],
+  ];
+  for (const [source, snippet] of iosRequired) {
+    if (!source.includes(snippet)) {
+      throw new Error(`iOS host missing ${snippet}`);
+    }
+  }
+  if (iosStorage.includes("appId(for:")) {
+    throw new Error("iOS storage must not derive app id from storage key");
   }
   const androidRequired = [
     [androidMain, "WebViewCompat.addWebMessageListener"],
@@ -285,7 +312,7 @@ function checkNativeStatic() {
       throw new Error(`Android host missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped storage=context-enforced android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped storage=context-enforced ios.webbridge=context-enforced android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {
