@@ -46,13 +46,25 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "runtime.capabilities":
             return .success(id: request.id, result: [
                 "platform": "macos",
+                "target": "macos",
                 "runtimeVersion": "0.1.0",
+                "devMode": true,
                 "features": [
-                    "storage": true,
-                    "dialog.openFile": "native",
-                    "dialog.saveFile": "native",
-                    "network.request": "native",
-                    "core.step": "pending-zig-link"
+                    "storage.get": true,
+                    "storage.set": true,
+                    "storage.remove": true,
+                    "storage.list": true,
+                    "dialog.openFile": true,
+                    "dialog.saveFile": true,
+                    "notification.toast": true,
+                    "network.request": false,
+                    "core.step": false,
+                    "runtime.capabilities": true,
+                    "app.log": true
+                ],
+                "limits": [
+                    "maxPackageBytes": 1_048_576,
+                    "maxFileBytes": 524_288
                 ]
             ])
         case "app.log":

@@ -17,6 +17,7 @@ await runCheck("manifests.sync", checkManifestSync);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("plugin.mcp", checkPluginMcp);
 await runCheck("server.static", checkServerStatic);
+await runCheck("native.static", checkNativeStatic);
 
 for (const check of checks) {
   console.log(`${check.ok ? "ok" : "fail"} ${check.name}${check.detail ? ` ${check.detail}` : ""}`);
@@ -225,6 +226,20 @@ function checkServerStatic() {
     }
   }
   return "bridge=core.step,runtime.capabilities validate=package-policy";
+}
+
+function checkNativeStatic() {
+  const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
+  const required = ['"target": "macos"', '"devMode": true', '"limits":', '"network.request": false', '"core.step": false'];
+  for (const snippet of required) {
+    if (!macBridge.includes(snippet)) {
+      throw new Error(`macOS runtime.capabilities missing ${snippet}`);
+    }
+  }
+  if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
+    throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
+  }
+  return "macos.capabilities=schema-shaped";
 }
 
 function readJson(filePath) {
