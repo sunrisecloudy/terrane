@@ -226,7 +226,9 @@ function checkRuntimeStatic() {
     "validateAndRecordBudget",
     "dispatchBridgeRequest",
     "webkitNativeBridgeHandler",
+    "androidNativeBridgeHandler",
     "NativeAIPlatformBridge",
+    "handler.onmessage",
     "normalizeHostBridgeResponse",
     "invalid_response",
     "permissionForBridgeMethod",
@@ -255,7 +257,7 @@ function checkRuntimeStatic() {
   if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
     throw new Error("runtime AppRuntime.on must not be a no-op");
   }
-  return "bridge=messagechannel,nonce-bound,webkit-adapter request=no-appid permission,policy,budget=runtime-preflight";
+  return "bridge=messagechannel,nonce-bound,webkit,android request=no-appid permission,policy,budget=runtime-preflight";
 }
 
 function checkServerStatic() {
@@ -500,10 +502,16 @@ function checkNativeStatic() {
     [androidMain, "https://appassets.androidplatform.net"],
     [androidMain, "allowFileAccess = false"],
     [androidMain, "AssetRootPathHandler"],
+    [androidMain, "sourceOrigin.toString()"],
     [androidMain, "sandboxContextFromManifest"],
+    [androidMain, "exampleAppIds.contains(appId)"],
     [androidMain, "NetworkPolicyRule.fromManifest"],
     [androidMain, "webapps/examples/$appId/manifest.json"],
     [androidMain, 'webView.loadUrl("https://appassets.androidplatform.net/runtime/index.html")'],
+    [androidBridge, "fun handleEnvelope"],
+    [androidBridge, "isMainFrame"],
+    [androidBridge, "trustedRuntimeOrigin"],
+    [androidBridge, "mountToken"],
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
     [androidBridge, '"network.request" to true'],

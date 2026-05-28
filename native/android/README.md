@@ -35,7 +35,7 @@ Current implementation status:
 - Gradle Android/Kotlin project scaffold exists under `app/`.
 - Gradle syncs the shared `runtime-web/` and `webapps/` trees into generated Android assets.
 - Runtime loads through `WebViewAssetLoader` on the appassets origin, with the shared runtime and example packages served from packaged assets.
-- Bridge uses `WebViewCompat.addWebMessageListener` with an origin allowlist.
+- Bridge uses `WebViewCompat.addWebMessageListener` with an origin allowlist and runtime-owned `{ appId, mountToken, request }` envelope handling.
 - SQLite-backed `storage.*` uses host-derived app context and storage-prefix checks.
 - The default sandbox context derives permissions, storage prefix, and network policy from the bundled app manifest instead of hardcoded bridge permissions.
 - Native bridge applies manifest-style permission checks before dispatch.

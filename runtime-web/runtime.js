@@ -27,6 +27,8 @@
   let activeMount = null;
   const mountsByFrame = new WeakMap();
   const mountsByPort = new WeakMap();
+  const androidBridgePending = new Map();
+  let androidBridgeHandlerAttached = false;
   const usageByApp = new Map();
   const minuteMs = 60 * 1000;
 
@@ -279,6 +281,16 @@
       return normalizeHostBridgeResponse(response, request.id);
     }
 
+    const androidHandler = androidNativeBridgeHandler();
+    if (androidHandler) {
+      const response = await androidHandler.postMessage({
+        appId: mount.appId,
+        mountToken: mount.mountToken,
+        request: request,
+      });
+      return normalizeHostBridgeResponse(response, request.id);
+    }
+
     return fetchJson("/bridge", {
       method: "POST",
       headers: {
@@ -295,6 +307,45 @@
     const handler = handlers && handlers.NativeAIPlatformBridge;
     if (!handler || typeof handler.postMessage !== "function") return null;
     return handler;
+  }
+
+  function androidNativeBridgeHandler() {
+    const handler = window.NativeAIPlatformBridge;
+    if (!handler || typeof handler.postMessage !== "function") return null;
+    attachAndroidBridgeHandler(handler);
+    return {
+      postMessage: function (envelope) {
+        return new Promise(function (resolve, reject) {
+          const requestId = envelope && envelope.request && envelope.request.id;
+          if (typeof requestId !== "string" || requestId.length === 0) {
+            reject(new Error("Android native bridge envelope requires a request id"));
+            return;
+          }
+          androidBridgePending.set(requestId, { resolve: resolve, reject: reject });
+          try {
+            handler.postMessage(JSON.stringify(envelope));
+          } catch (error) {
+            androidBridgePending.delete(requestId);
+            reject(error);
+          }
+        });
+      },
+    };
+  }
+
+  function attachAndroidBridgeHandler(handler) {
+    if (androidBridgeHandlerAttached) return;
+    const previousHandler = typeof handler.onmessage === "function" ? handler.onmessage : null;
+    handler.onmessage = function (event) {
+      if (previousHandler) previousHandler.call(handler, event);
+      const response = typeof event.data === "string" ? parseJsonOrNull(event.data) : event.data;
+      const responseId = response && typeof response.id === "string" ? response.id : null;
+      if (!responseId || !androidBridgePending.has(responseId)) return;
+      const waiter = androidBridgePending.get(responseId);
+      androidBridgePending.delete(responseId);
+      waiter.resolve(response);
+    };
+    androidBridgeHandlerAttached = true;
   }
 
   function normalizeHostBridgeResponse(response, requestId) {

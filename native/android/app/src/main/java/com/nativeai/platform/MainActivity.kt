@@ -16,15 +16,14 @@ import java.io.IOException
 import java.io.InputStream
 
 class MainActivity : Activity() {
+    private val exampleAppIds = setOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
     private lateinit var webView: WebView
     private lateinit var bridge: NativeBridge
     private lateinit var assetLoader: WebViewAssetLoader
-    private lateinit var activeSandboxContext: AppSandboxContext
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        activeSandboxContext = sandboxContextFromManifest("notes-lite")
 
         assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/", AssetRootPathHandler(this))
@@ -32,7 +31,7 @@ class MainActivity : Activity() {
 
         bridge = NativeBridge(
             context = this,
-            activeContext = { activeSandboxContext },
+            contextForApp = { appId -> sandboxContextFromManifest(appId) },
         )
 
         webView = WebView(this)
@@ -49,8 +48,8 @@ class MainActivity : Activity() {
             webView,
             "NativeAIPlatformBridge",
             setOf("https://appassets.androidplatform.net"),
-        ) { _, message, _, _, replyProxy ->
-            replyProxy.postMessage(bridge.handle(message.data ?: "{}"))
+        ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
+            replyProxy.postMessage(bridge.handleEnvelope(message.data ?: "{}", isMainFrame, sourceOrigin.toString()))
         }
 
         setContentView(webView)
@@ -58,6 +57,7 @@ class MainActivity : Activity() {
     }
 
     private fun sandboxContextFromManifest(appId: String): AppSandboxContext {
+        require(exampleAppIds.contains(appId)) { "Unknown generated app id" }
         val manifest = loadExampleManifest(appId)
         val actualAppId = manifest.optString("id", appId)
         return AppSandboxContext(

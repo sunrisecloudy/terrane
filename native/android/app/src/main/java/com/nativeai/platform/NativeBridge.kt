@@ -5,19 +5,55 @@ import org.json.JSONObject
 
 class NativeBridge(
     context: Context,
-    private val activeContext: () -> AppSandboxContext,
+    private val contextForApp: (String) -> AppSandboxContext,
 ) {
     private val storage = PlatformStorage(context)
     private val dialogs = PlatformDialogs()
     private val notifications = PlatformNotifications()
     private val network = PlatformNetwork()
     private val core = ZigCoreBridge()
+    private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
 
-    fun handle(body: String): String {
-        val request = try {
-            BridgeRequest(JSONObject(body), activeContext())
+    fun handleEnvelope(body: String, isMainFrame: Boolean, sourceOrigin: String): String {
+        val envelope = try {
+            JSONObject(body)
         } catch (error: Exception) {
-            return BridgeResponse.failure(null, "invalid_request", "Bridge message body must be JSON").toString()
+            return BridgeResponse.failure(null, "invalid_request", "Runtime bridge envelope must be JSON").toString()
+        }
+        val requestBody = envelope.optJSONObject("request")
+        val requestId = requestBody?.optString("id")?.ifBlank { null }
+
+        if (!isMainFrame || sourceOrigin != trustedRuntimeOrigin) {
+            return BridgeResponse.failure(
+                requestId,
+                "bridge.unauthorized_channel",
+                "Runtime bridge envelope must come from the trusted main runtime frame",
+            ).toString()
+        }
+
+        val appId = envelope.optString("appId").ifBlank { null }
+        val mountToken = envelope.optString("mountToken").ifBlank { null }
+        if (appId == null || mountToken == null || requestBody == null) {
+            return BridgeResponse.failure(
+                requestId,
+                "invalid_request",
+                "Runtime bridge envelope requires appId, mountToken, and request",
+            ).toString()
+        }
+
+        val context = try {
+            contextForApp(appId).copy(mountToken = mountToken)
+        } catch (error: Exception) {
+            return BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope references an unknown app").toString()
+        }
+        if (context.appId != appId) {
+            return BridgeResponse.failure(requestId, "invalid_request", "Runtime bridge envelope appId does not match the manifest").toString()
+        }
+
+        val request = try {
+            BridgeRequest(requestBody, context)
+        } catch (error: Exception) {
+            return BridgeResponse.failure(requestId, "invalid_request", "Bridge request body must be JSON").toString()
         }
 
         val permission = permissionForBridgeMethod(request.method)
@@ -84,6 +120,7 @@ data class AppSandboxContext(
     val storagePrefix: String,
     val approvedPermissions: Set<String>,
     val networkPolicy: List<NetworkPolicyRule> = emptyList(),
+    val mountToken: String? = null,
 )
 
 class BridgeRequest(body: JSONObject, val context: AppSandboxContext) {
