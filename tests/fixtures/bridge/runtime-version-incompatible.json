@@ -13,6 +13,10 @@
   "timestamp": 1730000000000,
   "expected": {
     "ok": false,
-    "errorCode": "runtime_version_incompatible"
+    "errorCode": "runtime_version_incompatible",
+    "errorDetailsSubset": {
+      "runtimeVersion": "0.1.0",
+      "appRuntimeVersion": "0.2.0"
+    }
   }
 }

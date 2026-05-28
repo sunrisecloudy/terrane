@@ -16,6 +16,16 @@
   },
   "timestamp": 1730000000000,
   "expected": {
-    "ok": true
+    "ok": true,
+    "resultSubset": {
+      "ok": true,
+      "stateVersion": 1,
+      "actions": [
+        {
+          "type": "TransformText",
+          "text": "hello"
+        }
+      ]
+    }
   }
 }

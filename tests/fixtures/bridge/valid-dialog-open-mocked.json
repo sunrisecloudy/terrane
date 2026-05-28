@@ -28,6 +28,15 @@
   },
   "timestamp": 1730000000000,
   "expected": {
-    "ok": true
+    "ok": true,
+    "resultSubset": {
+      "files": [
+        {
+          "name": "input.txt",
+          "mimeType": "text/plain",
+          "text": "Hello from fixture"
+        }
+      ]
+    }
   }
 }

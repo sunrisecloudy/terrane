@@ -124,7 +124,7 @@ Status snapshot: **2026-05-29**.
 
 | Path | Status |
 |---|---|
-| `tests/fixtures/bridge/` | partial (16 docs/08 required fixtures are now exercised by fake-host bridge tests) |
+| `tests/fixtures/bridge/` | partial (16 docs/08 required fixtures are now exercised with expected-response subset checks by fake-host bridge tests) |
 | `tests/fixtures/db/` | partial |
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |

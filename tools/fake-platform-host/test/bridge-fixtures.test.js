@@ -9,7 +9,7 @@ import { readPackage } from "../src/package-validator.js";
 import { PlatformDatabase } from "../src/platform-database.js";
 import { createPlatformKeypair, signPackage } from "../src/signing.js";
 
-test("checked-in bridge fixtures match fake-host response codes", async () => {
+test("checked-in bridge fixtures match fake-host expected responses", async () => {
   const fixturesDir = path.join(repoRoot, "tests", "fixtures", "bridge");
 
   const cases = [
@@ -71,6 +71,12 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
       if (fixture.expected?.resultErrorCode) {
         assert.equal(response.result?.error?.code, fixture.expected.resultErrorCode, fileName);
       }
+      if (fixture.expected?.resultSubset) {
+        assertDeepSubset(response.result, fixture.expected.resultSubset, `${fileName} result`);
+      }
+      if (fixture.expected?.errorDetailsSubset) {
+        assertDeepSubset(response.error?.details, fixture.expected.errorDetailsSubset, `${fileName} error details`);
+      }
     } finally {
       db.close();
     }
@@ -96,6 +102,21 @@ function applyBridgeFixturePreconditions(db, fixture, sessionId) {
       response: mock.response,
     });
   }
+}
+
+function assertDeepSubset(actual, expected, label) {
+  if (Array.isArray(expected)) {
+    assert.deepEqual(actual, expected, label);
+    return;
+  }
+  if (expected && typeof expected === "object") {
+    assert.equal(Boolean(actual && typeof actual === "object" && !Array.isArray(actual)), true, label);
+    for (const [key, value] of Object.entries(expected)) {
+      assertDeepSubset(actual[key], value, `${label}.${key}`);
+    }
+    return;
+  }
+  assert.deepEqual(actual, expected, label);
 }
 
 function assertBridgeFixtureShape(fixture, fileName) {

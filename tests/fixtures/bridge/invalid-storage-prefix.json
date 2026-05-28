@@ -8,5 +8,13 @@
     "key": "task-workbench:tasks",
     "defaultValue": []
   },
-  "timestamp": 1730000000000
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "permission_denied",
+    "errorDetailsSubset": {
+      "key": "task-workbench:tasks",
+      "prefix": "notes-lite:"
+    }
+  }
 }

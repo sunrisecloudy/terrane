@@ -30,6 +30,16 @@
   },
   "timestamp": 1730000000000,
   "expected": {
-    "ok": true
+    "ok": true,
+    "resultSubset": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "ok": true,
+        "source": "fixture"
+      }
+    }
   }
 }

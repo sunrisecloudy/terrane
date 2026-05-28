@@ -276,6 +276,7 @@ function checkFakeHostStatic() {
   const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
   const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
   const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
+  const bridgeFixturesTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "bridge-fixtures.test.js"), "utf8");
   const required = [
     [fakeHost, "new BrowserSmokeRunner"],
     [fakeHost, 'runner: args.runner ?? args.mode'],
@@ -283,6 +284,9 @@ function checkFakeHostStatic() {
     [bridgeDispatcher, "runtime_version_incompatible"],
     [core, "validateCoreEvent"],
     [core, "invalid_event"],
+    [bridgeFixturesTest, "assertDeepSubset"],
+    [bridgeFixturesTest, "resultSubset"],
+    [bridgeFixturesTest, "errorDetailsSubset"],
     [testRunner, "NATIVE_AI_SMOKE_RUNNER"],
     [testRunner, 'runner: "static"'],
     [testRunner, 'from: "browser"'],

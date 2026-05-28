@@ -13,6 +13,11 @@
   "timestamp": 1730000000000,
   "expected": {
     "ok": false,
-    "errorCode": "permission_denied"
+    "errorCode": "permission_denied",
+    "errorDetailsSubset": {
+      "appId": "notes-lite",
+      "method": "network.request",
+      "requiredPermission": "network.request"
+    }
   }
 }

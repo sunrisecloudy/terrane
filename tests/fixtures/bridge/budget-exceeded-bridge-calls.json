@@ -16,6 +16,10 @@
   "timestamp": 1730000000000,
   "expected": {
     "ok": false,
-    "errorCode": "resource_budget_exceeded"
+    "errorCode": "resource_budget_exceeded",
+    "errorDetailsSubset": {
+      "appId": "notes-lite",
+      "limit": 0
+    }
   }
 }

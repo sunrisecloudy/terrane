@@ -13,6 +13,10 @@
   "timestamp": 1730000000000,
   "expected": {
     "ok": false,
-    "errorCode": "network_policy_denied"
+    "errorCode": "network_policy_denied",
+    "errorDetailsSubset": {
+      "origin": "https://blocked.example.com",
+      "method": "GET"
+    }
   }
 }

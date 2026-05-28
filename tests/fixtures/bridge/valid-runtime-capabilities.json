@@ -7,6 +7,15 @@
   "params": {},
   "timestamp": 1730000000000,
   "expected": {
-    "ok": true
+    "ok": true,
+    "resultSubset": {
+      "platform": "fake-host",
+      "runtimeVersion": "0.1.0",
+      "appId": "notes-lite",
+      "features": {
+        "network.request": "mocked",
+        "dialog.openFile": "mocked"
+      }
+    }
   }
 }

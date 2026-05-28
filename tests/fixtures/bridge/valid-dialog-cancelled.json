@@ -23,6 +23,10 @@
   },
   "timestamp": 1730000000000,
   "expected": {
-    "ok": true
+    "ok": true,
+    "resultSubset": {
+      "cancelled": true,
+      "files": []
+    }
   }
 }

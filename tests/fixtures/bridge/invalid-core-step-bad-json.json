@@ -12,6 +12,13 @@
   "expected": {
     "ok": true,
     "resultOk": false,
-    "resultErrorCode": "invalid_event"
+    "resultErrorCode": "invalid_event",
+    "resultSubset": {
+      "ok": false,
+      "error": {
+        "code": "invalid_event"
+      },
+      "actions": []
+    }
   }
 }
