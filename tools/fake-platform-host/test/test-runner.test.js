@@ -82,16 +82,19 @@ test("runtime.run_smoke_tests auto mode falls back when browser is unavailable",
 });
 
 test(
-  "runtime.run_smoke_tests browser mode executes notes-lite in a real browser",
+  "runtime.run_smoke_tests browser mode executes every example in a real browser",
   { skip: process.env.NATIVE_AI_ENABLE_BROWSER_SMOKE_TESTS !== "1" || !BrowserSmokeRunner.isAvailable() },
   async () => {
     const host = new FakePlatformHost();
     try {
-      host.installPackage(path.join(examplesDir, "notes-lite"));
-      const run = await host.runControlCommand("runtime.run_smoke_tests", { appId: "notes-lite", runner: "browser" });
-      assert.equal(run.status, "passed", JSON.stringify(run.result.failures));
-      assert.equal(run.result.runner, "browser");
-      assert.equal(run.result.bridgeCalls.some((call) => call.method === "storage.set"), true);
+      const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
+      for (const app of apps) {
+        host.installPackage(path.join(examplesDir, app));
+        const run = await host.runControlCommand("runtime.run_smoke_tests", { appId: app, runner: "browser" });
+        assert.equal(run.status, "passed", `${app}: ${JSON.stringify(run.result.failures)}`);
+        assert.equal(run.result.runner, "browser");
+        assert.equal(run.result.bridgeCalls.length > 0, true, `${app}: expected bridge calls`);
+      }
     } finally {
       host.close();
     }
