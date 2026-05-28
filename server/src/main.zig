@@ -1706,6 +1706,54 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.run_smoke_tests")) {
+        const result_json = runtimeRunSmokeTestsControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.run_smoke_tests requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.run_microtest")) {
+        const result_json = runtimeRunMicrotestControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.run_microtest requires spec or microtestPath");
+            },
+            error.InvalidMicrotest => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_microtest", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_microtest", "Micro-test must target at least one app");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.run_platform_smoke")) {
+        const result_json = platformRunSmokeControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "platform.run_platform_smoke requires spec or smokePath");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -3547,6 +3595,22 @@ fn runtimeHtmlPackageAlloc(allocator: std.mem.Allocator, app_id: []const u8) !Ru
     };
 }
 
+fn installedAppJsAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    return (try installedPackageFileAlloc(allocator, app_id, "app.js")) orelse allocator.dupe(u8, "");
+}
+
+fn installedPackageFileAlloc(allocator: std.mem.Allocator, app_id: []const u8, file_path: []const u8) !?[]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const active = try activeInstallDetailsAlloc(allocator, db, app_id);
+    const active_version = active orelse return error.AppNotInstalled;
+    defer freeInstalledVersion(allocator, active_version);
+    const package_files = try packageFilesForInstallAlloc(allocator, db, active_version.install_id);
+    defer freeOwnedPackageFiles(allocator, package_files);
+    const content = findPackageFileContent(package_files, file_path) orelse return null;
+    return @as(?[]u8, try allocator.dupe(u8, content));
+}
+
 fn runtimeQueryControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
     const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
     const package = try runtimeHtmlPackageAlloc(allocator, app_id);
@@ -3702,6 +3766,305 @@ fn runtimeAssertAccessibilityControl(allocator: std.mem.Allocator, args: ?std.js
     try appendJsonNullableString(allocator, &out, rule);
     try out.writer.print(",\"report\":{s}}}", .{report});
     return out.toOwnedSlice();
+}
+
+fn runtimeRunSmokeTestsControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const evaluation = try evaluateInstalledSmokeTestsAlloc(allocator, app_id);
+    defer freeSmokeTestEvaluation(allocator, evaluation);
+    const micro_test_id = try std.fmt.allocPrint(allocator, "smoke:{s}", .{app_id});
+    defer allocator.free(micro_test_id);
+    const name = try std.fmt.allocPrint(allocator, "{s} bundled smoke tests", .{app_id});
+    defer allocator.free(name);
+    return recordControlTestRun(allocator, micro_test_id, name, app_id, testRunStatus(evaluation.status), evaluation.spec_json, evaluation.result_json, "zig-server-static-smoke");
+}
+
+fn runtimeRunMicrotestControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const spec_json = try controlSpecJsonAlloc(allocator, args, "spec", "microtestPath");
+    defer allocator.free(spec_json);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, spec_json, .{}) catch return error.InvalidControlArgs;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMicrotest;
+    const app_id = firstTargetApp(parsed.value) orelse return error.InvalidMicrotest;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const app_js = try installedAppJsAlloc(allocator, app_id);
+    defer allocator.free(app_js);
+
+    const result_json = try evaluateMicrotestSpecJsonAlloc(allocator, parsed.value, package.html, app_js);
+    defer allocator.free(result_json);
+    const status = if (std.mem.indexOf(u8, result_json, "\"ok\":true") != null) "passed" else "failed";
+    const micro_test_id = valueString(parsed.value.object.get("id")) orelse "microtest";
+    return recordControlTestRun(allocator, micro_test_id, micro_test_id, app_id, status, spec_json, result_json, "zig-server-static-microtest");
+}
+
+fn platformRunSmokeControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const spec_json = try controlSpecJsonAlloc(allocator, args, "spec", "smokePath");
+    defer allocator.free(spec_json);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, spec_json, .{}) catch return error.InvalidControlArgs;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidControlArgs;
+    const smoke_id = valueString(parsed.value.object.get("id")) orelse "platform-smoke";
+    const platform = controlStringArg(args, "platform") orelse "zig-server";
+    const apps = parsed.value.object.get("apps") orelse return error.InvalidControlArgs;
+    if (apps != .array) return error.InvalidControlArgs;
+
+    var failures: std.io.Writer.Allocating = .init(allocator);
+    errdefer failures.deinit();
+    var app_results: std.io.Writer.Allocating = .init(allocator);
+    errdefer app_results.deinit();
+    try failures.writer.writeAll("[");
+    try app_results.writer.writeAll("[");
+    var failure_count: usize = 0;
+    var app_count: usize = 0;
+    for (apps.array.items) |app_value| {
+        const app_id = valueString(app_value) orelse continue;
+        const smoke = evaluateInstalledSmokeTestsAlloc(allocator, app_id) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                if (failure_count > 0) try failures.writer.writeAll(",");
+                try failures.writer.writeAll("{\"appId\":");
+                try appendJsonString(allocator, &failures, app_id);
+                try failures.writer.writeAll(",\"code\":\"app_not_installed\"}");
+                failure_count += 1;
+                if (app_count > 0) try app_results.writer.writeAll(",");
+                try app_results.writer.writeAll("{\"appId\":");
+                try appendJsonString(allocator, &app_results, app_id);
+                try app_results.writer.writeAll(",\"ok\":false,\"commands\":[]}");
+                app_count += 1;
+                continue;
+            },
+            else => return err,
+        };
+        defer freeSmokeTestEvaluation(allocator, smoke);
+        if (!smoke.ok) {
+            if (failure_count > 0) try failures.writer.writeAll(",");
+            try failures.writer.writeAll("{\"appId\":");
+            try appendJsonString(allocator, &failures, app_id);
+            try failures.writer.print(",\"code\":\"smoke_failed\",\"result\":{s}}}", .{smoke.result_json});
+            failure_count += 1;
+        }
+        if (app_count > 0) try app_results.writer.writeAll(",");
+        try app_results.writer.writeAll("{\"appId\":");
+        try appendJsonString(allocator, &app_results, app_id);
+        try app_results.writer.print(",\"ok\":{},\"commands\":[{{\"tool\":\"runtime.run_smoke_tests\",\"status\":\"{s}\",\"result\":{s}}}]}}", .{ smoke.ok, smoke.status, smoke.result_json });
+        app_count += 1;
+    }
+    try failures.writer.writeAll("]");
+    try app_results.writer.writeAll("]");
+    const failures_json = try failures.toOwnedSlice();
+    defer allocator.free(failures_json);
+    const apps_json = try app_results.toOwnedSlice();
+    defer allocator.free(apps_json);
+
+    var result: std.io.Writer.Allocating = .init(allocator);
+    errdefer result.deinit();
+    try result.writer.writeAll("{\"ok\":");
+    try result.writer.writeAll(if (failure_count == 0) "true" else "false");
+    try result.writer.writeAll(",\"id\":");
+    try appendJsonString(allocator, &result, smoke_id);
+    try result.writer.writeAll(",\"platform\":");
+    try appendJsonString(allocator, &result, platform);
+    try result.writer.print(",\"totalApps\":{d},\"failures\":{s},\"apps\":{s}}}", .{ app_count, failures_json, apps_json });
+    const result_json = try result.toOwnedSlice();
+    defer allocator.free(result_json);
+
+    const micro_test_id = try std.fmt.allocPrint(allocator, "platform-smoke:{s}:{s}", .{ smoke_id, platform });
+    defer allocator.free(micro_test_id);
+    const name = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ smoke_id, platform });
+    defer allocator.free(name);
+    return recordControlTestRun(allocator, micro_test_id, name, null, if (failure_count == 0) "passed" else "failed", spec_json, result_json, "zig-server-static-platform-smoke");
+}
+
+fn controlSpecJsonAlloc(allocator: std.mem.Allocator, args: ?std.json.Value, spec_key: []const u8, path_key: []const u8) ![]u8 {
+    const value = args orelse return error.InvalidControlArgs;
+    if (value != .object) return error.InvalidControlArgs;
+    if (value.object.get(spec_key)) |spec| return jsonValueAlloc(allocator, spec);
+    const path = controlStringArg(args, path_key) orelse return error.InvalidControlArgs;
+    if (path.len == 0 or std.fs.path.isAbsolute(path) or containsAny(path, &.{ "..", "\\", "//" })) return error.InvalidControlArgs;
+    const file = std.fs.cwd().openFile(path, .{}) catch return error.InvalidControlArgs;
+    defer file.close();
+    return file.readToEndAlloc(allocator, max_request_bytes);
+}
+
+fn firstTargetApp(spec: std.json.Value) ?[]const u8 {
+    if (spec != .object) return null;
+    const target_apps = spec.object.get("targetApps") orelse return null;
+    if (target_apps != .array or target_apps.array.items.len == 0) return null;
+    return valueString(target_apps.array.items[0]);
+}
+
+fn evaluateMicrotestSpecJsonAlloc(allocator: std.mem.Allocator, spec: std.json.Value, html: []const u8, app_js: []const u8) ![]u8 {
+    const microtest_id = valueString(spec.object.get("id")) orelse "microtest";
+    var failures: std.io.Writer.Allocating = .init(allocator);
+    errdefer failures.deinit();
+    try failures.writer.writeAll("[");
+    var failure_count: usize = 0;
+    var total_steps: usize = 0;
+    var dynamic_text: std.ArrayList([]const u8) = .empty;
+    defer dynamic_text.deinit(allocator);
+    try evaluateMicrotestPhase(allocator, spec.object.get("setup"), html, app_js, &dynamic_text, &failures, &failure_count, &total_steps);
+    try evaluateMicrotestPhase(allocator, spec.object.get("steps"), html, app_js, &dynamic_text, &failures, &failure_count, &total_steps);
+    try evaluateMicrotestPhase(allocator, spec.object.get("teardown"), html, app_js, &dynamic_text, &failures, &failure_count, &total_steps);
+    try failures.writer.writeAll("]");
+    const failures_json = try failures.toOwnedSlice();
+    defer allocator.free(failures_json);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":");
+    try out.writer.writeAll(if (failure_count == 0) "true" else "false");
+    try out.writer.writeAll(",\"id\":");
+    try appendJsonString(allocator, &out, microtest_id);
+    try out.writer.print(",\"totalSteps\":{d},\"failures\":{s},\"setup\":{{\"ok\":true,\"commands\":[]}},\"teardown\":{{\"ok\":true,\"commands\":[]}}}}", .{ total_steps, failures_json });
+    return out.toOwnedSlice();
+}
+
+fn evaluateMicrotestPhase(
+    allocator: std.mem.Allocator,
+    phase: ?std.json.Value,
+    html: []const u8,
+    app_js: []const u8,
+    dynamic_text: *std.ArrayList([]const u8),
+    failures: *std.io.Writer.Allocating,
+    failure_count: *usize,
+    total_steps: *usize,
+) !void {
+    const steps = phase orelse return;
+    if (steps != .array) return;
+    for (steps.array.items) |step| {
+        if (step != .object) continue;
+        total_steps.* += 1;
+        const tool = valueString(step.object.get("tool")) orelse "";
+        const args = step.object.get("args") orelse continue;
+        const args_object = if (args == .object) args.object else continue;
+        if ((std.mem.eql(u8, tool, "runtime.click") or std.mem.eql(u8, tool, "runtime.type") or std.mem.eql(u8, tool, "runtime.set_value") or std.mem.eql(u8, tool, "runtime.assert_visible"))) {
+            if (valueString(args_object.get("testId"))) |test_id| {
+                if (!try htmlAttrValueExists(allocator, html, "data-testid", test_id)) {
+                    try appendMicroFailure(allocator, failures, failure_count, tool, "selector.not_found", "testId", test_id);
+                }
+            }
+        }
+        if (std.mem.eql(u8, tool, "runtime.type")) {
+            if (valueString(args_object.get("text"))) |text| try dynamic_text.append(allocator, text);
+        }
+        if (std.mem.eql(u8, tool, "runtime.set_value")) {
+            if (valueString(args_object.get("value"))) |text| try dynamic_text.append(allocator, text);
+        }
+        if ((std.mem.eql(u8, tool, "runtime.assert_text") or std.mem.eql(u8, tool, "runtime.assert_visible"))) {
+            if (valueString(args_object.get("text"))) |text| {
+                if (!textCanAppear(html, dynamic_text.items, text)) {
+                    try appendMicroFailure(allocator, failures, failure_count, tool, "text.not_found", "text", text);
+                }
+            }
+        }
+        if (std.mem.eql(u8, tool, "runtime.assert_bridge_call")) {
+            if (valueString(args_object.get("method"))) |method| {
+                if (!try bridgeMethodReferenced(allocator, app_js, method)) {
+                    try appendMicroFailure(allocator, failures, failure_count, tool, "bridge.call_missing", "method", method);
+                }
+            }
+        }
+        if (std.mem.eql(u8, tool, "runtime.replay_events") and !try bridgeMethodReferenced(allocator, app_js, "core.step")) {
+            try appendMicroFailure(allocator, failures, failure_count, tool, "core.action_missing", "method", "core.step");
+        }
+    }
+}
+
+fn appendMicroFailure(
+    allocator: std.mem.Allocator,
+    out: *std.io.Writer.Allocating,
+    count: *usize,
+    tool: []const u8,
+    code: []const u8,
+    detail_key: []const u8,
+    detail_value: []const u8,
+) !void {
+    if (count.* > 0) try out.writer.writeAll(",");
+    try out.writer.writeAll("{\"tool\":");
+    try appendJsonString(allocator, out, tool);
+    try out.writer.writeAll(",\"code\":");
+    try appendJsonString(allocator, out, code);
+    try out.writer.writeAll(",");
+    try appendJsonString(allocator, out, detail_key);
+    try out.writer.writeAll(":");
+    try appendJsonString(allocator, out, detail_value);
+    try out.writer.writeAll("}");
+    count.* += 1;
+}
+
+fn recordControlTestRun(
+    allocator: std.mem.Allocator,
+    micro_test_id: []const u8,
+    name: []const u8,
+    app_id: ?[]const u8,
+    status: []const u8,
+    spec_json: []const u8,
+    result_json: []const u8,
+    runner: []const u8,
+) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    var micro_statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " ++
+            "ON CONFLICT(micro_test_id) DO UPDATE SET app_id = excluded.app_id, name = excluded.name, spec_json = excluded.spec_json, updated_at = excluded.updated_at",
+        -1,
+        &micro_statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(micro_statement);
+    bindText(micro_statement, 1, micro_test_id);
+    bindNullableText(micro_statement, 2, app_id);
+    bindText(micro_statement, 3, name);
+    bindText(micro_statement, 4, spec_json);
+    bindText(micro_statement, 5, created_at);
+    bindText(micro_statement, 6, created_at);
+    if (sqlite.sqlite3_step(micro_statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+
+    const test_run_id = try randomDbIdAlloc(allocator, db, "testrun_");
+    defer allocator.free(test_run_id);
+    const diagnostics = try std.fmt.allocPrint(allocator, "{{\"runner\":\"{s}\"}}", .{runner});
+    defer allocator.free(diagnostics);
+    var run_statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO test_runs (test_run_id, micro_test_id, app_id, status, started_at, finished_at, result_json, diagnostics_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &run_statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(run_statement);
+    bindText(run_statement, 1, test_run_id);
+    bindText(run_statement, 2, micro_test_id);
+    bindNullableText(run_statement, 3, app_id);
+    bindText(run_statement, 4, status);
+    bindText(run_statement, 5, created_at);
+    bindText(run_statement, 6, created_at);
+    bindText(run_statement, 7, result_json);
+    bindText(run_statement, 8, diagnostics);
+    if (sqlite.sqlite3_step(run_statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"testRunId\":");
+    try appendJsonString(allocator, &out, test_run_id);
+    try out.writer.writeAll(",\"microTestId\":");
+    try appendJsonString(allocator, &out, micro_test_id);
+    try out.writer.writeAll(",\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"status\":");
+    try appendJsonString(allocator, &out, status);
+    try out.writer.print(",\"result\":{s}}}", .{result_json});
+    return out.toOwnedSlice();
+}
+
+fn testRunStatus(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "passed") or std.mem.eql(u8, status, "failed")) return status;
+    if (std.mem.eql(u8, status, "not-run")) return "skipped";
+    return "error";
 }
 
 fn runtimeQueryLabelAlloc(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
@@ -5919,7 +6282,33 @@ fn contentHashesDocumentJsonAlloc(allocator: std.mem.Allocator, hashes: PackageH
 
 fn evaluateSmokeTestsAlloc(allocator: std.mem.Allocator, package_root: std.json.Value, app_id: []const u8) !SmokeTestEvaluation {
     const files = package_root.object.get("files").?;
-    const smoke_tests = findPackageFile(files, "smoke-tests.json") orelse {
+    return evaluateSmokeTestSourcesAlloc(
+        allocator,
+        app_id,
+        findPackageFile(files, "smoke-tests.json"),
+        findPackageFile(files, "index.html") orelse "",
+        findPackageFile(files, "app.js") orelse "",
+    );
+}
+
+fn evaluateInstalledSmokeTestsAlloc(allocator: std.mem.Allocator, app_id: []const u8) !SmokeTestEvaluation {
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const app_js = try installedAppJsAlloc(allocator, app_id);
+    defer allocator.free(app_js);
+    const smoke_tests = try installedPackageFileAlloc(allocator, app_id, "smoke-tests.json");
+    defer if (smoke_tests) |actual| allocator.free(actual);
+    return evaluateSmokeTestSourcesAlloc(allocator, app_id, smoke_tests, package.html, app_js);
+}
+
+fn evaluateSmokeTestSourcesAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    smoke_tests_maybe: ?[]const u8,
+    html: []const u8,
+    app_js: []const u8,
+) !SmokeTestEvaluation {
+    const smoke_tests = smoke_tests_maybe orelse {
         return .{
             .ok = true,
             .status = "not-run",
@@ -5937,8 +6326,6 @@ fn evaluateSmokeTestsAlloc(allocator: std.mem.Allocator, package_root: std.json.
         return smokeInvalidResultAlloc(allocator, app_id, "invalid_smoke_shape", "smoke-tests.json must be an array");
     }
 
-    const html = findPackageFile(files, "index.html") orelse "";
-    const app_js = findPackageFile(files, "app.js") orelse "";
     var dynamic_text: std.ArrayList([]const u8) = .empty;
     defer dynamic_text.deinit(allocator);
     var failures: std.io.Writer.Allocating = .init(allocator);
