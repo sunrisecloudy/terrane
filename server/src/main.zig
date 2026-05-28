@@ -498,10 +498,11 @@ fn handleAppRollbackEndpoint(
     defer if (args) |*parsed| parsed.deinit();
     const root = if (args) |parsed| parsed.value else null;
     const target_install_id = if (root) |value| valueString(value.object.get("installId")) else null;
+    const snapshot_id = if (root) |value| valueString(value.object.get("snapshotId")) else null;
     const args_json = try controlArgsJsonForAudit(allocator, body);
     defer allocator.free(args_json);
 
-    const result_json = rollbackWebappPackage(allocator, app_id, target_install_id) catch |err| switch (err) {
+    const result_json = rollbackWebappPackage(allocator, app_id, target_install_id, snapshot_id) catch |err| switch (err) {
         error.AppNotInstalled => {
             auditControlCommand(allocator, path, tool, "rejected", "app_not_installed", args_json, null);
             return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
@@ -513,6 +514,18 @@ fn handleAppRollbackEndpoint(
         error.RollbackTargetInvalid => {
             auditControlCommand(allocator, path, tool, "rejected", "rollback_target_invalid", args_json, null);
             return writeControlError(allocator, stream, 400, "rollback_target_invalid", "Rollback target is invalid");
+        },
+        error.RollbackDataVersionIncompatible => {
+            auditControlCommand(allocator, path, tool, "rejected", "rollback_data_version_incompatible", args_json, null);
+            return writeControlError(allocator, stream, 400, "rollback_data_version_incompatible", "Rollback requires a compatible data version or explicit snapshotId");
+        },
+        error.SnapshotNotFound => {
+            auditControlCommand(allocator, path, tool, "rejected", "snapshot_not_found", args_json, null);
+            return writeControlError(allocator, stream, 400, "snapshot_not_found", "Snapshot was not found");
+        },
+        error.SnapshotInvalid => {
+            auditControlCommand(allocator, path, tool, "rejected", "snapshot_invalid", args_json, null);
+            return writeControlError(allocator, stream, 400, "snapshot_invalid", "Snapshot cannot be restored for this rollback target");
         },
         else => return err,
     };
@@ -733,7 +746,7 @@ fn handleControlCommand(
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "platform.rollback_webapp requires appId");
         };
-        const result_json = rollbackWebappPackage(allocator, app_id, controlStringArg(args, "installId")) catch |err| switch (err) {
+        const result_json = rollbackWebappPackage(allocator, app_id, controlStringArg(args, "installId"), controlStringArg(args, "snapshotId")) catch |err| switch (err) {
             error.AppNotInstalled => {
                 auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
                 return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
@@ -745,6 +758,18 @@ fn handleControlCommand(
             error.RollbackTargetInvalid => {
                 auditControlCommand(allocator, "/control/command", tool, "rejected", "rollback_target_invalid", args_json, null);
                 return writeControlError(allocator, stream, 400, "rollback_target_invalid", "Rollback target is invalid");
+            },
+            error.RollbackDataVersionIncompatible => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "rollback_data_version_incompatible", args_json, null);
+                return writeControlError(allocator, stream, 400, "rollback_data_version_incompatible", "Rollback requires a compatible data version or explicit snapshotId");
+            },
+            error.SnapshotNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_not_found", "Snapshot was not found");
+            },
+            error.SnapshotInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_invalid", "Snapshot cannot be restored for this rollback target");
             },
             else => return err,
         };
@@ -1306,7 +1331,12 @@ const InstalledVersion = struct {
     status: []u8,
 };
 
-fn rollbackWebappPackage(allocator: std.mem.Allocator, app_id: []const u8, target_install_id: ?[]const u8) ![]u8 {
+fn rollbackWebappPackage(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    target_install_id: ?[]const u8,
+    snapshot_id: ?[]const u8,
+) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
 
@@ -1331,12 +1361,24 @@ fn rollbackWebappPackage(allocator: std.mem.Allocator, app_id: []const u8, targe
 
     const created_at = try sqliteNowIsoAlloc(allocator, db);
     defer allocator.free(created_at);
+
+    var restored_storage_keys: ?usize = null;
+    if (target_version.data_version > active_version.data_version) {
+        return error.RollbackDataVersionIncompatible;
+    }
+    if (target_version.data_version < active_version.data_version and snapshot_id == null) {
+        return error.RollbackDataVersionIncompatible;
+    }
+    if (snapshot_id) |restore_snapshot_id| {
+        restored_storage_keys = try restoreSnapshotStorageIntoDb(allocator, db, restore_snapshot_id, app_id, target_version.install_id, created_at);
+    }
+
     try markVersionStatus(db, active_version.install_id, "rolled-back", null);
     try markVersionStatus(db, target_version.install_id, "enabled", created_at);
     try activateInstalledApp(db, app_id, target_version.install_id, target_version.version, target_version.data_version, created_at);
     try insertRollbackInstallationEvent(db, allocator, app_id, target_version.install_id, active_version.install_id, created_at);
 
-    const result_json = try rollbackResultJsonAlloc(allocator, app_id, target_version.install_id, active_version.install_id, target_version.version, target_version.data_version);
+    const result_json = try rollbackResultJsonAlloc(allocator, app_id, target_version.install_id, active_version.install_id, target_version.version, target_version.data_version, snapshot_id, restored_storage_keys);
     errdefer allocator.free(result_json);
     try execDb(db, "COMMIT");
     return result_json;
@@ -1419,6 +1461,8 @@ fn rollbackResultJsonAlloc(
     rolled_back_install_id: []const u8,
     active_version: []const u8,
     data_version: i64,
+    snapshot_id: ?[]const u8,
+    restored_storage_keys: ?usize,
 ) ![]u8 {
     const escaped_app_id = try escapeJsonString(allocator, app_id);
     defer allocator.free(escaped_app_id);
@@ -1428,11 +1472,21 @@ fn rollbackResultJsonAlloc(
     defer allocator.free(escaped_rolled_back);
     const escaped_version = try escapeJsonString(allocator, active_version);
     defer allocator.free(escaped_version);
-    return std.fmt.allocPrint(
-        allocator,
-        "{{\"appId\":\"{s}\",\"activeInstallId\":\"{s}\",\"rolledBackInstallId\":\"{s}\",\"activeVersion\":\"{s}\",\"dataVersion\":{d}}}",
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print(
+        "{{\"appId\":\"{s}\",\"activeInstallId\":\"{s}\",\"rolledBackInstallId\":\"{s}\",\"activeVersion\":\"{s}\",\"dataVersion\":{d}",
         .{ escaped_app_id, escaped_active, escaped_rolled_back, escaped_version, data_version },
     );
+    if (snapshot_id) |actual_snapshot_id| {
+        try out.writer.writeAll(",\"dataRollbackSnapshotId\":");
+        try appendJsonString(allocator, &out, actual_snapshot_id);
+    }
+    if (restored_storage_keys) |count| {
+        try out.writer.print(",\"restoredStorageKeys\":{d}", .{count});
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
 }
 
 const SnapshotActiveApp = struct {
@@ -1722,6 +1776,38 @@ fn snapshotContentHashByIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite
     bindText(statement, 1, snapshot_id);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.SnapshotNotFound;
     return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn restoreSnapshotStorageIntoDb(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    snapshot_id: []const u8,
+    expected_app_id: []const u8,
+    expected_install_id: []const u8,
+    restored_at: []const u8,
+) !usize {
+    const snapshot_json = try snapshotJsonByIdAlloc(allocator, db, snapshot_id);
+    defer allocator.free(snapshot_json);
+    const stored_hash = try snapshotContentHashByIdAlloc(allocator, db, snapshot_id);
+    defer allocator.free(stored_hash);
+    const actual_hash = try sha256PrefixedAlloc(allocator, snapshot_json);
+    defer allocator.free(actual_hash);
+    if (!std.mem.eql(u8, stored_hash, actual_hash)) return error.SnapshotInvalid;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{}) catch return error.SnapshotInvalid;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.SnapshotInvalid;
+    const active_app_value = parsed.value.object.get("activeApp") orelse return error.SnapshotInvalid;
+    if (active_app_value != .object) return error.SnapshotInvalid;
+    const app_id = valueString(active_app_value.object.get("appId")) orelse return error.SnapshotInvalid;
+    const install_id = valueString(active_app_value.object.get("installId")) orelse return error.SnapshotInvalid;
+    if (!std.mem.eql(u8, app_id, expected_app_id) or !std.mem.eql(u8, install_id, expected_install_id)) {
+        return error.SnapshotInvalid;
+    }
+    const storage_value = parsed.value.object.get("storage") orelse return error.SnapshotInvalid;
+    if (storage_value != .object) return error.SnapshotInvalid;
+    try deleteAppStorageForApp(db, app_id);
+    return restoreSnapshotStorage(allocator, db, app_id, storage_value, restored_at);
 }
 
 fn deleteAppStorageForApp(db: *sqlite.sqlite3, app_id: []const u8) !void {

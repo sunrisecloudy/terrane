@@ -330,6 +330,9 @@ function checkServerStatic() {
     "rolled-back",
     "fn rollbackWebappPackage",
     "fn insertRollbackInstallationEvent",
+    "rollback_data_version_incompatible",
+    "fn restoreSnapshotStorageIntoDb",
+    "dataRollbackSnapshotId",
     "fn createRuntimeSnapshot",
     "fn restoreRuntimeSnapshot",
     "fn insertRuntimeSnapshot",
@@ -411,7 +414,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
