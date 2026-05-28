@@ -278,6 +278,13 @@ function checkServerStatic() {
     "fn handleStorageBridge",
     "fn handleAppLogBridge",
     "fn handleControlCommand",
+    "fn enforceProductionStartupRules",
+    "fn isDevControlPath",
+    "NATIVE_AI_SERVER_ENV",
+    "production_control_disabled",
+    "--allow-unsigned-dev",
+    "--allow-runtime-mismatch",
+    "--control-plane-port",
     "fn handleDbControlEndpoint",
     "fn requireControlToken",
     "NATIVE_AI_SERVER_CONTROL_TOKEN",
@@ -414,7 +421,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

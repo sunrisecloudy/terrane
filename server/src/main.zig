@@ -10,6 +10,7 @@ const signature_prefix = "native-ai-webapp/sig/v1";
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
+    try enforceProductionStartupRules(allocator);
     const port = try parsePort(allocator);
     const address = try std.net.Address.parseIp("127.0.0.1", port);
     var server = try address.listen(.{ .reuse_address = true });
@@ -41,6 +42,48 @@ fn parsePort(allocator: std.mem.Allocator) !u16 {
     return 8088;
 }
 
+fn enforceProductionStartupRules(allocator: std.mem.Allocator) !void {
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    if (!isProductionMode(allocator)) return;
+
+    for (args[1..]) |arg| {
+        if (isForbiddenProductionFlag(arg)) {
+            std.debug.print("fatal: production mode rejects dev-only flag {s}\n", .{arg});
+            return error.ProductionDevFlagRejected;
+        }
+    }
+}
+
+fn isProductionMode(allocator: std.mem.Allocator) bool {
+    const env = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_ENV") catch return false;
+    defer allocator.free(env);
+    return std.ascii.eqlIgnoreCase(env, "production") or std.ascii.eqlIgnoreCase(env, "prod");
+}
+
+fn isForbiddenProductionFlag(arg: []const u8) bool {
+    const forbidden = [_][]const u8{
+        "--control-plane-port",
+        "--allow-runtime-mismatch",
+        "--allow-unsigned-dev",
+    };
+    for (forbidden) |candidate| {
+        if (std.mem.eql(u8, arg, candidate)) return true;
+        if (arg.len > candidate.len and std.mem.startsWith(u8, arg, candidate) and arg[candidate.len] == '=') return true;
+    }
+    return false;
+}
+
+fn isDevControlPath(path: []const u8) bool {
+    return std.mem.eql(u8, path, "/control/command") or
+        std.mem.startsWith(u8, path, "/control/db/") or
+        std.mem.startsWith(u8, path, "/db/") or
+        std.mem.eql(u8, path, "/webapps/validate") or
+        std.mem.eql(u8, path, "/webapps/install") or
+        std.mem.startsWith(u8, path, "/packages/") or
+        appIdFromRollbackPath(path) != null;
+}
+
 fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void {
     var buffer: [max_request_bytes + 4096]u8 = undefined;
     const read_len = try stream.read(&buffer);
@@ -53,6 +96,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
 
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/health")) {
         return writeJson(stream, 200, "{\"ok\":true,\"version\":\"0.1.0\",\"target\":\"zig-server\"}");
+    }
+
+    if (isProductionMode(allocator) and isDevControlPath(parsed.path)) {
+        return writeControlError(allocator, stream, 404, "production_control_disabled", "Dev control endpoints are disabled in production mode");
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/core/step")) {

@@ -43,4 +43,6 @@ Server dev persistence initializes the v0.4 logical SQLite schema: app registry/
 
 Safe DB inspection endpoints and `/control/command` require `X-Platform-Control-Token` to match `NATIVE_AI_SERVER_CONTROL_TOKEN`. They expose fixed read-only queries only; arbitrary SQL is not available. Accepted and rejected control requests are audited into `control_commands` under a host-owned `server-control-audit` session. Debug bundle exports include a SHA-256 `contentHash` and are recorded in `backup_exports`. The server creates host-owned app rows for bundled-example storage/log writes so `app_storage` can keep its relational `apps(id)` boundary without generated apps choosing SQL state.
 
+Set `NATIVE_AI_SERVER_ENV=production` to disable dev/control endpoints such as `/control/command`, `/db/*`, `/packages/*`, `/webapps/install`, and app rollback routes. In production mode the server also rejects dev-only startup flags `--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`.
+
 Remaining persistence work: browser-backed smoke-test execution and the Postgres production adapter.
