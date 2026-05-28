@@ -471,12 +471,15 @@ function checkServerStatic() {
     '"db.query_core_events"',
     '"db.query_test_runs"',
     '"db.export_backup"',
+    '"db.import_backup"',
     '"/db/snapshot"',
     '"/db/app-storage"',
     '"/db/bridge-calls"',
     '"/db/export-debug-bundle"',
     "fn dbSnapshotJson",
     "fn dbBackupExportJson",
+    "fn importBackupControl",
+    "fn insertBackupImportRecord",
     "fn dbDebugBundleJson",
     "fn signWebappPackage",
     "fn serverSignatureJsonAlloc",
@@ -609,7 +612,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export-import rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

@@ -1783,6 +1783,26 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "db.import_backup")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.import_backup requires args");
+        };
+        const backup = args_value.object.get("backup") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.import_backup requires backup");
+        };
+        const result_json = importBackupControl(allocator, backup) catch |err| switch (err) {
+            error.InvalidBackup => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_backup", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_backup", "Backup document is invalid or incomplete");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
@@ -5848,6 +5868,376 @@ fn dbBackupExportJson(allocator: std.mem.Allocator) ![]u8 {
     const content_hash = try sha256HexAlloc(allocator, base_json);
     defer allocator.free(content_hash);
     return std.fmt.allocPrint(allocator, "{s},\"contentHash\":\"sha256:{s}\"}}", .{ base_json[0 .. base_json.len - 1], content_hash });
+}
+
+fn importBackupControl(allocator: std.mem.Allocator, backup: std.json.Value) ![]u8 {
+    if (backup != .object) return error.InvalidBackup;
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    const backup_json = try jsonValueAlloc(allocator, backup);
+    defer allocator.free(backup_json);
+    const content_hash = if (objectString(backup, "contentHash")) |hash|
+        try allocator.dupe(u8, hash)
+    else
+        try sha256PrefixedAlloc(allocator, backup_json);
+    defer allocator.free(content_hash);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const apps_count = try importBackupApps(backup.object.get("apps"), db, created_at);
+    const versions_count = try importBackupAppVersions(allocator, backup.object.get("appVersions"), db, created_at);
+    _ = try importBackupAppFiles(allocator, backup.object.get("appFiles"), db, created_at);
+    _ = try importBackupAppPermissions(backup.object.get("appPermissions"), db);
+    const storage_count = try importBackupAppStorage(allocator, backup.object.get("appStorage"), db, created_at);
+    _ = try importBackupAppMigrations(allocator, backup.object.get("appMigrations"), db, created_at);
+    _ = try importBackupInstallReports(allocator, backup.object.get("appInstallReports"), db, created_at);
+    try insertBackupImportRecord(db, allocator, backup, backup_json, content_hash, created_at);
+
+    const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"apps\":{d},\"appVersions\":{d},\"appStorage\":{d}}}", .{ apps_count, versions_count, storage_count });
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn importBackupApps(value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const apps = value orelse return 0;
+    if (apps != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (apps.array.items) |app| {
+        if (app != .object) return error.InvalidBackup;
+        const app_id = objectStringAny(app, "id", "appId") orelse return error.InvalidBackup;
+        const name = objectString(app, "name") orelse app_id;
+        const status = objectString(app, "status") orelse "enabled";
+        const data_version = objectI64Any(app, "data_version", "dataVersion") orelse 1;
+        const row_created_at = objectStringAny(app, "created_at", "createdAt") orelse created_at;
+        const row_updated_at = objectStringAny(app, "updated_at", "updatedAt") orelse created_at;
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, app_id);
+        bindText(statement, 2, name);
+        bindText(statement, 3, status);
+        bindNullableText(statement, 4, objectStringAny(app, "active_install_id", "activeInstallId"));
+        bindNullableText(statement, 5, objectStringAny(app, "active_version", "activeVersion"));
+        _ = sqlite.sqlite3_bind_int64(statement, 6, data_version);
+        bindText(statement, 7, row_created_at);
+        bindText(statement, 8, row_updated_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupAppVersions(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const versions = value orelse return 0;
+    if (versions != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (versions.array.items) |version| {
+        if (version != .object) return error.InvalidBackup;
+        const install_id = objectStringAny(version, "install_id", "installId") orelse return error.InvalidBackup;
+        const app_id = objectStringAny(version, "app_id", "appId") orelse return error.InvalidBackup;
+        const version_name = objectString(version, "version") orelse objectString(version, "appVersion") orelse "0.0.0";
+        const version_runtime = objectStringAny(version, "runtime_version", "runtimeVersion") orelse runtime_version;
+        const data_version = objectI64Any(version, "data_version", "dataVersion") orelse 1;
+        const manifest_json = try jsonDocumentFieldAlloc(allocator, version, "manifest_json", "manifestJson", "manifest", "{}");
+        defer allocator.free(manifest_json);
+        const signature_json = try optionalJsonDocumentFieldAlloc(allocator, version, "signature_json", "signatureJson", "signature");
+        defer if (signature_json) |json| allocator.free(json);
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, install_id);
+        bindText(statement, 2, app_id);
+        bindText(statement, 3, version_name);
+        bindText(statement, 4, version_runtime);
+        _ = sqlite.sqlite3_bind_int64(statement, 5, data_version);
+        bindText(statement, 6, manifest_json);
+        bindText(statement, 7, objectStringAny(version, "manifest_hash", "manifestHash") orelse "");
+        bindText(statement, 8, objectStringAny(version, "content_hash", "contentHash") orelse "");
+        bindNullableText(statement, 9, signature_json);
+        bindText(statement, 10, objectStringAny(version, "trust_level", "trustLevel") orelse "developer");
+        bindText(statement, 11, objectString(version, "status") orelse "installed");
+        bindText(statement, 12, objectStringAny(version, "created_at", "installedAt") orelse objectStringAny(version, "createdAt", "created_at") orelse created_at);
+        bindNullableText(statement, 13, objectStringAny(version, "activated_at", "activatedAt"));
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupAppFiles(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const files = value orelse return 0;
+    if (files != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (files.array.items) |file| {
+        if (file != .object) return error.InvalidBackup;
+        const install_id = objectStringAny(file, "install_id", "installId") orelse return error.InvalidBackup;
+        const path = objectString(file, "path") orelse return error.InvalidBackup;
+        const content = objectStringAny(file, "content_text", "contentText") orelse "";
+        const generated_hash = try sha256PrefixedAlloc(allocator, content);
+        defer allocator.free(generated_hash);
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, install_id);
+        bindText(statement, 2, path);
+        bindText(statement, 3, content);
+        bindText(statement, 4, objectStringAny(file, "content_hash", "contentHash") orelse generated_hash);
+        _ = sqlite.sqlite3_bind_int64(statement, 5, objectI64Any(file, "size_bytes", "sizeBytes") orelse @as(i64, @intCast(content.len)));
+        bindText(statement, 6, objectString(file, "mime") orelse mimeForPackagePath(path));
+        bindText(statement, 7, objectStringAny(file, "created_at", "createdAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupAppPermissions(value: ?std.json.Value, db: *sqlite.sqlite3) !usize {
+    const permissions = value orelse return 0;
+    if (permissions != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (permissions.array.items) |permission| {
+        if (permission != .object) return error.InvalidBackup;
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(permission, "install_id", "installId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(permission, "app_id", "appId") orelse "");
+        bindText(statement, 3, objectString(permission, "permission") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 4, objectI64(permission, "requested") orelse 1);
+        _ = sqlite.sqlite3_bind_int64(statement, 5, objectBoolInt(permission, "approved") orelse 0);
+        bindNullableText(statement, 6, objectStringAny(permission, "approved_at", "approvedAt"));
+        bindNullableText(statement, 7, objectString(permission, "reason") orelse "imported");
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupAppStorage(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const storage_rows = value orelse return 0;
+    if (storage_rows != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (storage_rows.array.items) |storage| {
+        if (storage != .object) return error.InvalidBackup;
+        const value_json = try jsonDocumentFieldAlloc(allocator, storage, "value_json", "valueJson", "value", "null");
+        defer allocator.free(value_json);
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(storage, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectString(storage, "key") orelse return error.InvalidBackup);
+        bindText(statement, 3, value_json);
+        bindText(statement, 4, objectStringAny(storage, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupAppMigrations(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const migrations = value orelse return 0;
+    if (migrations != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (migrations.array.items) |migration| {
+        if (migration != .object) return error.InvalidBackup;
+        const fallback_id = try randomDbIdAlloc(allocator, db, "migration_");
+        defer allocator.free(fallback_id);
+        const migration_json = try jsonDocumentFieldAlloc(allocator, migration, "migration_json", "migrationJson", "migration", "{}");
+        defer allocator.free(migration_json);
+        const generated_hash = try sha256PrefixedAlloc(allocator, migration_json);
+        defer allocator.free(generated_hash);
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(migration, "migration_id", "migrationId") orelse fallback_id);
+        bindText(statement, 2, objectStringAny(migration, "app_id", "appId") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 3, objectI64Any(migration, "from_data_version", "fromDataVersion") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 4, objectI64Any(migration, "to_data_version", "toDataVersion") orelse return error.InvalidBackup);
+        bindText(statement, 5, migration_json);
+        bindText(statement, 6, objectStringAny(migration, "content_hash", "contentHash") orelse generated_hash);
+        bindText(statement, 7, objectStringAny(migration, "created_at", "createdAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupInstallReports(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const reports = value orelse return 0;
+    if (reports != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (reports.array.items) |report| {
+        if (report != .object) return error.InvalidBackup;
+        const fallback_id = try randomDbIdAlloc(allocator, db, "report_");
+        defer allocator.free(fallback_id);
+        const validation_json = try optionalJsonDocumentFieldAlloc(allocator, report, "validation_json", "validationJson", "validation");
+        defer if (validation_json) |json| allocator.free(json);
+        const security_json = try optionalJsonDocumentFieldAlloc(allocator, report, "security_json", "securityJson", "security");
+        defer if (security_json) |json| allocator.free(json);
+        const permissions_json = try optionalJsonDocumentFieldAlloc(allocator, report, "permissions_json", "permissionsJson", "permissions");
+        defer if (permissions_json) |json| allocator.free(json);
+        const compatibility_json = try optionalJsonDocumentFieldAlloc(allocator, report, "compatibility_json", "compatibilityJson", "compatibility");
+        defer if (compatibility_json) |json| allocator.free(json);
+        const smoke_test_json = try optionalJsonDocumentFieldAlloc(allocator, report, "smoke_test_json", "smokeTestJson", "smokeTest");
+        defer if (smoke_test_json) |json| allocator.free(json);
+        sqlite.sqlite3_reset(statement);
+        sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(report, "report_id", "reportId") orelse fallback_id);
+        bindText(statement, 2, objectStringAny(report, "app_id", "appId") orelse return error.InvalidBackup);
+        bindNullableText(statement, 3, objectStringAny(report, "install_id", "installId"));
+        bindText(statement, 4, objectString(report, "status") orelse "accepted");
+        bindNullableText(statement, 5, validation_json);
+        bindNullableText(statement, 6, security_json);
+        bindNullableText(statement, 7, permissions_json);
+        bindNullableText(statement, 8, compatibility_json);
+        bindNullableText(statement, 9, smoke_test_json);
+        bindNullableText(statement, 10, objectStringAny(report, "content_hash", "contentHash"));
+        bindText(statement, 11, objectStringAny(report, "created_at", "createdAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn insertBackupImportRecord(
+    db: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    backup: std.json.Value,
+    backup_json: []const u8,
+    content_hash: []const u8,
+    created_at: []const u8,
+) !void {
+    const import_id = try randomDbIdAlloc(allocator, db, "import_");
+    defer allocator.free(import_id);
+    const runtime = objectString(backup, "runtimeVersion") orelse runtime_version;
+    const source_platform = if (backup.object.get("source")) |source|
+        if (source == .object) objectString(source, "platform") orelse "unknown" else "unknown"
+    else
+        "unknown";
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at) VALUES (?, 'import', ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, import_id);
+    bindText(statement, 2, source_platform);
+    bindText(statement, 3, runtime);
+    bindText(statement, 4, backup_json);
+    bindText(statement, 5, content_hash);
+    bindText(statement, 6, created_at);
+    bindText(statement, 7, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn objectString(value: std.json.Value, field: []const u8) ?[]const u8 {
+    if (value != .object) return null;
+    return valueString(value.object.get(field));
+}
+
+fn objectStringAny(value: std.json.Value, first: []const u8, second: []const u8) ?[]const u8 {
+    return objectString(value, first) orelse objectString(value, second);
+}
+
+fn objectI64(value: std.json.Value, field: []const u8) ?i64 {
+    if (value != .object) return null;
+    return valueI64(value.object.get(field));
+}
+
+fn objectI64Any(value: std.json.Value, first: []const u8, second: []const u8) ?i64 {
+    return objectI64(value, first) orelse objectI64(value, second);
+}
+
+fn objectBoolInt(value: std.json.Value, field: []const u8) ?i64 {
+    if (value != .object) return null;
+    const actual = value.object.get(field) orelse return null;
+    if (actual == .bool) return if (actual.bool) 1 else 0;
+    return valueI64(actual);
+}
+
+fn optionalJsonDocumentFieldAlloc(
+    allocator: std.mem.Allocator,
+    object: std.json.Value,
+    raw_field: []const u8,
+    camel_field: []const u8,
+    value_field: []const u8,
+) !?[]u8 {
+    if (objectStringAny(object, raw_field, camel_field)) |json| return allocator.dupe(u8, json);
+    if (object == .object) {
+        if (object.object.get(value_field)) |value| return jsonValueAlloc(allocator, value);
+    }
+    return null;
+}
+
+fn jsonDocumentFieldAlloc(
+    allocator: std.mem.Allocator,
+    object: std.json.Value,
+    raw_field: []const u8,
+    camel_field: []const u8,
+    value_field: []const u8,
+    default_json: []const u8,
+) ![]u8 {
+    return (try optionalJsonDocumentFieldAlloc(allocator, object, raw_field, camel_field, value_field)) orelse try allocator.dupe(u8, default_json);
 }
 
 fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
