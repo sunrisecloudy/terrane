@@ -7,14 +7,14 @@ Checks performed while preparing this archive:
 - Verified required SQLite tables exist.
 - Statically checked Postgres schema for required tables and JSONB usage.
 - Validated DB record fixtures against the new DB schemas where possible.
-- Verified `examples/` and `webapps/examples/` manifests are synchronized.
+- Verified `webapps/examples/` contains the canonical generated app packages.
 - Verified the final ZIP can be listed after packaging.
 
 ## v0.4 validation counts
 
 | Area | Count |
 |---|---:|
-| JSON files | 97 |
+| JSON files | 150 |
 | SQLite migrations | 4 |
 | Postgres migrations | 4 |
 | DB test fixtures | 8 |

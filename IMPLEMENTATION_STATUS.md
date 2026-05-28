@@ -105,7 +105,6 @@ Status snapshot: **2026-05-29**.
 | `webapps/examples/file-transformer/` | fixtures |
 | `webapps/examples/api-dashboard/` | fixtures |
 | `webapps/examples/core-replay-lab/` | fixtures |
-| `examples/` (root) | **deprecated duplicate** — canonical path is `webapps/examples/`. Plan to consolidate. |
 
 ## Database migrations
 
@@ -142,7 +141,7 @@ Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-rep
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.
 3. **Postgres lint** — `db/postgres/*.sql` is checked for SQLite/Postgres table and logical-column parity, JSONB use, app-storage primary key shape, and optional live apply when `POSTGRES_TEST_URL` is set.
-4. **Example duplicate sync** — `examples/` and `webapps/examples/` package files must match (until consolidation).
+4. **Canonical example packages** — `webapps/examples/` is the only generated app package source.
 5. **Spec lint** — section numbering contiguous; no `addJavascriptInterface` in native source; no `networkAllowlist` in manifests.
 
 ## How to update this file

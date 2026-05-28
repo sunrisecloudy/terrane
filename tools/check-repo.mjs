@@ -14,7 +14,7 @@ await runCheck("schema.fixtures", checkSchemaFixtures);
 await runCheck("sqlite.migrate", checkSqliteMigrations);
 await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
-await runCheck("manifests.sync", checkManifestSync);
+await runCheck("examples.canonical", checkCanonicalExamples);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("plugin.mcp", checkPluginMcp);
 await runCheck("fake-host.static", checkFakeHostStatic);
@@ -206,27 +206,13 @@ function checkExamplePackages() {
   return `apps=${apps.length}`;
 }
 
-function checkManifestSync() {
+function checkCanonicalExamples() {
   const rootExamples = path.join(repoRoot, "examples");
-  if (!fs.existsSync(rootExamples)) {
-    return "deprecated examples absent";
+  if (fs.existsSync(rootExamples)) {
+    throw new Error("deprecated root examples/ tree must not be restored; use webapps/examples/");
   }
   const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
-  for (const app of apps) {
-    for (const fileName of ["manifest.json", "index.html", "styles.css", "app.js", "smoke-tests.json", "README.md"]) {
-      const canonicalPath = path.join(examplesDir, app, fileName);
-      const duplicatePath = path.join(rootExamples, app, fileName);
-      if (!fs.existsSync(duplicatePath)) {
-        throw new Error(`missing duplicate ${fileName} for ${app}`);
-      }
-      const canonical = fs.readFileSync(canonicalPath, "utf8");
-      const duplicate = fs.readFileSync(duplicatePath, "utf8");
-      if (canonical !== duplicate) {
-        throw new Error(`example duplicate drift: ${app}/${fileName}`);
-      }
-    }
-  }
-  return `apps=${apps.length}`;
+  return `webapps/examples apps=${apps.length}`;
 }
 
 function checkSecurityLint() {
@@ -948,7 +934,7 @@ function jsonFiles(root) {
 
 function isExamplePath(filePath) {
   const rel = relative(filePath);
-  return rel.startsWith("webapps/examples/") || rel.startsWith("examples/");
+  return rel.startsWith("webapps/examples/");
 }
 
 function createSchemaValidator(schemaDir) {

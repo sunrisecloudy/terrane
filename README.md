@@ -83,7 +83,7 @@ Persistence
 - `devtools/control-plane/` — developer-only host control-plane contract (OpenAPI).
 - `schemas/` — JSON Schemas for manifests, bridge calls, packages, core messages, signatures, migrations, capabilities, snapshots, budgets, network policy, install reports, accessibility reports, and DB records.
 - `db/sqlite/` and `db/postgres/` — platform database migrations.
-- `examples/` and `webapps/examples/` — five build-free webapp packages; `webapps/examples/` is canonical, `examples/` is a synchronized deprecated copy.
+- `webapps/examples/` — five canonical build-free webapp packages.
 - `codex/` — master prompts and guardrails for using Codex to implement the system.
 
 ## MVP definition
