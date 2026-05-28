@@ -342,30 +342,61 @@ export class PlatformDatabase {
     return runs;
   }
 
-  quarantineWebapp(appId, installId = null, reason = "manual quarantine") {
+  quarantineWebapp(appId, installId = null, reason = "manual quarantine", { restorePrevious = false, actor = "fake-host" } = {}) {
     const active = this.activeInstall(appId);
     const target = installId ?? active?.installId;
     if (!target) {
       throw new Error(`App is not installed: ${appId}`);
     }
+    const restoreTarget = restorePrevious && active?.installId === target
+      ? this.get(
+        "SELECT install_id, version, data_version FROM app_versions WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') ORDER BY created_at DESC LIMIT 1",
+        appId,
+        target,
+      )
+      : null;
 
     const createdAt = nowIso();
     this.transaction(() => {
       this.run("UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?", appId, target);
-      if (active?.installId === target) {
+      if (restoreTarget) {
+        this.run("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", createdAt, restoreTarget.install_id);
+        this.run(
+          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+          restoreTarget.install_id,
+          restoreTarget.version,
+          restoreTarget.data_version,
+          createdAt,
+          appId,
+        );
+      } else if (active?.installId === target) {
         this.run("UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?", createdAt, appId);
       }
       this.run(
-        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, actor, created_at, details_json) VALUES (?, ?, ?, 'quarantine', 'fake-host', ?, ?)",
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'quarantine', ?, ?, ?, ?)",
         id("install_event"),
         appId,
         target,
+        restoreTarget?.install_id ?? null,
+        actor,
         createdAt,
-        prettyJson({ reason }),
+        prettyJson({ reason, restoredInstallId: restoreTarget?.install_id ?? null }),
       );
+      if (restoreTarget) {
+        this.run(
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'rollback', ?, ?, ?, ?)",
+          id("install_event"),
+          appId,
+          restoreTarget.install_id,
+          target,
+          actor,
+          createdAt,
+          prettyJson({ reason: "automatic rollback after quarantine", quarantinedInstallId: target }),
+        );
+      }
     });
 
-    return { appId, installId: target, status: "quarantined", reason };
+    return { appId, installId: target, status: "quarantined", reason, restoredInstallId: restoreTarget?.install_id ?? null };
   }
 
   installReport(appId, installId = null) {
@@ -1248,7 +1279,16 @@ export class PlatformDatabase {
     return this.all("SELECT * FROM control_commands ORDER BY created_at");
   }
 
-  countBridgeCallsSince({ appId, since, method = null }) {
+  countBridgeCallsSince({ appId, since, method = null, installId = null }) {
+    if (method && installId) {
+      return this.get(
+        "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND install_id = ? AND method = ? AND created_at >= ?",
+        appId,
+        installId,
+        method,
+        since,
+      )?.count ?? 0;
+    }
     if (method) {
       return this.get(
         "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND method = ? AND created_at >= ?",
@@ -1257,11 +1297,41 @@ export class PlatformDatabase {
         since,
       )?.count ?? 0;
     }
+    if (installId) {
+      return this.get(
+        "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND install_id = ? AND created_at >= ?",
+        appId,
+        installId,
+        since,
+      )?.count ?? 0;
+    }
     return this.get(
       "SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = ? AND created_at >= ?",
       appId,
       since,
     )?.count ?? 0;
+  }
+
+  countBridgeErrorsSince({ appId, since, code, installId = null }) {
+    const rows = installId
+      ? this.all(
+        "SELECT error_json FROM bridge_calls WHERE app_id = ? AND install_id = ? AND error_json IS NOT NULL AND created_at >= ?",
+        appId,
+        installId,
+        since,
+      )
+      : this.all(
+        "SELECT error_json FROM bridge_calls WHERE app_id = ? AND error_json IS NOT NULL AND created_at >= ?",
+        appId,
+        since,
+      );
+    return rows.filter((row) => {
+      try {
+        return JSON.parse(row.error_json)?.code === code;
+      } catch {
+        return false;
+      }
+    }).length;
   }
 
   queryCoreEvents(appId = null) {

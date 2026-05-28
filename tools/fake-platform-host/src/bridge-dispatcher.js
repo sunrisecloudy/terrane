@@ -85,6 +85,7 @@ export class BridgeDispatcher {
         error: response.error,
         durationMs: Date.now() - started,
       });
+      this.quarantineAfterRepeatedBudgetViolations({ appId, active, error: response.error });
       return response;
     }
   }
@@ -174,6 +175,9 @@ export class BridgeDispatcher {
   }
 
   assertRuntimeCompatibility(context) {
+    if (context.active?.status === "quarantined") {
+      throw new PlatformError("package_quarantined", `App is quarantined: ${context.appId}`, { appId: context.appId });
+    }
     const appRuntimeVersion = context.active?.manifest?.runtimeVersion;
     if (!appRuntimeVersion || this.allowRuntimeMismatch) return;
     const runtime = parseSemver(this.runtimeVersion);
@@ -186,6 +190,24 @@ export class BridgeDispatcher {
         allowRuntimeMismatch: this.allowRuntimeMismatch,
       });
     }
+  }
+
+  quarantineAfterRepeatedBudgetViolations({ appId, active, error }) {
+    if (!appId || !active?.installId || error?.code !== "resource_budget_exceeded") return;
+
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const count = this.database.countBridgeErrorsSince({
+      appId,
+      installId: active.installId,
+      since,
+      code: "resource_budget_exceeded",
+    });
+    if (count < 3) return;
+
+    this.database.quarantineWebapp(appId, active.installId, "resource_budget_exceeded", {
+      restorePrevious: true,
+      actor: "fake-host-runtime",
+    });
   }
 
   assertPermission(method, context) {
@@ -234,7 +256,7 @@ export class BridgeDispatcher {
     const since = new Date(Date.now() - 60_000).toISOString();
     const bridgeLimit = budget.maxBridgeCallsPerMinute;
     if (Number.isInteger(bridgeLimit)) {
-      const count = this.database.countBridgeCallsSince({ appId: context.appId, since });
+      const count = this.database.countBridgeCallsSince({ appId: context.appId, installId: context.active?.installId ?? null, since });
       if (count >= bridgeLimit) {
         throw new PlatformError("resource_budget_exceeded", "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute", {
           appId: context.appId,
@@ -245,7 +267,12 @@ export class BridgeDispatcher {
     }
 
     if (method === "network.request" && Number.isInteger(budget.maxNetworkRequestsPerMinute)) {
-      const count = this.database.countBridgeCallsSince({ appId: context.appId, since, method: "network.request" });
+      const count = this.database.countBridgeCallsSince({
+        appId: context.appId,
+        installId: context.active?.installId ?? null,
+        since,
+        method: "network.request",
+      });
       if (count >= budget.maxNetworkRequestsPerMinute) {
         throw new PlatformError("resource_budget_exceeded", "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute", {
           appId: context.appId,
@@ -256,7 +283,12 @@ export class BridgeDispatcher {
     }
 
     if (method === "app.log" && Number.isInteger(budget.maxLogLinesPerMinute)) {
-      const count = this.database.countBridgeCallsSince({ appId: context.appId, since, method: "app.log" });
+      const count = this.database.countBridgeCallsSince({
+        appId: context.appId,
+        installId: context.active?.installId ?? null,
+        since,
+        method: "app.log",
+      });
       if (count >= budget.maxLogLinesPerMinute) {
         throw new PlatformError("resource_budget_exceeded", "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute", {
           appId: context.appId,

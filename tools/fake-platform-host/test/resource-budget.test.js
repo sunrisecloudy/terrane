@@ -54,6 +54,56 @@ test("bridge call budget rejects calls after the per-minute limit", async () => 
   }
 });
 
+test("repeated budget violations quarantine active version and restore previous install", async () => {
+  const host = new FakePlatformHost();
+  const firstDir = copyExample("notes-lite");
+  const secondDir = copyExample("notes-lite");
+  try {
+    updateManifestBudget(firstDir, { maxBridgeCallsPerMinute: 0 });
+    const first = host.installPackage(firstDir);
+
+    updateManifest(secondDir, (manifest) => {
+      manifest.version = "0.2.0";
+      manifest.description = "Budget rollback test version.";
+      manifest.resourceBudget = { ...manifest.resourceBudget, maxBridgeCallsPerMinute: 0 };
+    });
+    const second = host.installPackage(secondDir);
+    assert.equal(host.database.activeInstallId("notes-lite"), second.installId);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await host.runControlCommand("runtime.storage_get", {
+        appId: "notes-lite",
+        key: "notes-lite:notes",
+        defaultValue: [],
+      });
+      assert.equal(response.ok, false);
+      assert.equal(response.error.code, "resource_budget_exceeded");
+    }
+
+    const versions = await host.runControlCommand("platform.list_webapp_versions", { appId: "notes-lite" });
+    assert.equal(versions.find((version) => version.installId === second.installId).status, "quarantined");
+    assert.equal(versions.find((version) => version.installId === first.installId).status, "enabled");
+    assert.equal(host.database.activeInstallId("notes-lite"), first.installId);
+
+    const opened = await host.runControlCommand("platform.open_webapp", { appId: "notes-lite" });
+    assert.equal(opened.appId, "notes-lite");
+
+    const events = host.database.all(
+      "SELECT action, install_id, previous_install_id, details_json FROM app_installations WHERE app_id = ? ORDER BY created_at",
+      "notes-lite",
+    );
+    const quarantine = events.find((event) => event.action === "quarantine" && event.install_id === second.installId);
+    assert.ok(quarantine);
+    assert.equal(quarantine.previous_install_id, first.installId);
+    assert.equal(JSON.parse(quarantine.details_json).reason, "resource_budget_exceeded");
+    const rollback = events.find((event) => event.action === "rollback" && event.install_id === first.installId);
+    assert.ok(rollback);
+    assert.equal(rollback.previous_install_id, second.installId);
+  } finally {
+    host.close();
+  }
+});
+
 test("runtime sessions persist resource high-water marks", async () => {
   const host = new FakePlatformHost();
   try {
@@ -86,8 +136,14 @@ function copyExample(name) {
 }
 
 function updateManifestBudget(packageDir, patch) {
+  updateManifest(packageDir, (manifest) => {
+    manifest.resourceBudget = { ...manifest.resourceBudget, ...patch };
+  });
+}
+
+function updateManifest(packageDir, patcher) {
   const manifestPath = path.join(packageDir, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  manifest.resourceBudget = { ...manifest.resourceBudget, ...patch };
+  patcher(manifest);
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 }
