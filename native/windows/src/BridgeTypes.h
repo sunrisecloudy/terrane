@@ -1,15 +1,27 @@
 #pragma once
 
+#include <cstdint>
 #include <set>
 #include <string>
+#include <vector>
 #include <winrt/Windows.Data.Json.h>
 
 namespace nativeai {
+
+struct NetworkPolicyRule {
+  std::wstring origin;
+  std::set<std::wstring> methods;
+  std::set<std::wstring> allowedHeaders;
+  uint32_t maxRequestBytes = 0;
+  uint32_t maxResponseBytes = 0;
+  uint32_t timeoutMs = 10000;
+};
 
 struct AppSandboxContext {
   std::wstring appId;
   std::wstring storagePrefix;
   std::set<std::wstring> approvedPermissions;
+  std::vector<NetworkPolicyRule> networkPolicy;
 };
 
 struct BridgeRequest {

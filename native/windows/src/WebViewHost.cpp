@@ -1,6 +1,8 @@
 #include "WebViewHost.h"
 
 #include <ShlObj.h>
+#include <algorithm>
+#include <cwctype>
 #include <fstream>
 #include <winrt/Windows.Data.Json.h>
 #include <wrl/event.h>
@@ -21,6 +23,25 @@ std::wstring ReadTextFile(std::filesystem::path const& path) {
   }
   std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
   return Utf8ToWide(text);
+}
+
+json::JsonObject ManifestForApp(std::filesystem::path const& repoRoot, std::wstring const& appId) {
+  auto manifest = ReadTextFile(repoRoot / L"webapps" / L"examples" / appId / L"manifest.json");
+  json::JsonObject parsed{nullptr};
+  if (manifest.empty() || !json::JsonObject::TryParse(manifest, parsed)) {
+    return json::JsonObject();
+  }
+  return parsed;
+}
+
+std::wstring ToUpper(std::wstring value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towupper(ch)); });
+  return value;
+}
+
+std::wstring ToLower(std::wstring value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+  return value;
 }
 }  // namespace
 
@@ -96,6 +117,7 @@ AppSandboxContext WebViewHost::SandboxContextFromSource(std::wstring const& sour
       .appId = appId,
       .storagePrefix = appId + L":",
       .approvedPermissions = PermissionsForApp(appId),
+      .networkPolicy = NetworkPolicyForApp(appId),
   };
 }
 
@@ -113,9 +135,8 @@ std::wstring WebViewHost::AppIdFromSource(std::wstring const& source) const {
 }
 
 std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId) const {
-  auto manifest = ReadTextFile(RepoRoot() / L"webapps" / L"examples" / appId / L"manifest.json");
-  json::JsonObject parsed{nullptr};
-  if (manifest.empty() || !json::JsonObject::TryParse(manifest, parsed) || !parsed.HasKey(L"permissions")) {
+  auto parsed = ManifestForApp(RepoRoot(), appId);
+  if (!parsed.HasKey(L"permissions")) {
     return {};
   }
 
@@ -124,6 +145,41 @@ std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId)
     permissions.insert(std::wstring(value.GetString().c_str()));
   }
   return permissions;
+}
+
+std::vector<NetworkPolicyRule> WebViewHost::NetworkPolicyForApp(std::wstring const& appId) const {
+  auto parsed = ManifestForApp(RepoRoot(), appId);
+  if (!parsed.HasKey(L"networkPolicy")) {
+    return {};
+  }
+  auto policy = parsed.GetNamedObject(L"networkPolicy", json::JsonObject());
+  if (!policy.HasKey(L"allow")) {
+    return {};
+  }
+
+  std::vector<NetworkPolicyRule> rules;
+  for (auto const& rawValue : policy.GetNamedArray(L"allow", json::JsonArray())) {
+    if (rawValue.ValueType() != json::JsonValueType::Object) {
+      continue;
+    }
+    auto raw = rawValue.GetObject();
+    NetworkPolicyRule rule;
+    rule.origin = raw.GetNamedString(L"origin", L"").c_str();
+    if (rule.origin.empty()) {
+      continue;
+    }
+    for (auto const& method : raw.GetNamedArray(L"methods", json::JsonArray())) {
+      rule.methods.insert(ToUpper(std::wstring(method.GetString().c_str())));
+    }
+    for (auto const& header : raw.GetNamedArray(L"allowedHeaders", json::JsonArray())) {
+      rule.allowedHeaders.insert(ToLower(std::wstring(header.GetString().c_str())));
+    }
+    rule.maxRequestBytes = static_cast<uint32_t>(raw.GetNamedNumber(L"maxRequestBytes", 0));
+    rule.maxResponseBytes = static_cast<uint32_t>(raw.GetNamedNumber(L"maxResponseBytes", 0));
+    rule.timeoutMs = static_cast<uint32_t>(raw.GetNamedNumber(L"timeoutMs", 10000));
+    rules.push_back(std::move(rule));
+  }
+  return rules;
 }
 
 std::filesystem::path WebViewHost::RepoRoot() {

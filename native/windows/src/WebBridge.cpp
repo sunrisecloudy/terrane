@@ -102,7 +102,7 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(false));
   features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(false));
   features.Insert(L"notification.toast", json::JsonValue::CreateBooleanValue(true));
-  features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(false));
+  features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"core.step", json::JsonValue::CreateBooleanValue(false));
   features.Insert(L"runtime.capabilities", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"app.log", json::JsonValue::CreateBooleanValue(true));

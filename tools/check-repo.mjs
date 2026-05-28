@@ -294,6 +294,8 @@ function checkNativeStatic() {
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
+  const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
+  const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
@@ -389,6 +391,9 @@ function checkNativeStatic() {
     [windowsHost, "SandboxContextFromSource"],
     [windowsBridge, "permissionForBridgeMethod"],
     [windowsBridge, "approvedPermissions.contains(permission"],
+    [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
+    [windowsHost, "NetworkPolicyForApp"],
+    [windowsHost, ".networkPolicy"],
     [windowsStorage, "request.context.appId"],
     [windowsStorage, "request.context.storagePrefix"],
     [windowsStorage, "storagePrefixFailure"],
@@ -400,6 +405,17 @@ function checkNativeStatic() {
   }
   if (windowsStorage.includes("appIdFor")) {
     throw new Error("Windows storage must not derive app id from storage key");
+  }
+  for (const snippet of ["WinHttpOpenRequest", "network_policy_denied", "NetworkPolicyRule", "WINHTTP_DISABLE_REDIRECTS"]) {
+    if (!windowsNetwork.includes(snippet)) {
+      throw new Error(`Windows network missing policy enforcement: ${snippet}`);
+    }
+  }
+  if (windowsNetwork.includes("platform_unsupported")) {
+    throw new Error("Windows network.request must not remain a platform_unsupported stub");
+  }
+  if (!windowsCmake.includes("winhttp")) {
+    throw new Error("Windows network bridge must link winhttp");
   }
   const linuxRequired = [
     [linuxHost, "webkit_security_manager_register_uri_scheme_as_secure"],
