@@ -471,6 +471,19 @@ export class PlatformDatabase {
     return { ok: true, snapshotId, appId: snapshot.appId };
   }
 
+  runtimeSnapshotById(snapshotId) {
+    const row = this.get("SELECT snapshot_id, snapshot_json, content_hash, created_at FROM runtime_snapshots WHERE snapshot_id = ?", snapshotId);
+    if (!row) {
+      throw new Error(`Snapshot not found: ${snapshotId}`);
+    }
+    return {
+      snapshotId: row.snapshot_id,
+      snapshot: JSON.parse(row.snapshot_json),
+      contentHash: row.content_hash,
+      createdAt: row.created_at,
+    };
+  }
+
   runMigration({ migration, mode = "dry-run" }) {
     if (!migration || typeof migration !== "object") {
       throw new Error("Migration must be an object");
@@ -763,6 +776,36 @@ export class PlatformDatabase {
       durationMs,
       nowIso(),
     );
+  }
+
+  logCoreStep({ sessionId, appId, installId = null, event, result }) {
+    const createdAt = nowIso();
+    const eventId = id("core_event");
+    const stateVersion = Number.isInteger(result?.stateVersion) ? result.stateVersion : null;
+    this.transaction(() => {
+      this.run(
+        "INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        eventId,
+        sessionId,
+        appId,
+        installId,
+        stateVersion === null ? null : Math.max(0, stateVersion - 1),
+        prettyJson(event ?? null),
+        createdAt,
+      );
+      for (const action of result?.actions ?? []) {
+        this.run(
+          "INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          id("core_action"),
+          eventId,
+          sessionId,
+          appId,
+          prettyJson(action),
+          createdAt,
+        );
+      }
+    });
+    return { eventId, actionCount: result?.actions?.length ?? 0 };
   }
 
   storageGet(appId, key, defaultValue = null) {

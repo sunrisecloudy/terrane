@@ -13,6 +13,26 @@ export class CoreEngine {
       actions: actionsForEvent(event),
     };
   }
+
+  snapshot(appId = null) {
+    if (appId) {
+      return { appId, stateVersion: this.stateVersions.get(appId) ?? 0 };
+    }
+    return {
+      apps: [...this.stateVersions.entries()]
+        .map(([id, stateVersion]) => ({ appId: id, stateVersion }))
+        .sort((a, b) => a.appId.localeCompare(b.appId)),
+    };
+  }
+
+  replay(appId, events = []) {
+    const replayCore = new CoreEngine();
+    return events.map((event, index) => ({
+      index,
+      event,
+      result: replayCore.step(appId, event),
+    }));
+  }
 }
 
 function actionsForEvent(event) {

@@ -301,6 +301,21 @@ export class FakePlatformHost {
     return { ok: true, appId: report.appId, rule, report };
   }
 
+  compareSnapshots(args) {
+    const left = args.left ?? (args.leftSnapshotId ? this.database.runtimeSnapshotById(args.leftSnapshotId).snapshot : null);
+    const right = args.right ?? (args.rightSnapshotId ? this.database.runtimeSnapshotById(args.rightSnapshotId).snapshot : null);
+    if (!left || !right) {
+      throw new PlatformError("invalid_request", "runtime.compare_snapshot requires left/right snapshots or snapshot ids", {});
+    }
+    const equal = canonicalJson(left) === canonicalJson(right);
+    return {
+      ok: equal,
+      equal,
+      leftHash: `sha256:${sha256(canonicalJson(left))}`,
+      rightHash: `sha256:${sha256(canonicalJson(right))}`,
+    };
+  }
+
   activeRuntimePackage(appId) {
     this.verifyInstalledApp(appId);
     const pkg = this.database.activeInstallPackage(appId);
@@ -322,6 +337,10 @@ export class FakePlatformHost {
             { id: "server", platform: "server", status: "not-attached" },
           ],
         };
+      case "platform.launch":
+        return { ok: true, target: args.target ?? "fake-host", status: "running", url: `http://127.0.0.1:${args.port ?? 7878}` };
+      case "platform.stop":
+        return { ok: true, target: args.target ?? "fake-host", status: "stopped" };
       case "runtime.capabilities":
         return fakeHostCapabilities(args.appId ?? null);
       case "platform.validate_package":
@@ -373,6 +392,8 @@ export class FakePlatformHost {
         return this.validateRuntimeTarget(tool, args);
       case "runtime.wait_for":
         return { ok: true, kind: args.kind ?? "idle" };
+      case "runtime.timer_advance":
+        return { ok: true, advancedMs: args.ms ?? args.milliseconds ?? 0 };
       case "runtime.assert_visible":
         return this.assertRuntimeVisible(args);
       case "runtime.assert_text":
@@ -388,6 +409,14 @@ export class FakePlatformHost {
         return this.database.resetWebapp(requiredArg(args, "appId"));
       case "runtime.resource_usage":
         return this.database.resourceUsage(requiredArg(args, "appId"));
+      case "runtime.console_logs":
+        return { appId: args.appId ?? null, logs: [] };
+      case "runtime.event_log":
+        return {
+          appId: args.appId ?? null,
+          bridgeCalls: this.database.queryBridgeCalls(args.appId ?? null),
+          coreEvents: this.database.queryCoreEvents(args.appId ?? null),
+        };
       case "runtime.clear_logs":
         return this.database.clearRuntimeLogs(args.appId ?? null);
       case "runtime.assert_bridge_call":
@@ -402,6 +431,16 @@ export class FakePlatformHost {
           { id: args.id ?? "control_core_step", method: "core.step", params: { event: requiredArg(args, "event") } },
           { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
         );
+      case "runtime.core_snapshot":
+        return this.core.snapshot(args.appId ?? null);
+      case "runtime.replay_events":
+        return {
+          ok: true,
+          appId: requiredArg(args, "appId"),
+          replay: this.core.replay(args.appId, requiredArg(args, "events")),
+        };
+      case "runtime.compare_snapshot":
+        return this.compareSnapshots(args);
       case "runtime.storage_get":
         return this.bridge.dispatch(
           {
@@ -429,6 +468,8 @@ export class FakePlatformHost {
         return this.testRunner.runMicroTest({ spec: args.spec, microtestPath: args.microtestPath });
       case "platform.run_platform_smoke":
         return this.testRunner.runPlatformSmokeTest({ spec: args.spec, smokePath: args.smokePath, platform: args.platform ?? "fake-host" });
+      case "platform.run_repair_loop":
+        return { ok: false, status: "not-run", reason: "Codex repair-loop orchestration is not implemented in the static fake host yet." };
       case "runtime.network_mock_set":
         this.database.addNetworkMock(normalizeNetworkMockArgs(args));
         return { ok: true };

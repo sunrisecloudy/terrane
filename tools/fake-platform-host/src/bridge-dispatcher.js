@@ -83,7 +83,15 @@ export class BridgeDispatcher {
           channelApp: context.appId,
         });
       }
-      return this.core.step(context.appId, params.event);
+      const result = this.core.step(context.appId, params.event);
+      this.database.logCoreStep({
+        sessionId: context.sessionId,
+        appId: context.appId,
+        installId: context.active?.installId ?? null,
+        event: params.event,
+        result,
+      });
+      return result;
     }
 
     if (method === "dialog.openFile") {
