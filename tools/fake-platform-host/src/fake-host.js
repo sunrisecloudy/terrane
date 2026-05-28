@@ -404,6 +404,109 @@ export class FakePlatformHost {
     };
   }
 
+  async runRepairLoop(args = {}) {
+    const startedAt = new Date().toISOString();
+    const packagePath = packagePathArg(args);
+    const maxAttempts = Math.max(1, Math.min(args.maxAttempts ?? 1, 3));
+    const microtestPaths = Array.isArray(args.microtestPaths)
+      ? args.microtestPaths
+      : args.microtestPath
+        ? [args.microtestPath]
+        : [];
+    const attemptReports = [];
+    const snapshots = [];
+    const testsRun = [];
+    let appId = null;
+    let finalStatus = "failed";
+    let remainingWarnings = [];
+
+    for (let index = 0; index < maxAttempts; index += 1) {
+      const steps = [];
+      const validation = this.validatePackage(packagePath);
+      remainingWarnings = validation.warnings ?? [];
+      steps.push(repairStep("platform.validate_package", validation.ok ? "passed" : "failed", validation));
+      if (!validation.ok) {
+        attemptReports.push({ index: index + 1, status: "failed", steps });
+        break;
+      }
+
+      const signed = this.signPackage(packagePath, { trustLevel: args.trustLevel ?? "developer" });
+      steps.push(repairStep("platform.sign_webapp_package", "passed", signed));
+
+      const install = this.installPackage(packagePath, { trustLevel: args.trustLevel ?? "developer" });
+      appId = install.appId;
+      steps.push(repairStep("platform.install_webapp_package", install.status === "enabled" ? "passed" : install.status, install));
+      if (install.approval?.requiresUserApproval) {
+        finalStatus = "requires-approval";
+        attemptReports.push({ index: index + 1, status: finalStatus, steps, diagnostics: this.repairDiagnostics(appId) });
+        break;
+      }
+      if (install.status !== "enabled") {
+        attemptReports.push({ index: index + 1, status: "failed", steps, diagnostics: this.repairDiagnostics(appId) });
+        break;
+      }
+
+      const opened = await this.runControlCommand("platform.open_webapp", { appId });
+      steps.push(repairStep("platform.open_webapp", "passed", opened));
+      steps.push(repairStep("runtime.capabilities", "passed", fakeHostCapabilities(appId)));
+      steps.push(repairStep("runtime.snapshot", "passed", this.runtimeSnapshot(appId)));
+
+      const snapshot = this.database.createSnapshot({ appId, type: "post-test" });
+      snapshots.push(snapshot.snapshotId);
+      steps.push(repairStep("platform.create_snapshot", "passed", snapshot));
+
+      let smokeOk = true;
+      if (args.runSmokeTests !== false) {
+        const smoke = this.testRunner.runSmokeTests(appId);
+        testsRun.push(smoke.microTestId);
+        smokeOk = smoke.status === "passed";
+        steps.push(repairStep("runtime.run_smoke_tests", smokeOk ? "passed" : "failed", smoke));
+      }
+
+      let microOk = true;
+      for (const microtestPath of microtestPaths) {
+        const micro = await this.testRunner.runMicroTest({ microtestPath });
+        testsRun.push(micro.microTestId);
+        microOk &&= micro.status === "passed";
+        steps.push(repairStep("runtime.run_microtest", micro.status === "passed" ? "passed" : "failed", micro));
+      }
+
+      const accessibility = this.runAccessibilityAudit(appId);
+      steps.push(repairStep("runtime.run_accessibility_audit", accessibility.status === "fail" ? "failed" : "passed", accessibility));
+      steps.push(repairStep("runtime.resource_usage", "passed", this.database.resourceUsage(appId)));
+      steps.push(repairStep("platform.install_report", "passed", this.database.installReport(appId)));
+
+      finalStatus = smokeOk && microOk && accessibility.status !== "fail" ? "passed" : "failed";
+      attemptReports.push({ index: index + 1, status: finalStatus, steps, diagnostics: this.repairDiagnostics(appId) });
+      if (finalStatus === "passed") break;
+    }
+
+    return {
+      ok: finalStatus === "passed",
+      appId,
+      startedAt,
+      attempts: attemptReports.length,
+      finalStatus,
+      changedFiles: [],
+      testsRun,
+      snapshots,
+      remainingWarnings,
+      attemptReports,
+    };
+  }
+
+  repairDiagnostics(appId) {
+    if (!appId) return {};
+    return {
+      installReport: this.database.installReport(appId),
+      appVersions: this.database.queryAppVersions(appId),
+      appStorage: this.database.queryAppStorage(appId),
+      bridgeCalls: this.database.queryBridgeCalls(appId),
+      coreEvents: this.database.queryCoreEvents(appId),
+      testRuns: this.database.queryTestRuns(appId),
+    };
+  }
+
   activeRuntimePackage(appId) {
     this.verifyInstalledApp(appId);
     const pkg = this.database.activeInstallPackage(appId);
@@ -575,7 +678,7 @@ export class FakePlatformHost {
       case "platform.run_platform_smoke":
         return this.testRunner.runPlatformSmokeTest({ spec: args.spec, smokePath: args.smokePath, platform: args.platform ?? "fake-host" });
       case "platform.run_repair_loop":
-        return { ok: false, status: "not-run", reason: "Codex repair-loop orchestration is not implemented in the static fake host yet." };
+        return this.runRepairLoop(args);
       case "runtime.network_mock_set":
         this.database.addNetworkMock(normalizeNetworkMockArgs(args));
         return { ok: true };
@@ -1167,6 +1270,31 @@ function matchesJsonSubset(actual, expected) {
     return Object.entries(expected).every(([key, value]) => matchesJsonSubset(actual[key], value));
   }
   return Object.is(actual, expected);
+}
+
+function repairStep(tool, status, result) {
+  return {
+    tool,
+    status,
+    result: summarizeRepairResult(result),
+  };
+}
+
+function summarizeRepairResult(result) {
+  if (!result || typeof result !== "object") return result;
+  return {
+    ok: result.ok ?? (result.status ? result.status === "passed" || result.status === "enabled" : undefined),
+    appId: result.appId,
+    installId: result.installId,
+    sessionId: result.sessionId,
+    snapshotId: result.snapshotId,
+    status: result.status,
+    microTestId: result.microTestId,
+    testRunId: result.testRunId,
+    failures: result.result?.failures ?? result.failures,
+    warnings: result.warnings,
+    errors: result.errors,
+  };
 }
 
 function summarizeValidation(result) {

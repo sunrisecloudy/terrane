@@ -168,9 +168,14 @@ test("fake-host exposes common control utility tools", async () => {
     });
     assert.equal(snapshotCompare.ok, true);
 
-    const repair = await host.runControlCommand("platform.run_repair_loop", {});
-    assert.equal(repair.ok, false);
-    assert.equal(repair.status, "not-run");
+    const repair = await host.runControlCommand("platform.run_repair_loop", {
+      packagePath: path.join(examplesDir, "notes-lite"),
+    });
+    assert.equal(repair.ok, true);
+    assert.equal(repair.finalStatus, "passed");
+    assert.equal(repair.attempts, 1);
+    assert.equal(repair.snapshots.length, 1);
+    assert.equal(repair.testsRun.includes("smoke:notes-lite"), true);
 
     await assert.rejects(
       () => host.runControlCommand("platform.uninstall_webapp", { appId: "task-workbench" }),
