@@ -213,6 +213,23 @@ fn handleBridge(
         return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
     }
 
+    const compatible_runtime = bridgeRuntimeCompatible(allocator, channel_app_id) catch {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "runtime_compatibility_unavailable", "Runtime compatibility could not be evaluated");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "runtime_compatibility_unavailable", "Runtime compatibility could not be evaluated");
+    };
+    if (!compatible_runtime) {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "runtime_version_incompatible", "App runtimeVersion is not compatible with the zig-server runtime");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "runtime_version_incompatible", "App runtimeVersion is not compatible with the zig-server runtime");
+    }
+
     if (permissionForBridgeMethod(method)) |permission| {
         const permitted = bridgePermissionApproved(allocator, channel_app_id, permission) catch false;
         if (!permitted) {
@@ -476,6 +493,21 @@ fn storageBytesAfterSet(allocator: std.mem.Allocator, app_id: []const u8, key: [
     const existing = sqlite.sqlite3_column_int64(statement, 1);
     const retained = if (current > existing) current - existing else 0;
     return retained + @as(i64, @intCast(value_json.len));
+}
+
+fn bridgeRuntimeCompatible(allocator: std.mem.Allocator, app_id: []const u8) !bool {
+    const manifest_json = activeManifestJsonAlloc(allocator, app_id) catch |err| switch (err) {
+        error.AppNotInstalled => return true,
+        else => return err,
+    };
+    defer allocator.free(manifest_json);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{}) catch {
+        return error.InvalidRuntimeCompatibility;
+    };
+    defer parsed.deinit();
+    const app_runtime_version = valueString(parsed.value.object.get("runtimeVersion")) orelse return false;
+    return runtimeVersionsCompatible(runtime_version, app_runtime_version) or allowRuntimeMismatch(allocator);
 }
 
 fn handleStorageBridge(

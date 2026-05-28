@@ -378,6 +378,7 @@ function checkServerStatic() {
     "fn resourceBudgetLimit",
     "fn countBridgeCallsSince",
     "fn storageBytesAfterSet",
+    "fn bridgeRuntimeCompatible",
     "resource_budget_exceeded",
     "maxBridgeCallsPerMinute",
     "maxNetworkRequestsPerMinute",
