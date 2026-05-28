@@ -2462,7 +2462,7 @@ fn collectWebappPackageErrors(
         }
     }
     if (manifest.object.get("capabilities")) |capabilities| {
-        try validateServerCapabilities(allocator, capabilities, errors);
+        try validateServerCapabilities(allocator, manifest, capabilities, errors);
     }
     if (manifest.object.get("resourceBudget")) |resource_budget| {
         try validateServerResourceBudget(allocator, resource_budget, errors);
@@ -9647,6 +9647,7 @@ fn isKnownPackagePermission(permission: []const u8) bool {
 
 fn validateServerCapabilities(
     allocator: std.mem.Allocator,
+    manifest: std.json.Value,
     capabilities: std.json.Value,
     errors: *std.ArrayList([]const u8),
 ) !void {
@@ -9660,8 +9661,32 @@ fn validateServerCapabilities(
             try errors.append(allocator, "invalid_capabilities");
             continue;
         };
-        if (value != .array) try errors.append(allocator, "invalid_capabilities");
+        if (value != .array) {
+            try errors.append(allocator, "invalid_capabilities");
+            continue;
+        }
+        for (value.array.items) |capability| {
+            const capability_name = valueString(capability) orelse {
+                try errors.append(allocator, "invalid_capabilities");
+                continue;
+            };
+            if (!std.mem.startsWith(u8, capability_name, "runtime.") and !manifestPermissionsContain(manifest, capability_name)) {
+                try errors.append(allocator, "invalid_capabilities");
+            }
+        }
     }
+}
+
+fn manifestPermissionsContain(manifest: std.json.Value, permission: []const u8) bool {
+    if (manifest != .object) return false;
+    const permissions = manifest.object.get("permissions") orelse return false;
+    if (permissions != .array) return false;
+    for (permissions.array.items) |candidate| {
+        if (valueString(candidate)) |actual| {
+            if (std.mem.eql(u8, actual, permission)) return true;
+        }
+    }
+    return false;
 }
 
 fn validateServerResourceBudget(

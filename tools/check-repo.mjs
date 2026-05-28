@@ -770,6 +770,7 @@ function checkServerStatic() {
     "fn isKnownPackagePermission",
     "\"unknown_permission\"",
     "fn validateServerResourceBudget",
+    "fn manifestPermissionsContain",
     "fn validateServerNetworkPolicy",
     "\"invalid_network_origin\"",
     "fn hasUnknownRuntimeBridgeCall",

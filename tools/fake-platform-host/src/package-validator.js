@@ -240,9 +240,21 @@ function validateManifest(manifest, errors) {
   if (!manifest.capabilities || typeof manifest.capabilities !== "object") {
     errors.push(issue("invalid_capabilities", "manifest.capabilities is required", {}));
   } else {
+    const permissions = new Set(Array.isArray(manifest.permissions) ? manifest.permissions : []);
     for (const key of ["required", "optional"]) {
       if (!Array.isArray(manifest.capabilities[key])) {
         errors.push(issue("invalid_capabilities", `manifest.capabilities.${key} must be an array`, { key }));
+        continue;
+      }
+      for (const capability of manifest.capabilities[key]) {
+        if (typeof capability !== "string") {
+          errors.push(issue("invalid_capabilities", `manifest.capabilities.${key} entries must be strings`, { key }));
+        } else if (!capability.startsWith("runtime.") && !permissions.has(capability)) {
+          errors.push(issue("invalid_capabilities", "Bridge capabilities must be covered by manifest.permissions", {
+            capability,
+            key,
+          }));
+        }
       }
     }
   }

@@ -73,6 +73,18 @@ test("manifest.networkAllowlist is rejected", () => {
   assert.equal(result.errors.some((error) => error.code === "removed_manifest_field"), true);
 });
 
+test("bridge capabilities must be covered by permissions", () => {
+  const dir = copyExamplePackage("notes-lite");
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.capabilities.required = [...manifest.capabilities.required, "network.request"];
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "invalid_capabilities"), true);
+});
+
 test("interactive HTML elements must declare data-testid", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
   fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><button id="go">Go</button><script src="app.js"></script>');
