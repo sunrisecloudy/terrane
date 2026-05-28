@@ -338,9 +338,13 @@ function checkServerStatic() {
     "fn snapshotContentHashByIdAlloc",
     "fn runStorageMigration",
     "fn previewStorageMigration",
+    "fn applyPackagedMigrationChainForInstall",
+    "fn findPackageFileContent",
     "fn insertAppMigrationRecord",
     "fn insertMigrationRun",
     "fn applyMigrationChanges",
+    "migrations/{d}_to_{d}.json",
+    "invalid_migration",
     "action, previous_install_id",
     "fn insertInstallationEvent",
     "fn queryRowsJson",
@@ -407,7 +411,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command,rollback,snapshot,migration install=migration-chain db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

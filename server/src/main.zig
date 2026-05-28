@@ -414,6 +414,10 @@ fn handleWebappInstall(
             auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "invalid_package", body, null);
             return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
         },
+        error.InvalidMigration => {
+            auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "invalid_migration", body, null);
+            return writeControlError(allocator, stream, 400, "invalid_migration", "Package migration chain is invalid or incomplete");
+        },
         else => return err,
     };
     defer allocator.free(result_json);
@@ -687,6 +691,10 @@ fn handleControlCommand(
             error.InvalidWebappPackage => {
                 auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_package", args_json, null);
                 return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
+            },
+            error.InvalidMigration => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_migration", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_migration", "Package migration chain is invalid or incomplete");
             },
             else => return err,
         };
@@ -1233,9 +1241,6 @@ fn installWebappPackage(
     defer allocator.free(permissions_json);
 
     try upsertInstalledApp(db, app_id, app_name, app_status, stored_data_version, created_at);
-    if (previous_install_id != null and activate) {
-        try markPreviousVersionInstalled(db, previous_install_id.?);
-    }
     try insertAppVersion(db, install_id, app_id, app_version, app_runtime_version, data_version, manifest_json, hashes, signature_json, actual_trust_level, version_status, created_at, activate);
     for (package_files) |file| {
         try insertAppFile(db, install_id, file, created_at);
@@ -1245,6 +1250,15 @@ fn installWebappPackage(
     try insertSmokeTestRun(db, allocator, app_id, smoke_test.status, smoke_test.spec_json, smoke_test.result_json, created_at);
     try insertInstallationEvent(db, allocator, app_id, install_id, "install", null, report_id, created_at, "zig-server", version_status);
     if (activate) {
+        if (existing_data_version) |from_data_version| {
+            if (data_version < from_data_version) return error.InvalidMigration;
+            if (data_version > from_data_version) {
+                try applyPackagedMigrationChainForInstall(allocator, db, app_id, install_id, package_files, from_data_version, data_version, created_at);
+            }
+        }
+        if (previous_install_id != null) {
+            try markPreviousVersionInstalled(db, previous_install_id.?);
+        }
         try insertInstallationEvent(db, allocator, app_id, install_id, "activate", previous_install_id, report_id, created_at, "zig-server", "active");
         try activateInstalledApp(db, app_id, install_id, app_version, data_version, created_at);
     } else if (blocked_by_smoke) {
@@ -1436,7 +1450,16 @@ fn createRuntimeSnapshot(
 ) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
+    return createRuntimeSnapshotInDb(allocator, db, app_id, snapshot_type, session_id);
+}
 
+fn createRuntimeSnapshotInDb(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    snapshot_type: []const u8,
+    session_id: ?[]const u8,
+) ![]u8 {
     const active = try activeSnapshotAppAlloc(allocator, db, app_id);
     const active_app = active orelse return error.AppNotInstalled;
     defer freeSnapshotActiveApp(allocator, active_app);
@@ -1839,6 +1862,62 @@ fn runStorageMigration(allocator: std.mem.Allocator, migration: std.json.Value, 
     return migrationResultJsonAlloc(allocator, run_id, mode, snapshot_id, preview.changed_keys_json, preview.operation_counts_json);
 }
 
+fn applyPackagedMigrationChainForInstall(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    install_id: []const u8,
+    package_files: []const PackageFile,
+    from_data_version: i64,
+    to_data_version: i64,
+    created_at: []const u8,
+) !void {
+    if (to_data_version <= from_data_version) return;
+    const snapshot_json = try createRuntimeSnapshotInDb(allocator, db, app_id, "pre-migration", null);
+    defer allocator.free(snapshot_json);
+    const snapshot_id = try snapshotIdFromJsonAlloc(allocator, snapshot_json);
+    defer allocator.free(snapshot_id);
+
+    var current = from_data_version;
+    while (current < to_data_version) : (current += 1) {
+        const next = current + 1;
+        const migration_path = try std.fmt.allocPrint(allocator, "migrations/{d}_to_{d}.json", .{ current, next });
+        defer allocator.free(migration_path);
+        const migration_content = findPackageFileContent(package_files, migration_path) orelse return error.InvalidMigration;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, migration_content, .{}) catch return error.InvalidMigration;
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidMigration;
+        if (!migrationMatchesInstall(app_id, current, next, parsed.value)) return error.InvalidMigration;
+
+        const steps = parsed.value.object.get("steps") orelse return error.InvalidMigration;
+        if (steps != .array) return error.InvalidMigration;
+        const preview = try previewStorageMigration(allocator, db, app_id, steps.array.items);
+        defer freeMigrationPreview(allocator, preview);
+        const migration_json = try jsonValueAlloc(allocator, parsed.value);
+        defer allocator.free(migration_json);
+        const migration_hash = try sha256PrefixedAlloc(allocator, migration_json);
+        defer allocator.free(migration_hash);
+        const migration_id = try std.fmt.allocPrint(allocator, "migration_{s}_{d}_to_{d}", .{ app_id, current, next });
+        defer allocator.free(migration_id);
+        const run_id = try randomDbIdAlloc(allocator, db, "mrun_");
+        defer allocator.free(run_id);
+        const report_json = try migrationReportJsonAlloc(allocator, preview.changed_keys_json, preview.operation_counts_json);
+        defer allocator.free(report_json);
+
+        try insertAppMigrationRecord(db, migration_id, app_id, current, next, migration_json, migration_hash, created_at);
+        try applyMigrationChanges(db, preview.changes, created_at, app_id);
+        try updateAppDataVersion(db, app_id, next, created_at);
+        try insertMigrationRun(db, run_id, migration_id, app_id, install_id, "apply", "passed", snapshot_id, report_json, created_at, created_at);
+    }
+}
+
+fn migrationMatchesInstall(app_id: []const u8, from_data_version: i64, to_data_version: i64, migration: std.json.Value) bool {
+    const migration_app_id = valueString(migration.object.get("appId")) orelse return false;
+    const migration_from = valueI64(migration.object.get("fromDataVersion")) orelse return false;
+    const migration_to = valueI64(migration.object.get("toDataVersion")) orelse return false;
+    return std.mem.eql(u8, migration_app_id, app_id) and migration_from == from_data_version and migration_to == to_data_version;
+}
+
 fn previewStorageMigration(
     allocator: std.mem.Allocator,
     db: *sqlite.sqlite3,
@@ -2224,6 +2303,13 @@ fn freePackageFiles(allocator: std.mem.Allocator, files: []PackageFile) void {
         allocator.free(file.content_hash);
     }
     allocator.free(files);
+}
+
+fn findPackageFileContent(files: []const PackageFile, file_path: []const u8) ?[]const u8 {
+    for (files) |file| {
+        if (std.mem.eql(u8, file.path, file_path)) return file.content;
+    }
+    return null;
 }
 
 fn packageFileLessThan(_: void, a: PackageFile, b: PackageFile) bool {
