@@ -69,3 +69,40 @@ test("manifest.networkAllowlist is rejected", () => {
   assert.equal(result.ok, false);
   assert.equal(result.errors.some((error) => error.code === "removed_manifest_field"), true);
 });
+
+test("interactive HTML elements must declare data-testid", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
+  fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><button id="go">Go</button><script src="app.js"></script>');
+  fs.writeFileSync(path.join(dir, "styles.css"), "body { color: black; }");
+  fs.writeFileSync(path.join(dir, "app.js"), "console.log('ok');");
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      id: "bad-app",
+      name: "Bad App",
+      version: "0.1.0",
+      runtimeVersion: "0.1.0",
+      dataVersion: 1,
+      entry: "index.html",
+      description: "Bad HTML",
+      permissions: [],
+      storagePrefix: "bad-app:",
+      capabilities: { required: [], optional: [] },
+      resourceBudget: {
+        maxDomNodes: 10,
+        maxStorageBytes: 10,
+        maxBridgeCallsPerMinute: 10,
+        maxNetworkRequestsPerMinute: 10,
+        maxTimers: 10,
+        maxLogLinesPerMinute: 10,
+        maxPackageBytes: 100000,
+        maxFileBytes: 100000,
+      },
+      networkPolicy: { allow: [] },
+    }),
+  );
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "missing_testid"), true);
+});

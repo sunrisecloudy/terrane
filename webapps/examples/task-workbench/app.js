@@ -31,9 +31,9 @@
     const list=$('tasks'); list.innerHTML=''; const filtered=tasks.filter(visible); $('empty').hidden=filtered.length!==0;
     for(const task of filtered){
       const li=document.createElement('li'); li.className='task';
-      const check=document.createElement('input'); check.type='checkbox'; check.checked=task.done; check.addEventListener('change',()=>toggle(task.id));
+      const check=document.createElement('input'); check.type='checkbox'; check.dataset.testid='task-toggle-checkbox'; check.checked=task.done; check.addEventListener('change',()=>toggle(task.id));
       const title=document.createElement('div'); title.className='title'+(task.done?' done':''); title.textContent=task.title;
-      const meta=document.createElement('div'); const pill=document.createElement('span'); pill.className='pill '+task.priority; pill.textContent=task.priority; const del=document.createElement('button'); del.textContent='Delete'; del.addEventListener('click',()=>remove(task.id)); meta.append(pill,document.createTextNode(' '),del);
+      const meta=document.createElement('div'); const pill=document.createElement('span'); pill.className='pill '+task.priority; pill.textContent=task.priority; const del=document.createElement('button'); del.textContent='Delete'; del.dataset.testid='task-delete-button'; del.addEventListener('click',()=>remove(task.id)); meta.append(pill,document.createTextNode(' '),del);
       li.append(check,title,meta); list.append(li);
     }
   }

@@ -297,6 +297,13 @@ function validateHtml(source, errors) {
   if (/javascript:/i.test(source)) {
     errors.push(issue("forbidden_javascript_url", "javascript: URLs are forbidden", {}));
   }
+  for (const match of source.matchAll(/<(button|input|select|textarea|a)\b([^>]*)>/gi)) {
+    const tag = match[1].toLowerCase();
+    const attrs = match[2] ?? "";
+    if (!/\bdata-testid\s*=/.test(attrs)) {
+      errors.push(issue("missing_testid", "Interactive HTML elements must declare data-testid", { tag }));
+    }
+  }
 }
 
 function validateCss(source, errors) {
