@@ -131,7 +131,7 @@ Status snapshot: **2026-05-28**.
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
 | `tests/mutation/` | partial (10 mutations now exercised by fake-host validator/runtime tests) |
 | `tests/accessibility/` | fixtures |
-| `tests/security/malicious-packages/` | skeleton (directory exists, no fixtures yet) |
+| `tests/security/malicious-packages/` | partial (static validator fixtures exercised by fake-host tests) |
 | `tests/db/` | fixtures (DB test fixtures) |
 | `tests/platform-smoke/` | fixtures (cross-platform suite now exercised by fake-host runner) |
 

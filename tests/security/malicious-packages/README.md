@@ -1,6 +1,6 @@
 # Malicious Package Fixtures
 
-Create package fixtures here during implementation:
+Package fixtures here intentionally violate generated-app policy:
 
 - `uses-eval/`
 - `uses-fetch/`
