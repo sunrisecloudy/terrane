@@ -9770,6 +9770,17 @@ fn validateServerNetworkPolicy(
         try errors.append(allocator, "invalid_network_policy");
         return;
     }
+    var policy_iterator = network_policy.object.iterator();
+    while (policy_iterator.next()) |entry| {
+        if (!isAllowedNetworkPolicyKey(entry.key_ptr.*)) {
+            try errors.append(allocator, "invalid_network_policy");
+        }
+    }
+    for ([_][]const u8{ "denyPrivateNetwork", "allowCredentials" }) |key| {
+        if (network_policy.object.get(key)) |value| {
+            if (value != .bool) try errors.append(allocator, "invalid_network_policy");
+        }
+    }
     const allow = network_policy.object.get("allow") orelse {
         try errors.append(allocator, "invalid_network_policy");
         return;
@@ -9782,6 +9793,12 @@ fn validateServerNetworkPolicy(
         if (entry != .object) {
             try errors.append(allocator, "invalid_network_policy");
             continue;
+        }
+        var entry_iterator = entry.object.iterator();
+        while (entry_iterator.next()) |field| {
+            if (!isAllowedNetworkPolicyEntryKey(field.key_ptr.*)) {
+                try errors.append(allocator, "invalid_network_policy");
+            }
         }
         const origin = valueString(entry.object.get("origin")) orelse {
             try errors.append(allocator, "invalid_network_origin");
@@ -9800,10 +9817,85 @@ fn validateServerNetworkPolicy(
             try errors.append(allocator, "invalid_network_methods");
             continue;
         }
-        for (methods.array.items) |method| {
-            if (valueString(method) == null) try errors.append(allocator, "invalid_network_methods");
+        for (methods.array.items, 0..) |method, index| {
+            const method_name = valueString(method) orelse {
+                try errors.append(allocator, "invalid_network_methods");
+                continue;
+            };
+            if (!isAllowedNetworkMethod(method_name) or stringValueAppearsBefore(methods.array.items, index, method_name)) {
+                try errors.append(allocator, "invalid_network_methods");
+            }
+        }
+        if (entry.object.get("pathPrefix")) |path_prefix| {
+            if (path_prefix != .string) try errors.append(allocator, "invalid_network_policy");
+        }
+        if (entry.object.get("allowedHeaders")) |headers| {
+            if (headers != .array) {
+                try errors.append(allocator, "invalid_network_policy");
+            } else {
+                for (headers.array.items, 0..) |header, index| {
+                    const header_name = valueString(header) orelse {
+                        try errors.append(allocator, "invalid_network_policy");
+                        continue;
+                    };
+                    if (stringValueAppearsBefore(headers.array.items, index, header_name)) {
+                        try errors.append(allocator, "invalid_network_policy");
+                    }
+                }
+            }
+        }
+        for ([_][]const u8{ "maxRequestBytes", "maxResponseBytes" }) |key| {
+            if (entry.object.get(key)) |limit| {
+                if (limit != .integer or limit.integer < 0) try errors.append(allocator, "invalid_network_policy");
+            }
+        }
+        if (entry.object.get("timeoutMs")) |timeout| {
+            if (timeout != .integer or timeout.integer < 1 or timeout.integer > 120000) {
+                try errors.append(allocator, "invalid_network_policy");
+            }
         }
     }
+}
+
+fn isAllowedNetworkPolicyKey(key: []const u8) bool {
+    const keys = [_][]const u8{ "allow", "denyPrivateNetwork", "allowCredentials" };
+    for (keys) |candidate| {
+        if (std.mem.eql(u8, key, candidate)) return true;
+    }
+    return false;
+}
+
+fn isAllowedNetworkPolicyEntryKey(key: []const u8) bool {
+    const keys = [_][]const u8{
+        "origin",
+        "methods",
+        "pathPrefix",
+        "allowedHeaders",
+        "maxRequestBytes",
+        "maxResponseBytes",
+        "timeoutMs",
+    };
+    for (keys) |candidate| {
+        if (std.mem.eql(u8, key, candidate)) return true;
+    }
+    return false;
+}
+
+fn isAllowedNetworkMethod(method: []const u8) bool {
+    const methods = [_][]const u8{ "GET", "POST", "PUT", "PATCH", "DELETE" };
+    for (methods) |candidate| {
+        if (std.mem.eql(u8, method, candidate)) return true;
+    }
+    return false;
+}
+
+fn stringValueAppearsBefore(items: []std.json.Value, index: usize, value: []const u8) bool {
+    for (items[0..index]) |candidate| {
+        if (valueString(candidate)) |candidate_value| {
+            if (std.mem.eql(u8, candidate_value, value)) return true;
+        }
+    }
+    return false;
 }
 
 fn isValidHttpsOrigin(origin: []const u8) bool {

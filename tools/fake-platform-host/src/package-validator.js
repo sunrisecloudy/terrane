@@ -26,6 +26,17 @@ const PERMISSIONS = new Set([
   "network.request",
   "app.log",
 ]);
+const NETWORK_POLICY_KEYS = new Set(["allow", "denyPrivateNetwork", "allowCredentials"]);
+const NETWORK_POLICY_ENTRY_KEYS = new Set([
+  "origin",
+  "methods",
+  "pathPrefix",
+  "allowedHeaders",
+  "maxRequestBytes",
+  "maxResponseBytes",
+  "timeoutMs",
+]);
+const NETWORK_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const METHOD_PERMISSIONS = new Map([
   ["core.step", "core.step"],
   ["storage.get", "storage.read"],
@@ -284,6 +295,17 @@ function validateNetworkPolicy(networkPolicy, errors) {
     return;
   }
 
+  for (const key of Object.keys(networkPolicy)) {
+    if (!NETWORK_POLICY_KEYS.has(key)) {
+      errors.push(issue("invalid_network_policy", "manifest.networkPolicy contains an unknown field", { key }));
+    }
+  }
+  for (const key of ["denyPrivateNetwork", "allowCredentials"]) {
+    if (key in networkPolicy && typeof networkPolicy[key] !== "boolean") {
+      errors.push(issue("invalid_network_policy", `manifest.networkPolicy.${key} must be a boolean`, { key }));
+    }
+  }
+
   if (!Array.isArray(networkPolicy.allow)) {
     errors.push(issue("invalid_network_policy", "manifest.networkPolicy.allow must be an array", {}));
     return;
@@ -294,6 +316,11 @@ function validateNetworkPolicy(networkPolicy, errors) {
       errors.push(issue("invalid_network_policy", "networkPolicy.allow entries must be objects", {}));
       continue;
     }
+    for (const key of Object.keys(entry)) {
+      if (!NETWORK_POLICY_ENTRY_KEYS.has(key)) {
+        errors.push(issue("invalid_network_policy", "networkPolicy.allow entry contains an unknown field", { key }));
+      }
+    }
     if (typeof entry.origin !== "string" || !/^https:\/\/[^/\s]+(?::\d+)?$/.test(entry.origin)) {
       errors.push(issue("invalid_network_origin", "networkPolicy origin must be https origin", { origin: entry.origin }));
     }
@@ -301,7 +328,48 @@ function validateNetworkPolicy(networkPolicy, errors) {
       errors.push(issue("invalid_network_methods", "networkPolicy methods must be a non-empty array", {
         origin: entry.origin,
       }));
+    } else {
+      validateUniqueStringArray(entry.methods, "invalid_network_methods", "networkPolicy methods must be unique allowed HTTP methods", errors, {
+        origin: entry.origin,
+        allowed: [...NETWORK_METHODS],
+      }, NETWORK_METHODS);
     }
+    if ("pathPrefix" in entry && typeof entry.pathPrefix !== "string") {
+      errors.push(issue("invalid_network_policy", "networkPolicy pathPrefix must be a string", { origin: entry.origin }));
+    }
+    if ("allowedHeaders" in entry) {
+      validateUniqueStringArray(entry.allowedHeaders, "invalid_network_policy", "networkPolicy allowedHeaders must be a unique string array", errors, {
+        origin: entry.origin,
+      });
+    }
+    for (const key of ["maxRequestBytes", "maxResponseBytes"]) {
+      if (key in entry && (!Number.isInteger(entry[key]) || entry[key] < 0)) {
+        errors.push(issue("invalid_network_policy", `networkPolicy ${key} must be a non-negative integer`, {
+          origin: entry.origin,
+          key,
+        }));
+      }
+    }
+    if ("timeoutMs" in entry && (!Number.isInteger(entry.timeoutMs) || entry.timeoutMs < 1 || entry.timeoutMs > 120000)) {
+      errors.push(issue("invalid_network_policy", "networkPolicy timeoutMs must be an integer from 1 to 120000", {
+        origin: entry.origin,
+      }));
+    }
+  }
+}
+
+function validateUniqueStringArray(value, code, message, errors, details = {}, allowed = null) {
+  if (!Array.isArray(value)) {
+    errors.push(issue(code, message, details));
+    return;
+  }
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string" || seen.has(item) || (allowed && !allowed.has(item))) {
+      errors.push(issue(code, message, { ...details, value: item }));
+      return;
+    }
+    seen.add(item);
   }
 }
 

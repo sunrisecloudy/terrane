@@ -85,6 +85,30 @@ test("bridge capabilities must be covered by permissions", () => {
   assert.equal(result.errors.some((error) => error.code === "invalid_capabilities"), true);
 });
 
+test("networkPolicy validates methods, headers, sizes, and timeout bounds", () => {
+  const cases = [
+    ["invalid_network_policy", { allow: [], allowCredentials: "yes" }],
+    ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], allowedHeaders: ["x-debug", "x-debug"] }] }],
+    ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], pathPrefix: 42 }] }],
+    ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], maxResponseBytes: -1 }] }],
+    ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], timeoutMs: 120001 }] }],
+    ["invalid_network_methods", { allow: [{ origin: "https://api.example.com", methods: ["TRACE"] }] }],
+    ["invalid_network_methods", { allow: [{ origin: "https://api.example.com", methods: ["GET", "GET"] }] }],
+  ];
+
+  for (const [code, networkPolicy] of cases) {
+    const dir = copyExamplePackage("api-dashboard");
+    const manifestPath = path.join(dir, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.networkPolicy = networkPolicy;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = validatePackage(dir);
+    assert.equal(result.ok, false, code);
+    assert.equal(result.errors.some((error) => error.code === code), true, `${code}: ${JSON.stringify(result.errors)}`);
+  }
+});
+
 test("interactive HTML elements must declare data-testid", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
   fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><button id="go">Go</button><script src="app.js"></script>');
