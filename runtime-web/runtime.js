@@ -24,6 +24,8 @@
   let apps = [];
   let activeApp = null;
   let activeFrame = null;
+  const usageByApp = new Map();
+  const minuteMs = 60 * 1000;
 
   refreshButton.addEventListener("click", loadApps);
   reloadButton.addEventListener("click", function () {
@@ -222,7 +224,166 @@
         requiredPermission: permission,
       });
     }
+    const paramsError = validateMethodParams(app, request.method, request.params);
+    if (paramsError) return paramsError;
+    const budgetError = validateAndRecordBudget(app, request.method);
+    if (budgetError) return budgetError;
     return null;
+  }
+
+  function validateMethodParams(app, method, params) {
+    if (method === "storage.get" || method === "storage.set" || method === "storage.remove") {
+      if (typeof params.key !== "string") {
+        return bridgeError("invalid_request", `${method} requires key`);
+      }
+      if (!params.key.startsWith(app.storagePrefix)) {
+        return bridgeError("permission_denied", `Storage key must begin with ${app.storagePrefix}`, {
+          key: params.key,
+          prefix: app.storagePrefix,
+          appId: app.id,
+        });
+      }
+    }
+    if (method === "storage.list") {
+      if (typeof params.prefix !== "string") {
+        return bridgeError("invalid_request", "storage.list requires prefix");
+      }
+      if (!params.prefix.startsWith(app.storagePrefix)) {
+        return bridgeError("permission_denied", `Storage key must begin with ${app.storagePrefix}`, {
+          key: params.prefix,
+          prefix: app.storagePrefix,
+          appId: app.id,
+        });
+      }
+    }
+    if (method === "notification.toast") {
+      if (typeof params.message !== "string") {
+        return bridgeError("invalid_request", "notification.toast requires message");
+      }
+      if (params.level != null && !["info", "success", "warning", "error"].includes(params.level)) {
+        return bridgeError("invalid_request", "notification.toast level must be info, success, warning, or error");
+      }
+    }
+    if (method === "app.log") {
+      if (!["debug", "info", "warn", "error"].includes(params.level)) {
+        return bridgeError("invalid_request", "app.log level must be debug, info, warn, or error");
+      }
+      if (typeof params.message !== "string") {
+        return bridgeError("invalid_request", "app.log requires message");
+      }
+    }
+    if (method === "network.request") {
+      return validateNetworkRequest(app, params);
+    }
+    return null;
+  }
+
+  function validateNetworkRequest(app, params) {
+    if (typeof params.url !== "string") {
+      return bridgeError("invalid_request", "network.request requires url");
+    }
+    let url;
+    try {
+      url = new URL(params.url);
+    } catch (_) {
+      return bridgeError("invalid_request", "network.request url must be absolute");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return bridgeError("network_policy_denied", "network.request protocol is not allowed");
+    }
+    const method = (params.method || "GET").toUpperCase();
+    const headers = params.headers == null ? {} : params.headers;
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+      return bridgeError("invalid_request", "network.request headers must be an object");
+    }
+    const headerNames = [];
+    for (const [name, value] of Object.entries(headers)) {
+      if (typeof value !== "string") {
+        return bridgeError("invalid_request", "network.request headers must be strings");
+      }
+      const normalized = name.toLowerCase();
+      if (normalized === "cookie" || normalized === "set-cookie") {
+        return bridgeError("network_policy_denied", "network.request credential headers are not allowed");
+      }
+      headerNames.push(normalized);
+    }
+    const body = params.body == null ? null : params.body;
+    if (body != null && typeof body !== "string") {
+      return bridgeError("invalid_request", "network.request body must be a string or null");
+    }
+    const policy = app.networkPolicy && Array.isArray(app.networkPolicy.allow) ? app.networkPolicy.allow : [];
+    const rule = policy.find(function (candidate) {
+      const methods = Array.isArray(candidate.methods) ? candidate.methods.map(function (item) { return item.toUpperCase(); }) : [];
+      const allowedHeaders = Array.isArray(candidate.allowedHeaders) ? candidate.allowedHeaders.map(function (item) { return item.toLowerCase(); }) : [];
+      return candidate.origin === url.origin &&
+        methods.includes(method) &&
+        headerNames.every(function (name) { return allowedHeaders.includes(name); });
+    });
+    if (!rule) {
+      return bridgeError("network_policy_denied", "network.request is outside manifest.networkPolicy", {
+        origin: url.origin,
+        method: method,
+      });
+    }
+    if (body != null && Number.isInteger(rule.maxRequestBytes) && utf8Bytes(body) > rule.maxRequestBytes) {
+      return bridgeError("network_policy_denied", "network.request body exceeds manifest.networkPolicy maxRequestBytes");
+    }
+    return null;
+  }
+
+  function validateAndRecordBudget(app, method) {
+    const budget = app.resourceBudget || {};
+    const usage = usageForApp(app.id);
+    const now = Date.now();
+    pruneUsage(usage.bridgeCalls, now);
+    pruneUsage(usage.networkCalls, now);
+    pruneUsage(usage.logLines, now);
+    const bridgeLimit = budget.maxBridgeCallsPerMinute;
+    if (Number.isInteger(bridgeLimit) && usage.bridgeCalls.length >= bridgeLimit) {
+      return bridgeError("resource_budget_exceeded", "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute", {
+        appId: app.id,
+        limit: bridgeLimit,
+      });
+    }
+    if (method === "network.request") {
+      const networkLimit = budget.maxNetworkRequestsPerMinute;
+      if (Number.isInteger(networkLimit) && usage.networkCalls.length >= networkLimit) {
+        return bridgeError("resource_budget_exceeded", "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute", {
+          appId: app.id,
+          limit: networkLimit,
+        });
+      }
+    }
+    if (method === "app.log") {
+      const logLimit = budget.maxLogLinesPerMinute;
+      if (Number.isInteger(logLimit) && usage.logLines.length >= logLimit) {
+        return bridgeError("resource_budget_exceeded", "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute", {
+          appId: app.id,
+          limit: logLimit,
+        });
+      }
+    }
+    usage.bridgeCalls.push(now);
+    if (method === "network.request") usage.networkCalls.push(now);
+    if (method === "app.log") usage.logLines.push(now);
+    return null;
+  }
+
+  function usageForApp(appId) {
+    if (!usageByApp.has(appId)) {
+      usageByApp.set(appId, { bridgeCalls: [], networkCalls: [], logLines: [] });
+    }
+    return usageByApp.get(appId);
+  }
+
+  function pruneUsage(items, now) {
+    while (items.length && now - items[0] > minuteMs) {
+      items.shift();
+    }
+  }
+
+  function utf8Bytes(value) {
+    return new TextEncoder().encode(value).length;
   }
 
   function permissionForBridgeMethod(method) {

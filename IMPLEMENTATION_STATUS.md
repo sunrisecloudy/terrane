@@ -83,7 +83,7 @@ Status snapshot: **2026-05-28**.
 
 | Path | Status | Notes |
 |---|---|---|
-| `runtime-web/` | partial | Launcher HTML/CSS/JS exists; fake host serves it and proxies sandbox `AppRuntime.call` messages to `/bridge` |
+| `runtime-web/` | partial | Launcher HTML/CSS/JS exists; fake host serves it and proxies sandbox `AppRuntime.call` messages to `/bridge` with permission, storage-prefix, network-policy, and rate-budget preflight |
 | `zig-core/` | partial | Zig 0.15.2 static library package with C FFI header, deterministic JSON core.step behavior, and unit tests |
 | `server/` | partial | Minimal Zig HTTP server with `/health`, `/core/step`, `/bridge` for core/capabilities/storage/app.log, `/webapps/validate`, `/webapps/examples`, and `zig build run-server`; uses Zig core FFI and SQLite-backed dev `app_storage` plus redacted `app.log` bridge records |
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, session/command/package/app/db control HTTP surface, package validation/install with smoke-test, runtime-compatibility, and update-approval gating, Ed25519 signing, verified mount gate, version rollback/quarantine, snapshots, migrations, backup export/import, bridge dispatch with resource-budget checks, static runtime controls, static smoke/micro-test runner, and focused tests |

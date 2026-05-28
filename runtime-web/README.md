@@ -11,6 +11,8 @@ Runtime responsibilities:
 - `AppRuntime.call` bridge object.
 - Permission checks.
 - Storage-prefix enforcement.
+- Network policy preflight.
+- Per-minute bridge/network/log budget checks.
 - Debug console.
 - Local browser mock host for development.
 

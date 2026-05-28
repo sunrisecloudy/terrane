@@ -216,11 +216,16 @@ function checkRuntimeStatic() {
     "window.AppRuntime = {",
     "capabilities: function",
     "validateRuntimeBridgeRequest",
+    "validateMethodParams",
+    "validateNetworkRequest",
+    "validateAndRecordBudget",
     "permissionForBridgeMethod",
     "isKnownRuntimeBridgeMethod",
     "Bridge request contains unknown top-level fields",
     "permission_denied",
     "unknown_method",
+    "network_policy_denied",
+    "resource_budget_exceeded",
     '"x-app-id": appId',
     "body: JSON.stringify(request)",
   ];
@@ -232,7 +237,7 @@ function checkRuntimeStatic() {
   if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
     throw new Error("runtime bridge request body must not include appId");
   }
-  return "bridge=messagechannel request=no-appid permission=runtime-preflight";
+  return "bridge=messagechannel request=no-appid permission,policy,budget=runtime-preflight";
 }
 
 function checkServerStatic() {
