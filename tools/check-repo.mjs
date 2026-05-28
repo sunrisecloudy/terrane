@@ -17,6 +17,7 @@ await runCheck("examples.validate", checkExamplePackages);
 await runCheck("examples.canonical", checkCanonicalExamples);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("plugin.mcp", checkPluginMcp);
+await runCheck("control.tools", checkControlToolContract);
 await runCheck("fake-host.static", checkFakeHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
 await runCheck("server.static", checkServerStatic);
@@ -61,7 +62,8 @@ function checkSchemaFixtures() {
     ["accessibility-report.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "accessibility"))],
     ["app-version-record.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "app-version"))],
     ["runtime-capabilities.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "capabilities"))],
-    ["dev-control-response.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "control-plane"))],
+    ["dev-control-command.schema.json", [path.join(repoRoot, "tests", "fixtures", "control-plane", "dev-control-command.fixture.json")]],
+    ["dev-control-response.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "control-plane")).filter((filePath) => !filePath.endsWith("dev-control-command.fixture.json"))],
     ["install-report.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "install-report"))],
     ["app-signature.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "signatures"))],
     ["runtime-snapshot.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "snapshots"))],
@@ -270,6 +272,63 @@ function checkPluginMcp() {
     throw new Error("codex MCP server must resolve token-file config and avoid hardcoded tokens");
   }
   return `servers=${servers.length}`;
+}
+
+function mcpToolNames() {
+  const contract = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "tool-contract.js"), "utf8");
+  return [...contract.matchAll(/^\s*"([a-z0-9_.]+)",?/gm)].map((match) => match[1]);
+}
+
+function duplicates(values) {
+  const seen = new Set();
+  const duplicate = new Set();
+  for (const value of values) {
+    if (seen.has(value)) duplicate.add(value);
+    seen.add(value);
+  }
+  return [...duplicate].sort();
+}
+
+function assertSameList(label, actual, expected) {
+  const missing = expected.filter((value) => !actual.includes(value));
+  const extra = actual.filter((value) => !expected.includes(value));
+  const sameOrder = actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+  if (missing.length > 0 || extra.length > 0 || !sameOrder) {
+    throw new Error(`${label} drift: missing=${missing.join(",") || "none"} extra=${extra.join(",") || "none"} order=${sameOrder ? "ok" : "changed"}`);
+  }
+}
+
+function checkControlToolContract() {
+  const toolNames = mcpToolNames();
+  if (toolNames.length === 0) {
+    throw new Error("MCP tool contract declares no tools");
+  }
+  const duplicateTools = duplicates(toolNames);
+  if (duplicateTools.length > 0) {
+    throw new Error(`duplicate MCP tool names: ${duplicateTools.join(", ")}`);
+  }
+
+  const commandSchema = readJson(path.join(repoRoot, "schemas", "dev-control-command.schema.json"));
+  const schemaTools = commandSchema.properties?.tool?.enum ?? [];
+  assertSameList("dev-control-command.schema.json tool enum", schemaTools, toolNames);
+
+  const fakeHostSource = [
+    "tools/fake-platform-host/src/fake-host.js",
+    "tools/fake-platform-host/src/test-runner.js",
+    "tools/fake-platform-host/src/platform-database.js",
+  ]
+    .map((relativePath) => fs.readFileSync(path.join(repoRoot, relativePath), "utf8"))
+    .join("\n");
+  const serverSource = fs.readFileSync(path.join(repoRoot, "server", "src", "main.zig"), "utf8");
+  const fakeMissing = toolNames.filter((name) => !fakeHostSource.includes(`"${name}"`));
+  const serverMissing = toolNames.filter((name) => !serverSource.includes(`"${name}"`));
+  if (fakeMissing.length > 0) {
+    throw new Error(`fake host missing MCP tools: ${fakeMissing.join(", ")}`);
+  }
+  if (serverMissing.length > 0) {
+    throw new Error(`server missing MCP tools: ${serverMissing.join(", ")}`);
+  }
+  return `tools=${toolNames.length},schema=fixed,fake-host=covered,server=covered`;
 }
 
 function checkFakeHostStatic() {

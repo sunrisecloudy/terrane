@@ -1,0 +1,6 @@
+{
+  "tool": "runtime.run_microtest",
+  "args": {
+    "microtestPath": "tests/micro/notes-lite-create-note.microtest.json"
+  }
+}
