@@ -1,0 +1,39 @@
+{
+  "id": "req_network_timeout",
+  "context": {
+    "appId": "api-dashboard"
+  },
+  "preconditions": {
+    "networkMocks": [
+      {
+        "method": "GET",
+        "urlPattern": "https://api.example.com/slow",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "text/plain"
+          },
+          "bodyText": "ok",
+          "delayMs": 50
+        }
+      }
+    ]
+  },
+  "method": "network.request",
+  "params": {
+    "url": "https://api.example.com/slow",
+    "method": "GET",
+    "headers": {},
+    "body": null,
+    "timeoutMs": 10
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "timeout",
+    "errorDetailsSubset": {
+      "timeoutMs": 10,
+      "delayMs": 50
+    }
+  }
+}

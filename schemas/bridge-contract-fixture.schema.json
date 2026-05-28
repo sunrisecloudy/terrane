@@ -53,6 +53,9 @@
             "runtimeVersion": {
               "type": "string",
               "minLength": 1
+            },
+            "networkPolicy": {
+              "$ref": "network-policy.schema.json"
             }
           }
         },

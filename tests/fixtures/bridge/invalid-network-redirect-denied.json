@@ -1,0 +1,37 @@
+{
+  "id": "req_network_redirect_denied",
+  "context": {
+    "appId": "api-dashboard"
+  },
+  "preconditions": {
+    "networkMocks": [
+      {
+        "method": "GET",
+        "urlPattern": "https://api.example.com/redirect",
+        "response": {
+          "status": 302,
+          "headers": {
+            "location": "https://other.example.com/status"
+          },
+          "bodyText": ""
+        }
+      }
+    ]
+  },
+  "method": "network.request",
+  "params": {
+    "url": "https://api.example.com/redirect",
+    "method": "GET",
+    "headers": {},
+    "body": null
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "network_policy_denied",
+    "errorDetailsSubset": {
+      "origin": "https://other.example.com",
+      "method": "GET"
+    }
+  }
+}

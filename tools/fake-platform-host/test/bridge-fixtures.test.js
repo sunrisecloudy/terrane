@@ -11,27 +11,30 @@ import { createPlatformKeypair, signPackage } from "../src/signing.js";
 
 test("checked-in bridge fixtures match fake-host expected responses", async () => {
   const fixturesDir = path.join(repoRoot, "tests", "fixtures", "bridge");
+  const required = new Set([
+    "valid-storage-get.json",
+    "valid-storage-set.json",
+    "valid-storage-list.json",
+    "valid-storage-remove.json",
+    "invalid-unknown-method.json",
+    "invalid-permission-denied.json",
+    "invalid-storage-prefix.json",
+    "valid-core-step.json",
+    "invalid-core-step-bad-json.json",
+    "valid-network-request-mocked.json",
+    "valid-network-policy-denied.json",
+    "valid-dialog-open-mocked.json",
+    "valid-dialog-cancelled.json",
+    "valid-runtime-capabilities.json",
+    "budget-exceeded-bridge-calls.json",
+    "runtime-version-incompatible.json",
+  ]);
 
-  const cases = [
-    ["valid-storage-get.json", true, null],
-    ["valid-storage-set.json", true, null],
-    ["valid-storage-list.json", true, null],
-    ["valid-storage-remove.json", true, null],
-    ["invalid-storage-prefix.json", false, "permission_denied"],
-    ["invalid-permission-denied.json", false, "permission_denied"],
-    ["invalid-unknown-method.json", false, "unknown_method"],
-    ["valid-core-step.json", true, null],
-    ["invalid-core-step-bad-json.json", true, null],
-    ["valid-network-request-mocked.json", true, null],
-    ["valid-network-policy-denied.json", false, "network_policy_denied"],
-    ["valid-dialog-open-mocked.json", true, null],
-    ["valid-dialog-cancelled.json", true, null],
-    ["valid-runtime-capabilities.json", true, null],
-    ["budget-exceeded-bridge-calls.json", false, "resource_budget_exceeded"],
-    ["runtime-version-incompatible.json", false, "runtime_version_incompatible"],
-  ];
+  const files = fs.readdirSync(fixturesDir).filter((fileName) => fileName.endsWith(".json")).sort();
+  const missing = [...required].filter((fileName) => !files.includes(fileName));
+  assert.deepEqual(missing, [], "docs/08 required bridge fixtures must be checked in");
 
-  for (const [fileName, ok, code] of cases) {
+  for (const fileName of files) {
     const db = new PlatformDatabase();
     try {
       const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, fileName), "utf8"));
@@ -60,10 +63,9 @@ test("checked-in bridge fixtures match fake-host expected responses", async () =
       applyBridgeFixturePreconditions(db, fixture, sessionId);
       const { context, preconditions: _preconditions, expected: _expected, ...request } = fixture;
       const response = await dispatcher.dispatch(request, { appId: context.appId, sessionId });
-      assert.equal(response.ok, fixture.expected?.ok ?? ok, fileName);
-      const expectedCode = fixture.expected?.errorCode ?? code;
-      if (expectedCode) {
-        assert.equal(response.error.code, expectedCode, fileName);
+      assert.equal(response.ok, fixture.expected?.ok, fileName);
+      if (fixture.expected?.errorCode) {
+        assert.equal(response.error.code, fixture.expected.errorCode, fileName);
       }
       if ("resultOk" in (fixture.expected ?? {})) {
         assert.equal(response.result?.ok, fixture.expected.resultOk, fileName);
