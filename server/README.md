@@ -34,6 +34,6 @@ Implemented endpoints:
 
 ## v0.4 persistence requirement
 
-Server dev storage uses SQLite through the `app_storage(app_id, key, value_json)` table. By default it writes `server-platform.sqlite` in the current working directory; set `NATIVE_AI_SERVER_DB=/path/to/platform.sqlite` to choose another file.
+Server dev persistence uses SQLite through `app_storage(app_id, key, value_json)`, `runtime_sessions`, and `bridge_calls`. `app.log` validates `level`/`message`, writes a redacted `bridge_calls` row, and mirrors the message to stderr. By default the server writes `server-platform.sqlite` in the current working directory; set `NATIVE_AI_SERVER_DB=/path/to/platform.sqlite` to choose another file.
 
 Remaining persistence work: full app registry/package/install/test/control records, migrations, safe DB inspection tools, and the Postgres production adapter.
