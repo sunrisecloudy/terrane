@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val repoRoot = rootProject.projectDir.parentFile.parentFile
+val generatedNativeAiAssets = layout.buildDirectory.dir("generated/native-ai-assets")
+val syncNativeAiAssets by tasks.registering(Sync::class) {
+    into(generatedNativeAiAssets)
+    from(repoRoot.resolve("runtime-web")) {
+        into("runtime")
+    }
+    from(repoRoot.resolve("webapps")) {
+        into("webapps")
+    }
+}
+
 android {
     namespace = "com.nativeai.platform"
     compileSdk = 35
@@ -19,10 +31,20 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(generatedNativeAiAssets)
+        }
+    }
 }
 
 kotlin {
     jvmToolchain(17)
+}
+
+tasks.named("preBuild") {
+    dependsOn(syncNativeAiAssets)
 }
 
 dependencies {

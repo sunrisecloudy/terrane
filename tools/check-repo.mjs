@@ -469,6 +469,11 @@ function checkNativeStatic() {
     [androidMain, "WebViewCompat.addWebMessageListener"],
     [androidMain, "https://appassets.androidplatform.net"],
     [androidMain, "allowFileAccess = false"],
+    [androidMain, "AssetRootPathHandler"],
+    [androidMain, "sandboxContextFromManifest"],
+    [androidMain, "NetworkPolicyRule.fromManifest"],
+    [androidMain, "webapps/examples/$appId/manifest.json"],
+    [androidMain, 'webView.loadUrl("https://appassets.androidplatform.net/runtime/index.html")'],
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
     [androidBridge, '"network.request" to true'],
@@ -480,6 +485,12 @@ function checkNativeStatic() {
   for (const [source, snippet] of androidRequired) {
     if (!source.includes(snippet)) {
       throw new Error(`Android host missing ${snippet}`);
+    }
+  }
+  const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");
+  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)"]) {
+    if (!androidGradle.includes(snippet)) {
+      throw new Error(`Android Gradle asset sync missing ${snippet}`);
     }
   }
   for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch"]) {
