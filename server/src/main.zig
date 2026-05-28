@@ -155,6 +155,9 @@ fn handleBridge(
             return writeBridgeError(allocator, stream, id, "core_error", "core.step failed");
         };
         defer allocator.free(result_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
         const event_json = if (params.object.get("event")) |event_value|
             try jsonValueAlloc(allocator, event_value)
         else
@@ -170,11 +173,14 @@ fn handleBridge(
     if (std.mem.eql(u8, method, "runtime.capabilities")) {
         const result_json = try serverCapabilitiesJson(allocator);
         defer allocator.free(result_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, "{}", result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
     if (std.mem.startsWith(u8, method, "storage.")) {
-        return handleStorageBridge(allocator, stream, id, method, params, channel_app_id);
+        return handleStorageBridge(allocator, stream, id, method, params, channel_app_id, session_id);
     }
 
     if (std.mem.eql(u8, method, "app.log")) {
@@ -250,9 +256,12 @@ fn handleStorageBridge(
     method: []const u8,
     params: std.json.Value,
     app_id: []const u8,
+    session_id: ?[]const u8,
 ) !void {
     const prefix = try std.fmt.allocPrint(allocator, "{s}:", .{app_id});
     defer allocator.free(prefix);
+    const params_json = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json);
 
     if (std.mem.eql(u8, method, "storage.get")) {
         const key = valueString(params.object.get("key")) orelse {
@@ -265,6 +274,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.get failed");
         };
         defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
@@ -285,6 +297,9 @@ fn handleStorageBridge(
         };
         const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"bytesWritten\":{d}}}", .{value.len});
         defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
@@ -297,6 +312,9 @@ fn handleStorageBridge(
         }
         storageRemove(app_id, key) catch {
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.remove failed");
+        };
+        logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
         };
         return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
     }
@@ -312,6 +330,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.list failed");
         };
         defer allocator.free(result_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
@@ -1374,6 +1395,45 @@ fn queryBridgeCallsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) !
     }
     try out.writer.writeAll("]");
     return out.toOwnedSlice();
+}
+
+fn logBridgeCall(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    method: []const u8,
+    params_json: []const u8,
+    result_json: ?[]const u8,
+    error_json: ?[]const u8,
+) !void {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const actual_session_id = session_id orelse "server-dev-session";
+    try ensureAppRecord(db, app_id);
+    try ensureRuntimeSession(db, actual_session_id, app_id);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) " ++
+            "VALUES ('bridge_' || lower(hex(randomblob(16))), ?, ?, NULL, ?, ?, ?, ?, 0, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, actual_session_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, method);
+    bindText(statement, 4, params_json);
+    bindNullableText(statement, 5, result_json);
+    bindNullableText(statement, 6, error_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
 }
 
 fn logAppMessage(

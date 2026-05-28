@@ -302,6 +302,7 @@ function checkServerStatic() {
     "fn queryTestRunsRowsJson",
     "fn appendJsonColumnValue",
     "fn ensureAppRecord",
+    "fn logBridgeCall",
     "fn recordCoreStep",
     "fn insertCoreEvent",
     "fn insertCoreActions",
