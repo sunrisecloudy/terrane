@@ -103,7 +103,7 @@
     setStatus(`Mounting ${app.id}`);
 
     const html = await fetchText(`/webapps/examples/${app.id}/index.html`);
-    const srcdoc = injectRuntimeBootstrap(app.id, html);
+    const srcdoc = injectRuntimeBootstrap(app, html);
     const frame = document.createElement("iframe");
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
@@ -118,17 +118,25 @@
     setStatus(`Mounted ${app.id}`);
   }
 
-  function injectRuntimeBootstrap(appId, html) {
+  function injectRuntimeBootstrap(app, html) {
+    const appId = app.id;
     const bootstrap = `<base href="/webapps/examples/${appId}/">
 <script>
 (function () {
   var runtimeAppId = ${JSON.stringify(appId)};
+  var resourceBudget = ${JSON.stringify(app.resourceBudget || {})};
   var knownEvents = new Set(["runtime.ready", "runtime.suspend", "runtime.resume", "app.error", "app.budget_warning", "app.permission_revoked"]);
   var eventHandlers = new Map();
   var nextId = 1;
   var port = null;
   var pending = new Map();
   var queued = [];
+  var nativeSetTimeout = window.setTimeout.bind(window);
+  var nativeClearTimeout = window.clearTimeout.bind(window);
+  var nativeSetInterval = window.setInterval.bind(window);
+  var nativeClearInterval = window.clearInterval.bind(window);
+  var activeTimers = new Map();
+  var budgetSignals = new Set();
   function call(method, params) {
     return new Promise(function (resolve, reject) {
       if (typeof method !== "string" || !method) {
@@ -185,6 +193,7 @@
     },
     on: on
   };
+  installBudgetGuards();
   window.addEventListener("error", function (event) {
     emitAppError({ code: "app.error", message: event.message || "Unhandled app error" }, "window.error");
   });
@@ -219,6 +228,99 @@
   });
   function send(message) {
     port.postMessage(message);
+  }
+  function installBudgetGuards() {
+    installTimerBudgetGuard();
+    installDomBudgetGuard();
+  }
+  function installTimerBudgetGuard() {
+    var maxTimers = budgetLimit("maxTimers");
+    if (maxTimers == null) return;
+    window.setTimeout = function (handler, delay) {
+      var args = Array.prototype.slice.call(arguments, 2);
+      assertTimerBudget("setTimeout", maxTimers);
+      var nativeId = nativeSetTimeout(function () {
+        activeTimers.delete(nativeId);
+        if (typeof handler === "function") {
+          handler.apply(window, args);
+        }
+      }, delay);
+      activeTimers.set(nativeId, "timeout");
+      warnBudget("maxTimers", activeTimers.size, maxTimers);
+      return nativeId;
+    };
+    window.clearTimeout = function (nativeId) {
+      activeTimers.delete(nativeId);
+      return nativeClearTimeout(nativeId);
+    };
+    window.setInterval = function (handler, delay) {
+      var args = Array.prototype.slice.call(arguments, 2);
+      assertTimerBudget("setInterval", maxTimers);
+      var nativeId = nativeSetInterval(function () {
+        if (typeof handler === "function") {
+          handler.apply(window, args);
+        }
+      }, delay);
+      activeTimers.set(nativeId, "interval");
+      warnBudget("maxTimers", activeTimers.size, maxTimers);
+      return nativeId;
+    };
+    window.clearInterval = function (nativeId) {
+      activeTimers.delete(nativeId);
+      return nativeClearInterval(nativeId);
+    };
+  }
+  function installDomBudgetGuard() {
+    var maxDomNodes = budgetLimit("maxDomNodes");
+    if (maxDomNodes == null) return;
+    var scheduled = false;
+    function scheduleCheck() {
+      if (scheduled) return;
+      scheduled = true;
+      nativeSetTimeout(checkDomBudget, 0);
+    }
+    function checkDomBudget() {
+      scheduled = false;
+      var count = document.getElementsByTagName("*").length;
+      warnBudget("maxDomNodes", count, maxDomNodes);
+      if (count > maxDomNodes) {
+        signalBudget("maxDomNodes", "error", count, maxDomNodes);
+      }
+    }
+    if (window.MutationObserver && document.documentElement) {
+      new MutationObserver(scheduleCheck).observe(document.documentElement, { childList: true, subtree: true });
+    }
+    nativeSetInterval(checkDomBudget, 250);
+    scheduleCheck();
+  }
+  function assertTimerBudget(source, maxTimers) {
+    if (activeTimers.size < maxTimers) return;
+    signalBudget("maxTimers", "error", activeTimers.size + 1, maxTimers);
+    throw new Error("resource_budget_exceeded: " + source + " would exceed maxTimers");
+  }
+  function warnBudget(budget, current, max) {
+    if (max <= 0) return;
+    if (current >= Math.ceil(max * 0.8)) {
+      signalBudget(budget, "warning", current, max);
+    }
+  }
+  function signalBudget(budget, level, current, max) {
+    var key = budget + ":" + level;
+    if (budgetSignals.has(key)) return;
+    budgetSignals.add(key);
+    var payload = { budget: budget, current: current, max: max, appId: runtimeAppId };
+    if (level === "warning") {
+      emit("app.budget_warning", payload);
+      return;
+    }
+    emitAppError({
+      code: "resource_budget_exceeded",
+      message: budget + " exceeded",
+      details: payload
+    }, "resource_budget");
+  }
+  function budgetLimit(name) {
+    return Number.isInteger(resourceBudget[name]) ? resourceBudget[name] : null;
   }
   window.parent.postMessage({ type: "runtime.ready_for_port" }, "*");
 })();

@@ -444,6 +444,10 @@ function checkRuntimeStatic() {
     "validateMethodParams",
     "validateNetworkRequest",
     "validateAndRecordBudget",
+    "installBudgetGuards",
+    "MutationObserver",
+    "maxDomNodes",
+    "maxTimers",
     "dispatchBridgeRequest",
     "webkitNativeBridgeHandler",
     "androidNativeBridgeHandler",
@@ -480,7 +484,7 @@ function checkRuntimeStatic() {
   if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
     throw new Error("runtime AppRuntime.on must not be a no-op");
   }
-  return "bridge=messagechannel,nonce-bound,webkit,android,webview2 request=no-appid permission,policy,budget=runtime-preflight";
+  return "bridge=messagechannel,nonce-bound,webkit,android,webview2 request=no-appid permission,policy,budget=runtime-preflight,dom-timer-guards";
 }
 
 function checkServerStatic() {
