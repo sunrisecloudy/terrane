@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +122,26 @@ function checkSqliteMigrations() {
 }
 
 function checkPostgresSql() {
-  const files = walk(path.join(repoRoot, "db", "postgres")).filter((filePath) => filePath.endsWith(".sql"));
+  const sqliteDir = path.join(repoRoot, "db", "sqlite");
+  const postgresDir = path.join(repoRoot, "db", "postgres");
+  const files = walk(postgresDir).filter((filePath) => filePath.endsWith(".sql"));
+  const sqliteSchema = parseSqlSchema(sqlText(sqliteDir));
+  const postgresSchema = parseSqlSchema(sqlText(postgresDir));
+  const missingTables = [...sqliteSchema.keys()].filter((table) => !postgresSchema.has(table));
+  if (missingTables.length > 0) {
+    throw new Error(`Postgres schema missing tables: ${missingTables.join(", ")}`);
+  }
+  for (const [table, sqliteColumns] of sqliteSchema) {
+    const postgresColumns = postgresSchema.get(table) ?? new Set();
+    const missingColumns = [...sqliteColumns].filter((column) => !postgresColumns.has(column));
+    if (missingColumns.length > 0) {
+      throw new Error(`Postgres schema ${table} missing columns: ${missingColumns.join(", ")}`);
+    }
+  }
+  const postgresText = sqlText(postgresDir);
+  if (!/PRIMARY KEY\s*\(\s*app_id\s*,\s*key\s*\)/i.test(postgresText)) {
+    throw new Error("Postgres app_storage must keep PRIMARY KEY (app_id, key)");
+  }
   for (const filePath of files) {
     const sql = fs.readFileSync(filePath, "utf8");
     if (!/CREATE TABLE/i.test(sql)) {
@@ -131,7 +151,47 @@ function checkPostgresSql() {
       throw new Error(`${relative(filePath)} should use JSONB for logical JSON columns`);
     }
   }
-  return `files=${files.length}`;
+  if (process.env.POSTGRES_TEST_URL) {
+    applyPostgresMigrations(process.env.POSTGRES_TEST_URL, postgresText);
+    return `files=${files.length},tables=${postgresSchema.size},live=applied`;
+  }
+  return `files=${files.length},tables=${postgresSchema.size},live=skipped`;
+}
+
+function sqlText(dir) {
+  return walk(dir)
+    .filter((filePath) => filePath.endsWith(".sql"))
+    .sort()
+    .map((filePath) => fs.readFileSync(filePath, "utf8"))
+    .join("\n");
+}
+
+function parseSqlSchema(sql) {
+  const schema = new Map();
+  const tablePattern = /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([\s\S]*?)\);/gi;
+  let match;
+  while ((match = tablePattern.exec(sql))) {
+    const table = match[1];
+    const columns = new Set();
+    for (const rawLine of match[2].split("\n")) {
+      const line = rawLine.trim().replace(/,$/, "");
+      if (!line || line.startsWith("--")) continue;
+      const column = line.split(/\s+/)[0]?.replace(/"/g, "");
+      if (!column || /^(PRIMARY|FOREIGN|CONSTRAINT|CHECK|UNIQUE|KEY)$/i.test(column)) continue;
+      columns.add(column);
+    }
+    schema.set(table, columns);
+  }
+  return schema;
+}
+
+function applyPostgresMigrations(url, sql) {
+  const schema = `native_ai_schema_check_${process.pid}_${Date.now()}`;
+  const wrapped = `BEGIN; CREATE SCHEMA ${schema}; SET search_path TO ${schema}; ${sql}; ROLLBACK;`;
+  execFileSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-q", "-c", wrapped], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 function checkExamplePackages() {

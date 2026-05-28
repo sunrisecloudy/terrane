@@ -175,7 +175,7 @@ Add CI jobs for:
 - JSON parsing for all schema/fixture/test files.
 - SQLite migration execution using in-memory SQLite.
 - Required table/index assertions.
-- Postgres schema static parity checks.
+- Postgres schema static parity checks, with optional live apply when `POSTGRES_TEST_URL` is configured.
 - DB fixture schema validation.
 - App install transaction test.
 - Storage CRUD test.

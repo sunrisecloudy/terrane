@@ -77,6 +77,7 @@ For v1, Postgres tests may be static in CI if no Postgres container is configure
 - no platform-only table is missing from Postgres.
 
 When a Postgres test container is available, migrations must apply cleanly.
+Set `POSTGRES_TEST_URL` while running `node --no-warnings tools/check-repo.mjs` to apply the Postgres migrations inside a temporary schema and roll them back after validation.
 
 ## 6. App install transaction test
 
