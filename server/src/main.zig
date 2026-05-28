@@ -203,19 +203,43 @@ fn handleBridge(
     const id = valueString(root.object.get("id")).?;
     const method = valueString(root.object.get("method")).?;
     const params = root.object.get("params").?;
+    const params_json_for_audit = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json_for_audit);
+
+    if (!isAllowedRuntimeBridgeMethod(method)) {
+        if (isKnownUnsupportedBridgeMethod(method)) {
+            return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
+        }
+        return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
+    }
 
     if (permissionForBridgeMethod(method)) |permission| {
-        const params_json = try jsonValueAlloc(allocator, params);
-        defer allocator.free(params_json);
         const permitted = bridgePermissionApproved(allocator, channel_app_id, permission) catch false;
         if (!permitted) {
             const error_json = try bridgeErrorJsonAlloc(allocator, "permission_denied", "Bridge method requires an approved app permission");
             defer allocator.free(error_json);
-            logBridgeCall(allocator, channel_app_id, session_id, method, params_json, null, error_json) catch |err| {
+            logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
                 std.debug.print("bridge audit write failed: {}\n", .{err});
             };
             return writeBridgeError(allocator, stream, id, "permission_denied", "Bridge method requires an approved app permission");
         }
+    }
+
+    const budget_violation = enforceBridgeResourceBudget(allocator, channel_app_id, method, params) catch {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "resource_budget_unavailable", "Resource budget could not be evaluated");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "resource_budget_unavailable", "Resource budget could not be evaluated");
+    };
+    if (budget_violation) |violation| {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "resource_budget_exceeded", violation.message);
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "resource_budget_exceeded", violation.message);
     }
 
     if (std.mem.eql(u8, method, "core.step")) {
@@ -275,10 +299,6 @@ fn handleBridge(
         return handleDialogBridge(allocator, stream, id, method, params, channel_app_id, session_id);
     }
 
-    if (isKnownUnsupportedBridgeMethod(method)) {
-        return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
-    }
-
     return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
 }
 
@@ -335,6 +355,127 @@ fn bridgeValidationMessage(err: BridgeValidationError) []const u8 {
         error.InvalidParams => "Bridge request params must be an object",
         error.InvalidTimestamp => "Bridge request timestamp must be a number",
     };
+}
+
+const ResourceBudgetViolation = struct {
+    message: []const u8,
+};
+
+fn enforceBridgeResourceBudget(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+) !?ResourceBudgetViolation {
+    const manifest_json = activeManifestJsonAlloc(allocator, app_id) catch |err| switch (err) {
+        error.AppNotInstalled => return null,
+        else => return err,
+    };
+    defer allocator.free(manifest_json);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{}) catch {
+        return error.InvalidResourceBudget;
+    };
+    defer parsed.deinit();
+
+    if (resourceBudgetLimit(parsed.value, "maxBridgeCallsPerMinute")) |limit| {
+        const count = try countBridgeCallsSince(allocator, app_id, null);
+        if (count >= limit) {
+            return .{ .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute" };
+        }
+    }
+
+    if (std.mem.eql(u8, method, "network.request")) {
+        if (resourceBudgetLimit(parsed.value, "maxNetworkRequestsPerMinute")) |limit| {
+            const count = try countBridgeCallsSince(allocator, app_id, "network.request");
+            if (count >= limit) {
+                return .{ .message = "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute" };
+            }
+        }
+    }
+
+    if (std.mem.eql(u8, method, "app.log")) {
+        if (resourceBudgetLimit(parsed.value, "maxLogLinesPerMinute")) |limit| {
+            const count = try countBridgeCallsSince(allocator, app_id, "app.log");
+            if (count >= limit) {
+                return .{ .message = "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute" };
+            }
+        }
+    }
+
+    if (std.mem.eql(u8, method, "storage.set")) {
+        if (resourceBudgetLimit(parsed.value, "maxStorageBytes")) |limit| {
+            const key = valueString(params.object.get("key")) orelse return null;
+            const value_json = if (params.object.get("value")) |value|
+                try jsonValueAlloc(allocator, value)
+            else
+                try allocator.dupe(u8, "null");
+            defer allocator.free(value_json);
+            const projected_bytes = try storageBytesAfterSet(allocator, app_id, key, value_json);
+            if (projected_bytes > limit) {
+                return .{ .message = "Storage write exceeds manifest.resourceBudget.maxStorageBytes" };
+            }
+        }
+    }
+
+    return null;
+}
+
+fn resourceBudgetLimit(manifest: std.json.Value, field: []const u8) ?i64 {
+    if (manifest != .object) return null;
+    const resource_budget = manifest.object.get("resourceBudget") orelse return null;
+    if (resource_budget != .object) return null;
+    const limit = valueI64(resource_budget.object.get(field)) orelse return null;
+    if (limit < 0) return null;
+    return limit;
+}
+
+fn countBridgeCallsSince(allocator: std.mem.Allocator, app_id: []const u8, method: ?[]const u8) !i64 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    const sql: [*:0]const u8 = if (method != null)
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND julianday(created_at) >= julianday('now','-60 seconds')"
+    else
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND julianday(created_at) >= julianday('now','-60 seconds')";
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (method) |actual_method| {
+        bindText(statement, 2, actual_method);
+    }
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn storageBytesAfterSet(allocator: std.mem.Allocator, app_id: []const u8, key: []const u8, value_json: []const u8) !i64 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0), " ++
+            "COALESCE((SELECT LENGTH(CAST(value_json AS BLOB)) FROM app_storage WHERE app_id = ? AND key = ?), 0) " ++
+            "FROM app_storage WHERE app_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, key);
+    bindText(statement, 3, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.StorageQueryFailed;
+    const current = sqlite.sqlite3_column_int64(statement, 0);
+    const existing = sqlite.sqlite3_column_int64(statement, 1);
+    const retained = if (current > existing) current - existing else 0;
+    return retained + @as(i64, @intCast(value_json.len));
 }
 
 fn handleStorageBridge(

@@ -368,6 +368,15 @@ function checkServerStatic() {
     "fn handleAppLogBridge",
     "fn bridgePermissionApproved",
     "fn permissionForBridgeMethod",
+    "fn enforceBridgeResourceBudget",
+    "fn resourceBudgetLimit",
+    "fn countBridgeCallsSince",
+    "fn storageBytesAfterSet",
+    "resource_budget_exceeded",
+    "maxBridgeCallsPerMinute",
+    "maxNetworkRequestsPerMinute",
+    "maxLogLinesPerMinute",
+    "maxStorageBytes",
     "fn networkPolicyAllowsRequest",
     "fn networkMockResultJsonAlloc",
     "fn insertNetworkMockControl",
@@ -525,7 +534,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

@@ -35,6 +35,19 @@
     "params": {
       "type": "object"
     },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resourceBudget": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
     "timestamp": {
       "type": "integer"
     },
