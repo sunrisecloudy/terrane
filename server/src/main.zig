@@ -191,6 +191,7 @@ fn isForbiddenProductionFlag(arg: []const u8) bool {
         "--control-plane-port",
         "--allow-runtime-mismatch",
         "--allow-unsigned-dev",
+        "--token-file",
     };
     for (forbidden) |candidate| {
         if (std.mem.eql(u8, arg, candidate)) return true;

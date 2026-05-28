@@ -410,6 +410,7 @@ function checkServerStatic() {
     "--allow-unsigned-dev",
     "--allow-runtime-mismatch",
     "--control-plane-port",
+    "--token-file",
     "fn handleDbControlEndpoint",
     "fn requireControlToken",
     "fn authorizeControlRequest",
