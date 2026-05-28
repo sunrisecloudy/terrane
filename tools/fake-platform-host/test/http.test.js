@@ -52,6 +52,29 @@ test("http health and token-protected control command work", async () => {
     assert.equal(directValidate.ok, true);
     assert.equal(directValidate.result.ok, true);
 
+    const missingMountToken = await fetch(`${started.url}/bridge`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-app-id": "notes-lite",
+      },
+      body: JSON.stringify({ id: "req_missing_mount", method: "runtime.capabilities", params: {} }),
+    }).then((response) => response.json());
+    assert.equal(missingMountToken.ok, false);
+    assert.equal(missingMountToken.error.code, "bridge.unauthorized_channel");
+
+    const bridgeCapabilities = await fetch(`${started.url}/bridge`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-app-id": "notes-lite",
+        "x-mount-token": "test-mount-token",
+      },
+      body: JSON.stringify({ id: "req_caps", method: "runtime.capabilities", params: {} }),
+    }).then((response) => response.json());
+    assert.equal(bridgeCapabilities.ok, true);
+    assert.equal(bridgeCapabilities.result.platform, "fake-host");
+
     const install = await fetch(`${started.url}/control/command`, {
       method: "POST",
       headers: {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispatcher.js";
 import { fakeHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
-import { errorBody, PlatformError } from "./errors.js";
+import { bridgeError, errorBody, PlatformError } from "./errors.js";
 import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
 import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
@@ -741,7 +741,16 @@ export class FakePlatformHost {
         const body = await readBodyJson(req);
         const appId = req.headers["x-app-id"];
         const sessionId = req.headers["x-runtime-session-id"];
-        return sendJson(res, 200, await this.dispatchBridge(body, { appId, sessionId }));
+        const mountToken = req.headers["x-mount-token"];
+        if (!mountToken) {
+          const id = body && typeof body === "object" && !Array.isArray(body) && typeof body.id === "string" ? body.id : null;
+          return sendJson(
+            res,
+            200,
+            bridgeError(id, new PlatformError("bridge.unauthorized_channel", "Bridge calls require a channel-derived mount token")),
+          );
+        }
+        return sendJson(res, 200, await this.dispatchBridge(body, { appId, sessionId, mountToken }));
       }
 
       const sessionRoute = parseControlSessionRoute(url.pathname);

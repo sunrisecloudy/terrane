@@ -281,6 +281,8 @@ function checkServerStatic() {
     "Bridge request contains unknown top-level fields",
     'headerValue(headers, "x-app-id")',
     'headerValue(headers, "x-runtime-session-id")',
+    'headerValue(headers, "x-mount-token")',
+    "Bridge calls require a channel-derived mount token",
     "\"core.step\"",
     "\"runtime.capabilities\"",
     "\"bridge.unauthorized_channel\"",

@@ -59,7 +59,7 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/bridge")) {
-        return handleBridge(allocator, stream, parsed.body, parsed.app_id, parsed.session_id);
+        return handleBridge(allocator, stream, parsed.body, parsed.app_id, parsed.mount_token, parsed.session_id);
     }
 
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/validate")) {
@@ -97,9 +97,19 @@ fn handleCoreStep(allocator: std.mem.Allocator, stream: std.net.Stream, body: []
     return writeJson(stream, 200, output);
 }
 
-fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []const u8, app_id: ?[]const u8, session_id: ?[]const u8) !void {
+fn handleBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    body: []const u8,
+    app_id: ?[]const u8,
+    mount_token: ?[]const u8,
+    session_id: ?[]const u8,
+) !void {
     const channel_app_id = app_id orelse {
         return writeBridgeError(allocator, stream, "unknown", "bridge.unauthorized_channel", "Bridge calls require a channel-derived app id");
+    };
+    _ = mount_token orelse {
+        return writeBridgeError(allocator, stream, "unknown", "bridge.unauthorized_channel", "Bridge calls require a channel-derived mount token");
     };
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
@@ -946,6 +956,7 @@ const ParsedRequest = struct {
     body: []const u8,
     app_id: ?[]const u8,
     session_id: ?[]const u8,
+    mount_token: ?[]const u8,
     control_token: ?[]const u8,
 };
 
@@ -967,6 +978,7 @@ fn parseRequest(request: []const u8) !ParsedRequest {
         .body = body,
         .app_id = headerValue(headers, "x-app-id"),
         .session_id = headerValue(headers, "x-runtime-session-id"),
+        .mount_token = headerValue(headers, "x-mount-token"),
         .control_token = headerValue(headers, "x-platform-control-token"),
     };
 }
