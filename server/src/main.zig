@@ -66,6 +66,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return handleWebappValidate(allocator, stream, parsed.body);
     }
 
+    if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/webapps/install")) {
+        return handleWebappInstall(allocator, stream, parsed.body, parsed.control_token);
+    }
+
     if (std.mem.eql(u8, parsed.method, "POST") and std.mem.eql(u8, parsed.path, "/control/command")) {
         return handleControlCommand(allocator, stream, parsed.body, parsed.control_token);
     }
@@ -371,6 +375,41 @@ fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, bo
     return writeJson(stream, 200, report);
 }
 
+fn handleWebappInstall(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    body: []const u8,
+    provided_token: ?[]const u8,
+) !void {
+    requireControlToken(allocator, provided_token) catch {
+        auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "control_auth_required", null, null);
+        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    };
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "invalid_request", null, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Install request body must be valid JSON");
+    };
+    defer parsed.deinit();
+
+    const root = packageRootValue(parsed.value) orelse {
+        auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "invalid_request", body, null);
+        return writeControlError(allocator, stream, 400, "invalid_request", "Install request requires an inline package object");
+    };
+    const activate = controlBoolArg(parsed.value, "activate") orelse true;
+    const trust_level = controlStringArg(parsed.value, "trustLevel") orelse "developer";
+    const result_json = installWebappPackage(allocator, root, activate, trust_level) catch |err| switch (err) {
+        error.InvalidWebappPackage => {
+            auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "rejected", "invalid_package", body, null);
+            return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
+        },
+        else => return err,
+    };
+    defer allocator.free(result_json);
+    auditControlCommand(allocator, "/webapps/install", "platform.install_webapp_package", "accepted", null, body, result_json);
+    return writeControlOkRaw(allocator, stream, result_json);
+}
+
 fn handleDbControlEndpoint(
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -503,6 +542,60 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.validate_package") or std.mem.eql(u8, tool, "platform.run_policy_audit")) {
+        const package_root = (if (args) |args_value| packageRootValue(args_value) else null) orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Package validation requires an inline package object");
+        };
+        const result_json = try validateWebappPackageValue(allocator, package_root);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.install_webapp_package")) {
+        const package_root = (if (args) |args_value| packageRootValue(args_value) else null) orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "Package install requires an inline package object");
+        };
+        const activate = controlBoolArg(args, "activate") orelse true;
+        const trust_level = controlStringArg(args, "trustLevel") orelse "developer";
+        const result_json = installWebappPackage(allocator, package_root, activate, trust_level) catch |err| switch (err) {
+            error.InvalidWebappPackage => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_package", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_package", "Package validation failed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.list_webapps")) {
+        const result_json = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.list_webapp_versions")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.list_webapp_versions requires appId");
+        };
+        const result_json = try queryAppVersionsRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "platform.install_report")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "platform.install_report requires appId");
+        };
+        const result_json = try queryInstallReportRowsJson(allocator, app_id, controlStringArg(args, "installId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.snapshot")) {
         const result_json = try dbSnapshotJson(allocator);
         defer allocator.free(result_json);
@@ -601,6 +694,14 @@ fn controlStringArg(args: ?std.json.Value, name: []const u8) ?[]const u8 {
     return valueString(value.object.get(name));
 }
 
+fn controlBoolArg(args: ?std.json.Value, name: []const u8) ?bool {
+    const value = args orelse return null;
+    if (value != .object) return null;
+    const actual = value.object.get(name) orelse return null;
+    if (actual != .bool) return null;
+    return actual.bool;
+}
+
 fn handleExampleAsset(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8) !void {
     if (rel_path.len == 0 or containsAny(rel_path, &.{ "..", "\\", "//" })) {
         return writeJson(stream, 400, "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"Invalid example asset path\",\"details\":{}}}");
@@ -627,28 +728,56 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     };
     defer parsed.deinit();
 
-    const root = parsed.value;
+    try collectWebappPackageErrors(allocator, parsed.value, &errors);
+    return validationReportAlloc(allocator, errors.items);
+}
+
+fn validateWebappPackageValue(allocator: std.mem.Allocator, root: std.json.Value) ![]u8 {
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(allocator);
+    try collectWebappPackageErrors(allocator, root, &errors);
+    return validationReportAlloc(allocator, errors.items);
+}
+
+fn packageRootValue(value: std.json.Value) ?std.json.Value {
+    if (value != .object) return null;
+    if (value.object.get("package")) |package| {
+        if (package == .object and package.object.get("manifest") != null and package.object.get("files") != null) {
+            return package;
+        }
+    }
+    if (value.object.get("manifest") != null and value.object.get("files") != null) {
+        return value;
+    }
+    return null;
+}
+
+fn collectWebappPackageErrors(
+    allocator: std.mem.Allocator,
+    root: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
     if (root != .object) {
         try errors.append(allocator, "invalid_package_shape");
-        return validationReportAlloc(allocator, errors.items);
+        return;
     }
 
     const manifest = root.object.get("manifest") orelse {
         try errors.append(allocator, "missing_manifest");
-        return validationReportAlloc(allocator, errors.items);
+        return;
     };
     if (manifest != .object) {
         try errors.append(allocator, "invalid_manifest");
-        return validationReportAlloc(allocator, errors.items);
+        return;
     }
 
     const files = root.object.get("files") orelse {
         try errors.append(allocator, "missing_files");
-        return validationReportAlloc(allocator, errors.items);
+        return;
     };
     if (files != .array) {
         try errors.append(allocator, "invalid_files");
-        return validationReportAlloc(allocator, errors.items);
+        return;
     }
 
     const required_files = [_][]const u8{ "manifest.json", "index.html", "styles.css", "app.js" };
@@ -677,9 +806,18 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
             try errors.append(allocator, "missing_manifest_field");
         }
     }
+    const string_manifest_fields = [_][]const u8{ "id", "name", "version", "runtimeVersion", "entry", "description", "storagePrefix" };
+    for (string_manifest_fields) |field| {
+        if (manifest.object.get(field)) |value| {
+            if (valueString(value) == null) try errors.append(allocator, "invalid_manifest_field");
+        }
+    }
 
     if (manifest.object.get("networkAllowlist") != null) {
         try errors.append(allocator, "removed_manifest_field");
+    }
+    if (valueString(manifest.object.get("id"))) |app_id| {
+        if (!isValidAppId(app_id)) try errors.append(allocator, "invalid_manifest_id");
     }
     if (valueString(manifest.object.get("entry"))) |entry| {
         if (!std.mem.eql(u8, entry, "index.html")) {
@@ -700,6 +838,24 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
             try errors.append(allocator, "invalid_data_version");
         }
     }
+    if (manifest.object.get("permissions")) |permissions| {
+        if (permissions != .array) {
+            try errors.append(allocator, "invalid_permissions");
+        } else {
+            for (permissions.array.items) |permission| {
+                if (valueString(permission) == null) try errors.append(allocator, "invalid_permissions");
+            }
+        }
+    }
+    if (manifest.object.get("capabilities")) |capabilities| {
+        if (capabilities != .object) try errors.append(allocator, "invalid_capabilities");
+    }
+    if (manifest.object.get("resourceBudget")) |resource_budget| {
+        if (resource_budget != .object) try errors.append(allocator, "invalid_resource_budget");
+    }
+    if (manifest.object.get("networkPolicy")) |network_policy| {
+        if (network_policy != .object) try errors.append(allocator, "invalid_network_policy");
+    }
 
     if (findPackageFile(files, "index.html")) |html| {
         if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
@@ -717,8 +873,589 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
         if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "shell.exec", "native.exec" })) try errors.append(allocator, "forbidden_bridge_method");
         if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
     }
+}
 
-    return validationReportAlloc(allocator, errors.items);
+const PackageFile = struct {
+    path: []const u8,
+    content: []const u8,
+    content_hash: []u8,
+};
+
+const PackageHashes = struct {
+    manifest_hash: []u8,
+    content_hash: []u8,
+    permissions_hash: []u8,
+    policy_hash: []u8,
+    file_records_json: []u8,
+};
+
+fn installWebappPackage(
+    allocator: std.mem.Allocator,
+    package_root: std.json.Value,
+    activate_requested: bool,
+    trust_level: []const u8,
+) ![]u8 {
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(allocator);
+    try collectWebappPackageErrors(allocator, package_root, &errors);
+    if (errors.items.len > 0) return error.InvalidWebappPackage;
+
+    const manifest = package_root.object.get("manifest").?;
+    const files_value = package_root.object.get("files").?;
+    const app_id = valueString(manifest.object.get("id")).?;
+    const app_name = valueString(manifest.object.get("name")).?;
+    const app_version = valueString(manifest.object.get("version")).?;
+    const app_runtime_version = valueString(manifest.object.get("runtimeVersion")).?;
+    const data_version = manifest.object.get("dataVersion").?.integer;
+    const permissions = manifest.object.get("permissions").?;
+    const actual_trust_level = if (isTrustLevel(trust_level)) trust_level else "developer";
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    const install_id = try randomDbIdAlloc(allocator, db, "install_");
+    defer allocator.free(install_id);
+    const report_id = try randomDbIdAlloc(allocator, db, "report_");
+    defer allocator.free(report_id);
+
+    const manifest_json = try jsonValueAlloc(allocator, manifest);
+    defer allocator.free(manifest_json);
+    const package_files = try packageFilesAlloc(allocator, files_value);
+    defer freePackageFiles(allocator, package_files);
+    const hashes = try packageHashesAlloc(allocator, manifest, manifest_json, permissions, package_files);
+    defer freePackageHashes(allocator, hashes);
+    const signature_json = try devSignatureJsonAlloc(allocator, manifest, actual_trust_level, hashes, created_at);
+    defer allocator.free(signature_json);
+    const content_hashes_json = try contentHashesDocumentJsonAlloc(allocator, hashes);
+    defer allocator.free(content_hashes_json);
+    const security_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"signature\":{s},\"contentHashes\":{s}}}", .{ signature_json, content_hashes_json });
+    defer allocator.free(security_json);
+    const validation_json = try validationReportAlloc(allocator, &.{});
+    defer allocator.free(validation_json);
+    const compatibility_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"runtimeVersion\":\"{s}\",\"appRuntimeVersion\":\"{s}\"}}", .{ runtime_version, app_runtime_version });
+    defer allocator.free(compatibility_json);
+    const smoke_test_json = try smokeTestsReportJsonAlloc(allocator, package_root);
+    defer allocator.free(smoke_test_json);
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+
+    const previous_install_id = try activeInstallIdAlloc(allocator, db, app_id);
+    defer if (previous_install_id) |previous| allocator.free(previous);
+    const existing_data_version = try appDataVersion(db, app_id);
+    const requires_approval = try packageAddsPermissions(db, permissions, previous_install_id);
+    const activate = activate_requested and !requires_approval;
+    const version_status = if (activate) "enabled" else "installed";
+    const app_status = if (activate or previous_install_id != null) "enabled" else "disabled";
+    const stored_data_version = if (activate or previous_install_id == null) data_version else existing_data_version orelse data_version;
+    const report_status = if (requires_approval) "requires-approval" else "accepted";
+    const permissions_json = try permissionsReportJsonAlloc(allocator, permissions, activate, requires_approval, previous_install_id);
+    defer allocator.free(permissions_json);
+
+    try upsertInstalledApp(db, app_id, app_name, app_status, stored_data_version, created_at);
+    if (previous_install_id != null and activate) {
+        try markPreviousVersionInstalled(db, previous_install_id.?);
+    }
+    try insertAppVersion(db, install_id, app_id, app_version, app_runtime_version, data_version, manifest_json, hashes, signature_json, actual_trust_level, version_status, created_at, activate);
+    for (package_files) |file| {
+        try insertAppFile(db, install_id, file, created_at);
+    }
+    try insertAppPermissions(db, install_id, app_id, permissions, activate, created_at);
+    try insertInstallReport(db, report_id, app_id, install_id, report_status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, hashes.content_hash, created_at);
+    try insertInstallationEvent(db, allocator, app_id, install_id, "install", null, report_id, created_at, "zig-server", version_status);
+    if (activate) {
+        try insertInstallationEvent(db, allocator, app_id, install_id, "activate", previous_install_id, report_id, created_at, "zig-server", "active");
+        try activateInstalledApp(db, app_id, install_id, app_version, data_version, created_at);
+    }
+
+    const result_json = try installResultJsonAlloc(allocator, app_id, install_id, report_id, app_version, version_status, activate, requires_approval, hashes.content_hash);
+    errdefer allocator.free(result_json);
+    try execDb(db, "COMMIT");
+    return result_json;
+}
+
+fn installResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    install_id: []const u8,
+    report_id: []const u8,
+    app_version: []const u8,
+    version_status: []const u8,
+    activated: bool,
+    requires_approval: bool,
+    content_hash: []const u8,
+) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_install_id = try escapeJsonString(allocator, install_id);
+    defer allocator.free(escaped_install_id);
+    const escaped_report_id = try escapeJsonString(allocator, report_id);
+    defer allocator.free(escaped_report_id);
+    const escaped_version = try escapeJsonString(allocator, app_version);
+    defer allocator.free(escaped_version);
+    const escaped_content_hash = try escapeJsonString(allocator, content_hash);
+    defer allocator.free(escaped_content_hash);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"appId\":\"{s}\",\"installId\":\"{s}\",\"reportId\":\"{s}\",\"version\":\"{s}\",\"status\":\"{s}\",\"activated\":{},\"requiresUserApproval\":{},\"contentHash\":\"{s}\"}}",
+        .{ escaped_app_id, escaped_install_id, escaped_report_id, escaped_version, version_status, activated, requires_approval, escaped_content_hash },
+    );
+}
+
+fn packageFilesAlloc(allocator: std.mem.Allocator, files_value: std.json.Value) ![]PackageFile {
+    var files: std.ArrayList(PackageFile) = .empty;
+    errdefer {
+        for (files.items) |file| allocator.free(file.content_hash);
+        files.deinit(allocator);
+    }
+    for (files_value.array.items) |file_value| {
+        if (file_value != .object) continue;
+        const path = valueString(file_value.object.get("path")) orelse continue;
+        const content = valueString(file_value.object.get("content")) orelse continue;
+        const content_hash = try sha256PrefixedAlloc(allocator, content);
+        try files.append(allocator, .{
+            .path = path,
+            .content = content,
+            .content_hash = content_hash,
+        });
+    }
+    const owned = try files.toOwnedSlice(allocator);
+    std.mem.sort(PackageFile, owned, {}, packageFileLessThan);
+    return owned;
+}
+
+fn freePackageFiles(allocator: std.mem.Allocator, files: []PackageFile) void {
+    for (files) |file| {
+        allocator.free(file.content_hash);
+    }
+    allocator.free(files);
+}
+
+fn packageFileLessThan(_: void, a: PackageFile, b: PackageFile) bool {
+    return std.mem.lessThan(u8, a.path, b.path);
+}
+
+fn packageHashesAlloc(
+    allocator: std.mem.Allocator,
+    manifest: std.json.Value,
+    manifest_json: []const u8,
+    permissions: std.json.Value,
+    files: []const PackageFile,
+) !PackageHashes {
+    const manifest_hash = try sha256PrefixedAlloc(allocator, manifest_json);
+    errdefer allocator.free(manifest_hash);
+    const permissions_json = try permissionsArrayJsonAlloc(allocator, permissions);
+    defer allocator.free(permissions_json);
+    const permissions_hash = try sha256PrefixedAlloc(allocator, permissions_json);
+    errdefer allocator.free(permissions_hash);
+    const policy_json = try policyJsonAlloc(allocator, manifest);
+    defer allocator.free(policy_json);
+    const policy_hash = try sha256PrefixedAlloc(allocator, policy_json);
+    errdefer allocator.free(policy_hash);
+
+    var content_bytes: std.io.Writer.Allocating = .init(allocator);
+    errdefer content_bytes.deinit();
+    var records: std.io.Writer.Allocating = .init(allocator);
+    errdefer records.deinit();
+    try records.writer.writeAll("[");
+    for (files, 0..) |file, index| {
+        try content_bytes.writer.print("{s}\n{s}\n", .{ file.path, file.content_hash });
+        if (index > 0) try records.writer.writeAll(",");
+        try records.writer.writeAll("{\"path\":");
+        try appendJsonString(allocator, &records, file.path);
+        try records.writer.writeAll(",\"hash\":");
+        try appendJsonString(allocator, &records, file.content_hash);
+        try records.writer.writeAll("}");
+    }
+    try records.writer.writeAll("]");
+    const content_slice = try content_bytes.toOwnedSlice();
+    defer allocator.free(content_slice);
+    const content_hash = try sha256PrefixedAlloc(allocator, content_slice);
+    errdefer allocator.free(content_hash);
+    const file_records_json = try records.toOwnedSlice();
+
+    return .{
+        .manifest_hash = manifest_hash,
+        .content_hash = content_hash,
+        .permissions_hash = permissions_hash,
+        .policy_hash = policy_hash,
+        .file_records_json = file_records_json,
+    };
+}
+
+fn freePackageHashes(allocator: std.mem.Allocator, hashes: PackageHashes) void {
+    allocator.free(hashes.manifest_hash);
+    allocator.free(hashes.content_hash);
+    allocator.free(hashes.permissions_hash);
+    allocator.free(hashes.policy_hash);
+    allocator.free(hashes.file_records_json);
+}
+
+fn permissionsArrayJsonAlloc(allocator: std.mem.Allocator, permissions: std.json.Value) ![]u8 {
+    var items: std.ArrayList([]const u8) = .empty;
+    defer items.deinit(allocator);
+    if (permissions == .array) {
+        for (permissions.array.items) |permission| {
+            if (valueString(permission)) |name| {
+                try items.append(allocator, name);
+            }
+        }
+    }
+    std.mem.sort([]const u8, items.items, {}, stringLessThan);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    for (items.items, 0..) |permission, index| {
+        if (index > 0) try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, permission);
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn stringLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+fn policyJsonAlloc(allocator: std.mem.Allocator, manifest: std.json.Value) ![]u8 {
+    const capabilities = try jsonValueAlloc(allocator, manifest.object.get("capabilities").?);
+    defer allocator.free(capabilities);
+    const network_policy = try jsonValueAlloc(allocator, manifest.object.get("networkPolicy").?);
+    defer allocator.free(network_policy);
+    const resource_budget = try jsonValueAlloc(allocator, manifest.object.get("resourceBudget").?);
+    defer allocator.free(resource_budget);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"capabilities\":{s},\"networkPolicy\":{s},\"resourceBudget\":{s}}}",
+        .{ capabilities, network_policy, resource_budget },
+    );
+}
+
+fn devSignatureJsonAlloc(
+    allocator: std.mem.Allocator,
+    manifest: std.json.Value,
+    trust_level: []const u8,
+    hashes: PackageHashes,
+    signed_at: []const u8,
+) ![]u8 {
+    const app_id = valueString(manifest.object.get("id")).?;
+    const version = valueString(manifest.object.get("version")).?;
+    const app_runtime_version = valueString(manifest.object.get("runtimeVersion")).?;
+    const data_version = manifest.object.get("dataVersion").?.integer;
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_version = try escapeJsonString(allocator, version);
+    defer allocator.free(escaped_version);
+    const escaped_runtime_version = try escapeJsonString(allocator, app_runtime_version);
+    defer allocator.free(escaped_runtime_version);
+    const escaped_trust_level = try escapeJsonString(allocator, trust_level);
+    defer allocator.free(escaped_trust_level);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"appId\":\"{s}\",\"appVersion\":\"{s}\",\"dataVersion\":{d},\"runtimeVersion\":\"{s}\",\"trustLevel\":\"{s}\",\"algorithm\":\"none-dev\",\"keyId\":\"zig-server-dev\",\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\",\"permissionsHash\":\"{s}\",\"policyHash\":\"{s}\",\"signedAt\":\"{s}\",\"signedBy\":\"zig-server\",\"signature\":\"none-dev\"}}",
+        .{ escaped_app_id, escaped_version, data_version, escaped_runtime_version, escaped_trust_level, hashes.manifest_hash, hashes.content_hash, hashes.permissions_hash, hashes.policy_hash, signed_at },
+    );
+}
+
+fn contentHashesDocumentJsonAlloc(allocator: std.mem.Allocator, hashes: PackageHashes) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"algorithm\":\"sha256\",\"manifestHash\":\"{s}\",\"contentHash\":\"{s}\",\"files\":{s}}}",
+        .{ hashes.manifest_hash, hashes.content_hash, hashes.file_records_json },
+    );
+}
+
+fn smokeTestsReportJsonAlloc(allocator: std.mem.Allocator, package_root: std.json.Value) ![]u8 {
+    const files = package_root.object.get("files").?;
+    if (findPackageFile(files, "smoke-tests.json")) |smoke_tests| {
+        const escaped = try escapeJsonString(allocator, smoke_tests);
+        defer allocator.free(escaped);
+        return std.fmt.allocPrint(allocator, "{{\"status\":\"recorded\",\"source\":\"package\",\"smokeTestsJson\":\"{s}\"}}", .{escaped});
+    }
+    return allocator.dupe(u8, "{\"status\":\"not-run\",\"reason\":\"no smoke-tests.json\"}");
+}
+
+fn permissionsReportJsonAlloc(
+    allocator: std.mem.Allocator,
+    permissions: std.json.Value,
+    activate: bool,
+    requires_approval: bool,
+    previous_install_id: ?[]const u8,
+) ![]u8 {
+    const requested = try permissionsArrayJsonAlloc(allocator, permissions);
+    defer allocator.free(requested);
+    const approved = if (activate) try allocator.dupe(u8, requested) else try allocator.dupe(u8, "[]");
+    defer allocator.free(approved);
+    const previous = previous_install_id orelse "";
+    const escaped_previous = try escapeJsonString(allocator, previous);
+    defer allocator.free(escaped_previous);
+    const previous_json = if (previous_install_id == null)
+        try allocator.dupe(u8, "null")
+    else
+        try std.fmt.allocPrint(allocator, "\"{s}\"", .{escaped_previous});
+    defer allocator.free(previous_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"requested\":{s},\"approved\":{s},\"requiresUserApproval\":{},\"approvalReasons\":{s},\"previousInstallId\":{s}}}",
+        .{
+            requested,
+            approved,
+            requires_approval,
+            if (requires_approval) "[\"permission_change\"]" else "[]",
+            previous_json,
+        },
+    );
+}
+
+fn activeInstallIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8) !?[]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT active_install_id FROM apps WHERE id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    return if (sqliteColumnNullableText(statement, 0)) |value| try allocator.dupe(u8, value) else null;
+}
+
+fn appDataVersion(db: *sqlite.sqlite3, app_id: []const u8) !?i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT data_version FROM apps WHERE id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn packageAddsPermissions(db: *sqlite.sqlite3, permissions: std.json.Value, previous_install_id: ?[]const u8) !bool {
+    const previous = previous_install_id orelse return false;
+    for (permissions.array.items) |permission| {
+        const name = valueString(permission) orelse continue;
+        var statement: ?*sqlite.sqlite3_stmt = null;
+        if (sqlite.sqlite3_prepare_v2(db, "SELECT 1 FROM app_permissions WHERE install_id = ? AND permission = ? AND approved = 1", -1, &statement, null) != sqlite.SQLITE_OK) {
+            return error.StorageQueryFailed;
+        }
+        defer _ = sqlite.sqlite3_finalize(statement);
+        bindText(statement, 1, previous);
+        bindText(statement, 2, name);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return true;
+    }
+    return false;
+}
+
+fn upsertInstalledApp(db: *sqlite.sqlite3, app_id: []const u8, name: []const u8, status: []const u8, data_version: i64, created_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " ++
+            "ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status, data_version = excluded.data_version, updated_at = excluded.updated_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, name);
+    bindText(statement, 3, status);
+    _ = sqlite.sqlite3_bind_int64(statement, 4, data_version);
+    bindText(statement, 5, created_at);
+    bindText(statement, 6, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn markPreviousVersionInstalled(db: *sqlite.sqlite3, install_id: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "UPDATE app_versions SET status = 'installed' WHERE install_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, install_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertAppVersion(
+    db: *sqlite.sqlite3,
+    install_id: []const u8,
+    app_id: []const u8,
+    version: []const u8,
+    app_runtime_version: []const u8,
+    data_version: i64,
+    manifest_json: []const u8,
+    hashes: PackageHashes,
+    signature_json: []const u8,
+    trust_level: []const u8,
+    status: []const u8,
+    created_at: []const u8,
+    activated: bool,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, install_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, version);
+    bindText(statement, 4, app_runtime_version);
+    _ = sqlite.sqlite3_bind_int64(statement, 5, data_version);
+    bindText(statement, 6, manifest_json);
+    bindText(statement, 7, hashes.manifest_hash);
+    bindText(statement, 8, hashes.content_hash);
+    bindText(statement, 9, signature_json);
+    bindText(statement, 10, trust_level);
+    bindText(statement, 11, status);
+    bindText(statement, 12, created_at);
+    bindNullableText(statement, 13, if (activated) created_at else null);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertAppFile(db: *sqlite.sqlite3, install_id: []const u8, file: PackageFile, created_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, install_id);
+    bindText(statement, 2, file.path);
+    bindText(statement, 3, file.content);
+    bindText(statement, 4, file.content_hash);
+    _ = sqlite.sqlite3_bind_int64(statement, 5, @intCast(file.content.len));
+    bindText(statement, 6, mimeForPackagePath(file.path));
+    bindText(statement, 7, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertAppPermissions(db: *sqlite.sqlite3, install_id: []const u8, app_id: []const u8, permissions: std.json.Value, activate: bool, created_at: []const u8) !void {
+    for (permissions.array.items) |permission| {
+        const name = valueString(permission) orelse continue;
+        var statement: ?*sqlite.sqlite3_stmt = null;
+        if (sqlite.sqlite3_prepare_v2(
+            db,
+            "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, 1, ?, ?, ?)",
+            -1,
+            &statement,
+            null,
+        ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        bindText(statement, 1, install_id);
+        bindText(statement, 2, app_id);
+        bindText(statement, 3, name);
+        _ = sqlite.sqlite3_bind_int64(statement, 4, if (activate) 1 else 0);
+        bindNullableText(statement, 5, if (activate) created_at else null);
+        bindText(statement, 6, if (activate) "server install approved" else "pending approval");
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    }
+}
+
+fn insertInstallReport(
+    db: *sqlite.sqlite3,
+    report_id: []const u8,
+    app_id: []const u8,
+    install_id: []const u8,
+    status: []const u8,
+    validation_json: []const u8,
+    security_json: []const u8,
+    permissions_json: []const u8,
+    compatibility_json: []const u8,
+    smoke_test_json: []const u8,
+    content_hash: []const u8,
+    created_at: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, report_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, install_id);
+    bindText(statement, 4, status);
+    bindText(statement, 5, validation_json);
+    bindText(statement, 6, security_json);
+    bindText(statement, 7, permissions_json);
+    bindText(statement, 8, compatibility_json);
+    bindText(statement, 9, smoke_test_json);
+    bindText(statement, 10, content_hash);
+    bindText(statement, 11, created_at);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn insertInstallationEvent(
+    db: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    install_id: []const u8,
+    action: []const u8,
+    previous_install_id: ?[]const u8,
+    report_id: []const u8,
+    created_at: []const u8,
+    actor: []const u8,
+    status: []const u8,
+) !void {
+    const event_id = try randomDbIdAlloc(allocator, db, "install_event_");
+    defer allocator.free(event_id);
+    const details_json = try std.fmt.allocPrint(allocator, "{{\"status\":\"{s}\"}}", .{status});
+    defer allocator.free(details_json);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, event_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, install_id);
+    bindText(statement, 4, action);
+    bindNullableText(statement, 5, previous_install_id);
+    bindText(statement, 6, actor);
+    bindText(statement, 7, report_id);
+    bindText(statement, 8, created_at);
+    bindText(statement, 9, details_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn activateInstalledApp(db: *sqlite.sqlite3, app_id: []const u8, install_id: []const u8, version: []const u8, data_version: i64, created_at: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, install_id);
+    bindText(statement, 2, version);
+    _ = sqlite.sqlite3_bind_int64(statement, 3, data_version);
+    bindText(statement, 4, created_at);
+    bindText(statement, 5, app_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+}
+
+fn mimeForPackagePath(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, ".html")) return "text/html";
+    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
+    if (std.mem.endsWith(u8, path, ".js")) return "text/javascript";
+    if (std.mem.endsWith(u8, path, ".json")) return "application/json";
+    return "text/plain";
 }
 
 fn coreStepAlloc(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
@@ -1145,6 +1882,10 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(apps);
     const app_versions = try queryRowsJson(allocator, "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions ORDER BY app_id, version", null);
     defer allocator.free(app_versions);
+    const app_installations = try queryRowsJson(allocator, "SELECT installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json FROM app_installations ORDER BY created_at", null);
+    defer allocator.free(app_installations);
+    const app_install_reports = try queryRowsJson(allocator, "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports ORDER BY created_at", null);
+    defer allocator.free(app_install_reports);
     const storage = try queryAppStorageRowsJson(allocator, null);
     defer allocator.free(storage);
     const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
@@ -1168,8 +1909,8 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"apps\":{s},\"app_versions\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s}}}",
-        .{ apps, app_versions, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs },
+        "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s}}}",
+        .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs },
     );
 }
 
@@ -1226,6 +1967,55 @@ fn queryAppVersionsRowsJson(allocator: std.mem.Allocator, app_id: []const u8) ![
         "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions WHERE app_id = ? ORDER BY created_at",
         app_id,
     );
+}
+
+fn queryInstallReportRowsJson(allocator: std.mem.Allocator, app_id: []const u8, install_id: ?[]const u8) ![]u8 {
+    if (install_id == null) {
+        return queryRowsJson(
+            allocator,
+            "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports WHERE app_id = ? ORDER BY created_at DESC",
+            app_id,
+        );
+    }
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, install_id.?);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var row_count: usize = 0;
+    const column_count = sqlite.sqlite3_column_count(statement);
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (row_count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{");
+        var column: c_int = 0;
+        while (column < column_count) : (column += 1) {
+            if (column > 0) try out.writer.writeAll(",");
+            const name_z = sqlite.sqlite3_column_name(statement, column) orelse return error.StorageQueryFailed;
+            try appendJsonString(allocator, &out, std.mem.span(name_z));
+            try out.writer.writeAll(":");
+            try appendJsonColumnValue(allocator, &out, statement, column);
+        }
+        try out.writer.writeAll("}");
+        row_count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
 }
 
 fn queryCoreEventsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
@@ -1710,6 +2500,12 @@ fn sha256HexAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return hex;
 }
 
+fn sha256PrefixedAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const hex = try sha256HexAlloc(allocator, input);
+    defer allocator.free(hex);
+    return std.fmt.allocPrint(allocator, "sha256:{s}", .{hex});
+}
+
 fn execDb(db: *sqlite.sqlite3, sql: [*:0]const u8) !void {
     if (sqlite.sqlite3_exec(db, sql, null, null, null) != sqlite.SQLITE_OK) {
         return error.StorageWriteFailed;
@@ -1995,10 +2791,28 @@ fn valueString(value: ?std.json.Value) ?[]const u8 {
     return actual.string;
 }
 
+fn isValidAppId(app_id: []const u8) bool {
+    if (app_id.len < 3 or app_id.len > 64) return false;
+    if (app_id[0] < 'a' or app_id[0] > 'z') return false;
+    for (app_id) |char| {
+        if ((char >= 'a' and char <= 'z') or (char >= '0' and char <= '9') or char == '-') continue;
+        return false;
+    }
+    return true;
+}
+
 fn isLogLevel(level: []const u8) bool {
     const levels = [_][]const u8{ "debug", "info", "warn", "error" };
     for (levels) |candidate| {
         if (std.mem.eql(u8, level, candidate)) return true;
+    }
+    return false;
+}
+
+fn isTrustLevel(trust_level: []const u8) bool {
+    const levels = [_][]const u8{ "bundled", "user-generated", "developer", "remote", "quarantined" };
+    for (levels) |candidate| {
+        if (std.mem.eql(u8, trust_level, candidate)) return true;
     }
     return false;
 }
