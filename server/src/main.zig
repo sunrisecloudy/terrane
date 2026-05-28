@@ -2388,6 +2388,7 @@ fn collectWebappPackageErrors(
         try errors.append(allocator, "invalid_files");
         return;
     }
+    try validateServerPackageFileList(allocator, files, errors);
 
     const required_files = [_][]const u8{ "manifest.json", "index.html", "styles.css", "app.js" };
     for (required_files) |file_path| {
@@ -9802,6 +9803,45 @@ fn findPackageFile(files: std.json.Value, file_path: []const u8) ?[]const u8 {
         return valueString(file.object.get("content"));
     }
     return null;
+}
+
+fn validateServerPackageFileList(
+    allocator: std.mem.Allocator,
+    files: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (files != .array) {
+        try errors.append(allocator, "invalid_files");
+        return;
+    }
+    for (files.array.items) |file| {
+        if (file != .object) {
+            try errors.append(allocator, "invalid_files");
+            continue;
+        }
+        const file_path = valueString(file.object.get("path")) orelse {
+            try errors.append(allocator, "invalid_files");
+            continue;
+        };
+        if (std.mem.startsWith(u8, file_path, "assets/") or !isAllowedServerPackagePath(file_path)) {
+            try errors.append(allocator, "unexpected_package_path");
+        }
+    }
+}
+
+fn isAllowedServerPackagePath(file_path: []const u8) bool {
+    const allowed_files = [_][]const u8{
+        "manifest.json",
+        "index.html",
+        "styles.css",
+        "app.js",
+        "smoke-tests.json",
+        "README.md",
+    };
+    for (allowed_files) |allowed| {
+        if (std.mem.eql(u8, file_path, allowed)) return true;
+    }
+    return std.mem.startsWith(u8, file_path, "migrations/");
 }
 
 fn containsAny(source: []const u8, needles: []const []const u8) bool {

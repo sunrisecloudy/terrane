@@ -759,6 +759,8 @@ function checkServerStatic() {
     "fn isKnownUnsupportedBridgeMethod",
     "fn hasInteractiveWithoutTestId",
     "\"missing_testid\"",
+    "fn validateServerPackageFileList",
+    "\"unexpected_package_path\"",
     "fn isKnownPackagePermission",
     "\"unknown_permission\"",
     "fn validateServerResourceBudget",
