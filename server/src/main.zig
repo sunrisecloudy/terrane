@@ -843,7 +843,7 @@ fn handleNotificationToastBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be a string");
         };
         if (!isToastLevel(level)) {
-            return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be info, success, warn, or error");
+            return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be info, success, warning, or error");
         }
     }
 
@@ -5530,7 +5530,7 @@ fn notificationToastBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be a string");
         };
         if (!isToastLevel(level)) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be info, success, warn, or error");
+            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be info, success, warning, or error");
         }
     }
     logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
@@ -10118,7 +10118,7 @@ fn isLogLevel(level: []const u8) bool {
 }
 
 fn isToastLevel(level: []const u8) bool {
-    const levels = [_][]const u8{ "info", "success", "warn", "warning", "error" };
+    const levels = [_][]const u8{ "info", "success", "warning", "error" };
     for (levels) |candidate| {
         if (std.mem.eql(u8, level, candidate)) return true;
     }
@@ -10478,6 +10478,14 @@ test "resource budget bridge errors include repair details" {
     );
     defer std.testing.allocator.free(response);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"details\":{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600") != null);
+}
+
+test "notification toast levels follow runtime spec" {
+    try std.testing.expect(isToastLevel("info"));
+    try std.testing.expect(isToastLevel("success"));
+    try std.testing.expect(isToastLevel("warning"));
+    try std.testing.expect(isToastLevel("error"));
+    try std.testing.expect(!isToastLevel("warn"));
 }
 
 test "network policy helper matches URL method headers and string body bytes" {

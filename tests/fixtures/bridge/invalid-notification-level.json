@@ -1,0 +1,19 @@
+{
+  "id": "req_notification_bad_level",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "notification.toast",
+  "params": {
+    "message": "Saved",
+    "level": "warn"
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "invalid_request",
+    "errorDetailsSubset": {
+      "level": "warn"
+    }
+  }
+}

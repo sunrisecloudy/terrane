@@ -1,0 +1,18 @@
+{
+  "id": "req_notification_toast",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "notification.toast",
+  "params": {
+    "message": "Saved",
+    "level": "warning"
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true,
+    "resultSubset": {
+      "ok": true
+    }
+  }
+}

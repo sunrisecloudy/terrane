@@ -135,6 +135,7 @@ export class BridgeDispatcher {
     }
 
     if (method === "notification.toast") {
+      assertNotificationToastParams(params);
       this.notifications.push({ appId: context.appId, ...params });
       return { ok: true };
     }
@@ -394,6 +395,20 @@ function isKnownMethod(method) {
     method === "app.log" ||
     method === "runtime.capabilities"
   );
+}
+
+function assertNotificationToastParams(params) {
+  if (typeof params.message !== "string") {
+    throw new PlatformError("invalid_request", "notification.toast requires message", {});
+  }
+  if (params.level != null && typeof params.level !== "string") {
+    throw new PlatformError("invalid_request", "notification.toast level must be a string", {});
+  }
+  if (typeof params.level === "string" && !["info", "success", "warning", "error"].includes(params.level)) {
+    throw new PlatformError("invalid_request", "notification.toast level must be info, success, warning, or error", {
+      level: params.level,
+    });
+  }
 }
 
 function parseSemver(version) {
