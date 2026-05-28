@@ -6,6 +6,7 @@ gtk_dep = dependency('gtk4')
 webkit_dep = dependency('webkitgtk-6.0')
 json_dep = dependency('json-glib-1.0')
 sqlite_dep = dependency('sqlite3')
+soup_dep = dependency('libsoup-3.0')
 
 executable('native-ai-webapp-host',
   [
@@ -19,5 +20,5 @@ executable('native-ai-webapp-host',
     'src/platform_network.c',
     'src/zig_core_bridge.c',
   ],
-  dependencies: [gtk_dep, webkit_dep, json_dep, sqlite_dep],
+  dependencies: [gtk_dep, webkit_dep, json_dep, sqlite_dep, soup_dep],
   install: true)

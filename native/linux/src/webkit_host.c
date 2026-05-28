@@ -65,12 +65,64 @@ static GHashTable *permissions_for_app(const gchar *app_id) {
   return permissions;
 }
 
+static GPtrArray *network_policy_for_app(const gchar *app_id) {
+  GPtrArray *rules = g_ptr_array_new_with_free_func(network_policy_rule_free);
+  g_autofree gchar *root = repo_root();
+  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *contents = NULL;
+  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+    return rules;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, contents, -1, NULL)) {
+    g_object_unref(parser);
+    return rules;
+  }
+  JsonObject *manifest = json_node_get_object(json_parser_get_root(parser));
+  JsonObject *policy = json_object_get_object_member(manifest, "networkPolicy");
+  JsonArray *allow = policy == NULL ? NULL : json_object_get_array_member(policy, "allow");
+  if (allow != NULL) {
+    guint length = json_array_get_length(allow);
+    for (guint index = 0; index < length; ++index) {
+      JsonObject *raw = json_array_get_object_element(allow, index);
+      if (raw == NULL || !json_object_has_member(raw, "origin")) {
+        continue;
+      }
+      NetworkPolicyRule *rule = g_new0(NetworkPolicyRule, 1);
+      rule->origin = g_strdup(json_object_get_string_member(raw, "origin"));
+      rule->methods = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+      rule->allowed_headers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+      rule->max_request_bytes = (gsize)json_object_get_int_member_with_default(raw, "maxRequestBytes", 0);
+      rule->max_response_bytes = (gsize)json_object_get_int_member_with_default(raw, "maxResponseBytes", 0);
+      rule->timeout_ms = (guint)json_object_get_int_member_with_default(raw, "timeoutMs", 10000);
+
+      JsonArray *methods = json_object_get_array_member(raw, "methods");
+      if (methods != NULL) {
+        for (guint method_index = 0; method_index < json_array_get_length(methods); ++method_index) {
+          g_hash_table_add(rule->methods, g_ascii_strup(json_array_get_string_element(methods, method_index), -1));
+        }
+      }
+      JsonArray *headers = json_object_get_array_member(raw, "allowedHeaders");
+      if (headers != NULL) {
+        for (guint header_index = 0; header_index < json_array_get_length(headers); ++header_index) {
+          g_hash_table_add(rule->allowed_headers, g_ascii_strdown(json_array_get_string_element(headers, header_index), -1));
+        }
+      }
+      g_ptr_array_add(rules, rule);
+    }
+  }
+  g_object_unref(parser);
+  return rules;
+}
+
 static AppSandboxContext sandbox_context_from_uri(const gchar *uri) {
   gchar *app_id = app_id_from_uri(uri);
   return (AppSandboxContext){
       .app_id = g_strdup(app_id),
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
+      .network_policy = network_policy_for_app(app_id),
   };
 }
 

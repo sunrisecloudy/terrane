@@ -299,6 +299,8 @@ function checkNativeStatic() {
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
+  const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
+  const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
@@ -423,8 +425,11 @@ function checkNativeStatic() {
     [linuxHost, "script-message-received::NativeAIPlatformBridge"],
     [linuxHost, "app-runtime://runtime-web/index.html"],
     [linuxHost, "sandbox_context_from_uri"],
+    [linuxHost, "network_policy_for_app"],
+    [linuxHost, ".network_policy"],
     [linuxBridge, "permission_for_bridge_method"],
     [linuxBridge, "approved_permissions_contains"],
+    [linuxBridge, '"network.request"'],
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
@@ -436,6 +441,17 @@ function checkNativeStatic() {
   }
   if (linuxStorage.includes("app_id_for_key")) {
     throw new Error("Linux storage must not derive app id from storage key");
+  }
+  for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT"]) {
+    if (!linuxNetwork.includes(snippet)) {
+      throw new Error(`Linux network missing policy enforcement: ${snippet}`);
+    }
+  }
+  if (linuxNetwork.includes("platform_unsupported")) {
+    throw new Error("Linux network.request must not remain a platform_unsupported stub");
+  }
+  if (!linuxMeson.includes("libsoup-3.0")) {
+    throw new Error("Linux network bridge must link libsoup-3.0");
   }
   const androidRequired = [
     [androidMain, "WebViewCompat.addWebMessageListener"],

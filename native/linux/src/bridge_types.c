@@ -45,6 +45,21 @@ gchar *bridge_response_to_string(JsonNode *response) {
   return text;
 }
 
+void network_policy_rule_free(gpointer data) {
+  NetworkPolicyRule *rule = data;
+  if (rule == NULL) {
+    return;
+  }
+  g_clear_pointer(&rule->origin, g_free);
+  if (rule->methods != NULL) {
+    g_hash_table_unref(rule->methods);
+  }
+  if (rule->allowed_headers != NULL) {
+    g_hash_table_unref(rule->allowed_headers);
+  }
+  g_free(rule);
+}
+
 void bridge_request_clear(BridgeRequest *request) {
   if (request == NULL) {
     return;
@@ -67,5 +82,9 @@ void app_sandbox_context_clear(AppSandboxContext *context) {
   if (context->approved_permissions != NULL) {
     g_hash_table_unref(context->approved_permissions);
     context->approved_permissions = NULL;
+  }
+  if (context->network_policy != NULL) {
+    g_ptr_array_unref(context->network_policy);
+    context->network_policy = NULL;
   }
 }

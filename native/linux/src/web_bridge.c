@@ -32,12 +32,12 @@ static JsonNode *capabilities_response(const BridgeRequest *request) {
   json_builder_add_boolean_value(builder, TRUE);
   json_builder_set_member_name(builder, "features");
   json_builder_begin_object(builder);
-  const gchar *enabled[] = {"storage.get", "storage.set", "storage.remove", "storage.list", "notification.toast", "runtime.capabilities", "app.log"};
+  const gchar *enabled[] = {"storage.get", "storage.set", "storage.remove", "storage.list", "notification.toast", "network.request", "runtime.capabilities", "app.log"};
   for (gsize index = 0; index < G_N_ELEMENTS(enabled); ++index) {
     json_builder_set_member_name(builder, enabled[index]);
     json_builder_add_boolean_value(builder, TRUE);
   }
-  const gchar *disabled[] = {"dialog.openFile", "dialog.saveFile", "network.request", "core.step"};
+  const gchar *disabled[] = {"dialog.openFile", "dialog.saveFile", "core.step"};
   for (gsize index = 0; index < G_N_ELEMENTS(disabled); ++index) {
     json_builder_set_member_name(builder, disabled[index]);
     json_builder_add_boolean_value(builder, FALSE);
