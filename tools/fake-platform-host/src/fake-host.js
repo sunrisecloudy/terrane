@@ -182,6 +182,78 @@ export class FakePlatformHost {
     return this.bridge.dispatch(request, context);
   }
 
+  runtimeSnapshot(appId) {
+    const pkg = this.activeRuntimePackage(appId);
+    const html = pkg.files.get("index.html") ?? "";
+    return {
+      appId,
+      installId: pkg.installId,
+      version: pkg.version,
+      title: html.match(/<title>([^<]+)<\/title>/i)?.[1] ?? pkg.manifest.name,
+      testIds: extractTestIds(html),
+      text: htmlToText(html),
+      resourceUsage: this.database.resourceUsage(appId),
+    };
+  }
+
+  runtimeQuery(args) {
+    const appId = requiredArg(args, "appId");
+    const pkg = this.activeRuntimePackage(appId);
+    const html = pkg.files.get("index.html") ?? "";
+    const query = args.testId ? `[data-testid="${args.testId}"]` : args.selector ?? args.text ?? "";
+    const matches = queryMatches(html, args);
+    return { ok: matches.length > 0, appId, query, matches };
+  }
+
+  validateRuntimeTarget(tool, args) {
+    if (tool === "runtime.press_key") {
+      return { ok: true, key: args.key ?? null };
+    }
+    const result = this.runtimeQuery(args);
+    if (!result.ok) {
+      throw new PlatformError("selector.not_found", "Runtime target was not found in installed package HTML", {
+        appId: args.appId,
+        testId: args.testId,
+        selector: args.selector,
+        text: args.text,
+      });
+    }
+    return { ok: true, tool, target: result.matches[0] };
+  }
+
+  assertRuntimeVisible(args) {
+    const result = this.runtimeQuery(args);
+    if (!result.ok) {
+      throw new PlatformError("selector.not_found", "Expected runtime target is not visible", {
+        appId: args.appId,
+        testId: args.testId,
+        selector: args.selector,
+        text: args.text,
+      });
+    }
+    return { ok: true, matches: result.matches.length };
+  }
+
+  assertRuntimeText(args) {
+    const appId = requiredArg(args, "appId");
+    const text = requiredArg(args, "text");
+    const pkg = this.activeRuntimePackage(appId);
+    const html = pkg.files.get("index.html") ?? "";
+    if (!htmlToText(html).includes(text)) {
+      throw new PlatformError("text.not_found", "Expected text was not found in installed package HTML", { appId, text });
+    }
+    return { ok: true, text };
+  }
+
+  activeRuntimePackage(appId) {
+    this.verifyInstalledApp(appId);
+    const pkg = this.database.activeInstallPackage(appId);
+    if (!pkg) {
+      throw new PlatformError("app_not_installed", `App is not installed: ${appId}`, { appId });
+    }
+    return pkg;
+  }
+
   async runControlCommand(tool, args = {}) {
     switch (tool) {
       case "platform.health":
@@ -232,6 +304,21 @@ export class FakePlatformHost {
           sessionId: this.database.createRuntimeSession({ appId: args.appId }),
           appId: args.appId,
         };
+      case "runtime.snapshot":
+        return this.runtimeSnapshot(requiredArg(args, "appId"));
+      case "runtime.query":
+        return this.runtimeQuery(args);
+      case "runtime.click":
+      case "runtime.type":
+      case "runtime.set_value":
+      case "runtime.press_key":
+        return this.validateRuntimeTarget(tool, args);
+      case "runtime.wait_for":
+        return { ok: true, kind: args.kind ?? "idle" };
+      case "runtime.assert_visible":
+        return this.assertRuntimeVisible(args);
+      case "runtime.assert_text":
+        return this.assertRuntimeText(args);
       case "platform.reset_webapp":
       case "runtime.storage_reset":
         return this.database.resetWebapp(requiredArg(args, "appId"));
@@ -489,6 +576,49 @@ function parseSemver(version) {
 
 function sortedStrings(values) {
   return [...new Set(Array.isArray(values) ? values : [])].sort();
+}
+
+function extractTestIds(html) {
+  return [...html.matchAll(/\bdata-testid=["']([^"']+)["']/g)].map((match) => match[1]).sort();
+}
+
+function queryMatches(html, args) {
+  if (args.testId) {
+    const tag = tagForAttribute(html, "data-testid", args.testId);
+    return tag ? [{ kind: "testId", value: args.testId, tag }] : [];
+  }
+  if (args.selector?.startsWith("#")) {
+    const id = args.selector.slice(1);
+    const tag = tagForAttribute(html, "id", id);
+    return tag ? [{ kind: "selector", value: args.selector, tag }] : [];
+  }
+  const testId = args.selector?.match(/\[data-testid=["']([^"']+)["']\]/)?.[1];
+  if (testId) {
+    const tag = tagForAttribute(html, "data-testid", testId);
+    return tag ? [{ kind: "selector", value: args.selector, tag }] : [];
+  }
+  if (args.text) {
+    return htmlToText(html).includes(args.text) ? [{ kind: "text", value: args.text }] : [];
+  }
+  return [];
+}
+
+function tagForAttribute(html, attr, value) {
+  const pattern = new RegExp(`<([a-z0-9-]+)\\b[^>]*\\b${attr}=["']${escapeRegExp(value)}["'][^>]*>`, "i");
+  return html.match(pattern)?.[1] ?? null;
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function summarizeValidation(result) {
