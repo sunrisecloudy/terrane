@@ -8,7 +8,7 @@ import { packageHashes, readPackage, validatePackage } from "./package-validator
 import { PlatformDatabase } from "./platform-database.js";
 import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "./signing.js";
 import { TestRunner } from "./test-runner.js";
-import { canonicalJson, prettyJson } from "./util.js";
+import { canonicalJson, prettyJson, sha256 } from "./util.js";
 
 export class FakePlatformHost {
   constructor({ dbFile = ":memory:", controlToken = "dev-token-change-me", runtimeVersion = "0.1.0", allowRuntimeMismatch = false } = {}) {
@@ -197,6 +197,20 @@ export class FakePlatformHost {
     };
   }
 
+  runtimeScreenshot(args) {
+    const appId = requiredArg(args, "appId");
+    const snapshot = this.runtimeSnapshot(appId);
+    return {
+      ok: true,
+      appId,
+      label: args.label ?? null,
+      format: "static-html-summary",
+      title: snapshot.title,
+      textHash: `sha256:${sha256(snapshot.text)}`,
+      testIds: snapshot.testIds,
+    };
+  }
+
   runtimeQuery(args) {
     const appId = requiredArg(args, "appId");
     const pkg = this.activeRuntimePackage(appId);
@@ -348,6 +362,8 @@ export class FakePlatformHost {
         };
       case "runtime.snapshot":
         return this.runtimeSnapshot(requiredArg(args, "appId"));
+      case "runtime.screenshot":
+        return this.runtimeScreenshot(args);
       case "runtime.query":
         return this.runtimeQuery(args);
       case "runtime.click":
@@ -411,6 +427,8 @@ export class FakePlatformHost {
         return this.testRunner.runSmokeTests(requiredArg(args, "appId"));
       case "runtime.run_microtest":
         return this.testRunner.runMicroTest({ spec: args.spec, microtestPath: args.microtestPath });
+      case "platform.run_platform_smoke":
+        return this.testRunner.runPlatformSmokeTest({ spec: args.spec, smokePath: args.smokePath, platform: args.platform ?? "fake-host" });
       case "runtime.network_mock_set":
         this.database.addNetworkMock(normalizeNetworkMockArgs(args));
         return { ok: true };

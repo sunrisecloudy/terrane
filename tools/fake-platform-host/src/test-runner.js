@@ -72,6 +72,55 @@ export class TestRunner {
     });
   }
 
+  async runPlatformSmokeTest({ spec, smokePath, platform = "fake-host" } = {}) {
+    const smoke = spec ?? readPlatformSmoke(smokePath);
+    const appResults = [];
+    const failures = [];
+
+    for (const appId of smoke.apps ?? []) {
+      const appCommands = [];
+      const install = await this.executeControlStep({
+        phase: "setup",
+        index: 0,
+        step: { tool: "platform.install_webapp_package", args: { path: path.join("webapps", "examples", appId) } },
+        appId,
+      });
+      appCommands.push(install);
+      if (install.status === "failed") failures.push({ appId, ...install });
+
+      for (const [index, step] of (smoke.stepsPerApp ?? []).entries()) {
+        const expanded = expandControlStep(step, { appId, platform });
+        const execution = await this.executeControlStep({ phase: "steps", index, step: expanded, appId });
+        appCommands.push(execution);
+        if (execution.status === "failed") failures.push({ appId, ...execution });
+      }
+
+      appResults.push({
+        appId,
+        ok: appCommands.every((command) => command.status !== "failed"),
+        commands: appCommands,
+      });
+    }
+
+    const result = {
+      ok: failures.length === 0,
+      id: smoke.id,
+      platform,
+      totalApps: smoke.apps?.length ?? 0,
+      failures,
+      apps: appResults,
+    };
+
+    return this.database.recordTestRun({
+      microTestId: `platform-smoke:${smoke.id}:${platform}`,
+      name: `${smoke.id} (${platform})`,
+      appId: null,
+      spec: smoke,
+      status: result.ok ? "passed" : "failed",
+      result,
+    });
+  }
+
   evaluateSmokeTests({ appId, tests, html, appJs }) {
     const failures = [];
     const dynamicText = new Set();
@@ -195,6 +244,14 @@ function readMicrotest(microtestPath) {
   return JSON.parse(fs.readFileSync(resolved, "utf8"));
 }
 
+function readPlatformSmoke(smokePath) {
+  if (!smokePath) {
+    throw new PlatformError("invalid_request", "platform.run_platform_smoke requires spec or smokePath");
+  }
+  const resolved = resolveInside(repoRoot, smokePath);
+  return JSON.parse(fs.readFileSync(resolved, "utf8"));
+}
+
 function selectorExists(html, selector) {
   if (selector.startsWith("#")) {
     return new RegExp(`\\bid=["']${escapeRegExp(selector.slice(1))}["']`).test(html);
@@ -252,6 +309,7 @@ function normalizeControlStep(step, appId) {
       "runtime.accessibility_snapshot",
       "runtime.assert_accessibility",
       "runtime.assert_no_console_errors",
+      "runtime.screenshot",
     ].includes(step.tool)
   ) {
     args.appId ??= appId;
@@ -270,6 +328,7 @@ function normalizeControlStep(step, appId) {
     "runtime.accessibility_snapshot",
     "runtime.assert_accessibility",
     "runtime.assert_no_console_errors",
+    "runtime.screenshot",
     "runtime.network_mock_set",
     "runtime.dialog_mock_set",
   ]);
@@ -320,6 +379,26 @@ function dynamicTextFromCommands(commands) {
     collectText(command.result, values);
   }
   return values;
+}
+
+function expandControlStep(step, values) {
+  return {
+    ...step,
+    args: expandPlaceholders(step.args ?? {}, values),
+  };
+}
+
+function expandPlaceholders(value, values) {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([a-zA-Z0-9_]+)\}/g, (match, name) => (name in values ? values[name] : match));
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => expandPlaceholders(item, values));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expandPlaceholders(item, values)]));
+  }
+  return value;
 }
 
 function collectText(value, values) {

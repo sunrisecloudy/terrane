@@ -138,6 +138,7 @@ Codex should never call generated app APIs directly. It calls MCP tools. The MCP
 | `runtime.assert_core_action` | Assert core action appeared in the log. |
 | `runtime.run_microtest` | Execute a `.microtest.json` file. |
 | `runtime.run_smoke_tests` | Execute app package `smoke-tests.json`. |
+| `platform.run_platform_smoke` | Execute a `.platform-smoke.json` suite across target apps. |
 
 ## Required MCP tool behavior
 

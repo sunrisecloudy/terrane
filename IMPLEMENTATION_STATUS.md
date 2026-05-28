@@ -133,7 +133,7 @@ Status snapshot: **2026-05-28**.
 | `tests/accessibility/` | fixtures |
 | `tests/security/malicious-packages/` | skeleton (directory exists, no fixtures yet) |
 | `tests/db/` | fixtures (DB test fixtures) |
-| `tests/platform-smoke/` | skeleton |
+| `tests/platform-smoke/` | fixtures (cross-platform suite now exercised by fake-host runner) |
 
 ## CI
 

@@ -24,7 +24,7 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 - Logs: `runtime.console_logs`, `runtime.bridge_calls`, `runtime.event_log`, `runtime.clear_logs`.
 - Effects: `runtime.storage_get`, `runtime.storage_set`, `runtime.storage_reset`, `runtime.network_mock_set`, `runtime.dialog_mock_set`, `runtime.timer_advance`.
 - Core/replay: `runtime.core_step`, `runtime.core_snapshot`, `runtime.replay_events`.
-- Assertions: `runtime.assert_visible`, `runtime.assert_text`, `runtime.assert_bridge_call`, `runtime.assert_no_console_errors`, `runtime.run_microtest`, `runtime.run_smoke_tests`.
+- Assertions: `runtime.assert_visible`, `runtime.assert_text`, `runtime.assert_bridge_call`, `runtime.assert_no_console_errors`, `runtime.run_microtest`, `runtime.run_smoke_tests`, `platform.run_platform_smoke`.
 
 ## Implementation notes
 

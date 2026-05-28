@@ -39,6 +39,7 @@ export const TOOL_NAMES = [
   "platform.migration_dry_run",
   "platform.migration_apply",
   "platform.run_policy_audit",
+  "platform.run_platform_smoke",
   "platform.run_repair_loop",
   "runtime.capabilities",
   "runtime.compare_snapshot",
