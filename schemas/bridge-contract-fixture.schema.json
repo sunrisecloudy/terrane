@@ -46,6 +46,16 @@
             "minimum": 0
           }
         },
+        "manifestPatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runtimeVersion": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "networkMocks": {
           "type": "array",
           "items": {
@@ -101,6 +111,12 @@
           "type": "boolean"
         },
         "errorCode": {
+          "type": "string"
+        },
+        "resultOk": {
+          "type": "boolean"
+        },
+        "resultErrorCode": {
           "type": "string"
         }
       }

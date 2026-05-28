@@ -21,12 +21,14 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
     ["invalid-permission-denied.json", false, "permission_denied"],
     ["invalid-unknown-method.json", false, "unknown_method"],
     ["valid-core-step.json", true, null],
+    ["invalid-core-step-bad-json.json", true, null],
     ["valid-network-request-mocked.json", true, null],
     ["valid-network-policy-denied.json", false, "network_policy_denied"],
     ["valid-dialog-open-mocked.json", true, null],
     ["valid-dialog-cancelled.json", true, null],
     ["valid-runtime-capabilities.json", true, null],
     ["budget-exceeded-bridge-calls.json", false, "resource_budget_exceeded"],
+    ["runtime-version-incompatible.json", false, "runtime_version_incompatible"],
   ];
 
   for (const [fileName, ok, code] of cases) {
@@ -37,6 +39,7 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
       const pkg = readPackage(path.join(examplesDir, fixture.context.appId));
       const manifest = {
         ...pkg.manifest,
+        ...(fixture.preconditions?.manifestPatch ?? {}),
         resourceBudget: {
           ...pkg.manifest.resourceBudget,
           ...(fixture.preconditions?.resourceBudget ?? {}),
@@ -61,6 +64,12 @@ test("checked-in bridge fixtures match fake-host response codes", async () => {
       const expectedCode = fixture.expected?.errorCode ?? code;
       if (expectedCode) {
         assert.equal(response.error.code, expectedCode, fileName);
+      }
+      if ("resultOk" in (fixture.expected ?? {})) {
+        assert.equal(response.result?.ok, fixture.expected.resultOk, fileName);
+      }
+      if (fixture.expected?.resultErrorCode) {
+        assert.equal(response.result?.error?.code, fixture.expected.resultErrorCode, fileName);
       }
     } finally {
       db.close();

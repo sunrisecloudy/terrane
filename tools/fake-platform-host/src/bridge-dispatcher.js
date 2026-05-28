@@ -15,9 +15,11 @@ const METHOD_PERMISSION = new Map([
 ]);
 
 export class BridgeDispatcher {
-  constructor({ database, core }) {
+  constructor({ database, core, runtimeVersion = "0.1.0", allowRuntimeMismatch = false }) {
     this.database = database;
     this.core = core;
+    this.runtimeVersion = runtimeVersion;
+    this.allowRuntimeMismatch = allowRuntimeMismatch;
     this.notifications = [];
     this.faults = [];
   }
@@ -91,6 +93,7 @@ export class BridgeDispatcher {
       throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
     }
 
+    this.assertRuntimeCompatibility(context);
     this.throwInjectedFault(method, context);
     this.assertPermission(method, context);
     this.assertResourceBudget(method, params, context);
@@ -157,6 +160,21 @@ export class BridgeDispatcher {
     }
 
     throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
+  }
+
+  assertRuntimeCompatibility(context) {
+    const appRuntimeVersion = context.active?.manifest?.runtimeVersion;
+    if (!appRuntimeVersion || this.allowRuntimeMismatch) return;
+    const runtime = parseSemver(this.runtimeVersion);
+    const app = parseSemver(appRuntimeVersion);
+    const ok = Boolean(runtime && app && app.major === runtime.major && app.minor <= runtime.minor);
+    if (!ok) {
+      throw new PlatformError("runtime_version_incompatible", "App runtimeVersion is not compatible with the fake-host runtime", {
+        runtimeVersion: this.runtimeVersion,
+        appRuntimeVersion,
+        allowRuntimeMismatch: this.allowRuntimeMismatch,
+      });
+    }
   }
 
   assertPermission(method, context) {
@@ -304,6 +322,16 @@ function isKnownMethod(method) {
     method === "app.log" ||
     method === "runtime.capabilities"
   );
+}
+
+function parseSemver(version) {
+  const match = String(version ?? "").match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
 }
 
 function assertBridgeRequestShape(request) {

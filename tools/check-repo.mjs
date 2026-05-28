@@ -272,11 +272,17 @@ function checkPluginMcp() {
 
 function checkFakeHostStatic() {
   const fakeHost = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "fake-host.js"), "utf8");
+  const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "bridge-dispatcher.js"), "utf8");
+  const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
   const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
   const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
   const required = [
     [fakeHost, "new BrowserSmokeRunner"],
     [fakeHost, 'runner: args.runner ?? args.mode'],
+    [bridgeDispatcher, "assertRuntimeCompatibility"],
+    [bridgeDispatcher, "runtime_version_incompatible"],
+    [core, "validateCoreEvent"],
+    [core, "invalid_event"],
     [testRunner, "NATIVE_AI_SMOKE_RUNNER"],
     [testRunner, 'runner: "static"'],
     [testRunner, 'from: "browser"'],
@@ -292,7 +298,7 @@ function checkFakeHostStatic() {
       throw new Error(`fake-host browser smoke support missing ${snippet}`);
     }
   }
-  return "smoke=static,browser-cdp";
+  return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events";
 }
 
 function checkRuntimeStatic() {

@@ -22,7 +22,7 @@ export class FakePlatformHost {
   } = {}) {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
-    this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
+    this.bridge = new BridgeDispatcher({ database: this.database, core: this.core, runtimeVersion, allowRuntimeMismatch });
     this.testRunner = new TestRunner({
       database: this.database,
       runControlCommand: (tool, args) => this.runControlCommand(tool, args),

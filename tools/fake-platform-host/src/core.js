@@ -4,11 +4,21 @@ export class CoreEngine {
   }
 
   step(appId, event) {
+    const validationError = validateCoreEvent(event);
+    if (validationError) {
+      return {
+        ok: false,
+        error: validationError,
+        actions: [],
+      };
+    }
+
     const current = this.stateVersions.get(appId) ?? 0;
     const stateVersion = current + 1;
     this.stateVersions.set(appId, stateVersion);
 
     return {
+      ok: true,
       stateVersion,
       actions: actionsForEvent(event),
     };
@@ -33,6 +43,22 @@ export class CoreEngine {
       result: replayCore.step(appId, event),
     }));
   }
+}
+
+function validateCoreEvent(event) {
+  if (event === undefined) {
+    return { code: "invalid_event", message: "core.step input requires event" };
+  }
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    return { code: "invalid_event", message: "event must be an object" };
+  }
+  if (!("type" in event)) {
+    return { code: "invalid_event", message: "event.type is required" };
+  }
+  if (typeof event.type !== "string") {
+    return { code: "invalid_event", message: "event.type must be a string" };
+  }
+  return null;
 }
 
 function actionsForEvent(event) {
