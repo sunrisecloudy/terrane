@@ -1570,6 +1570,26 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.compare_snapshot")) {
+        const result_json = compareSnapshotControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.compare_snapshot requires left/right snapshots or snapshot ids");
+            },
+            error.SnapshotNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_not_found", "Snapshot was not found");
+            },
+            error.SnapshotInvalid => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "snapshot_invalid", args_json, null);
+                return writeControlError(allocator, stream, 400, "snapshot_invalid", "Snapshot cannot be parsed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.call_bridge")) {
         const args_value = args orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -6469,6 +6489,89 @@ fn timerAdvanceControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u
     const requested_ms = controlI64Arg(args, "ms") orelse controlI64Arg(args, "milliseconds") orelse 0;
     const advanced_ms = @max(requested_ms, 0);
     return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"advancedMs\":{d}}}", .{advanced_ms});
+}
+
+fn compareSnapshotControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const args_value = args orelse return error.InvalidControlArgs;
+    if (args_value != .object) return error.InvalidControlArgs;
+    const left_json = try snapshotCompareSideCanonicalJsonAlloc(allocator, args_value, "left", "leftSnapshotId");
+    defer allocator.free(left_json);
+    const right_json = try snapshotCompareSideCanonicalJsonAlloc(allocator, args_value, "right", "rightSnapshotId");
+    defer allocator.free(right_json);
+    const equal = std.mem.eql(u8, left_json, right_json);
+    const left_hash = try sha256PrefixedAlloc(allocator, left_json);
+    defer allocator.free(left_hash);
+    const right_hash = try sha256PrefixedAlloc(allocator, right_json);
+    defer allocator.free(right_hash);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":{},\"equal\":{},\"leftHash\":\"{s}\",\"rightHash\":\"{s}\"}}",
+        .{ equal, equal, left_hash, right_hash },
+    );
+}
+
+fn snapshotCompareSideCanonicalJsonAlloc(
+    allocator: std.mem.Allocator,
+    args: std.json.Value,
+    inline_field: []const u8,
+    snapshot_id_field: []const u8,
+) ![]u8 {
+    if (args.object.get(inline_field)) |inline_value| {
+        if (inline_value != .null) {
+            return canonicalJsonValueAlloc(allocator, inline_value);
+        }
+    }
+    const snapshot_id = valueString(args.object.get(snapshot_id_field)) orelse return error.InvalidControlArgs;
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const snapshot_json = try snapshotJsonByIdAlloc(allocator, db, snapshot_id);
+    defer allocator.free(snapshot_json);
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, snapshot_json, .{}) catch return error.SnapshotInvalid;
+    defer parsed.deinit();
+    return canonicalJsonValueAlloc(allocator, parsed.value);
+}
+
+fn canonicalJsonValueAlloc(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try appendCanonicalJsonValue(allocator, &out, value);
+    return out.toOwnedSlice();
+}
+
+fn appendCanonicalJsonValue(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, value: std.json.Value) !void {
+    switch (value) {
+        .null => try out.writer.writeAll("null"),
+        .bool => |actual| try out.writer.writeAll(if (actual) "true" else "false"),
+        .integer => |actual| try out.writer.print("{d}", .{actual}),
+        .float => |actual| try out.writer.print("{d}", .{actual}),
+        .number_string => |actual| try out.writer.writeAll(actual),
+        .string => |actual| try appendJsonString(allocator, out, actual),
+        .array => |array| {
+            try out.writer.writeAll("[");
+            for (array.items, 0..) |item, index| {
+                if (index > 0) try out.writer.writeAll(",");
+                try appendCanonicalJsonValue(allocator, out, item);
+            }
+            try out.writer.writeAll("]");
+        },
+        .object => |object| {
+            var keys: std.ArrayList([]const u8) = .empty;
+            defer keys.deinit(allocator);
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                try keys.append(allocator, entry.key_ptr.*);
+            }
+            std.mem.sort([]const u8, keys.items, {}, stringLessThan);
+            try out.writer.writeAll("{");
+            for (keys.items, 0..) |key, index| {
+                if (index > 0) try out.writer.writeAll(",");
+                try appendJsonString(allocator, out, key);
+                try out.writer.writeAll(":");
+                try appendCanonicalJsonValue(allocator, out, object.get(key).?);
+            }
+            try out.writer.writeAll("}");
+        },
+    }
 }
 
 fn queryRowsJson(allocator: std.mem.Allocator, sql: []const u8, bind_value: ?[]const u8) ![]u8 {
