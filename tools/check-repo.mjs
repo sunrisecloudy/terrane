@@ -581,6 +581,9 @@ function checkNativeStatic() {
   const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
+  const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "ZigCoreBridge.kt"), "utf8");
+  const androidCoreJni = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "zig_core_jni.cpp"), "utf8");
+  const androidCoreCmake = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "CMakeLists.txt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
   const macRequired = [
@@ -830,6 +833,7 @@ function checkNativeStatic() {
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
     [androidBridge, '"network.request" to true'],
+    [androidBridge, '"core.step" to core.isAvailable()'],
     [androidBridge, "networkPolicy"],
     [androidStorage, "SQLiteOpenHelper"],
     [androidStorage, "request.context.appId"],
@@ -841,7 +845,7 @@ function checkNativeStatic() {
     }
   }
   const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");
-  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)"]) {
+  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")']) {
     if (!androidGradle.includes(snippet)) {
       throw new Error(`Android Gradle asset sync missing ${snippet}`);
     }
@@ -854,7 +858,22 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
+  for (const snippet of ["System.loadLibrary(\"zig_core_jni\")", "external fun nativeStep", "core.step app field does not match the channel-derived app id", "JSONObject(request.params.toString())"]) {
+    if (!androidCore.includes(snippet)) {
+      throw new Error(`Android Zig core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["dlopen(\"libzig_core.so\"", "dlsym", "core_step_json", "core_free", "JNI_OnUnload"]) {
+    if (!androidCoreJni.includes(snippet)) {
+      throw new Error(`Android JNI Zig core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["add_library(zig_core_jni SHARED zig_core_jni.cpp)", "target_link_libraries(zig_core_jni PRIVATE", "dl"]) {
+    if (!androidCoreCmake.includes(snippet)) {
+      throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
+    }
+  }
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked core=jni-so";
 }
 
 function readJson(filePath) {

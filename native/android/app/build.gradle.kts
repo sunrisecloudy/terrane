@@ -25,6 +25,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
     }
 
     compileOptions {
@@ -35,6 +41,12 @@ android {
     sourceSets {
         getByName("main") {
             assets.srcDir(generatedNativeAiAssets)
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
         }
     }
 }

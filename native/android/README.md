@@ -16,6 +16,7 @@ app/src/main/java/.../PlatformStorage.kt
 app/src/main/java/.../PlatformDialogs.kt
 app/src/main/java/.../PlatformNotifications.kt
 app/src/main/java/.../PlatformNetwork.kt
+app/src/main/cpp/zig_core_jni.cpp
 app/src/main/assets/runtime/
 app/src/main/assets/examples/
 app/src/main/jniLibs/arm64-v8a/libzig_core.so
@@ -40,7 +41,9 @@ Current implementation status:
 - The default sandbox context derives permissions, storage prefix, and network policy from the bundled app manifest instead of hardcoded bridge permissions.
 - Native bridge applies manifest-style permission checks before dispatch.
 - `network.request` uses `HttpURLConnection` with manifest `networkPolicy` checks.
-- Dialog and Zig core paths currently return structured `platform_unsupported`.
+- `core.step` uses a JNI wrapper that loads packaged `libzig_core.so` and calls the shared Zig C ABI.
+- `runtime.capabilities` reports `core.step` from actual JNI/Zig core availability and returns structured `platform_unsupported` when unavailable.
+- Dialog paths currently return structured `platform_unsupported`.
 
 ## Dev control plane
 

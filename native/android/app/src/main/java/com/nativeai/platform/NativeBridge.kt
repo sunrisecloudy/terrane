@@ -105,7 +105,7 @@ class NativeBridge(
                     "dialog.saveFile" to false,
                     "notification.toast" to true,
                     "network.request" to true,
-                    "core.step" to false,
+                    "core.step" to core.isAvailable(),
                     "runtime.capabilities" to true,
                     "app.log" to true,
                 ),
