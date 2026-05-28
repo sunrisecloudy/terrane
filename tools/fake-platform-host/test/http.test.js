@@ -64,6 +64,18 @@ test("http health and token-protected control command work", async () => {
     assert.equal(install.ok, true);
     assert.equal(install.result.appId, "notes-lite");
 
+    const versions = await fetch(`${started.url}/apps/notes-lite/versions`, {
+      headers: { authorization: "Bearer test-token" },
+    }).then((response) => response.json());
+    assert.equal(versions.ok, true);
+    assert.equal(versions.result.some((version) => version.appId === "notes-lite"), true);
+
+    const report = await fetch(`${started.url}/apps/notes-lite/install-report`, {
+      headers: { authorization: "Bearer test-token" },
+    }).then((response) => response.json());
+    assert.equal(report.ok, true);
+    assert.equal(report.result.appId, "notes-lite");
+
     const session = await fetch(`${started.url}/control/sessions`, {
       method: "POST",
       headers: {

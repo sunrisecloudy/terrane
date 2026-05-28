@@ -529,12 +529,12 @@ export class FakePlatformHost {
   }
 
   async handleDirectControlRoute(req, res, route) {
-    if (req.method !== "POST") {
+    if (!route.methods.includes(req.method)) {
       return sendJson(res, 404, controlError(new PlatformError("not_found", "Control route not found", {})));
     }
     try {
-      const body = await readBodyJson(req);
-      const result = await this.runControlCommand(route.tool, body);
+      const body = req.method === "POST" ? await readBodyJson(req) : {};
+      const result = await this.runControlCommand(route.tool, { ...route.args, ...body });
       return sendJson(res, 200, controlResponse(result));
     } catch (error) {
       return sendJson(res, 400, controlError(error));
@@ -728,19 +728,26 @@ function parseDirectControlRoute(pathname) {
     ? pathname.replace(/^\/control/, "")
     : pathname;
   const tools = new Map([
-    ["/packages/validate", "platform.validate_package"],
-    ["/packages/sign", "platform.sign_webapp_package"],
-    ["/packages/policy-audit", "platform.run_policy_audit"],
-    ["/db/snapshot", "db.snapshot"],
-    ["/db/app-storage", "db.query_app_storage"],
-    ["/db/app-versions", "db.query_app_versions"],
-    ["/db/export-debug-bundle", "db.export_debug_bundle"],
-    ["/db/bridge-calls", "db.query_bridge_calls"],
-    ["/db/core-events", "db.query_core_events"],
-    ["/db/test-runs", "db.query_test_runs"],
+    ["/packages/validate", { tool: "platform.validate_package", methods: ["POST"] }],
+    ["/packages/sign", { tool: "platform.sign_webapp_package", methods: ["POST"] }],
+    ["/packages/policy-audit", { tool: "platform.run_policy_audit", methods: ["POST"] }],
+    ["/db/snapshot", { tool: "db.snapshot", methods: ["POST"] }],
+    ["/db/app-storage", { tool: "db.query_app_storage", methods: ["POST"] }],
+    ["/db/app-versions", { tool: "db.query_app_versions", methods: ["POST"] }],
+    ["/db/export-debug-bundle", { tool: "db.export_debug_bundle", methods: ["POST"] }],
+    ["/db/bridge-calls", { tool: "db.query_bridge_calls", methods: ["POST"] }],
+    ["/db/core-events", { tool: "db.query_core_events", methods: ["POST"] }],
+    ["/db/test-runs", { tool: "db.query_test_runs", methods: ["POST"] }],
   ]);
-  const tool = tools.get(normalized);
-  return tool ? { tool } : null;
+  const mapped = tools.get(normalized);
+  if (mapped) return { ...mapped, args: {} };
+
+  const appRoute = normalized.match(/^\/apps\/([^/]+)\/(versions|install-report|rollback)$/);
+  if (!appRoute) return null;
+  const appId = decodeURIComponent(appRoute[1]);
+  if (appRoute[2] === "versions") return { tool: "platform.list_webapp_versions", methods: ["GET"], args: { appId } };
+  if (appRoute[2] === "install-report") return { tool: "platform.install_report", methods: ["GET"], args: { appId } };
+  return { tool: "platform.rollback_webapp", methods: ["POST"], args: { appId } };
 }
 
 function parseSemver(version) {
