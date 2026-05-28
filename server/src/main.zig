@@ -2452,18 +2452,22 @@ fn collectWebappPackageErrors(
             try errors.append(allocator, "invalid_permissions");
         } else {
             for (permissions.array.items) |permission| {
-                if (valueString(permission) == null) try errors.append(allocator, "invalid_permissions");
+                const permission_name = valueString(permission) orelse {
+                    try errors.append(allocator, "invalid_permissions");
+                    continue;
+                };
+                if (!isKnownPackagePermission(permission_name)) try errors.append(allocator, "unknown_permission");
             }
         }
     }
     if (manifest.object.get("capabilities")) |capabilities| {
-        if (capabilities != .object) try errors.append(allocator, "invalid_capabilities");
+        try validateServerCapabilities(allocator, capabilities, errors);
     }
     if (manifest.object.get("resourceBudget")) |resource_budget| {
-        if (resource_budget != .object) try errors.append(allocator, "invalid_resource_budget");
+        try validateServerResourceBudget(allocator, resource_budget, errors);
     }
     if (manifest.object.get("networkPolicy")) |network_policy| {
-        if (network_policy != .object) try errors.append(allocator, "invalid_network_policy");
+        try validateServerNetworkPolicy(allocator, network_policy, errors);
     }
 
     if (findPackageFile(files, "index.html")) |html| {
@@ -9619,6 +9623,128 @@ fn isValidAppId(app_id: []const u8) bool {
     for (app_id) |char| {
         if ((char >= 'a' and char <= 'z') or (char >= '0' and char <= '9') or char == '-') continue;
         return false;
+    }
+    return true;
+}
+
+fn isKnownPackagePermission(permission: []const u8) bool {
+    const permissions = [_][]const u8{
+        "core.step",
+        "storage.read",
+        "storage.write",
+        "dialog.openFile",
+        "dialog.saveFile",
+        "notification.toast",
+        "network.request",
+        "app.log",
+    };
+    for (permissions) |candidate| {
+        if (std.mem.eql(u8, permission, candidate)) return true;
+    }
+    return false;
+}
+
+fn validateServerCapabilities(
+    allocator: std.mem.Allocator,
+    capabilities: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (capabilities != .object) {
+        try errors.append(allocator, "invalid_capabilities");
+        return;
+    }
+    const required_fields = [_][]const u8{ "required", "optional" };
+    for (required_fields) |field| {
+        const value = capabilities.object.get(field) orelse {
+            try errors.append(allocator, "invalid_capabilities");
+            continue;
+        };
+        if (value != .array) try errors.append(allocator, "invalid_capabilities");
+    }
+}
+
+fn validateServerResourceBudget(
+    allocator: std.mem.Allocator,
+    resource_budget: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (resource_budget != .object) {
+        try errors.append(allocator, "invalid_resource_budget");
+        return;
+    }
+    const required_keys = [_][]const u8{
+        "maxDomNodes",
+        "maxStorageBytes",
+        "maxBridgeCallsPerMinute",
+        "maxNetworkRequestsPerMinute",
+        "maxTimers",
+        "maxLogLinesPerMinute",
+        "maxPackageBytes",
+        "maxFileBytes",
+    };
+    for (required_keys) |key| {
+        const limit = valueI64(resource_budget.object.get(key)) orelse {
+            try errors.append(allocator, "invalid_resource_budget");
+            continue;
+        };
+        if (limit < 0) try errors.append(allocator, "invalid_resource_budget");
+    }
+}
+
+fn validateServerNetworkPolicy(
+    allocator: std.mem.Allocator,
+    network_policy: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (network_policy != .object) {
+        try errors.append(allocator, "invalid_network_policy");
+        return;
+    }
+    const allow = network_policy.object.get("allow") orelse {
+        try errors.append(allocator, "invalid_network_policy");
+        return;
+    };
+    if (allow != .array) {
+        try errors.append(allocator, "invalid_network_policy");
+        return;
+    }
+    for (allow.array.items) |entry| {
+        if (entry != .object) {
+            try errors.append(allocator, "invalid_network_policy");
+            continue;
+        }
+        const origin = valueString(entry.object.get("origin")) orelse {
+            try errors.append(allocator, "invalid_network_origin");
+            continue;
+        };
+        if (!isValidHttpsOrigin(origin)) try errors.append(allocator, "invalid_network_origin");
+        const methods = entry.object.get("methods") orelse {
+            try errors.append(allocator, "invalid_network_methods");
+            continue;
+        };
+        if (methods != .array) {
+            try errors.append(allocator, "invalid_network_methods");
+            continue;
+        }
+        if (methods.array.items.len == 0) {
+            try errors.append(allocator, "invalid_network_methods");
+            continue;
+        }
+        for (methods.array.items) |method| {
+            if (valueString(method) == null) try errors.append(allocator, "invalid_network_methods");
+        }
+    }
+}
+
+fn isValidHttpsOrigin(origin: []const u8) bool {
+    const prefix = "https://";
+    if (!std.mem.startsWith(u8, origin, prefix)) return false;
+    const host = origin[prefix.len..];
+    if (host.len == 0) return false;
+    for (host) |char| {
+        if (char == '/' or char == '?' or char == '#' or char == ' ' or char == '\t' or char == '\n' or char == '\r') {
+            return false;
+        }
     }
     return true;
 }
