@@ -1,4 +1,4 @@
-# Android Host Skeleton Target
+# Android Host Target
 
 Codex should implement this as a Kotlin Android app using Android WebView.
 
@@ -30,6 +30,14 @@ MVP acceptance:
 - Implements storage and JNI `core.step`.
 - Handles unsupported dialog methods with structured errors until fully implemented.
 
+Current implementation status:
+
+- Gradle Android/Kotlin project scaffold exists under `app/`.
+- Runtime loads through `WebViewAssetLoader` on the appassets origin.
+- Bridge uses `WebViewCompat.addWebMessageListener` with an origin allowlist.
+- SQLite-backed `storage.*` uses host-derived app context and storage-prefix checks.
+- Native bridge applies manifest-style permission checks before dispatch.
+- Dialog, network, and Zig core paths currently return structured `platform_unsupported`.
 
 ## Dev control plane
 

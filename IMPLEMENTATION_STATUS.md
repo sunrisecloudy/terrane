@@ -90,7 +90,7 @@ Status snapshot: **2026-05-28**.
 | `tools/codex-platform-mcp/` | partial | Dependency-free MCP stdio JSON-RPC server forwards declared tools to fake-host/dev control plane; node:test coverage present |
 | `native/ios/` | skeleton | README only |
 | `native/macos/` | partial | SwiftPM AppKit/WKWebView host scaffold with SQLite storage, dialogs, toast logging, and structured bridge responses |
-| `native/android/` | skeleton | README only |
+| `native/android/` | partial | Kotlin Android scaffold with WebViewAssetLoader, WebViewCompat message bridge with origin allowlist, SQLite-backed storage, native permission checks, and structured unsupported responses for unfinished platform services |
 | `native/windows/` | skeleton | README only |
 | `native/linux/` | skeleton | README only |
 | `codex-plugin/platform-control/` | partial | `plugin.json`, `.mcp.json`, skills present; local MCP path resolves to the repo server |

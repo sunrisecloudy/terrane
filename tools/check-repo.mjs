@@ -240,6 +240,9 @@ function checkServerStatic() {
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
+  const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
+  const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
+  const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const required = [
     '"target": "macos"',
     '"devMode": true',
@@ -266,7 +269,22 @@ function checkNativeStatic() {
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
   }
-  return "macos.capabilities=schema-shaped storage=context-enforced";
+  const androidRequired = [
+    [androidMain, "WebViewCompat.addWebMessageListener"],
+    [androidMain, "https://appassets.androidplatform.net"],
+    [androidMain, "allowFileAccess = false"],
+    [androidBridge, "permissionForBridgeMethod"],
+    [androidBridge, "approvedPermissions.contains(permission)"],
+    [androidStorage, "SQLiteOpenHelper"],
+    [androidStorage, "request.context.appId"],
+    [androidStorage, "request.context.storagePrefix"],
+  ];
+  for (const [source, snippet] of androidRequired) {
+    if (!source.includes(snippet)) {
+      throw new Error(`Android host missing ${snippet}`);
+    }
+  }
+  return "macos.capabilities=schema-shaped storage=context-enforced android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {
@@ -403,7 +421,15 @@ function walk(root) {
   const files = [];
   if (!fs.existsSync(root)) return files;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".zig-cache" || entry.name === "zig-out") {
+    if (
+      entry.name === ".git" ||
+      entry.name === "node_modules" ||
+      entry.name === ".gradle" ||
+      entry.name === ".zig-cache" ||
+      entry.name === ".build" ||
+      entry.name === "build" ||
+      entry.name === "zig-out"
+    ) {
       continue;
     }
     const abs = path.join(root, entry.name);

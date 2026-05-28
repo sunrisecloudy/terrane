@@ -1,6 +1,8 @@
 node_modules/
+build/
 dist/
 coverage/
+.gradle/
 .zig-cache/
 zig-out/
 .build/
