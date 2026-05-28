@@ -487,6 +487,16 @@ export class FakePlatformHost {
         return sendJson(res, 200, await this.dispatchBridge(body, { appId, sessionId }));
       }
 
+      const sessionRoute = parseControlSessionRoute(url.pathname);
+      if (sessionRoute) {
+        try {
+          this.requireControlToken(req);
+        } catch (error) {
+          return sendJson(res, 401, controlError(error));
+        }
+        return this.handleControlSessionRoute(req, res, sessionRoute);
+      }
+
       if (req.method === "POST" && url.pathname === "/control/command") {
         try {
           this.requireControlToken(req);
@@ -505,6 +515,50 @@ export class FakePlatformHost {
       return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Route not found", details: {} } });
     } catch (error) {
       return sendJson(res, 500, controlError(error));
+    }
+  }
+
+  async handleControlSessionRoute(req, res, route) {
+    try {
+      if (req.method === "POST" && route.kind === "collection") {
+        const body = await readBodyJson(req);
+        const session = this.database.createControlSession({
+          target: body.target ?? "fake-host",
+          appId: body.appId ?? null,
+          actor: body.actor ?? "codex",
+          metadata: body.metadata ?? {},
+          tokenHash: body.tokenHash ?? null,
+        });
+        return sendJson(res, 200, controlResponse(session));
+      }
+
+      if (req.method === "DELETE" && route.kind === "item") {
+        return sendJson(res, 200, controlResponse(this.database.endControlSession(route.controlSessionId)));
+      }
+
+      if (req.method === "GET" && route.kind === "subresource") {
+        const session = this.database.controlSession(route.controlSessionId);
+        if (route.subresource === "snapshot") {
+          const snapshot = session.appId ? this.runtimeSnapshot(session.appId) : this.database.snapshot();
+          return sendJson(res, 200, controlResponse({ controlSessionId: session.controlSessionId, snapshot }));
+        }
+        if (route.subresource === "events") {
+          return sendJson(res, 200, controlResponse({
+            controlSessionId: session.controlSessionId,
+            runtimeSessionId: session.runtimeSessionId,
+            appId: session.appId,
+            bridgeCalls: this.database.queryBridgeCalls(session.appId),
+            coreEvents: this.database.queryCoreEvents(session.appId),
+          }));
+        }
+        if (route.subresource === "capabilities") {
+          return sendJson(res, 200, controlResponse(fakeHostCapabilities(session.appId)));
+        }
+      }
+
+      return sendJson(res, 404, controlError(new PlatformError("not_found", "Control session route not found", {})));
+    } catch (error) {
+      return sendJson(res, 400, controlError(error));
     }
   }
 
@@ -627,6 +681,22 @@ function normalizeDialogMockArgs(args) {
       selectedPath: args.selectedPath ?? null,
       cancelled: args.cancelled ?? false,
     },
+  };
+}
+
+function parseControlSessionRoute(pathname) {
+  const normalized = pathname.startsWith("/control/sessions")
+    ? pathname.replace(/^\/control/, "")
+    : pathname;
+  if (normalized === "/sessions") {
+    return { kind: "collection" };
+  }
+  const match = normalized.match(/^\/sessions\/([^/]+)(?:\/([^/]+))?$/);
+  if (!match) return null;
+  return {
+    kind: match[2] ? "subresource" : "item",
+    controlSessionId: decodeURIComponent(match[1]),
+    subresource: match[2] ? decodeURIComponent(match[2]) : null,
   };
 }
 

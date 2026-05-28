@@ -697,6 +697,58 @@ export class PlatformDatabase {
     return sessionId;
   }
 
+  createControlSession({ target = "fake-host", appId = null, actor = "codex", metadata = {}, tokenHash = null } = {}) {
+    const controlSessionId = id("control");
+    const runtimeSessionId = appId ? this.createRuntimeSession({ appId, metadata: { controlSessionId, ...metadata } }) : null;
+    const startedAt = nowIso();
+    this.run(
+      "INSERT INTO control_sessions (control_session_id, target, runtime_session_id, actor, token_hash, started_at, status, metadata_json) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
+      controlSessionId,
+      target,
+      runtimeSessionId,
+      actor,
+      tokenHash,
+      startedAt,
+      prettyJson({ appId, ...metadata }),
+    );
+    return { controlSessionId, runtimeSessionId, target, appId, status: "running", startedAt };
+  }
+
+  controlSession(controlSessionId) {
+    const row = this.get(
+      "SELECT c.control_session_id, c.target, c.runtime_session_id, c.actor, c.started_at, c.ended_at, c.status, c.metadata_json, r.active_app_id FROM control_sessions c LEFT JOIN runtime_sessions r ON r.session_id = c.runtime_session_id WHERE c.control_session_id = ?",
+      controlSessionId,
+    );
+    if (!row) {
+      throw new Error(`Control session not found: ${controlSessionId}`);
+    }
+    const metadata = row.metadata_json ? JSON.parse(row.metadata_json) : {};
+    return {
+      controlSessionId: row.control_session_id,
+      target: row.target,
+      runtimeSessionId: row.runtime_session_id,
+      actor: row.actor,
+      appId: row.active_app_id ?? metadata.appId ?? null,
+      status: row.status,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      metadata,
+    };
+  }
+
+  endControlSession(controlSessionId) {
+    const endedAt = nowIso();
+    const changes = this.run(
+      "UPDATE control_sessions SET status = 'ended', ended_at = ? WHERE control_session_id = ?",
+      endedAt,
+      controlSessionId,
+    ).changes;
+    if (changes === 0) {
+      throw new Error(`Control session not found: ${controlSessionId}`);
+    }
+    return { ok: true, controlSessionId, status: "ended", endedAt };
+  }
+
   logBridgeCall({ sessionId, appId, installId = null, method, params, result = null, error = null, durationMs = 0 }) {
     this.run(
       "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
