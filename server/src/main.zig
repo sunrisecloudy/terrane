@@ -1774,6 +1774,15 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "db.export_backup")) {
+        const result_json = try dbBackupExportJson(allocator);
+        defer allocator.free(result_json);
+        recordBackupExport(allocator, result_json) catch |err| {
+            std.debug.print("backup export record failed: {}\n", .{err});
+        };
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
         defer allocator.free(result_json);
@@ -5804,6 +5813,41 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
         "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s}}}",
         .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs },
     );
+}
+
+fn dbBackupExportJson(allocator: std.mem.Allocator) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const export_id = try randomDbIdAlloc(allocator, db, "export_");
+    defer allocator.free(export_id);
+    const created_at = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(created_at);
+    const apps = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
+    defer allocator.free(apps);
+    const app_versions = try queryRowsJson(allocator, "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions ORDER BY app_id, version", null);
+    defer allocator.free(app_versions);
+    const app_files = try queryRowsJson(allocator, "SELECT install_id, path, content_text, content_hash, size_bytes, mime, created_at FROM app_files ORDER BY install_id, path", null);
+    defer allocator.free(app_files);
+    const app_permissions = try queryRowsJson(allocator, "SELECT install_id, app_id, permission, requested, approved, approved_at, reason FROM app_permissions ORDER BY install_id, permission", null);
+    defer allocator.free(app_permissions);
+    const storage = try queryAppStorageRowsJson(allocator, null);
+    defer allocator.free(storage);
+    const app_migrations = try queryRowsJson(allocator, "SELECT migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at FROM app_migrations ORDER BY app_id, from_data_version", null);
+    defer allocator.free(app_migrations);
+    const install_reports = try queryRowsJson(allocator, "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports ORDER BY app_id, created_at", null);
+    defer allocator.free(install_reports);
+    const capabilities = try serverCapabilitiesJson(allocator);
+    defer allocator.free(capabilities);
+
+    const base_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"exportId\":\"{s}\",\"type\":\"backup\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{}}}}",
+        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities },
+    );
+    defer allocator.free(base_json);
+    const content_hash = try sha256HexAlloc(allocator, base_json);
+    defer allocator.free(content_hash);
+    return std.fmt.allocPrint(allocator, "{s},\"contentHash\":\"sha256:{s}\"}}", .{ base_json[0 .. base_json.len - 1], content_hash });
 }
 
 fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
