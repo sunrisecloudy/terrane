@@ -1,6 +1,6 @@
 {
   "id": "storage-prefix-violation",
-  "expectedError": "storage_prefix_violation",
+  "expectedError": "permission_denied",
   "bridgeCall": {
     "method": "storage.set",
     "params": {

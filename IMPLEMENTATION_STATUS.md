@@ -77,7 +77,7 @@ Status snapshot: **2026-05-28**.
 | `schemas/dev-control-response.schema.json` | schema |
 | `schemas/micro-test.schema.json` | schema |
 | `schemas/mutation-fixture.schema.json` | schema |
-| `schemas/bridge-contract-fixture.schema.json` | **missing** — to be added with docs/08 §6.1 |
+| `schemas/bridge-contract-fixture.schema.json` | schema |
 
 ## Code/runtime directories
 
@@ -129,7 +129,7 @@ Status snapshot: **2026-05-28**.
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |
 | `tests/micro/` | fixtures (4 micro-tests, one missing for task-workbench) |
-| `tests/mutation/` | fixtures (10 mutations) |
+| `tests/mutation/` | partial (10 mutations now exercised by fake-host validator/runtime tests) |
 | `tests/accessibility/` | fixtures |
 | `tests/security/malicious-packages/` | skeleton (directory exists, no fixtures yet) |
 | `tests/db/` | fixtures (DB test fixtures) |

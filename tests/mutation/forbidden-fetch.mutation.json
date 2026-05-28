@@ -1,7 +1,7 @@
 {
   "expected": {
     "status": "rejected",
-    "errorCode": "FORBIDDEN_DIRECT_NETWORK"
+    "errorCode": "forbidden_network_api"
   },
   "files": [
     {
@@ -10,5 +10,5 @@
     }
   ],
   "id": "forbidden-fetch",
-  "expectedError": "FORBIDDEN_DIRECT_NETWORK"
+  "expectedError": "forbidden_network_api"
 }
