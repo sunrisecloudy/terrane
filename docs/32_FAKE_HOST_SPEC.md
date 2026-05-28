@@ -71,26 +71,34 @@ The fake host implements every method in docs/03 §3:
 
 ```json
 {
-  "platform": "fake-host",
   "runtimeVersion": "0.1.0",
+  "platform": "fake",
+  "target": "fake-host",
+  "devMode": true,
   "features": {
-    "dialog.openFile": "mocked",
-    "dialog.saveFile": "mocked",
-    "network.request": "mocked",
-    "notification.toast": "captured",
-    "snapshot": true,
-    "replay": true,
-    "unsafe_eval": false,
-    "unsafe_sql": false
+    "core.step": true,
+    "storage.read": true,
+    "storage.write": true,
+    "dialog.openFile": true,
+    "dialog.saveFile": true,
+    "network.request": true,
+    "notification.toast": true,
+    "app.log": true,
+    "runtime.capabilities": true,
+    "runtime.snapshot": true,
+    "runtime.replay": true
   },
   "limits": {
+    "maxBodyBytes": 1048576,
+    "maxStorageBytes": 5242880,
+    "maxBridgeCallsPerMinute": 600,
     "maxPackageBytes": 4194304,
     "maxFileBytes": 2097152
   }
 }
 ```
 
-Fake host features marked `"mocked"` make every call to that bridge method consult the mock registry; calls that have no matching mock return `network.mock_missing` / `dialog.mock_missing`.
+Fake host features that use mock registries (`network.request`, `dialog.openFile`, and `dialog.saveFile`) report `true` in the capability document. Calls that have no matching mock return `network.mock_missing` / `dialog.mock_missing`.
 
 ## 7. Control plane
 

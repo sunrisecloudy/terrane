@@ -386,6 +386,7 @@ function checkFakeHostStatic() {
   const fakeServer = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "server.js"), "utf8");
   const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "bridge-dispatcher.js"), "utf8");
   const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
+  const capabilities = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "capabilities.js"), "utf8");
   const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
   const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
   const bridgeFixturesTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "bridge-fixtures.test.js"), "utf8");
@@ -414,6 +415,11 @@ function checkFakeHostStatic() {
     [fakeHost, "controlAuthFailures"],
     [fakeHost, "control_connection_banned"],
     [fakeHost, "retryAfterSeconds"],
+    [capabilities, 'platform: "fake"'],
+    [capabilities, 'target: "fake-host"'],
+    [capabilities, "devMode: true"],
+    [capabilities, '"storage.read": true'],
+    [capabilities, '"runtime.snapshot": true'],
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {

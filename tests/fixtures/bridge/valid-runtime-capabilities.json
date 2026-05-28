@@ -9,12 +9,15 @@
   "expected": {
     "ok": true,
     "resultSubset": {
-      "platform": "fake-host",
+      "platform": "fake",
+      "target": "fake-host",
+      "devMode": true,
       "runtimeVersion": "0.1.0",
       "appId": "notes-lite",
       "features": {
-        "network.request": "mocked",
-        "dialog.openFile": "mocked"
+        "storage.read": true,
+        "network.request": true,
+        "dialog.openFile": true
       }
     }
   }

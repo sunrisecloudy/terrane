@@ -75,7 +75,8 @@ test("http health and token-protected control command work", async () => {
       body: JSON.stringify({ id: "req_caps", method: "runtime.capabilities", params: {} }),
     }).then((response) => response.json());
     assert.equal(bridgeCapabilities.ok, true);
-    assert.equal(bridgeCapabilities.result.platform, "fake-host");
+    assert.equal(bridgeCapabilities.result.platform, "fake");
+    assert.equal(bridgeCapabilities.result.target, "fake-host");
 
     const install = await fetch(`${started.url}/control/command`, {
       method: "POST",
@@ -119,7 +120,8 @@ test("http health and token-protected control command work", async () => {
       headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(capabilities.ok, true);
-    assert.equal(capabilities.result.platform, "fake-host");
+    assert.equal(capabilities.result.platform, "fake");
+    assert.equal(capabilities.result.target, "fake-host");
 
     const snapshot = await fetch(`${started.url}/control/sessions/${session.result.controlSessionId}/snapshot`, {
       headers: { "x-platform-control-token": "test-token" },

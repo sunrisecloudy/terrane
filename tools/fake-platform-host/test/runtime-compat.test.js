@@ -83,3 +83,37 @@ test("mount gate rejects an active incompatible install unless dev override is s
     devHost.close();
   }
 });
+
+test("mount gate rejects apps with missing required capabilities", async () => {
+  const host = new FakePlatformHost();
+  const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "missing-capability-package-"));
+  try {
+    fs.cpSync(path.join(examplesDir, "notes-lite"), packageDir, { recursive: true });
+    const manifestPath = path.join(packageDir, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.id = "missing-capability-app";
+    manifest.name = "Missing Capability App";
+    manifest.storagePrefix = "missing-capability-app:";
+    manifest.capabilities.required = [...manifest.capabilities.required, "runtime.darkMode"];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const pkg = readPackage(packageDir);
+    const signed = host.signPackage(packageDir);
+    host.database.insertInstalledPackage({
+      manifest: pkg.manifest,
+      files: pkg.files,
+      hashes: signed.hashes,
+      validation: pkg.validation,
+      signature: signed.signature,
+      contentHashesDocument: signed.contentHashesDocument,
+      activate: true,
+    });
+
+    await assert.rejects(
+      () => host.runControlCommand("platform.open_webapp", { appId: "missing-capability-app" }),
+      /Required runtime capability is unavailable/,
+    );
+  } finally {
+    host.close();
+  }
+});

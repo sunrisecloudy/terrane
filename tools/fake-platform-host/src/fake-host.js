@@ -114,6 +114,13 @@ export class FakePlatformHost {
     if (!compatibility.ok && !this.allowRuntimeMismatch) {
       throw new PlatformError("runtime_version_incompatible", "App runtimeVersion is not compatible with the fake-host runtime", compatibility);
     }
+    const missingCapabilities = missingRequiredCapabilities(installed.manifest, fakeHostCapabilities(appId));
+    if (missingCapabilities.length > 0) {
+      throw new PlatformError("capability_unavailable", "Required runtime capability is unavailable on fake-host", {
+        appId,
+        missingCapabilities,
+      });
+    }
     return verifyInstalledPackage({
       manifest: installed.manifest,
       files: installed.files,
@@ -1072,6 +1079,11 @@ function packagePathArg(args) {
     throw new PlatformError("invalid_request", "Missing required argument: packagePath", { aliases: ["packagePath", "path"] });
   }
   return packagePath.startsWith("/") ? packagePath : resolveInside(repoRoot, packagePath);
+}
+
+function missingRequiredCapabilities(manifest, capabilities) {
+  const features = capabilities.features ?? {};
+  return (manifest.capabilities?.required ?? []).filter((capability) => features[capability] !== true);
 }
 
 function normalizeNetworkMockArgs(args) {
