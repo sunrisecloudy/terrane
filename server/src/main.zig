@@ -1654,6 +1654,58 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.accessibility_snapshot")) {
+        const result_json = runtimeAccessibilitySnapshotControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.accessibility_snapshot requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.run_accessibility_audit")) {
+        const result_json = runtimeAccessibilityAuditControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.run_accessibility_audit requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_accessibility")) {
+        const result_json = runtimeAssertAccessibilityControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_accessibility requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.AccessibilityFailed => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "accessibility_failed", args_json, null);
+                return writeControlError(allocator, stream, 400, "accessibility_failed", "Accessibility assertion failed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -3613,6 +3665,45 @@ fn assertRuntimeTextControl(allocator: std.mem.Allocator, args: ?std.json.Value)
     return out.toOwnedSlice();
 }
 
+fn runtimeAccessibilitySnapshotControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const title = try htmlTitleOrFallbackAlloc(allocator, package.html, "");
+    defer allocator.free(title);
+    return htmlAccessibilityTreeJsonAlloc(allocator, app_id, package.html, title);
+}
+
+fn runtimeAccessibilityAuditControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const title = try htmlTitleOrFallbackAlloc(allocator, package.html, "");
+    defer allocator.free(title);
+    return htmlAccessibilityAuditJsonAlloc(allocator, app_id, package.html, title);
+}
+
+fn runtimeAssertAccessibilityControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const rule = controlStringArg(args, "rule");
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const title = try htmlTitleOrFallbackAlloc(allocator, package.html, "");
+    defer allocator.free(title);
+    const report = try htmlAccessibilityAuditJsonAlloc(allocator, app_id, package.html, title);
+    defer allocator.free(report);
+    if (try htmlAccessibilityFails(allocator, package.html, title, rule)) return error.AccessibilityFailed;
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"rule\":");
+    try appendJsonNullableString(allocator, &out, rule);
+    try out.writer.print(",\"report\":{s}}}", .{report});
+    return out.toOwnedSlice();
+}
+
 fn runtimeQueryLabelAlloc(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
     if (controlStringArg(args, "testId")) |test_id| {
         return std.fmt.allocPrint(allocator, "[data-testid=\"{s}\"]", .{test_id});
@@ -3832,8 +3923,80 @@ fn htmlAccessibilityTreeJsonAlloc(allocator: std.mem.Allocator, app_id: []const 
     }
     try out.writer.writeAll(",\"headings\":");
     try appendHtmlHeadingsJson(allocator, &out, html);
-    try out.writer.writeAll(",\"controls\":[]}");
+    try out.writer.writeAll(",\"controls\":");
+    try appendHtmlControlsJson(allocator, &out, html);
+    try out.writer.writeAll("}");
     return out.toOwnedSlice();
+}
+
+fn htmlAccessibilityAuditJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, html: []const u8, title: []const u8) ![]u8 {
+    const checked_at = try serverNowIsoAlloc(allocator);
+    defer allocator.free(checked_at);
+    const unlabeled_selector = try firstUnlabeledControlSelectorAlloc(allocator, html);
+    defer if (unlabeled_selector) |selector| allocator.free(selector);
+    const title_ok = title.len > 0;
+    const main_ok = std.mem.indexOf(u8, html, "<main") != null;
+    const h1_ok = htmlHasHeadingLevel(html, '1');
+    const controls_ok = unlabeled_selector == null;
+    const status = if (title_ok and main_ok and h1_ok and controls_ok) "pass" else "fail";
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"checkedAt\":");
+    try appendJsonString(allocator, &out, checked_at);
+    try out.writer.writeAll(",\"status\":");
+    try appendJsonString(allocator, &out, status);
+    try out.writer.writeAll(",\"checks\":[");
+    try appendAccessibilityCheckJson(allocator, &out, "document_title", title_ok, "Document must include a non-empty <title>.", null);
+    try out.writer.writeAll(",");
+    try appendAccessibilityCheckJson(allocator, &out, "main_landmark", main_ok, "Page must include a <main> landmark.", null);
+    try out.writer.writeAll(",");
+    try appendAccessibilityCheckJson(allocator, &out, "screen_title", h1_ok, "Page must include an h1 screen title.", null);
+    try out.writer.writeAll(",");
+    try appendAccessibilityCheckJson(allocator, &out, "no_unlabeled_controls", controls_ok, "Every interactive control must have an accessible name.", unlabeled_selector);
+    try out.writer.writeAll("]}");
+    return out.toOwnedSlice();
+}
+
+fn htmlAccessibilityFails(allocator: std.mem.Allocator, html: []const u8, title: []const u8, rule: ?[]const u8) !bool {
+    const unlabeled_selector = try firstUnlabeledControlSelectorAlloc(allocator, html);
+    defer if (unlabeled_selector) |selector| allocator.free(selector);
+    const all_failed = [_]struct { id: []const u8, failed: bool }{
+        .{ .id = "document_title", .failed = title.len == 0 },
+        .{ .id = "main_landmark", .failed = std.mem.indexOf(u8, html, "<main") == null },
+        .{ .id = "screen_title", .failed = !htmlHasHeadingLevel(html, '1') },
+        .{ .id = "no_unlabeled_controls", .failed = unlabeled_selector != null },
+    };
+    for (all_failed) |check| {
+        if (rule) |actual_rule| {
+            if (!std.mem.eql(u8, actual_rule, check.id)) continue;
+        }
+        if (check.failed) return true;
+    }
+    return false;
+}
+
+fn appendAccessibilityCheckJson(
+    allocator: std.mem.Allocator,
+    out: *std.io.Writer.Allocating,
+    id: []const u8,
+    ok: bool,
+    message: []const u8,
+    selector: ?[]const u8,
+) !void {
+    try out.writer.writeAll("{\"id\":");
+    try appendJsonString(allocator, out, id);
+    try out.writer.writeAll(",\"status\":");
+    try appendJsonString(allocator, out, if (ok) "pass" else "fail");
+    try out.writer.writeAll(",\"message\":");
+    try appendJsonString(allocator, out, message);
+    if (selector) |actual_selector| {
+        try out.writer.writeAll(",\"selector\":");
+        try appendJsonString(allocator, out, actual_selector);
+    }
+    try out.writer.writeAll("}");
 }
 
 fn appendHtmlHeadingsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, html: []const u8) !void {
@@ -3862,6 +4025,300 @@ fn appendHtmlHeadingsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allo
         index = close_start + close_tag.len;
     }
     try out.writer.writeAll("]");
+}
+
+fn appendHtmlControlsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, html: []const u8) !void {
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    try appendPairedControlsJson(allocator, out, html, &count, "button");
+    try appendPairedControlsJson(allocator, out, html, &count, "select");
+    try appendPairedControlsJson(allocator, out, html, &count, "textarea");
+    try appendPairedControlsJson(allocator, out, html, &count, "a");
+    try appendInputControlsJson(allocator, out, html, &count);
+    try out.writer.writeAll("]");
+}
+
+fn appendPairedControlsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, html: []const u8, count: *usize, tag: []const u8) !void {
+    var index: usize = 0;
+    while (findOpeningTag(html, tag, index)) |start| {
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return;
+        const close_tag = try std.fmt.allocPrint(allocator, "</{s}>", .{tag});
+        defer allocator.free(close_tag);
+        const close_start = std.mem.indexOfPos(u8, html, open_end + 1, close_tag) orelse {
+            index = open_end + 1;
+            continue;
+        };
+        if (count.* > 0) try out.writer.writeAll(",");
+        try appendControlRecordJson(allocator, out, html, tag, html[start + tag.len + 1 .. open_end], html[open_end + 1 .. close_start], start);
+        count.* += 1;
+        index = close_start + close_tag.len;
+    }
+}
+
+fn appendInputControlsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, html: []const u8, count: *usize) !void {
+    var index: usize = 0;
+    while (findOpeningTag(html, "input", index)) |start| {
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return;
+        const attrs = html[start + "<input".len .. open_end];
+        const input_type = try htmlAttrValueAlloc(allocator, attrs, "type");
+        defer if (input_type) |actual| allocator.free(actual);
+        if (input_type) |actual| {
+            if (std.ascii.eqlIgnoreCase(actual, "hidden")) {
+                index = open_end + 1;
+                continue;
+            }
+        }
+        if (count.* > 0) try out.writer.writeAll(",");
+        try appendControlRecordJson(allocator, out, html, "input", attrs, "", start);
+        count.* += 1;
+        index = open_end + 1;
+    }
+}
+
+fn appendControlRecordJson(
+    allocator: std.mem.Allocator,
+    out: *std.io.Writer.Allocating,
+    html: []const u8,
+    tag: []const u8,
+    attrs: []const u8,
+    inner_html: []const u8,
+    tag_start: usize,
+) !void {
+    const test_id = try htmlAttrValueAlloc(allocator, attrs, "data-testid");
+    defer if (test_id) |actual| allocator.free(actual);
+    const id = try htmlAttrValueAlloc(allocator, attrs, "id");
+    defer if (id) |actual| allocator.free(actual);
+    const input_type = try htmlAttrValueAlloc(allocator, attrs, "type");
+    defer if (input_type) |actual| allocator.free(actual);
+    const selector = try controlSelectorAlloc(allocator, tag, test_id, id);
+    defer allocator.free(selector);
+    const name = try controlAccessibleNameAlloc(allocator, html, tag, attrs, inner_html, tag_start, id);
+    defer allocator.free(name);
+
+    try out.writer.writeAll("{\"tag\":");
+    try appendJsonString(allocator, out, tag);
+    try out.writer.writeAll(",\"type\":");
+    try appendJsonNullableString(allocator, out, input_type);
+    try out.writer.writeAll(",\"testId\":");
+    try appendJsonString(allocator, out, test_id orelse "");
+    try out.writer.writeAll(",\"selector\":");
+    try appendJsonString(allocator, out, selector);
+    try out.writer.writeAll(",\"name\":");
+    try appendJsonString(allocator, out, name);
+    try out.writer.writeAll("}");
+}
+
+fn firstUnlabeledControlSelectorAlloc(allocator: std.mem.Allocator, html: []const u8) !?[]u8 {
+    const tags = [_][]const u8{ "button", "select", "textarea", "a", "input" };
+    var best_start: ?usize = null;
+    var best_tag: []const u8 = "";
+    for (tags) |tag| {
+        if (findOpeningTag(html, tag, 0)) |start| {
+            if (best_start == null or start < best_start.?) {
+                best_start = start;
+                best_tag = tag;
+            }
+        }
+    }
+    var cursor: usize = 0;
+    while (best_start) |start| {
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return null;
+        const attrs_start = start + best_tag.len + 2;
+        const attrs = html[@min(attrs_start, open_end)..open_end];
+        if (std.mem.eql(u8, best_tag, "input")) {
+            const input_type = try htmlAttrValueAlloc(allocator, attrs, "type");
+            defer if (input_type) |actual| allocator.free(actual);
+            if (input_type) |actual| {
+                if (std.ascii.eqlIgnoreCase(actual, "hidden")) {
+                    cursor = open_end + 1;
+                    best_start = nextControlStart(html, tags[0..], cursor, &best_tag);
+                    continue;
+                }
+            }
+        }
+        const close_start = if (std.mem.eql(u8, best_tag, "input")) open_end else blk: {
+            const close_tag = try std.fmt.allocPrint(allocator, "</{s}>", .{best_tag});
+            defer allocator.free(close_tag);
+            break :blk std.mem.indexOfPos(u8, html, open_end + 1, close_tag) orelse open_end;
+        };
+        const inner = if (close_start > open_end) html[open_end + 1 .. close_start] else "";
+        const id = try htmlAttrValueAlloc(allocator, attrs, "id");
+        defer if (id) |actual| allocator.free(actual);
+        const name = try controlAccessibleNameAlloc(allocator, html, best_tag, attrs, inner, start, id);
+        defer allocator.free(name);
+        if (name.len == 0) {
+            const test_id = try htmlAttrValueAlloc(allocator, attrs, "data-testid");
+            defer if (test_id) |actual| allocator.free(actual);
+            return controlSelectorAlloc(allocator, best_tag, test_id, id);
+        }
+        cursor = open_end + 1;
+        best_start = nextControlStart(html, tags[0..], cursor, &best_tag);
+    }
+    return null;
+}
+
+fn nextControlStart(html: []const u8, tags: []const []const u8, start: usize, found_tag: *[]const u8) ?usize {
+    var best: ?usize = null;
+    var best_tag: []const u8 = "";
+    for (tags) |tag| {
+        if (findOpeningTag(html, tag, start)) |candidate| {
+            if (best == null or candidate < best.?) {
+                best = candidate;
+                best_tag = tag;
+            }
+        }
+    }
+    if (best) |_| found_tag.* = best_tag;
+    return best;
+}
+
+fn controlAccessibleNameAlloc(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    tag: []const u8,
+    attrs: []const u8,
+    inner_html: []const u8,
+    tag_start: usize,
+    id: ?[]const u8,
+) ![]u8 {
+    const aria = try htmlAttrValueAlloc(allocator, attrs, "aria-label");
+    defer if (aria) |actual| allocator.free(actual);
+    if (aria) |actual| {
+        const trimmed = std.mem.trim(u8, actual, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    const title = try htmlAttrValueAlloc(allocator, attrs, "title");
+    defer if (title) |actual| allocator.free(actual);
+    if (title) |actual| {
+        const trimmed = std.mem.trim(u8, actual, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    if (std.mem.eql(u8, tag, "button") or std.mem.eql(u8, tag, "a")) {
+        const inner_text = try htmlTextAlloc(allocator, inner_html);
+        defer allocator.free(inner_text);
+        const trimmed = std.mem.trim(u8, inner_text, " \t\r\n");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed);
+    }
+    if (id) |actual_id| {
+        const explicit = try explicitLabelForIdAlloc(allocator, html, actual_id);
+        if (explicit) |label| return label;
+    }
+    if (try wrappingLabelForControlAlloc(allocator, html, tag_start)) |wrapped| return wrapped;
+    return allocator.dupe(u8, "");
+}
+
+fn controlSelectorAlloc(allocator: std.mem.Allocator, tag: []const u8, test_id: ?[]const u8, id: ?[]const u8) ![]u8 {
+    if (test_id) |actual_test_id| return std.fmt.allocPrint(allocator, "[data-testid=\"{s}\"]", .{actual_test_id});
+    if (id) |actual_id| return std.fmt.allocPrint(allocator, "#{s}", .{actual_id});
+    return allocator.dupe(u8, tag);
+}
+
+fn htmlAttrValueAlloc(allocator: std.mem.Allocator, attrs: []const u8, attr: []const u8) !?[]u8 {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, attrs, index, attr)) |attr_start| {
+        if (attr_start > 0 and htmlNameChar(attrs[attr_start - 1])) {
+            index = attr_start + attr.len;
+            continue;
+        }
+        var cursor = attr_start + attr.len;
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor >= attrs.len or attrs[cursor] != '=') {
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor >= attrs.len) return null;
+        if (attrs[cursor] == '"' or attrs[cursor] == '\'') {
+            const quote = attrs[cursor];
+            const value_start = cursor + 1;
+            const value_end = std.mem.indexOfScalarPos(u8, attrs, value_start, quote) orelse return null;
+            return @as(?[]u8, try allocator.dupe(u8, attrs[value_start..value_end]));
+        }
+        const value_start = cursor;
+        while (cursor < attrs.len and !htmlSpace(attrs[cursor]) and attrs[cursor] != '>') : (cursor += 1) {}
+        return @as(?[]u8, try allocator.dupe(u8, attrs[value_start..cursor]));
+    }
+    return null;
+}
+
+fn explicitLabelForIdAlloc(allocator: std.mem.Allocator, html: []const u8, id: []const u8) !?[]u8 {
+    var index: usize = 0;
+    while (findOpeningTag(html, "label", index)) |start| {
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return null;
+        const attrs = html[start + "<label".len .. open_end];
+        const label_for = try htmlAttrValueAlloc(allocator, attrs, "for");
+        defer if (label_for) |actual| allocator.free(actual);
+        const close_start = std.mem.indexOfPos(u8, html, open_end + 1, "</label>") orelse return null;
+        if (label_for) |actual_for| {
+            if (std.mem.eql(u8, actual_for, id)) {
+                const text = try htmlTextAlloc(allocator, html[open_end + 1 .. close_start]);
+                const trimmed = std.mem.trim(u8, text, " \t\r\n");
+                if (trimmed.len == text.len) return @as(?[]u8, text);
+                const duped = try allocator.dupe(u8, trimmed);
+                allocator.free(text);
+                return @as(?[]u8, duped);
+            }
+        }
+        index = close_start + "</label>".len;
+    }
+    return null;
+}
+
+fn wrappingLabelForControlAlloc(allocator: std.mem.Allocator, html: []const u8, tag_start: usize) !?[]u8 {
+    const label_start = lastIndexOfBefore(html, "<label", tag_start) orelse return null;
+    const previous_label_close = lastIndexOfBefore(html, "</label>", tag_start);
+    if (previous_label_close != null and previous_label_close.? > label_start) return null;
+    const label_open_end = std.mem.indexOfScalarPos(u8, html, label_start, '>') orelse return null;
+    if (label_open_end >= tag_start) return null;
+    const label_close = std.mem.indexOfPos(u8, html, tag_start, "</label>") orelse return null;
+    if (label_close < tag_start) return null;
+    const text = try htmlTextAlloc(allocator, html[label_open_end + 1 .. tag_start]);
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == text.len) return @as(?[]u8, text);
+    const duped = try allocator.dupe(u8, trimmed);
+    allocator.free(text);
+    return @as(?[]u8, duped);
+}
+
+fn findOpeningTag(html: []const u8, tag: []const u8, start_index: usize) ?usize {
+    var index = start_index;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |start| {
+        index = start + 1;
+        const name_start = start + 1;
+        const name_end = name_start + tag.len;
+        if (name_end > html.len) continue;
+        if (!std.ascii.eqlIgnoreCase(html[name_start..name_end], tag)) continue;
+        if (name_end < html.len and htmlTagBoundary(html[name_end])) return start;
+    }
+    return null;
+}
+
+fn lastIndexOfBefore(haystack: []const u8, needle: []const u8, before: usize) ?usize {
+    var result: ?usize = null;
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack[0..@min(before, haystack.len)], index, needle)) |found| {
+        result = found;
+        index = found + 1;
+    }
+    return result;
+}
+
+fn htmlHasHeadingLevel(html: []const u8, level: u8) bool {
+    var pattern: [3]u8 = .{ '<', 'h', level };
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, html, index, &pattern)) |start| {
+        const after_level = start + pattern.len;
+        if (after_level < html.len and htmlTagBoundary(html[after_level])) return true;
+        index = after_level;
+    }
+    return false;
+}
+
+fn serverNowIsoAlloc(allocator: std.mem.Allocator) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    return sqliteNowIsoAlloc(allocator, db);
 }
 
 fn htmlDataTestIdCount(html: []const u8) usize {
@@ -8756,6 +9213,7 @@ test "runtime static snapshot helpers summarize installed app HTML" {
         \\  <body>
         \\    <main data-testid="notes-shell">
         \\      <h1>Notes Lite</h1>
+        \\      <label>Title <input id="note-title" data-testid="note-title-input"></label>
         \\      <button data-testid="new-note-button">Create note</button>
         \\    </main>
         \\  </body>
@@ -8779,6 +9237,8 @@ test "runtime static snapshot helpers summarize installed app HTML" {
     defer std.testing.allocator.free(accessibility);
     try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"role\":\"main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"level\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"name\":\"Title\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"name\":\"Create note\"") != null);
 
     var query_args = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"testId\":\"new-note-button\"}", .{});
     defer query_args.deinit();
