@@ -228,6 +228,7 @@ fn validateWebappPackage(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
         if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
         if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
         if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
+        if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
         if (containsAny(css, &.{ "@import", "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
@@ -387,6 +388,33 @@ fn containsAny(source: []const u8, needles: []const []const u8) bool {
         if (std.mem.indexOf(u8, source, needle) != null) return true;
     }
     return false;
+}
+
+fn hasInteractiveWithoutTestId(html: []const u8) bool {
+    const tags = [_][]const u8{ "button", "input", "select", "textarea", "a" };
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |start| {
+        index = start + 1;
+        for (tags) |tag| {
+            if (!tagStartsAt(html, start, tag)) continue;
+            const end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return true;
+            const attrs = html[start..end];
+            if (std.mem.indexOf(u8, attrs, "data-testid") == null) return true;
+            index = end + 1;
+            break;
+        }
+    }
+    return false;
+}
+
+fn tagStartsAt(html: []const u8, start: usize, tag: []const u8) bool {
+    const name_start = start + 1;
+    const name_end = name_start + tag.len;
+    if (name_end > html.len) return false;
+    if (!std.mem.eql(u8, html[name_start..name_end], tag)) return false;
+    if (name_end == html.len) return false;
+    const next = html[name_end];
+    return next == ' ' or next == '\t' or next == '\n' or next == '\r' or next == '>' or next == '/';
 }
 
 fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
