@@ -9,7 +9,7 @@ export class ControlClient {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${this.token}`,
+        "x-platform-control-token": this.token,
       },
       body: JSON.stringify({ tool, args: args ?? {} }),
     });

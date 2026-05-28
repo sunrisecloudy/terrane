@@ -767,8 +767,10 @@ export class FakePlatformHost {
   }
 
   requireControlToken(req) {
-    const expected = `Bearer ${this.controlToken}`;
-    if (req.headers.authorization !== expected) {
+    const expectedAuthorization = `Bearer ${this.controlToken}`;
+    const hasSpecHeader = req.headers["x-platform-control-token"] === this.controlToken;
+    const hasLegacyAuthorization = req.headers.authorization === expectedAuthorization;
+    if (!hasSpecHeader && !hasLegacyAuthorization) {
       throw new PlatformError("control_auth_required", "Missing or invalid control token", {});
     }
   }

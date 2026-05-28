@@ -31,7 +31,7 @@ test("http health and token-protected control command work", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer test-token",
+        "x-platform-control-token": "test-token",
       },
       body: JSON.stringify({
         tool: "platform.validate_package",
@@ -45,7 +45,7 @@ test("http health and token-protected control command work", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer test-token",
+        "x-platform-control-token": "test-token",
       },
       body: JSON.stringify({ packagePath: path.join(examplesDir, "notes-lite") }),
     }).then((response) => response.json());
@@ -56,7 +56,7 @@ test("http health and token-protected control command work", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer test-token",
+        "x-platform-control-token": "test-token",
       },
       body: JSON.stringify({
         tool: "platform.install_webapp_package",
@@ -67,13 +67,13 @@ test("http health and token-protected control command work", async () => {
     assert.equal(install.result.appId, "notes-lite");
 
     const versions = await fetch(`${started.url}/apps/notes-lite/versions`, {
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(versions.ok, true);
     assert.equal(versions.result.some((version) => version.appId === "notes-lite"), true);
 
     const report = await fetch(`${started.url}/apps/notes-lite/install-report`, {
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(report.ok, true);
     assert.equal(report.result.appId, "notes-lite");
@@ -82,7 +82,7 @@ test("http health and token-protected control command work", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer test-token",
+        "x-platform-control-token": "test-token",
       },
       body: JSON.stringify({ appId: "notes-lite" }),
     }).then((response) => response.json());
@@ -91,26 +91,26 @@ test("http health and token-protected control command work", async () => {
     assert.match(session.result.controlSessionId, /^control_/);
 
     const capabilities = await fetch(`${started.url}/control/sessions/${session.result.controlSessionId}/capabilities`, {
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(capabilities.ok, true);
     assert.equal(capabilities.result.platform, "fake-host");
 
     const snapshot = await fetch(`${started.url}/control/sessions/${session.result.controlSessionId}/snapshot`, {
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(snapshot.ok, true);
     assert.equal(snapshot.result.snapshot.appId, "notes-lite");
 
     const events = await fetch(`${started.url}/control/sessions/${session.result.controlSessionId}/events`, {
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(events.ok, true);
     assert.equal(Array.isArray(events.result.bridgeCalls), true);
 
     const ended = await fetch(`${started.url}/control/sessions/${session.result.controlSessionId}`, {
       method: "DELETE",
-      headers: { authorization: "Bearer test-token" },
+      headers: { "x-platform-control-token": "test-token" },
     }).then((response) => response.json());
     assert.equal(ended.ok, true);
     assert.equal(ended.result.status, "ended");
@@ -119,7 +119,7 @@ test("http health and token-protected control command work", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer test-token",
+        "x-platform-control-token": "test-token",
       },
       body: JSON.stringify({}),
     }).then((response) => response.json());
