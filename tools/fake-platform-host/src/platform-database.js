@@ -832,6 +832,32 @@ export class PlatformDatabase {
     return this.all("SELECT * FROM test_runs ORDER BY started_at");
   }
 
+  recordTestRun({ microTestId, name, appId, spec, status, result }) {
+    const startedAt = nowIso();
+    const testRunId = id("testrun");
+    this.run(
+      "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(micro_test_id) DO UPDATE SET app_id = excluded.app_id, name = excluded.name, spec_json = excluded.spec_json, updated_at = excluded.updated_at",
+      microTestId,
+      appId,
+      name,
+      prettyJson(spec),
+      startedAt,
+      startedAt,
+    );
+    this.run(
+      "INSERT INTO test_runs (test_run_id, micro_test_id, app_id, status, started_at, finished_at, result_json, diagnostics_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      testRunId,
+      microTestId,
+      appId,
+      status,
+      startedAt,
+      nowIso(),
+      prettyJson(result),
+      prettyJson({ runner: "fake-host-static" }),
+    );
+    return { testRunId, microTestId, appId, status, result };
+  }
+
   run(sql, ...params) {
     return this.db.prepare(sql).run(...params);
   }

@@ -3,10 +3,11 @@ import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispat
 import { fakeHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
 import { PlatformError } from "./errors.js";
-import { examplesDir, resolveInside, runtimeWebDir } from "./paths.js";
+import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
 import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
 import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "./signing.js";
+import { TestRunner } from "./test-runner.js";
 import { prettyJson } from "./util.js";
 
 export class FakePlatformHost {
@@ -14,6 +15,10 @@ export class FakePlatformHost {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
     this.bridge = new BridgeDispatcher({ database: this.database, core: this.core });
+    this.testRunner = new TestRunner({
+      database: this.database,
+      runControlCommand: (tool, args) => this.runControlCommand(tool, args),
+    });
     this.keypair = createPlatformKeypair();
     this.controlToken = controlToken;
     this.dbFile = dbFile;
@@ -84,15 +89,15 @@ export class FakePlatformHost {
       case "runtime.capabilities":
         return fakeHostCapabilities(args.appId ?? null);
       case "platform.validate_package":
-        return this.validatePackage(requiredArg(args, "packagePath"));
+        return this.validatePackage(packagePathArg(args));
       case "platform.sign_webapp_package":
-        return this.signPackage(requiredArg(args, "packagePath"), {
+        return this.signPackage(packagePathArg(args), {
           trustLevel: args.trustLevel ?? "developer",
         });
       case "platform.run_policy_audit":
-        return this.validatePackage(requiredArg(args, "packagePath"));
+        return this.validatePackage(packagePathArg(args));
       case "platform.install_webapp_package":
-        return this.installPackage(requiredArg(args, "packagePath"), {
+        return this.installPackage(packagePathArg(args), {
           trustLevel: args.trustLevel ?? "developer",
         });
       case "platform.list_webapp_versions":
@@ -143,11 +148,15 @@ export class FakePlatformHost {
       case "runtime.bridge_calls":
       case "db.query_bridge_calls":
         return this.database.queryBridgeCalls(args.appId ?? null);
+      case "runtime.run_smoke_tests":
+        return this.testRunner.runSmokeTests(requiredArg(args, "appId"));
+      case "runtime.run_microtest":
+        return this.testRunner.runMicroTest({ spec: args.spec, microtestPath: args.microtestPath });
       case "runtime.network_mock_set":
-        this.database.addNetworkMock(args);
+        this.database.addNetworkMock(normalizeNetworkMockArgs(args));
         return { ok: true };
       case "runtime.dialog_mock_set":
-        this.database.addDialogMock(args);
+        this.database.addDialogMock(normalizeDialogMockArgs(args));
         return { ok: true };
       case "db.snapshot":
         return this.database.snapshot();
@@ -308,6 +317,40 @@ function requiredArg(args, name) {
     throw new PlatformError("invalid_request", `Missing required argument: ${name}`, { name });
   }
   return args[name];
+}
+
+function packagePathArg(args) {
+  const packagePath = args.packagePath ?? args.path;
+  if (!packagePath) {
+    throw new PlatformError("invalid_request", "Missing required argument: packagePath", { aliases: ["packagePath", "path"] });
+  }
+  return packagePath.startsWith("/") ? packagePath : resolveInside(repoRoot, packagePath);
+}
+
+function normalizeNetworkMockArgs(args) {
+  const match = args.match ?? {};
+  return {
+    sessionId: args.sessionId ?? null,
+    appId: args.appId ?? null,
+    method: args.method ?? match.method ?? "GET",
+    urlPattern: args.urlPattern ?? match.url ?? match.urlPattern,
+    response: args.response,
+  };
+}
+
+function normalizeDialogMockArgs(args) {
+  const method = args.method ?? "";
+  const dialogType = args.dialogType ?? method.replace(/^dialog\./, "");
+  return {
+    sessionId: args.sessionId ?? null,
+    appId: args.appId ?? null,
+    dialogType,
+    response: args.response ?? {
+      files: args.files ?? [],
+      selectedPath: args.selectedPath ?? null,
+      cancelled: args.cancelled ?? false,
+    },
+  };
 }
 
 function summarizeValidation(result) {
