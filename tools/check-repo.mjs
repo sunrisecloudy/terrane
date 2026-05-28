@@ -285,19 +285,41 @@ function checkServerStatic() {
     '"/control/command"',
     '"platform.health"',
     '"db.query_app_storage"',
+    '"db.query_app_versions"',
+    '"db.query_core_events"',
+    '"db.query_test_runs"',
     '"/db/snapshot"',
     '"/db/app-storage"',
     '"/db/bridge-calls"',
     '"/db/export-debug-bundle"',
     "fn dbSnapshotJson",
     "fn dbDebugBundleJson",
+    "fn queryRowsJson",
     "fn queryAppStorageRowsJson",
+    "fn queryAppVersionsRowsJson",
     "fn queryBridgeCallsRowsJson",
+    "fn queryCoreEventsRowsJson",
+    "fn queryTestRunsRowsJson",
+    "fn appendJsonColumnValue",
+    "fn ensureAppRecord",
     "fn logAppMessage",
     "sqlite3_open",
+    "app_versions",
+    "app_files",
+    "app_permissions",
+    "app_installations",
     "app_storage",
     "runtime_sessions",
     "bridge_calls",
+    "core_events",
+    "runtime_snapshots",
+    "control_sessions",
+    "control_commands",
+    "test_runs",
+    "app_migrations",
+    "migration_runs",
+    "app_install_reports",
+    "backup_exports",
     "storage.get\\\":true",
     "app.log\\\":true",
     "Bridge request contains unknown top-level fields",
@@ -321,7 +343,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log control=command db=safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log control=command db=v0.4-schema,safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

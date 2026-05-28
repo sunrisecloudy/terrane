@@ -369,16 +369,22 @@ fn handleDbControlEndpoint(
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/app-versions") or std.mem.eql(u8, path, "/control/db/app-versions")) {
-        if (app_id == null) {
+        const actual_app_id = app_id orelse {
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
-        }
-        return writeControlOkRaw(allocator, stream, "[]");
+        };
+        const result_json = try queryAppVersionsRowsJson(allocator, actual_app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/core-events") or std.mem.eql(u8, path, "/control/db/core-events")) {
-        return writeControlOkRaw(allocator, stream, "[]");
+        const result_json = try queryCoreEventsRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/test-runs") or std.mem.eql(u8, path, "/control/db/test-runs")) {
-        return writeControlOkRaw(allocator, stream, "[]");
+        const result_json = try queryTestRunsRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
@@ -446,16 +452,22 @@ fn handleControlCommand(
         return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_app_versions")) {
-        if (controlStringArg(args, "appId") == null) {
+        const app_id = controlStringArg(args, "appId") orelse {
             return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
-        }
-        return writeControlOkRaw(allocator, stream, "[]");
+        };
+        const result_json = try queryAppVersionsRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_core_events")) {
-        return writeControlOkRaw(allocator, stream, "[]");
+        const result_json = try queryCoreEventsRowsJson(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.query_test_runs")) {
-        return writeControlOkRaw(allocator, stream, "[]");
+        const result_json = try queryTestRunsRowsJson(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
     }
     if (std.mem.eql(u8, tool, "db.export_debug_bundle")) {
         const result_json = try dbDebugBundleJson(allocator);
@@ -645,41 +657,253 @@ fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
     }
 
     const schema =
-        "CREATE TABLE IF NOT EXISTS app_storage (" ++
-        "app_id TEXT NOT NULL, " ++
-        "key TEXT NOT NULL, " ++
-        "value_json TEXT, " ++
-        "updated_at TEXT NOT NULL, " ++
-        "PRIMARY KEY(app_id, key)" ++
-        ");" ++
-        "CREATE INDEX IF NOT EXISTS idx_app_storage_app_updated ON app_storage(app_id, updated_at);" ++
-        "CREATE TABLE IF NOT EXISTS runtime_sessions (" ++
-        "session_id TEXT PRIMARY KEY, " ++
-        "target TEXT NOT NULL, " ++
-        "platform TEXT NOT NULL, " ++
-        "runtime_version TEXT NOT NULL, " ++
-        "active_app_id TEXT, " ++
-        "active_install_id TEXT, " ++
-        "started_at TEXT NOT NULL, " ++
-        "ended_at TEXT, " ++
-        "status TEXT NOT NULL DEFAULT 'running', " ++
-        "capabilities_json TEXT, " ++
-        "metadata_json TEXT" ++
-        ");" ++
-        "CREATE TABLE IF NOT EXISTS bridge_calls (" ++
-        "bridge_call_id TEXT PRIMARY KEY, " ++
-        "session_id TEXT NOT NULL REFERENCES runtime_sessions(session_id) ON DELETE CASCADE, " ++
-        "app_id TEXT, " ++
-        "install_id TEXT, " ++
-        "method TEXT NOT NULL, " ++
-        "params_json TEXT, " ++
-        "result_json TEXT, " ++
-        "error_json TEXT, " ++
-        "duration_ms INTEGER, " ++
-        "created_at TEXT NOT NULL" ++
-        ");" ++
-        "CREATE INDEX IF NOT EXISTS idx_bridge_calls_session_created ON bridge_calls(session_id, created_at);" ++
-        "CREATE INDEX IF NOT EXISTS idx_bridge_calls_app_method ON bridge_calls(app_id, method);";
+        \\CREATE TABLE IF NOT EXISTS apps (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  status TEXT NOT NULL DEFAULT 'enabled' CHECK (status IN ('enabled','disabled','quarantined','uninstalled')),
+        \\  active_install_id TEXT,
+        \\  active_version TEXT,
+        \\  data_version INTEGER NOT NULL DEFAULT 1,
+        \\  created_at TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_versions (
+        \\  install_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  version TEXT NOT NULL,
+        \\  runtime_version TEXT NOT NULL,
+        \\  data_version INTEGER NOT NULL,
+        \\  manifest_json TEXT NOT NULL,
+        \\  manifest_hash TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  signature_json TEXT,
+        \\  trust_level TEXT NOT NULL DEFAULT 'user-generated',
+        \\  status TEXT NOT NULL DEFAULT 'installed' CHECK (status IN ('installed','enabled','disabled','quarantined','rolled-back','uninstalled')),
+        \\  created_at TEXT NOT NULL,
+        \\  activated_at TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_files (
+        \\  install_id TEXT NOT NULL REFERENCES app_versions(install_id) ON DELETE CASCADE,
+        \\  path TEXT NOT NULL,
+        \\  content_text TEXT,
+        \\  content_hash TEXT NOT NULL,
+        \\  size_bytes INTEGER NOT NULL DEFAULT 0,
+        \\  mime TEXT NOT NULL DEFAULT 'text/plain',
+        \\  created_at TEXT NOT NULL,
+        \\  PRIMARY KEY (install_id, path)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_permissions (
+        \\  install_id TEXT NOT NULL REFERENCES app_versions(install_id) ON DELETE CASCADE,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  permission TEXT NOT NULL,
+        \\  requested INTEGER NOT NULL DEFAULT 1,
+        \\  approved INTEGER NOT NULL DEFAULT 0,
+        \\  approved_at TEXT,
+        \\  reason TEXT,
+        \\  PRIMARY KEY (install_id, permission)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_installations (
+        \\  installation_event_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  install_id TEXT NOT NULL REFERENCES app_versions(install_id) ON DELETE CASCADE,
+        \\  action TEXT NOT NULL CHECK (action IN ('install','activate','disable','rollback','quarantine','uninstall','import')),
+        \\  previous_install_id TEXT,
+        \\  actor TEXT NOT NULL DEFAULT 'system',
+        \\  report_id TEXT,
+        \\  created_at TEXT NOT NULL,
+        \\  details_json TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_storage (
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  key TEXT NOT NULL,
+        \\  value_json TEXT,
+        \\  updated_at TEXT NOT NULL,
+        \\  PRIMARY KEY (app_id, key)
+        \\);
+        \\CREATE INDEX IF NOT EXISTS idx_app_versions_app_version ON app_versions(app_id, version);
+        \\CREATE INDEX IF NOT EXISTS idx_app_versions_app_status ON app_versions(app_id, status);
+        \\CREATE INDEX IF NOT EXISTS idx_app_files_install_path ON app_files(install_id, path);
+        \\CREATE INDEX IF NOT EXISTS idx_app_permissions_install_perm ON app_permissions(install_id, permission);
+        \\CREATE INDEX IF NOT EXISTS idx_app_installations_app_created ON app_installations(app_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_app_storage_app_updated ON app_storage(app_id, updated_at);
+        \\CREATE TABLE IF NOT EXISTS runtime_sessions (
+        \\  session_id TEXT PRIMARY KEY,
+        \\  target TEXT NOT NULL,
+        \\  platform TEXT NOT NULL,
+        \\  runtime_version TEXT NOT NULL,
+        \\  active_app_id TEXT,
+        \\  active_install_id TEXT,
+        \\  started_at TEXT NOT NULL,
+        \\  ended_at TEXT,
+        \\  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ended','failed')),
+        \\  capabilities_json TEXT,
+        \\  metadata_json TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS bridge_calls (
+        \\  bridge_call_id TEXT PRIMARY KEY,
+        \\  session_id TEXT NOT NULL REFERENCES runtime_sessions(session_id) ON DELETE CASCADE,
+        \\  app_id TEXT,
+        \\  install_id TEXT,
+        \\  method TEXT NOT NULL,
+        \\  params_json TEXT,
+        \\  result_json TEXT,
+        \\  error_json TEXT,
+        \\  duration_ms INTEGER,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS core_events (
+        \\  event_id TEXT PRIMARY KEY,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  app_id TEXT,
+        \\  install_id TEXT,
+        \\  state_version_before INTEGER,
+        \\  event_json TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS core_actions (
+        \\  action_id TEXT PRIMARY KEY,
+        \\  event_id TEXT NOT NULL REFERENCES core_events(event_id) ON DELETE CASCADE,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  app_id TEXT,
+        \\  action_json TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS runtime_snapshots (
+        \\  snapshot_id TEXT PRIMARY KEY,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  app_id TEXT,
+        \\  install_id TEXT,
+        \\  type TEXT NOT NULL CHECK (type IN ('bug-report','pre-install','pre-migration','post-test','golden','manual','debug-bundle')),
+        \\  snapshot_json TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE INDEX IF NOT EXISTS idx_bridge_calls_session_created ON bridge_calls(session_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_bridge_calls_app_method ON bridge_calls(app_id, method);
+        \\CREATE INDEX IF NOT EXISTS idx_core_events_session_created ON core_events(session_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_core_actions_event_created ON core_actions(event_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_session_created ON runtime_snapshots(session_id, created_at);
+        \\CREATE TABLE IF NOT EXISTS control_sessions (
+        \\  control_session_id TEXT PRIMARY KEY,
+        \\  target TEXT NOT NULL,
+        \\  runtime_session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  actor TEXT NOT NULL DEFAULT 'codex',
+        \\  token_hash TEXT,
+        \\  started_at TEXT NOT NULL,
+        \\  ended_at TEXT,
+        \\  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ended','failed')),
+        \\  metadata_json TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS control_commands (
+        \\  command_id TEXT PRIMARY KEY,
+        \\  control_session_id TEXT NOT NULL REFERENCES control_sessions(control_session_id) ON DELETE CASCADE,
+        \\  runtime_session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  tool TEXT NOT NULL,
+        \\  http_method TEXT,
+        \\  path TEXT,
+        \\  decision TEXT CHECK (decision IN ('accepted','rejected')),
+        \\  error_code TEXT,
+        \\  args_json TEXT,
+        \\  result_json TEXT,
+        \\  error_json TEXT,
+        \\  created_at TEXT NOT NULL,
+        \\  duration_ms INTEGER
+        \\);
+        \\CREATE TABLE IF NOT EXISTS micro_tests (
+        \\  micro_test_id TEXT PRIMARY KEY,
+        \\  app_id TEXT,
+        \\  name TEXT NOT NULL,
+        \\  spec_json TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS test_runs (
+        \\  test_run_id TEXT PRIMARY KEY,
+        \\  micro_test_id TEXT REFERENCES micro_tests(micro_test_id) ON DELETE SET NULL,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL,
+        \\  control_session_id TEXT REFERENCES control_sessions(control_session_id) ON DELETE SET NULL,
+        \\  app_id TEXT,
+        \\  status TEXT NOT NULL CHECK (status IN ('passed','failed','skipped','running','error')),
+        \\  started_at TEXT NOT NULL,
+        \\  finished_at TEXT,
+        \\  result_json TEXT,
+        \\  diagnostics_json TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS network_mocks (
+        \\  mock_id TEXT PRIMARY KEY,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE CASCADE,
+        \\  app_id TEXT,
+        \\  method TEXT NOT NULL DEFAULT 'GET',
+        \\  url_pattern TEXT NOT NULL,
+        \\  response_json TEXT NOT NULL,
+        \\  enabled INTEGER NOT NULL DEFAULT 1,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS dialog_mocks (
+        \\  mock_id TEXT PRIMARY KEY,
+        \\  session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE CASCADE,
+        \\  app_id TEXT,
+        \\  dialog_type TEXT NOT NULL CHECK (dialog_type IN ('openFile','saveFile')),
+        \\  response_json TEXT NOT NULL,
+        \\  enabled INTEGER NOT NULL DEFAULT 1,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE INDEX IF NOT EXISTS idx_control_commands_session_created ON control_commands(control_session_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_test_runs_session_started ON test_runs(session_id, started_at);
+        \\CREATE INDEX IF NOT EXISTS idx_test_runs_app_started ON test_runs(app_id, started_at);
+        \\CREATE INDEX IF NOT EXISTS idx_network_mocks_session_app ON network_mocks(session_id, app_id);
+        \\CREATE INDEX IF NOT EXISTS idx_dialog_mocks_session_app ON dialog_mocks(session_id, app_id);
+        \\CREATE TABLE IF NOT EXISTS app_migrations (
+        \\  migration_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  from_data_version INTEGER NOT NULL,
+        \\  to_data_version INTEGER NOT NULL,
+        \\  migration_json TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  UNIQUE(app_id, from_data_version, to_data_version)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS migration_runs (
+        \\  migration_run_id TEXT PRIMARY KEY,
+        \\  migration_id TEXT REFERENCES app_migrations(migration_id) ON DELETE SET NULL,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  install_id TEXT REFERENCES app_versions(install_id) ON DELETE SET NULL,
+        \\  mode TEXT NOT NULL CHECK (mode IN ('dry-run','apply','rollback')),
+        \\  status TEXT NOT NULL CHECK (status IN ('passed','failed','running','rolled-back')),
+        \\  pre_snapshot_id TEXT REFERENCES runtime_snapshots(snapshot_id) ON DELETE SET NULL,
+        \\  post_snapshot_id TEXT REFERENCES runtime_snapshots(snapshot_id) ON DELETE SET NULL,
+        \\  report_json TEXT,
+        \\  started_at TEXT NOT NULL,
+        \\  finished_at TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS app_install_reports (
+        \\  report_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  install_id TEXT REFERENCES app_versions(install_id) ON DELETE SET NULL,
+        \\  status TEXT NOT NULL CHECK (status IN ('accepted','accepted-with-warnings','rejected','failed','requires-approval')),
+        \\  validation_json TEXT,
+        \\  security_json TEXT,
+        \\  permissions_json TEXT,
+        \\  compatibility_json TEXT,
+        \\  smoke_test_json TEXT,
+        \\  content_hash TEXT,
+        \\  created_at TEXT NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS backup_exports (
+        \\  export_id TEXT PRIMARY KEY,
+        \\  type TEXT NOT NULL CHECK (type IN ('backup','debug-bundle','test-fixture','import')),
+        \\  source_platform TEXT NOT NULL,
+        \\  runtime_version TEXT NOT NULL,
+        \\  export_json TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  imported_at TEXT
+        \\);
+        \\CREATE INDEX IF NOT EXISTS idx_app_migrations_app_versions ON app_migrations(app_id, from_data_version, to_data_version);
+        \\CREATE INDEX IF NOT EXISTS idx_migration_runs_app_started ON migration_runs(app_id, started_at);
+        \\CREATE INDEX IF NOT EXISTS idx_app_install_reports_app_created ON app_install_reports(app_id, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_backup_exports_created ON backup_exports(created_at);
+    ;
     if (sqlite.sqlite3_exec(db, schema, null, null, null) != sqlite.SQLITE_OK) {
         return error.StorageSchemaFailed;
     }
@@ -720,6 +944,8 @@ fn storageSet(app_id: []const u8, key: []const u8, value_json: []const u8) !void
     const allocator = std.heap.page_allocator;
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
+
+    try ensureAppRecord(db, app_id);
 
     var statement: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(
@@ -789,33 +1015,127 @@ fn storageListResultJson(allocator: std.mem.Allocator, app_id: []const u8, prefi
 }
 
 fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
+    const apps = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
+    defer allocator.free(apps);
+    const app_versions = try queryRowsJson(allocator, "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions ORDER BY app_id, version", null);
+    defer allocator.free(app_versions);
     const storage = try queryAppStorageRowsJson(allocator, null);
     defer allocator.free(storage);
     const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
     defer allocator.free(bridge_calls);
     const runtime_sessions = try queryRuntimeSessionsRowsJson(allocator);
     defer allocator.free(runtime_sessions);
+    const control_sessions = try queryRowsJson(allocator, "SELECT control_session_id, target, runtime_session_id, actor, token_hash, started_at, ended_at, status, metadata_json FROM control_sessions ORDER BY started_at", null);
+    defer allocator.free(control_sessions);
+    const control_commands = try queryRowsJson(allocator, "SELECT command_id, control_session_id, runtime_session_id, tool, http_method, path, decision, error_code, args_json, result_json, error_json, created_at, duration_ms FROM control_commands ORDER BY created_at", null);
+    defer allocator.free(control_commands);
+    const runtime_snapshots = try queryRowsJson(allocator, "SELECT snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at FROM runtime_snapshots ORDER BY created_at", null);
+    defer allocator.free(runtime_snapshots);
+    const app_migrations = try queryRowsJson(allocator, "SELECT migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at FROM app_migrations ORDER BY created_at", null);
+    defer allocator.free(app_migrations);
+    const migration_runs = try queryRowsJson(allocator, "SELECT migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, post_snapshot_id, report_json, started_at, finished_at FROM migration_runs ORDER BY started_at", null);
+    defer allocator.free(migration_runs);
+    const core_events = try queryCoreEventsRowsJson(allocator, null);
+    defer allocator.free(core_events);
+    const test_runs = try queryTestRunsRowsJson(allocator, null);
+    defer allocator.free(test_runs);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"app_storage\":{s},\"bridge_calls\":{s},\"runtime_sessions\":{s},\"app_versions\":[],\"core_events\":[],\"test_runs\":[]}}",
-        .{ storage, bridge_calls, runtime_sessions },
+        "{{\"apps\":{s},\"app_versions\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s}}}",
+        .{ apps, app_versions, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs },
     );
 }
 
 fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
+    const apps = try queryRowsJson(allocator, "SELECT id, name, status, active_install_id, active_version, data_version, created_at, updated_at FROM apps ORDER BY id", null);
+    defer allocator.free(apps);
+    const app_versions = try queryRowsJson(allocator, "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions ORDER BY app_id, version", null);
+    defer allocator.free(app_versions);
+    const app_files = try queryRowsJson(allocator, "SELECT install_id, path, content_text, content_hash, size_bytes, mime, created_at FROM app_files ORDER BY install_id, path", null);
+    defer allocator.free(app_files);
+    const app_permissions = try queryRowsJson(allocator, "SELECT install_id, app_id, permission, requested, approved, approved_at, reason FROM app_permissions ORDER BY install_id, permission", null);
+    defer allocator.free(app_permissions);
     const storage = try queryAppStorageRowsJson(allocator, null);
     defer allocator.free(storage);
     const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
     defer allocator.free(bridge_calls);
     const runtime_sessions = try queryRuntimeSessionsRowsJson(allocator);
     defer allocator.free(runtime_sessions);
+    const core_events = try queryCoreEventsRowsJson(allocator, null);
+    defer allocator.free(core_events);
+    const core_actions = try queryRowsJson(allocator, "SELECT action_id, event_id, session_id, app_id, action_json, created_at FROM core_actions ORDER BY created_at", null);
+    defer allocator.free(core_actions);
+    const runtime_snapshots = try queryRowsJson(allocator, "SELECT snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at FROM runtime_snapshots ORDER BY created_at", null);
+    defer allocator.free(runtime_snapshots);
+    const test_runs = try queryTestRunsRowsJson(allocator, null);
+    defer allocator.free(test_runs);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"exportId\":\"server-debug-bundle\",\"type\":\"debug-bundle\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"appStorage\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":[],\"testRuns\":[]}}}}",
-        .{ runtime_version, storage, runtime_sessions, bridge_calls },
+        "{{\"exportId\":\"server-debug-bundle\",\"type\":\"debug-bundle\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s}}}}}",
+        .{ runtime_version, apps, app_versions, app_files, app_permissions, storage, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs },
     );
+}
+
+fn queryAppVersionsRowsJson(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    return queryRowsJson(
+        allocator,
+        "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at FROM app_versions WHERE app_id = ? ORDER BY created_at",
+        app_id,
+    );
+}
+
+fn queryCoreEventsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const sql = if (app_id == null)
+        "SELECT event_id, session_id, app_id, install_id, state_version_before, event_json, created_at FROM core_events ORDER BY created_at"
+    else
+        "SELECT event_id, session_id, app_id, install_id, state_version_before, event_json, created_at FROM core_events WHERE app_id = ? ORDER BY created_at";
+    return queryRowsJson(allocator, sql, app_id);
+}
+
+fn queryTestRunsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const sql = if (app_id == null)
+        "SELECT test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json FROM test_runs ORDER BY started_at"
+    else
+        "SELECT test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json FROM test_runs WHERE app_id = ? ORDER BY started_at";
+    return queryRowsJson(allocator, sql, app_id);
+}
+
+fn queryRowsJson(allocator: std.mem.Allocator, sql: []const u8, bind_value: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (bind_value) |value| {
+        bindText(statement, 1, value);
+    }
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var row_count: usize = 0;
+    const column_count = sqlite.sqlite3_column_count(statement);
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (row_count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{");
+        var column: c_int = 0;
+        while (column < column_count) : (column += 1) {
+            if (column > 0) try out.writer.writeAll(",");
+            const name_z = sqlite.sqlite3_column_name(statement, column) orelse return error.StorageQueryFailed;
+            try appendJsonString(allocator, &out, std.mem.span(name_z));
+            try out.writer.writeAll(":");
+            try appendJsonColumnValue(allocator, &out, statement, column);
+        }
+        try out.writer.writeAll("}");
+        row_count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
 }
 
 fn queryAppStorageRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
@@ -968,6 +1288,7 @@ fn logAppMessage(
     defer _ = sqlite.sqlite3_close(db);
 
     const actual_session_id = session_id orelse "server-dev-session";
+    try ensureAppRecord(db, app_id);
     try ensureRuntimeSession(db, actual_session_id, app_id);
 
     const params_json = try appLogParamsJson(allocator, level, message);
@@ -988,6 +1309,25 @@ fn logAppMessage(
     bindText(statement, 1, actual_session_id);
     bindText(statement, 2, app_id);
     bindText(statement, 3, params_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
+        return error.StorageWriteFailed;
+    }
+}
+
+fn ensureAppRecord(db: *sqlite.sqlite3, app_id: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR IGNORE INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', 1, datetime('now'), datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, app_id);
     if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) {
         return error.StorageWriteFailed;
     }
@@ -1323,6 +1663,16 @@ fn appendJsonNullableInt(out: *std.io.Writer.Allocating, statement: ?*sqlite.sql
         return out.writer.writeAll("null");
     }
     try out.writer.print("{d}", .{sqlite.sqlite3_column_int64(statement, index)});
+}
+
+fn appendJsonColumnValue(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, statement: ?*sqlite.sqlite3_stmt, index: c_int) !void {
+    switch (sqlite.sqlite3_column_type(statement, index)) {
+        sqlite.SQLITE_NULL => try out.writer.writeAll("null"),
+        sqlite.SQLITE_INTEGER => try out.writer.print("{d}", .{sqlite.sqlite3_column_int64(statement, index)}),
+        sqlite.SQLITE_FLOAT => try out.writer.print("{d}", .{sqlite.sqlite3_column_double(statement, index)}),
+        sqlite.SQLITE_TEXT => try appendJsonString(allocator, out, sqliteColumnText(statement, index)),
+        else => try appendJsonString(allocator, out, sqliteColumnText(statement, index)),
+    }
 }
 
 fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

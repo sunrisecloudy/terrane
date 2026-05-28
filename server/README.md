@@ -36,8 +36,8 @@ Implemented endpoints:
 
 ## v0.4 persistence requirement
 
-Server dev persistence uses SQLite through `app_storage(app_id, key, value_json)`, `runtime_sessions`, and `bridge_calls`. `app.log` validates `level`/`message`, writes a redacted `bridge_calls` row, and mirrors the message to stderr. By default the server writes `server-platform.sqlite` in the current working directory; set `NATIVE_AI_SERVER_DB=/path/to/platform.sqlite` to choose another file.
+Server dev persistence initializes the v0.4 logical SQLite schema: app registry/install tables, `app_storage`, runtime/debug tables, Codex control tables, test/mocking tables, migrations, install reports, and backup export metadata. `app.log` validates `level`/`message`, writes a redacted `bridge_calls` row, and mirrors the message to stderr. By default the server writes `server-platform.sqlite` in the current working directory; set `NATIVE_AI_SERVER_DB=/path/to/platform.sqlite` to choose another file.
 
-Safe DB inspection endpoints and `/control/command` require `X-Platform-Control-Token` to match `NATIVE_AI_SERVER_CONTROL_TOKEN`. They expose fixed read-only queries only; arbitrary SQL is not available. The current server DB surface includes `app_storage`, `runtime_sessions`, and `bridge_calls`; app version, core event, and test-run inspection endpoints return empty arrays until those records are implemented.
+Safe DB inspection endpoints and `/control/command` require `X-Platform-Control-Token` to match `NATIVE_AI_SERVER_CONTROL_TOKEN`. They expose fixed read-only queries only; arbitrary SQL is not available. The server creates host-owned app rows for bundled-example storage/log writes so `app_storage` can keep its relational `apps(id)` boundary without generated apps choosing SQL state.
 
 Remaining persistence work: full app registry/package/install/test/control records, migrations, and the Postgres production adapter.
