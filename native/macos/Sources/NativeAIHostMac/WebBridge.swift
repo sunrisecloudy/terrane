@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 
+@MainActor
 final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let storage = PlatformStorage()
     private let dialogs = PlatformDialogs()
@@ -18,7 +19,21 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
 
-        let request = BridgeRequest(body: body)
+        let request = BridgeRequest(body: body, context: AppSandboxContext(message: message))
+        if let permission = permissionForBridgeMethod(request.method),
+           !request.context.approvedPermissions.contains(permission) {
+            replyHandler(
+                BridgeResponse.failure(
+                    id: request.id,
+                    code: "permission_denied",
+                    message: "App \(request.context.appId) cannot call \(request.method)",
+                    details: ["appId": request.context.appId, "method": request.method, "requiredPermission": permission]
+                ).asDictionary(),
+                nil
+            )
+            return
+        }
+
         let result = dispatch(request)
         replyHandler(result.asDictionary(), nil)
     }
@@ -74,17 +89,69 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return .failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)")
         }
     }
+
+    private func permissionForBridgeMethod(_ method: String) -> String? {
+        switch method {
+        case "storage.get", "storage.list":
+            return "storage.read"
+        case "storage.set", "storage.remove":
+            return "storage.write"
+        case "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step", "app.log":
+            return method
+        default:
+            return nil
+        }
+    }
 }
 
 struct BridgeRequest {
     let id: String?
     let method: String
     let params: [String: Any]
+    let context: AppSandboxContext
 
-    init(body: [String: Any]) {
+    init(body: [String: Any], context: AppSandboxContext) {
         self.id = body["id"] as? String
         self.method = body["method"] as? String ?? ""
         self.params = body["params"] as? [String: Any] ?? [:]
+        self.context = context
+    }
+}
+
+struct AppSandboxContext {
+    let appId: String
+    let storagePrefix: String
+    let approvedPermissions: Set<String>
+
+    @MainActor
+    init(message: WKScriptMessage) {
+        let appId = AppSandboxContext.appId(from: message.frameInfo.request.url) ?? "unknown"
+        self.appId = appId
+        self.storagePrefix = "\(appId):"
+        self.approvedPermissions = AppSandboxContext.permissions(for: appId)
+    }
+
+    private static func appId(from url: URL?) -> String? {
+        guard let path = url?.path else { return nil }
+        let marker = "/webapps/examples/"
+        guard let markerRange = path.range(of: marker) else { return nil }
+        let rest = path[markerRange.upperBound...]
+        guard let id = rest.split(separator: "/").first, !id.isEmpty else { return nil }
+        return String(id)
+    }
+
+    private static func permissions(for appId: String) -> Set<String> {
+        let manifestURL = RuntimeResourceLocator.repoRootURL()
+            .appendingPathComponent("webapps/examples")
+            .appendingPathComponent(appId)
+            .appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let permissions = json["permissions"] as? [String]
+        else {
+            return []
+        }
+        return Set(permissions)
     }
 }
 

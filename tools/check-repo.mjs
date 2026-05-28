@@ -239,16 +239,34 @@ function checkServerStatic() {
 
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
-  const required = ['"target": "macos"', '"devMode": true', '"limits":', '"network.request": false', '"core.step": false'];
+  const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
+  const required = [
+    '"target": "macos"',
+    '"devMode": true',
+    '"limits":',
+    '"network.request": false',
+    '"core.step": false',
+    "struct AppSandboxContext",
+    "permissionForBridgeMethod",
+    "approvedPermissions.contains(permission)",
+  ];
   for (const snippet of required) {
     if (!macBridge.includes(snippet)) {
       throw new Error(`macOS runtime.capabilities missing ${snippet}`);
     }
   }
+  for (const snippet of ["request.context.appId", "request.context.storagePrefix", "storagePrefixFailure"]) {
+    if (!macStorage.includes(snippet)) {
+      throw new Error(`macOS storage missing context enforcement: ${snippet}`);
+    }
+  }
+  if (macStorage.includes("appId(for:")) {
+    throw new Error("macOS storage must not derive app id from storage key");
+  }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
   }
-  return "macos.capabilities=schema-shaped";
+  return "macos.capabilities=schema-shaped storage=context-enforced";
 }
 
 function readJson(filePath) {

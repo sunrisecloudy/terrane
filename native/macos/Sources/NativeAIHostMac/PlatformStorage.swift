@@ -19,7 +19,10 @@ final class PlatformStorage {
         guard let key = request.params["key"] as? String else {
             return .failure(id: request.id, code: "invalid_request", message: "storage.get requires key")
         }
-        let appId = appId(for: key)
+        guard key.hasPrefix(request.context.storagePrefix) else {
+            return storagePrefixFailure(request, key: key)
+        }
+        let appId = request.context.appId
         let sql = "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?"
         var statement: OpaquePointer?
         sqlite3_prepare_v2(db, sql, -1, &statement, nil)
@@ -37,7 +40,10 @@ final class PlatformStorage {
         guard let key = request.params["key"] as? String else {
             return .failure(id: request.id, code: "invalid_request", message: "storage.set requires key")
         }
-        let appId = appId(for: key)
+        guard key.hasPrefix(request.context.storagePrefix) else {
+            return storagePrefixFailure(request, key: key)
+        }
+        let appId = request.context.appId
         let value = encodeJson(request.params["value"] ?? NSNull())
         let sql = "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at"
         var statement: OpaquePointer?
@@ -55,11 +61,14 @@ final class PlatformStorage {
         guard let key = request.params["key"] as? String else {
             return .failure(id: request.id, code: "invalid_request", message: "storage.remove requires key")
         }
+        guard key.hasPrefix(request.context.storagePrefix) else {
+            return storagePrefixFailure(request, key: key)
+        }
         let sql = "DELETE FROM app_storage WHERE app_id = ? AND key = ?"
         var statement: OpaquePointer?
         sqlite3_prepare_v2(db, sql, -1, &statement, nil)
         defer { sqlite3_finalize(statement) }
-        bind(statement, 1, appId(for: key))
+        bind(statement, 1, request.context.appId)
         bind(statement, 2, key)
         sqlite3_step(statement)
         return .success(id: request.id, result: ["ok": true])
@@ -69,11 +78,14 @@ final class PlatformStorage {
         guard let prefix = request.params["prefix"] as? String else {
             return .failure(id: request.id, code: "invalid_request", message: "storage.list requires prefix")
         }
+        guard prefix.hasPrefix(request.context.storagePrefix) else {
+            return storagePrefixFailure(request, key: prefix)
+        }
         let sql = "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key"
         var statement: OpaquePointer?
         sqlite3_prepare_v2(db, sql, -1, &statement, nil)
         defer { sqlite3_finalize(statement) }
-        bind(statement, 1, appId(for: prefix))
+        bind(statement, 1, request.context.appId)
         bind(statement, 2, "\(prefix)%")
         var keys: [String] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -89,8 +101,13 @@ final class PlatformStorage {
         return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
     }
 
-    private func appId(for key: String) -> String {
-        key.split(separator: ":", maxSplits: 1).first.map(String.init) ?? "unknown"
+    private func storagePrefixFailure(_ request: BridgeRequest, key: String) -> BridgeResponse {
+        .failure(
+            id: request.id,
+            code: "permission_denied",
+            message: "Storage key must begin with \(request.context.storagePrefix)",
+            details: ["key": key, "prefix": request.context.storagePrefix, "appId": request.context.appId]
+        )
     }
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
