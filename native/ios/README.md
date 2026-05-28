@@ -9,6 +9,7 @@ App.swift
 WebHostView.swift
 WebBridge.swift
 ZigCoreBridge.swift
+CZigCoreBridge/
 PlatformStorage.swift
 PlatformDialogs.swift
 PlatformNotifications.swift
@@ -26,7 +27,9 @@ Implemented now:
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
-- Returns structured `platform_unsupported` responses for dialogs and Zig core until those services are wired.
+- Loads statically linked Zig core symbols when present and falls back to `libzig_core.dylib` for simulator/dev `core.step`, using `NATIVE_AI_ZIG_CORE_DYLIB` first.
+- Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
+- Returns structured `platform_unsupported` responses for dialogs until those services are wired.
 
 MVP acceptance:
 

@@ -561,6 +561,9 @@ function checkNativeStatic() {
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
+  const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "ZigCoreBridge.swift"), "utf8");
+  const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
+  const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
@@ -659,7 +662,7 @@ function checkNativeStatic() {
     [iosBridge, '"devMode": true'],
     [iosBridge, '"limits":'],
     [iosBridge, '"network.request": true'],
-    [iosBridge, '"core.step": false'],
+    [iosBridge, '"core.step": core.isAvailable'],
     [iosBridge, "struct BridgeEnvelope"],
     [iosBridge, "message.frameInfo.isMainFrame"],
     [iosBridge, "mountToken"],
@@ -686,6 +689,28 @@ function checkNativeStatic() {
   }
   if (iosNetwork.includes("platform_unsupported")) {
     throw new Error("iOS network.request must not remain a platform_unsupported stub");
+  }
+  for (const snippet of [
+    "import CZigCoreBridge",
+    "Library(linked: true)",
+    "NATIVE_AI_ZIG_CORE_DYLIB",
+    "RuntimeResourceLocator.repoRootURL()",
+    "native_ai_zig_core_step_json",
+    "native_ai_zig_core_free_output",
+    "core.step app field does not match the channel-derived app id",
+    "platform_unsupported",
+  ]) {
+    if (!iosCore.includes(snippet)) {
+      throw new Error(`iOS core bridge missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["weak_import", "dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
+    if (!iosCoreShim.includes(snippet)) {
+      throw new Error(`iOS C Zig core shim missing ${snippet}`);
+    }
+  }
+  if (!iosPackage.includes('.target(name: "CZigCoreBridge")') || !iosPackage.includes('dependencies: ["CZigCoreBridge"]')) {
+    throw new Error("iOS package must include the C Zig core bridge target");
   }
   const windowsRequired = [
     [windowsHost, "SetVirtualHostNameToFolderMapping"],
@@ -829,7 +854,7 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced core=linked-or-dylib windows.webview2=origin-checked core=zig-dll linux.webkit=scheme-checked core=zig-so android.webmessage=origin-checked";
 }
 
 function readJson(filePath) {
