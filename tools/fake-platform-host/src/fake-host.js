@@ -186,6 +186,14 @@ export class FakePlatformHost {
     switch (tool) {
       case "platform.health":
         return this.health();
+      case "platform.list_targets":
+        return {
+          targets: [
+            { id: "fake-host", platform: "fake-host", status: "available", runtimeVersion: this.runtimeVersion },
+            { id: "macos", platform: "macos", status: "not-attached" },
+            { id: "server", platform: "server", status: "not-attached" },
+          ],
+        };
       case "runtime.capabilities":
         return fakeHostCapabilities(args.appId ?? null);
       case "platform.validate_package":
@@ -224,6 +232,20 @@ export class FakePlatformHost {
           sessionId: this.database.createRuntimeSession({ appId: args.appId }),
           appId: args.appId,
         };
+      case "platform.reset_webapp":
+      case "runtime.storage_reset":
+        return this.database.resetWebapp(requiredArg(args, "appId"));
+      case "runtime.resource_usage":
+        return this.database.resourceUsage(requiredArg(args, "appId"));
+      case "runtime.clear_logs":
+        return this.database.clearRuntimeLogs(args.appId ?? null);
+      case "runtime.assert_bridge_call":
+        return this.database.assertBridgeCall({
+          appId: requiredArg(args, "appId"),
+          method: requiredArg(args, "method"),
+        });
+      case "runtime.assert_no_console_errors":
+        return { ok: true, errors: 0 };
       case "runtime.core_step":
         return this.bridge.dispatch(
           { id: args.id ?? "control_core_step", method: "core.step", params: { event: requiredArg(args, "event") } },

@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { PlatformError } from "./errors.js";
 import { sqliteMigrationsDir } from "./paths.js";
 import { canonicalJson, id, nowIso, prettyJson, sha256 } from "./util.js";
 
@@ -371,6 +372,52 @@ export class PlatformDatabase {
       snapshot.createdAt,
     );
     return { snapshotId, ...snapshot };
+  }
+
+  resetWebapp(appId) {
+    const snapshot = this.createSnapshot({ appId, type: "manual" });
+    this.run("DELETE FROM app_storage WHERE app_id = ?", appId);
+    return {
+      ok: true,
+      appId,
+      snapshotId: snapshot.snapshotId,
+      clearedStorageKeys: snapshot.storage.length,
+    };
+  }
+
+  clearRuntimeLogs(appId = null) {
+    const bridge = appId
+      ? this.run("DELETE FROM bridge_calls WHERE app_id = ?", appId).changes
+      : this.run("DELETE FROM bridge_calls").changes;
+    const actions = appId
+      ? this.run("DELETE FROM core_actions WHERE app_id = ?", appId).changes
+      : this.run("DELETE FROM core_actions").changes;
+    const events = appId
+      ? this.run("DELETE FROM core_events WHERE app_id = ?", appId).changes
+      : this.run("DELETE FROM core_events").changes;
+    return { ok: true, appId, bridgeCallsCleared: bridge, coreActionsCleared: actions, coreEventsCleared: events };
+  }
+
+  resourceUsage(appId) {
+    const since = new Date(Date.now() - 60_000).toISOString();
+    return {
+      appId,
+      storageBytes: this.get(
+        "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) AS bytes FROM app_storage WHERE app_id = ?",
+        appId,
+      )?.bytes ?? 0,
+      bridgeCallsLastMinute: this.countBridgeCallsSince({ appId, since }),
+      networkRequestsLastMinute: this.countBridgeCallsSince({ appId, since, method: "network.request" }),
+      logLinesLastMinute: this.countBridgeCallsSince({ appId, since, method: "app.log" }),
+    };
+  }
+
+  assertBridgeCall({ appId, method }) {
+    const rows = this.queryBridgeCalls(appId).filter((row) => row.method === method);
+    if (rows.length === 0) {
+      throw new PlatformError("assertion_failed", "Expected bridge call was not recorded", { appId, method });
+    }
+    return { ok: true, appId, method, count: rows.length, latest: rows.at(-1) };
   }
 
   restoreSnapshot(snapshotId) {
