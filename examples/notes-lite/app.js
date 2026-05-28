@@ -91,10 +91,12 @@
       actions.className = 'note-actions';
       const edit = document.createElement('button');
       edit.textContent = 'Edit';
+      edit.dataset.testid = 'note-edit-button';
       edit.addEventListener('click', () => showEditor(note));
       const del = document.createElement('button');
       del.textContent = 'Delete';
       del.className = 'danger';
+      del.dataset.testid = 'note-delete-button';
       del.addEventListener('click', () => deleteNote(note.id));
       actions.append(edit, del);
       item.append(title, body, actions);

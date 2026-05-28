@@ -24,14 +24,14 @@
       <label>Body <textarea id="note-body" data-testid="note-body-input" rows="5"></textarea></label>
       <div class="row">
         <button id="save-note" data-testid="save-note-button" class="primary">Save</button>
-        <button id="cancel-edit">Cancel</button>
+        <button id="cancel-edit" data-testid="cancel-edit-button">Cancel</button>
       </div>
     </section>
 
     <section class="panel">
       <div class="toolbar">
-        <input id="search" data-testid="notes-search-input" placeholder="Search notes" autocomplete="off">
-        <button id="clear-all" class="danger">Clear all</button>
+        <input id="search" data-testid="notes-search-input" aria-label="Search notes" placeholder="Search notes" autocomplete="off">
+        <button id="clear-all" data-testid="clear-all-notes-button" class="danger">Clear all</button>
       </div>
       <div id="empty" class="empty">No notes yet. Create one to test storage.set.</div>
       <ul id="notes" class="notes"></ul>

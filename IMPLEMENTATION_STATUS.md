@@ -142,7 +142,7 @@ Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-rep
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.
 3. **Postgres lint** — `db/postgres/*.sql` is static-checked; full apply runs when a Postgres service is available.
-4. **Manifest sync** — `examples/` and `webapps/examples/` manifests must match (until consolidation).
+4. **Example duplicate sync** — `examples/` and `webapps/examples/` package files must match (until consolidation).
 5. **Spec lint** — section numbering contiguous; no `addJavascriptInterface` in native source; no `networkAllowlist` in manifests.
 
 ## How to update this file

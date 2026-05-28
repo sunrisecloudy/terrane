@@ -149,14 +149,17 @@ function checkManifestSync() {
   }
   const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
   for (const app of apps) {
-    const canonical = readJson(path.join(examplesDir, app, "manifest.json"));
-    const duplicatePath = path.join(rootExamples, app, "manifest.json");
-    if (!fs.existsSync(duplicatePath)) {
-      throw new Error(`missing duplicate manifest for ${app}`);
-    }
-    const duplicate = readJson(duplicatePath);
-    if (JSON.stringify(canonical) !== JSON.stringify(duplicate)) {
-      throw new Error(`manifest drift: ${app}`);
+    for (const fileName of ["manifest.json", "index.html", "styles.css", "app.js", "smoke-tests.json", "README.md"]) {
+      const canonicalPath = path.join(examplesDir, app, fileName);
+      const duplicatePath = path.join(rootExamples, app, fileName);
+      if (!fs.existsSync(duplicatePath)) {
+        throw new Error(`missing duplicate ${fileName} for ${app}`);
+      }
+      const canonical = fs.readFileSync(canonicalPath, "utf8");
+      const duplicate = fs.readFileSync(duplicatePath, "utf8");
+      if (canonical !== duplicate) {
+        throw new Error(`example duplicate drift: ${app}/${fileName}`);
+      }
     }
   }
   return `apps=${apps.length}`;
