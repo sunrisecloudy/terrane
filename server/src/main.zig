@@ -1550,6 +1550,110 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.query")) {
+        const result_json = runtimeQueryControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.query requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.screenshot")) {
+        const result_json = runtimeScreenshotControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.screenshot requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.click") or std.mem.eql(u8, tool, "runtime.type") or std.mem.eql(u8, tool, "runtime.set_value") or std.mem.eql(u8, tool, "runtime.drag")) {
+        const result_json = runtimeTargetControl(allocator, tool, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "Runtime target command requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.SelectorNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "selector.not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "selector.not_found", "Runtime target was not found in installed package HTML");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.press_key")) {
+        const result_json = try runtimePressKeyControl(allocator, args);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.wait_for")) {
+        const result_json = try runtimeWaitForControl(allocator, args);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_visible")) {
+        const result_json = assertRuntimeVisibleControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_visible requires appId");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.SelectorNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "selector.not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "selector.not_found", "Expected runtime target is not visible");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.assert_text")) {
+        const result_json = assertRuntimeTextControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.assert_text requires appId and text");
+            },
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            error.TextNotFound => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "text.not_found", args_json, null);
+                return writeControlError(allocator, stream, 400, "text.not_found", "Expected text was not found in installed package HTML");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -3355,6 +3459,279 @@ fn runtimeSnapshotControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u
     try appendJsonString(allocator, &out, text);
     try out.writer.print(",\"domSummary\":{s},\"accessibilityTree\":{s},\"errors\":[],\"resourceUsage\":{s}}}", .{ dom_summary, accessibility_tree, resource_usage });
     return out.toOwnedSlice();
+}
+
+const RuntimeHtmlPackage = struct {
+    install_id: []u8,
+    version: []u8,
+    html: []u8,
+};
+
+fn freeRuntimeHtmlPackage(allocator: std.mem.Allocator, package: RuntimeHtmlPackage) void {
+    allocator.free(package.install_id);
+    allocator.free(package.version);
+    allocator.free(package.html);
+}
+
+fn runtimeHtmlPackageAlloc(allocator: std.mem.Allocator, app_id: []const u8) !RuntimeHtmlPackage {
+    const manifest_json = try activeManifestJsonAlloc(allocator, app_id);
+    defer allocator.free(manifest_json);
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const active = try activeInstallDetailsAlloc(allocator, db, app_id);
+    const active_version = active orelse return error.AppNotInstalled;
+    errdefer freeInstalledVersion(allocator, active_version);
+
+    const package_files = try packageFilesForInstallAlloc(allocator, db, active_version.install_id);
+    defer freeOwnedPackageFiles(allocator, package_files);
+    const html = try allocator.dupe(u8, findPackageFileContent(package_files, "index.html") orelse "");
+    errdefer allocator.free(html);
+    allocator.free(active_version.status);
+    return .{
+        .install_id = active_version.install_id,
+        .version = active_version.version,
+        .html = html,
+    };
+}
+
+fn runtimeQueryControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const query = try runtimeQueryLabelAlloc(allocator, args);
+    defer allocator.free(query);
+    const match_json = try runtimeFirstMatchJsonAlloc(allocator, package.html, args);
+    defer if (match_json) |actual| allocator.free(actual);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":");
+    try out.writer.writeAll(if (match_json != null) "true" else "false");
+    try out.writer.writeAll(",\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"query\":");
+    try appendJsonString(allocator, &out, query);
+    try out.writer.writeAll(",\"matches\":");
+    if (match_json) |actual| {
+        try out.writer.print("[{s}]", .{actual});
+    } else {
+        try out.writer.writeAll("[]");
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn runtimeScreenshotControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const title = try htmlTitleOrFallbackAlloc(allocator, package.html, app_id);
+    defer allocator.free(title);
+    const text = try htmlTextAlloc(allocator, package.html);
+    defer allocator.free(text);
+    const text_hash = try sha256PrefixedAlloc(allocator, text);
+    defer allocator.free(text_hash);
+    const test_ids = try htmlDataTestIdsJsonAlloc(allocator, package.html);
+    defer allocator.free(test_ids);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"label\":");
+    try appendJsonNullableString(allocator, &out, controlStringArg(args, "label"));
+    try out.writer.writeAll(",\"format\":\"static-html-summary\",\"title\":");
+    try appendJsonString(allocator, &out, title);
+    try out.writer.writeAll(",\"textHash\":");
+    try appendJsonString(allocator, &out, text_hash);
+    try out.writer.print(",\"testIds\":{s}}}", .{test_ids});
+    return out.toOwnedSlice();
+}
+
+fn runtimeTargetControl(allocator: std.mem.Allocator, tool: []const u8, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const match_json = try runtimeFirstMatchJsonAlloc(allocator, package.html, args);
+    const target = match_json orelse return error.SelectorNotFound;
+    defer allocator.free(target);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"tool\":");
+    try appendJsonString(allocator, &out, tool);
+    try out.writer.print(",\"target\":{s}}}", .{target});
+    return out.toOwnedSlice();
+}
+
+fn runtimePressKeyControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"key\":");
+    try appendJsonNullableString(allocator, &out, controlStringArg(args, "key"));
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn runtimeWaitForControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"kind\":");
+    try appendJsonString(allocator, &out, controlStringArg(args, "kind") orelse "idle");
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn assertRuntimeVisibleControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const match_json = try runtimeFirstMatchJsonAlloc(allocator, package.html, args);
+    if (match_json) |actual| {
+        allocator.free(actual);
+    } else {
+        return error.SelectorNotFound;
+    }
+    return allocator.dupe(u8, "{\"ok\":true,\"matches\":1}");
+}
+
+fn assertRuntimeTextControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    const text = controlStringArg(args, "text") orelse return error.InvalidControlArgs;
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const html_text = try htmlTextAlloc(allocator, package.html);
+    defer allocator.free(html_text);
+    if (std.mem.indexOf(u8, html_text, text) == null) return error.TextNotFound;
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":true,\"text\":");
+    try appendJsonString(allocator, &out, text);
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn runtimeQueryLabelAlloc(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    if (controlStringArg(args, "testId")) |test_id| {
+        return std.fmt.allocPrint(allocator, "[data-testid=\"{s}\"]", .{test_id});
+    }
+    if (controlStringArg(args, "selector")) |selector| return allocator.dupe(u8, selector);
+    if (controlStringArg(args, "text")) |text| return allocator.dupe(u8, text);
+    return allocator.dupe(u8, "");
+}
+
+fn runtimeFirstMatchJsonAlloc(allocator: std.mem.Allocator, html: []const u8, args: ?std.json.Value) !?[]u8 {
+    if (controlStringArg(args, "testId")) |test_id| {
+        const tag = try htmlTagForAttributeAlloc(allocator, html, "data-testid", test_id);
+        if (tag) |actual_tag| {
+            defer allocator.free(actual_tag);
+            return @as(?[]u8, try runtimeMatchJsonAlloc(allocator, "testId", test_id, actual_tag));
+        }
+        return null;
+    }
+    if (controlStringArg(args, "selector")) |selector| {
+        if (std.mem.startsWith(u8, selector, "#")) {
+            const tag = try htmlTagForAttributeAlloc(allocator, html, "id", selector[1..]);
+            if (tag) |actual_tag| {
+                defer allocator.free(actual_tag);
+                return @as(?[]u8, try runtimeMatchJsonAlloc(allocator, "selector", selector, actual_tag));
+            }
+            return null;
+        }
+        if (selectorDataTestId(selector)) |test_id| {
+            const tag = try htmlTagForAttributeAlloc(allocator, html, "data-testid", test_id);
+            if (tag) |actual_tag| {
+                defer allocator.free(actual_tag);
+                return @as(?[]u8, try runtimeMatchJsonAlloc(allocator, "selector", selector, actual_tag));
+            }
+            return null;
+        }
+        if (isSimpleHtmlSelector(selector) and htmlTagExists(html, selector)) {
+            return @as(?[]u8, try runtimeMatchJsonAlloc(allocator, "selector", selector, selector));
+        }
+    }
+    if (controlStringArg(args, "text")) |text| {
+        const html_text = try htmlTextAlloc(allocator, html);
+        defer allocator.free(html_text);
+        if (std.mem.indexOf(u8, html_text, text) != null) {
+            return @as(?[]u8, try runtimeMatchJsonAlloc(allocator, "text", text, null));
+        }
+    }
+    return null;
+}
+
+fn runtimeMatchJsonAlloc(allocator: std.mem.Allocator, kind: []const u8, value: []const u8, tag: ?[]const u8) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"kind\":");
+    try appendJsonString(allocator, &out, kind);
+    try out.writer.writeAll(",\"value\":");
+    try appendJsonString(allocator, &out, value);
+    if (tag) |actual_tag| {
+        try out.writer.writeAll(",\"tag\":");
+        try appendJsonString(allocator, &out, actual_tag);
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn htmlTagForAttributeAlloc(allocator: std.mem.Allocator, html: []const u8, attr: []const u8, value: []const u8) !?[]u8 {
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |tag_start| {
+        index = tag_start + 1;
+        if (tag_start + 1 >= html.len) continue;
+        const first = html[tag_start + 1];
+        if (first == '/' or first == '!' or first == '?') continue;
+        const name_start = tag_start + 1;
+        var name_end = name_start;
+        while (name_end < html.len and htmlNameChar(html[name_end])) : (name_end += 1) {}
+        if (name_end == name_start) continue;
+        const tag_end = std.mem.indexOfScalarPos(u8, html, name_end, '>') orelse return null;
+        const tag_source = html[tag_start..tag_end];
+        if (try htmlAttrValueExists(allocator, tag_source, attr, value)) {
+            return @as(?[]u8, try allocator.dupe(u8, html[name_start..name_end]));
+        }
+        index = tag_end + 1;
+    }
+    return null;
+}
+
+fn selectorDataTestId(selector: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, selector, "data-testid=") orelse return null;
+    const value_start = start + "data-testid=".len;
+    if (value_start >= selector.len or (selector[value_start] != '"' and selector[value_start] != '\'')) return null;
+    const quote = selector[value_start];
+    const actual_start = value_start + 1;
+    const actual_end = std.mem.indexOfScalarPos(u8, selector, actual_start, quote) orelse return null;
+    return selector[actual_start..actual_end];
+}
+
+fn isSimpleHtmlSelector(selector: []const u8) bool {
+    if (selector.len == 0 or !std.ascii.isAlphabetic(selector[0])) return false;
+    for (selector[1..]) |char| {
+        if (!std.ascii.isAlphanumeric(char) and char != '-') return false;
+    }
+    return true;
+}
+
+fn htmlTagExists(html: []const u8, tag: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |tag_start| {
+        index = tag_start + 1;
+        if (tag_start + 1 >= html.len or html[tag_start + 1] == '/') continue;
+        const name_start = tag_start + 1;
+        var name_end = name_start;
+        while (name_end < html.len and htmlNameChar(html[name_end])) : (name_end += 1) {}
+        if (name_end == name_start) continue;
+        if (std.ascii.eqlIgnoreCase(html[name_start..name_end], tag)) return true;
+    }
+    return false;
+}
+
+fn htmlNameChar(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '-';
 }
 
 fn htmlTitleOrFallbackAlloc(allocator: std.mem.Allocator, html: []const u8, fallback: []const u8) ![]u8 {
@@ -8402,6 +8779,19 @@ test "runtime static snapshot helpers summarize installed app HTML" {
     defer std.testing.allocator.free(accessibility);
     try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"role\":\"main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"level\":1") != null);
+
+    var query_args = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"testId\":\"new-note-button\"}", .{});
+    defer query_args.deinit();
+    const match = (try runtimeFirstMatchJsonAlloc(std.testing.allocator, html, query_args.value)).?;
+    defer std.testing.allocator.free(match);
+    try std.testing.expect(std.mem.indexOf(u8, match, "\"kind\":\"testId\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, match, "\"tag\":\"button\"") != null);
+
+    var text_args = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"text\":\"Create note\"}", .{});
+    defer text_args.deinit();
+    const text_match = (try runtimeFirstMatchJsonAlloc(std.testing.allocator, html, text_args.value)).?;
+    defer std.testing.allocator.free(text_match);
+    try std.testing.expect(std.mem.indexOf(u8, text_match, "\"kind\":\"text\"") != null);
 }
 
 test "control auth tracker bans repeated failures and clears after expiry" {
