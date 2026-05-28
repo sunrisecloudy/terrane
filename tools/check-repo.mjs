@@ -15,6 +15,7 @@ await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
 await runCheck("manifests.sync", checkManifestSync);
 await runCheck("spec.security_lint", checkSecurityLint);
+await runCheck("plugin.mcp", checkPluginMcp);
 
 for (const check of checks) {
   console.log(`${check.ok ? "ok" : "fail"} ${check.name}${check.detail ? ` ${check.detail}` : ""}`);
@@ -180,6 +181,26 @@ function checkSecurityLint() {
     }
   }
   return `nativeFiles=${nativeFiles.length} manifests=${manifestFiles.length}`;
+}
+
+function checkPluginMcp() {
+  const pluginDir = path.join(repoRoot, "codex-plugin", "platform-control");
+  const config = readJson(path.join(pluginDir, ".mcp.json"));
+  const servers = Object.entries(config.mcp_servers ?? {});
+  if (servers.length === 0) {
+    throw new Error("codex plugin declares no MCP servers");
+  }
+  for (const [name, server] of servers) {
+    const serverScript = server.args?.find((arg) => arg.endsWith("src/server.js"));
+    if (!serverScript) {
+      throw new Error(`${name} does not point at an MCP server script`);
+    }
+    const resolved = path.resolve(pluginDir, serverScript);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`${name} MCP script missing: ${path.relative(repoRoot, resolved)}`);
+    }
+  }
+  return `servers=${servers.length}`;
 }
 
 function readJson(filePath) {

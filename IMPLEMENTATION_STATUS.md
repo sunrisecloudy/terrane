@@ -93,7 +93,7 @@ Status snapshot: **2026-05-28**.
 | `native/android/` | skeleton | README only |
 | `native/windows/` | skeleton | README only |
 | `native/linux/` | skeleton | README only |
-| `codex-plugin/platform-control/` | partial | `plugin.json`, `.mcp.json`, skills present; not wired to a built MCP server |
+| `codex-plugin/platform-control/` | partial | `plugin.json`, `.mcp.json`, skills present; local MCP path resolves to the repo server |
 | `devtools/control-plane/` | partial | `openapi.json` + README |
 
 ## Example apps

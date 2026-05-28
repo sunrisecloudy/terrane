@@ -12,7 +12,7 @@ It packages:
 
 Add a repo-local marketplace entry at `.agents/plugins/marketplace.json` pointing to this plugin. Then install/enable it from Codex's plugin UI or CLI plugin browser.
 
-The MCP server is expected to run from the installed plugin root. During implementation, adjust `.mcp.json` paths if Codex installs the plugin into a cache path and the server should instead run from the repository checkout.
+The MCP server path in `.mcp.json` is resolved from this plugin root and points back to the repository checkout at `../../tools/codex-platform-mcp/src/server.js`.
 
 ## Dev-only warning
 
