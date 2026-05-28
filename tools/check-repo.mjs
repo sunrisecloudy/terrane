@@ -362,6 +362,7 @@ function checkServerStatic() {
     "fn writeStatic",
     "fn validateBridgeRequest",
     "fn handleStorageBridge",
+    "fn handleDialogBridge",
     "fn handleNotificationToastBridge",
     "fn handleNetworkRequestBridge",
     "fn handleAppLogBridge",
@@ -371,6 +372,8 @@ function checkServerStatic() {
     "fn networkMockResultJsonAlloc",
     "fn insertNetworkMockControl",
     "fn resetNetworkMocksControl",
+    "fn dialogMockResultJsonAlloc",
+    "fn insertDialogMockControl",
     "fn handleControlCommand",
     "fn enforceProductionStartupRules",
     "fn isDevControlPath",
@@ -403,6 +406,7 @@ function checkServerStatic() {
     '"platform.install_report"',
     '"runtime.network_mock_set"',
     '"runtime.network_mock_reset"',
+    '"runtime.dialog_mock_set"',
     '"db.query_app_storage"',
     '"db.query_app_versions"',
     '"db.query_core_events"',
@@ -495,6 +499,8 @@ function checkServerStatic() {
     "app_install_reports",
     "backup_exports",
     "storage.get\\\":true",
+    "dialog.openFile\\\":true",
+    "dialog.saveFile\\\":true",
     "notification.toast\\\":true",
     "network.request\\\":true",
     "app.log\\\":true",
@@ -519,7 +525,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,notification,mock-network,app.log permissions=active-install control=command,rollback,snapshot,migration,network-mocks install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install control=command,rollback,snapshot,migration,network-mocks,dialog-mocks install=migration-chain db=v0.4-schema,safe-token-gated rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {

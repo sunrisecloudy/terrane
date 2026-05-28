@@ -271,6 +271,10 @@ fn handleBridge(
         return handleNetworkRequestBridge(allocator, stream, id, params, channel_app_id, session_id);
     }
 
+    if (std.mem.eql(u8, method, "dialog.openFile") or std.mem.eql(u8, method, "dialog.saveFile")) {
+        return handleDialogBridge(allocator, stream, id, method, params, channel_app_id, session_id);
+    }
+
     if (isKnownUnsupportedBridgeMethod(method)) {
         return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
     }
@@ -519,6 +523,42 @@ fn handleNetworkRequestBridge(
     };
     defer allocator.free(result_json);
     logBridgeCall(allocator, app_id, session_id, "network.request", params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return writeBridgeOkRaw(allocator, stream, id, result_json);
+}
+
+fn handleDialogBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+) !void {
+    const dialog_type = dialogTypeForBridgeMethod(method) orelse {
+        return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown dialog method");
+    };
+    const params_json = try jsonValueAlloc(allocator, params);
+    defer allocator.free(params_json);
+
+    const result_json = (try dialogMockResultJsonAlloc(allocator, app_id, session_id, dialog_type)) orelse {
+        if (std.mem.eql(u8, dialog_type, "saveFile")) {
+            logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
+                std.debug.print("bridge audit write failed: {}\n", .{err});
+            };
+            return writeBridgeOkRaw(allocator, stream, id, "{\"ok\":true}");
+        }
+        const error_json = try bridgeErrorJsonAlloc(allocator, "dialog.mock_missing", "No dialog.openFile mock is registered");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "dialog.mock_missing", "No dialog.openFile mock is registered");
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
         std.debug.print("bridge audit write failed: {}\n", .{err});
     };
     return writeBridgeOkRaw(allocator, stream, id, result_json);
@@ -984,6 +1024,22 @@ fn handleControlCommand(
     }
     if (std.mem.eql(u8, tool, "runtime.network_mock_reset")) {
         const result_json = try resetNetworkMocksControl(allocator, args);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.dialog_mock_set")) {
+        const args_value = args orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.dialog_mock_set requires args");
+        };
+        const result_json = insertDialogMockControl(allocator, args_value) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "runtime.dialog_mock_set requires dialogType or method");
+            },
+            else => return err,
+        };
         defer allocator.free(result_json);
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
@@ -4349,6 +4405,86 @@ fn resetNetworkMocksControl(allocator: std.mem.Allocator, args: ?std.json.Value)
     return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"cleared\":{d}}}", .{cleared});
 }
 
+fn dialogMockResultJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    dialog_type: []const u8,
+) !?[]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT response_json FROM dialog_mocks WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) ORDER BY created_at DESC LIMIT 1",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, dialog_type);
+    bindText(statement, 2, app_id);
+    bindNullableText(statement, 3, session_id);
+
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return null;
+    const response_copy = try allocator.dupe(u8, sqliteColumnText(statement, 0));
+    return response_copy;
+}
+
+fn insertDialogMockControl(allocator: std.mem.Allocator, args: std.json.Value) ![]u8 {
+    if (args != .object) return error.InvalidControlArgs;
+    const app_id = controlStringArg(args, "appId");
+    const session_id = controlStringArg(args, "sessionId");
+    const dialog_type_raw = controlStringArg(args, "dialogType") orelse blk: {
+        const method = controlStringArg(args, "method") orelse return error.InvalidControlArgs;
+        break :blk dialogTypeForBridgeMethod(method) orelse return error.InvalidControlArgs;
+    };
+    const dialog_type = normalizeDialogType(dialog_type_raw) orelse return error.InvalidControlArgs;
+    const response_json = if (args.object.get("response")) |response|
+        try jsonValueAlloc(allocator, response)
+    else
+        try defaultDialogResponseJsonAlloc(allocator, dialog_type, args);
+    defer allocator.free(response_json);
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at) VALUES ('dialogmock_' || lower(hex(randomblob(16))), ?, ?, ?, ?, 1, datetime('now'))",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindNullableText(statement, 1, session_id);
+    bindNullableText(statement, 2, app_id);
+    bindText(statement, 3, dialog_type);
+    bindText(statement, 4, response_json);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"dialogType\":\"{s}\"}}", .{dialog_type});
+}
+
+fn defaultDialogResponseJsonAlloc(allocator: std.mem.Allocator, dialog_type: []const u8, args: std.json.Value) ![]u8 {
+    if (std.mem.eql(u8, dialog_type, "saveFile")) {
+        return allocator.dupe(u8, "{\"ok\":true}");
+    }
+    if (std.mem.eql(u8, dialog_type, "openFile")) {
+        if (args.object.get("files")) |files| {
+            const files_json = try jsonValueAlloc(allocator, files);
+            defer allocator.free(files_json);
+            return std.fmt.allocPrint(allocator, "{{\"files\":{s}}}", .{files_json});
+        }
+        return allocator.dupe(u8, "{\"files\":[]}");
+    }
+    return error.InvalidControlArgs;
+}
+
 fn bridgePermissionApproved(allocator: std.mem.Allocator, app_id: []const u8, permission: []const u8) !bool {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
@@ -4938,7 +5074,7 @@ fn writeControlError(allocator: std.mem.Allocator, stream: std.net.Stream, statu
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":false,\"dialog.saveFile\":false,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
         .{runtime_version},
     );
 }
@@ -5001,6 +5137,18 @@ fn upperAsciiAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     return out;
 }
 
+fn dialogTypeForBridgeMethod(method: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, method, "dialog.openFile")) return "openFile";
+    if (std.mem.eql(u8, method, "dialog.saveFile")) return "saveFile";
+    return null;
+}
+
+fn normalizeDialogType(dialog_type: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, dialog_type, "openFile") or std.mem.eql(u8, dialog_type, "dialog.openFile")) return "openFile";
+    if (std.mem.eql(u8, dialog_type, "saveFile") or std.mem.eql(u8, dialog_type, "dialog.saveFile")) return "saveFile";
+    return null;
+}
+
 fn isTrustLevel(trust_level: []const u8) bool {
     const levels = [_][]const u8{ "bundled", "user-generated", "developer", "remote", "quarantined" };
     for (levels) |candidate| {
@@ -5056,8 +5204,6 @@ fn tagStartsAt(html: []const u8, start: usize, tag: []const u8) bool {
 
 fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
     const methods = [_][]const u8{
-        "dialog.openFile",
-        "dialog.saveFile",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;
