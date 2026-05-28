@@ -1,6 +1,6 @@
 # Zig Server Target
 
-Codex should implement a Zig server that uses the same core logic directly.
+Minimal Zig server that uses the same core FFI as native hosts.
 
 Minimum endpoints:
 
@@ -17,6 +17,20 @@ MVP acceptance:
 - `/health` returns OK.
 - `/core/step` accepts the same JSON event shape as native bridge calls.
 - Contract fixtures pass.
+
+Current local run command:
+
+```sh
+mkdir -p zig-out
+zig build-exe -target aarch64-macos.15.0 -lc --dep zig_core -Mroot=src/main.zig -target aarch64-macos.15.0 -Mzig_core=../zig-core/src/lib.zig -femit-bin=zig-out/server
+./zig-out/server --port 8088
+```
+
+Implemented endpoints:
+
+- `GET /health`
+- `POST /core/step`
+- `GET /webapps/examples`
 
 ## v0.4 persistence requirement
 

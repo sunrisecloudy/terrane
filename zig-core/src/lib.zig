@@ -8,7 +8,7 @@ pub const ZigCoreBuffer = extern struct {
     len: usize,
 };
 
-const Core = struct {
+pub const Core = struct {
     state_version: u64 = 0,
 
     fn step(self: *Core, allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -117,19 +117,19 @@ const Core = struct {
     }
 };
 
-export fn core_create() ?*Core {
+pub export fn core_create() ?*Core {
     const core = ffi_allocator.create(Core) catch return null;
     core.* = .{};
     return core;
 }
 
-export fn core_destroy(core: ?*Core) void {
+pub export fn core_destroy(core: ?*Core) void {
     if (core) |ptr| {
         ffi_allocator.destroy(ptr);
     }
 }
 
-export fn core_step_json(core: ?*Core, input_ptr: ?[*]const u8, input_len: usize, output: ?*ZigCoreBuffer) i32 {
+pub export fn core_step_json(core: ?*Core, input_ptr: ?[*]const u8, input_len: usize, output: ?*ZigCoreBuffer) i32 {
     if (core == null or input_ptr == null or output == null) {
         return -1;
     }
@@ -143,7 +143,7 @@ export fn core_step_json(core: ?*Core, input_ptr: ?[*]const u8, input_len: usize
     return 0;
 }
 
-export fn core_free(buffer: ZigCoreBuffer) void {
+pub export fn core_free(buffer: ZigCoreBuffer) void {
     if (buffer.len == 0) return;
     ffi_allocator.free(buffer.ptr[0..buffer.len]);
 }
