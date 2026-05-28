@@ -127,6 +127,10 @@ fn handleBridge(allocator: std.mem.Allocator, stream: std.net.Stream, body: []co
         return writeBridgeOkRaw(allocator, stream, id, result_json);
     }
 
+    if (isKnownUnsupportedBridgeMethod(method)) {
+        return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
+    }
+
     return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
 }
 
@@ -381,6 +385,24 @@ fn findPackageFile(files: std.json.Value, file_path: []const u8) ?[]const u8 {
 fn containsAny(source: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
         if (std.mem.indexOf(u8, source, needle) != null) return true;
+    }
+    return false;
+}
+
+fn isKnownUnsupportedBridgeMethod(method: []const u8) bool {
+    const methods = [_][]const u8{
+        "storage.get",
+        "storage.set",
+        "storage.remove",
+        "storage.list",
+        "dialog.openFile",
+        "dialog.saveFile",
+        "notification.toast",
+        "network.request",
+        "app.log",
+    };
+    for (methods) |candidate| {
+        if (std.mem.eql(u8, method, candidate)) return true;
     }
     return false;
 }
