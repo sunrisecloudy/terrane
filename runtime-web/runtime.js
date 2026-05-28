@@ -29,6 +29,8 @@
   const mountsByPort = new WeakMap();
   const androidBridgePending = new Map();
   let androidBridgeHandlerAttached = false;
+  const webview2BridgePending = new Map();
+  let webview2BridgeHandlerAttached = false;
   const usageByApp = new Map();
   const minuteMs = 60 * 1000;
 
@@ -291,6 +293,16 @@
       return normalizeHostBridgeResponse(response, request.id);
     }
 
+    const webview2Handler = webview2NativeBridgeHandler();
+    if (webview2Handler) {
+      const response = await webview2Handler.postMessage({
+        appId: mount.appId,
+        mountToken: mount.mountToken,
+        request: request,
+      });
+      return normalizeHostBridgeResponse(response, request.id);
+    }
+
     return fetchJson("/bridge", {
       method: "POST",
       headers: {
@@ -346,6 +358,43 @@
       waiter.resolve(response);
     };
     androidBridgeHandlerAttached = true;
+  }
+
+  function webview2NativeBridgeHandler() {
+    const handler = window.chrome && window.chrome.webview;
+    if (!handler || typeof handler.postMessage !== "function" || typeof handler.addEventListener !== "function") return null;
+    attachWebView2BridgeHandler(handler);
+    return {
+      postMessage: function (envelope) {
+        return new Promise(function (resolve, reject) {
+          const requestId = envelope && envelope.request && envelope.request.id;
+          if (typeof requestId !== "string" || requestId.length === 0) {
+            reject(new Error("WebView2 native bridge envelope requires a request id"));
+            return;
+          }
+          webview2BridgePending.set(requestId, { resolve: resolve, reject: reject });
+          try {
+            handler.postMessage(JSON.stringify(envelope));
+          } catch (error) {
+            webview2BridgePending.delete(requestId);
+            reject(error);
+          }
+        });
+      },
+    };
+  }
+
+  function attachWebView2BridgeHandler(handler) {
+    if (webview2BridgeHandlerAttached) return;
+    handler.addEventListener("message", function (event) {
+      const response = typeof event.data === "string" ? parseJsonOrNull(event.data) : event.data;
+      const responseId = response && typeof response.id === "string" ? response.id : null;
+      if (!responseId || !webview2BridgePending.has(responseId)) return;
+      const waiter = webview2BridgePending.get(responseId);
+      webview2BridgePending.delete(responseId);
+      waiter.resolve(response);
+    });
+    webview2BridgeHandlerAttached = true;
   }
 
   function normalizeHostBridgeResponse(response, requestId) {

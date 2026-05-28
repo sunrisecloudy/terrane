@@ -11,7 +11,7 @@ Runtime responsibilities:
 - `AppRuntime.call` bridge object.
 - Fixed `AppRuntime.on` event subscriptions for runtime/app lifecycle signals.
 - Per-mount bridge nonce and `MessagePort` context binding.
-- WebKit and Android native host dispatch through a runtime-owned `{ appId, mountToken, request }` envelope.
+- WebKit, Android, and WebView2 native host dispatch through a runtime-owned `{ appId, mountToken, request }` envelope.
 - Permission checks.
 - Storage-prefix enforcement.
 - Network policy preflight.

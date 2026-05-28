@@ -227,7 +227,10 @@ function checkRuntimeStatic() {
     "dispatchBridgeRequest",
     "webkitNativeBridgeHandler",
     "androidNativeBridgeHandler",
+    "webview2NativeBridgeHandler",
     "NativeAIPlatformBridge",
+    "window.chrome && window.chrome.webview",
+    "addEventListener(\"message\"",
     "handler.onmessage",
     "normalizeHostBridgeResponse",
     "invalid_response",
@@ -257,7 +260,7 @@ function checkRuntimeStatic() {
   if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
     throw new Error("runtime AppRuntime.on must not be a no-op");
   }
-  return "bridge=messagechannel,nonce-bound,webkit,android request=no-appid permission,policy,budget=runtime-preflight";
+  return "bridge=messagechannel,nonce-bound,webkit,android,webview2 request=no-appid permission,policy,budget=runtime-preflight";
 }
 
 function checkServerStatic() {
@@ -435,6 +438,11 @@ function checkNativeStatic() {
     [windowsHost, "get_Source"],
     [windowsHost, "https://runtime.local.platform/"],
     [windowsHost, "SandboxContextFromSource"],
+    [windowsHost, "SandboxContextForApp"],
+    [windowsHost, "IsRuntimeEnvelope"],
+    [windowsHost, "HasValidRuntimeEnvelope"],
+    [windowsHost, "mountToken"],
+    [windowsHost, "IsKnownExampleAppId"],
     [windowsBridge, "permissionForBridgeMethod"],
     [windowsBridge, "approvedPermissions.contains(permission"],
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],

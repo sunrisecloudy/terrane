@@ -18,6 +18,7 @@ class WebViewHost {
  private:
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
   AppSandboxContext SandboxContextFromSource(std::wstring const& source) const;
+  AppSandboxContext SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const;
   std::set<std::wstring> PermissionsForApp(std::wstring const& appId) const;
   std::vector<NetworkPolicyRule> NetworkPolicyForApp(std::wstring const& appId) const;
   std::wstring AppIdFromSource(std::wstring const& source) const;

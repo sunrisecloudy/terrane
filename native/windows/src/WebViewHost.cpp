@@ -34,6 +34,42 @@ json::JsonObject ManifestForApp(std::filesystem::path const& repoRoot, std::wstr
   return parsed;
 }
 
+bool IsRuntimeEnvelope(json::JsonObject const& body) {
+  return body.HasKey(L"appId") || body.HasKey(L"mountToken") || body.HasKey(L"request");
+}
+
+bool IsKnownExampleAppId(std::wstring const& appId) {
+  for (auto const* candidate : {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab"}) {
+    if (appId == candidate) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::wstring RuntimeEnvelopeRequestId(json::JsonObject const& body) {
+  if (!body.HasKey(L"request")) {
+    return L"";
+  }
+  auto requestValue = body.GetNamedValue(L"request");
+  if (requestValue.ValueType() != json::JsonValueType::Object) {
+    return L"";
+  }
+  return std::wstring(requestValue.GetObject().GetNamedString(L"id", L"").c_str());
+}
+
+bool HasValidRuntimeEnvelope(json::JsonObject const& body) {
+  if (!body.HasKey(L"appId") || !body.HasKey(L"mountToken") || !body.HasKey(L"request")) {
+    return false;
+  }
+  auto appId = std::wstring(body.GetNamedString(L"appId", L"").c_str());
+  auto mountToken = std::wstring(body.GetNamedString(L"mountToken", L"").c_str());
+  if (appId.empty() || mountToken.empty()) {
+    return false;
+  }
+  return body.GetNamedValue(L"request").ValueType() == json::JsonValueType::Object;
+}
+
 std::wstring ToUpper(std::wstring value) {
   std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towupper(ch)); });
   return value;
@@ -106,18 +142,56 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
 
   PWSTR rawMessage = nullptr;
   args->TryGetWebMessageAsString(&rawMessage);
-  auto response = bridge_->HandleJson(rawMessage == nullptr ? L"" : rawMessage, SandboxContextFromSource(sourceText));
+  std::wstring body = rawMessage == nullptr ? L"" : rawMessage;
   CoTaskMemFree(rawMessage);
+
+  std::wstring response;
+  json::JsonObject parsed{nullptr};
+  if (json::JsonObject::TryParse(body, parsed) && IsRuntimeEnvelope(parsed)) {
+    auto requestId = RuntimeEnvelopeRequestId(parsed);
+    if (!HasValidRuntimeEnvelope(parsed)) {
+      response = BridgeResponse::Failure(
+                     requestId,
+                     !requestId.empty(),
+                     L"invalid_request",
+                     L"Runtime bridge envelope requires appId, mountToken, and request")
+                     .Stringify()
+                     .c_str();
+    } else {
+      auto appId = std::wstring(parsed.GetNamedString(L"appId", L"").c_str());
+      if (!IsKnownExampleAppId(appId)) {
+        response = BridgeResponse::Failure(
+                       requestId,
+                       !requestId.empty(),
+                       L"invalid_request",
+                       L"Runtime bridge envelope references an unknown app")
+                       .Stringify()
+                       .c_str();
+      } else {
+        auto mountToken = std::wstring(parsed.GetNamedString(L"mountToken", L"").c_str());
+        auto requestJson = std::wstring(parsed.GetNamedObject(L"request").Stringify().c_str());
+        response = bridge_->HandleJson(requestJson, SandboxContextForApp(appId, mountToken));
+      }
+    }
+  } else {
+    response = bridge_->HandleJson(body, SandboxContextFromSource(sourceText));
+  }
+
   webview_->PostWebMessageAsString(response.c_str());
 }
 
 AppSandboxContext WebViewHost::SandboxContextFromSource(std::wstring const& source) const {
   auto appId = AppIdFromSource(source);
+  return SandboxContextForApp(appId, L"");
+}
+
+AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const {
   return AppSandboxContext{
       .appId = appId,
       .storagePrefix = appId + L":",
       .approvedPermissions = PermissionsForApp(appId),
       .networkPolicy = NetworkPolicyForApp(appId),
+      .mountToken = mountToken,
   };
 }
 

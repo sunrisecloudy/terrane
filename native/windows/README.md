@@ -22,7 +22,7 @@ Implemented now:
 
 - Initializes WebView2 and maps the repo runtime through `SetVirtualHostNameToFolderMapping`.
 - Receives bridge payloads through `WebMessageReceived` and checks the internal runtime origin before dispatch.
-- Derives `appId` and storage prefix from the WebView source URL instead of request bodies.
+- Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
