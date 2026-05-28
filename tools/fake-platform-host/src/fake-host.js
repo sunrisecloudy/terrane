@@ -40,6 +40,7 @@ export class FakePlatformHost {
     this.runtimeVersion = runtimeVersion;
     this.allowRuntimeMismatch = allowRuntimeMismatch;
     this.auditControlSessionId = null;
+    this.controlAuthFailures = new Map();
   }
 
   close() {
@@ -772,10 +773,10 @@ export class FakePlatformHost {
       if (sessionRoute) {
         const startedAt = Date.now();
         try {
-          this.requireControlToken(req);
+          this.authorizeControlRequest(req);
         } catch (error) {
           this.auditControlRequest({ req, path: url.pathname, tool: `${req.method} ${url.pathname}`, error, startedAt });
-          return sendJson(res, 401, controlError(error));
+          return sendJson(res, controlAuthStatus(error), controlError(error));
         }
         return this.handleControlSessionRoute(req, res, sessionRoute, startedAt, url.pathname);
       }
@@ -784,10 +785,10 @@ export class FakePlatformHost {
       if (directRoute) {
         const startedAt = Date.now();
         try {
-          this.requireControlToken(req);
+          this.authorizeControlRequest(req);
         } catch (error) {
           this.auditControlRequest({ req, path: url.pathname, tool: directRoute.tool, args: directRoute.args, error, startedAt });
-          return sendJson(res, 401, controlError(error));
+          return sendJson(res, controlAuthStatus(error), controlError(error));
         }
         return this.handleDirectControlRoute(req, res, directRoute, startedAt, url.pathname);
       }
@@ -795,10 +796,10 @@ export class FakePlatformHost {
       if (req.method === "POST" && url.pathname === "/control/command") {
         const startedAt = Date.now();
         try {
-          this.requireControlToken(req);
+          this.authorizeControlRequest(req);
         } catch (error) {
           this.auditControlRequest({ req, path: url.pathname, tool: "control.command", error, startedAt });
-          return sendJson(res, 401, controlError(error));
+          return sendJson(res, controlAuthStatus(error), controlError(error));
         }
         let body = {};
         try {
@@ -974,6 +975,32 @@ export class FakePlatformHost {
     }
   }
 
+  authorizeControlRequest(req) {
+    const key = controlClientKey(req);
+    const failures = this.controlAuthFailures.get(key);
+    if (failures?.bannedUntil && failures.bannedUntil > Date.now()) {
+      throw new PlatformError("control_connection_banned", "Control connection is temporarily banned after repeated auth failures", {
+        retryAfterSeconds: Math.ceil((failures.bannedUntil - Date.now()) / 1000),
+      });
+    }
+
+    try {
+      this.requireControlToken(req);
+      this.controlAuthFailures.delete(key);
+    } catch (error) {
+      const count = (failures?.count ?? 0) + 1;
+      if (count >= 3) {
+        const bannedUntil = Date.now() + 60_000;
+        this.controlAuthFailures.set(key, { count, bannedUntil });
+        throw new PlatformError("control_connection_banned", "Control connection is temporarily banned after repeated auth failures", {
+          retryAfterSeconds: 60,
+        });
+      }
+      this.controlAuthFailures.set(key, { count, bannedUntil: 0 });
+      throw error;
+    }
+  }
+
   importBackup(backup) {
     const result = this.database.importBackup(backup);
     for (const version of backup.appVersions ?? []) {
@@ -998,6 +1025,14 @@ export class FakePlatformHost {
 
 export function sendJson(res, status, value) {
   sendText(res, status, prettyJson(value), "application/json");
+}
+
+function controlAuthStatus(error) {
+  return error instanceof PlatformError && error.code === "control_connection_banned" ? 403 : 401;
+}
+
+function controlClientKey(req) {
+  return req.socket.remoteAddress ?? "unknown";
 }
 
 function sendText(res, status, body, contentTypeValue) {

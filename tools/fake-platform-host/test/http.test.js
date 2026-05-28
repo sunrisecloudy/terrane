@@ -188,3 +188,39 @@ test("fake host writes a per-launch control token file", async () => {
     await started.close();
   }
 });
+
+test("repeated control auth failures trigger a temporary ban and audit row", async () => {
+  const started = await startFakePlatformHost({ port: 0, controlToken: "test-token" });
+  try {
+    const request = () =>
+      fetch(`${started.url}/control/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: "platform.health", args: {} }),
+      });
+
+    assert.equal((await request()).status, 401);
+    assert.equal((await request()).status, 401);
+    const banned = await request();
+    assert.equal(banned.status, 403);
+    assert.equal((await banned.json()).error.code, "control_connection_banned");
+
+    const stillBanned = await fetch(`${started.url}/control/command`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-platform-control-token": "test-token",
+      },
+      body: JSON.stringify({ tool: "platform.health", args: {} }),
+    });
+    assert.equal(stillBanned.status, 403);
+
+    const auditRows = started.host.database.queryControlCommands();
+    assert.equal(
+      auditRows.some((row) => row.path === "/control/command" && row.decision === "rejected" && row.error_code === "control_connection_banned"),
+      true,
+    );
+  } finally {
+    await started.close();
+  }
+});

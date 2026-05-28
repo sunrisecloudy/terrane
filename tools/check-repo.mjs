@@ -301,13 +301,16 @@ function checkFakeHostStatic() {
     [fakeServer, "generateControlToken"],
     [fakeServer, "writeControlTokenFile"],
     [fakeServer, "controlTokenPath"],
+    [fakeHost, "controlAuthFailures"],
+    [fakeHost, "control_connection_banned"],
+    [fakeHost, "retryAfterSeconds"],
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {
       throw new Error(`fake-host browser smoke support missing ${snippet}`);
     }
   }
-  return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events control-token=file";
+  return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events control-token=file auth-ban=audited";
 }
 
 function checkRuntimeStatic() {
