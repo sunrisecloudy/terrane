@@ -11,6 +11,13 @@ test("http health and token-protected control command work", async () => {
     assert.equal(health.ok, true);
     assert.equal(health.db, "sqlite-mem");
 
+    const runtimeHtml = await fetch(`${started.url}/`).then((response) => response.text());
+    assert.match(runtimeHtml, /Native AI Webapp Platform/);
+
+    const examples = await fetch(`${started.url}/webapps/examples.json`).then((response) => response.json());
+    assert.equal(examples.length, 5);
+    assert.equal(examples.some((app) => app.id === "notes-lite"), true);
+
     const unauthorized = await fetch(`${started.url}/control/command`, {
       method: "POST",
       headers: { "content-type": "application/json" },

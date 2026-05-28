@@ -125,7 +125,11 @@ export class FakePlatformHost {
       }
 
       if (req.method === "GET" && url.pathname === "/") {
-        return sendText(res, 200, runtimePlaceholder(), "text/html");
+        return this.serveStatic(res, runtimeWebDir, "index.html");
+      }
+
+      if (req.method === "GET" && url.pathname === "/webapps/examples.json") {
+        return sendJson(res, 200, this.exampleManifestList());
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/webapps/examples/")) {
@@ -170,6 +174,22 @@ export class FakePlatformHost {
       return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "File not found", details: {} } });
     }
     sendText(res, 200, fs.readFileSync(filePath, "utf8"), contentType(filePath));
+  }
+
+  exampleManifestList() {
+    return fs
+      .readdirSync(examplesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const manifest = JSON.parse(fs.readFileSync(resolveInside(examplesDir, `${entry.name}/manifest.json`), "utf8"));
+        return {
+          id: manifest.id,
+          name: manifest.name,
+          version: manifest.version,
+          description: manifest.description,
+        };
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   requireControlToken(req) {
@@ -230,17 +250,4 @@ function summarizeValidation(result) {
       : null,
     bridgeMethods: result.bridgeMethods,
   };
-}
-
-function runtimePlaceholder() {
-  return `<!doctype html>
-<html>
-  <head><meta charset="utf-8"><title>Fake Platform Host</title></head>
-  <body>
-    <main>
-      <h1>Fake Platform Host</h1>
-      <p>The runtime-web launcher is not implemented yet. The fake host API is available.</p>
-    </main>
-  </body>
-</html>`;
 }

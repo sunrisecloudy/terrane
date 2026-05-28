@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Native AI Webapp Runtime</title>
+    <link rel="stylesheet" href="/runtime/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Fake host runtime</p>
+        <h1>Native AI Webapp Platform</h1>
+      </div>
+      <div class="status" id="runtime-status" data-testid="runtime-status">Starting</div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="Installed apps">
+        <div class="sidebar-header">
+          <h2>Apps</h2>
+          <button id="refresh-apps" data-testid="refresh-apps-button" title="Refresh apps">Refresh</button>
+        </div>
+        <div id="app-list" class="app-list" data-testid="app-list"></div>
+      </aside>
+
+      <section class="workspace" aria-label="App workspace">
+        <div class="workspace-toolbar">
+          <div>
+            <h2 id="active-title" data-testid="active-app-title">No app open</h2>
+            <p id="active-description">Choose a bundled app to mount it in the sandbox.</p>
+          </div>
+          <button id="reload-app" data-testid="reload-app-button" title="Reload app" disabled>Reload</button>
+        </div>
+        <div id="app-frame-wrap" class="frame-wrap" data-testid="app-frame-wrap">
+          <div class="empty-state">Select an app to launch the sandbox.</div>
+        </div>
+      </section>
+    </main>
+
+    <section class="debug-panel" aria-label="Bridge debug log">
+      <div class="debug-header">
+        <h2>Bridge Calls</h2>
+        <button id="clear-debug" data-testid="clear-debug-button" title="Clear log">Clear</button>
+      </div>
+      <ol id="bridge-log" data-testid="bridge-log"></ol>
+    </section>
+
+    <script src="/runtime/runtime.js"></script>
+  </body>
+</html>

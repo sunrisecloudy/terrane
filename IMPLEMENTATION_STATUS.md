@@ -83,7 +83,7 @@ Status snapshot: **2026-05-28**.
 
 | Path | Status | Notes |
 |---|---|---|
-| `runtime-web/` | skeleton | README only; no `index.html` or `src/` yet |
+| `runtime-web/` | partial | Launcher HTML/CSS/JS exists; fake host serves it and proxies sandbox `AppRuntime.call` messages to `/bridge` |
 | `zig-core/` | skeleton | README only; no `build.zig` yet |
 | `server/` | skeleton | README only; no `build.zig` yet |
 | `tools/fake-platform-host/` | partial | Node fake host with SQLite migrations, health/control command HTTP surface, package validation/install, bridge dispatch, and focused tests |
