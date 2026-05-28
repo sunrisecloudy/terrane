@@ -66,6 +66,12 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         return handleWebappValidate(allocator, stream, parsed.body);
     }
 
+    if (std.mem.eql(u8, parsed.method, "POST") and
+        (std.mem.startsWith(u8, parsed.path, "/db/") or std.mem.startsWith(u8, parsed.path, "/control/db/")))
+    {
+        return handleDbControlEndpoint(allocator, stream, parsed.path, parsed.body, parsed.control_token);
+    }
+
     if (std.mem.eql(u8, parsed.method, "GET") and std.mem.eql(u8, parsed.path, "/webapps/examples")) {
         return writeJson(stream, 200, "{\"ok\":true,\"examples\":[\"notes-lite\",\"task-workbench\",\"file-transformer\",\"api-dashboard\",\"core-replay-lab\"]}");
     }
@@ -310,6 +316,80 @@ fn handleWebappValidate(allocator: std.mem.Allocator, stream: std.net.Stream, bo
     const report = try validateWebappPackage(allocator, body);
     defer allocator.free(report);
     return writeJson(stream, 200, report);
+}
+
+fn handleDbControlEndpoint(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    path: []const u8,
+    body: []const u8,
+    provided_token: ?[]const u8,
+) !void {
+    requireControlToken(allocator, provided_token) catch {
+        return writeControlError(allocator, stream, 401, "control_auth_required", "A valid X-Platform-Control-Token header is required");
+    };
+
+    const args = parseControlArgs(allocator, body) catch {
+        return writeControlError(allocator, stream, 400, "invalid_request", "Control request body must be a JSON object");
+    };
+    defer if (args) |*parsed| parsed.deinit();
+    const root = if (args) |parsed| parsed.value else null;
+    const app_id = if (root) |value| valueString(value.object.get("appId")) else null;
+
+    if (std.mem.eql(u8, path, "/db/snapshot") or std.mem.eql(u8, path, "/control/db/snapshot")) {
+        const result_json = try dbSnapshotJson(allocator);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, path, "/db/app-storage") or std.mem.eql(u8, path, "/control/db/app-storage")) {
+        const actual_app_id = app_id orelse {
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_storage requires appId");
+        };
+        const result_json = try queryAppStorageRowsJson(allocator, actual_app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, path, "/db/bridge-calls") or std.mem.eql(u8, path, "/control/db/bridge-calls")) {
+        const result_json = try queryBridgeCallsRowsJson(allocator, app_id);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, path, "/db/app-versions") or std.mem.eql(u8, path, "/control/db/app-versions")) {
+        if (app_id == null) {
+            return writeControlError(allocator, stream, 400, "invalid_request", "db.query_app_versions requires appId");
+        }
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, path, "/db/core-events") or std.mem.eql(u8, path, "/control/db/core-events")) {
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, path, "/db/test-runs") or std.mem.eql(u8, path, "/control/db/test-runs")) {
+        return writeControlOkRaw(allocator, stream, "[]");
+    }
+    if (std.mem.eql(u8, path, "/db/export-debug-bundle") or std.mem.eql(u8, path, "/control/db/export-debug-bundle")) {
+        const result_json = try dbDebugBundleJson(allocator);
+        defer allocator.free(result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+
+    return writeControlError(allocator, stream, 404, "not_found", "Control route not found");
+}
+
+fn requireControlToken(allocator: std.mem.Allocator, provided_token: ?[]const u8) !void {
+    const expected = try std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN");
+    defer allocator.free(expected);
+    if (expected.len == 0) return error.ControlAuthRequired;
+    const actual = provided_token orelse return error.ControlAuthRequired;
+    if (!std.mem.eql(u8, actual, expected)) return error.ControlAuthRequired;
+}
+
+fn parseControlArgs(allocator: std.mem.Allocator, body: []const u8) !?std.json.Parsed(std.json.Value) {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{});
+    errdefer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidControlArgs;
+    return parsed;
 }
 
 fn handleExampleAsset(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8) !void {
@@ -611,6 +691,175 @@ fn storageListResultJson(allocator: std.mem.Allocator, app_id: []const u8, prefi
     return out.toOwnedSlice();
 }
 
+fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
+    const storage = try queryAppStorageRowsJson(allocator, null);
+    defer allocator.free(storage);
+    const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
+    defer allocator.free(bridge_calls);
+    const runtime_sessions = try queryRuntimeSessionsRowsJson(allocator);
+    defer allocator.free(runtime_sessions);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"app_storage\":{s},\"bridge_calls\":{s},\"runtime_sessions\":{s},\"app_versions\":[],\"core_events\":[],\"test_runs\":[]}}",
+        .{ storage, bridge_calls, runtime_sessions },
+    );
+}
+
+fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
+    const storage = try queryAppStorageRowsJson(allocator, null);
+    defer allocator.free(storage);
+    const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
+    defer allocator.free(bridge_calls);
+    const runtime_sessions = try queryRuntimeSessionsRowsJson(allocator);
+    defer allocator.free(runtime_sessions);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"exportId\":\"server-debug-bundle\",\"type\":\"debug-bundle\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"appStorage\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":[],\"testRuns\":[]}}}}",
+        .{ runtime_version, storage, runtime_sessions, bridge_calls },
+    );
+}
+
+fn queryAppStorageRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    const sql = if (app_id == null)
+        "SELECT app_id, key, value_json, updated_at FROM app_storage ORDER BY app_id, key"
+    else
+        "SELECT app_id, key, value_json, updated_at FROM app_storage WHERE app_id = ? ORDER BY key";
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (app_id) |actual_app_id| {
+        bindText(statement, 1, actual_app_id);
+    }
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"app_id\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.writeAll(",\"key\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 1));
+        try out.writer.writeAll(",\"value_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 2));
+        try out.writer.writeAll(",\"updated_at\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 3));
+        try out.writer.writeAll("}");
+        count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn queryRuntimeSessionsRowsJson(allocator: std.mem.Allocator) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, ended_at, status, capabilities_json, metadata_json FROM runtime_sessions ORDER BY started_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"session_id\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.writeAll(",\"target\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 1));
+        try out.writer.writeAll(",\"platform\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 2));
+        try out.writer.writeAll(",\"runtime_version\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 3));
+        try out.writer.writeAll(",\"active_app_id\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 4));
+        try out.writer.writeAll(",\"active_install_id\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 5));
+        try out.writer.writeAll(",\"started_at\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 6));
+        try out.writer.writeAll(",\"ended_at\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 7));
+        try out.writer.writeAll(",\"status\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 8));
+        try out.writer.writeAll(",\"capabilities_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 9));
+        try out.writer.writeAll(",\"metadata_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 10));
+        try out.writer.writeAll("}");
+        count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn queryBridgeCallsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    const sql = if (app_id == null)
+        "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls ORDER BY created_at"
+    else
+        "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls WHERE app_id = ? ORDER BY created_at";
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (app_id) |actual_app_id| {
+        bindText(statement, 1, actual_app_id);
+    }
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"bridge_call_id\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.writeAll(",\"session_id\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 1));
+        try out.writer.writeAll(",\"app_id\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 2));
+        try out.writer.writeAll(",\"install_id\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 3));
+        try out.writer.writeAll(",\"method\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 4));
+        try out.writer.writeAll(",\"params_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 5));
+        try out.writer.writeAll(",\"result_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 6));
+        try out.writer.writeAll(",\"error_json\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 7));
+        try out.writer.writeAll(",\"duration_ms\":");
+        try appendJsonNullableInt(&out, statement, 8);
+        try out.writer.writeAll(",\"created_at\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 9));
+        try out.writer.writeAll("}");
+        count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
 fn logAppMessage(
     allocator: std.mem.Allocator,
     app_id: []const u8,
@@ -686,12 +935,18 @@ fn sqliteColumnText(statement: ?*sqlite.sqlite3_stmt, index: c_int) []const u8 {
     return @as([*]const u8, @ptrCast(raw))[0..len];
 }
 
+fn sqliteColumnNullableText(statement: ?*sqlite.sqlite3_stmt, index: c_int) ?[]const u8 {
+    if (sqlite.sqlite3_column_type(statement, index) == sqlite.SQLITE_NULL) return null;
+    return sqliteColumnText(statement, index);
+}
+
 const ParsedRequest = struct {
     method: []const u8,
     path: []const u8,
     body: []const u8,
     app_id: ?[]const u8,
     session_id: ?[]const u8,
+    control_token: ?[]const u8,
 };
 
 fn parseRequest(request: []const u8) !ParsedRequest {
@@ -712,6 +967,7 @@ fn parseRequest(request: []const u8) !ParsedRequest {
         .body = body,
         .app_id = headerValue(headers, "x-app-id"),
         .session_id = headerValue(headers, "x-runtime-session-id"),
+        .control_token = headerValue(headers, "x-platform-control-token"),
     };
 }
 
@@ -739,6 +995,7 @@ fn writeBody(stream: std.net.Stream, status: u16, content_type: []const u8, body
     const reason = switch (status) {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         500 => "Internal Server Error",
         else => "OK",
@@ -783,6 +1040,26 @@ fn writeBridgeError(allocator: std.mem.Allocator, stream: std.net.Stream, id: []
     );
     defer allocator.free(body);
     return writeJson(stream, 200, body);
+}
+
+fn writeControlOkRaw(allocator: std.mem.Allocator, stream: std.net.Stream, result_json: []const u8) !void {
+    const body = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"result\":{s}}}", .{result_json});
+    defer allocator.free(body);
+    return writeJson(stream, 200, body);
+}
+
+fn writeControlError(allocator: std.mem.Allocator, stream: std.net.Stream, status: u16, code: []const u8, message: []const u8) !void {
+    const escaped_code = try escapeJsonString(allocator, code);
+    defer allocator.free(escaped_code);
+    const escaped_message = try escapeJsonString(allocator, message);
+    defer allocator.free(escaped_message);
+    const body = try std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":false,\"error\":{{\"code\":\"{s}\",\"message\":\"{s}\",\"details\":{{}}}}}}",
+        .{ escaped_code, escaped_message },
+    );
+    defer allocator.free(body);
+    return writeJson(stream, status, body);
 }
 
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
@@ -927,6 +1204,26 @@ fn jsonValueAlloc(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
     errdefer out.deinit();
     try std.json.Stringify.value(value, .{}, &out.writer);
     return out.toOwnedSlice();
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, text: []const u8) !void {
+    const escaped = try escapeJsonString(allocator, text);
+    defer allocator.free(escaped);
+    try out.writer.print("\"{s}\"", .{escaped});
+}
+
+fn appendJsonNullableString(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, text: ?[]const u8) !void {
+    if (text) |actual| {
+        return appendJsonString(allocator, out, actual);
+    }
+    try out.writer.writeAll("null");
+}
+
+fn appendJsonNullableInt(out: *std.io.Writer.Allocating, statement: ?*sqlite.sqlite3_stmt, index: c_int) !void {
+    if (sqlite.sqlite3_column_type(statement, index) == sqlite.SQLITE_NULL) {
+        return out.writer.writeAll("null");
+    }
+    try out.writer.print("{d}", .{sqlite.sqlite3_column_int64(statement, index)});
 }
 
 fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

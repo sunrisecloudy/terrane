@@ -254,6 +254,18 @@ function checkServerStatic() {
     "fn validateBridgeRequest",
     "fn handleStorageBridge",
     "fn handleAppLogBridge",
+    "fn handleDbControlEndpoint",
+    "fn requireControlToken",
+    "NATIVE_AI_SERVER_CONTROL_TOKEN",
+    'headerValue(headers, "x-platform-control-token")',
+    '"/db/snapshot"',
+    '"/db/app-storage"',
+    '"/db/bridge-calls"',
+    '"/db/export-debug-bundle"',
+    "fn dbSnapshotJson",
+    "fn dbDebugBundleJson",
+    "fn queryAppStorageRowsJson",
+    "fn queryBridgeCallsRowsJson",
     "fn logAppMessage",
     "sqlite3_open",
     "app_storage",
@@ -280,7 +292,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,app.log unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,app.log db=safe-token-gated unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
