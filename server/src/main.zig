@@ -1558,6 +1558,18 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.notification_capture")) {
+        const result_json = try notificationCaptureControl(allocator, controlStringArg(args, "appId"));
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
+    if (std.mem.eql(u8, tool, "runtime.timer_advance")) {
+        const result_json = try timerAdvanceControl(allocator, args);
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.call_bridge")) {
         const args_value = args orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -2009,6 +2021,12 @@ fn controlBoolArg(args: ?std.json.Value, name: []const u8) ?bool {
     const actual = value.object.get(name) orelse return null;
     if (actual != .bool) return null;
     return actual.bool;
+}
+
+fn controlI64Arg(args: ?std.json.Value, name: []const u8) ?i64 {
+    const value = args orelse return null;
+    if (value != .object) return null;
+    return valueI64(value.object.get(name));
 }
 
 fn handleExampleAsset(allocator: std.mem.Allocator, stream: std.net.Stream, rel_path: []const u8) !void {
@@ -6401,6 +6419,56 @@ fn consoleLogsControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
     try appendJsonNullableString(allocator, &out, app_id);
     try out.writer.print(",\"logs\":{s}}}", .{logs});
     return out.toOwnedSlice();
+}
+
+fn notificationCaptureControl(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    const sql = if (app_id == null)
+        "SELECT app_id, params_json, created_at FROM bridge_calls WHERE method = 'notification.toast' ORDER BY created_at"
+    else
+        "SELECT app_id, params_json, created_at FROM bridge_calls WHERE method = 'notification.toast' AND app_id = ? ORDER BY created_at";
+    if (sqlite.sqlite3_prepare_v2(db, sql, -1, &statement, null) != sqlite.SQLITE_OK) {
+        return error.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (app_id) |actual_app_id| bindText(statement, 1, actual_app_id);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"notifications\":[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const params_json = sqliteColumnNullableText(statement, 1) orelse "{}";
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch null;
+        defer if (parsed) |*actual| actual.deinit();
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"appId\":");
+        try appendJsonNullableString(allocator, &out, sqliteColumnNullableText(statement, 0));
+        try out.writer.writeAll(",\"message\":");
+        if (parsed) |actual| {
+            try appendJsonNullableString(allocator, &out, objectString(actual.value, "message"));
+            try out.writer.writeAll(",\"level\":");
+            try appendJsonNullableString(allocator, &out, objectString(actual.value, "level"));
+        } else {
+            try out.writer.writeAll("null,\"level\":null");
+        }
+        try out.writer.writeAll(",\"createdAt\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 2));
+        try out.writer.print(",\"params\":{s}}}", .{params_json});
+        count += 1;
+    }
+    try out.writer.writeAll("]}");
+    return out.toOwnedSlice();
+}
+
+fn timerAdvanceControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const requested_ms = controlI64Arg(args, "ms") orelse controlI64Arg(args, "milliseconds") orelse 0;
+    const advanced_ms = @max(requested_ms, 0);
+    return std.fmt.allocPrint(allocator, "{{\"ok\":true,\"advancedMs\":{d}}}", .{advanced_ms});
 }
 
 fn queryRowsJson(allocator: std.mem.Allocator, sql: []const u8, bind_value: ?[]const u8) ![]u8 {

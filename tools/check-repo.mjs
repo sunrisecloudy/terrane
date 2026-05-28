@@ -458,6 +458,8 @@ function checkServerStatic() {
     '"runtime.console_logs"',
     '"runtime.event_log"',
     '"runtime.clear_logs"',
+    '"runtime.notification_capture"',
+    '"runtime.timer_advance"',
     '"runtime.call_bridge"',
     '"runtime.core_step"',
     '"runtime.core_snapshot"',
@@ -537,6 +539,8 @@ function checkServerStatic() {
     "fn queryTestRunsRowsJson",
     "fn runtimeEventLogControl",
     "fn consoleLogsControl",
+    "fn notificationCaptureControl",
+    "fn timerAdvanceControl",
     "fn clearRuntimeLogsControl",
     "fn callBridgeControl",
     "fn coreStepControl",
@@ -612,7 +616,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export-import rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions,timers,notifications install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export-import rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
 }
 
 function checkNativeStatic() {
