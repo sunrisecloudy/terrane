@@ -1754,6 +1754,18 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "platform.run_repair_loop")) {
+        const result_json = platformRunRepairLoopControl(allocator, args) catch |err| switch (err) {
+            error.InvalidControlArgs => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+                return writeControlError(allocator, stream, 400, "invalid_request", "platform.run_repair_loop requires an inline package");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -3770,6 +3782,10 @@ fn runtimeAssertAccessibilityControl(allocator: std.mem.Allocator, args: ?std.js
 
 fn runtimeRunSmokeTestsControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
     const app_id = controlStringArg(args, "appId") orelse return error.InvalidControlArgs;
+    return runSmokeTestsForAppControl(allocator, app_id);
+}
+
+fn runSmokeTestsForAppControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
     const evaluation = try evaluateInstalledSmokeTestsAlloc(allocator, app_id);
     defer freeSmokeTestEvaluation(allocator, evaluation);
     const micro_test_id = try std.fmt.allocPrint(allocator, "smoke:{s}", .{app_id});
@@ -3873,6 +3889,187 @@ fn platformRunSmokeControl(allocator: std.mem.Allocator, args: ?std.json.Value) 
     const name = try std.fmt.allocPrint(allocator, "{s} ({s})", .{ smoke_id, platform });
     defer allocator.free(name);
     return recordControlTestRun(allocator, micro_test_id, name, null, if (failure_count == 0) "passed" else "failed", spec_json, result_json, "zig-server-static-platform-smoke");
+}
+
+fn platformRunRepairLoopControl(allocator: std.mem.Allocator, args: ?std.json.Value) ![]u8 {
+    const args_value = args orelse return error.InvalidControlArgs;
+    const package_root = packageRootValue(args_value) orelse return error.InvalidControlArgs;
+    const started_at = try serverNowIsoAlloc(allocator);
+    defer allocator.free(started_at);
+    const trust_level = controlStringArg(args, "trustLevel") orelse "developer";
+
+    var steps: std.io.Writer.Allocating = .init(allocator);
+    errdefer steps.deinit();
+    try steps.writer.writeAll("[");
+    var step_count: usize = 0;
+    var final_status: []const u8 = "failed";
+    var app_id: ?[]u8 = null;
+    defer if (app_id) |actual| allocator.free(actual);
+    var tests_run: std.io.Writer.Allocating = .init(allocator);
+    errdefer tests_run.deinit();
+    try tests_run.writer.writeAll("[");
+    var tests_count: usize = 0;
+    var snapshots: std.io.Writer.Allocating = .init(allocator);
+    errdefer snapshots.deinit();
+    try snapshots.writer.writeAll("[");
+    var snapshot_count: usize = 0;
+
+    const validation = try validateWebappPackageValue(allocator, package_root);
+    defer allocator.free(validation);
+    try appendRepairStepJson(allocator, &steps, &step_count, "platform.validate_package", if (jsonOk(validation)) "passed" else "failed", validation);
+    if (!jsonOk(validation)) {
+        final_status = "failed";
+    } else {
+        const signed = try signWebappPackage(allocator, package_root, trust_level);
+        defer allocator.free(signed);
+        try appendRepairStepJson(allocator, &steps, &step_count, "platform.sign_webapp_package", "passed", signed);
+
+        const install = installWebappPackage(allocator, package_root, true, trust_level) catch |err| switch (err) {
+            error.InvalidPackage => blk: {
+                const failed = try allocator.dupe(u8, "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_package\"}");
+                break :blk failed;
+            },
+            error.InvalidMigration => blk: {
+                const failed = try allocator.dupe(u8, "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_migration\"}");
+                break :blk failed;
+            },
+            else => return err,
+        };
+        defer allocator.free(install);
+        const install_enabled = jsonStringFieldEquals(allocator, install, "status", "enabled") catch false;
+        try appendRepairStepJson(allocator, &steps, &step_count, "platform.install_webapp_package", if (install_enabled) "passed" else "failed", install);
+        app_id = try jsonStringFieldAlloc(allocator, install, "appId");
+        const install_status = try jsonStringFieldAlloc(allocator, install, "status");
+        defer if (install_status) |status| allocator.free(status);
+        if (install_status) |status| {
+            if (std.mem.eql(u8, status, "requires-approval")) {
+                final_status = "requires-approval";
+            } else if (std.mem.eql(u8, status, "enabled")) {
+                final_status = "passed";
+            }
+        }
+        if (app_id) |actual_app_id| {
+            if (install_status != null and std.mem.eql(u8, install_status.?, "enabled")) {
+                const opened = try openWebappControl(allocator, actual_app_id);
+                defer allocator.free(opened);
+                try appendRepairStepJson(allocator, &steps, &step_count, "platform.open_webapp", "passed", opened);
+
+                const capabilities = try serverCapabilitiesJson(allocator);
+                defer allocator.free(capabilities);
+                try appendRepairStepJson(allocator, &steps, &step_count, "runtime.capabilities", "passed", capabilities);
+
+                const runtime_snapshot = try runtimeSnapshotControl(allocator, actual_app_id);
+                defer allocator.free(runtime_snapshot);
+                try appendRepairStepJson(allocator, &steps, &step_count, "runtime.snapshot", "passed", runtime_snapshot);
+
+                const persisted_snapshot = try createRuntimeSnapshot(allocator, actual_app_id, "post-test", null);
+                defer allocator.free(persisted_snapshot);
+                try appendRepairStepJson(allocator, &steps, &step_count, "platform.create_snapshot", "passed", persisted_snapshot);
+                if (try jsonStringFieldAlloc(allocator, persisted_snapshot, "snapshotId")) |snapshot_id| {
+                    defer allocator.free(snapshot_id);
+                    if (snapshot_count > 0) try snapshots.writer.writeAll(",");
+                    try appendJsonString(allocator, &snapshots, snapshot_id);
+                    snapshot_count += 1;
+                }
+
+                var smoke_ok = true;
+                if (controlBoolArg(args, "runSmokeTests") orelse true) {
+                    const smoke = try runSmokeTestsForAppControl(allocator, actual_app_id);
+                    defer allocator.free(smoke);
+                    smoke_ok = jsonStringFieldEquals(allocator, smoke, "status", "passed") catch false;
+                    try appendRepairStepJson(allocator, &steps, &step_count, "runtime.run_smoke_tests", if (smoke_ok) "passed" else "failed", smoke);
+                    if (try jsonStringFieldAlloc(allocator, smoke, "microTestId")) |micro_test_id| {
+                        defer allocator.free(micro_test_id);
+                        if (tests_count > 0) try tests_run.writer.writeAll(",");
+                        try appendJsonString(allocator, &tests_run, micro_test_id);
+                        tests_count += 1;
+                    }
+                }
+
+                const accessibility = try htmlAccessibilityAuditForAppAlloc(allocator, actual_app_id);
+                defer allocator.free(accessibility);
+                const accessibility_ok = jsonStringFieldEquals(allocator, accessibility, "status", "pass") catch false;
+                try appendRepairStepJson(allocator, &steps, &step_count, "runtime.run_accessibility_audit", if (accessibility_ok) "passed" else "failed", accessibility);
+
+                const resource = try runtimeResourceUsageControl(allocator, actual_app_id);
+                defer allocator.free(resource);
+                try appendRepairStepJson(allocator, &steps, &step_count, "runtime.resource_usage", "passed", resource);
+
+                const report = try queryInstallReportRowsJson(allocator, actual_app_id, null);
+                defer allocator.free(report);
+                try appendRepairStepJson(allocator, &steps, &step_count, "platform.install_report", "passed", report);
+
+                final_status = if (smoke_ok and accessibility_ok) "passed" else "failed";
+            }
+        }
+    }
+
+    try steps.writer.writeAll("]");
+    const steps_json = try steps.toOwnedSlice();
+    defer allocator.free(steps_json);
+    try tests_run.writer.writeAll("]");
+    const tests_json = try tests_run.toOwnedSlice();
+    defer allocator.free(tests_json);
+    try snapshots.writer.writeAll("]");
+    const snapshots_json = try snapshots.toOwnedSlice();
+    defer allocator.free(snapshots_json);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"ok\":");
+    try out.writer.writeAll(if (std.mem.eql(u8, final_status, "passed")) "true" else "false");
+    try out.writer.writeAll(",\"appId\":");
+    try appendJsonNullableString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"startedAt\":");
+    try appendJsonString(allocator, &out, started_at);
+    try out.writer.writeAll(",\"attempts\":1,\"finalStatus\":");
+    try appendJsonString(allocator, &out, final_status);
+    try out.writer.print(",\"changedFiles\":[],\"testsRun\":{s},\"snapshots\":{s},\"remainingWarnings\":[],\"attemptReports\":[{{\"index\":1,\"status\":\"{s}\",\"steps\":{s},\"diagnostics\":{{}}}}]}}", .{ tests_json, snapshots_json, final_status, steps_json });
+    return out.toOwnedSlice();
+}
+
+fn htmlAccessibilityAuditForAppAlloc(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const package = try runtimeHtmlPackageAlloc(allocator, app_id);
+    defer freeRuntimeHtmlPackage(allocator, package);
+    const title = try htmlTitleOrFallbackAlloc(allocator, package.html, "");
+    defer allocator.free(title);
+    return htmlAccessibilityAuditJsonAlloc(allocator, app_id, package.html, title);
+}
+
+fn appendRepairStepJson(
+    allocator: std.mem.Allocator,
+    out: *std.io.Writer.Allocating,
+    count: *usize,
+    tool: []const u8,
+    status: []const u8,
+    result_json: []const u8,
+) !void {
+    if (count.* > 0) try out.writer.writeAll(",");
+    try out.writer.writeAll("{\"tool\":");
+    try appendJsonString(allocator, out, tool);
+    try out.writer.writeAll(",\"status\":");
+    try appendJsonString(allocator, out, status);
+    try out.writer.print(",\"result\":{s}}}", .{result_json});
+    count.* += 1;
+}
+
+fn jsonStringFieldAlloc(allocator: std.mem.Allocator, json: []const u8, field: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const value = valueString(parsed.value.object.get(field)) orelse return null;
+    return @as(?[]u8, try allocator.dupe(u8, value));
+}
+
+fn jsonStringFieldEquals(allocator: std.mem.Allocator, json: []const u8, field: []const u8, expected: []const u8) !bool {
+    const actual = try jsonStringFieldAlloc(allocator, json, field);
+    defer if (actual) |value| allocator.free(value);
+    if (actual) |value| return std.mem.eql(u8, value, expected);
+    return false;
+}
+
+fn jsonOk(json: []const u8) bool {
+    return std.mem.indexOf(u8, json, "\"ok\":true") != null;
 }
 
 fn controlSpecJsonAlloc(allocator: std.mem.Allocator, args: ?std.json.Value, spec_key: []const u8, path_key: []const u8) ![]u8 {
