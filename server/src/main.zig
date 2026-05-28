@@ -1534,6 +1534,22 @@ fn handleControlCommand(
         auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
         return writeControlOkRaw(allocator, stream, result_json);
     }
+    if (std.mem.eql(u8, tool, "runtime.snapshot")) {
+        const app_id = controlStringArg(args, "appId") orelse {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
+            return writeControlError(allocator, stream, 400, "invalid_request", "runtime.snapshot requires appId");
+        };
+        const result_json = runtimeSnapshotControl(allocator, app_id) catch |err| switch (err) {
+            error.AppNotInstalled => {
+                auditControlCommand(allocator, "/control/command", tool, "rejected", "app_not_installed", args_json, null);
+                return writeControlError(allocator, stream, 400, "app_not_installed", "App is not installed");
+            },
+            else => return err,
+        };
+        defer allocator.free(result_json);
+        auditControlCommand(allocator, "/control/command", tool, "accepted", null, args_json, result_json);
+        return writeControlOkRaw(allocator, stream, result_json);
+    }
     if (std.mem.eql(u8, tool, "runtime.resource_usage")) {
         const app_id = controlStringArg(args, "appId") orelse {
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
@@ -3289,6 +3305,216 @@ fn snapshotResourceUsageJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqli
         "{{\"storageBytes\":{d},\"bridgeCalls\":{d},\"coreEvents\":{d}}}",
         .{ storage_bytes, bridge_calls, core_events },
     );
+}
+
+fn runtimeSnapshotControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    const manifest_json = try activeManifestJsonAlloc(allocator, app_id);
+    defer allocator.free(manifest_json);
+    var parsed_manifest = std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{}) catch return error.StorageQueryFailed;
+    defer parsed_manifest.deinit();
+    const manifest_name = if (parsed_manifest.value == .object)
+        valueString(parsed_manifest.value.object.get("name")) orelse app_id
+    else
+        app_id;
+
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    const active = try activeInstallDetailsAlloc(allocator, db, app_id);
+    const active_version = active orelse return error.AppNotInstalled;
+    defer freeInstalledVersion(allocator, active_version);
+
+    const package_files = try packageFilesForInstallAlloc(allocator, db, active_version.install_id);
+    defer freeOwnedPackageFiles(allocator, package_files);
+    const html = findPackageFileContent(package_files, "index.html") orelse "";
+
+    const title = try htmlTitleOrFallbackAlloc(allocator, html, manifest_name);
+    defer allocator.free(title);
+    const text = try htmlTextAlloc(allocator, html);
+    defer allocator.free(text);
+    const test_ids = try htmlDataTestIdsJsonAlloc(allocator, html);
+    defer allocator.free(test_ids);
+    const dom_summary = try htmlDomSummaryJsonAlloc(allocator, html, text);
+    defer allocator.free(dom_summary);
+    const accessibility_tree = try htmlAccessibilityTreeJsonAlloc(allocator, app_id, html, title);
+    defer allocator.free(accessibility_tree);
+    const resource_usage = try snapshotResourceUsageJsonAlloc(allocator, db, app_id);
+    defer allocator.free(resource_usage);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"installId\":");
+    try appendJsonString(allocator, &out, active_version.install_id);
+    try out.writer.writeAll(",\"version\":");
+    try appendJsonString(allocator, &out, active_version.version);
+    try out.writer.writeAll(",\"route\":\"/\",\"title\":");
+    try appendJsonString(allocator, &out, title);
+    try out.writer.print(",\"testIds\":{s},\"text\":", .{test_ids});
+    try appendJsonString(allocator, &out, text);
+    try out.writer.print(",\"domSummary\":{s},\"accessibilityTree\":{s},\"errors\":[],\"resourceUsage\":{s}}}", .{ dom_summary, accessibility_tree, resource_usage });
+    return out.toOwnedSlice();
+}
+
+fn htmlTitleOrFallbackAlloc(allocator: std.mem.Allocator, html: []const u8, fallback: []const u8) ![]u8 {
+    const open = std.mem.indexOf(u8, html, "<title>") orelse return allocator.dupe(u8, fallback);
+    const start = open + "<title>".len;
+    const close = std.mem.indexOfPos(u8, html, start, "</title>") orelse return allocator.dupe(u8, fallback);
+    const title = try htmlTextAlloc(allocator, html[start..close]);
+    if (title.len > 0) return title;
+    allocator.free(title);
+    return allocator.dupe(u8, fallback);
+}
+
+fn htmlTextAlloc(allocator: std.mem.Allocator, html: []const u8) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    var in_tag = false;
+    var pending_space = false;
+    var wrote_any = false;
+    for (html) |char| {
+        if (char == '<') {
+            in_tag = true;
+            pending_space = wrote_any;
+            continue;
+        }
+        if (in_tag) {
+            if (char == '>') in_tag = false;
+            continue;
+        }
+        if (std.ascii.isWhitespace(char)) {
+            pending_space = wrote_any;
+            continue;
+        }
+        if (pending_space) {
+            try out.writer.writeByte(' ');
+            pending_space = false;
+        }
+        try out.writer.writeByte(char);
+        wrote_any = true;
+    }
+    return out.toOwnedSlice();
+}
+
+fn htmlDataTestIdsJsonAlloc(allocator: std.mem.Allocator, html: []const u8) ![]u8 {
+    var ids: std.ArrayList([]const u8) = .empty;
+    defer ids.deinit(allocator);
+    try collectHtmlDataTestIds(allocator, html, &ids);
+    std.mem.sort([]const u8, ids.items, {}, stringSliceLessThan);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    for (ids.items, 0..) |id_value, index| {
+        if (index > 0) try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, id_value);
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn collectHtmlDataTestIds(allocator: std.mem.Allocator, html: []const u8, ids: *std.ArrayList([]const u8)) !void {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, html, index, "data-testid")) |attr_start| {
+        index = attr_start + "data-testid".len;
+        var cursor = index;
+        while (cursor < html.len and htmlSpace(html[cursor])) : (cursor += 1) {}
+        if (cursor >= html.len or html[cursor] != '=') continue;
+        cursor += 1;
+        while (cursor < html.len and htmlSpace(html[cursor])) : (cursor += 1) {}
+        if (cursor >= html.len or (html[cursor] != '"' and html[cursor] != '\'')) continue;
+        const quote = html[cursor];
+        const value_start = cursor + 1;
+        const value_end = std.mem.indexOfScalarPos(u8, html, value_start, quote) orelse break;
+        try ids.append(allocator, html[value_start..value_end]);
+        index = value_end + 1;
+    }
+}
+
+fn htmlDomSummaryJsonAlloc(allocator: std.mem.Allocator, html: []const u8, text: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"htmlBytes\":{d},\"textBytes\":{d},\"tagCount\":{d},\"testIdCount\":{d}}}",
+        .{ html.len, text.len, countByte(html, '<'), htmlDataTestIdCount(html) },
+    );
+}
+
+fn htmlAccessibilityTreeJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, html: []const u8, title: []const u8) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"appId\":");
+    try appendJsonString(allocator, &out, app_id);
+    try out.writer.writeAll(",\"title\":");
+    try appendJsonString(allocator, &out, title);
+    try out.writer.writeAll(",\"landmarks\":");
+    if (std.mem.indexOf(u8, html, "<main") != null) {
+        try out.writer.writeAll("[{\"role\":\"main\",\"selector\":\"main\"}]");
+    } else {
+        try out.writer.writeAll("[]");
+    }
+    try out.writer.writeAll(",\"headings\":");
+    try appendHtmlHeadingsJson(allocator, &out, html);
+    try out.writer.writeAll(",\"controls\":[]}");
+    return out.toOwnedSlice();
+}
+
+fn appendHtmlHeadingsJson(allocator: std.mem.Allocator, out: *std.io.Writer.Allocating, html: []const u8) !void {
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |tag_start| {
+        index = tag_start + 1;
+        if (tag_start + 3 >= html.len) continue;
+        if (html[tag_start + 1] != 'h') continue;
+        const level_char = html[tag_start + 2];
+        if (level_char < '1' or level_char > '6') continue;
+        const after_level = tag_start + 3;
+        if (after_level >= html.len or !htmlTagBoundary(html[after_level])) continue;
+        const open_end = std.mem.indexOfScalarPos(u8, html, after_level, '>') orelse continue;
+        const close_tag = try std.fmt.allocPrint(allocator, "</h{c}>", .{level_char});
+        defer allocator.free(close_tag);
+        const close_start = std.mem.indexOfPos(u8, html, open_end + 1, close_tag) orelse continue;
+        const name = try htmlTextAlloc(allocator, html[open_end + 1 .. close_start]);
+        defer allocator.free(name);
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.print("{{\"level\":{c},\"name\":", .{level_char});
+        try appendJsonString(allocator, out, name);
+        try out.writer.writeAll("}");
+        count += 1;
+        index = close_start + close_tag.len;
+    }
+    try out.writer.writeAll("]");
+}
+
+fn htmlDataTestIdCount(html: []const u8) usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, html, index, "data-testid")) |attr_start| {
+        count += 1;
+        index = attr_start + "data-testid".len;
+    }
+    return count;
+}
+
+fn countByte(value: []const u8, needle: u8) usize {
+    var count: usize = 0;
+    for (value) |char| {
+        if (char == needle) count += 1;
+    }
+    return count;
+}
+
+fn htmlSpace(char: u8) bool {
+    return char == ' ' or char == '\t' or char == '\n' or char == '\r';
+}
+
+fn htmlTagBoundary(char: u8) bool {
+    return htmlSpace(char) or char == '>' or char == '/';
+}
+
+fn stringSliceLessThan(_: void, left: []const u8, right: []const u8) bool {
+    return std.mem.lessThan(u8, left, right);
 }
 
 fn runtimeResourceUsageControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
@@ -8143,6 +8369,39 @@ fn escapeJsonString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
         }
     }
     return out.toOwnedSlice(allocator);
+}
+
+test "runtime static snapshot helpers summarize installed app HTML" {
+    const html =
+        \\<!doctype html>
+        \\<html>
+        \\  <head><title>Notes Lite</title></head>
+        \\  <body>
+        \\    <main data-testid="notes-shell">
+        \\      <h1>Notes Lite</h1>
+        \\      <button data-testid="new-note-button">Create note</button>
+        \\    </main>
+        \\  </body>
+        \\</html>
+    ;
+
+    const title = try htmlTitleOrFallbackAlloc(std.testing.allocator, html, "fallback");
+    defer std.testing.allocator.free(title);
+    try std.testing.expectEqualStrings("Notes Lite", title);
+
+    const text = try htmlTextAlloc(std.testing.allocator, html);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Create note") != null);
+
+    const test_ids = try htmlDataTestIdsJsonAlloc(std.testing.allocator, html);
+    defer std.testing.allocator.free(test_ids);
+    try std.testing.expect(std.mem.indexOf(u8, test_ids, "\"new-note-button\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, test_ids, "\"notes-shell\"") != null);
+
+    const accessibility = try htmlAccessibilityTreeJsonAlloc(std.testing.allocator, "notes-lite", html, title);
+    defer std.testing.allocator.free(accessibility);
+    try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"role\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, accessibility, "\"level\":1") != null);
 }
 
 test "control auth tracker bans repeated failures and clears after expiry" {
