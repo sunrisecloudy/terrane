@@ -73,7 +73,7 @@ Desktop host dev mode:
 
 ```text
 --dev-control
---control-port 29371
+--control-port 7878
 --control-token <random>
 --runtime-dir ./runtime-web
 --webapps-dir ./webapps/examples

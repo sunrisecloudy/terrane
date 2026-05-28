@@ -14,6 +14,10 @@ Add a repo-local marketplace entry at `.agents/plugins/marketplace.json` pointin
 
 The MCP server path in `.mcp.json` is resolved from this plugin root and points back to the repository checkout at `../../tools/codex-platform-mcp/src/server.js`.
 
+The MCP server reads the per-launch control token from the platform token file
+unless `PLATFORM_CONTROL_TOKEN` is explicitly set by a test harness. Do not
+check a shared control token into this plugin config.
+
 ## Dev-only warning
 
 This plugin controls dev/test builds. Do not expose its control endpoints in production.

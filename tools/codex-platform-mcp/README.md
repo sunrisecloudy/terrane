@@ -12,8 +12,9 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 
 ## Environment
 
-- `PLATFORM_CONTROL_URL` — base URL, default `http://127.0.0.1:29371`.
-- `PLATFORM_CONTROL_TOKEN` — required bearer/session token.
+- `PLATFORM_CONTROL_URL` — base URL, default `http://127.0.0.1:7878`.
+- `PLATFORM_CONTROL_TOKEN_FILE` — optional path to the per-launch token file.
+- `PLATFORM_CONTROL_TOKEN` — explicit test/dev override. If unset, the server reads the token file and fails fast when it is missing or empty.
 - `PLATFORM_CONTROL_DEFAULT_TARGET` — default target, usually `fake-host` or `macos`.
 
 ## Required tool groups

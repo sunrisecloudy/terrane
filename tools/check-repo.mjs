@@ -239,6 +239,10 @@ function checkSecurityLint() {
 function checkPluginMcp() {
   const pluginDir = path.join(repoRoot, "codex-plugin", "platform-control");
   const config = readJson(path.join(pluginDir, ".mcp.json"));
+  const mcpConfigSource = fs.readFileSync(path.join(pluginDir, ".mcp.json"), "utf8");
+  if (mcpConfigSource.includes("PLATFORM_CONTROL_TOKEN") || mcpConfigSource.includes("dev-token-change-me")) {
+    throw new Error("codex plugin MCP config must not check in a shared control token");
+  }
   const servers = Object.entries(config.mcp_servers ?? {});
   if (servers.length === 0) {
     throw new Error("codex plugin declares no MCP servers");
@@ -252,6 +256,16 @@ function checkPluginMcp() {
     if (!fs.existsSync(resolved)) {
       throw new Error(`${name} MCP script missing: ${path.relative(repoRoot, resolved)}`);
     }
+  }
+  const mcpConfig = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "config.js"), "utf8");
+  const mcpServer = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "server.js"), "utf8");
+  for (const snippet of ["PLATFORM_CONTROL_TOKEN_FILE", "control.token", "Control token file not found", "DEFAULT_CONTROL_URL"]) {
+    if (!mcpConfig.includes(snippet)) {
+      throw new Error(`codex MCP config missing token-file behavior: ${snippet}`);
+    }
+  }
+  if (!mcpServer.includes("resolveControlConfig") || mcpServer.includes("dev-token-change-me")) {
+    throw new Error("codex MCP server must resolve token-file config and avoid hardcoded tokens");
   }
   return `servers=${servers.length}`;
 }

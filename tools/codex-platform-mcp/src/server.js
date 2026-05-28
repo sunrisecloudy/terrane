@@ -1,12 +1,10 @@
 import { stdin, stdout } from "node:process";
+import { resolveControlConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
 import { TOOL_NAMES, toolDefinitions } from "./tool-contract.js";
 
-const CONTROL_URL = process.env.PLATFORM_CONTROL_URL ?? "http://127.0.0.1:7878";
-const CONTROL_TOKEN = process.env.PLATFORM_CONTROL_TOKEN ?? "dev-token-change-me";
-
 export class McpStdioServer {
-  constructor({ input = stdin, output = stdout, client = new ControlClient(CONTROL_URL, CONTROL_TOKEN) } = {}) {
+  constructor({ input = stdin, output = stdout, client = defaultControlClient() } = {}) {
     this.input = input;
     this.output = output;
     this.client = client;
@@ -107,6 +105,11 @@ export function takeMessage(buffer) {
     message: JSON.parse(body),
     rest: buffer.subarray(bodyEnd),
   };
+}
+
+function defaultControlClient() {
+  const { controlUrl, controlToken } = resolveControlConfig();
+  return new ControlClient(controlUrl, controlToken);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
