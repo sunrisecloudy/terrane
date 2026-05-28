@@ -16,6 +16,7 @@ await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
 await runCheck("examples.canonical", checkCanonicalExamples);
 await runCheck("spec.security_lint", checkSecurityLint);
+await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("plugin.mcp", checkPluginMcp);
 await runCheck("control.tools", checkControlToolContract);
 await runCheck("fake-host.static", checkFakeHostStatic);
@@ -237,6 +238,27 @@ function checkSecurityLint() {
     }
   }
   return `nativeFiles=${nativeFiles.length} manifests=${manifestFiles.length}`;
+}
+
+function checkCiWorkflow() {
+  const workflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const required = [
+    "mlugg/setup-zig@v2",
+    "version: 0.15.2",
+    "libsqlite3-dev",
+    "working-directory: zig-core",
+    "working-directory: server",
+    "zig build test",
+    "tools/check-repo.mjs",
+    "tools/fake-platform-host",
+    "tools/codex-platform-mcp",
+  ];
+  for (const snippet of required) {
+    if (!workflow.includes(snippet)) {
+      throw new Error(`CI workflow missing ${snippet}`);
+    }
+  }
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test";
 }
 
 function checkPluginMcp() {

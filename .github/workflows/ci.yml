@@ -21,8 +21,26 @@ jobs:
         with:
           node-version: 24
 
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
+
       - name: Repository checks
         run: node --no-warnings tools/check-repo.mjs
+
+      - name: Zig core tests
+        working-directory: zig-core
+        run: zig build test
+
+      - name: Zig server tests
+        working-directory: server
+        run: zig build test
 
       - name: Fake host tests
         working-directory: tools/fake-platform-host
