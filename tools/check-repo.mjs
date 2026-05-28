@@ -16,6 +16,7 @@ await runCheck("examples.validate", checkExamplePackages);
 await runCheck("manifests.sync", checkManifestSync);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("plugin.mcp", checkPluginMcp);
+await runCheck("runtime.static", checkRuntimeStatic);
 await runCheck("server.static", checkServerStatic);
 await runCheck("native.static", checkNativeStatic);
 
@@ -206,6 +207,32 @@ function checkPluginMcp() {
     }
   }
   return `servers=${servers.length}`;
+}
+
+function checkRuntimeStatic() {
+  const source = fs.readFileSync(path.join(repoRoot, "runtime-web", "runtime.js"), "utf8");
+  const required = [
+    "new MessageChannel()",
+    "window.AppRuntime = {",
+    "capabilities: function",
+    "validateRuntimeBridgeRequest",
+    "permissionForBridgeMethod",
+    "isKnownRuntimeBridgeMethod",
+    "Bridge request contains unknown top-level fields",
+    "permission_denied",
+    "unknown_method",
+    '"x-app-id": appId',
+    "body: JSON.stringify(request)",
+  ];
+  for (const snippet of required) {
+    if (!source.includes(snippet)) {
+      throw new Error(`runtime-web/runtime.js missing ${snippet}`);
+    }
+  }
+  if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
+    throw new Error("runtime bridge request body must not include appId");
+  }
+  return "bridge=messagechannel request=no-appid permission=runtime-preflight";
 }
 
 function checkServerStatic() {

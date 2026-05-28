@@ -9,6 +9,17 @@
   const refreshButton = document.getElementById("refresh-apps");
   const clearDebugButton = document.getElementById("clear-debug");
   const bridgeLog = document.getElementById("bridge-log");
+  const METHOD_PERMISSION = new Map([
+    ["core.step", "core.step"],
+    ["storage.get", "storage.read"],
+    ["storage.list", "storage.read"],
+    ["storage.set", "storage.write"],
+    ["storage.remove", "storage.write"],
+    ["dialog.openFile", "dialog.openFile"],
+    ["dialog.saveFile", "dialog.saveFile"],
+    ["notification.toast", "notification.toast"],
+    ["network.request", "network.request"],
+  ]);
 
   let apps = [];
   let activeApp = null;
@@ -90,15 +101,28 @@
   var port = null;
   var pending = new Map();
   var queued = [];
+  function call(method, params) {
+    return new Promise(function (resolve, reject) {
+      if (typeof method !== "string" || !method) {
+        reject({ code: "invalid_request", message: "Bridge method must be a non-empty string", details: {} });
+        return;
+      }
+      var bodyParams = params == null ? {} : params;
+      if (typeof bodyParams !== "object" || Array.isArray(bodyParams)) {
+        reject({ code: "invalid_request", message: "Bridge params must be an object", details: {} });
+        return;
+      }
+      var id = "app_req_" + nextId++;
+      var message = { id: id, method: method, params: bodyParams, timestamp: Date.now() };
+      pending.set(id, { resolve: resolve, reject: reject });
+      if (port) send(message);
+      else queued.push(message);
+    });
+  }
   window.AppRuntime = {
-    call: function (method, params) {
-      return new Promise(function (resolve, reject) {
-        var id = "app_req_" + nextId++;
-        var message = { id: id, method: method, params: params || {}, timestamp: Date.now() };
-        pending.set(id, { resolve: resolve, reject: reject });
-        if (port) send(message);
-        else queued.push(message);
-      });
+    call: call,
+    capabilities: function () {
+      return call("runtime.capabilities", {});
     },
     on: function () {
       return function () {};
@@ -134,6 +158,16 @@
     const channel = new MessageChannel();
     channel.port1.onmessage = async function (portEvent) {
       const request = portEvent.data;
+      const runtimeError = validateRuntimeBridgeRequest(activeApp, request);
+      if (runtimeError) {
+        addBridgeLog(appId, request && request.method ? request.method : "unknown", runtimeError.code);
+        channel.port1.postMessage({
+          id: request && typeof request.id === "string" ? request.id : null,
+          ok: false,
+          error: runtimeError,
+        });
+        return;
+      }
       addBridgeLog(appId, request.method, "pending");
       try {
         const response = await fetchJson("/bridge", {
@@ -156,6 +190,51 @@
       }
     };
     event.source.postMessage({ type: "runtime.port" }, "*", [channel.port2]);
+  }
+
+  function validateRuntimeBridgeRequest(app, request) {
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      return bridgeError("invalid_request", "Bridge request must be an object");
+    }
+    const fields = Object.keys(request);
+    for (const field of fields) {
+      if (field !== "id" && field !== "method" && field !== "params" && field !== "timestamp") {
+        return bridgeError("invalid_request", "Bridge request contains unknown top-level fields", { fields: [field] });
+      }
+    }
+    if (typeof request.id !== "string" || request.id.length === 0) {
+      return bridgeError("invalid_request", "Bridge request id must be a non-empty string");
+    }
+    if (!isKnownRuntimeBridgeMethod(request.method)) {
+      return bridgeError("unknown_method", `Unknown bridge method: ${request.method}`, { method: request.method });
+    }
+    if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) {
+      return bridgeError("invalid_request", "Bridge request params must be an object");
+    }
+    if ("timestamp" in request && !Number.isFinite(request.timestamp)) {
+      return bridgeError("invalid_request", "Bridge request timestamp must be a finite number");
+    }
+    const permission = permissionForBridgeMethod(request.method);
+    if (permission && !(app.permissions || []).includes(permission)) {
+      return bridgeError("permission_denied", `App ${app.id} cannot call ${request.method}`, {
+        appId: app.id,
+        method: request.method,
+        requiredPermission: permission,
+      });
+    }
+    return null;
+  }
+
+  function permissionForBridgeMethod(method) {
+    return METHOD_PERMISSION.get(method) || null;
+  }
+
+  function isKnownRuntimeBridgeMethod(method) {
+    return METHOD_PERMISSION.has(method) || method === "app.log" || method === "runtime.capabilities";
+  }
+
+  function bridgeError(code, message, details) {
+    return { code, message, details: details || {} };
   }
 
   function addBridgeLog(appId, method, status) {
