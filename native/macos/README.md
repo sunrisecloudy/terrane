@@ -37,7 +37,8 @@ Current implementation status:
 - Defines the native bridge response shape.
 - Implements SQLite-backed `storage.*`.
 - Implements native open/save dialogs and toast logging.
-- Returns structured `platform_unsupported` for unfinished `network.request` and `core.step` wiring.
+- Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
+- Returns structured `platform_unsupported` for unfinished `core.step` wiring.
 
 
 ## Dev control plane

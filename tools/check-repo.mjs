@@ -281,6 +281,7 @@ function checkServerStatic() {
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
+  const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
@@ -297,9 +298,10 @@ function checkNativeStatic() {
     '"target": "macos"',
     '"devMode": true',
     '"limits":',
-    '"network.request": false',
+    '"network.request": true',
     '"core.step": false',
     "struct AppSandboxContext",
+    "networkPolicy",
     "permissionForBridgeMethod",
     "approvedPermissions.contains(permission)",
   ];
@@ -315,6 +317,14 @@ function checkNativeStatic() {
   }
   if (macStorage.includes("appId(for:")) {
     throw new Error("macOS storage must not derive app id from storage key");
+  }
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection"]) {
+    if (!macNetwork.includes(snippet)) {
+      throw new Error(`macOS network missing policy enforcement: ${snippet}`);
+    }
+  }
+  if (macNetwork.includes("platform_unsupported")) {
+    throw new Error("macOS network.request must not remain a platform_unsupported stub");
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
