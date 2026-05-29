@@ -2692,7 +2692,17 @@ fn installWebappPackage(
     defer allocator.free(signature_json);
     const content_hashes_json = try contentHashesDocumentJsonAlloc(allocator, hashes);
     defer allocator.free(content_hashes_json);
-    const security_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"signature\":{s},\"contentHashes\":{s}}}", .{ signature_json, content_hashes_json });
+    const index_html = findPackageFileContent(package_files, "index.html") orelse "";
+    const accessibility_title = try htmlTitleOrFallbackAlloc(allocator, index_html, "");
+    defer allocator.free(accessibility_title);
+    const accessibility_json = try htmlAccessibilityAuditJsonAlloc(allocator, app_id, index_html, accessibility_title);
+    defer allocator.free(accessibility_json);
+    const accessibility_ok = jsonStringFieldEquals(allocator, accessibility_json, "status", "pass") catch false;
+    const security_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":{},\"signature\":{s},\"contentHashes\":{s},\"accessibility\":{s}}}",
+        .{ accessibility_ok, signature_json, content_hashes_json, accessibility_json },
+    );
     defer allocator.free(security_json);
     const validation_json = try validationReportAlloc(allocator, &.{});
     defer allocator.free(validation_json);
@@ -2710,10 +2720,11 @@ fn installWebappPackage(
     defer if (previous_install_id) |previous| allocator.free(previous);
     const existing_data_version = try appDataVersion(db, app_id);
     const requires_approval = try packageAddsPermissions(db, permissions, previous_install_id);
-    const activate = activate_requested and !requires_approval and smoke_test.ok and compatibility_ok;
+    const activate = activate_requested and !requires_approval and smoke_test.ok and accessibility_ok and compatibility_ok;
     const blocked_by_smoke = !smoke_test.ok;
+    const blocked_by_accessibility = !accessibility_ok;
     const blocked_by_compatibility = !compatibility_ok;
-    const blocked_by_failure = blocked_by_smoke or blocked_by_compatibility;
+    const blocked_by_failure = blocked_by_smoke or blocked_by_accessibility or blocked_by_compatibility;
     const version_status = if (activate) "enabled" else if (blocked_by_failure) "quarantined" else "installed";
     const app_status = if (activate or previous_install_id != null) "enabled" else if (blocked_by_failure) "quarantined" else "disabled";
     const stored_data_version = if (activate or previous_install_id == null) data_version else existing_data_version orelse data_version;
@@ -2743,7 +2754,7 @@ fn installWebappPackage(
         try insertInstallationEvent(db, allocator, app_id, install_id, "activate", previous_install_id, report_id, created_at, "zig-server", "active");
         try activateInstalledApp(db, app_id, install_id, app_version, data_version, created_at);
     } else if (blocked_by_failure) {
-        const reason = if (blocked_by_compatibility) "runtime compatibility failed" else "smoke-test failed";
+        const reason = if (blocked_by_compatibility) "runtime compatibility failed" else if (blocked_by_accessibility) "accessibility audit failed" else "smoke-test failed";
         try insertInstallationEvent(db, allocator, app_id, install_id, "quarantine", previous_install_id, report_id, created_at, "zig-server", reason);
     }
 

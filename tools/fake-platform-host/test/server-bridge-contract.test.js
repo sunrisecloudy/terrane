@@ -100,6 +100,57 @@ test(
   },
 );
 
+test(
+  "Zig server install gate quarantines packages that fail accessibility",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-accessibility-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "accessibility-gate");
+      try {
+        const first = await controlCommand(started.url, "platform.install_webapp_package", {
+          package: packageForApp("notes-lite"),
+          activate: true,
+          trustLevel: "developer",
+        });
+        assert.equal(first.ok, true);
+        assert.equal(first.result.status, "enabled");
+
+        const failed = await controlCommand(started.url, "platform.install_webapp_package", {
+          package: packageForApp("notes-lite", (html) => html
+            .replace(/<main\b([^>]*)>/i, "<section$1>")
+            .replace(/<\/main>/i, "</section>")),
+          activate: true,
+          trustLevel: "developer",
+        });
+        assert.equal(failed.ok, true);
+        assert.equal(failed.result.status, "quarantined");
+        assert.equal(failed.result.activated, false);
+
+        const report = await controlCommand(started.url, "platform.install_report", {
+          appId: "notes-lite",
+          installId: failed.result.installId,
+        });
+        assert.equal(report.ok, true);
+        assert.equal(report.result.length, 1);
+        assert.equal(report.result[0].status, "failed");
+        const security = JSON.parse(report.result[0].security_json);
+        assert.equal(security.ok, false);
+        assert.equal(security.accessibility.status, "fail");
+        assert.equal(security.accessibility.checks.some((check) => check.id === "main_landmark" && check.status === "fail"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
@@ -239,6 +290,15 @@ function packageForFixture(fixture) {
     content: filePath === "manifest.json" ? `${JSON.stringify(manifest, null, 2)}\n` : content,
   }));
   return { manifest, files };
+}
+
+function packageForApp(appId, mapIndexHtml = (html) => html) {
+  const pkg = readPackage(path.join(examplesDir, appId));
+  const files = [...pkg.files.entries()].map(([filePath, content]) => ({
+    path: filePath,
+    content: filePath === "index.html" ? mapIndexHtml(content) : content,
+  }));
+  return { manifest: pkg.manifest, files };
 }
 
 async function applyBridgeFixturePreconditions(baseUrl, fixture, sessionId) {
