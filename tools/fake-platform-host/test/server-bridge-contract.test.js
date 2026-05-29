@@ -233,6 +233,12 @@ test(
         assert.equal(duplicate.status, 200);
         assert.equal(duplicate.body.ok, false);
         assert.equal(duplicate.body.errors.includes("invalid_stylesheet_count"), true);
+
+        const resourceHint = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("</head>", '<link rel="preconnect" href="https://tracker.example"></head>')));
+        assert.equal(resourceHint.status, 200);
+        assert.equal(resourceHint.body.ok, false);
+        assert.equal(resourceHint.body.errors.includes("forbidden_resource_hint"), true);
       } finally {
         await stopServer(started);
       }

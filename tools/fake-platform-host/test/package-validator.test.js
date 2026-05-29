@@ -193,6 +193,19 @@ test("remote stylesheet links and CSS imports are rejected", () => {
   assert.equal(importResult.errors.some((error) => error.code === "forbidden_css_import"), true);
 });
 
+test("resource hint links are rejected", () => {
+  const resourceHint = copyExamplePackage("notes-lite");
+  const indexPath = path.join(resourceHint, "index.html");
+  fs.writeFileSync(
+    indexPath,
+    fs.readFileSync(indexPath, "utf8").replace("</head>", '<link rel="preconnect" href="https://tracker.example"></head>'),
+  );
+
+  const result = validatePackage(resourceHint);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "forbidden_resource_hint"), true);
+});
+
 test("stylesheet link must load plain styles.css exactly once", () => {
   const missingStylesheet = copyExamplePackage("notes-lite");
   const missingIndexPath = path.join(missingStylesheet, "index.html");

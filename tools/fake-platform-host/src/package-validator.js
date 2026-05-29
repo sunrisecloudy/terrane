@@ -39,6 +39,7 @@ const NETWORK_POLICY_ENTRY_KEYS = new Set([
   "maxResponseBytes",
   "timeoutMs",
 ]);
+const RESOURCE_HINT_RELS = new Set(["dns-prefetch", "modulepreload", "preconnect", "prefetch", "preload", "prerender"]);
 const NETWORK_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const CONTENT_RATING_MINIMUM_AGE = new Map([
   ["4+", 4],
@@ -504,7 +505,13 @@ function validateStylesheetLinks(source, errors) {
   for (const match of source.matchAll(/<link\b([^>]*)>/gi)) {
     const attrs = match[1] ?? "";
     const rel = htmlAttr(attrs, "rel") ?? "";
-    if (!rel.toLowerCase().split(/\s+/).includes("stylesheet")) {
+    const relTokens = rel.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!relTokens.includes("stylesheet")) {
+      if (relTokens.some((token) => RESOURCE_HINT_RELS.has(token))) {
+        errors.push(issue("forbidden_resource_hint", "generated apps must not create network/resource hints", { rel }));
+      } else {
+        errors.push(issue("forbidden_link_tag", "index.html may only use a link tag for styles.css", { rel }));
+      }
       continue;
     }
     const href = htmlAttr(attrs, "href") ?? "";

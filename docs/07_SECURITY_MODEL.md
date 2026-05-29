@@ -116,6 +116,7 @@ Reject generated apps containing:
 - direct `fetch`;
 - `XMLHttpRequest`;
 - WebSocket / EventSource;
+- resource hints such as `dns-prefetch`, `preconnect`, `prefetch`, `preload`, `prerender`, or `modulepreload`;
 - localStorage / sessionStorage / IndexedDB / cookies;
 - direct use of platform bridge objects (`webkit.messageHandlers`, `chrome.webview`, `Android.*`);
 - forms with external action;

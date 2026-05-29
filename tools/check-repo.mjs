@@ -910,6 +910,8 @@ function checkServerStatic() {
     "\"forbidden_inline_script_csp\"",
     "fn htmlHasInlineStyle",
     "\"forbidden_stylesheet_href\"",
+    "\"forbidden_resource_hint\"",
+    "\"forbidden_link_tag\"",
     "\"missing_stylesheet\"",
     "\"invalid_stylesheet_count\"",
     "\"forbidden_stylesheet_attribute\"",

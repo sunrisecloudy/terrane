@@ -11031,7 +11031,14 @@ fn validateServerStylesheetLinks(
     while (findOpeningTag(html, "link", index)) |start| {
         index = start + 1;
         const attrs = htmlOpeningTagAttrs(html, start, "link") orelse continue;
-        if (!try htmlRelIncludesStylesheet(allocator, attrs)) continue;
+        if (!try htmlRelIncludesStylesheet(allocator, attrs)) {
+            if (try htmlRelIncludesResourceHint(allocator, attrs)) {
+                try errors.append(allocator, "forbidden_resource_hint");
+            } else {
+                try errors.append(allocator, "forbidden_link_tag");
+            }
+            continue;
+        }
 
         const href = try htmlAttrValueAlloc(allocator, attrs, "href");
         defer if (href) |actual| allocator.free(actual);
@@ -11060,6 +11067,25 @@ fn validateServerStylesheetLinks(
     } else if (stylesheet_count > 1) {
         try errors.append(allocator, "invalid_stylesheet_count");
     }
+}
+
+fn htmlRelIncludesResourceHint(allocator: std.mem.Allocator, attrs: []const u8) !bool {
+    const rel = try htmlAttrValueAlloc(allocator, attrs, "rel");
+    defer if (rel) |actual| allocator.free(actual);
+    const actual = rel orelse return false;
+    var tokens = std.mem.tokenizeAny(u8, actual, " \t\r\n");
+    while (tokens.next()) |token| {
+        if (std.ascii.eqlIgnoreCase(token, "dns-prefetch") or
+            std.ascii.eqlIgnoreCase(token, "modulepreload") or
+            std.ascii.eqlIgnoreCase(token, "preconnect") or
+            std.ascii.eqlIgnoreCase(token, "prefetch") or
+            std.ascii.eqlIgnoreCase(token, "preload") or
+            std.ascii.eqlIgnoreCase(token, "prerender"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn htmlRelIncludesStylesheet(allocator: std.mem.Allocator, attrs: []const u8) !bool {
@@ -12462,6 +12488,46 @@ test "server package validation rejects unexpected stylesheet hrefs" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_stylesheet_href\"") != null);
+}
+
+test "server package validation rejects resource hint links" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "resource-hint-test",
+        \\    "name": "Resource Hint Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "resource-hint-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"styles.css\"><link rel=\"dns-prefetch\" href=\"https://tracker.example\"><main>Resource hint test</main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_resource_hint\"") != null);
 }
 
 test "server package validation requires a plain styles.css link" {

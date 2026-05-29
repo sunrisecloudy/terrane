@@ -1,0 +1,6 @@
+{
+  "id": "remote-resource-hint",
+  "expectedError": "forbidden_resource_hint",
+  "description": "Generated app HTML must not create DNS, connection, preload, or prerender resource hints.",
+  "html": "<link rel=\"dns-prefetch\" href=\"https://tracker.example\">"
+}
