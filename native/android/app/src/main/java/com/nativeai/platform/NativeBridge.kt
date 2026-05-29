@@ -83,7 +83,7 @@ class NativeBridge(
             "notification.toast" -> respond(notifications.toast(request))
             "network.request" -> respond(network.request(request))
             "core.step" -> respond(core.step(request))
-            "runtime.capabilities" -> respond(BridgeResponse.success(request.id, capabilities()).toString())
+            "runtime.capabilities" -> respond(BridgeResponse.success(request.id, capabilities(request)).toString())
             "app.log" -> respond(BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString())
             else -> respond(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
         }
@@ -96,14 +96,17 @@ class NativeBridge(
         else -> null
     }
 
-    private fun capabilities(): JSONObject = JSONObject(
+    private fun capabilities(request: BridgeRequest): JSONObject = JSONObject(
         mapOf(
             "platform" to "android",
             "target" to "android",
+            "appId" to request.context.appId,
             "runtimeVersion" to "0.1.0",
             "devMode" to true,
             "features" to JSONObject(
                 mapOf(
+                    "storage.read" to true,
+                    "storage.write" to true,
                     "storage.get" to true,
                     "storage.set" to true,
                     "storage.remove" to true,

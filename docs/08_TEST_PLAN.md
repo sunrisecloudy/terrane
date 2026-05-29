@@ -140,6 +140,8 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
 
 `expectedByPlatform` is only for intentional platform-identity differences such as `runtime.capabilities.target` or for a host that rejects an invalid fixture earlier than bridge dispatch. Otherwise fixtures use `expected` and every target must match the fake host.
 
+The runtime capabilities contract is also covered by `tools/fake-platform-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target and checks each native/server implementation exposes the channel-derived `appId` plus manifest-level `storage.read` / `storage.write` capability IDs.
+
 The harness:
 
 1. Resolves the fixture file.

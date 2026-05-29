@@ -21,6 +21,7 @@ Example:
   "runtimeVersion": "0.1.0",
   "platform": "ios",
   "target": "ios-simulator",
+  "appId": "notes-lite",
   "devMode": true,
   "features": {
     "core.step": true,
@@ -40,6 +41,8 @@ Example:
   }
 }
 ```
+
+`appId` is derived from the runtime/native sandbox channel and is informational only. Apps must not put `appId` in bridge request bodies.
 
 ## 3. Manifest capabilities
 

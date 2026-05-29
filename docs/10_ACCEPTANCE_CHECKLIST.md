@@ -134,7 +134,7 @@
 - [x] Runtime refuses tampered installed packages.
 - [x] App registry stores immutable versions and active-version pointer.
 - [x] Rollback works on fake-host and at least one desktop target.
-- [ ] Runtime capabilities API works on every target.
+- [x] Runtime capabilities API works on every target.
 - [x] Snapshot/replay works on fake-host.
 - [x] Resource-budget violations are detected.
 - [x] Network policy blocks disallowed requests.

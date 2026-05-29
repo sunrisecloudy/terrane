@@ -31,6 +31,9 @@
     "target": {
       "type": "string"
     },
+    "appId": {
+      "type": "string"
+    },
     "devMode": {
       "type": "boolean"
     },

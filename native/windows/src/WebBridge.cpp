@@ -96,6 +96,8 @@ json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {
 
 json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   json::JsonObject features;
+  features.Insert(L"storage.read", json::JsonValue::CreateBooleanValue(true));
+  features.Insert(L"storage.write", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"storage.get", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"storage.set", json::JsonValue::CreateBooleanValue(true));
   features.Insert(L"storage.remove", json::JsonValue::CreateBooleanValue(true));
@@ -115,6 +117,7 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   json::JsonObject result;
   result.Insert(L"platform", json::JsonValue::CreateStringValue(L"windows"));
   result.Insert(L"target", json::JsonValue::CreateStringValue(L"windows"));
+  result.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
   result.Insert(L"runtimeVersion", json::JsonValue::CreateStringValue(L"0.1.0"));
   result.Insert(L"devMode", json::JsonValue::CreateBooleanValue(true));
   result.Insert(L"features", features);

@@ -86,9 +86,12 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return .success(id: request.id, result: [
                 "platform": "macos",
                 "target": "macos",
+                "appId": request.context.appId,
                 "runtimeVersion": "0.1.0",
                 "devMode": true,
                 "features": [
+                    "storage.read": true,
+                    "storage.write": true,
                     "storage.get": true,
                     "storage.set": true,
                     "storage.remove": true,

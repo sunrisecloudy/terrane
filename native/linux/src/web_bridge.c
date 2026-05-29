@@ -26,13 +26,15 @@ static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *r
   json_builder_add_string_value(builder, "linux");
   json_builder_set_member_name(builder, "target");
   json_builder_add_string_value(builder, "linux");
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, request->context.app_id != NULL ? request->context.app_id : "");
   json_builder_set_member_name(builder, "runtimeVersion");
   json_builder_add_string_value(builder, "0.1.0");
   json_builder_set_member_name(builder, "devMode");
   json_builder_add_boolean_value(builder, TRUE);
   json_builder_set_member_name(builder, "features");
   json_builder_begin_object(builder);
-  const gchar *enabled[] = {"storage.get", "storage.set", "storage.remove", "storage.list", "notification.toast", "network.request", "runtime.capabilities", "app.log"};
+  const gchar *enabled[] = {"storage.read", "storage.write", "storage.get", "storage.set", "storage.remove", "storage.list", "notification.toast", "network.request", "runtime.capabilities", "app.log"};
   for (gsize index = 0; index < G_N_ELEMENTS(enabled); ++index) {
     json_builder_set_member_name(builder, enabled[index]);
     json_builder_add_boolean_value(builder, TRUE);

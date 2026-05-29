@@ -1,11 +1,10 @@
 {
   "runtimeVersion": "0.1.0",
-  "platform": "fake",
-  "target": "fake-host",
+  "platform": "macos",
+  "target": "macos",
   "appId": "notes-lite",
   "devMode": true,
   "features": {
-    "core.step": true,
     "storage.read": true,
     "storage.write": true,
     "storage.get": true,
@@ -14,18 +13,14 @@
     "storage.list": true,
     "dialog.openFile": true,
     "dialog.saveFile": true,
-    "network.request": true,
     "notification.toast": true,
-    "app.log": true,
+    "network.request": true,
+    "core.step": false,
     "runtime.capabilities": true,
-    "runtime.replay": true,
-    "runtime.snapshot": true
+    "app.log": true
   },
   "limits": {
-    "maxBodyBytes": 1048576,
-    "maxStorageBytes": 5242880,
-    "maxBridgeCallsPerMinute": 600,
-    "maxPackageBytes": 4194304,
-    "maxFileBytes": 2097152
+    "maxPackageBytes": 1048576,
+    "maxFileBytes": 524288
   }
 }
