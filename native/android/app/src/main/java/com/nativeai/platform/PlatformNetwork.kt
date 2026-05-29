@@ -23,6 +23,9 @@ class PlatformNetwork {
         if (request.context.denyPrivateNetwork && isPrivateNetworkHost(url.host)) {
             return BridgeResponse.failure(request.id, "network_policy_denied", "network.request private network targets are denied").toString()
         }
+        if (request.params.has("credentials") && !request.params.isNull("credentials")) {
+            return BridgeResponse.failure(request.id, "network_policy_denied", "network.request credentials are not allowed").toString()
+        }
         val method = request.params.optString("method", "GET").uppercase(Locale.US)
         val headers = parseHeaders(request)
             ?: return BridgeResponse.failure(request.id, "invalid_request", "network.request headers must be strings").toString()

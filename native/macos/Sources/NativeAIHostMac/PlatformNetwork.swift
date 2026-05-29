@@ -11,6 +11,9 @@ final class PlatformNetwork {
         if request.context.denyPrivateNetwork && Self.isPrivateNetworkHost(url.host) {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.request private network targets are denied")
         }
+        if let credentials = request.params["credentials"], !(credentials is NSNull) {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request credentials are not allowed")
+        }
 
         let method = (request.params["method"] as? String ?? "GET").uppercased()
         guard let headers = Self.headers(from: request.params["headers"]) else {

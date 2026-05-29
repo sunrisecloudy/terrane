@@ -874,7 +874,7 @@ function checkNativeStatic() {
   if (macStorage.includes("appId(for:")) {
     throw new Error("macOS storage must not derive app id from storage key");
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!macNetwork.includes(snippet)) {
       throw new Error(`macOS network missing policy enforcement: ${snippet}`);
     }
@@ -954,7 +954,7 @@ function checkNativeStatic() {
   if (iosStorage.includes("appId(for:")) {
     throw new Error("iOS storage must not derive app id from storage key");
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!iosNetwork.includes(snippet)) {
       throw new Error(`iOS network missing policy enforcement: ${snippet}`);
     }
@@ -1026,7 +1026,7 @@ function checkNativeStatic() {
   if (windowsStorage.includes("appIdFor")) {
     throw new Error("Windows storage must not derive app id from storage key");
   }
-  for (const snippet of ["WinHttpOpenRequest", "network_policy_denied", "NetworkPolicyRule", "WINHTTP_DISABLE_REDIRECTS", "IsPrivateNetworkHost", "network.request private network targets are denied"]) {
+  for (const snippet of ["WinHttpOpenRequest", "network_policy_denied", "NetworkPolicyRule", "WINHTTP_DISABLE_REDIRECTS", "IsPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!windowsNetwork.includes(snippet)) {
       throw new Error(`Windows network missing policy enforcement: ${snippet}`);
     }
@@ -1097,7 +1097,7 @@ function checkNativeStatic() {
   if (linuxStorage.includes("app_id_for_key")) {
     throw new Error("Linux storage must not derive app id from storage key");
   }
-  for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT", "is_private_network_host", "network.request private network targets are denied"]) {
+  for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT", "is_private_network_host", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!linuxNetwork.includes(snippet)) {
       throw new Error(`Linux network missing policy enforcement: ${snippet}`);
     }
@@ -1175,7 +1175,7 @@ function checkNativeStatic() {
   if (androidDialogs.includes("is not implemented on Android yet") || androidBridge.includes('"dialog.openFile" to false')) {
     throw new Error("Android dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
+  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!androidNetwork.includes(snippet)) {
       throw new Error(`Android network missing policy enforcement: ${snippet}`);
     }

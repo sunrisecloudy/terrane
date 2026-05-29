@@ -396,6 +396,9 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
   if (!body.valid) {
     return Failure(request, L"invalid_request", L"network.request body must be a string or null");
   }
+  if (request.params.HasKey(L"credentials") && request.params.GetNamedValue(L"credentials").ValueType() != json::JsonValueType::Null) {
+    return Failure(request, L"network_policy_denied", L"network.request credentials are not allowed");
+  }
   if (request.context.denyPrivateNetwork && IsPrivateNetworkHost(parsed->host)) {
     return Failure(request, L"network_policy_denied", L"network.request private network targets are denied");
   }

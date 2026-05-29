@@ -272,6 +272,9 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
   if (private_denied) {
     return network_failure(request, "network_policy_denied", "network.request private network targets are denied");
   }
+  if (json_object_has_member(request->params, "credentials") && !json_object_get_null_member(request->params, "credentials")) {
+    return network_failure(request, "network_policy_denied", "network.request credentials are not allowed");
+  }
 
   g_autofree gchar *method = g_ascii_strup(json_object_get_string_member_with_default(request->params, "method", "GET"), -1);
   gboolean headers_valid = TRUE;
