@@ -129,7 +129,7 @@ Status snapshot: **2026-05-29**.
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
-| `tests/mutation/` | partial (35 mutations now exercised by fake-host validator/runtime tests, including direct network/storage/native-bridge APIs, sendBeacon, Cookie Store API use, appId bridge-param rejection, service workers, sandbox escape APIs, inline-style CSP drift, app script/stylesheet tag drift, platform-generated artifact rejection, invalid manifests, tampering, and runtime-denied paths) |
+| `tests/mutation/` | partial (36 mutations now exercised by fake-host validator/runtime tests, including direct network/storage/native-bridge APIs, sendBeacon, Cookie Store API use, appId bridge-param rejection, service workers, sandbox escape APIs, inline-style CSP drift, app script/stylesheet tag drift, platform-generated artifact rejection, invalid manifests/capabilities, tampering, and runtime-denied paths) |
 | `tests/accessibility/` | fixtures |
 | `tests/performance/` | partial (fake-host latency harness reports p50/p95 for storage and core bridge round-trips) |
 | `tests/security/malicious-packages/` | partial (12 fixtures exercised by fake-host security tests; static rejection plus runtime-denied storage-prefix and budget paths) |

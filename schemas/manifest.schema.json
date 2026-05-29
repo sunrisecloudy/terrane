@@ -126,6 +126,10 @@
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "required",
+        "optional"
+      ],
       "properties": {
         "required": {
           "type": "array",

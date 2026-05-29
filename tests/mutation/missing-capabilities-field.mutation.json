@@ -1,0 +1,10 @@
+{
+  "id": "missing-capabilities-field",
+  "description": "Manifest capabilities must declare both required and optional arrays.",
+  "expectedError": "invalid_capabilities",
+  "manifestPatch": {
+    "capabilities": {
+      "required": []
+    }
+  }
+}
