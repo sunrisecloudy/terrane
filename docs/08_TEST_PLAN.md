@@ -210,7 +210,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Storage persists.
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
-- Local debug APK/JNI/resource build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js` when Gradle and the Android SDK are available.
+- Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
 
 ### Windows
 

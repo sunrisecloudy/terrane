@@ -10,7 +10,7 @@ const androidDir = path.join(repoRoot, "native", "android");
 
 function commandExists(command) {
   try {
-    execFileSync(command, ["--version"], { stdio: "ignore" });
+    execFileSync(command, command === "zig" ? ["version"] : ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -40,7 +40,13 @@ function findFiles(directory, predicate) {
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {
-    skip: !commandExists("gradle") ? "gradle is not available" : !hasAndroidSdk() ? "Android SDK is not available" : false,
+    skip: !commandExists("gradle")
+      ? "gradle is not available"
+      : !commandExists("zig")
+        ? "zig is not available"
+        : !hasAndroidSdk()
+          ? "Android SDK is not available"
+          : false,
     timeout: 180_000,
   },
   () => {
@@ -66,11 +72,23 @@ test(
 
     for (const abi of ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]) {
       assert.equal(
+        fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-zig-core", "jniLibs", abi, "libzig_core.so")),
+        true,
+        `Zig core shared library should be generated for ${abi}`,
+      );
+      assert.equal(
         findFiles(path.join(androidDir, "app", "build", "intermediates", "cxx", "Debug"), (filePath) =>
           filePath.endsWith(path.join("obj", abi, "libzig_core_jni.so")),
         ).length > 0,
         true,
         `JNI bridge library should build for ${abi}`,
+      );
+      assert.equal(
+        findFiles(path.join(androidDir, "app", "build", "intermediates", "merged_native_libs", "debug"), (filePath) =>
+          filePath.endsWith(path.join("lib", abi, "libzig_core.so")),
+        ).length > 0,
+        true,
+        `Zig core shared library should be packaged for ${abi}`,
       );
     }
   },

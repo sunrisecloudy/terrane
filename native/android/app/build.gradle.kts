@@ -5,6 +5,7 @@ plugins {
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
 val generatedNativeAiAssets = layout.buildDirectory.dir("generated/native-ai-assets")
+val generatedZigCoreJniLibs = layout.buildDirectory.dir("generated/native-ai-zig-core/jniLibs")
 val syncNativeAiAssets by tasks.registering(Sync::class) {
     into(generatedNativeAiAssets)
     from(repoRoot.resolve("runtime-web")) {
@@ -13,6 +14,40 @@ val syncNativeAiAssets by tasks.registering(Sync::class) {
     from(repoRoot.resolve("webapps")) {
         into("webapps")
     }
+}
+val androidZigCoreTargets = mapOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "armeabi-v7a" to "arm-linux-androideabi",
+    "x86" to "x86-linux-android",
+    "x86_64" to "x86_64-linux-android",
+)
+val buildAndroidZigCoreAbiTasks = androidZigCoreTargets.map { (abi, target) ->
+    val taskName = "buildAndroidZigCore${abi.replace("-", "").replace("_", "")}"
+    tasks.register<Exec>(taskName) {
+        val zigCoreDir = repoRoot.resolve("zig-core")
+        val outputDir = generatedZigCoreJniLibs.get().asFile.resolve(abi)
+        val outputFile = outputDir.resolve("libzig_core.so")
+        inputs.dir(zigCoreDir.resolve("src"))
+        outputs.file(outputFile)
+        workingDir = zigCoreDir
+        environment("ZIG_GLOBAL_CACHE_DIR", layout.buildDirectory.dir("zig-cache/android/global").get().asFile.absolutePath)
+        environment("ZIG_LOCAL_CACHE_DIR", layout.buildDirectory.dir("zig-cache/android/local-$abi").get().asFile.absolutePath)
+        doFirst {
+            outputDir.mkdirs()
+        }
+        commandLine(
+            "zig",
+            "build-lib",
+            "src/lib.zig",
+            "-dynamic",
+            "-target",
+            target,
+            "-femit-bin=${outputFile.absolutePath}",
+        )
+    }
+}
+val buildAndroidZigCore by tasks.registering {
+    dependsOn(buildAndroidZigCoreAbiTasks)
 }
 
 android {
@@ -41,6 +76,7 @@ android {
     sourceSets {
         getByName("main") {
             assets.srcDir(generatedNativeAiAssets)
+            jniLibs.srcDir(generatedZigCoreJniLibs)
         }
     }
 
@@ -57,6 +93,7 @@ kotlin {
 
 tasks.named("preBuild") {
     dependsOn(syncNativeAiAssets)
+    dependsOn(buildAndroidZigCore)
 }
 
 dependencies {
