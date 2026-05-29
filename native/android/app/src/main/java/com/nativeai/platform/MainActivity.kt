@@ -208,6 +208,9 @@ private class AndroidSmokeProbe(
                         response.optJSONObject("result")?.optJSONArray("actions") != null) {
                         "core.step failed: $response"
                     }
+                    require(hasPersistedCoreLogs(activity, "task-workbench")) {
+                        "core smoke did not persist bridge/core log rows"
+                    }
                     emitSuccess(webView, activity, "NATIVE_AI_ANDROID_SMOKE_CORE_STEP_OK")
                 }
                 AndroidSmokeAction.RuntimeLoad -> Unit
@@ -235,6 +238,30 @@ private class AndroidSmokeProbe(
             responseText = response
         }
         return JSONObject(requireNotNull(responseText) { "Bridge did not respond to $method" })
+    }
+
+    private fun hasPersistedCoreLogs(context: Context, appId: String): Boolean {
+        val database = PlatformDatabase(context)
+        return try {
+            val db = database.readableDatabase
+            rowCount(db, "bridge_calls", appId, "core.step") > 0 &&
+                rowCount(db, "core_events", appId) > 0 &&
+                rowCount(db, "core_actions", appId) > 0
+        } finally {
+            database.close()
+        }
+    }
+
+    private fun rowCount(db: android.database.sqlite.SQLiteDatabase, table: String, appId: String, method: String? = null): Int {
+        val sql = if (method == null) {
+            "SELECT COUNT(*) FROM $table WHERE app_id = ?"
+        } else {
+            "SELECT COUNT(*) FROM $table WHERE app_id = ? AND method = ?"
+        }
+        val args = if (method == null) arrayOf(appId) else arrayOf(appId, method)
+        db.rawQuery(sql, args).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
     }
 
     private fun emitSuccess(webView: WebView, activity: MainActivity, marker: String) {

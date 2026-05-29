@@ -211,7 +211,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
 - Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
-- Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, and JNI-backed `core.step`.
+- Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
 
 ### Windows
 

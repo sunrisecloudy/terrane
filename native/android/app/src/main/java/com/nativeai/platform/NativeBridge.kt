@@ -1,13 +1,20 @@
 package com.nativeai.platform
 
+import android.content.ContentValues
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.os.SystemClock
+import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.util.UUID
 
 class NativeBridge(
     context: Context,
     private val dialogs: PlatformDialogs,
     private val contextForApp: (String) -> AppSandboxContext,
 ) {
+    private val database = PlatformDatabase(context)
     private val storage = PlatformStorage(context)
     private val notifications = PlatformNotifications()
     private val network = PlatformNetwork()
@@ -61,10 +68,16 @@ class NativeBridge(
             respond(BridgeResponse.failure(requestId, "invalid_request", "Bridge request body must be JSON").toString())
             return
         }
+        val startedAtMs = SystemClock.elapsedRealtime()
+        fun respondWithLog(responseText: String) {
+            recordBridgeCall(request, responseText, startedAtMs)
+            recordCoreStep(request, responseText)
+            respond(responseText)
+        }
 
         val permission = permissionForBridgeMethod(request.method)
         if (permission != null && !request.context.approvedPermissions.contains(permission)) {
-            respond(BridgeResponse.failure(
+            respondWithLog(BridgeResponse.failure(
                 request.id,
                 "permission_denied",
                 "App ${request.context.appId} cannot call ${request.method}",
@@ -74,19 +87,126 @@ class NativeBridge(
         }
 
         when (request.method) {
-            "storage.get" -> respond(storage.get(request))
-            "storage.set" -> respond(storage.set(request))
-            "storage.remove" -> respond(storage.remove(request))
-            "storage.list" -> respond(storage.list(request))
-            "dialog.openFile" -> dialogs.openFile(request, respond)
-            "dialog.saveFile" -> dialogs.saveFile(request, respond)
-            "notification.toast" -> respond(notifications.toast(request))
-            "network.request" -> respond(network.request(request))
-            "core.step" -> respond(core.step(request))
-            "runtime.capabilities" -> respond(BridgeResponse.success(request.id, capabilities(request)).toString())
-            "app.log" -> respond(BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString())
-            else -> respond(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
+            "storage.get" -> respondWithLog(storage.get(request))
+            "storage.set" -> respondWithLog(storage.set(request))
+            "storage.remove" -> respondWithLog(storage.remove(request))
+            "storage.list" -> respondWithLog(storage.list(request))
+            "dialog.openFile" -> dialogs.openFile(request) { response -> respondWithLog(response) }
+            "dialog.saveFile" -> dialogs.saveFile(request) { response -> respondWithLog(response) }
+            "notification.toast" -> respondWithLog(notifications.toast(request))
+            "network.request" -> respondWithLog(network.request(request))
+            "core.step" -> respondWithLog(core.step(request))
+            "runtime.capabilities" -> respondWithLog(BridgeResponse.success(request.id, capabilities(request)).toString())
+            "app.log" -> respondWithLog(BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString())
+            else -> respondWithLog(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
         }
+    }
+
+    private fun recordBridgeCall(request: BridgeRequest, responseText: String, startedAtMs: Long) {
+        if (request.context.appId.isBlank()) return
+        val sessionId = ensureRuntimeSession(request)
+        val response = parseJsonObject(responseText)
+        val values = ContentValues().apply {
+            put("bridge_call_id", "bridge_android_${UUID.randomUUID().toString().lowercase()}")
+            put("session_id", sessionId)
+            put("app_id", request.context.appId)
+            putNull("install_id")
+            put("method", request.method)
+            put("params_json", jsonString(request.params))
+            put("result_json", jsonStringOrNull(response?.opt("result")))
+            put("error_json", jsonStringOrNull(response?.opt("error")))
+            put("duration_ms", SystemClock.elapsedRealtime() - startedAtMs)
+            put("created_at", Instant.now().toString())
+        }
+        database.writableDatabase.insert("bridge_calls", null, values)
+    }
+
+    private fun recordCoreStep(request: BridgeRequest, responseText: String) {
+        if (request.method != "core.step") return
+        val response = parseJsonObject(responseText) ?: return
+        if (!response.optBoolean("ok")) return
+        val event = request.params.opt("event") ?: return
+        val result = response.optJSONObject("result") ?: return
+        val sessionId = ensureRuntimeSession(request)
+        val eventId = "core_event_android_${UUID.randomUUID().toString().lowercase()}"
+        val eventValues = ContentValues().apply {
+            put("event_id", eventId)
+            put("session_id", sessionId)
+            put("app_id", request.context.appId)
+            putNull("install_id")
+            if (result.has("stateVersion")) {
+                put("state_version_before", maxOf(0, result.optInt("stateVersion") - 1))
+            } else {
+                putNull("state_version_before")
+            }
+            put("event_json", jsonString(event))
+            put("created_at", Instant.now().toString())
+        }
+        database.writableDatabase.insert("core_events", null, eventValues)
+        val actions = result.optJSONArray("actions") ?: JSONArray()
+        for (index in 0 until actions.length()) {
+            val action = actions.opt(index) ?: continue
+            val actionValues = ContentValues().apply {
+                put("action_id", "core_action_android_${UUID.randomUUID().toString().lowercase()}")
+                put("event_id", eventId)
+                put("session_id", sessionId)
+                put("app_id", request.context.appId)
+                put("action_json", jsonString(action))
+                put("created_at", Instant.now().toString())
+            }
+            database.writableDatabase.insert("core_actions", null, actionValues)
+        }
+    }
+
+    private fun ensureRuntimeSession(request: BridgeRequest): String {
+        val sessionId = runtimeSessionId(request)
+        val now = Instant.now().toString()
+        val values = ContentValues().apply {
+            put("session_id", sessionId)
+            put("target", "android")
+            put("platform", "android")
+            put("runtime_version", "0.1.0")
+            put("active_app_id", request.context.appId)
+            putNull("active_install_id")
+            put("started_at", now)
+            put("status", "running")
+            put("capabilities_json", "{}")
+            put("metadata_json", JSONObject(mapOf("source" to "native-android-bridge")).toString())
+        }
+        database.writableDatabase.insertWithOnConflict("runtime_sessions", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        database.writableDatabase.update(
+            "runtime_sessions",
+            ContentValues().apply {
+                put("active_app_id", request.context.appId)
+                put("status", "running")
+            },
+            "session_id = ?",
+            arrayOf(sessionId),
+        )
+        return sessionId
+    }
+
+    private fun runtimeSessionId(request: BridgeRequest): String =
+        "runtime_android_${request.context.appId}_${request.context.mountToken ?: "native"}"
+
+    private fun parseJsonObject(text: String): JSONObject? = try {
+        JSONObject(text)
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun jsonStringOrNull(value: Any?): String? =
+        if (value == null || value == JSONObject.NULL) null else jsonString(value)
+
+    private fun jsonString(value: Any?): String = when (value) {
+        null -> "null"
+        JSONObject.NULL -> "null"
+        is JSONObject -> value.toString()
+        is JSONArray -> value.toString()
+        is String -> JSONObject.quote(value)
+        is Number -> value.toString()
+        is Boolean -> value.toString()
+        else -> JSONObject.quote(value.toString())
     }
 
     private fun permissionForBridgeMethod(method: String): String? = when (method) {

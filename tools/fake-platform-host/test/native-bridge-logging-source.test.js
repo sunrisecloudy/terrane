@@ -7,12 +7,26 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native bridges persist bridge and core logs", () => {
+  const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const androidHost = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
   const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
   const iosHost = read("native/ios/Sources/NativeAIHostIOS/WebHostView.swift");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
   const linuxHost = read("native/linux/src/webkit_host.c");
+
+  assert.match(androidBridge, /"runtime_sessions"/);
+  assert.match(androidBridge, /"bridge_calls"/);
+  assert.match(androidBridge, /"core_events"/);
+  assert.match(androidBridge, /"core_actions"/);
+  assert.match(androidBridge, /"params_json"/);
+  assert.match(androidBridge, /"result_json"/);
+  assert.match(androidBridge, /"error_json"/);
+  assert.match(androidHost, /rowCount\(db, "bridge_calls", appId, "core.step"\)/);
+  assert.match(androidHost, /rowCount\(db, "core_events", appId\)/);
+  assert.match(androidHost, /rowCount\(db, "core_actions", appId\)/);
+  assert.match(androidHost, /core smoke did not persist bridge\/core log rows/);
 
   assert.match(iosBridge, /INSERT INTO runtime_sessions/);
   assert.match(iosBridge, /INSERT INTO bridge_calls/);
