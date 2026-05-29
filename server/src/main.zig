@@ -2549,13 +2549,7 @@ fn collectWebappPackageErrors(
     try validateServerMigrations(allocator, manifest, files, errors);
 
     if (findPackageFile(files, "index.html")) |html| {
-        if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
-        if (containsAny(html, &.{ "src=\"http://", "src=\"https://", "src='http://", "src='https://" })) try errors.append(allocator, "forbidden_remote_script");
-        if (containsAny(html, &.{ "href=\"http://", "href=\"https://", "href='http://", "href='https://" })) try errors.append(allocator, "forbidden_remote_stylesheet");
-        if (containsAny(html, &.{ "http-equiv=\"refresh\"", "http-equiv='refresh'" })) try errors.append(allocator, "forbidden_meta_refresh");
-        if (containsAny(html, &.{"<base"})) try errors.append(allocator, "forbidden_base_href");
-        if (containsAny(html, &.{ "action=\"http://", "action=\"https://", "action=\"/", "action='http://", "action='https://", "action='/" })) try errors.append(allocator, "forbidden_form_action");
-        if (containsAny(html, &.{ "<iframe", "<object", "<embed", "<applet" })) try errors.append(allocator, "forbidden_embedded_context");
+        try validateServerHtmlPolicy(allocator, html, errors);
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
@@ -10309,6 +10303,170 @@ fn validateMigrationStringFieldPrefix(
     if (!std.mem.startsWith(u8, value, storage_prefix)) try errors.append(allocator, "invalid_migration_prefix");
 }
 
+fn validateServerHtmlPolicy(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (try htmlHasForbiddenScriptTag(allocator, html)) try errors.append(allocator, "forbidden_inline_script");
+    if (try htmlHasRemoteScript(allocator, html)) try errors.append(allocator, "forbidden_remote_script");
+    if (htmlHasInlineEventHandler(html)) try errors.append(allocator, "forbidden_inline_handler");
+    if (containsIgnoreCase(html, "javascript:")) try errors.append(allocator, "forbidden_javascript_url");
+    if (try htmlHasMetaRefresh(allocator, html)) try errors.append(allocator, "forbidden_meta_refresh");
+    if (findOpeningTag(html, "base", 0) != null) try errors.append(allocator, "forbidden_base_href");
+    if (try htmlHasForbiddenFormAction(allocator, html)) try errors.append(allocator, "forbidden_form_action");
+    if (findOpeningTag(html, "iframe", 0) != null or
+        findOpeningTag(html, "object", 0) != null or
+        findOpeningTag(html, "embed", 0) != null or
+        findOpeningTag(html, "applet", 0) != null)
+    {
+        try errors.append(allocator, "forbidden_embedded_context");
+    }
+    if (try htmlHasRemoteStylesheet(allocator, html)) try errors.append(allocator, "forbidden_remote_stylesheet");
+    if (try htmlHasForbiddenStylesheetHref(allocator, html)) try errors.append(allocator, "forbidden_stylesheet_href");
+}
+
+fn htmlHasForbiddenScriptTag(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "script", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "script") orelse return true;
+        const src = try htmlAttrValueAlloc(allocator, attrs, "src");
+        defer if (src) |actual| allocator.free(actual);
+        if (src == null or !std.mem.eql(u8, src.?, "app.js")) return true;
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlHasRemoteScript(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "script", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "script") orelse return false;
+        const src = try htmlAttrValueAlloc(allocator, attrs, "src");
+        defer if (src) |actual| allocator.free(actual);
+        if (src) |actual| {
+            if (isHttpUrl(actual)) return true;
+        }
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlHasMetaRefresh(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "meta", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "meta") orelse return false;
+        const http_equiv = try htmlAttrValueAlloc(allocator, attrs, "http-equiv");
+        defer if (http_equiv) |actual| allocator.free(actual);
+        if (http_equiv) |actual| {
+            if (std.ascii.eqlIgnoreCase(actual, "refresh")) return true;
+        }
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlHasForbiddenFormAction(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "form", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "form") orelse return false;
+        const action = try htmlAttrValueAlloc(allocator, attrs, "action");
+        defer if (action) |actual| allocator.free(actual);
+        if (action) |actual| {
+            if (!std.mem.eql(u8, actual, "#")) return true;
+        }
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlHasRemoteStylesheet(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "link", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "link") orelse return false;
+        if (try htmlRelIncludesStylesheet(allocator, attrs)) {
+            const href = try htmlAttrValueAlloc(allocator, attrs, "href");
+            defer if (href) |actual| allocator.free(actual);
+            if (href) |actual| {
+                if (isHttpUrl(actual)) return true;
+            }
+        }
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlHasForbiddenStylesheetHref(allocator: std.mem.Allocator, html: []const u8) !bool {
+    var index: usize = 0;
+    while (findOpeningTag(html, "link", index)) |start| {
+        const attrs = htmlOpeningTagAttrs(html, start, "link") orelse return false;
+        if (try htmlRelIncludesStylesheet(allocator, attrs)) {
+            const href = try htmlAttrValueAlloc(allocator, attrs, "href");
+            defer if (href) |actual| allocator.free(actual);
+            if (href == null or !std.mem.eql(u8, href.?, "styles.css")) return true;
+        }
+        index = start + 1;
+    }
+    return false;
+}
+
+fn htmlRelIncludesStylesheet(allocator: std.mem.Allocator, attrs: []const u8) !bool {
+    const rel = try htmlAttrValueAlloc(allocator, attrs, "rel");
+    defer if (rel) |actual| allocator.free(actual);
+    const actual = rel orelse return false;
+    var tokens = std.mem.tokenizeAny(u8, actual, " \t\r\n");
+    while (tokens.next()) |token| {
+        if (std.ascii.eqlIgnoreCase(token, "stylesheet")) return true;
+    }
+    return false;
+}
+
+fn htmlOpeningTagAttrs(html: []const u8, start: usize, tag: []const u8) ?[]const u8 {
+    const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return null;
+    const attrs_start = start + 1 + tag.len;
+    if (attrs_start > open_end) return null;
+    return html[attrs_start..open_end];
+}
+
+fn htmlHasInlineEventHandler(html: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |start| {
+        const end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return false;
+        const attrs = html[start + 1 .. end];
+        if (attrsHaveInlineEventHandler(attrs)) return true;
+        index = end + 1;
+    }
+    return false;
+}
+
+fn attrsHaveInlineEventHandler(attrs: []const u8) bool {
+    var index: usize = 0;
+    while (index + 2 < attrs.len) : (index += 1) {
+        if (std.ascii.toLower(attrs[index]) != 'o' or std.ascii.toLower(attrs[index + 1]) != 'n') continue;
+        if (index > 0 and htmlNameChar(attrs[index - 1])) continue;
+        var cursor = index + 2;
+        while (cursor < attrs.len and std.ascii.isAlphabetic(attrs[cursor])) : (cursor += 1) {}
+        if (cursor == index + 2) continue;
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor < attrs.len and attrs[cursor] == '=') return true;
+    }
+    return false;
+}
+
+fn containsIgnoreCase(source: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (source.len < needle.len) return false;
+    var index: usize = 0;
+    while (index + needle.len <= source.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(source[index .. index + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn isHttpUrl(value: []const u8) bool {
+    return startsWithIgnoreCase(value, "http://") or startsWithIgnoreCase(value, "https://");
+}
+
 fn validateServerNetworkPolicy(
     allocator: std.mem.Allocator,
     network_policy: std.json.Value,
@@ -11116,6 +11274,86 @@ test "server package validation rejects migration keys outside storage prefix" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_migration_prefix\"") != null);
+}
+
+test "server package validation rejects inline script tags with attributes" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "html-policy-test",
+        \\    "name": "HTML Policy Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "html-policy-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>HTML policy test</main><script type=\"module\">alert(1)</script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_inline_script\"") != null);
+}
+
+test "server package validation rejects unexpected stylesheet hrefs" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "stylesheet-policy-test",
+        \\    "name": "Stylesheet Policy Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "stylesheet-policy-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"theme.css\"><main>Stylesheet policy test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_stylesheet_href\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {
