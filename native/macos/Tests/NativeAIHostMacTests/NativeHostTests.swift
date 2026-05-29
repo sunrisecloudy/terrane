@@ -77,6 +77,80 @@ struct NativeHostTests {
     }
 
     @MainActor
+    @Test("file dialogs return selected files, save output, and structured cancellations")
+    func fileDialogsReturnResultsAndCancellationErrors() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-dialogs-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let inputURL = tempDir.appendingPathComponent("input.txt")
+        try "Dialog input".write(to: inputURL, atomically: true, encoding: .utf8)
+        let outputURL = tempDir.appendingPathComponent("output.txt")
+        let context = AppSandboxContext(
+            appId: "file-transformer",
+            approvedPermissions: ["dialog.openFile", "dialog.saveFile"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "test-mount"
+        )
+        let dialogs = PlatformDialogs(
+            openFileURLProvider: { inputURL },
+            saveFileURLProvider: { suggestedName in
+                #expect(suggestedName == "output.txt")
+                return outputURL
+            }
+        )
+
+        let open = dialogs.openFile(BridgeRequest(
+            id: "open",
+            method: "dialog.openFile",
+            params: [:],
+            context: context
+        ))
+        #expect(open.ok)
+        let openResult = try #require(open.result as? [String: Any])
+        let files = try #require(openResult["files"] as? [[String: Any]])
+        let firstFile = try #require(files.first)
+        #expect(firstFile["name"] as? String == "input.txt")
+        #expect(firstFile["mime"] as? String == "text/plain")
+        #expect(firstFile["text"] as? String == "Dialog input")
+
+        let save = dialogs.saveFile(BridgeRequest(
+            id: "save",
+            method: "dialog.saveFile",
+            params: ["suggestedName": "output.txt", "text": "Saved body"],
+            context: context
+        ))
+        #expect(save.ok)
+        #expect(try String(contentsOf: outputURL, encoding: .utf8) == "Saved body")
+
+        let cancelled = PlatformDialogs(
+            openFileURLProvider: { nil },
+            saveFileURLProvider: { _ in nil }
+        )
+        let openCancelled = cancelled.openFile(BridgeRequest(
+            id: "open-cancel",
+            method: "dialog.openFile",
+            params: [:],
+            context: context
+        ))
+        #expect(!openCancelled.ok)
+        #expect(openCancelled.error?["code"] as? String == "dialog_cancelled")
+
+        let saveCancelled = cancelled.saveFile(BridgeRequest(
+            id: "save-cancel",
+            method: "dialog.saveFile",
+            params: [:],
+            context: context
+        ))
+        #expect(!saveCancelled.ok)
+        #expect(saveCancelled.error?["code"] as? String == "dialog_cancelled")
+    }
+
+    @MainActor
     @Test("WKWebView loads runtime resources and dispatches the native bridge")
     func webViewLoadsRuntimeAndDispatchesBridge() async throws {
         let bridge = WebBridge()

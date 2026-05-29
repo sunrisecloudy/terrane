@@ -59,7 +59,7 @@
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
-- [ ] Dialogs work or return structured unsupported errors.
+- [x] Dialogs work or return structured unsupported errors.
 - [ ] Zig core step works.
 
 ### Android

@@ -35,7 +35,7 @@ test(
         },
       });
 
-      assert.match(output, /Test run with 3 tests in 1 suite passed/);
+      assert.match(output, /Test run with 4 tests in 1 suite passed/);
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }
