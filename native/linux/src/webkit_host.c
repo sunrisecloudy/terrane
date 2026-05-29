@@ -316,6 +316,23 @@ static gint bridge_log_count(WebKitHost *host, const gchar *app_id, const gchar 
   return count;
 }
 
+static gint table_log_count(WebKitHost *host, const gchar *table, const gchar *app_id) {
+  if (host == NULL || host->bridge == NULL || host->bridge->storage == NULL || host->bridge->storage->db == NULL) {
+    return 0;
+  }
+  const gchar *sql = g_strcmp0(table, "core_actions") == 0
+      ? "SELECT COUNT(*) FROM core_actions WHERE app_id = ?"
+      : "SELECT COUNT(*) FROM core_events WHERE app_id = ?";
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(host->bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return 0;
+  }
+  sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
+  gint count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
 static void run_storage_smoke(WebKitHost *host, gboolean set_value) {
   const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
   const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
@@ -386,6 +403,10 @@ static void run_core_smoke(WebKitHost *host) {
 
   if (!json_response_ok(response)) {
     smoke_failure(host, response);
+    return;
+  }
+  if (table_log_count(host, "core_events", "task-workbench") <= 0 || table_log_count(host, "core_actions", "task-workbench") <= 0) {
+    smoke_failure(host, "core smoke did not persist core_events/core_actions rows");
     return;
   }
   smoke_success(host, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK");

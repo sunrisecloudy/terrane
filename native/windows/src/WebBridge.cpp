@@ -18,6 +18,12 @@ std::wstring NewBridgeCallId() {
       std::to_wstring(NowMs()) + L"_" + std::to_wstring(sequence.fetch_add(1));
 }
 
+std::wstring NewCoreId(std::wstring const& prefix) {
+  static std::atomic_uint64_t sequence{0};
+  return prefix + L"_windows_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+      std::to_wstring(NowMs()) + L"_" + std::to_wstring(sequence.fetch_add(1));
+}
+
 std::wstring RuntimeSessionId(BridgeRequest const& request) {
   auto token = request.context.mountToken.empty() ? L"native" : request.context.mountToken;
   return L"runtime_windows_" + request.context.appId + L"_" + token;
@@ -36,11 +42,31 @@ void BindNullableText(sqlite3_stmt* statement, int index, std::wstring const& va
   BindText(statement, index, value);
 }
 
+void BindNullableInt64(sqlite3_stmt* statement, int index, std::optional<int64_t> value) {
+  if (!value.has_value()) {
+    sqlite3_bind_null(statement, index);
+    return;
+  }
+  sqlite3_bind_int64(statement, index, static_cast<sqlite3_int64>(value.value()));
+}
+
 std::wstring JsonMemberString(json::JsonObject const& object, std::wstring const& member) {
   if (!object.HasKey(member)) {
     return L"";
   }
   return std::wstring(object.GetNamedValue(member).Stringify().c_str());
+}
+
+std::optional<int64_t> StateVersionBefore(json::JsonObject const& result) {
+  if (!result.HasKey(L"stateVersion")) {
+    return std::nullopt;
+  }
+  auto value = result.GetNamedValue(L"stateVersion");
+  if (value.ValueType() != json::JsonValueType::Number) {
+    return std::nullopt;
+  }
+  auto number = static_cast<int64_t>(value.GetNumber());
+  return number > 0 ? number - 1 : 0;
 }
 
 }  // namespace
@@ -83,6 +109,7 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
 
   auto response = Dispatch(request);
   RecordBridgeCall(request, response, startedAtMs);
+  RecordCoreStep(request, response);
   return response.Stringify().c_str();
 }
 
@@ -187,6 +214,77 @@ void WebBridge::EnsureRuntimeSession(BridgeRequest const& request) {
   }
   BindText(statement, 1, RuntimeSessionId(request));
   BindText(statement, 2, request.context.appId);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
+void WebBridge::RecordCoreStep(BridgeRequest const& request, json::JsonObject const& response) {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr || request.context.appId.empty() || request.method != L"core.step" || !request.params.HasKey(L"event")) {
+    return;
+  }
+  auto ok = response.GetNamedValue(L"ok", json::JsonValue::CreateBooleanValue(false));
+  if (ok.ValueType() != json::JsonValueType::Boolean || !ok.GetBoolean() || !response.HasKey(L"result")) {
+    return;
+  }
+  auto resultValue = response.GetNamedValue(L"result");
+  if (resultValue.ValueType() != json::JsonValueType::Object) {
+    return;
+  }
+  auto result = resultValue.GetObject();
+  EnsureRuntimeSession(request);
+
+  auto sessionId = RuntimeSessionId(request);
+  auto eventId = NewCoreId(L"core_event");
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "INSERT INTO core_events "
+      "(event_id, session_id, app_id, install_id, state_version_before, event_json, created_at) "
+      "VALUES (?, ?, ?, NULL, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return;
+  }
+  BindText(statement, 1, eventId);
+  BindText(statement, 2, sessionId);
+  BindText(statement, 3, request.context.appId);
+  BindNullableInt64(statement, 4, StateVersionBefore(result));
+  BindText(statement, 5, std::wstring(request.params.GetNamedValue(L"event").Stringify().c_str()));
+  auto inserted = sqlite3_step(statement) == SQLITE_DONE;
+  sqlite3_finalize(statement);
+  if (!inserted || !result.HasKey(L"actions")) {
+    return;
+  }
+
+  auto actionsValue = result.GetNamedValue(L"actions");
+  if (actionsValue.ValueType() != json::JsonValueType::Array) {
+    return;
+  }
+  for (auto const& action : actionsValue.GetArray()) {
+    RecordCoreAction(eventId, sessionId, request.context.appId, action);
+  }
+}
+
+void WebBridge::RecordCoreAction(
+    std::wstring const& eventId,
+    std::wstring const& sessionId,
+    std::wstring const& appId,
+    json::IJsonValue const& action) {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr) {
+    return;
+  }
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at) "
+      "VALUES (?, ?, ?, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return;
+  }
+  BindText(statement, 1, NewCoreId(L"core_action"));
+  BindText(statement, 2, eventId);
+  BindText(statement, 3, sessionId);
+  BindText(statement, 4, appId);
+  BindText(statement, 5, std::wstring(action.Stringify().c_str()));
   sqlite3_step(statement);
   sqlite3_finalize(statement);
 }

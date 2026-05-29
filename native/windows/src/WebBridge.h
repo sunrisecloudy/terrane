@@ -27,6 +27,14 @@ class WebBridge {
       BridgeRequest const& request,
       winrt::Windows::Data::Json::JsonObject const& response,
       uint64_t startedAtMs);
+  void RecordCoreStep(
+      BridgeRequest const& request,
+      winrt::Windows::Data::Json::JsonObject const& response);
+  void RecordCoreAction(
+      std::wstring const& eventId,
+      std::wstring const& sessionId,
+      std::wstring const& appId,
+      winrt::Windows::Data::Json::IJsonValue const& action);
   void EnsureRuntimeSession(BridgeRequest const& request);
 
   PlatformStorage storage_;

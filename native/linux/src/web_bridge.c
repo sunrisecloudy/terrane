@@ -14,6 +14,12 @@ static gchar *new_bridge_call_id(void) {
   return g_strdup_printf("bridge_linux_%" G_GINT64_FORMAT "_%d", g_get_real_time(), next);
 }
 
+static gchar *new_core_id(const gchar *prefix) {
+  static gint sequence = 0;
+  gint next = g_atomic_int_add(&sequence, 1);
+  return g_strdup_printf("%s_linux_%" G_GINT64_FORMAT "_%d", prefix, g_get_real_time(), next);
+}
+
 static void bind_text(sqlite3_stmt *statement, int index, const gchar *value) {
   sqlite3_bind_text(statement, index, value != NULL ? value : "", -1, SQLITE_TRANSIENT);
 }
@@ -24,6 +30,27 @@ static void bind_nullable_text(sqlite3_stmt *statement, int index, const gchar *
     return;
   }
   sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT);
+}
+
+static void bind_nullable_int64(sqlite3_stmt *statement, int index, gboolean has_value, gint64 value) {
+  if (!has_value) {
+    sqlite3_bind_null(statement, index);
+    return;
+  }
+  sqlite3_bind_int64(statement, index, (sqlite3_int64)value);
+}
+
+static gchar *json_node_to_string_copy(JsonNode *node) {
+  if (node == NULL) {
+    return NULL;
+  }
+  JsonNode *copy = json_node_copy(node);
+  JsonGenerator *generator = json_generator_new();
+  json_generator_set_root(generator, copy);
+  gchar *text = json_generator_to_data(generator, NULL);
+  g_object_unref(generator);
+  json_node_unref(copy);
+  return text;
 }
 
 static gchar *json_object_to_string(JsonObject *object) {
@@ -52,6 +79,23 @@ static gchar *json_member_to_string(JsonObject *object, const gchar *member) {
   return text;
 }
 
+static gboolean state_version_before(JsonObject *result, gint64 *out) {
+  if (result == NULL || !json_object_has_member(result, "stateVersion")) {
+    return FALSE;
+  }
+  JsonNode *node = json_object_get_member(result, "stateVersion");
+  if (!JSON_NODE_HOLDS_VALUE(node)) {
+    return FALSE;
+  }
+  GType value_type = json_node_get_value_type(node);
+  if (value_type != G_TYPE_INT64 && value_type != G_TYPE_INT && value_type != G_TYPE_DOUBLE) {
+    return FALSE;
+  }
+  gint64 value = value_type == G_TYPE_DOUBLE ? (gint64)json_node_get_double(node) : json_node_get_int(node);
+  *out = value > 0 ? value - 1 : 0;
+  return TRUE;
+}
+
 static void ensure_runtime_session(WebBridge *bridge, const BridgeRequest *request) {
   if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL || request->context.app_id == NULL) {
     return;
@@ -70,6 +114,77 @@ static void ensure_runtime_session(WebBridge *bridge, const BridgeRequest *reque
   bind_text(statement, 2, request->context.app_id);
   sqlite3_step(statement);
   sqlite3_finalize(statement);
+}
+
+static void record_core_action(WebBridge *bridge, const gchar *event_id, const gchar *session_id, const gchar *app_id, JsonNode *action) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL) {
+    return;
+  }
+  g_autofree gchar *action_id = new_core_id("core_action");
+  g_autofree gchar *action_json = json_node_to_string_copy(action);
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at) "
+      "VALUES (?, ?, ?, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return;
+  }
+  bind_text(statement, 1, action_id);
+  bind_text(statement, 2, event_id);
+  bind_text(statement, 3, session_id);
+  bind_text(statement, 4, app_id);
+  bind_text(statement, 5, action_json);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
+static void record_core_step(WebBridge *bridge, const BridgeRequest *request, JsonNode *response) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL ||
+      request->context.app_id == NULL || g_strcmp0(request->method, "core.step") != 0 ||
+      !json_object_has_member(request->params, "event")) {
+    return;
+  }
+  JsonObject *response_object = response != NULL && JSON_NODE_HOLDS_OBJECT(response) ? json_node_get_object(response) : NULL;
+  if (response_object == NULL || !json_object_get_boolean_member_with_default(response_object, "ok", FALSE)) {
+    return;
+  }
+  JsonObject *result = json_object_get_object_member(response_object, "result");
+  if (result == NULL) {
+    return;
+  }
+  ensure_runtime_session(bridge, request);
+
+  g_autofree gchar *event_id = new_core_id("core_event");
+  g_autofree gchar *session_id = runtime_session_id(request);
+  g_autofree gchar *event_json = json_node_to_string_copy(json_object_get_member(request->params, "event"));
+  gint64 version_before = 0;
+  gboolean has_version_before = state_version_before(result, &version_before);
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at) "
+      "VALUES (?, ?, ?, NULL, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return;
+  }
+  bind_text(statement, 1, event_id);
+  bind_text(statement, 2, session_id);
+  bind_text(statement, 3, request->context.app_id);
+  bind_nullable_int64(statement, 4, has_version_before, version_before);
+  bind_text(statement, 5, event_json);
+  gboolean inserted = sqlite3_step(statement) == SQLITE_DONE;
+  sqlite3_finalize(statement);
+  if (!inserted) {
+    return;
+  }
+
+  JsonArray *actions = json_object_get_array_member(result, "actions");
+  if (actions == NULL) {
+    return;
+  }
+  for (guint index = 0; index < json_array_get_length(actions); ++index) {
+    record_core_action(bridge, event_id, session_id, request->context.app_id, json_array_get_element(actions, index));
+  }
 }
 
 static void record_bridge_call(WebBridge *bridge, const BridgeRequest *request, JsonNode *response, gint64 started_at_us) {
@@ -262,6 +377,7 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
   JsonNode *response = dispatch(bridge, &request);
   gchar *text = bridge_response_to_string(response);
   record_bridge_call(bridge, &request, response, started_at_us);
+  record_core_step(bridge, &request, response);
   json_node_unref(response);
   bridge_request_clear(&request);
   g_object_unref(parser);

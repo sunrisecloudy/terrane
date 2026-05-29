@@ -38,6 +38,8 @@ class WebViewHost {
   void SmokeSuccess(std::wstring const& marker);
   void SmokeFailure(std::wstring const& message);
   int BridgeLogCount(std::wstring const& appId, std::wstring const& method) const;
+  int CoreEventLogCount(std::wstring const& appId) const;
+  int CoreActionLogCount(std::wstring const& appId) const;
   std::wstring BridgeCall(
       std::wstring const& appId,
       std::wstring const& id,

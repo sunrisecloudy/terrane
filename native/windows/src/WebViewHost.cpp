@@ -425,6 +425,10 @@ void WebViewHost::RunCoreSmoke() {
     SmokeFailure(response);
     return;
   }
+  if (CoreEventLogCount(L"task-workbench") <= 0 || CoreActionLogCount(L"task-workbench") <= 0) {
+    SmokeFailure(L"core smoke did not persist core_events/core_actions rows");
+    return;
+  }
   SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK");
 }
 
@@ -696,6 +700,36 @@ int WebViewHost::BridgeLogCount(std::wstring const& appId, std::wstring const& m
   }
   BindSmokeSqlText(statement, 1, appId);
   BindSmokeSqlText(statement, 2, method);
+  int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
+int WebViewHost::CoreEventLogCount(std::wstring const& appId) const {
+  auto db = bridge_ == nullptr ? nullptr : bridge_->DatabaseHandle();
+  if (db == nullptr) {
+    return 0;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM core_events WHERE app_id = ?", -1, &statement, nullptr) != SQLITE_OK) {
+    return 0;
+  }
+  BindSmokeSqlText(statement, 1, appId);
+  int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
+int WebViewHost::CoreActionLogCount(std::wstring const& appId) const {
+  auto db = bridge_ == nullptr ? nullptr : bridge_->DatabaseHandle();
+  if (db == nullptr) {
+    return 0;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM core_actions WHERE app_id = ?", -1, &statement, nullptr) != SQLITE_OK) {
+    return 0;
+  }
+  BindSmokeSqlText(statement, 1, appId);
   int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
   sqlite3_finalize(statement);
   return count;
