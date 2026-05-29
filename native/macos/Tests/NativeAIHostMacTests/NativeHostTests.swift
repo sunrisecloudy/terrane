@@ -337,6 +337,17 @@ struct NativeHostTests {
         )
         #expect(createdSnapshotCommand.statusCode == 200)
         #expect(createdSnapshotCommand.body.contains(#""snapshotId":"snapshot_"#))
+        let createdSnapshotCommandResult = try jsonResult(createdSnapshotCommand)
+        let matchingSnapshotId = try #require(createdSnapshotCommandResult["snapshotId"] as? String)
+
+        let matchingSnapshotCompare = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.compare_snapshot","args":{"leftSnapshotId":"\#(appSnapshotId)","rightSnapshotId":"\#(matchingSnapshotId)"}}"#
+        )
+        #expect(matchingSnapshotCompare.statusCode == 200)
+        #expect(matchingSnapshotCompare.body.contains(#""equal":true"#))
 
         let changedBeforeRouteRestore = PlatformStorage(databaseURL: dbURL).set(BridgeRequest(
             id: "control-change-before-route-restore",
@@ -345,6 +356,25 @@ struct NativeHostTests {
             context: storageContext
         ))
         #expect(changedBeforeRouteRestore.ok)
+
+        let changedSnapshotCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.create_snapshot","args":{"appId":"notes-lite","type":"manual"}}"#
+        )
+        #expect(changedSnapshotCommand.statusCode == 200)
+        let changedSnapshotCommandResult = try jsonResult(changedSnapshotCommand)
+        let changedSnapshotId = try #require(changedSnapshotCommandResult["snapshotId"] as? String)
+
+        let changedSnapshotCompare = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.compare_snapshot","args":{"leftSnapshotId":"\#(appSnapshotId)","rightSnapshotId":"\#(changedSnapshotId)"}}"#
+        )
+        #expect(changedSnapshotCompare.statusCode == 200)
+        #expect(changedSnapshotCompare.body.contains(#""equal":false"#))
 
         let routeRestoredSnapshot = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshots/\(appSnapshotId)")!,
@@ -964,7 +994,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 72)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 75)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

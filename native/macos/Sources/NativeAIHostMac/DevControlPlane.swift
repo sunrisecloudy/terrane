@@ -378,6 +378,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeCoreSnapshot(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_core_action":
             handleCoreActionAssertion(connection, request, args: args, startedAt: startedAt)
+        case "runtime.compare_snapshot":
+            handleRuntimeCompareSnapshot(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
@@ -1122,6 +1124,24 @@ final class DevControlPlane: @unchecked Sendable {
         ])
     }
 
+    private func handleRuntimeCompareSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let left = snapshotValue(args["left"], snapshotId: args["leftSnapshotId"] as? String),
+              let right = snapshotValue(args["right"], snapshotId: args["rightSnapshotId"] as? String)
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.compare_snapshot requires left/right snapshots or snapshot ids", startedAt: startedAt)
+            return
+        }
+        let leftJSON = jsonString(left)
+        let rightJSON = jsonString(right)
+        let equal = leftJSON == rightJSON
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": equal,
+            "equal": equal,
+            "leftHash": "sha256:\(sha256Hex(leftJSON))",
+            "rightHash": "sha256:\(sha256Hex(rightJSON))",
+        ])
+    }
+
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
         guard let appId = args["appId"] as? String, !appId.isEmpty else {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.create_snapshot requires appId", startedAt: startedAt)
@@ -1221,6 +1241,16 @@ final class DevControlPlane: @unchecked Sendable {
             "contentHash": columnText(statement, 2),
             "createdAt": columnText(statement, 3),
         ]
+    }
+
+    private func snapshotValue(_ value: Any?, snapshotId: String?) -> Any? {
+        if let snapshotId, !snapshotId.isEmpty {
+            return readSnapshot(snapshotId: snapshotId)?["snapshot"]
+        }
+        if let value, !(value is NSNull) {
+            return value
+        }
+        return nil
     }
 
     private func restoreSnapshot(snapshotId: String) -> [String: Any]? {
