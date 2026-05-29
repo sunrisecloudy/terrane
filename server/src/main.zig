@@ -2572,6 +2572,7 @@ fn collectWebappPackageErrors(
         if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
         if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
         if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
+        if (hasRuntimeBridgeCallMissingPermission(manifest, js)) try errors.append(allocator, "missing_permission");
     }
 }
 
@@ -10399,6 +10400,12 @@ fn containsAny(source: []const u8, needles: []const []const u8) bool {
     return false;
 }
 
+const RuntimeBridgeCall = struct {
+    method: []const u8,
+    next_index: usize,
+    malformed: bool = false,
+};
+
 fn hasInteractiveWithoutTestId(html: []const u8) bool {
     const tags = [_][]const u8{ "button", "input", "select", "textarea", "a" };
     var index: usize = 0;
@@ -10454,21 +10461,99 @@ fn permissionForBridgeMethod(method: []const u8) ?[]const u8 {
 
 fn hasUnknownRuntimeBridgeCall(source: []const u8) bool {
     var index: usize = 0;
-    while (std.mem.indexOfPos(u8, source, index, "AppRuntime.call")) |call_start| {
-        index = call_start + "AppRuntime.call".len;
-        const open = std.mem.indexOfScalarPos(u8, source, index, '(') orelse return false;
-        var cursor = open + 1;
-        while (cursor < source.len and (source[cursor] == ' ' or source[cursor] == '\t' or source[cursor] == '\n' or source[cursor] == '\r')) {
-            cursor += 1;
-        }
-        if (cursor >= source.len or (source[cursor] != '"' and source[cursor] != '\'')) continue;
-        const quote = source[cursor];
-        const method_start = cursor + 1;
-        const method_end = std.mem.indexOfScalarPos(u8, source, method_start, quote) orelse return true;
-        if (!isAllowedRuntimeBridgeMethod(source[method_start..method_end])) return true;
-        index = method_end + 1;
+    while (nextRuntimeBridgeCall(source, &index)) |call| {
+        if (call.malformed) return true;
+        if (!isAllowedRuntimeBridgeMethod(call.method)) return true;
     }
     return false;
+}
+
+fn hasRuntimeBridgeCallMissingPermission(manifest: std.json.Value, source: []const u8) bool {
+    var index: usize = 0;
+    while (nextRuntimeBridgeCall(source, &index)) |call| {
+        if (call.malformed or !isAllowedRuntimeBridgeMethod(call.method)) continue;
+        const permission = permissionForBridgeMethod(call.method) orelse continue;
+        if (!manifestPermissionsContain(manifest, permission)) return true;
+    }
+    return false;
+}
+
+fn nextRuntimeBridgeCall(source: []const u8, index: *usize) ?RuntimeBridgeCall {
+    const app_pattern = "AppRuntime.call";
+    const bare_pattern = "call";
+
+    while (index.* < source.len) {
+        const app_call = std.mem.indexOfPos(u8, source, index.*, app_pattern);
+        const bare_call = std.mem.indexOfPos(u8, source, index.*, bare_pattern);
+        if (app_call == null and bare_call == null) return null;
+
+        var start: usize = undefined;
+        var after_pattern: usize = undefined;
+        var bare = false;
+        if (app_call) |app_start| {
+            if (bare_call) |bare_start| {
+                if (app_start <= bare_start) {
+                    start = app_start;
+                    after_pattern = app_start + app_pattern.len;
+                } else {
+                    start = bare_start;
+                    after_pattern = bare_start + bare_pattern.len;
+                    bare = true;
+                }
+            } else {
+                start = app_start;
+                after_pattern = app_start + app_pattern.len;
+            }
+        } else {
+            start = bare_call.?;
+            after_pattern = start + bare_pattern.len;
+            bare = true;
+        }
+
+        index.* = after_pattern;
+        if (bare and !isStandaloneCallToken(source, start, bare_pattern.len)) continue;
+
+        const parsed = parseRuntimeBridgeCallAfter(source, after_pattern) orelse continue;
+        index.* = parsed.next_index;
+        return parsed;
+    }
+    return null;
+}
+
+fn parseRuntimeBridgeCallAfter(source: []const u8, search_after: usize) ?RuntimeBridgeCall {
+    const open = std.mem.indexOfScalarPos(u8, source, search_after, '(') orelse return null;
+    var cursor = open + 1;
+    while (cursor < source.len and isJsonWhitespace(source[cursor])) {
+        cursor += 1;
+    }
+    if (cursor >= source.len or (source[cursor] != '"' and source[cursor] != '\'')) return null;
+    const quote = source[cursor];
+    const method_start = cursor + 1;
+    const method_end = std.mem.indexOfScalarPos(u8, source, method_start, quote) orelse
+        return .{ .method = "", .next_index = source.len, .malformed = true };
+    return .{ .method = source[method_start..method_end], .next_index = method_end + 1 };
+}
+
+fn isStandaloneCallToken(source: []const u8, start: usize, len: usize) bool {
+    if (start > 0) {
+        const previous = source[start - 1];
+        if (isJavaScriptIdentifierChar(previous) or previous == '.') return false;
+    }
+    const end = start + len;
+    if (end < source.len and isJavaScriptIdentifierChar(source[end])) return false;
+    return true;
+}
+
+fn isJavaScriptIdentifierChar(char: u8) bool {
+    return (char >= 'a' and char <= 'z') or
+        (char >= 'A' and char <= 'Z') or
+        (char >= '0' and char <= '9') or
+        char == '_' or
+        char == '$';
+}
+
+fn isJsonWhitespace(char: u8) bool {
+    return char == ' ' or char == '\t' or char == '\n' or char == '\r';
 }
 
 fn isAllowedRuntimeBridgeMethod(method: []const u8) bool {
@@ -10707,6 +10792,46 @@ test "server package validation rejects direct native bridge globals" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_native_bridge\"") != null);
+}
+
+test "server package validation rejects bridge calls without manifest permission" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "missing-permission-test",
+        \\    "name": "Missing Permission Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "missing-permission-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Missing permission test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "AppRuntime.call(\"storage.get\", { key: \"missing-permission-test:notes\" });"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"missing_permission\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {

@@ -796,8 +796,10 @@ function checkServerStatic() {
     "fn validateServerNetworkPolicy",
     "\"invalid_network_origin\"",
     "fn hasUnknownRuntimeBridgeCall",
+    "fn hasRuntimeBridgeCallMissingPermission",
     "fn isAllowedRuntimeBridgeMethod",
     "\"unknown_method\"",
+    "\"missing_permission\"",
     "\"NativeAIPlatformBridge\"",
   ];
   for (const snippet of required) {
