@@ -55,12 +55,12 @@
 
 ### macOS
 
-- [ ] macOS app launches.
+- [x] macOS app launches.
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
 - [x] Dialogs work or return structured unsupported errors.
-- [ ] Zig core step works.
+- [x] Zig core step works.
 
 ### Android
 

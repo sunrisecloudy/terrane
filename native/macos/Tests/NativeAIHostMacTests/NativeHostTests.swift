@@ -76,6 +76,36 @@ struct NativeHostTests {
         #expect(denied.error?["code"] as? String == "permission_denied")
     }
 
+    @Test("core.step returns real Zig output when a dylib is available")
+    func coreStepReturnsRealZigOutput() throws {
+        guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],
+              FileManager.default.fileExists(atPath: dylibPath)
+        else {
+            return
+        }
+
+        let core = ZigCoreBridge(libraryPathOverride: dylibPath)
+        #expect(core.isAvailable)
+        let context = AppSandboxContext(
+            appId: "task-workbench",
+            approvedPermissions: ["core.step"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "test-mount"
+        )
+        let response = core.step(BridgeRequest(
+            id: "core",
+            method: "core.step",
+            params: ["event": ["type": "CreateTask", "payload": ["title": "macOS smoke task"]]],
+            context: context
+        ))
+        #expect(response.ok)
+        let result = try #require(response.result as? [String: Any])
+        #expect(result["ok"] as? Bool == true)
+        let actions = try #require(result["actions"] as? [[String: Any]])
+        #expect(!actions.isEmpty)
+    }
+
     @MainActor
     @Test("file dialogs return selected files, save output, and structured cancellations")
     func fileDialogsReturnResultsAndCancellationErrors() throws {

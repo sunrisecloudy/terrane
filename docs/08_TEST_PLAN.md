@@ -187,6 +187,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Storage persists.
 - Core bridge works.
 - Local build and native SwiftPM tests run with `node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js` on macOS hosts.
+- When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
+- Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js`.
 
 ### Android
 

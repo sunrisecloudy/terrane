@@ -1,11 +1,16 @@
 import AppKit
 
-@main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var hostView: WebHostView?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+#if DEBUG
+        if MacSmokeProbe.emitLaunchMarkerAndExitIfRequested() {
+            return
+        }
+#endif
+
         let hostView = WebHostView()
         self.hostView = hostView
 
@@ -26,3 +31,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 }
+
+#if DEBUG
+enum MacSmokeProbe {
+    static let launchedMarker = "NATIVE_AI_MACOS_SMOKE_APP_LAUNCHED"
+    static let markerFileName = "native-ai-macos-smoke-launched.txt"
+
+    static func emitLaunchMarkerAndExitIfRequested() -> Bool {
+        let args = CommandLine.arguments
+        guard args.contains("--native-ai-smoke-launch") else { return false }
+        print(launchedMarker)
+        fflush(stdout)
+        let markerURL = smokeMarkerURL()
+        try? FileManager.default.createDirectory(
+            at: markerURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? launchedMarker.write(to: markerURL, atomically: true, encoding: .utf8)
+        if args.contains("--native-ai-smoke-exit-after-launch") {
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+            return true
+        }
+        return false
+    }
+
+    private static func smokeMarkerURL() -> URL {
+        if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_SMOKE_MARKER_PATH"],
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath)
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(markerFileName)
+    }
+}
+#endif

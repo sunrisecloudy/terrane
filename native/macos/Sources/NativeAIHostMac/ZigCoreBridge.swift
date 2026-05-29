@@ -58,8 +58,8 @@ final class ZigCoreBridge {
         library != nil
     }
 
-    init() {
-        self.library = Self.loadLibrary()
+    init(libraryPathOverride: String? = nil) {
+        self.library = Self.loadLibrary(libraryPathOverride: libraryPathOverride)
     }
 
     func step(_ request: BridgeRequest) -> BridgeResponse {
@@ -113,8 +113,8 @@ final class ZigCoreBridge {
         }
     }
 
-    private static func loadLibrary() -> Library? {
-        for path in candidateLibraryPaths() {
+    private static func loadLibrary(libraryPathOverride: String?) -> Library? {
+        for path in candidateLibraryPaths(libraryPathOverride: libraryPathOverride) {
             if let library = Library(path: path) {
                 return library
             }
@@ -122,8 +122,12 @@ final class ZigCoreBridge {
         return nil
     }
 
-    private static func candidateLibraryPaths() -> [String] {
+    private static func candidateLibraryPaths(libraryPathOverride: String?) -> [String] {
         var paths: [String] = []
+
+        if let libraryPathOverride, !libraryPathOverride.isEmpty {
+            paths.append(libraryPathOverride)
+        }
 
         if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB"],
            !overridePath.isEmpty {
