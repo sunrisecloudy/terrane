@@ -1,24 +1,24 @@
 ---
 name: core-replay-debug
-description: Use this when debugging Zig core event/action determinism, replay failures, or mismatches between generated app behavior and core state.
+description: Debug deterministic Zig core behavior by replaying runtime/core event logs, comparing snapshots, and verifying fixes through core and bridge contract tests.
 ---
 
-# Core replay debug skill
+# Core Replay Debug
 
-Use runtime/core logs and replay tools to debug deterministic Zig core behavior.
+Use this skill when core state, `core.step`, action logs, replay output, or runtime/core snapshot comparisons disagree.
 
 ## Workflow
 
-1. Read the runtime event log and bridge calls.
-2. Extract all `core.step` events in order.
-3. Call `runtime.replay_events` or run Zig replay tests.
-4. Compare expected actions, final snapshot hash, and observed host behavior.
-5. If mismatch is in generated app code, patch the app.
-6. If mismatch is in core behavior, patch Zig tests first, then Zig code.
-7. Re-run replay and app micro-tests.
+1. Capture the evidence with `runtime.event_log`, `runtime.core_snapshot`, `runtime.bridge_calls`, and `db.query_core_events`.
+2. Reproduce with `runtime.replay_events` or `runtime.core_step`; prefer checked-in golden or replay fixtures when available.
+3. Compare expected and actual actions with `runtime.assert_core_action` and `runtime.compare_snapshot`.
+4. If the defect is in Zig core, keep the fix deterministic: event in, action/state out, no platform effects in core logic.
+5. If the defect is in bridge wiring, update bridge fixtures and contract tests rather than only patching one host.
+6. Verify with Zig unit/replay tests and the relevant fake-host or server bridge contract tests.
 
-## Rules
+## Guardrails
 
-- Do not inspect or mutate private core state except through dev-only snapshot APIs.
-- Treat event logs as the source of truth for reproduction.
-- Add regression fixtures for every replay bug.
+- Do not hide nondeterminism with timing sleeps; replay must be deterministic.
+- Do not add native or async effects to core logic.
+- Use `platform.create_snapshot` before migration or rollback debugging that may change persisted app data.
+- If a verified behavior changes status, update `IMPLEMENTATION_STATUS.md`; if an acceptance box becomes verified, update `docs/10_ACCEPTANCE_CHECKLIST.md`.

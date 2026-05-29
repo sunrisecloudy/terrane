@@ -297,6 +297,7 @@ function checkPerformanceHarness() {
 
 function checkPluginMcp() {
   const pluginDir = path.join(repoRoot, "codex-plugin", "platform-control");
+  const pluginManifest = readJson(path.join(pluginDir, ".codex-plugin", "plugin.json"));
   const config = readJson(path.join(pluginDir, ".mcp.json"));
   const mcpConfigSource = fs.readFileSync(path.join(pluginDir, ".mcp.json"), "utf8");
   if (mcpConfigSource.includes("PLATFORM_CONTROL_TOKEN") || mcpConfigSource.includes("dev-token-change-me")) {
@@ -330,7 +331,23 @@ function checkPluginMcp() {
   if (!mcpServer.includes("validateToolArguments")) {
     throw new Error("codex MCP server must validate tool arguments before forwarding");
   }
-  return `servers=${servers.length}`;
+  const skillsDir = path.resolve(pluginDir, pluginManifest.skills ?? "skills");
+  const requiredSkills = [
+    ["platform-micro-test", "runtime.run_microtest"],
+    ["generated-webapp-repair", "platform.run_policy_audit"],
+    ["core-replay-debug", "runtime.replay_events"],
+  ];
+  for (const [skillName, requiredTool] of requiredSkills) {
+    const skillPath = path.join(skillsDir, skillName, "SKILL.md");
+    if (!fs.existsSync(skillPath)) {
+      throw new Error(`codex plugin skill missing: ${path.relative(repoRoot, skillPath)}`);
+    }
+    const skillSource = fs.readFileSync(skillPath, "utf8");
+    if (!skillSource.includes(`name: ${skillName}`) || !skillSource.includes(requiredTool)) {
+      throw new Error(`${skillName} skill must declare its name and reference ${requiredTool}`);
+    }
+  }
+  return `servers=${servers.length},skills=${requiredSkills.length}`;
 }
 
 function mcpToolNames() {

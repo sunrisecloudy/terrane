@@ -1,39 +1,25 @@
 ---
 name: platform-micro-test
-description: Use this when Codex must launch or attach to the Native AI Webapp Platform, install generated webapps, inspect UI/runtime/bridge/core state, and run granular micro-tests.
+description: Run generated webapp micro-tests, smoke tests, or platform smoke suites through the Native AI Webapp Platform control MCP without bypassing the runtime bridge.
 ---
 
-# Platform micro-test skill
+# Platform Micro-Test
 
-Use the platform-control MCP tools to test generated webapps and runtime behavior.
+Use this skill when the user asks to validate, install, open, smoke-test, or micro-test a generated webapp package on a dev host or fake host.
 
 ## Workflow
 
-1. Call `platform.health`.
-2. If no host is attached, call `platform.launch` with the requested target, defaulting to `fake-host` for fast tests.
-3. Validate the webapp package before installing it.
-4. Install the package.
-5. Open the app.
-6. Wait for runtime idle.
-7. Run declared smoke tests and relevant `.microtest.json` tests.
-8. On failure, collect screenshot, DOM snapshot, runtime snapshot, console logs, bridge logs, storage snapshot, and core event log.
-9. Report whether the failure belongs to generated app code, runtime code, bridge/native code, or Zig core.
+1. Confirm the target host with `platform.health` and `platform.list_targets` when the target is not explicit.
+2. Validate the package with `platform.validate_package`; stop on policy or schema failures.
+3. Install with `platform.install_webapp_package`, then open with `platform.open_webapp`.
+4. Run the smallest relevant test first: `runtime.run_microtest`, `runtime.run_smoke_tests`, or `platform.run_platform_smoke`.
+5. Inspect failures with `runtime.snapshot`, `runtime.console_logs`, `runtime.bridge_calls`, `runtime.event_log`, and `runtime.assert_no_console_errors`.
+6. Report the exact failing assertion, bridge method, app id, and host target.
 
-## Rules
+## Guardrails
 
-- Prefer `data-testid` selectors.
-- Do not use arbitrary unsafe evaluation unless the user explicitly asks for it and dev mode enables it.
-- Do not bypass manifest permissions.
-- Do not call bridge methods not documented in `docs/03_RUNTIME_API_SPEC.md`.
-- Destructive operations require `confirm: true`.
-
-## Database-level assertions
-
-When a UI/bridge assertion is ambiguous, use safe DB tools to inspect persisted state:
-
-- `db.query_app_storage`
-- `db.query_bridge_calls`
-- `db.query_core_events`
-- `db.query_test_runs`
-
-Do not request arbitrary SQL. Prefer exact app id, key prefix, and session id filters.
+- Never call generated app APIs directly; use MCP tools only.
+- Treat `data-testid` as the primary UI selector.
+- Do not use raw SQL; DB inspection goes through `db.snapshot` and fixed `db.query_*` tools.
+- Destructive controls must include `confirm: true` and should only be used at an explicit repair or reset boundary.
+- If a package or host surface changed, run the relevant verification and compare `docs/10_ACCEPTANCE_CHECKLIST.md` plus `IMPLEMENTATION_STATUS.md`.

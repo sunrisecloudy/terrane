@@ -1,6 +1,6 @@
 # AI Native WebView Platform Control Plugin
 
-This is a local Codex plugin skeleton.
+This is a local Codex plugin for development control and repair workflows.
 
 It packages:
 
