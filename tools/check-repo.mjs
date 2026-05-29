@@ -425,6 +425,7 @@ function checkFakeHostStatic() {
     [capabilities, '"runtime.snapshot": true'],
     [packageValidator, "MAX_PACKAGE_FILES"],
     [packageValidator, "MAX_MIGRATION_FILES"],
+    [packageValidator, "forbidden_sql_api"],
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {
@@ -810,6 +811,7 @@ function checkServerStatic() {
     "fn validateServerJsPolicy",
     "\"forbidden_function_constructor\"",
     "\"forbidden_dynamic_import\"",
+    "\"forbidden_sql_api\"",
     "fn manifestPermissionsContain",
     "fn validateServerNetworkPolicy",
     "\"invalid_network_origin\"",

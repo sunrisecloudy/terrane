@@ -10528,6 +10528,7 @@ fn validateServerJsPolicy(
     if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
     if (jsHasCall(js, "fetch") or containsAny(js, &.{ "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
     if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
+    if (jsHasCall(js, "openDatabase") or jsHasCall(js, "executeSql") or containsAny(js, &.{ "SQLDatabase", "sqlite3" })) try errors.append(allocator, "forbidden_sql_api");
     if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
     if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
     if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
@@ -11585,7 +11586,7 @@ test "server package validation rejects js policy variants" {
         \\    {"path": "manifest.json", "content": "{}"},
         \\    {"path": "index.html", "content": "<main>JS policy test</main>"},
         \\    {"path": "styles.css", "content": ""},
-        \\    {"path": "app.js", "content": "const make = new   Function(\"return 1\"); import (\"./module.js\"); fetch (\"https://example.test\");"}
+        \\    {"path": "app.js", "content": "const make = new   Function(\"return 1\"); import (\"./module.js\"); fetch (\"https://example.test\"); const db = openDatabase(\"app\", \"1\", \"app\", 1024); db.transaction(tx => tx.executeSql(\"select 1\"));"}
         \\  ]
         \\}
     );
@@ -11595,6 +11596,7 @@ test "server package validation rejects js policy variants" {
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_function_constructor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_dynamic_import\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_network_api\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_sql_api\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {

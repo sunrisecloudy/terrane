@@ -147,7 +147,7 @@
 - [x] SQLite migrations apply cleanly to an in-memory database.
 - [ ] Native hosts use SQLite by default.
 - [ ] Server can use SQLite/Postgres logical schema.
-- [ ] Generated apps use storage bridge only; no SQL APIs are exposed.
+- [x] Generated apps use storage bridge only; no SQL APIs are exposed.
 - [x] App install transaction writes `apps`, `app_versions`, `app_files`, `app_permissions`, `app_install_reports`, and `app_installations`.
 - [x] App data persists in `app_storage`.
 - [ ] Storage keys are scoped by `app_id` and `storagePrefix`.
