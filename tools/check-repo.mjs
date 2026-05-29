@@ -974,7 +974,7 @@ function checkNativeStatic() {
     [iosBridge, '"dialog.saveFile": true'],
     [iosBridge, '"core.step": core.isAvailable'],
     [iosBridge, "typealias BridgeReply"],
-    [iosBridge, "dispatch(request) { response in"],
+    [iosBridge, "dispatch(request) { [weak self] response in"],
     [iosBridge, "dialogs.openFile(request, reply: reply)"],
     [iosBridge, "struct BridgeEnvelope"],
     [iosBridge, "message.frameInfo.isMainFrame"],

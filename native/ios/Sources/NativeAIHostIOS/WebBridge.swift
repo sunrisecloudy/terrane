@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import UIKit
 import WebKit
 
@@ -51,6 +52,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
 
         let request = BridgeRequest(body: envelope.requestBody, context: AppSandboxContext(message: message, envelope: envelope))
+        let startedAt = Date()
         if let denialReason = BundledAppCatalog.denialReason(appId: request.context.appId) {
             var details: [String: Any] = [
                 "appId": request.context.appId,
@@ -63,32 +65,38 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             let message = denialReason == "not_bundled"
                 ? "App \(request.context.appId) is not part of the bundled iOS app index"
                 : "App \(request.context.appId) is blocked by the iOS content rating gate"
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "permission_denied",
+                message: message,
+                details: details
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
             replyHandler(
-                BridgeResponse.failure(
-                    id: request.id,
-                    code: "permission_denied",
-                    message: message,
-                    details: details
-                ).asDictionary(),
+                response.asDictionary(),
                 nil
             )
             return
         }
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "permission_denied",
+                message: "App \(request.context.appId) cannot call \(request.method)",
+                details: ["appId": request.context.appId, "method": request.method, "requiredPermission": permission]
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
             replyHandler(
-                BridgeResponse.failure(
-                    id: request.id,
-                    code: "permission_denied",
-                    message: "App \(request.context.appId) cannot call \(request.method)",
-                    details: ["appId": request.context.appId, "method": request.method, "requiredPermission": permission]
-                ).asDictionary(),
+                response.asDictionary(),
                 nil
             )
             return
         }
 
-        dispatch(request) { response in
+        dispatch(request) { [weak self] response in
+            self?.recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            self?.recordCoreStep(request: request, response: response)
             replyHandler(response.asDictionary(), nil)
         }
     }
@@ -146,6 +154,115 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         default:
             reply(.failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)"))
         }
+    }
+
+    private func recordBridgeCall(request: BridgeRequest, response: BridgeResponse, startedAt: Date) {
+        guard let db = storage.databaseHandle, !request.context.appId.isEmpty else { return }
+        ensureRuntimeSession(request)
+        let sql = """
+        INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, datetime('now'))
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, "bridge_ios_\(UUID().uuidString.lowercased())")
+        bind(statement, 2, runtimeSessionId(request))
+        bind(statement, 3, request.context.appId)
+        bind(statement, 4, request.method)
+        bind(statement, 5, jsonString(request.params))
+        bindNullable(statement, 6, response.result.map(jsonString))
+        bindNullable(statement, 7, response.error.map(jsonString))
+        sqlite3_bind_int64(statement, 8, Int64(Date().timeIntervalSince(startedAt) * 1000))
+        sqlite3_step(statement)
+    }
+
+    private func recordCoreStep(request: BridgeRequest, response: BridgeResponse) {
+        guard let db = storage.databaseHandle,
+              request.method == "core.step",
+              response.ok,
+              let event = request.params["event"],
+              let result = response.result as? [String: Any]
+        else { return }
+        ensureRuntimeSession(request)
+        let eventId = "core_event_ios_\(UUID().uuidString.lowercased())"
+        let sql = """
+        INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at)
+        VALUES (?, ?, ?, NULL, ?, ?, datetime('now'))
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, eventId)
+        bind(statement, 2, runtimeSessionId(request))
+        bind(statement, 3, request.context.appId)
+        bindNullableInt(statement, 4, stateVersionBefore(result))
+        bind(statement, 5, jsonString(event))
+        guard sqlite3_step(statement) == SQLITE_DONE else { return }
+        for action in result["actions"] as? [[String: Any]] ?? [] {
+            recordCoreAction(eventId: eventId, sessionId: runtimeSessionId(request), appId: request.context.appId, action: action)
+        }
+    }
+
+    private func recordCoreAction(eventId: String, sessionId: String, appId: String, action: [String: Any]) {
+        guard let db = storage.databaseHandle else { return }
+        let sql = """
+        INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, "core_action_ios_\(UUID().uuidString.lowercased())")
+        bind(statement, 2, eventId)
+        bind(statement, 3, sessionId)
+        bind(statement, 4, appId)
+        bind(statement, 5, jsonString(action))
+        sqlite3_step(statement)
+    }
+
+    private func ensureRuntimeSession(_ request: BridgeRequest) {
+        guard let db = storage.databaseHandle else { return }
+        let sql = """
+        INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json)
+        VALUES (?, 'ios-simulator', 'ios', '0.1.0', ?, NULL, datetime('now'), 'running', '{}', '{"source":"native-ios-bridge"}')
+        ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, status = 'running'
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, runtimeSessionId(request))
+        bind(statement, 2, request.context.appId)
+        sqlite3_step(statement)
+    }
+
+    private func runtimeSessionId(_ request: BridgeRequest) -> String {
+        "runtime_ios_\(request.context.appId)_\(request.context.mountToken ?? "native")"
+    }
+
+    private func stateVersionBefore(_ result: [String: Any]) -> Int? {
+        guard let value = result["stateVersion"] as? NSNumber else { return nil }
+        return max(0, value.intValue - 1)
+    }
+
+    private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+    }
+
+    private func bindNullable(_ statement: OpaquePointer?, _ index: Int32, _ value: String?) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        bind(statement, index, value)
+    }
+
+    private func bindNullableInt(_ statement: OpaquePointer?, _ index: Int32, _ value: Int?) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        sqlite3_bind_int64(statement, index, Int64(value))
     }
 
     private func permissionForBridgeMethod(_ method: String) -> String? {
@@ -286,4 +403,18 @@ struct BridgeResponse {
         }
         return body
     }
+}
+
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+private func jsonString(_ value: Any) -> String {
+    if JSONSerialization.isValidJSONObject(value),
+       let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+       let text = String(data: data, encoding: .utf8) {
+        return text
+    }
+    if value is NSNull {
+        return "null"
+    }
+    return "null"
 }

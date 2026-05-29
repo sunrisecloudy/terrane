@@ -1,4 +1,5 @@
 import SwiftUI
+import SQLite3
 import UIKit
 import WebKit
 
@@ -153,6 +154,11 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
                     self?.exitIfRequested()
                     return
                 }
+                if marker == Self.coreStepMarker && !Self.hasPersistedCoreLogs(appId: "task-workbench") {
+                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: core smoke did not persist bridge/core log rows")
+                    self?.exitIfRequested()
+                    return
+                }
                 self?.emitSmokeMarker(marker)
                 self?.exitIfRequested()
             } catch {
@@ -162,6 +168,30 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         }
     }
 
+    private static func hasPersistedCoreLogs(appId: String) -> Bool {
+        let database = PlatformDatabase()
+        guard let db = database.handle else { return false }
+        return rowCount(db: db, table: "bridge_calls", appId: appId, method: "core.step") > 0 &&
+            rowCount(db: db, table: "core_events", appId: appId) > 0 &&
+            rowCount(db: db, table: "core_actions", appId: appId) > 0
+    }
+
+    private static func rowCount(db: OpaquePointer, table: String, appId: String, method: String? = nil) -> Int {
+        let sql = method == nil
+            ? "SELECT COUNT(*) FROM \(table) WHERE app_id = ?"
+            : "SELECT COUNT(*) FROM \(table) WHERE app_id = ? AND method = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, appId, -1, SQLITE_TRANSIENT)
+        if let method {
+            sqlite3_bind_text(statement, 2, method, -1, SQLITE_TRANSIENT)
+        }
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
+    }
+
     private func exitIfRequested() {
         guard exitAfterLoad else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -169,6 +199,8 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         }
     }
 }
+
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 private struct CoreStepSmoke {
     static func javaScript() -> String {

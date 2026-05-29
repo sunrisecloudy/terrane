@@ -6,11 +6,26 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("Windows and Linux native bridges persist bridge and core logs", () => {
+test("native bridges persist bridge and core logs", () => {
+  const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
+  const iosHost = read("native/ios/Sources/NativeAIHostIOS/WebHostView.swift");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
   const linuxHost = read("native/linux/src/webkit_host.c");
+
+  assert.match(iosBridge, /INSERT INTO runtime_sessions/);
+  assert.match(iosBridge, /INSERT INTO bridge_calls/);
+  assert.match(iosBridge, /INSERT INTO core_events/);
+  assert.match(iosBridge, /INSERT INTO core_actions/);
+  assert.match(iosBridge, /params_json/);
+  assert.match(iosBridge, /result_json/);
+  assert.match(iosBridge, /error_json/);
+  assert.match(iosHost, /rowCount\(db: db, table: "bridge_calls", appId: appId, method: "core.step"\)/);
+  assert.match(iosHost, /rowCount\(db: db, table: "core_events", appId: appId\)/);
+  assert.match(iosHost, /rowCount\(db: db, table: "core_actions", appId: appId\)/);
+  assert.match(iosHost, /SELECT COUNT\(\*\) FROM \\\(table\) WHERE app_id = \? AND method = \?/);
+  assert.match(iosHost, /core smoke did not persist bridge\/core log rows/);
 
   assert.match(windowsBridge, /INSERT INTO runtime_sessions/);
   assert.match(windowsBridge, /INSERT INTO bridge_calls/);

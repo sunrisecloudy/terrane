@@ -4,6 +4,7 @@ import SQLite3
 final class PlatformStorage {
     private let database: PlatformDatabase
     private var db: OpaquePointer? { database.handle }
+    var databaseHandle: OpaquePointer? { database.handle }
 
     init(databaseURL: URL? = nil) {
         self.database = PlatformDatabase(databaseURL: databaseURL)
