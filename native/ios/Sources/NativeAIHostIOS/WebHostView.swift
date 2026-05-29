@@ -2,6 +2,10 @@ import SwiftUI
 import UIKit
 import WebKit
 
+#if DEBUG
+import Darwin
+#endif
+
 struct WebHostView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let bridge = context.coordinator.bridge
@@ -18,6 +22,11 @@ struct WebHostView: UIViewRepresentable {
             guard let webView else { return nil }
             return Self.presentingViewController(from: webView)
         }
+#if DEBUG
+        if let smokeProbe = context.coordinator.smokeProbe {
+            webView.navigationDelegate = smokeProbe
+        }
+#endif
         webView.load(URLRequest(url: RuntimeResourceLocator.runtimeIndexURL()))
         return webView
     }
@@ -31,6 +40,9 @@ struct WebHostView: UIViewRepresentable {
     @MainActor
     final class Coordinator {
         let bridge = WebBridge()
+#if DEBUG
+        let smokeProbe = IOSSmokeRuntimeProbe.fromCommandLine()
+#endif
     }
 
     @MainActor
@@ -45,6 +57,54 @@ struct WebHostView: UIViewRepresentable {
         return view.window?.rootViewController
     }
 }
+
+#if DEBUG
+final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
+    static let loadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED"
+    static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
+
+    private let exitAfterLoad: Bool
+
+    private init(exitAfterLoad: Bool) {
+        self.exitAfterLoad = exitAfterLoad
+    }
+
+    static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
+        let args = CommandLine.arguments
+        guard args.contains("--native-ai-smoke-runtime-load") ||
+            args.contains("--native-ai-smoke-exit-on-runtime-load")
+        else {
+            return nil
+        }
+        return IOSSmokeRuntimeProbe(exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"))
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView.url == RuntimeResourceLocator.runtimeIndexURL() else { return }
+        emitSmokeMarker(Self.loadedMarker)
+        if exitAfterLoad {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                Darwin.exit(0)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        emitSmokeMarker("NATIVE_AI_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        emitSmokeMarker("NATIVE_AI_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
+    }
+
+    private func emitSmokeMarker(_ marker: String) {
+        print(marker)
+        fflush(stdout)
+        let markerURL = FileManager.default.temporaryDirectory.appendingPathComponent(Self.markerFileName)
+        try? marker.write(to: markerURL, atomically: true, encoding: .utf8)
+    }
+}
+#endif
 
 final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
