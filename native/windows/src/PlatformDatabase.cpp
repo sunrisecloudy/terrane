@@ -70,7 +70,11 @@ void PlatformDatabase::ApplyCheckedInMigrations() {
   if (!std::filesystem::exists(migrationsDir)) {
     ExecSql(
         "CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));",
+        "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));"
+        "CREATE TABLE IF NOT EXISTS runtime_sessions (session_id TEXT PRIMARY KEY, target TEXT NOT NULL, platform TEXT NOT NULL, runtime_version TEXT NOT NULL, active_app_id TEXT, active_install_id TEXT, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL DEFAULT 'running', capabilities_json TEXT, resource_high_water_json TEXT, metadata_json TEXT);"
+        "CREATE TABLE IF NOT EXISTS control_sessions (control_session_id TEXT PRIMARY KEY, target TEXT NOT NULL, runtime_session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL, actor TEXT NOT NULL DEFAULT 'codex', token_hash TEXT, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL DEFAULT 'running', metadata_json TEXT);"
+        "CREATE TABLE IF NOT EXISTS control_commands (command_id TEXT PRIMARY KEY, control_session_id TEXT NOT NULL REFERENCES control_sessions(control_session_id) ON DELETE CASCADE, runtime_session_id TEXT REFERENCES runtime_sessions(session_id) ON DELETE SET NULL, tool TEXT NOT NULL, http_method TEXT, path TEXT, decision TEXT, error_code TEXT, args_json TEXT, result_json TEXT, error_json TEXT, created_at TEXT NOT NULL, duration_ms INTEGER);"
+        "CREATE INDEX IF NOT EXISTS idx_control_commands_session_created ON control_commands(control_session_id, created_at);",
         "fallback schema");
     return;
   }
