@@ -174,6 +174,28 @@ test("remote stylesheet links and CSS imports are rejected", () => {
   assert.equal(importResult.errors.some((error) => error.code === "forbidden_css_import"), true);
 });
 
+test("inline styles and unsafe-inline style CSP are rejected", () => {
+  const inlineStyle = copyExamplePackage("notes-lite");
+  const inlineIndexPath = path.join(inlineStyle, "index.html");
+  fs.writeFileSync(
+    inlineIndexPath,
+    fs.readFileSync(inlineIndexPath, "utf8").replace("<main", '<main style="color:red"'),
+  );
+  const inlineResult = validatePackage(inlineStyle);
+  assert.equal(inlineResult.ok, false);
+  assert.equal(inlineResult.errors.some((error) => error.code === "forbidden_inline_style"), true);
+
+  const unsafeCsp = copyExamplePackage("notes-lite");
+  const cspIndexPath = path.join(unsafeCsp, "index.html");
+  fs.writeFileSync(
+    cspIndexPath,
+    fs.readFileSync(cspIndexPath, "utf8").replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"),
+  );
+  const cspResult = validatePackage(unsafeCsp);
+  assert.equal(cspResult.ok, false);
+  assert.equal(cspResult.errors.some((error) => error.code === "forbidden_inline_style_csp"), true);
+});
+
 test("document policy rejects navigation and viewport escape hatches", () => {
   const htmlCases = [
     ["forbidden_meta_refresh", '<meta http-equiv="refresh" content="0;url=https://example.test">'],

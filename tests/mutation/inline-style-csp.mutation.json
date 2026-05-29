@@ -1,0 +1,6 @@
+{
+  "id": "inline-style-csp",
+  "description": "Generated app CSP must not include style-src 'unsafe-inline'.",
+  "expectedError": "forbidden_inline_style_csp",
+  "html": "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'\">"
+}

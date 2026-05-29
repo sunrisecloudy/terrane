@@ -12,6 +12,7 @@ Required mutation categories:
 - direct sandbox escape APIs (`window.parent`, `window.top`, `window.opener`);
 - service worker registration;
 - `eval` or `new Function`;
+- inline styles or CSP that allows inline styles;
 - remote script or stylesheet;
 - invalid storage prefix;
 - invalid network policy;

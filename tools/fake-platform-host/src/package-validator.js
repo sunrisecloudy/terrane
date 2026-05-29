@@ -453,8 +453,12 @@ function validateUniqueStringArray(value, code, message, errors, details = {}, a
 }
 
 function validateHtml(source, errors) {
+  validateCsp(source, errors);
   if (/<script(?![^>]*\bsrc=["']app\.js["'])[^>]*>/i.test(source)) {
     errors.push(issue("forbidden_inline_script", "index.html may only load app.js", {}));
+  }
+  if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
+    errors.push(issue("forbidden_inline_style", "generated apps must use styles.css instead of inline styles", {}));
   }
   if (/<script[^>]+\bsrc=["']https?:\/\//i.test(source)) {
     errors.push(issue("forbidden_remote_script", "remote scripts are forbidden", {}));
@@ -505,9 +509,41 @@ function validateHtml(source, errors) {
   }
 }
 
+function validateCsp(source, errors) {
+  for (const match of source.matchAll(/<meta\b([^>]*)>/gi)) {
+    const attrs = match[1] ?? "";
+    const httpEquiv = htmlAttr(attrs, "http-equiv") ?? "";
+    if (httpEquiv.toLowerCase() !== "content-security-policy") continue;
+    const content = htmlAttr(attrs, "content") ?? "";
+    const directives = parseCspDirectives(content);
+    const styleSrc = directives.get("style-src") ?? directives.get("default-src") ?? [];
+    if (styleSrc.includes("'unsafe-inline'")) {
+      errors.push(issue("forbidden_inline_style_csp", "Content-Security-Policy must not allow inline styles", {
+        directive: "style-src",
+      }));
+    }
+    const scriptSrc = directives.get("script-src") ?? directives.get("default-src") ?? [];
+    if (scriptSrc.includes("'unsafe-inline'")) {
+      errors.push(issue("forbidden_inline_script_csp", "Content-Security-Policy must not allow inline scripts", {
+        directive: "script-src",
+      }));
+    }
+  }
+}
+
+function parseCspDirectives(content) {
+  const directives = new Map();
+  for (const rawDirective of content.split(";")) {
+    const parts = rawDirective.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) continue;
+    directives.set(parts[0].toLowerCase(), parts.slice(1));
+  }
+  return directives;
+}
+
 function htmlAttr(attrs, name) {
-  const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i"));
-  return match?.[1] ?? null;
+  const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  return match?.[1] ?? match?.[2] ?? null;
 }
 
 function validateCss(source, errors) {
