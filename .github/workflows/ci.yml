@@ -103,6 +103,40 @@ jobs:
           name: zig-core-release-artifacts
           path: artifacts/
 
+  server-release-artifacts:
+    name: Server Release Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install server build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
+
+      - name: Package server release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-server
+
+      - name: Upload server release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-release-artifacts
+          path: artifacts/
+
   linux-native-smoke:
     name: Linux Native Smoke
     runs-on: ubuntu-24.04

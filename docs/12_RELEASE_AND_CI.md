@@ -76,13 +76,13 @@ android emulator job:
 
 ## 5. Release artifacts
 
-The static release artifact packager is:
+The release artifact packager is:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core
+node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -96,12 +96,21 @@ artifacts/
     windows/windows-x86_64/zig_core.dll
     windows/windows-x86_64/zig_core.lib
     linux/linux-x86_64/libzig_core.so
+  server/
+    linux-x86_64/native-ai-server
   runtime-web.zip
   example-webapps.zip
   release-manifest.json
-  server/
   native-apps/
 ```
+
+The dedicated Linux server artifact job runs:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts --build-server
+```
+
+The default static packaging command without build flags still creates placeholder target directories for downstream jobs.
 
 ## 6. Versioning
 

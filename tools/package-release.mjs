@@ -12,6 +12,7 @@ const FIXED_DOS_TIME = 0;
 const FIXED_DOS_DATE = 33;
 const PLATFORM_VERSION = "0.1.0";
 const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
+const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server";
 const ZIG_CORE_ARTIFACTS = [
   {
     id: "ios-arm64-device",
@@ -72,7 +73,11 @@ const ZIG_CORE_ARTIFACTS = [
   },
 ];
 
-export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifacts"), buildZigCore = false } = {}) {
+export function packageReleaseArtifacts({
+  outDir = path.join(repoRoot, "artifacts"),
+  buildZigCore = false,
+  buildServer = false,
+} = {}) {
   const resolvedOutDir = path.resolve(outDir);
   fs.mkdirSync(resolvedOutDir, { recursive: true });
 
@@ -85,6 +90,7 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
   writeStoredZip(examplesArchive, exampleFiles);
 
   const zigCoreArtifacts = buildZigCore ? buildZigCoreArtifacts({ outDir: resolvedOutDir }) : [];
+  const serverArtifacts = buildServer ? buildServerArtifacts({ outDir: resolvedOutDir }) : [];
   const directoryArtifacts = [
     ...(buildZigCore
       ? []
@@ -94,7 +100,7 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
           description: `Target-specific Zig core library output for ${target}.`,
         }))
     ),
-    { id: "server", path: "server", description: "Server executable output." },
+    ...(buildServer ? [] : [{ id: "server", path: "server", description: "Server executable output." }]),
     { id: "native-apps", path: "native-apps", description: "Target-specific native host app output." },
   ];
 
@@ -126,6 +132,7 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
         fileCount: exampleFiles.length,
       }),
       ...zigCoreArtifacts,
+      ...serverArtifacts,
       ...directoryArtifacts.map((artifact) => ({
         id: artifact.id,
         path: artifact.path,
@@ -184,6 +191,89 @@ export function buildZigCoreArtifacts({ outDir = path.join(repoRoot, "artifacts"
   }
 
   return artifacts;
+}
+
+export function buildServerArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+  const resolvedOutDir = path.resolve(outDir);
+  const serverDir = path.join(repoRoot, "server");
+  const targetId = hostServerTargetId();
+  const artifactDir = path.join(resolvedOutDir, "server", targetId);
+  const outputPath = path.join(artifactDir, SERVER_EXECUTABLE_NAME);
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-release-cache-"));
+  const env = {
+    ...process.env,
+    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "global"),
+    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "local"),
+  };
+
+  try {
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const moduleArgs = zigServerModuleArgs();
+    const targetArgs = serverTargetArgsForHost();
+    const optimizeArgs = ["-O", "ReleaseSafe"];
+    if (process.platform === "darwin") {
+      const objectPath = path.join(cacheRoot, "native-ai-server.o");
+      execFileSync("zig", ["build-obj", ...moduleArgs, ...targetArgs, ...optimizeArgs, "-lc", `-femit-bin=${objectPath}`], {
+        cwd: serverDir,
+        env,
+        stdio: "ignore",
+      });
+      execFileSync("cc", [objectPath, "-lsqlite3", "-o", outputPath], {
+        env,
+        stdio: "ignore",
+      });
+    } else {
+      execFileSync(
+        "zig",
+        ["build-exe", ...moduleArgs, ...targetArgs, ...optimizeArgs, "-lc", "-lsqlite3", `-femit-bin=${outputPath}`],
+        {
+          cwd: serverDir,
+          env,
+          stdio: "ignore",
+        },
+      );
+    }
+    if (process.platform !== "win32") {
+      fs.chmodSync(outputPath, 0o755);
+    }
+    return [
+      {
+        id: `server-${targetId}`,
+        path: path.join("server", targetId),
+        kind: "server-executable",
+        target: targetId,
+        files: [describeFile(outputPath, path.join("server", targetId, SERVER_EXECUTABLE_NAME))],
+      },
+    ];
+  } finally {
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+function zigServerModuleArgs() {
+  return ["--dep", "zig_core", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig"];
+}
+
+function serverTargetArgsForHost() {
+  if (process.platform !== "darwin") return [];
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  return ["-target", `${arch}-macos.15.0.0`];
+}
+
+function hostServerTargetId() {
+  const platform = {
+    darwin: "macos",
+    linux: "linux",
+    win32: "windows",
+  }[process.platform];
+  const arch = {
+    arm64: "arm64",
+    x64: "x86_64",
+  }[process.arch];
+  if (!platform || !arch) {
+    throw new Error(`Unsupported server artifact host: ${process.platform}/${process.arch}`);
+  }
+  return `${platform}-${arch}`;
 }
 
 function describeFileArtifact({ id, archivePath, relativePath, source, fileCount }) {
@@ -345,6 +435,8 @@ function parseCliArgs(argv) {
       options.outDir = path.resolve(argv[(index += 1)]);
     } else if (arg === "--build-zig-core") {
       options.buildZigCore = true;
+    } else if (arg === "--build-server") {
+      options.buildServer = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
