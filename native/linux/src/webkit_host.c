@@ -166,6 +166,19 @@ static gboolean json_response_ok(const gchar *text) {
   return ok;
 }
 
+static gboolean storage_smoke_response_matches(const gchar *text, const gchar *value) {
+  JsonParser *parser = json_parser_new();
+  gboolean matches = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    JsonObject *result = json_object_get_object_member(root, "result");
+    JsonObject *stored = result == NULL ? NULL : json_object_get_object_member(result, "value");
+    matches = stored != NULL && g_strcmp0(json_object_get_string_member_with_default(stored, "smokeValue", ""), value) == 0;
+  }
+  g_object_unref(parser);
+  return matches;
+}
+
 static gchar *request_json(const gchar *id, const gchar *method, JsonNode *params) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -175,6 +188,34 @@ static gchar *request_json(const gchar *id, const gchar *method, JsonNode *param
   json_builder_add_string_value(builder, method);
   json_builder_set_member_name(builder, "params");
   json_builder_add_value(builder, json_node_copy(params));
+  json_builder_end_object(builder);
+
+  JsonGenerator *generator = json_generator_new();
+  JsonNode *root = json_builder_get_root(builder);
+  json_generator_set_root(generator, root);
+  gchar *text = json_generator_to_data(generator, NULL);
+  json_node_unref(root);
+  g_object_unref(generator);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *runtime_envelope_json(const gchar *app_id, const gchar *mount_token, const gchar *id, const gchar *method, JsonNode *params) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "mountToken");
+  json_builder_add_string_value(builder, mount_token);
+  json_builder_set_member_name(builder, "request");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method);
+  json_builder_set_member_name(builder, "params");
+  json_builder_add_value(builder, json_node_copy(params));
+  json_builder_end_object(builder);
   json_builder_end_object(builder);
 
   JsonGenerator *generator = json_generator_new();
@@ -284,6 +325,97 @@ static void run_core_smoke(WebKitHost *host) {
   smoke_success(host, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK");
 }
 
+static void maybe_finish_web_bridge_smoke(WebKitHost *host, const gchar *request_id, const gchar *response) {
+  if (request_id == NULL || response == NULL) {
+    return;
+  }
+  if (g_strcmp0(request_id, "linux_smoke_bridge_storage_set") == 0) {
+    json_response_ok(response) ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK") : smoke_failure(host, response);
+  } else if (g_strcmp0(request_id, "linux_smoke_bridge_storage_get") == 0) {
+    const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    json_response_ok(response) && storage_smoke_response_matches(response, value)
+        ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK")
+        : smoke_failure(host, response);
+  } else if (g_strcmp0(request_id, "linux_smoke_bridge_core_step") == 0) {
+    json_response_ok(response) ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK") : smoke_failure(host, response);
+  }
+}
+
+static void smoke_script_done(GObject *source_object, GAsyncResult *result, gpointer user_data) {
+  WebKitHost *host = user_data;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source_object), result, &error);
+  if (error != NULL) {
+    smoke_failure(host, error->message);
+    g_error_free(error);
+    return;
+  }
+  g_autofree gchar *status = value == NULL ? g_strdup("") : jsc_value_to_string(value);
+  if (g_strcmp0(status, "posted") != 0) {
+    smoke_failure(host, status);
+  }
+  g_clear_object(&value);
+}
+
+static void start_web_bridge_smoke(WebKitHost *host, const gchar *app_id, const gchar *id, const gchar *method, JsonNode *params) {
+  g_autofree gchar *envelope = runtime_envelope_json(app_id, "linux-webkit-smoke", id, method, params);
+  g_autofree gchar *script = g_strdup_printf(
+      "(function () {"
+      "var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.NativeAIPlatformBridge;"
+      "if (!handler || typeof handler.postMessage !== 'function') return 'missing-webkit-bridge';"
+      "handler.postMessage(%s);"
+      "return 'posted';"
+      "})()",
+      envelope);
+  webkit_web_view_evaluate_javascript(host->web_view, script, -1, NULL, NULL, NULL, smoke_script_done, host);
+}
+
+static void run_web_bridge_storage_smoke(WebKitHost *host, gboolean set_value) {
+  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  if (key == NULL || value == NULL) {
+    smoke_failure(host, "web bridge storage smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "key");
+  json_builder_add_string_value(builder, key);
+  if (set_value) {
+    json_builder_set_member_name(builder, "value");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "smokeValue");
+    json_builder_add_string_value(builder, value);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_object(builder);
+  JsonNode *params = json_builder_get_root(builder);
+  start_web_bridge_smoke(host, "notes-lite", set_value ? "linux_smoke_bridge_storage_set" : "linux_smoke_bridge_storage_get", set_value ? "storage.set" : "storage.get", params);
+  json_node_unref(params);
+  g_object_unref(builder);
+}
+
+static void run_web_bridge_core_smoke(WebKitHost *host) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "event");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "type");
+  json_builder_add_string_value(builder, "CreateTask");
+  json_builder_set_member_name(builder, "payload");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "title");
+  json_builder_add_string_value(builder, "Linux WebKit bridge smoke task");
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  JsonNode *params = json_builder_get_root(builder);
+  start_web_bridge_smoke(host, "task-workbench", "linux_smoke_bridge_core_step", "core.step", params);
+  json_node_unref(params);
+  g_object_unref(builder);
+}
+
 static void run_smoke(WebKitHost *host) {
   if (host->smoke_ran) {
     return;
@@ -302,6 +434,12 @@ static void run_smoke(WebKitHost *host) {
     run_storage_smoke(host, FALSE);
   } else if (g_strcmp0(action, "core-step") == 0) {
     run_core_smoke(host);
+  } else if (g_strcmp0(action, "bridge-storage-set") == 0) {
+    run_web_bridge_storage_smoke(host, TRUE);
+  } else if (g_strcmp0(action, "bridge-storage-get") == 0) {
+    run_web_bridge_storage_smoke(host, FALSE);
+  } else if (g_strcmp0(action, "bridge-core-step") == 0) {
+    run_web_bridge_core_smoke(host);
   } else {
     smoke_failure(host, "unknown smoke action");
   }
@@ -471,6 +609,7 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
   WebKitHost *host = user_data;
   const gchar *uri = webkit_web_view_get_uri(host->web_view);
   g_autofree gchar *payload = jsc_value_to_json(value, 0);
+  g_autofree gchar *request_id = NULL;
   gchar *response = NULL;
 
   if (!is_trusted_runtime_uri(uri)) {
@@ -487,7 +626,7 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
         response = bridge_error_text(NULL, "invalid_request", "Runtime bridge envelope must be an object");
       } else if (is_runtime_envelope(json_node_get_object(root_node))) {
         JsonObject *root = json_node_get_object(root_node);
-        g_autofree gchar *request_id = runtime_envelope_request_id(root);
+        request_id = runtime_envelope_request_id(root);
         if (!has_valid_runtime_envelope(root)) {
           response = bridge_error_text(request_id, "invalid_request", "Runtime bridge envelope requires appId, mountToken, and request");
         } else {
@@ -510,6 +649,7 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
     g_object_unref(parser);
   }
 
+  maybe_finish_web_bridge_smoke(host, request_id, response);
   JSCContext *js_context = jsc_value_get_context(value);
   JSCValue *reply_value = jsc_value_new_from_json(js_context, response);
   webkit_script_message_reply_return_value(reply, reply_value);

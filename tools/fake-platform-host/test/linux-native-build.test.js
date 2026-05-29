@@ -112,6 +112,22 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
     ...baseEnv,
     NATIVE_AI_LINUX_SMOKE: "core-step",
   });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-storage-set",
+    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+  });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-storage-get",
+    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+  });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-core-step",
+  });
 }
 
 function runSmoke(binaryPath, marker, env) {

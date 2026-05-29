@@ -125,6 +125,33 @@ bool JsonResponseOk(std::wstring const& response) {
   auto ok = parsed.GetNamedValue(L"ok");
   return ok.ValueType() == json::JsonValueType::Boolean && ok.GetBoolean();
 }
+
+bool StorageSmokeResponseMatches(std::wstring const& response, std::wstring const& value) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto result = parsed.GetNamedObject(L"result", json::JsonObject());
+  auto storedValue = result.GetNamedValue(L"value", json::JsonValue::CreateNullValue());
+  if (storedValue.ValueType() != json::JsonValueType::Object) {
+    return false;
+  }
+  auto stored = storedValue.GetObject();
+  return std::wstring(stored.GetNamedString(L"smokeValue", L"").c_str()) == value;
+}
+
+std::wstring ScriptStringResult(PCWSTR resultObjectAsJson) {
+  if (resultObjectAsJson == nullptr) {
+    return L"";
+  }
+  json::JsonValue parsed{nullptr};
+  if (!json::JsonValue::TryParse(resultObjectAsJson, parsed)) {
+    return resultObjectAsJson;
+  }
+  return parsed.ValueType() == json::JsonValueType::String
+      ? std::wstring(parsed.GetString().c_str())
+      : std::wstring(resultObjectAsJson);
+}
 }  // namespace
 
 WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
@@ -218,9 +245,11 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
   CoTaskMemFree(rawMessage);
 
   std::wstring response;
+  std::wstring smokeRequestId;
   json::JsonObject parsed{nullptr};
   if (json::JsonObject::TryParse(body, parsed) && IsRuntimeEnvelope(parsed)) {
     auto requestId = RuntimeEnvelopeRequestId(parsed);
+    smokeRequestId = requestId;
     if (!HasValidRuntimeEnvelope(parsed)) {
       response = BridgeResponse::Failure(
                      requestId,
@@ -249,6 +278,7 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
     response = bridge_->HandleJson(body, SandboxContextFromSource(sourceText));
   }
 
+  HandleWebBridgeSmokeResponse(smokeRequestId, response);
   webview_->PostWebMessageAsString(response.c_str());
 }
 
@@ -270,6 +300,12 @@ void WebViewHost::RunSmoke() {
     RunStorageSmoke(false);
   } else if (action == L"core-step") {
     RunCoreSmoke();
+  } else if (action == L"bridge-storage-set") {
+    RunWebBridgeStorageSmoke(true);
+  } else if (action == L"bridge-storage-get") {
+    RunWebBridgeStorageSmoke(false);
+  } else if (action == L"bridge-core-step") {
+    RunWebBridgeCoreSmoke();
   } else {
     SmokeFailure(L"unknown smoke action");
   }
@@ -338,6 +374,108 @@ void WebViewHost::RunCoreSmoke() {
     return;
   }
   SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK");
+}
+
+void WebViewHost::RunWebBridgeStorageSmoke(bool setValue) {
+  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  if (key.empty() || value.empty()) {
+    SmokeFailure(L"web bridge storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  json::JsonObject params;
+  params.Insert(L"key", json::JsonValue::CreateStringValue(key));
+  if (setValue) {
+    json::JsonObject stored;
+    stored.Insert(L"smokeValue", json::JsonValue::CreateStringValue(value));
+    params.Insert(L"value", stored);
+  }
+
+  StartWebBridgeSmoke(
+      L"notes-lite",
+      setValue ? L"windows_smoke_bridge_storage_set" : L"windows_smoke_bridge_storage_get",
+      setValue ? L"storage.set" : L"storage.get",
+      params);
+}
+
+void WebViewHost::RunWebBridgeCoreSmoke() {
+  json::JsonObject payload;
+  payload.Insert(L"title", json::JsonValue::CreateStringValue(L"Windows WebView bridge smoke task"));
+
+  json::JsonObject event;
+  event.Insert(L"type", json::JsonValue::CreateStringValue(L"CreateTask"));
+  event.Insert(L"payload", payload);
+
+  json::JsonObject params;
+  params.Insert(L"event", event);
+
+  StartWebBridgeSmoke(L"task-workbench", L"windows_smoke_bridge_core_step", L"core.step", params);
+}
+
+void WebViewHost::StartWebBridgeSmoke(
+    std::wstring const& appId,
+    std::wstring const& id,
+    std::wstring const& method,
+    json::JsonObject const& params) {
+  if (webview_ == nullptr) {
+    SmokeFailure(L"WebView2 is not initialized");
+    return;
+  }
+
+  json::JsonObject request;
+  request.Insert(L"id", json::JsonValue::CreateStringValue(id));
+  request.Insert(L"method", json::JsonValue::CreateStringValue(method));
+  request.Insert(L"params", params);
+
+  json::JsonObject envelope;
+  envelope.Insert(L"appId", json::JsonValue::CreateStringValue(appId));
+  envelope.Insert(L"mountToken", json::JsonValue::CreateStringValue(L"windows-webview-smoke"));
+  envelope.Insert(L"request", request);
+
+  std::wstring script =
+      LR"JS((function () {
+  if (!window.chrome || !window.chrome.webview || typeof window.chrome.webview.postMessage !== "function") {
+    return "missing-webview2-bridge";
+  }
+  window.chrome.webview.postMessage(JSON.stringify()JS" +
+      std::wstring(envelope.Stringify().c_str()) +
+      LR"JS());
+  return "posted";
+})())JS";
+
+  webview_->ExecuteScript(
+      script.c_str(),
+      Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+          [this](HRESULT errorCode, PCWSTR resultObjectAsJson) -> HRESULT {
+            if (FAILED(errorCode)) {
+              SmokeFailure(L"WebView2 bridge smoke script failed");
+              return S_OK;
+            }
+            auto result = ScriptStringResult(resultObjectAsJson);
+            if (result != L"posted") {
+              SmokeFailure(L"WebView2 bridge smoke script did not post: " + result);
+            }
+            return S_OK;
+          })
+          .Get());
+}
+
+void WebViewHost::HandleWebBridgeSmokeResponse(std::wstring const& requestId, std::wstring const& response) {
+  if (requestId == L"windows_smoke_bridge_storage_set") {
+    JsonResponseOk(response)
+        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK")
+        : SmokeFailure(response);
+  } else if (requestId == L"windows_smoke_bridge_storage_get") {
+    auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    JsonResponseOk(response) && StorageSmokeResponseMatches(response, value)
+        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK")
+        : SmokeFailure(response);
+  } else if (requestId == L"windows_smoke_bridge_core_step") {
+    JsonResponseOk(response)
+        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK")
+        : SmokeFailure(response);
+  }
 }
 
 void WebViewHost::SmokeSuccess(std::wstring const& marker) {

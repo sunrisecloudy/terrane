@@ -21,6 +21,14 @@ class WebViewHost {
   void RunSmoke();
   void RunStorageSmoke(bool setValue);
   void RunCoreSmoke();
+  void RunWebBridgeStorageSmoke(bool setValue);
+  void RunWebBridgeCoreSmoke();
+  void StartWebBridgeSmoke(
+      std::wstring const& appId,
+      std::wstring const& id,
+      std::wstring const& method,
+      winrt::Windows::Data::Json::JsonObject const& params);
+  void HandleWebBridgeSmokeResponse(std::wstring const& requestId, std::wstring const& response);
   void SmokeSuccess(std::wstring const& marker);
   void SmokeFailure(std::wstring const& message);
   std::wstring BridgeCall(

@@ -125,6 +125,22 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreDll }) {
     ...baseEnv,
     NATIVE_AI_WINDOWS_SMOKE: "core-step",
   });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-set",
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+  });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-get",
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+  });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-core-step",
+  });
 }
 
 function runSmoke(binaryPath, resultFile, marker, env) {
