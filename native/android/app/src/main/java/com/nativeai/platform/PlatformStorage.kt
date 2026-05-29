@@ -35,6 +35,28 @@ class PlatformStorage(context: Context) {
 
         ensureAppRow(request.context.appId)
         val valueJson = encodeJson(request.params.opt("value"))
+        val storageLimit = request.context.resourceBudget.optInt("maxStorageBytes", -1)
+        if (storageLimit >= 0) {
+            val projectedBytes = storageBytesAfterSet(request.context.appId, key, valueJson.toByteArray().size)
+            if (projectedBytes > storageLimit) {
+                return BridgeResponse.failure(
+                    request.id,
+                    "resource_budget_exceeded",
+                    "Storage write exceeds manifest.resourceBudget.maxStorageBytes",
+                    JSONObject(
+                        mapOf(
+                            "appId" to request.context.appId,
+                            "key" to key,
+                            "budget" to "maxStorageBytes",
+                            "current" to projectedBytes,
+                            "max" to storageLimit,
+                            "limit" to storageLimit,
+                            "projectedBytes" to projectedBytes,
+                        ),
+                    ),
+                ).toString()
+            }
+        }
         val values = ContentValues().apply {
             put("app_id", request.context.appId)
             put("key", key)
@@ -43,6 +65,16 @@ class PlatformStorage(context: Context) {
         }
         database.writableDatabase.insertWithOnConflict("app_storage", null, values, SQLiteDatabase.CONFLICT_REPLACE)
         return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true, "bytesWritten" to valueJson.toByteArray().size))).toString()
+    }
+
+    private fun storageBytesAfterSet(appId: String, key: String, valueBytes: Int): Int {
+        database.readableDatabase.rawQuery(
+            "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ? AND key != ?",
+            arrayOf(appId, key),
+        ).use { cursor ->
+            val currentOtherBytes = if (cursor.moveToFirst()) cursor.getInt(0) else 0
+            return currentOtherBytes + valueBytes
+        }
     }
 
     fun remove(request: BridgeRequest): String {

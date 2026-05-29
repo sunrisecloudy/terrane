@@ -63,6 +63,27 @@ json::JsonObject PlatformStorage::Set(BridgeRequest const& request) {
   EnsureAppRow(request.context.appId);
 
   auto value = request.params.HasKey(L"value") ? request.params.GetNamedValue(L"value").Stringify() : L"null";
+  auto valueUtf8 = WideToUtf8(value.c_str());
+  if (auto limit = request.context.resourceBudget.find(L"maxStorageBytes");
+      limit != request.context.resourceBudget.end()) {
+    auto projectedBytes = StorageBytesAfterSet(request.context.appId, key, static_cast<int64_t>(valueUtf8.size()));
+    if (projectedBytes > static_cast<int64_t>(limit->second)) {
+      json::JsonObject details;
+      details.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
+      details.Insert(L"key", json::JsonValue::CreateStringValue(key));
+      details.Insert(L"budget", json::JsonValue::CreateStringValue(L"maxStorageBytes"));
+      details.Insert(L"current", json::JsonValue::CreateNumberValue(static_cast<double>(projectedBytes)));
+      details.Insert(L"max", json::JsonValue::CreateNumberValue(static_cast<double>(limit->second)));
+      details.Insert(L"limit", json::JsonValue::CreateNumberValue(static_cast<double>(limit->second)));
+      details.Insert(L"projectedBytes", json::JsonValue::CreateNumberValue(static_cast<double>(projectedBytes)));
+      return BridgeResponse::Failure(
+          request.id,
+          request.hasId,
+          L"resource_budget_exceeded",
+          L"Storage write exceeds manifest.resourceBudget.maxStorageBytes",
+          details);
+    }
+  }
   sqlite3_stmt* statement = nullptr;
   sqlite3_prepare_v2(
       database_.handle(),
@@ -73,14 +94,29 @@ json::JsonObject PlatformStorage::Set(BridgeRequest const& request) {
       nullptr);
   sqlite3_bind_text(statement, 1, WideToUtf8(request.context.appId).c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, WideToUtf8(key).c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(statement, 3, WideToUtf8(value.c_str()).c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 3, valueUtf8.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_step(statement);
   sqlite3_finalize(statement);
 
   json::JsonObject result;
   result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true));
-  result.Insert(L"bytesWritten", json::JsonValue::CreateNumberValue(static_cast<double>(value.size())));
+  result.Insert(L"bytesWritten", json::JsonValue::CreateNumberValue(static_cast<double>(valueUtf8.size())));
   return BridgeResponse::Success(request.id, request.hasId, result);
+}
+
+int64_t PlatformStorage::StorageBytesAfterSet(std::wstring const& appId, std::wstring const& key, int64_t valueBytes) const {
+  sqlite3_stmt* statement = nullptr;
+  sqlite3_prepare_v2(
+      database_.handle(),
+      "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ? AND key != ?",
+      -1,
+      &statement,
+      nullptr);
+  sqlite3_bind_text(statement, 1, WideToUtf8(appId).c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, WideToUtf8(key).c_str(), -1, SQLITE_TRANSIENT);
+  auto currentOtherBytes = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return currentOtherBytes + valueBytes;
 }
 
 json::JsonObject PlatformStorage::Remove(BridgeRequest const& request) {

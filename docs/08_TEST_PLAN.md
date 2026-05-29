@@ -185,6 +185,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Example launcher visible.
 - JS bridge receives request.
 - Storage persists across relaunch.
+- Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Core step returns real Zig output.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -197,6 +198,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Runtime loads from bundle.
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
+- Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Core bridge works.
 - SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -210,6 +212,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - WebView loads runtime from assets.
 - JS bridge dispatches messages.
 - Storage persists.
+- Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -223,6 +226,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Runtime loads from resources/local folder.
 - Bridge dispatch works.
 - Storage under LocalAppData works.
+- Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Zig DLL loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local Windows build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available.
@@ -234,6 +238,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - WebKitGTK loads runtime.
 - Bridge dispatch works.
 - Storage under XDG data directory works.
+- Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Zig shared library loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local Linux build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.

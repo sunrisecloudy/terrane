@@ -78,6 +78,40 @@ struct NativeHostTests {
         #expect(denied.error?["code"] as? String == "permission_denied")
     }
 
+    @Test("SQLite storage enforces manifest maxStorageBytes")
+    func sqliteStorageEnforcesManifestMaxStorageBytes() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-storage-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let context = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            resourceBudget: ["maxStorageBytes": 8],
+            mountToken: "storage-budget-test-mount"
+        )
+
+        let storage = PlatformStorage(databaseURL: dbURL)
+        let response = storage.set(BridgeRequest(
+            id: "set-too-large",
+            method: "storage.set",
+            params: ["key": "notes-lite:note", "value": ["title": "this is too large"]],
+            context: context
+        ))
+        #expect(!response.ok)
+        #expect(response.error?["code"] as? String == "resource_budget_exceeded")
+        let details = try #require(response.error?["details"] as? [String: Any])
+        #expect(details["budget"] as? String == "maxStorageBytes")
+        #expect(jsonInt(details["current"]) > 8)
+        #expect(jsonInt(details["max"]) == 8)
+        #expect(jsonInt(details["limit"]) == 8)
+    }
+
     @Test("SQLite app registry rolls back active version and preserves storage")
     func sqliteAppRegistryRollsBackActiveVersion() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

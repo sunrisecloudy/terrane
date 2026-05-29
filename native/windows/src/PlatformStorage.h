@@ -3,6 +3,7 @@
 #include "BridgeTypes.h"
 #include "PlatformDatabase.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <winsqlite/winsqlite3.h>
 
@@ -24,6 +25,7 @@ class PlatformStorage {
 
  private:
   void EnsureAppRow(std::wstring const& appId);
+  int64_t StorageBytesAfterSet(std::wstring const& appId, std::wstring const& key, int64_t valueBytes) const;
   winrt::Windows::Data::Json::JsonObject storagePrefixFailure(BridgeRequest const& request, std::wstring const& key);
   bool HasStoragePrefix(BridgeRequest const& request, std::wstring const& key) const;
 

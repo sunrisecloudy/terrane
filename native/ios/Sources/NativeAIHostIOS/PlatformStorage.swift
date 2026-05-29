@@ -39,6 +39,25 @@ final class PlatformStorage {
         }
         ensureAppRow(request.context.appId)
         let value = encodeJson(request.params["value"] ?? NSNull())
+        if let limit = request.context.resourceBudget["maxStorageBytes"] {
+            let projectedBytes = storageBytesAfterSet(appId: request.context.appId, key: key, valueBytes: value.utf8.count)
+            if projectedBytes > limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Storage write exceeds manifest.resourceBudget.maxStorageBytes",
+                    details: [
+                        "appId": request.context.appId,
+                        "key": key,
+                        "budget": "maxStorageBytes",
+                        "current": projectedBytes,
+                        "max": limit,
+                        "limit": limit,
+                        "projectedBytes": projectedBytes
+                    ]
+                )
+            }
+        }
         let sql = "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at"
         var statement: OpaquePointer?
         sqlite3_prepare_v2(db, sql, -1, &statement, nil)
@@ -49,6 +68,17 @@ final class PlatformStorage {
         bind(statement, 4, ISO8601DateFormatter().string(from: Date()))
         sqlite3_step(statement)
         return .success(id: request.id, result: ["ok": true, "bytesWritten": value.utf8.count])
+    }
+
+    private func storageBytesAfterSet(appId: String, key: String, valueBytes: Int) -> Int {
+        let sql = "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ? AND key != ?"
+        var statement: OpaquePointer?
+        sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, key)
+        let currentOtherBytes = sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
+        return currentOtherBytes + valueBytes
     }
 
     func remove(_ request: BridgeRequest) -> BridgeResponse {

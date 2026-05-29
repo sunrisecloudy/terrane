@@ -18,6 +18,33 @@ static gboolean has_storage_prefix(const BridgeRequest *request, const gchar *ke
   return g_str_has_prefix(key, request->context.storage_prefix);
 }
 
+static gboolean resource_budget_limit(const BridgeRequest *request, const gchar *name, guint *out) {
+  if (request == NULL || request->context.resource_budget == NULL) {
+    return FALSE;
+  }
+  gpointer value = NULL;
+  if (!g_hash_table_lookup_extended(request->context.resource_budget, name, NULL, &value)) {
+    return FALSE;
+  }
+  *out = GPOINTER_TO_UINT(value);
+  return TRUE;
+}
+
+static gint64 storage_bytes_after_set(PlatformStorage *storage, const gchar *app_id, const gchar *key, gint64 value_bytes) {
+  sqlite3_stmt *statement = NULL;
+  sqlite3_prepare_v2(
+      storage->db,
+      "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ? AND key != ?",
+      -1,
+      &statement,
+      NULL);
+  sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT);
+  gint64 current_other_bytes = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return current_other_bytes + value_bytes;
+}
+
 static JsonNode *storage_prefix_failure(const BridgeRequest *request, const gchar *key) {
   JsonObject *details = json_object_new();
   json_object_set_string_member(details, "key", key);
@@ -87,6 +114,22 @@ JsonNode *platform_storage_set(PlatformStorage *storage, const BridgeRequest *re
   JsonGenerator *generator = json_generator_new();
   json_generator_set_root(generator, json_object_get_member(request->params, "value"));
   g_autofree gchar *value_json = json_generator_to_data(generator, NULL);
+  guint limit = 0;
+  if (resource_budget_limit(request, "maxStorageBytes", &limit)) {
+    gint64 projected_bytes = storage_bytes_after_set(storage, request->context.app_id, key, (gint64)strlen(value_json));
+    if (projected_bytes > (gint64)limit) {
+      JsonObject *details = json_object_new();
+      json_object_set_string_member(details, "appId", request->context.app_id);
+      json_object_set_string_member(details, "key", key);
+      json_object_set_string_member(details, "budget", "maxStorageBytes");
+      json_object_set_int_member(details, "current", projected_bytes);
+      json_object_set_int_member(details, "max", limit);
+      json_object_set_int_member(details, "limit", limit);
+      json_object_set_int_member(details, "projectedBytes", projected_bytes);
+      g_object_unref(generator);
+      return bridge_failure(request, "resource_budget_exceeded", "Storage write exceeds manifest.resourceBudget.maxStorageBytes", details);
+    }
+  }
   sqlite3_stmt *statement = NULL;
   sqlite3_prepare_v2(
       storage->db,
