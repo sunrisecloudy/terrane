@@ -504,6 +504,79 @@ struct NativeHostTests {
         #expect(bridgeCallsQuery.statusCode == 200)
         #expect(bridgeCallsQuery.body.contains(#""rows":[]"#))
 
+        let controlStorageSet = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.storage_set","args":{"appId":"notes-lite","key":"notes-lite:control-effect","value":{"title":"Seeded by control"}}}"#
+        )
+        #expect(controlStorageSet.statusCode == 200)
+        #expect(controlStorageSet.body.contains(#""ok":true"#))
+
+        let controlStorageGet = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.storage_get","args":{"appId":"notes-lite","key":"notes-lite:control-effect"}}"#
+        )
+        #expect(controlStorageGet.statusCode == 200)
+        #expect(controlStorageGet.body.contains("Seeded by control"))
+
+        let bridgeCallAssert = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.assert_bridge_call","args":{"appId":"notes-lite","method":"storage.set"}}"#
+        )
+        #expect(bridgeCallAssert.statusCode == 200)
+        #expect(bridgeCallAssert.body.contains(#""method":"storage.set""#))
+
+        let runtimeBridgeCalls = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.bridge_calls","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(runtimeBridgeCalls.statusCode == 200)
+        #expect(runtimeBridgeCalls.body.contains(#""method":"storage.get""#))
+        #expect(runtimeBridgeCalls.body.contains(#""method":"storage.set""#))
+
+        let noConsoleErrors = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.assert_no_console_errors","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(noConsoleErrors.statusCode == 200)
+        #expect(noConsoleErrors.body.contains(#""errors":0"#))
+
+        let clearedLogs = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.clear_logs","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(clearedLogs.statusCode == 200)
+        #expect(clearedLogs.body.contains(#""bridgeCallsCleared":2"#))
+
+        let bridgeCallsAfterClear = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.bridge_calls","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(bridgeCallsAfterClear.statusCode == 200)
+        #expect(bridgeCallsAfterClear.body.contains(#""bridgeCalls":[]"#))
+
+        let storageReset = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.storage_reset","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(storageReset.statusCode == 200)
+        #expect(storageReset.body.contains(#""clearedStorageKeys":"#))
+
         let coreEventsQuery = try await httpRequest(
             commandURL,
             method: "POST",
@@ -552,7 +625,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 31)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 39)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

@@ -298,6 +298,24 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: args["appId"] as? String))
         case "runtime.resource_usage":
             sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: args["appId"] as? String))
+        case "runtime.storage_get":
+            handleRuntimeStorageGet(connection, request, args: args, startedAt: startedAt)
+        case "runtime.storage_set":
+            handleRuntimeStorageSet(connection, request, args: args, startedAt: startedAt)
+        case "runtime.storage_reset", "platform.reset_webapp":
+            handleRuntimeStorageReset(connection, request, args: args, startedAt: startedAt)
+        case "runtime.bridge_calls":
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "bridgeCalls": bridgeCallRows(appId: args["appId"] as? String),
+            ])
+        case "runtime.clear_logs":
+            sendAccepted(connection, request, startedAt: startedAt, result: clearRuntimeLogs(appId: args["appId"] as? String))
+        case "runtime.console_logs":
+            sendAccepted(connection, request, startedAt: startedAt, result: consoleLogs(appId: args["appId"] as? String))
+        case "runtime.assert_bridge_call":
+            handleBridgeCallAssertion(connection, request, args: args, startedAt: startedAt)
+        case "runtime.assert_no_console_errors":
+            handleNoConsoleErrorsAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
@@ -582,6 +600,88 @@ final class DevControlPlane: @unchecked Sendable {
             "appId": appId,
             "installId": installId ?? NSNull(),
             "report": installReport(appId: appId, installId: installId) ?? NSNull(),
+        ])
+    }
+
+    private func handleRuntimeStorageGet(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let key = args["key"] as? String, !key.isEmpty
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.storage_get requires appId and key", startedAt: startedAt)
+            return
+        }
+        let response = PlatformStorage(databaseURL: databaseURL).get(BridgeRequest(
+            id: args["id"] as? String ?? "control_storage_get",
+            method: "storage.get",
+            params: ["key": key, "defaultValue": args["defaultValue"] ?? NSNull()],
+            context: controlStorageContext(appId: appId, permissions: ["storage.read"])
+        ))
+        recordBridgeCall(appId: appId, method: "storage.get", params: ["key": key], response: response, startedAt: startedAt)
+        sendAccepted(connection, request, startedAt: startedAt, result: response.asDictionary())
+    }
+
+    private func handleRuntimeStorageSet(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let key = args["key"] as? String, !key.isEmpty
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.storage_set requires appId and key", startedAt: startedAt)
+            return
+        }
+        let response = PlatformStorage(databaseURL: databaseURL).set(BridgeRequest(
+            id: args["id"] as? String ?? "control_storage_set",
+            method: "storage.set",
+            params: ["key": key, "value": args["value"] ?? NSNull()],
+            context: controlStorageContext(appId: appId, permissions: ["storage.write"])
+        ))
+        recordBridgeCall(appId: appId, method: "storage.set", params: ["key": key, "value": args["value"] ?? NSNull()], response: response, startedAt: startedAt)
+        sendAccepted(connection, request, startedAt: startedAt, result: response.asDictionary())
+    }
+
+    private func handleRuntimeStorageReset(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "\(request.toolName) requires appId", startedAt: startedAt)
+            return
+        }
+        guard let result = resetWebapp(appId: appId) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Webapp storage could not be reset", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleBridgeCallAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let method = args["method"] as? String, !method.isEmpty
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.assert_bridge_call requires appId and method", startedAt: startedAt)
+            return
+        }
+        let rows = bridgeCallRows(appId: appId).filter { ($0["method"] as? String) == method }
+        guard let latest = rows.last else {
+            sendRejected(connection, request, status: 400, code: "assertion_failed", message: "Expected bridge call was not recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "method": method,
+            "count": rows.count,
+            "latest": latest,
+        ])
+    }
+
+    private func handleNoConsoleErrorsAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let errors = consoleLogRows(appId: args["appId"] as? String).filter { row in
+            let params = jsonDictionary(row["params_json"] as? String ?? "") ?? [:]
+            return (params["level"] as? String) == "error"
+        }
+        guard errors.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "assertion_failed", message: "Console errors were recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "errors": 0,
         ])
     }
 
@@ -960,6 +1060,88 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func resetWebapp(appId: String) -> [String: Any]? {
+        let storageKeys = scalarInt("SELECT COUNT(*) FROM app_storage WHERE app_id = ?", values: [appId])
+        let snapshot = createSnapshot(appId: appId, type: "manual", sessionId: runtimeSessionId(appId: appId))
+        guard deleteStorage(appId: appId) else {
+            return nil
+        }
+        return [
+            "ok": true,
+            "appId": appId,
+            "snapshotId": snapshot?["snapshotId"] ?? NSNull(),
+            "clearedStorageKeys": storageKeys,
+        ]
+    }
+
+    private func bridgeCallRows(appId: String?) -> [[String: Any]] {
+        tableRows(
+            table: "bridge_calls",
+            columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "params_json", "result_json", "error_json", "duration_ms", "created_at"],
+            orderBy: "created_at",
+            filterColumn: "app_id",
+            filterValue: appId
+        )
+    }
+
+    private func consoleLogs(appId: String?) -> [String: Any] {
+        [
+            "appId": appId ?? NSNull(),
+            "logs": consoleLogRows(appId: appId).map { row in
+                [
+                    "bridgeCallId": row["bridge_call_id"] ?? NSNull(),
+                    "appId": row["app_id"] ?? NSNull(),
+                    "params": jsonValue(row["params_json"] as? String),
+                    "createdAt": row["created_at"] ?? NSNull(),
+                ]
+            },
+        ]
+    }
+
+    private func consoleLogRows(appId: String?) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        let sql = appId == nil
+            ? "SELECT bridge_call_id, app_id, params_json, created_at FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at LIMIT 100"
+            : "SELECT bridge_call_id, app_id, params_json, created_at FROM bridge_calls WHERE method = 'app.log' AND app_id = ? ORDER BY created_at LIMIT 100"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        if let appId {
+            bind(statement, 1, appId)
+        }
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append([
+                "bridge_call_id": columnText(statement, 0),
+                "app_id": columnNullableText(statement, 1) ?? NSNull(),
+                "params_json": columnNullableText(statement, 2) ?? NSNull(),
+                "created_at": columnText(statement, 3),
+            ])
+        }
+        return rows
+    }
+
+    private func clearRuntimeLogs(appId: String?) -> [String: Any] {
+        if let appId {
+            return [
+                "ok": true,
+                "appId": appId,
+                "bridgeCallsCleared": deleteRows("DELETE FROM bridge_calls WHERE app_id = ?", values: [appId]),
+                "coreEventsCleared": deleteRows("DELETE FROM core_events WHERE app_id = ?", values: [appId]),
+                "coreActionsCleared": deleteRows("DELETE FROM core_actions WHERE app_id = ?", values: [appId]),
+            ]
+        }
+        return [
+            "ok": true,
+            "appId": NSNull(),
+            "bridgeCallsCleared": deleteRows("DELETE FROM bridge_calls"),
+            "coreEventsCleared": deleteRows("DELETE FROM core_events"),
+            "coreActionsCleared": deleteRows("DELETE FROM core_actions"),
+        ]
+    }
+
     private func exportDebugBundle() -> [String: Any] {
         let exportId = "export_\(UUID().uuidString.lowercased())"
         let createdAt = Self.now()
@@ -1179,6 +1361,70 @@ final class DevControlPlane: @unchecked Sendable {
         return rows
     }
 
+    private func controlStorageContext(appId: String, permissions: Set<String>) -> AppSandboxContext {
+        AppSandboxContext(
+            appId: appId,
+            approvedPermissions: permissions,
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: controlSessionId
+        )
+    }
+
+    private func recordBridgeCall(
+        appId: String,
+        method: String,
+        params: [String: Any],
+        response: BridgeResponse,
+        startedAt: Date
+    ) {
+        guard let db = database.handle else { return }
+        let sessionId = runtimeSessionId(appId: appId)
+        let active = activeAppRecord(appId: appId)
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, "bridge_\(UUID().uuidString.lowercased())")
+        bind(statement, 2, sessionId)
+        bind(statement, 3, appId)
+        bindNullable(statement, 4, active?.installId)
+        bind(statement, 5, method)
+        bind(statement, 6, jsonBody(params))
+        bindNullable(statement, 7, response.result.map(jsonString))
+        bindNullable(statement, 8, response.error.map(jsonBody))
+        sqlite3_bind_int64(statement, 9, Int64(Date().timeIntervalSince(startedAt) * 1000))
+        bind(statement, 10, Self.now())
+        sqlite3_step(statement)
+    }
+
+    private func runtimeSessionId(appId: String) -> String {
+        let sessionId = "runtime_\(controlSessionId)"
+        guard let db = database.handle else { return sessionId }
+        let active = activeAppRecord(appId: appId)
+        let now = Self.now()
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json)
+        VALUES (?, 'macos', 'macos', '0.1.0', ?, ?, ?, 'running', ?, '{"source":"native-macos-control"}')
+        ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, active_install_id = excluded.active_install_id, status = 'running'
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return sessionId
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, sessionId)
+        bind(statement, 2, appId)
+        bindNullable(statement, 3, active?.installId)
+        bind(statement, 4, now)
+        bind(statement, 5, jsonBody(runtimeCapabilities(appId: appId)))
+        sqlite3_step(statement)
+        return sessionId
+    }
+
     private func recordBackupExport(_ document: [String: Any], contentHash: String, createdAt: String) {
         guard let db = database.handle else { return }
         var statement: OpaquePointer?
@@ -1283,6 +1529,22 @@ final class DevControlPlane: @unchecked Sendable {
         return status == SQLITE_OK
     }
 
+    private func deleteRows(_ sql: String, values: [String] = []) -> Int {
+        guard let db = database.handle else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            bind(statement, Int32(index + 1), value)
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return 0
+        }
+        return Int(sqlite3_changes(db))
+    }
+
     private func jsonDictionary(_ text: String) -> [String: Any]? {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1290,6 +1552,19 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         return object
+    }
+
+    private func jsonString(_ value: Any) -> String {
+        if let object = value as? [String: Any] {
+            return jsonBody(object)
+        }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return jsonBody(["value": value])
+        }
+        return string
     }
 
     private func jsonValue(_ text: String?) -> Any {

@@ -71,6 +71,7 @@
 - [x] Debug dev control plane exports `db.export_debug_bundle` artifacts and records them in `backup_exports`.
 - [x] Debug dev control plane persists, reads, and restores runtime snapshots for app storage.
 - [x] Debug dev control plane lists installed webapps/versions and rolls back app registry versions.
+- [x] Debug dev control plane supports runtime storage get/set/reset, bridge-call inspection/assertion, and log clearing.
 
 ### Android
 
