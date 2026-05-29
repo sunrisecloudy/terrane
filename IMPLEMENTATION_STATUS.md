@@ -128,9 +128,9 @@ Status snapshot: **2026-05-29**.
 | `tests/fixtures/db/` | partial (schema-shaped app/install/runtime/test/control fixture records include control audit fields plus network, dialog, and fault-injection effect mocks) |
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | partial (6 checked-in golden fixtures are schema-validated; the five micro-test style flows covering storage forms, network policy, file dialogs/core, core.step replay, and large-table budgets execute through the fake-host micro-test runner) |
-| `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
+| `tests/micro/` | partial (5 micro-tests, one per bundled example app, execute through the fake-host micro-test runner and persist `test_runs`) |
 | `tests/mutation/` | partial (37 mutations now exercised by fake-host validator/runtime tests, including direct network/storage/native-bridge APIs, sendBeacon, Cookie Store API use, appId bridge-param rejection, service workers, sandbox escape APIs, inline-style CSP drift, app script/stylesheet tag drift, platform-generated artifact rejection, invalid manifests/capabilities/resource budgets, tampering, and runtime-denied paths) |
-| `tests/accessibility/` | fixtures |
+| `tests/accessibility/` | partial (checked-in accessibility microtests execute against fake-host controls; every example app passes the fake-host static accessibility audit) |
 | `tests/performance/` | partial (fake-host latency harness reports p50/p95 for storage and core bridge round-trips) |
 | `tests/security/malicious-packages/` | partial (12 fixtures exercised by fake-host security tests; static rejection plus runtime-denied storage-prefix and budget paths) |
 | `tests/db/` | partial (9 checked-in dbtest fixtures are exercised by fake-host DB contract tests, including schema, install, storage, runtime logging, rollback, migration, backup, and corruption paths) |
