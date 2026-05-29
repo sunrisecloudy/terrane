@@ -6,6 +6,12 @@
     "runtimeVersion": "0.1.0",
     "entry": "index.html",
     "description": "Golden minimal counter fixture.",
+    "contentRating": {
+      "scheme": "app-store",
+      "label": "4+",
+      "minimumAge": 4,
+      "descriptors": []
+    },
     "permissions": [
       "app.log"
     ],
@@ -49,7 +55,7 @@
     },
     {
       "path": "index.html",
-      "content": "<button data-testid=inc>+</button><output data-testid=count>0</output><script src=app.js></script>"
+      "content": "<!doctype html><html><head><title>Minimal Counter</title><link rel=\"stylesheet\" href=\"styles.css\"></head><body><main><h1 data-testid=\"counter-title\">Minimal Counter</h1><button data-testid=\"inc\">+</button><output data-testid=\"count\">0</output></main><script src=\"app.js\"></script></body></html>"
     },
     {
       "path": "styles.css",
@@ -57,7 +63,7 @@
     },
     {
       "path": "app.js",
-      "content": "let n=0;document.querySelector('[data-testid=inc]').onclick=()=>{n++;document.querySelector('[data-testid=count]').textContent=String(n)};"
+      "content": "let n=0;document.querySelector('[data-testid=\"inc\"]').onclick=()=>{n++;document.querySelector('[data-testid=\"count\"]').textContent=String(n)};"
     }
   ]
 }

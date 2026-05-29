@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { examplesDir } from "../src/paths.js";
+import { examplesDir, repoRoot } from "../src/paths.js";
 import { validatePackage, validateSourceSnippet } from "../src/package-validator.js";
 
 test("all canonical example packages validate", () => {
@@ -15,6 +15,21 @@ test("all canonical example packages validate", () => {
     assert.equal(result.ok, true, `${app}: ${JSON.stringify(result.errors)}`);
     assert.equal(result.manifest.id, app);
   }
+});
+
+test("golden package fixtures validate as source packages", () => {
+  const goldenPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, "tests", "golden", "minimal-counter.package.json"), "utf8"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "golden-package-"));
+  for (const file of goldenPackage.files) {
+    fs.writeFileSync(
+      path.join(dir, file.path),
+      file.path === "manifest.json" ? `${JSON.stringify(goldenPackage.manifest, null, 2)}\n` : file.content,
+    );
+  }
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.manifest.id, "minimal-counter");
 });
 
 test("forbidden JS source snippets are rejected with policy codes", () => {
