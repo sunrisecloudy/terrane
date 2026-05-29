@@ -125,6 +125,7 @@ Options:
   --port <n>               default 7878
   --bind <addr>            default 127.0.0.1
   --db-file <path>         use file-backed SQLite instead of :memory:
+  --key-file <path>        persistent Ed25519 platform key file (default docs/17 cache path)
   --seed-bundled           preload bundled example apps with trustLevel="bundled" (CLI default)
   --no-seed-bundled        start the CLI with an empty app registry
   --allow-runtime-mismatch dev override for runtime version compat

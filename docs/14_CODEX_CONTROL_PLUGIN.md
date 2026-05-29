@@ -68,7 +68,7 @@ Codex should never call generated app APIs directly. It calls MCP tools. The MCP
 
 | Tool | Purpose |
 |---|---|
-| `platform.health` | Verify MCP server and host control plane are reachable. |
+| `platform.health` | Verify MCP server and host control plane are reachable and report runtime/signing-key metadata. |
 | `platform.list_targets` | List configured host targets: macos, ios-simulator, android-emulator, windows, linux, server. |
 | `platform.launch` | Launch or attach to a dev host. |
 | `platform.stop` | Stop a host session. |

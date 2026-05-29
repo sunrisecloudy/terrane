@@ -2,12 +2,14 @@ import http from "node:http";
 import fs from "node:fs";
 import { controlTokenPath, generateControlToken, writeControlTokenFile } from "../../control-token.js";
 import { FakePlatformHost } from "./fake-host.js";
+import { defaultPlatformKeyFile } from "./signing.js";
 
 export async function startFakePlatformHost(options = {}) {
   const controlToken = options.controlToken ?? generateControlToken();
   const host = new FakePlatformHost({
     dbFile: options.dbFile ?? ":memory:",
     controlToken,
+    keyFile: options.keyFile ?? false,
   });
 
   if (options.seedBundled) {
@@ -46,6 +48,7 @@ function parseArgs(args) {
     bind: "127.0.0.1",
     dbFile: ":memory:",
     controlToken: process.env.PLATFORM_CONTROL_TOKEN ?? generateControlToken(),
+    keyFile: defaultPlatformKeyFile(),
     tokenFile: controlTokenPath({ env: process.env }),
     seedBundled: true,
   };
@@ -55,6 +58,7 @@ function parseArgs(args) {
     if (arg === "--port") options.port = Number(args[++index]);
     else if (arg === "--bind") options.bind = args[++index];
     else if (arg === "--db-file") options.dbFile = args[++index];
+    else if (arg === "--key-file") options.keyFile = args[++index];
     else if (arg === "--token-file") options.tokenFile = args[++index];
     else if (arg === "--control-token") options.controlToken = args[++index];
     else if (arg === "--seed-bundled") options.seedBundled = true;

@@ -7,7 +7,7 @@ import { bridgeError, errorBody, PlatformError } from "./errors.js";
 import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
 import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
-import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "./signing.js";
+import { loadOrCreatePlatformKeypair, publicKeyDescriptor, signPackage, verifyInstalledPackage } from "./signing.js";
 import { TestRunner } from "./test-runner.js";
 import { canonicalJson, prettyJson, sha256 } from "./util.js";
 
@@ -20,6 +20,7 @@ export class FakePlatformHost {
     capabilityOverrides = {},
     browserSmokeRunner = null,
     smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static",
+    keyFile = false,
   } = {}) {
     this.database = new PlatformDatabase({ dbFile });
     this.core = new CoreEngine();
@@ -35,7 +36,8 @@ export class FakePlatformHost {
         }),
       smokeRunner,
     });
-    this.keypair = createPlatformKeypair();
+    this.keypair = loadOrCreatePlatformKeypair({ keyFile });
+    this.keyFile = keyFile ?? null;
     this.controlToken = controlToken;
     this.dbFile = dbFile;
     this.runtimeVersion = runtimeVersion;
@@ -55,6 +57,7 @@ export class FakePlatformHost {
       version: this.runtimeVersion,
       db: this.dbFile === ":memory:" ? "sqlite-mem" : "sqlite-file",
       keyId: this.keypair.keyId,
+      signingPublicKey: publicKeyDescriptor(this.keypair),
       capabilities: this.capabilities(),
     };
   }

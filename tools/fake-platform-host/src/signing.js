@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { canonicalJson, sha256 } from "./util.js";
 import { PlatformError } from "./errors.js";
 
@@ -6,6 +9,84 @@ const SIGNATURE_PREFIX = "native-ai-webapp/sig/v1";
 
 export function createPlatformKeypair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  return keypairFromKeys({ publicKey, privateKey });
+}
+
+export function defaultPlatformKeyFile({ env = process.env, homeDir = os.homedir() } = {}) {
+  return path.join(env.XDG_CACHE_HOME || path.join(homeDir, ".cache"), "native-ai-webapp", "platform.key");
+}
+
+export function loadOrCreatePlatformKeypair({ keyFile = defaultPlatformKeyFile() } = {}) {
+  if (keyFile === false || keyFile === null) {
+    return createPlatformKeypair();
+  }
+
+  const loaded = loadPlatformKeypair(keyFile);
+  if (loaded) {
+    return loaded;
+  }
+
+  const keypair = createPlatformKeypair();
+  try {
+    persistPlatformKeypair(keypair, keyFile);
+  } catch {
+    // Keep constrained dev sandboxes usable if the default cache path is not writable.
+  }
+  return keypair;
+}
+
+export function publicKeyDescriptor(keypair) {
+  const publicDer = keypair.publicKey.export({ type: "spki", format: "der" });
+  return {
+    algorithm: "ed25519",
+    keyId: keypair.keyId,
+    format: "spki-der",
+    publicKey: publicDer.toString("base64"),
+  };
+}
+
+function loadPlatformKeypair(keyFile) {
+  if (!fs.existsSync(keyFile)) {
+    return null;
+  }
+  try {
+    const record = JSON.parse(fs.readFileSync(keyFile, "utf8"));
+    if (record.algorithm !== "ed25519" || typeof record.privateKeyPkcs8 !== "string") {
+      return null;
+    }
+    const privateKey = crypto.createPrivateKey({
+      key: Buffer.from(record.privateKeyPkcs8, "base64"),
+      format: "der",
+      type: "pkcs8",
+    });
+    const publicKey = record.publicKeySpki
+      ? crypto.createPublicKey({
+          key: Buffer.from(record.publicKeySpki, "base64"),
+          format: "der",
+          type: "spki",
+        })
+      : crypto.createPublicKey(privateKey);
+    return keypairFromKeys({ publicKey, privateKey });
+  } catch {
+    return null;
+  }
+}
+
+function persistPlatformKeypair(keypair, keyFile) {
+  fs.mkdirSync(path.dirname(keyFile), { recursive: true, mode: 0o700 });
+  const publicDer = keypair.publicKey.export({ type: "spki", format: "der" });
+  const privateDer = keypair.privateKey.export({ type: "pkcs8", format: "der" });
+  const record = {
+    algorithm: "ed25519",
+    publicKeySpki: publicDer.toString("base64"),
+    privateKeyPkcs8: privateDer.toString("base64"),
+    createdAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(keyFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(keyFile, 0o600);
+}
+
+function keypairFromKeys({ publicKey, privateKey }) {
   const publicDer = publicKey.export({ type: "spki", format: "der" });
   return {
     publicKey,

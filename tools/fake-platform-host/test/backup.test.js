@@ -5,8 +5,8 @@ import { FakePlatformHost } from "../src/fake-host.js";
 import { examplesDir } from "../src/paths.js";
 
 test("backup export/import round-trips active app and storage with re-sign", async () => {
-  const source = new FakePlatformHost();
-  const target = new FakePlatformHost();
+  const source = new FakePlatformHost({ keyFile: false });
+  const target = new FakePlatformHost({ keyFile: false });
   try {
     const install = source.installPackage(path.join(examplesDir, "notes-lite"));
     await source.runControlCommand("runtime.storage_set", {

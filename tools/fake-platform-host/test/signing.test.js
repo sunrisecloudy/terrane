@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { PlatformError } from "../src/errors.js";
 import { FakePlatformHost } from "../src/fake-host.js";
 import { examplesDir } from "../src/paths.js";
 import { readPackage } from "../src/package-validator.js";
-import { createPlatformKeypair, signPackage, verifyInstalledPackage } from "../src/signing.js";
+import {
+  createPlatformKeypair,
+  loadOrCreatePlatformKeypair,
+  publicKeyDescriptor,
+  signPackage,
+  verifyInstalledPackage,
+} from "../src/signing.js";
 
 test("signPackage emits spec-shaped Ed25519 signature and verifies", () => {
   const keypair = createPlatformKeypair();
@@ -28,6 +36,27 @@ test("signPackage emits spec-shaped Ed25519 signature and verifies", () => {
     publicKey: keypair.publicKey,
   });
   assert.equal(verified.ok, true);
+});
+
+test("fake-host platform signing key persists when a key file is configured", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-keypair-"));
+  const keyFile = path.join(tempDir, "platform.key");
+  try {
+    const first = loadOrCreatePlatformKeypair({ keyFile });
+    const second = loadOrCreatePlatformKeypair({ keyFile });
+
+    assert.equal(second.keyId, first.keyId);
+    assert.match(first.keyId, /^platform-host:fake-host:[a-f0-9]{16}$/);
+    assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600);
+
+    const descriptor = publicKeyDescriptor(second);
+    assert.equal(descriptor.keyId, second.keyId);
+    assert.equal(descriptor.algorithm, "ed25519");
+    assert.equal(descriptor.format, "spki-der");
+    assert.match(descriptor.publicKey, /^[A-Za-z0-9+/]+=*$/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("verified mount path rejects tampered installed files", async () => {
@@ -55,6 +84,10 @@ test("verified mount path rejects tampered installed files", async () => {
 test("control tools expose signing and policy audit", async () => {
   const host = new FakePlatformHost();
   try {
+    const health = host.health();
+    assert.equal(health.signingPublicKey.keyId, host.keypair.keyId);
+    assert.equal(health.signingPublicKey.algorithm, "ed25519");
+
     const packagePath = path.join(examplesDir, "notes-lite");
     const signed = await host.runControlCommand("platform.sign_webapp_package", { packagePath });
     assert.equal(signed.signature.appId, "notes-lite");

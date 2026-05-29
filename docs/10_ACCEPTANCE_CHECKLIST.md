@@ -167,6 +167,7 @@
 - [x] All example manifests include `dataVersion`, `capabilities`, `resourceBudget`, and `networkPolicy`.
 - [x] All example packages validate against updated schemas.
 - [x] Package install creates a signature and install report.
+- [x] Fake host persists a configured Ed25519 platform key file and exposes public key metadata.
 - [x] Runtime refuses tampered installed packages.
 - [x] App registry stores immutable versions and active-version pointer.
 - [x] Rollback works on fake-host and at least one desktop target.
