@@ -22,7 +22,7 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   );
   assert.deepEqual(
     report.scenarios.map((scenario) => scenario.id),
-    ["network_timeout", "bridge_throughput", "install_uninstall_loop"],
+    ["network_timeout", "bridge_throughput", "open_all_examples_memory", "install_uninstall_loop"],
   );
 
   for (const metric of report.metrics) {
@@ -43,6 +43,18 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   assert.equal(throughput.ok, true);
   assert.equal(throughput.calls, 10);
   assert.equal(throughput.callsPerMinute >= throughput.targetCallsPerMinute, true);
+
+  const memory = report.scenarios.find((scenario) => scenario.id === "open_all_examples_memory");
+  assert.equal(memory.ok, true);
+  assert.equal(memory.appCount, 5);
+  assert.equal(memory.sessionDelta, 5);
+  assert.deepEqual(memory.openedAppIds.sort(), [
+    "api-dashboard",
+    "core-replay-lab",
+    "file-transformer",
+    "notes-lite",
+    "task-workbench",
+  ]);
 
   const lifecycle = report.scenarios.find((scenario) => scenario.id === "install_uninstall_loop");
   assert.equal(lifecycle.ok, true);

@@ -9,6 +9,7 @@ This directory contains benchmark harnesses for the host-level latency targets i
 - `runtime.storage_set`
 - `runtime.core_step`
 - bridge call/minute throughput over `runtime.storage_get`
+- bounded memory growth after opening all five bundled examples
 - `runtime.call_bridge` for `network.request` timeout enforcement
 - `platform.uninstall_webapp` install/uninstall loop cleanup
 

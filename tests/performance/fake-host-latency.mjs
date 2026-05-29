@@ -22,6 +22,7 @@ const DESKTOP_TARGETS_MS = {
   storage_set_1kib: { p50: 10, p95: 40 },
   core_step_trivial: { p50: 5, p95: 20 },
 };
+const EXAMPLE_APP_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
 
 export async function runFakeHostLatencyBenchmark({
   warmup = DEFAULT_WARMUP,
@@ -32,11 +33,9 @@ export async function runFakeHostLatencyBenchmark({
   enforceTargets = false,
 } = {}) {
   const host = new FakePlatformHost();
-  const packageDirs = [
-    prepareBenchmarkPackage({ appId: "notes-lite", warmup, samples, lifecycleLoops, throughputCalls }),
-    prepareBenchmarkPackage({ appId: "task-workbench", warmup, samples, lifecycleLoops, throughputCalls }),
-    prepareBenchmarkPackage({ appId: "api-dashboard", warmup, samples, lifecycleLoops, throughputCalls }),
-  ];
+  const packageDirs = EXAMPLE_APP_IDS.map((appId) =>
+    prepareBenchmarkPackage({ appId, warmup, samples, lifecycleLoops, throughputCalls }),
+  );
   const startedAt = new Date().toISOString();
   try {
     for (const packageDir of packageDirs) {
@@ -100,6 +99,7 @@ export async function runFakeHostLatencyBenchmark({
     const scenarios = [
       await runNetworkTimeoutScenario(host),
       await runBridgeThroughputScenario({ host, appId: "notes-lite", calls: throughputCalls }),
+      await runOpenAllExamplesMemoryScenario({ host, appIds: EXAMPLE_APP_IDS }),
       await runInstallUninstallScenario({
         host,
         packageDir: packageDirs[0],
@@ -215,6 +215,32 @@ async function runBridgeThroughputScenario({ host, appId, calls }) {
   };
 }
 
+async function runOpenAllExamplesMemoryScenario({ host, appIds }) {
+  const beforeHeapBytes = process.memoryUsage().heapUsed;
+  const beforeSessions = runtimeSessionCount(host.database);
+  const opened = [];
+
+  for (const appId of appIds) {
+    opened.push(await openAndWait(host, appId));
+  }
+
+  const heapDeltaBytes = process.memoryUsage().heapUsed - beforeHeapBytes;
+  const sessionDelta = runtimeSessionCount(host.database) - beforeSessions;
+  const openedAppIds = [...new Set(opened.map((entry) => entry.appId))];
+  const boundedMemoryGrowth = heapDeltaBytes <= MEMORY_GROWTH_LIMIT_BYTES;
+
+  return {
+    id: "open_all_examples_memory",
+    ok: boundedMemoryGrowth && openedAppIds.length === appIds.length && sessionDelta === appIds.length,
+    appCount: appIds.length,
+    openedAppIds,
+    sessionDelta,
+    boundedMemoryGrowth,
+    heapDeltaBytes,
+    memoryGrowthLimitBytes: MEMORY_GROWTH_LIMIT_BYTES,
+  };
+}
+
 async function runInstallUninstallScenario({ host, packageDir, appId, loops }) {
   const beforeCounts = tableCounts(host.database);
   const beforeHeapBytes = process.memoryUsage().heapUsed;
@@ -263,6 +289,10 @@ async function runInstallUninstallScenario({ host, packageDir, appId, loops }) {
     logicalResidueFailures: residueFailures,
     tableDeltas: diffCounts(beforeCounts, afterCounts),
   };
+}
+
+function runtimeSessionCount(database) {
+  return database.get("SELECT COUNT(*) AS count FROM runtime_sessions").count;
 }
 
 function tableCounts(database) {
