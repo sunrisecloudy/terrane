@@ -7,13 +7,33 @@
   "platforms": [
     "fake-host"
   ],
-  "steps": [
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/task-workbench"
+      }
+    },
     {
       "tool": "platform.open_webapp",
       "args": {
         "appId": "task-workbench"
       }
-    },
+    }
+  ],
+  "steps": [
     {
       "tool": "runtime.snapshot",
       "args": {

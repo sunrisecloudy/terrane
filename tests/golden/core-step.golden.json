@@ -7,13 +7,33 @@
   "platforms": [
     "fake-host"
   ],
-  "steps": [
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/core-replay-lab"
+      }
+    },
     {
       "tool": "platform.open_webapp",
       "args": {
         "appId": "core-replay-lab"
       }
-    },
+    }
+  ],
+  "steps": [
     {
       "tool": "runtime.click",
       "args": {

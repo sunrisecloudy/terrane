@@ -7,7 +7,31 @@
   "platforms": [
     "fake-host"
   ],
-  "steps": [
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/file-transformer"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "file-transformer"
+      }
+    },
     {
       "tool": "runtime.dialog_mock_set",
       "args": {
@@ -23,13 +47,9 @@
           ]
         }
       }
-    },
-    {
-      "tool": "platform.open_webapp",
-      "args": {
-        "appId": "file-transformer"
-      }
-    },
+    }
+  ],
+  "steps": [
     {
       "tool": "runtime.click",
       "args": {
@@ -52,6 +72,18 @@
       "tool": "runtime.assert_bridge_call",
       "args": {
         "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "selector": "[data-testid='save-file-button']"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "dialog.saveFile"
       }
     },
     {

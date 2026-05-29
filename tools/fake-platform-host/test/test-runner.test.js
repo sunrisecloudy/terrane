@@ -126,6 +126,36 @@ test("checked-in microtests execute setup, validate statically, and persist runs
   }
 });
 
+test("checked-in golden flows execute as fake-host microtests", async () => {
+  const goldenDir = path.join(repoRoot, "tests", "golden");
+  const files = fs.readdirSync(goldenDir).filter((fileName) => fileName.endsWith(".golden.json")).sort();
+  assert.deepEqual(files, [
+    "core-step.golden.json",
+    "file-dialog-core.golden.json",
+    "form-storage.golden.json",
+    "large-table.golden.json",
+    "network-policy.golden.json",
+  ]);
+
+  for (const fileName of files) {
+    const host = new FakePlatformHost();
+    try {
+      const run = await host.runControlCommand("runtime.run_microtest", {
+        microtestPath: path.join("tests", "golden", fileName),
+      });
+      assert.equal(run.status, "passed", `${fileName}: ${JSON.stringify(run.result.failures)}`);
+      assert.equal(run.result.setup.ok, true, `${fileName}: ${JSON.stringify(run.result.setup.failures)}`);
+
+      const spec = JSON.parse(fs.readFileSync(path.join(goldenDir, fileName), "utf8"));
+      const appId = spec.targetApps[0];
+      const persisted = await host.runControlCommand("db.query_test_runs", { appId });
+      assert.equal(persisted.some((row) => row.micro_test_id === spec.id && row.status === "passed"), true, fileName);
+    } finally {
+      host.close();
+    }
+  }
+});
+
 test("microtest failures are reported with stable repair codes", async () => {
   const host = new FakePlatformHost();
   try {

@@ -9,6 +9,30 @@
   ],
   "setup": [
     {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/api-dashboard"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/api-dashboard"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/api-dashboard"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "api-dashboard"
+      }
+    },
+    {
       "tool": "runtime.network_mock_set",
       "args": {
         "appId": "api-dashboard",
@@ -22,12 +46,6 @@
     }
   ],
   "steps": [
-    {
-      "tool": "platform.open_webapp",
-      "args": {
-        "appId": "api-dashboard"
-      }
-    },
     {
       "tool": "runtime.click",
       "args": {
