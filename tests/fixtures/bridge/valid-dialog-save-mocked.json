@@ -1,0 +1,40 @@
+{
+  "id": "req_dialog_save",
+  "context": {
+    "appId": "file-transformer"
+  },
+  "preconditions": {
+    "dialogMocks": [
+      {
+        "dialogType": "saveFile",
+        "response": {
+          "ok": true,
+          "path": "fixture-output.txt"
+        }
+      }
+    ]
+  },
+  "method": "dialog.saveFile",
+  "params": {
+    "suggestedName": "fixture-output.txt",
+    "mimeType": "text/plain",
+    "text": "Hello from save fixture"
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true,
+    "resultSubset": {
+      "ok": true,
+      "path": "fixture-output.txt"
+    }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
+}

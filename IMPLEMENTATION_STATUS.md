@@ -123,7 +123,7 @@ Status snapshot: **2026-05-29**.
 
 | Path | Status |
 |---|---|
-| `tests/fixtures/bridge/` | partial (26 fixtures are exercised by fake-host bridge tests and Zig server bridge contract tests: the 16 docs/08 required fixtures plus network policy edge cases) |
+| `tests/fixtures/bridge/` | partial (28 fixtures are exercised by fake-host bridge tests and Zig server bridge contract tests: the expanded docs/08 required fixtures now cover every fixed bridge method plus network policy edge cases) |
 | `tests/fixtures/capabilities/` | partial (schema-shaped runtime capability fixtures for fake-host, server, macOS, iOS simulator, Android, Windows, and Linux are exercised by runtime capability contract tests) |
 | `tests/fixtures/db/` | partial |
 | `tests/fixtures/snapshots/` | fixtures |

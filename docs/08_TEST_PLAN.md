@@ -169,6 +169,8 @@ valid-network-request-mocked.json
 valid-network-policy-denied.json
 valid-dialog-open-mocked.json
 valid-dialog-cancelled.json
+valid-dialog-save-mocked.json
+valid-app-log.json
 valid-runtime-capabilities.json
 budget-exceeded-bridge-calls.json
 runtime-version-incompatible.json

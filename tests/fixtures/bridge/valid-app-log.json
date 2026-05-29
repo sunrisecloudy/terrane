@@ -1,0 +1,27 @@
+{
+  "id": "req_app_log",
+  "context": {
+    "appId": "notes-lite"
+  },
+  "method": "app.log",
+  "params": {
+    "level": "info",
+    "message": "Saved note from bridge fixture"
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true,
+    "resultSubset": {
+      "ok": true
+    }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
+}
