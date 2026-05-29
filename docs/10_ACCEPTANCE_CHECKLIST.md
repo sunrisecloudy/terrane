@@ -34,11 +34,11 @@
 
 ## Example apps
 
-- [ ] Notes Lite loads.
-- [ ] Task Workbench loads.
-- [ ] File Transformer loads.
-- [ ] API Dashboard loads.
-- [ ] Core Replay Lab loads.
+- [x] Notes Lite loads.
+- [x] Task Workbench loads.
+- [x] File Transformer loads.
+- [x] API Dashboard loads.
+- [x] Core Replay Lab loads.
 - [x] Each app declares permissions.
 - [x] Each app has smoke tests.
 - [x] Each app uses only `AppRuntime.call`.
