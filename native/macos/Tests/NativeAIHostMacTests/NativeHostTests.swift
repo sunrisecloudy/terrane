@@ -224,6 +224,14 @@ struct NativeHostTests {
             contentHash: "file-control-hash",
             installId: "install-file-control"
         )
+        try registry.installVersion(
+            appId: "core-replay-lab",
+            name: "Core Replay Lab",
+            version: "0.1.0",
+            manifestJSON: #"{"id":"core-replay-lab","version":"0.1.0","dataVersion":1}"#,
+            contentHash: "core-replay-control-hash",
+            installId: "install-core-replay-control"
+        )
         let storageContext = AppSandboxContext(
             appId: "notes-lite",
             approvedPermissions: ["storage.read", "storage.write"],
@@ -238,6 +246,20 @@ struct NativeHostTests {
             context: storageContext
         ))
         #expect(storageSet.ok)
+        let uninstallStorageContext = AppSandboxContext(
+            appId: "core-replay-lab",
+            approvedPermissions: ["storage.read", "storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "uninstall-test-mount"
+        )
+        let uninstallStorageSet = PlatformStorage(databaseURL: dbURL).set(BridgeRequest(
+            id: "control-uninstall-seed",
+            method: "storage.set",
+            params: ["key": "core-replay-lab:state", "value": ["title": "Delete me on uninstall"]],
+            context: uninstallStorageContext
+        ))
+        #expect(uninstallStorageSet.ok)
 
         let port = try #require(controlPlane.boundPort)
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
@@ -696,6 +718,55 @@ struct NativeHostTests {
         #expect(rollbackCommand.body.contains(#""activeInstallId":"install-control""#))
         #expect(rollbackCommand.body.contains(#""rolledBackInstallId":"install-control-v2""#))
 
+        let quarantineCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.quarantine_webapp","args":{"appId":"core-replay-lab","reason":"control lifecycle test"}}"#
+        )
+        #expect(quarantineCommand.statusCode == 200)
+        #expect(quarantineCommand.body.contains(#""status":"quarantined""#))
+        #expect(quarantineCommand.body.contains(#""installId":"install-core-replay-control""#))
+
+        let quarantinedOpen = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.open_webapp","args":{"appId":"core-replay-lab"}}"#
+        )
+        #expect(quarantinedOpen.statusCode == 400)
+        #expect(quarantinedOpen.body.contains("package_quarantined"))
+
+        let uninstallWithoutConfirm = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.uninstall_webapp","args":{"appId":"core-replay-lab"}}"#
+        )
+        #expect(uninstallWithoutConfirm.statusCode == 400)
+        #expect(uninstallWithoutConfirm.body.contains("confirmation_required"))
+
+        let uninstallCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.uninstall_webapp","args":{"appId":"core-replay-lab","confirm":true}}"#
+        )
+        #expect(uninstallCommand.statusCode == 200)
+        #expect(uninstallCommand.body.contains(#""status":"uninstalled""#))
+        #expect(uninstallCommand.body.contains(#""snapshotId":"snapshot_"#))
+        #expect(uninstallCommand.body.contains(#""clearedStorageKeys":1"#))
+
+        let listWithUninstalled = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.list_webapps","args":{"includeUninstalled":true}}"#
+        )
+        #expect(listWithUninstalled.statusCode == 200)
+        #expect(listWithUninstalled.body.contains(#""appId":"core-replay-lab""#))
+        #expect(listWithUninstalled.body.contains(#""status":"uninstalled""#))
+
         let bridgeCallsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/bridge-calls")!,
             method: "POST",
@@ -1080,7 +1151,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 86)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 89)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

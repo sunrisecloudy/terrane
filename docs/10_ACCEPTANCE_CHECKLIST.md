@@ -75,6 +75,7 @@
 - [x] Debug dev control plane persists, reads, and restores runtime snapshots for app storage.
 - [x] Debug dev control plane compares runtime snapshots with normalized stable hashes through `runtime.compare_snapshot`.
 - [x] Debug dev control plane lists installed webapps/versions and rolls back app registry versions.
+- [x] Debug dev control plane quarantines and uninstalls webapps with confirmation-gated destructive uninstall and a pre-uninstall snapshot.
 - [x] Debug dev control plane supports runtime storage get/set/reset, bridge-call inspection/assertion, and log clearing.
 - [x] Debug dev control plane supports lifecycle target list/launch/reload and opening installed webapps into runtime sessions.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch.

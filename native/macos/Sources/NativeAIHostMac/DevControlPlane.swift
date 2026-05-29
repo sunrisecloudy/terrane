@@ -419,6 +419,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRunPlatformSmoke(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapps":
             sendAccepted(connection, request, startedAt: startedAt, result: listWebapps(includeUninstalled: args["includeUninstalled"] as? Bool == true))
+        case "platform.uninstall_webapp":
+            handleUninstallWebapp(connection, request, args: args, startedAt: startedAt)
         case "platform.open_webapp":
             handleOpenWebapp(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapp_versions":
@@ -429,6 +431,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleListWebappVersions(connection, request, appId: appId, startedAt: startedAt)
         case "platform.rollback_webapp":
             handleRollbackWebapp(connection, request, args: args, startedAt: startedAt)
+        case "platform.quarantine_webapp":
+            handleQuarantineWebapp(connection, request, args: args, startedAt: startedAt)
         case "platform.install_report":
             guard let appId = args["appId"] as? String, !appId.isEmpty else {
                 sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.install_report requires appId", startedAt: startedAt)
@@ -709,8 +713,16 @@ final class DevControlPlane: @unchecked Sendable {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.open_webapp requires appId", startedAt: startedAt)
             return
         }
-        guard activeAppRecord(appId: appId)?.installId != nil else {
+        guard let app = appRecord(appId: appId), app.status != "uninstalled" else {
             sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App is not installed", startedAt: startedAt)
+            return
+        }
+        guard app.status != "quarantined" else {
+            sendRejected(connection, request, status: 400, code: "package_quarantined", message: "App is quarantined", startedAt: startedAt)
+            return
+        }
+        guard app.activeInstallId != nil else {
+            sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App has no active install", startedAt: startedAt)
             return
         }
         let sessionId = runtimeSessionId(appId: appId)
@@ -907,6 +919,39 @@ final class DevControlPlane: @unchecked Sendable {
         } catch {
             sendRejected(connection, request, status: 400, code: "rollback_failed", message: "Rollback could not be completed", startedAt: startedAt)
         }
+    }
+
+    private func handleQuarantineWebapp(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.quarantine_webapp requires appId", startedAt: startedAt)
+            return
+        }
+        guard let result = quarantineWebapp(
+            appId: appId,
+            installId: args["installId"] as? String,
+            reason: args["reason"] as? String ?? "manual quarantine",
+            restorePrevious: args["restorePrevious"] as? Bool == true
+        ) else {
+            sendRejected(connection, request, status: 400, code: "quarantine_failed", message: "Quarantine could not be completed", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleUninstallWebapp(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.uninstall_webapp requires appId", startedAt: startedAt)
+            return
+        }
+        guard args["confirm"] as? Bool == true else {
+            sendRejected(connection, request, status: 400, code: "confirmation_required", message: "platform.uninstall_webapp requires confirm: true", startedAt: startedAt)
+            return
+        }
+        guard let result = uninstallWebapp(appId: appId) else {
+            sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App is not installed", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
     }
 
     private func handleInstallReport(_ connection: NWConnection, _ request: HTTPRequest, appId: String, installId: String?, startedAt: Date) {
@@ -3759,7 +3804,7 @@ final class DevControlPlane: @unchecked Sendable {
     private func activeAppRecord(appId: String) -> (installId: String?, version: String?, dataVersion: Int)? {
         guard let db = database.handle else { return nil }
         var statement: OpaquePointer?
-        let sql = "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ?"
+        let sql = "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ? AND status = 'enabled'"
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             return nil
         }
@@ -3773,6 +3818,200 @@ final class DevControlPlane: @unchecked Sendable {
             version: columnNullableText(statement, 1),
             dataVersion: Int(sqlite3_column_int64(statement, 2))
         )
+    }
+
+    private func appRecord(appId: String) -> (status: String, activeInstallId: String?, activeVersion: String?, dataVersion: Int)? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT status, active_install_id, active_version, data_version FROM apps WHERE id = ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return (
+            status: columnText(statement, 0),
+            activeInstallId: columnNullableText(statement, 1),
+            activeVersion: columnNullableText(statement, 2),
+            dataVersion: Int(sqlite3_column_int64(statement, 3))
+        )
+    }
+
+    private func versionRecord(appId: String, installId: String) -> (installId: String, version: String, dataVersion: Int, status: String)? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT install_id, version, data_version, status FROM app_versions WHERE app_id = ? AND install_id = ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, installId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return (
+            installId: columnText(statement, 0),
+            version: columnText(statement, 1),
+            dataVersion: Int(sqlite3_column_int64(statement, 2)),
+            status: columnText(statement, 3)
+        )
+    }
+
+    private func previousRestorableVersion(appId: String, excluding installId: String) -> (installId: String, version: String, dataVersion: Int)? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT install_id, version, data_version
+        FROM app_versions
+        WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled')
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, installId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return (
+            installId: columnText(statement, 0),
+            version: columnText(statement, 1),
+            dataVersion: Int(sqlite3_column_int64(statement, 2))
+        )
+    }
+
+    private func quarantineWebapp(appId: String, installId: String?, reason: String, restorePrevious: Bool) -> [String: Any]? {
+        guard let app = appRecord(appId: appId), app.status != "uninstalled" else {
+            return nil
+        }
+        guard let targetInstallId = installId ?? app.activeInstallId,
+              let target = versionRecord(appId: appId, installId: targetInstallId),
+              target.status != "uninstalled"
+        else {
+            return nil
+        }
+        let restoreTarget = restorePrevious && app.activeInstallId == targetInstallId
+            ? previousRestorableVersion(appId: appId, excluding: targetInstallId)
+            : nil
+        let now = Self.now()
+
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+        ok = ok && executePrepared(
+            "UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?",
+            [appId, targetInstallId]
+        )
+        if let restoreTarget {
+            ok = ok && executePrepared(
+                "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?",
+                [now, restoreTarget.installId]
+            )
+            ok = ok && executePrepared(
+                "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+                [restoreTarget.installId, restoreTarget.version, restoreTarget.dataVersion, now, appId]
+            )
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json)
+                VALUES (?, ?, ?, 'rollback', ?, 'codex', ?, ?)
+                """,
+                [
+                    "event_\(UUID().uuidString.lowercased())",
+                    appId,
+                    restoreTarget.installId,
+                    targetInstallId,
+                    now,
+                    jsonBody(["reason": "automatic rollback after quarantine", "quarantinedInstallId": targetInstallId] as [String: Any]),
+                ]
+            )
+        } else if app.activeInstallId == targetInstallId {
+            ok = ok && executePrepared(
+                "UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?",
+                [now, appId]
+            )
+        }
+        ok = ok && executePrepared(
+            """
+            INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json)
+            VALUES (?, ?, ?, 'quarantine', ?, 'codex', ?, ?)
+            """,
+            [
+                "event_\(UUID().uuidString.lowercased())",
+                appId,
+                targetInstallId,
+                restoreTarget?.installId,
+                now,
+                jsonBody(["reason": reason, "restoredInstallId": restoreTarget?.installId ?? NSNull()] as [String: Any]),
+            ]
+        )
+
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            return nil
+        }
+        return [
+            "appId": appId,
+            "installId": targetInstallId,
+            "status": "quarantined",
+            "reason": reason,
+            "restoredInstallId": restoreTarget?.installId ?? NSNull(),
+        ]
+    }
+
+    private func uninstallWebapp(appId: String) -> [String: Any]? {
+        guard let app = appRecord(appId: appId), app.status != "uninstalled" else {
+            return nil
+        }
+        let clearedStorageKeys = scalarInt("SELECT COUNT(*) FROM app_storage WHERE app_id = ?", values: [appId])
+        let snapshot = createSnapshot(appId: appId, type: "manual", sessionId: activeAppId == appId ? activeRuntimeSessionId : nil)
+        let now = Self.now()
+
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+        ok = ok && executePrepared("DELETE FROM app_storage WHERE app_id = ?", [appId])
+        ok = ok && executePrepared("UPDATE app_versions SET status = 'uninstalled' WHERE app_id = ?", [appId])
+        ok = ok && executePrepared(
+            "UPDATE apps SET status = 'uninstalled', active_install_id = NULL, active_version = NULL, updated_at = ? WHERE id = ?",
+            [now, appId]
+        )
+        if let activeInstallId = app.activeInstallId {
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json)
+                VALUES (?, ?, ?, 'uninstall', ?, 'codex', ?, ?)
+                """,
+                [
+                    "event_\(UUID().uuidString.lowercased())",
+                    appId,
+                    activeInstallId,
+                    activeInstallId,
+                    now,
+                    jsonBody(["snapshotId": snapshot?["snapshotId"] ?? NSNull(), "clearedStorageKeys": clearedStorageKeys] as [String: Any]),
+                ]
+            )
+        }
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            return nil
+        }
+        if activeAppId == appId {
+            activeAppId = nil
+            activeRuntimeSessionId = nil
+        }
+        return [
+            "ok": true,
+            "appId": appId,
+            "status": "uninstalled",
+            "snapshotId": snapshot?["snapshotId"] ?? NSNull(),
+            "clearedStorageKeys": clearedStorageKeys,
+        ]
     }
 
     private func deleteStorage(appId: String) -> Bool {
