@@ -376,6 +376,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeCoreStep(connection, request, args: args, startedAt: startedAt)
         case "runtime.core_snapshot":
             handleRuntimeCoreSnapshot(connection, request, args: args, startedAt: startedAt)
+        case "runtime.replay_events":
+            handleRuntimeReplayEvents(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_core_action":
             handleCoreActionAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.compare_snapshot":
@@ -1091,6 +1093,51 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: coreSnapshot(appId: appId))
+    }
+
+    private func handleRuntimeReplayEvents(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.replay_events requires appId", startedAt: startedAt)
+            return
+        }
+        guard let events = args["events"] as? [Any] else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.replay_events events must be an array", startedAt: startedAt)
+            return
+        }
+        let replayCore = ZigCoreBridge()
+        let context = AppSandboxContext(
+            appId: appId,
+            approvedPermissions: ["core.step"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: controlSessionId
+        )
+        let replay = events.enumerated().map { index, event in
+            let response = replayCore.step(BridgeRequest(
+                id: "control_replay_\(index)",
+                method: "core.step",
+                params: ["event": event],
+                context: context
+            ))
+            return [
+                "index": index,
+                "event": event,
+                "result": response.result ?? [
+                    "ok": false,
+                    "error": response.error ?? [
+                        "code": "core_error",
+                        "message": "Replay event failed",
+                        "details": [:],
+                    ],
+                    "actions": [],
+                ],
+            ] as [String: Any]
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "replay": replay,
+        ])
     }
 
     private func handleCoreActionAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {

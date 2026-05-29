@@ -905,6 +905,17 @@ struct NativeHostTests {
         #expect(coreStep.statusCode == 200)
         #expect(coreStep.body.contains(#""id":"control_core_step""#))
 
+        let replayEvents = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.replay_events","args":{"appId":"task-workbench","events":[{"type":"CreateTask","payload":{"title":"Replay task"}}]}}"#
+        )
+        #expect(replayEvents.statusCode == 200)
+        #expect(replayEvents.body.contains(#""appId":"task-workbench""#))
+        #expect(replayEvents.body.contains(#""index":0"#))
+        #expect(replayEvents.body.contains("Replay task"))
+
         let coreBridgeCallAssert = try await httpRequest(
             commandURL,
             method: "POST",
@@ -994,7 +1005,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 75)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 76)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
