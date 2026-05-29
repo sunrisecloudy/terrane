@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,8 +12,67 @@ const FIXED_DOS_TIME = 0;
 const FIXED_DOS_DATE = 33;
 const PLATFORM_VERSION = "0.1.0";
 const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
+const ZIG_CORE_ARTIFACTS = [
+  {
+    id: "ios-arm64-device",
+    platform: "ios",
+    target: "aarch64-ios",
+    output: "libzig_core.a",
+    args: ["--name", "zig_core", "-static", "-target", "aarch64-ios", "-lc"],
+  },
+  {
+    id: "ios-arm64-simulator",
+    platform: "ios",
+    target: "aarch64-ios-simulator",
+    output: "libzig_core.a",
+    args: ["--name", "zig_core", "-static", "-target", "aarch64-ios-simulator", "-lc"],
+  },
+  {
+    id: "macos-arm64",
+    platform: "macos",
+    target: "aarch64-macos.15.0.0",
+    output: "libzig_core.a",
+    args: ["--name", "zig_core", "-static", "-target", "aarch64-macos.15.0.0", "-lc"],
+  },
+  {
+    id: "macos-x86_64",
+    platform: "macos",
+    target: "x86_64-macos.15.0.0",
+    output: "libzig_core.a",
+    args: ["--name", "zig_core", "-static", "-target", "x86_64-macos.15.0.0", "-lc"],
+  },
+  {
+    id: "android-arm64-v8a",
+    platform: "android",
+    target: "aarch64-linux-android",
+    output: "libzig_core.so",
+    args: ["--name", "zig_core", "-dynamic", "-target", "aarch64-linux-android", "-fsoname=libzig_core.so"],
+  },
+  {
+    id: "android-x86_64",
+    platform: "android",
+    target: "x86_64-linux-android",
+    output: "libzig_core.so",
+    args: ["--name", "zig_core", "-dynamic", "-target", "x86_64-linux-android", "-fsoname=libzig_core.so"],
+  },
+  {
+    id: "windows-x86_64",
+    platform: "windows",
+    target: "x86_64-windows-gnu",
+    output: "zig_core.dll",
+    expectedOutputs: ["zig_core.dll", "zig_core.lib"],
+    args: ["--name", "zig_core", "-dynamic", "-target", "x86_64-windows-gnu", "-lc"],
+  },
+  {
+    id: "linux-x86_64",
+    platform: "linux",
+    target: "x86_64-linux-gnu",
+    output: "libzig_core.so",
+    args: ["--name", "zig_core", "-dynamic", "-target", "x86_64-linux-gnu", "-lc"],
+  },
+];
 
-export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifacts"), buildZigCore = false } = {}) {
   const resolvedOutDir = path.resolve(outDir);
   fs.mkdirSync(resolvedOutDir, { recursive: true });
 
@@ -23,12 +84,16 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
   writeStoredZip(runtimeArchive, runtimeFiles);
   writeStoredZip(examplesArchive, exampleFiles);
 
+  const zigCoreArtifacts = buildZigCore ? buildZigCoreArtifacts({ outDir: resolvedOutDir }) : [];
   const directoryArtifacts = [
-    ...ZIG_CORE_TARGETS.map((target) => ({
-      id: `zig-core-${target}`,
-      path: path.join("zig-core", target),
-      description: `Target-specific Zig core library output for ${target}.`,
-    })),
+    ...(buildZigCore
+      ? []
+      : ZIG_CORE_TARGETS.map((target) => ({
+          id: `zig-core-${target}`,
+          path: path.join("zig-core", target),
+          description: `Target-specific Zig core library output for ${target}.`,
+        }))
+    ),
     { id: "server", path: "server", description: "Server executable output." },
     { id: "native-apps", path: "native-apps", description: "Target-specific native host app output." },
   ];
@@ -60,6 +125,7 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
         source: "webapps/examples/",
         fileCount: exampleFiles.length,
       }),
+      ...zigCoreArtifacts,
       ...directoryArtifacts.map((artifact) => ({
         id: artifact.id,
         path: artifact.path,
@@ -78,6 +144,48 @@ export function packageReleaseArtifacts({ outDir = path.join(repoRoot, "artifact
   };
 }
 
+export function buildZigCoreArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+  const resolvedOutDir = path.resolve(outDir);
+  const zigCoreDir = path.join(repoRoot, "zig-core");
+  const headerPath = path.join(zigCoreDir, "include", "zig_core.h");
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-core-cache-"));
+  const artifacts = [];
+
+  try {
+    for (const artifact of ZIG_CORE_ARTIFACTS) {
+      const artifactDir = path.join(resolvedOutDir, "zig-core", artifact.platform, artifact.id);
+      fs.mkdirSync(artifactDir, { recursive: true });
+      const outputPath = path.join(artifactDir, artifact.output);
+      const env = {
+        ...process.env,
+        ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "global"),
+        ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, artifact.id),
+      };
+      execFileSync(
+        "zig",
+        ["build-lib", "src/lib.zig", ...artifact.args, `-femit-bin=${outputPath}`],
+        { cwd: zigCoreDir, env, stdio: "ignore" },
+      );
+      fs.copyFileSync(headerPath, path.join(artifactDir, "zig_core.h"));
+      const expectedOutputs = artifact.expectedOutputs ?? [artifact.output];
+      const files = ["zig_core.h", ...expectedOutputs].map((fileName) =>
+        describeFile(path.join(artifactDir, fileName), path.join("zig-core", artifact.platform, artifact.id, fileName)),
+      );
+      artifacts.push({
+        id: `zig-core-${artifact.id}`,
+        path: path.join("zig-core", artifact.platform, artifact.id),
+        kind: "zig-core-library",
+        target: artifact.target,
+        files,
+      });
+    }
+  } finally {
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+
+  return artifacts;
+}
+
 function describeFileArtifact({ id, archivePath, relativePath, source, fileCount }) {
   const data = fs.readFileSync(archivePath);
   return {
@@ -86,6 +194,15 @@ function describeFileArtifact({ id, archivePath, relativePath, source, fileCount
     kind: "zip",
     source,
     fileCount,
+    bytes: data.length,
+    sha256: crypto.createHash("sha256").update(data).digest("hex"),
+  };
+}
+
+function describeFile(filePath, relativePath) {
+  const data = fs.readFileSync(filePath);
+  return {
+    path: toPosix(relativePath),
     bytes: data.length,
     sha256: crypto.createHash("sha256").update(data).digest("hex"),
   };
@@ -226,6 +343,8 @@ function parseCliArgs(argv) {
     const arg = argv[index];
     if (arg === "--out") {
       options.outDir = path.resolve(argv[(index += 1)]);
+    } else if (arg === "--build-zig-core") {
+      options.buildZigCore = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }

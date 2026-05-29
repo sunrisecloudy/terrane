@@ -79,19 +79,23 @@ android emulator job:
 The static release artifact packager is:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts
+node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, plus a manifest that records hashes and the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
   zig-core/
-    ios/
-    macos/
-    android/
-    windows/
-    linux/
+    ios/ios-arm64-device/libzig_core.a
+    ios/ios-arm64-simulator/libzig_core.a
+    macos/macos-arm64/libzig_core.a
+    macos/macos-x86_64/libzig_core.a
+    android/android-arm64-v8a/libzig_core.so
+    android/android-x86_64/libzig_core.so
+    windows/windows-x86_64/zig_core.dll
+    windows/windows-x86_64/zig_core.lib
+    linux/linux-x86_64/libzig_core.so
   runtime-web.zip
   example-webapps.zip
   release-manifest.json

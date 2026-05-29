@@ -266,6 +266,8 @@ function checkCiWorkflow() {
     "tools/codex-platform-mcp",
     "tools/package-release.mjs --out artifacts",
     "static-release-artifacts",
+    "zig-core-release-artifacts",
+    "tools/package-release.mjs --out artifacts --build-zig-core",
     "linux-native-smoke",
     "NATIVE_AI_LINUX_SMOKE_LAUNCH",
     "libwebkitgtk-6.0-dev",
@@ -301,15 +303,20 @@ function checkReleasePackaging() {
     "example-webapps.zip",
     "release-manifest.json",
     "writeStoredZip",
+    "buildZigCoreArtifacts",
+    "--build-zig-core",
     "sha256",
     "ZIG_CORE_TARGETS",
+    "ios-arm64-device",
+    "windows-x86_64",
+    "zig_core.lib",
   ];
   for (const snippet of requiredScriptSnippets) {
     if (!script.includes(snippet)) {
       throw new Error(`tools/package-release.mjs missing ${snippet}`);
     }
   }
-  for (const snippet of ["tools/package-release.mjs --out artifacts", "release-manifest.json"]) {
+  for (const snippet of ["tools/package-release.mjs --out artifacts --build-zig-core", "release-manifest.json"]) {
     if (!docs.includes(snippet)) {
       throw new Error(`docs/12 release artifacts missing ${snippet}`);
     }
@@ -317,12 +324,12 @@ function checkReleasePackaging() {
   if (!ignore.includes("artifacts/")) {
     throw new Error(".gitignore must ignore generated release artifacts");
   }
-  for (const snippet of ["listZipEntries", "runtime-web/index.html", "webapps/examples/notes-lite/manifest.json"]) {
+  for (const snippet of ["listZipEntries", "buildZigCore: true", "runtime-web/index.html", "webapps/examples/notes-lite/manifest.json"]) {
     if (!test.includes(snippet)) {
       throw new Error(`release packaging test missing ${snippet}`);
     }
   }
-  return "static-artifacts=runtime-web.zip,example-webapps.zip,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,manifest";
 }
 
 function checkPerformanceHarness() {

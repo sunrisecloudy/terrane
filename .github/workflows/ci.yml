@@ -74,6 +74,35 @@ jobs:
           name: static-release-artifacts
           path: artifacts/
 
+  zig-core-release-artifacts:
+    name: Zig Core Release Artifacts
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Package Zig core release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core
+
+      - name: Upload Zig core release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zig-core-release-artifacts
+          path: artifacts/
+
   linux-native-smoke:
     name: Linux Native Smoke
     runs-on: ubuntu-24.04

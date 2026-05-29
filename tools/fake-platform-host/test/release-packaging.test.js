@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { listZipEntries, packageReleaseArtifacts } from "../../../tools/package-release.mjs";
+
+function hasZig() {
+  try {
+    execFileSync("zig", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("release packaging creates deterministic static artifact archives and manifest", () => {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-artifacts-"));
@@ -41,3 +51,37 @@ test("release packaging creates deterministic static artifact archives and manif
     fs.rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+test(
+  "release packaging can build Zig core libraries for platform artifact targets",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 60_000,
+  },
+  () => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-zig-artifacts-"));
+    try {
+      const result = packageReleaseArtifacts({ outDir, buildZigCore: true });
+      const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
+      const coreArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "zig-core-library");
+      assert.equal(coreArtifacts.length, 8);
+
+      for (const artifact of coreArtifacts) {
+        assert.equal(fs.existsSync(path.join(outDir, artifact.path, "zig_core.h")), true);
+        assert.equal(artifact.files.some((file) => file.path.endsWith("zig_core.h") && file.sha256.length === 64), true);
+      }
+
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "ios", "ios-arm64-device", "libzig_core.a")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "ios", "ios-arm64-simulator", "libzig_core.a")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "macos", "macos-arm64", "libzig_core.a")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "macos", "macos-x86_64", "libzig_core.a")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "android", "android-arm64-v8a", "libzig_core.so")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "android", "android-x86_64", "libzig_core.so")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "linux", "linux-x86_64", "libzig_core.so")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.dll")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.lib")), true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  },
+);
