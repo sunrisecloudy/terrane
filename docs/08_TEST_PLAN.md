@@ -432,6 +432,10 @@ which verifies unique tool names, per-tool JSON Schema input definitions,
 safe database tool exposure, and MCP-boundary argument validation including
 `confirm: true` gates for destructive calls. `tools/codex-platform-mcp/test/server.test.js`
 verifies invalid tool arguments are rejected before any control-plane request is forwarded.
+Fake-host console inspection is covered by `tools/fake-platform-host/test/control-utilities.test.js`
+and `tools/fake-platform-host/test/codex-control-acceptance.test.js`, which verify `app.log`
+bridge calls appear through `runtime.console_logs` and that `runtime.assert_no_console_errors`
+fails on error-level log rows.
 
 ### New test levels
 

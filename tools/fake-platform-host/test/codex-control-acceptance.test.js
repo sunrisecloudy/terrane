@@ -60,6 +60,13 @@ test("Codex control plane installs, opens, drives, mocks, and inspects examples"
     });
     assert.equal(storageWrite.ok, true);
 
+    const appLog = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "app.log",
+      params: { level: "info", message: "Codex inspected this log" },
+    });
+    assert.equal(appLog.ok, true);
+
     const coreStep = await host.runControlCommand("runtime.core_step", {
       appId: "task-workbench",
       event: { type: "task.created", title: "Inspect core log" },
@@ -108,7 +115,8 @@ test("Codex control plane installs, opens, drives, mocks, and inspects examples"
     assert.equal(dialogResponse.result.files[0].name, "codex.txt");
 
     const logs = await host.runControlCommand("runtime.console_logs", { appId: "notes-lite" });
-    assert.deepEqual(logs, { appId: "notes-lite", logs: [] });
+    assert.equal(logs.appId, "notes-lite");
+    assert.equal(logs.logs.some((entry) => entry.level === "info" && entry.message === "Codex inspected this log"), true);
 
     const bridgeCalls = await host.runControlCommand("runtime.bridge_calls", { appId: "api-dashboard" });
     assert.equal(bridgeCalls.some((call) => call.method === "network.request"), true);

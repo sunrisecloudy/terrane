@@ -158,6 +158,7 @@ export class BridgeDispatcher {
     }
 
     if (method === "app.log") {
+      assertAppLogParams(params);
       return { ok: true };
     }
 
@@ -412,6 +413,20 @@ function assertNotificationToastParams(params) {
     throw new PlatformError("invalid_request", "notification.toast level must be info, success, warning, or error", {
       level: params.level,
     });
+  }
+}
+
+function assertAppLogParams(params) {
+  if (typeof params.level !== "string") {
+    throw new PlatformError("invalid_request", "app.log requires level", {});
+  }
+  if (!["debug", "info", "warn", "error"].includes(params.level)) {
+    throw new PlatformError("invalid_request", "app.log level must be debug, info, warn, or error", {
+      level: params.level,
+    });
+  }
+  if (typeof params.message !== "string" || params.message.length === 0) {
+    throw new PlatformError("invalid_request", "app.log requires message", {});
   }
 }
 

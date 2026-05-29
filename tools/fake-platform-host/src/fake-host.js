@@ -357,6 +357,17 @@ export class FakePlatformHost {
     return { ok: true, appId, count: matches.length, actions: matches.map((match) => match.action) };
   }
 
+  assertNoConsoleErrors(appId = null) {
+    const errors = this.database.queryConsoleLogs(appId).filter((entry) => entry.level === "error" || entry.error);
+    if (errors.length > 0) {
+      throw new PlatformError("console_errors_found", "Console error logs were found", {
+        appId,
+        errors,
+      });
+    }
+    return { ok: true, errors: 0 };
+  }
+
   compareSnapshots(args) {
     const left = args.left ?? (args.leftSnapshotId ? this.database.runtimeSnapshotById(args.leftSnapshotId).snapshot : null);
     const right = args.right ?? (args.rightSnapshotId ? this.database.runtimeSnapshotById(args.rightSnapshotId).snapshot : null);
@@ -658,7 +669,7 @@ export class FakePlatformHost {
       case "runtime.resource_usage":
         return this.database.resourceUsage(requiredArg(args, "appId"));
       case "runtime.console_logs":
-        return { appId: args.appId ?? null, logs: [] };
+        return { appId: args.appId ?? null, logs: this.database.queryConsoleLogs(args.appId ?? null) };
       case "runtime.event_log":
         return {
           appId: args.appId ?? null,
@@ -673,7 +684,7 @@ export class FakePlatformHost {
           method: requiredArg(args, "method"),
         });
       case "runtime.assert_no_console_errors":
-        return { ok: true, errors: 0 };
+        return this.assertNoConsoleErrors(args.appId ?? null);
       case "runtime.call_bridge":
         return this.bridge.dispatch(
           { id: args.id ?? "control_call_bridge", method: requiredArg(args, "method"), params: args.params ?? {} },

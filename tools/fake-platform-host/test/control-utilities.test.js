@@ -203,3 +203,47 @@ test("fake-host exposes common control utility tools", async () => {
     host.close();
   }
 });
+
+test("fake-host exposes app.log rows as console logs and asserts error logs", async () => {
+  const host = new FakePlatformHost();
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+
+    const missingMessage = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "app.log",
+      params: { level: "info" },
+    });
+    assert.equal(missingMessage.ok, false);
+    assert.equal(missingMessage.error.code, "invalid_request");
+    await host.runControlCommand("runtime.clear_logs", { appId: "notes-lite" });
+
+    const info = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "app.log",
+      params: { level: "info", message: "utility log" },
+    });
+    assert.equal(info.ok, true);
+
+    const logs = await host.runControlCommand("runtime.console_logs", { appId: "notes-lite" });
+    assert.equal(logs.appId, "notes-lite");
+    assert.equal(logs.logs.some((entry) => entry.level === "info" && entry.message === "utility log"), true);
+    assert.deepEqual(await host.runControlCommand("runtime.assert_no_console_errors", { appId: "notes-lite" }), { ok: true, errors: 0 });
+
+    const error = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "app.log",
+      params: { level: "error", message: "visible failure" },
+    });
+    assert.equal(error.ok, true);
+    await assert.rejects(
+      () => host.runControlCommand("runtime.assert_no_console_errors", { appId: "notes-lite" }),
+      /Console error logs were found/,
+    );
+
+    await host.runControlCommand("runtime.clear_logs", { appId: "notes-lite" });
+    assert.deepEqual(await host.runControlCommand("runtime.console_logs", { appId: "notes-lite" }), { appId: "notes-lite", logs: [] });
+  } finally {
+    host.close();
+  }
+});
