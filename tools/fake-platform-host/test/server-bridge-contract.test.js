@@ -242,6 +242,50 @@ test(
   },
 );
 
+test(
+  "Zig server package validation enforces plain app script tags",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-script-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "script-validation");
+      try {
+        const missing = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace('<script src="app.js"></script>', "")));
+        assert.equal(missing.status, 200);
+        assert.equal(missing.body.ok, false);
+        assert.equal(missing.body.errors.includes("missing_app_script"), true);
+
+        const alternate = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace('src="app.js"', 'src="other.js"')));
+        assert.equal(alternate.status, 200);
+        assert.equal(alternate.body.ok, false);
+        assert.equal(alternate.body.errors.includes("forbidden_app_script_src"), true);
+
+        const nonPlain = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace('src="app.js"', 'src="app.js" type="module"')));
+        assert.equal(nonPlain.status, 200);
+        assert.equal(nonPlain.body.ok, false);
+        assert.equal(nonPlain.body.errors.includes("forbidden_app_script_attribute"), true);
+
+        const duplicate = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("</body>", '<script src="app.js"></script></body>')));
+        assert.equal(duplicate.status, 200);
+        assert.equal(duplicate.body.ok, false);
+        assert.equal(duplicate.body.errors.includes("invalid_app_script_count"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");

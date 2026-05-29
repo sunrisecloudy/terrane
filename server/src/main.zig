@@ -10791,8 +10791,7 @@ fn validateServerHtmlPolicy(
     html: []const u8,
     errors: *std.ArrayList([]const u8),
 ) !void {
-    if (try htmlHasForbiddenScriptTag(allocator, html)) try errors.append(allocator, "forbidden_inline_script");
-    if (try htmlHasRemoteScript(allocator, html)) try errors.append(allocator, "forbidden_remote_script");
+    try validateServerScriptTags(allocator, html, errors);
     if (htmlHasInlineEventHandler(html)) try errors.append(allocator, "forbidden_inline_handler");
     if (containsIgnoreCase(html, "javascript:")) try errors.append(allocator, "forbidden_javascript_url");
     if (try htmlHasMetaRefresh(allocator, html)) try errors.append(allocator, "forbidden_meta_refresh");
@@ -10832,6 +10831,58 @@ fn htmlHasRemoteScript(allocator: std.mem.Allocator, html: []const u8) !bool {
         index = start + 1;
     }
     return false;
+}
+
+fn validateServerScriptTags(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    var script_count: usize = 0;
+    var app_script_count: usize = 0;
+    var index: usize = 0;
+    while (findOpeningTag(html, "script", index)) |start| {
+        script_count += 1;
+        index = start + 1;
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse {
+            try errors.append(allocator, "forbidden_inline_script");
+            continue;
+        };
+        const attrs = htmlOpeningTagAttrs(html, start, "script") orelse {
+            try errors.append(allocator, "forbidden_inline_script");
+            continue;
+        };
+        const src = try htmlAttrValueAlloc(allocator, attrs, "src");
+        defer if (src) |actual| allocator.free(actual);
+        if (src) |actual| {
+            if (isHttpUrl(actual)) {
+                try errors.append(allocator, "forbidden_remote_script");
+                continue;
+            }
+            if (!std.mem.eql(u8, actual, "app.js")) {
+                try errors.append(allocator, "forbidden_app_script_src");
+                continue;
+            }
+        } else {
+            try errors.append(allocator, "forbidden_inline_script");
+            continue;
+        }
+
+        app_script_count += 1;
+        if (htmlAttrsContainDisallowedNames(attrs, &.{"src"})) {
+            try errors.append(allocator, "forbidden_app_script_attribute");
+        }
+        const close_start = indexOfIgnoreCasePos(html, open_end + 1, "</script>") orelse html.len;
+        if (std.mem.trim(u8, html[open_end + 1 .. close_start], " \t\r\n").len > 0) {
+            try errors.append(allocator, "forbidden_inline_script");
+        }
+    }
+
+    if (script_count == 0) {
+        try errors.append(allocator, "missing_app_script");
+    } else if (app_script_count != 1) {
+        try errors.append(allocator, "invalid_app_script_count");
+    }
 }
 
 fn htmlHasMetaRefresh(allocator: std.mem.Allocator, html: []const u8) !bool {
