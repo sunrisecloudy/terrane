@@ -2553,10 +2553,7 @@ fn collectWebappPackageErrors(
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
-        if (containsAny(css, &.{"@import"})) try errors.append(allocator, "forbidden_css_import");
-        if (containsAny(css, &.{"@font-face"})) try errors.append(allocator, "forbidden_external_font");
-        if (containsAny(css, &.{ "position:fixed", "position: fixed" })) try errors.append(allocator, "forbidden_fixed_position");
-        if (containsAny(css, &.{ "url(http:", "url(https:", "url(/", "url(data:" })) try errors.append(allocator, "forbidden_css_url");
+        try validateServerCssPolicy(allocator, css, errors);
     }
     if (findPackageFile(files, "app.js")) |js| {
         if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
@@ -10454,17 +10451,75 @@ fn attrsHaveInlineEventHandler(attrs: []const u8) bool {
 }
 
 fn containsIgnoreCase(source: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (source.len < needle.len) return false;
-    var index: usize = 0;
+    return indexOfIgnoreCasePos(source, 0, needle) != null;
+}
+
+fn indexOfIgnoreCasePos(source: []const u8, start_index: usize, needle: []const u8) ?usize {
+    if (needle.len == 0) return start_index;
+    if (source.len < needle.len or start_index > source.len - needle.len) return null;
+    var index = start_index;
     while (index + needle.len <= source.len) : (index += 1) {
-        if (std.ascii.eqlIgnoreCase(source[index .. index + needle.len], needle)) return true;
+        if (std.ascii.eqlIgnoreCase(source[index .. index + needle.len], needle)) return index;
     }
-    return false;
+    return null;
 }
 
 fn isHttpUrl(value: []const u8) bool {
     return startsWithIgnoreCase(value, "http://") or startsWithIgnoreCase(value, "https://");
+}
+
+fn validateServerCssPolicy(
+    allocator: std.mem.Allocator,
+    css: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (containsIgnoreCase(css, "@import")) try errors.append(allocator, "forbidden_css_import");
+    if (containsIgnoreCase(css, "@font-face")) try errors.append(allocator, "forbidden_external_font");
+    if (cssHasFixedPosition(css)) try errors.append(allocator, "forbidden_fixed_position");
+    if (cssHasForbiddenUrl(css)) try errors.append(allocator, "forbidden_css_url");
+}
+
+fn cssHasFixedPosition(css: []const u8) bool {
+    var index: usize = 0;
+    while (indexOfIgnoreCasePos(css, index, "position")) |start| {
+        var cursor = start + "position".len;
+        while (cursor < css.len and htmlSpace(css[cursor])) : (cursor += 1) {}
+        if (cursor >= css.len or css[cursor] != ':') {
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < css.len and htmlSpace(css[cursor])) : (cursor += 1) {}
+        const end = cursor + "fixed".len;
+        if (end <= css.len and std.ascii.eqlIgnoreCase(css[cursor..end], "fixed")) {
+            if (end == css.len or !isCssIdentifierChar(css[end])) return true;
+        }
+        index = cursor + 1;
+    }
+    return false;
+}
+
+fn cssHasForbiddenUrl(css: []const u8) bool {
+    var index: usize = 0;
+    while (indexOfIgnoreCasePos(css, index, "url(")) |start| {
+        var cursor = start + "url(".len;
+        while (cursor < css.len and htmlSpace(css[cursor])) : (cursor += 1) {}
+        if (cursor < css.len and (css[cursor] == '"' or css[cursor] == '\'')) cursor += 1;
+        const value = css[cursor..];
+        if (startsWithIgnoreCase(value, "http:") or
+            startsWithIgnoreCase(value, "https:") or
+            startsWithIgnoreCase(value, "data:") or
+            startsWithIgnoreCase(value, "/"))
+        {
+            return true;
+        }
+        index = cursor + 1;
+    }
+    return false;
+}
+
+fn isCssIdentifierChar(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '-' or char == '_';
 }
 
 fn validateServerNetworkPolicy(
@@ -11354,6 +11409,47 @@ test "server package validation rejects unexpected stylesheet hrefs" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_stylesheet_href\"") != null);
+}
+
+test "server package validation rejects css policy variants" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "css-policy-test",
+        \\    "name": "CSS Policy Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "css-policy-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>CSS policy test</main>"},
+        \\    {"path": "styles.css", "content": ".escape { POSITION : fixed; background: URL( 'https://cdn.example.test/pixel.png'); }"},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_fixed_position\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_css_url\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {

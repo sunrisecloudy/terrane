@@ -800,6 +800,8 @@ function checkServerStatic() {
     "fn validateServerHtmlPolicy",
     "\"forbidden_inline_script\"",
     "\"forbidden_stylesheet_href\"",
+    "fn validateServerCssPolicy",
+    "\"forbidden_css_url\"",
     "fn manifestPermissionsContain",
     "fn validateServerNetworkPolicy",
     "\"invalid_network_origin\"",
