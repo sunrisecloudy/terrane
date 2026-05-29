@@ -2546,6 +2546,7 @@ fn collectWebappPackageErrors(
     if (manifest.object.get("networkPolicy")) |network_policy| {
         try validateServerNetworkPolicy(allocator, network_policy, errors);
     }
+    try validateServerMigrations(allocator, manifest, files, errors);
 
     if (findPackageFile(files, "index.html")) |html| {
         if (containsAny(html, &.{ "<script>", "onclick=", "onchange=", "javascript:" })) try errors.append(allocator, "forbidden_html_policy");
@@ -10172,6 +10173,142 @@ fn validateServerPackageBudget(
     }
 }
 
+fn validateServerMigrations(
+    allocator: std.mem.Allocator,
+    manifest: std.json.Value,
+    files: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (files != .array) return;
+    const app_id = valueString(manifest.object.get("id")) orelse return;
+    const storage_prefix = valueString(manifest.object.get("storagePrefix")) orelse return;
+    const data_version = valueI64(manifest.object.get("dataVersion")) orelse return;
+    if (data_version < 1) return;
+
+    var from: i64 = 1;
+    while (from < data_version) : (from += 1) {
+        const migration_path = try std.fmt.allocPrint(allocator, "migrations/{d}_to_{d}.json", .{ from, from + 1 });
+        defer allocator.free(migration_path);
+        if (findPackageFile(files, migration_path) == null) try errors.append(allocator, "migration_missing");
+    }
+
+    for (files.array.items) |file| {
+        if (file != .object) continue;
+        const path = valueString(file.object.get("path")) orelse continue;
+        if (!std.mem.startsWith(u8, path, "migrations/") or !std.mem.endsWith(u8, path, ".json")) continue;
+
+        const version = parseMigrationFileVersion(path) orelse {
+            try errors.append(allocator, "invalid_migration_filename");
+            continue;
+        };
+        const content = valueString(file.object.get("content")) orelse continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch {
+            try errors.append(allocator, "invalid_migration_json");
+            continue;
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            try errors.append(allocator, "invalid_migration");
+            continue;
+        }
+
+        const migration_app_id = valueString(parsed.value.object.get("appId"));
+        if (migration_app_id == null or !std.mem.eql(u8, migration_app_id.?, app_id)) {
+            try errors.append(allocator, "invalid_migration_app");
+        }
+        const from_data_version = valueI64(parsed.value.object.get("fromDataVersion"));
+        const to_data_version = valueI64(parsed.value.object.get("toDataVersion"));
+        if (from_data_version == null or to_data_version == null or
+            from_data_version.? != version.from or
+            to_data_version.? != version.to or
+            version.to != version.from + 1)
+        {
+            try errors.append(allocator, "invalid_migration_version");
+        }
+        try validateServerMigrationSteps(allocator, storage_prefix, parsed.value, errors);
+    }
+}
+
+const MigrationFileVersion = struct {
+    from: i64,
+    to: i64,
+};
+
+fn parseMigrationFileVersion(path: []const u8) ?MigrationFileVersion {
+    const prefix = "migrations/";
+    const suffix = ".json";
+    if (!std.mem.startsWith(u8, path, prefix) or !std.mem.endsWith(u8, path, suffix)) return null;
+    const stem = path[prefix.len .. path.len - suffix.len];
+    const separator = std.mem.indexOf(u8, stem, "_to_") orelse return null;
+    if (std.mem.indexOfScalar(u8, stem, '/') != null) return null;
+    const from = std.fmt.parseInt(i64, stem[0..separator], 10) catch return null;
+    const to = std.fmt.parseInt(i64, stem[separator + "_to_".len ..], 10) catch return null;
+    if (from < 1 or to < 1) return null;
+    return .{ .from = from, .to = to };
+}
+
+fn validateServerMigrationSteps(
+    allocator: std.mem.Allocator,
+    storage_prefix: []const u8,
+    migration: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    const steps = migration.object.get("steps") orelse {
+        try errors.append(allocator, "invalid_migration");
+        return;
+    };
+    if (steps != .array) {
+        try errors.append(allocator, "invalid_migration");
+        return;
+    }
+    for (steps.array.items) |step| {
+        if (step != .object) {
+            try errors.append(allocator, "invalid_migration");
+            continue;
+        }
+        const op = valueString(step.object.get("op")) orelse {
+            try errors.append(allocator, "invalid_migration_op");
+            continue;
+        };
+        if (!isAllowedMigrationOp(op)) {
+            try errors.append(allocator, "invalid_migration_op");
+        }
+        try validateMigrationStringFieldPrefix(allocator, storage_prefix, step, "key", errors);
+        try validateMigrationStringFieldPrefix(allocator, storage_prefix, step, "keyPattern", errors);
+        if (std.mem.eql(u8, op, "renameKey") or std.mem.eql(u8, op, "moveStorageKey") or std.mem.eql(u8, op, "copyKey")) {
+            try validateMigrationStringFieldPrefix(allocator, storage_prefix, step, "from", errors);
+            try validateMigrationStringFieldPrefix(allocator, storage_prefix, step, "to", errors);
+        }
+    }
+}
+
+fn isAllowedMigrationOp(op: []const u8) bool {
+    const ops = [_][]const u8{
+        "renameKey",
+        "setDefault",
+        "deleteKey",
+        "copyKey",
+        "transformEnum",
+        "moveStorageKey",
+        "deleteStorageKey",
+    };
+    for (ops) |candidate| {
+        if (std.mem.eql(u8, op, candidate)) return true;
+    }
+    return false;
+}
+
+fn validateMigrationStringFieldPrefix(
+    allocator: std.mem.Allocator,
+    storage_prefix: []const u8,
+    step: std.json.Value,
+    field: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    const value = valueString(step.object.get(field)) orelse return;
+    if (!std.mem.startsWith(u8, value, storage_prefix)) try errors.append(allocator, "invalid_migration_prefix");
+}
+
 fn validateServerNetworkPolicy(
     allocator: std.mem.Allocator,
     network_policy: std.json.Value,
@@ -10898,6 +11035,87 @@ test "server package validation rejects package files over resource budget" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"resource_budget_exceeded\"") != null);
+}
+
+test "server package validation requires consecutive migration files" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "migration-test",
+        \\    "name": "Migration Test",
+        \\    "version": "0.2.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "migration-test:",
+        \\    "dataVersion": 2,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Migration test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"migration_missing\"") != null);
+}
+
+test "server package validation rejects migration keys outside storage prefix" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "migration-prefix-test",
+        \\    "name": "Migration Prefix Test",
+        \\    "version": "0.2.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "migration-prefix-test:",
+        \\    "dataVersion": 2,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Migration prefix test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"},
+        \\    {"path": "migrations/1_to_2.json", "content": "{\"appId\":\"migration-prefix-test\",\"fromDataVersion\":1,\"toDataVersion\":2,\"steps\":[{\"op\":\"deleteKey\",\"key\":\"other:leak\"}]}"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_migration_prefix\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {
