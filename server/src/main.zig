@@ -2556,16 +2556,7 @@ fn collectWebappPackageErrors(
         try validateServerCssPolicy(allocator, css, errors);
     }
     if (findPackageFile(files, "app.js")) |js| {
-        if (containsAny(js, &.{ "eval(", "new Function(", "import(" })) try errors.append(allocator, "forbidden_eval");
-        if (containsAny(js, &.{ "navigator.serviceWorker", "serviceWorker.register" })) try errors.append(allocator, "forbidden_service_worker");
-        if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
-        if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
-        if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
-        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
-        if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
-        if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
-        if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
-        if (hasRuntimeBridgeCallMissingPermission(manifest, js)) try errors.append(allocator, "missing_permission");
+        try validateServerJsPolicy(allocator, manifest, js, errors);
     }
 }
 
@@ -10522,6 +10513,66 @@ fn isCssIdentifierChar(char: u8) bool {
     return std.ascii.isAlphanumeric(char) or char == '-' or char == '_';
 }
 
+fn validateServerJsPolicy(
+    allocator: std.mem.Allocator,
+    manifest: std.json.Value,
+    js: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (jsHasCall(js, "eval")) try errors.append(allocator, "forbidden_eval");
+    if (jsHasNewFunction(js)) try errors.append(allocator, "forbidden_function_constructor");
+    if (jsHasCall(js, "import")) try errors.append(allocator, "forbidden_dynamic_import");
+    if (containsAny(js, &.{ "navigator.serviceWorker", "serviceWorker.register" })) try errors.append(allocator, "forbidden_service_worker");
+    if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
+    if (jsHasCall(js, "fetch") or containsAny(js, &.{ "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
+    if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
+    if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
+    if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
+    if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
+    if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
+    if (hasRuntimeBridgeCallMissingPermission(manifest, js)) try errors.append(allocator, "missing_permission");
+}
+
+fn jsHasCall(source: []const u8, name: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, source, index, name)) |start| {
+        index = start + name.len;
+        if (!isJavaScriptStandaloneToken(source, start, name.len)) continue;
+        var cursor = start + name.len;
+        while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor < source.len and source[cursor] == '(') return true;
+    }
+    return false;
+}
+
+fn jsHasNewFunction(source: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, source, index, "new")) |start| {
+        index = start + "new".len;
+        if (!isJavaScriptStandaloneToken(source, start, "new".len)) continue;
+        var cursor = start + "new".len;
+        if (cursor >= source.len or !isJsonWhitespace(source[cursor])) continue;
+        while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+        const function_end = cursor + "Function".len;
+        if (function_end > source.len or !std.mem.eql(u8, source[cursor..function_end], "Function")) continue;
+        if (!isJavaScriptStandaloneToken(source, cursor, "Function".len)) continue;
+        cursor = function_end;
+        while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor < source.len and source[cursor] == '(') return true;
+    }
+    return false;
+}
+
+fn isJavaScriptStandaloneToken(source: []const u8, start: usize, len: usize) bool {
+    if (start > 0) {
+        const previous = source[start - 1];
+        if (isJavaScriptIdentifierChar(previous) or previous == '.') return false;
+    }
+    const end = start + len;
+    if (end < source.len and isJavaScriptIdentifierChar(source[end])) return false;
+    return true;
+}
+
 fn validateServerNetworkPolicy(
     allocator: std.mem.Allocator,
     network_policy: std.json.Value,
@@ -11450,6 +11501,48 @@ test "server package validation rejects css policy variants" {
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_fixed_position\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_css_url\"") != null);
+}
+
+test "server package validation rejects js policy variants" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "js-policy-test",
+        \\    "name": "JS Policy Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "js-policy-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>JS policy test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const make = new   Function(\"return 1\"); import (\"./module.js\"); fetch (\"https://example.test\");"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_function_constructor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_dynamic_import\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_network_api\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {
