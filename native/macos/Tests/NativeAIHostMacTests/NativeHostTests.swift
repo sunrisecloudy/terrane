@@ -504,6 +504,61 @@ struct NativeHostTests {
         #expect(runtimeQuery.statusCode == 200)
         #expect(runtimeQuery.body.contains(#""kind":"testId""#))
 
+        let runtimeScreenshot = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.screenshot","args":{"appId":"notes-lite","label":"control-smoke"}}"#
+        )
+        #expect(runtimeScreenshot.statusCode == 200)
+        #expect(runtimeScreenshot.body.contains(#""format":"static-html-summary""#))
+        #expect(runtimeScreenshot.body.contains(#""new-note-button""#))
+
+        let clickTarget = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.click","args":{"appId":"notes-lite","testId":"new-note-button"}}"#
+        )
+        #expect(clickTarget.statusCode == 200)
+        #expect(clickTarget.body.contains(#""tool":"runtime.click""#))
+
+        let typeTarget = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.type","args":{"appId":"notes-lite","testId":"note-title-input","text":"Hello"}} "#
+        )
+        #expect(typeTarget.statusCode == 200)
+        #expect(typeTarget.body.contains(#""value":"Hello""#))
+
+        let setValueTarget = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.set_value","args":{"appId":"notes-lite","testId":"notes-search-input","value":"bridge"}}"#
+        )
+        #expect(setValueTarget.statusCode == 200)
+        #expect(setValueTarget.body.contains(#""tool":"runtime.set_value""#))
+
+        let pressKey = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.press_key","args":{"key":"Enter"}}"#
+        )
+        #expect(pressKey.statusCode == 200)
+        #expect(pressKey.body.contains(#""key":"Enter""#))
+
+        let dragTarget = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.drag","args":{"appId":"notes-lite","selector":"main"}}"#
+        )
+        #expect(dragTarget.statusCode == 200)
+        #expect(dragTarget.body.contains(#""tool":"runtime.drag""#))
+
         let visibleAssert = try await httpRequest(
             commandURL,
             method: "POST",
@@ -881,7 +936,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 63)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 69)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

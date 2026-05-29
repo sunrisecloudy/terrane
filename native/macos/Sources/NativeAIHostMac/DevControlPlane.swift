@@ -320,8 +320,12 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: args["appId"] as? String))
         case "runtime.resource_usage":
             sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: args["appId"] as? String))
+        case "runtime.screenshot":
+            handleRuntimeScreenshot(connection, request, args: args, startedAt: startedAt)
         case "runtime.query":
             handleRuntimeQuery(connection, request, args: args, startedAt: startedAt)
+        case "runtime.click", "runtime.type", "runtime.set_value", "runtime.press_key", "runtime.drag":
+            handleRuntimeTargetCommand(connection, request, args: args, startedAt: startedAt)
         case "runtime.wait_for":
             handleRuntimeWaitFor(connection, request, args: args, startedAt: startedAt)
         case "runtime.timer_advance":
@@ -679,6 +683,43 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: runtimeQuery(appId: appId, args: args))
+    }
+
+    private func handleRuntimeScreenshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.screenshot requires appId", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: runtimeScreenshot(appId: appId, label: args["label"] as? String))
+    }
+
+    private func handleRuntimeTargetCommand(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        if request.toolName == "runtime.press_key" {
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "ok": true,
+                "key": args["key"] ?? NSNull(),
+            ])
+            return
+        }
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "\(request.toolName) requires appId", startedAt: startedAt)
+            return
+        }
+        let result = runtimeQuery(appId: appId, args: args)
+        let matches = result["matches"] as? [[String: Any]] ?? []
+        guard let target = matches.first else {
+            sendRejected(connection, request, status: 400, code: "selector.not_found", message: "Runtime target was not found in generated app HTML", startedAt: startedAt)
+            return
+        }
+        var response: [String: Any] = [
+            "ok": true,
+            "tool": request.toolName,
+            "target": target,
+        ]
+        if request.toolName == "runtime.type" || request.toolName == "runtime.set_value" {
+            response["value"] = args["value"] ?? args["text"] ?? ""
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: response)
     }
 
     private func handleRuntimeWaitFor(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -2530,6 +2571,20 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func runtimeScreenshot(appId: String, label: String?) -> [String: Any] {
+        let html = htmlForBundledApp(appId)
+        let text = htmlText(html)
+        return [
+            "ok": true,
+            "appId": appId,
+            "label": label ?? NSNull(),
+            "format": "static-html-summary",
+            "title": firstMatch(in: html, pattern: #"<title[^>]*>([\s\S]*?)</title>"#),
+            "textHash": "sha256:\(sha256Hex(text))",
+            "testIds": testIds(in: html),
+        ]
+    }
+
     private func queryMatches(html: String, args: [String: Any]) -> [[String: Any]] {
         if let testId = args["testId"] as? String, let tag = tagForAttribute(html: html, attr: "data-testid", value: testId) {
             return [["kind": "testId", "value": testId, "tag": tag]]
@@ -2556,6 +2611,12 @@ final class DevControlPlane: @unchecked Sendable {
             }
         }
         return []
+    }
+
+    private func testIds(in html: String) -> [String] {
+        regexMatches(in: html, pattern: #"\bdata-testid=["']([^"']+)["']"#)
+            .compactMap { $0[safe: 1] }
+            .sorted()
     }
 
     private func tagForAttribute(html: String, attr: String, value: String) -> String? {

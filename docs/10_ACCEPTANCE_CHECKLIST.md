@@ -68,6 +68,7 @@
 - [x] Debug dev control plane exposes DB-backed `runtime.resource_usage` through session and command routes.
 - [x] Debug dev control plane exposes static accessibility audit/snapshot/assertion tools.
 - [x] Debug dev control plane supports static `runtime.query`, `runtime.assert_visible`, and `runtime.assert_text` over generated app HTML.
+- [x] Debug dev control plane supports static `runtime.screenshot`, `runtime.click`, `runtime.type`, `runtime.set_value`, `runtime.press_key`, and `runtime.drag` controls.
 - [x] Debug dev control plane supports static `runtime.wait_for` and no-op test-mode `runtime.timer_advance`.
 - [x] Debug dev control plane exposes safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Debug dev control plane exports `db.export_debug_bundle` artifacts and records them in `backup_exports`.
