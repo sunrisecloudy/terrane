@@ -25,12 +25,12 @@
 ## Zig core
 
 - [ ] Zig core builds.
-- [ ] Zig core tests pass.
-- [ ] FFI API works.
-- [ ] `core.step` accepts valid JSON event.
-- [ ] `core.step` returns valid JSON actions.
-- [ ] Invalid input does not crash.
-- [ ] Replay is deterministic.
+- [x] Zig core tests pass.
+- [x] FFI API works.
+- [x] `core.step` accepts valid JSON event.
+- [x] `core.step` returns valid JSON actions.
+- [x] Invalid input does not crash.
+- [x] Replay is deterministic.
 
 ## Example apps
 

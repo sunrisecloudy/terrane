@@ -259,6 +259,63 @@ test "FFI create step free destroy" {
     try std.testing.expect(std.mem.indexOf(u8, json, "Task accepted") != null);
 }
 
+test "core.step accepts valid JSON and returns valid JSON actions" {
+    var core = Core{};
+    const input =
+        \\{"app":"file-transformer","event":{"type":"TransformText","payload":{"text":"Hello","mode":"lowercase"}}}
+    ;
+
+    const output = try core.step(std.testing.allocator, input);
+    defer std.testing.allocator.free(output);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value == .object);
+    const ok = parsed.value.object.get("ok") orelse return error.MissingOk;
+    try std.testing.expect(ok == .bool);
+    try std.testing.expectEqual(true, ok.bool);
+
+    const state_version = parsed.value.object.get("stateVersion") orelse return error.MissingStateVersion;
+    try std.testing.expect(state_version == .integer);
+    try std.testing.expectEqual(@as(i64, 1), state_version.integer);
+
+    const actions = parsed.value.object.get("actions") orelse return error.MissingActions;
+    try std.testing.expect(actions == .array);
+    try std.testing.expectEqual(@as(usize, 1), actions.array.items.len);
+    const action = actions.array.items[0];
+    try std.testing.expect(action == .object);
+    const action_type = action.object.get("type") orelse return error.MissingActionType;
+    try std.testing.expect(action_type == .string);
+    try std.testing.expectEqualStrings("TransformText", action_type.string);
+    const text = action.object.get("text") orelse return error.MissingActionText;
+    try std.testing.expect(text == .string);
+    try std.testing.expectEqualStrings("hello", text.string);
+}
+
+test "FFI invalid input returns structured error without crashing" {
+    const core = core_create() orelse return error.OutOfMemory;
+    defer core_destroy(core);
+
+    const input = "{not json";
+    var output: ZigCoreBuffer = undefined;
+    try std.testing.expectEqual(@as(i32, 0), core_step_json(core, input.ptr, input.len, &output));
+    defer core_free(output);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output.ptr[0..output.len], .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value == .object);
+    const ok = parsed.value.object.get("ok") orelse return error.MissingOk;
+    try std.testing.expect(ok == .bool);
+    try std.testing.expectEqual(false, ok.bool);
+    const err = parsed.value.object.get("error") orelse return error.MissingError;
+    try std.testing.expect(err == .object);
+    const code = err.object.get("code") orelse return error.MissingErrorCode;
+    try std.testing.expect(code == .string);
+    try std.testing.expectEqualStrings("invalid_json", code.string);
+}
+
 test "invalid JSON returns structured logical error" {
     var core = Core{};
     const json = try core.step(std.testing.allocator, "{bad json");
@@ -283,6 +340,25 @@ test "same initial state and event produce deterministic JSON" {
     try std.testing.expect(std.mem.indexOf(u8, out_a, "\"text\":\"hello\"") != null);
 }
 
+test "ordered event streams replay deterministically" {
+    const inputs = [_][]const u8{
+        \\{"app":"task-workbench","event":{"type":"CreateTask","payload":{"title":"Replay task"}}}
+        ,
+        \\{"app":"file-transformer","event":{"type":"TransformText","payload":{"text":"One\nTwo","mode":"reverse-lines"}}}
+        ,
+    };
+    var a = Core{};
+    var b = Core{};
+
+    for (inputs) |input| {
+        const out_a = try a.step(std.testing.allocator, input);
+        defer std.testing.allocator.free(out_a);
+        const out_b = try b.step(std.testing.allocator, input);
+        defer std.testing.allocator.free(out_b);
+        try std.testing.expectEqualStrings(out_a, out_b);
+    }
+}
+
 test "payload over limit fails safely" {
     var core = Core{};
     const input = try std.testing.allocator.alloc(u8, max_input_bytes + 1);
@@ -293,4 +369,19 @@ test "payload over limit fails safely" {
     defer std.testing.allocator.free(json);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "payload_too_large") != null);
+}
+
+test "FFI output buffers can be allocated and freed repeatedly" {
+    const core = core_create() orelse return error.OutOfMemory;
+    defer core_destroy(core);
+
+    const input =
+        \\{"app":"task-workbench","event":{"type":"UpdateTask","payload":{"id":"task-1"}}}
+    ;
+    for (0..16) |_| {
+        var output: ZigCoreBuffer = undefined;
+        try std.testing.expectEqual(@as(i32, 0), core_step_json(core, input.ptr, input.len, &output));
+        try std.testing.expect(output.len > 0);
+        core_free(output);
+    }
 }
