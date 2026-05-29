@@ -30,7 +30,7 @@ Status snapshot: **2026-05-29**.
 | `docs/10_ACCEPTANCE_CHECKLIST.md` | spec-only | qa |
 | `docs/11_AI_GENERATION_PROMPTS.md` | spec-only | codex |
 | `docs/12_RELEASE_AND_CI.md` | spec-only | platform |
-| `docs/13_EXAMPLE_APP_COVERAGE.md` | spec-only (thin — needs expansion) | qa |
+| `docs/13_EXAMPLE_APP_COVERAGE.md` | spec-only (v0.4) | qa |
 | `docs/14_CODEX_CONTROL_PLUGIN.md` | spec-only (v0.4) | codex |
 | `docs/15_MICRO_TESTING_PROTOCOL.md` | spec-only (v0.4) | qa |
 | `docs/16_CODEX_PLUGIN_IMPLEMENTATION_PLAN.md` | spec-only | codex |
