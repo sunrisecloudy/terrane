@@ -2530,6 +2530,9 @@ fn collectWebappPackageErrors(
     if (manifest.object.get("networkAllowlist") != null) {
         try errors.append(allocator, "removed_manifest_field");
     }
+    if (manifestTrustLevelIs(manifest, "bundled") and manifest.object.get("contentRating") == null) {
+        try errors.append(allocator, "missing_content_rating");
+    }
     if (valueString(manifest.object.get("id"))) |app_id| {
         if (!isValidAppId(app_id)) try errors.append(allocator, "invalid_manifest_id");
     }
@@ -2567,6 +2570,9 @@ fn collectWebappPackageErrors(
     }
     if (manifest.object.get("capabilities")) |capabilities| {
         try validateServerCapabilities(allocator, manifest, capabilities, errors);
+    }
+    if (manifest.object.get("contentRating")) |content_rating| {
+        try validateServerContentRating(allocator, content_rating, errors);
     }
     if (manifest.object.get("resourceBudget")) |resource_budget| {
         try validateServerResourceBudget(allocator, resource_budget, errors);
@@ -10493,6 +10499,76 @@ fn validateServerCapabilities(
     }
 }
 
+fn manifestTrustLevelIs(manifest: std.json.Value, expected: []const u8) bool {
+    if (manifest != .object) return false;
+    const trust = manifest.object.get("trust") orelse return false;
+    if (trust != .object) return false;
+    const level = valueString(trust.object.get("level")) orelse return false;
+    return std.mem.eql(u8, level, expected);
+}
+
+fn validateServerContentRating(
+    allocator: std.mem.Allocator,
+    content_rating: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (content_rating != .object) {
+        try errors.append(allocator, "invalid_content_rating");
+        return;
+    }
+
+    const required_keys = [_][]const u8{ "scheme", "label", "minimumAge", "descriptors" };
+    for (required_keys) |key| {
+        if (content_rating.object.get(key) == null) {
+            try errors.append(allocator, "invalid_content_rating");
+        }
+    }
+
+    const scheme = valueString(content_rating.object.get("scheme"));
+    if (scheme == null or !std.mem.eql(u8, scheme.?, "app-store")) {
+        try errors.append(allocator, "invalid_content_rating");
+    }
+
+    const label = valueString(content_rating.object.get("label"));
+    const expected_minimum_age = if (label) |actual| contentRatingMinimumAge(actual) else null;
+    if (expected_minimum_age == null) {
+        try errors.append(allocator, "invalid_content_rating");
+    } else {
+        const minimum_age = valueI64(content_rating.object.get("minimumAge"));
+        if (minimum_age == null or minimum_age.? != expected_minimum_age.?) {
+            try errors.append(allocator, "invalid_content_rating");
+        }
+    }
+
+    const descriptors = content_rating.object.get("descriptors");
+    if (descriptors == null or descriptors.? != .array) {
+        try errors.append(allocator, "invalid_content_rating");
+        return;
+    }
+    for (descriptors.?.array.items, 0..) |descriptor, index| {
+        const actual = valueString(descriptor) orelse {
+            try errors.append(allocator, "invalid_content_rating");
+            continue;
+        };
+        for (descriptors.?.array.items[0..index]) |previous| {
+            if (valueString(previous)) |previous_actual| {
+                if (std.mem.eql(u8, actual, previous_actual)) {
+                    try errors.append(allocator, "invalid_content_rating");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn contentRatingMinimumAge(label: []const u8) ?i64 {
+    if (std.mem.eql(u8, label, "4+")) return 4;
+    if (std.mem.eql(u8, label, "9+")) return 9;
+    if (std.mem.eql(u8, label, "12+")) return 12;
+    if (std.mem.eql(u8, label, "17+")) return 17;
+    return null;
+}
+
 fn manifestPermissionsContain(manifest: std.json.Value, permission: []const u8) bool {
     if (manifest != .object) return false;
     const permissions = manifest.object.get("permissions") orelse return false;
@@ -11632,12 +11708,13 @@ test "control storage helpers enforce app storage prefix" {
 test "resource budget bridge errors include repair details" {
     const details = try resourceBudgetDetailsJsonAlloc(std.testing.allocator, .{
         .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+        .app_id = "notes-lite",
         .budget = "maxBridgeCallsPerMinute",
         .current = 601,
         .max = 600,
     });
     defer std.testing.allocator.free(details);
-    try std.testing.expectEqualStrings("{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600,\"limit\":600}", details);
+    try std.testing.expectEqualStrings("{\"appId\":\"notes-lite\",\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600,\"limit\":600}", details);
 
     const response = try bridgeErrorResponseJsonWithDetailsAlloc(
         std.testing.allocator,
@@ -11728,6 +11805,88 @@ test "server package validation rejects bridge calls without manifest permission
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"missing_permission\"") != null);
+}
+
+test "server package validation requires content ratings for bundled manifests" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "bundled-rating-test",
+        \\    "name": "Bundled Rating Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "bundled-rating-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []},
+        \\    "trust": {"level": "bundled", "requiresUserApproval": false}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Bundled rating test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"missing_content_rating\"") != null);
+}
+
+test "server package validation rejects invalid content rating age bands" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "invalid-rating-test",
+        \\    "name": "Invalid Rating Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "invalid-rating-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []},
+        \\    "contentRating": {"scheme": "app-store", "label": "9+", "minimumAge": 4, "descriptors": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Invalid rating test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_content_rating\"") != null);
 }
 
 test "server package validation rejects package files over resource budget" {

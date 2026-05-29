@@ -809,6 +809,9 @@ function checkServerStatic() {
     "fn validateServerResourceBudget",
     "fn validateServerPackageBudget",
     "\"resource_budget_exceeded\"",
+    "fn validateServerContentRating",
+    "\"missing_content_rating\"",
+    "\"invalid_content_rating\"",
     "fn validateServerMigrations",
     "\"migration_missing\"",
     "\"invalid_migration_prefix\"",
@@ -836,7 +839,7 @@ function checkServerStatic() {
       throw new Error(`server/src/main.zig missing ${snippet}`);
     }
   }
-  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions,timers,notifications,snapshot-compare,fault-injection install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export-import rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods examples=static,json";
+  return "bridge=core.step,runtime.capabilities,storage,mock-dialogs,notification,mock-network,app.log permissions=active-install budgets=bridge,network,logs,storage control=command,open,reset,logs,rollback,lifecycle,snapshot,migration,network-mocks,dialog-mocks,bridge-call,core-replay,assertions,timers,notifications,snapshot-compare,fault-injection install=migration-chain db=v0.4-schema,safe-token-file,auth-ban,backup-export-import rollback=data-version-guard production=control-disabled unsupported=platform_unsupported validate=package-policy,testids,methods,content-rating examples=static,json";
 }
 
 function checkNativeStatic() {
