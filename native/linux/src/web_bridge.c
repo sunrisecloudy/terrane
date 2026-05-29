@@ -503,6 +503,18 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
   JsonObject *params = json_object_get_object_member(root, "params");
   request.params = params == NULL ? json_object_new() : json_object_ref(params);
 
+  if (json_object_has_member(request.params, "appId")) {
+    JsonObject *details = json_object_new();
+    json_object_set_string_member(details, "field", "appId");
+    JsonNode *response = bridge_failure(&request, "invalid_request", "Bridge params must not include appId; app id is channel-derived", details);
+    gchar *text = bridge_response_to_string(response);
+    record_bridge_call(bridge, &request, response, started_at_us);
+    json_node_unref(response);
+    bridge_request_clear(&request);
+    g_object_unref(parser);
+    return text;
+  }
+
   const gchar *permission = permission_for_bridge_method(request.method);
   if (permission != NULL && !approved_permissions_contains(&request.context, permission)) {
     JsonObject *details = json_object_new();

@@ -76,6 +76,16 @@ class NativeBridge(
             respond(responseText)
         }
 
+        if (request.params.has("appId")) {
+            respondWithLog(BridgeResponse.failure(
+                request.id,
+                "invalid_request",
+                "Bridge params must not include appId; app id is channel-derived",
+                JSONObject(mapOf("field" to "appId")),
+            ).toString())
+            return
+        }
+
         val permission = permissionForBridgeMethod(request.method)
         if (permission != null && !request.context.approvedPermissions.contains(permission)) {
             respondWithLog(BridgeResponse.failure(

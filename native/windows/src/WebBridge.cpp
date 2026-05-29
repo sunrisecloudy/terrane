@@ -99,6 +99,19 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
   request.method = parsed.GetNamedString(L"method", L"").c_str();
   request.params = parsed.GetNamedObject(L"params", json::JsonObject());
 
+  if (request.params.HasKey(L"appId")) {
+    json::JsonObject details;
+    details.Insert(L"field", json::JsonValue::CreateStringValue(L"appId"));
+    auto response = BridgeResponse::Failure(
+        request.id,
+        request.hasId,
+        L"invalid_request",
+        L"Bridge params must not include appId; app id is channel-derived",
+        details);
+    RecordBridgeCall(request, response, startedAtMs);
+    return response.Stringify().c_str();
+  }
+
   if (auto permission = permissionForBridgeMethod(request.method);
       permission.has_value() && !request.context.approvedPermissions.contains(permission.value())) {
     json::JsonObject details;

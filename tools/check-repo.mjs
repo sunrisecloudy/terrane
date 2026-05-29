@@ -882,6 +882,18 @@ function checkNativeStatic() {
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
   const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDialogs.kt"), "utf8");
+  const nativeNoAppIdParams = [
+    [macBridge, 'request.params["appId"] != nil'],
+    [iosBridge, 'request.params["appId"] != nil'],
+    [androidBridge, 'request.params.has("appId")'],
+    [windowsBridge, 'request.params.HasKey(L"appId")'],
+    [linuxBridge, 'json_object_has_member(request.params, "appId")'],
+  ];
+  for (const [source, snippet] of nativeNoAppIdParams) {
+    if (!source.includes(snippet) || !source.includes("Bridge params must not include appId; app id is channel-derived")) {
+      throw new Error("native bridges must reject appId in bridge params using channel-derived context");
+    }
+  }
   const macRequired = [
     '"target": "macos"',
     '"appId": request.context.appId',

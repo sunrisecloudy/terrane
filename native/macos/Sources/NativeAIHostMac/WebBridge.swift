@@ -53,6 +53,17 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
 
         let request = BridgeRequest(body: envelope.requestBody, context: AppSandboxContext(message: message, envelope: envelope))
         let startedAt = Date()
+        if request.params["appId"] != nil {
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "invalid_request",
+                message: "Bridge params must not include appId; app id is channel-derived",
+                details: ["field": "appId"]
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            replyHandler(response.asDictionary(), nil)
+            return
+        }
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
             let response = BridgeResponse.failure(

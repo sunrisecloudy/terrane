@@ -333,8 +333,11 @@ Create malicious packages under `tests/security/malicious-packages/`:
 - Excessive bridge calls.
 - Huge package size.
 - Huge storage write.
+- Attempts to pass `appId` inside bridge params instead of using the channel-derived app id.
 
 Expected result: rejected at install or denied at runtime.
+
+Native host-side `appId` request-body rejection is covered by `tools/fake-platform-host/test/native-channel-appid-source.test.js`, with macOS/iOS compile coverage in their native build tests.
 
 ## 11. Performance tests
 

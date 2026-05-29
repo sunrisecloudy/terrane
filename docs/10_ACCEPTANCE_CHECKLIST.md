@@ -140,6 +140,7 @@
 - [x] Direct network use rejected by validator.
 - [x] Remote scripts rejected.
 - [x] Quota exceeded path tested.
+- [x] Native bridges reject `appId` in bridge params and use the channel-derived app id.
 
 ## Tests
 
