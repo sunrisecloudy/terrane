@@ -67,14 +67,27 @@ const targetAssertions = [
     name: "Windows",
     files: [
       {
+        path: "native/windows/src/PlatformDatabase.h",
+        contains: ["class PlatformDatabase", "sqlite3* handle() const"],
+      },
+      {
+        path: "native/windows/src/PlatformDatabase.cpp",
+        contains: [
+          "PRAGMA foreign_keys = ON",
+          "PRAGMA integrity_check",
+          'L"db" / L"sqlite"',
+          "CREATE TABLE IF NOT EXISTS apps",
+        ],
+      },
+      {
         path: "native/windows/src/PlatformStorage.h",
-        contains: ["#include <winsqlite/winsqlite3.h>", "sqlite3* db_"],
+        contains: ['#include "PlatformDatabase.h"', "PlatformDatabase database_"],
       },
       {
         path: "native/windows/src/PlatformStorage.cpp",
         contains: [
-          "sqlite3_open16",
-          "CREATE TABLE IF NOT EXISTS app_storage",
+          "database_(std::move(databasePath))",
+          "INSERT OR IGNORE INTO apps",
           "WHERE app_id = ? AND key = ?",
           "request.context.appId",
         ],
@@ -85,7 +98,7 @@ const targetAssertions = [
       },
       {
         path: "native/windows/CMakeLists.txt",
-        contains: ["winsqlite3"],
+        contains: ["winsqlite3", "src/PlatformDatabase.cpp"],
       },
     ],
   },

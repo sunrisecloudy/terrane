@@ -1,25 +1,26 @@
 #include "PlatformStorage.h"
 
-#include <chrono>
+#include <utility>
 
 namespace nativeai {
 namespace json = winrt::Windows::Data::Json;
 
-PlatformStorage::PlatformStorage(std::filesystem::path databasePath) {
-  std::filesystem::create_directories(databasePath.parent_path());
-  sqlite3_open16(databasePath.c_str(), &db_);
-  sqlite3_exec(
-      db_,
-      "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));",
-      nullptr,
-      nullptr,
-      nullptr);
-}
+PlatformStorage::PlatformStorage(std::filesystem::path databasePath) : database_(std::move(databasePath)) {}
 
-PlatformStorage::~PlatformStorage() {
-  if (db_ != nullptr) {
-    sqlite3_close(db_);
-  }
+PlatformStorage::~PlatformStorage() = default;
+
+void PlatformStorage::EnsureAppRow(std::wstring const& appId) {
+  sqlite3_stmt* statement = nullptr;
+  sqlite3_prepare_v2(
+      database_.handle(),
+      "INSERT OR IGNORE INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', 1, datetime('now'), datetime('now'))",
+      -1,
+      &statement,
+      nullptr);
+  sqlite3_bind_text(statement, 1, WideToUtf8(appId).c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, WideToUtf8(appId).c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
 }
 
 json::JsonObject PlatformStorage::Get(BridgeRequest const& request) {
@@ -32,7 +33,7 @@ json::JsonObject PlatformStorage::Get(BridgeRequest const& request) {
   }
 
   sqlite3_stmt* statement = nullptr;
-  sqlite3_prepare_v2(db_, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, nullptr);
+  sqlite3_prepare_v2(database_.handle(), "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, nullptr);
   sqlite3_bind_text(statement, 1, WideToUtf8(request.context.appId).c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, WideToUtf8(key).c_str(), -1, SQLITE_TRANSIENT);
 
@@ -59,11 +60,12 @@ json::JsonObject PlatformStorage::Set(BridgeRequest const& request) {
   if (!HasStoragePrefix(request, key)) {
     return storagePrefixFailure(request, key);
   }
+  EnsureAppRow(request.context.appId);
 
   auto value = request.params.HasKey(L"value") ? request.params.GetNamedValue(L"value").Stringify() : L"null";
   sqlite3_stmt* statement = nullptr;
   sqlite3_prepare_v2(
-      db_,
+      database_.handle(),
       "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, datetime('now')) "
       "ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
       -1,
@@ -91,7 +93,7 @@ json::JsonObject PlatformStorage::Remove(BridgeRequest const& request) {
   }
 
   sqlite3_stmt* statement = nullptr;
-  sqlite3_prepare_v2(db_, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, nullptr);
+  sqlite3_prepare_v2(database_.handle(), "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, nullptr);
   sqlite3_bind_text(statement, 1, WideToUtf8(request.context.appId).c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, WideToUtf8(key).c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_step(statement);
@@ -112,7 +114,7 @@ json::JsonObject PlatformStorage::List(BridgeRequest const& request) {
   }
 
   sqlite3_stmt* statement = nullptr;
-  sqlite3_prepare_v2(db_, "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key", -1, &statement, nullptr);
+  sqlite3_prepare_v2(database_.handle(), "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key", -1, &statement, nullptr);
   sqlite3_bind_text(statement, 1, WideToUtf8(request.context.appId).c_str(), -1, SQLITE_TRANSIENT);
   auto likePrefix = WideToUtf8(prefix) + "%";
   sqlite3_bind_text(statement, 2, likePrefix.c_str(), -1, SQLITE_TRANSIENT);

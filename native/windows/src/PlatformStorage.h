@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BridgeTypes.h"
+#include "PlatformDatabase.h"
 
 #include <filesystem>
 #include <winsqlite/winsqlite3.h>
@@ -21,10 +22,11 @@ class PlatformStorage {
   winrt::Windows::Data::Json::JsonObject List(BridgeRequest const& request);
 
  private:
+  void EnsureAppRow(std::wstring const& appId);
   winrt::Windows::Data::Json::JsonObject storagePrefixFailure(BridgeRequest const& request, std::wstring const& key);
   bool HasStoragePrefix(BridgeRequest const& request, std::wstring const& key) const;
 
-  sqlite3* db_ = nullptr;
+  PlatformDatabase database_;
 };
 
 }  // namespace nativeai

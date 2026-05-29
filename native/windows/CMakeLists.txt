@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(NativeAIWebappHost WIN32
   src/main.cpp
   src/BridgeTypes.cpp
+  src/PlatformDatabase.cpp
   src/WebViewHost.cpp
   src/WebBridge.cpp
   src/PlatformStorage.cpp
