@@ -4,6 +4,63 @@
 
 static const gchar *k_runtime_scheme = "app-runtime";
 
+static gboolean logical_path_is_allowed(const gchar *path) {
+  return path != NULL &&
+         path[0] != '\0' &&
+         strstr(path, "..") == NULL &&
+         strchr(path, '\\') == NULL &&
+         (g_str_has_prefix(path, "runtime/") || g_str_has_prefix(path, "webapps/examples/"));
+}
+
+static gchar *resource_path_for_logical_path(const gchar *root, const gchar *logical_path) {
+  if (!logical_path_is_allowed(logical_path)) {
+    return NULL;
+  }
+  if (g_str_has_prefix(logical_path, "runtime/")) {
+    return g_build_filename(root, "runtime-web", logical_path + strlen("runtime/"), NULL);
+  }
+  return g_build_filename(root, logical_path, NULL);
+}
+
+static gchar *logical_path_for_runtime_uri(const gchar *uri) {
+  if (!g_str_has_prefix(uri, "app-runtime://")) {
+    return g_strdup("runtime/index.html");
+  }
+
+  const gchar *authority_and_path = uri + strlen("app-runtime://");
+  const gchar *slash = strchr(authority_and_path, '/');
+  g_autofree gchar *host = slash == NULL ? g_strdup(authority_and_path) : g_strndup(authority_and_path, slash - authority_and_path);
+  const gchar *path = slash == NULL ? "" : slash + 1;
+
+  if (g_strcmp0(host, "runtime") == 0) {
+    if (path[0] == '\0' || g_strcmp0(path, "index.html") == 0) {
+      return g_strdup("runtime/index.html");
+    }
+    return g_strdup(path);
+  }
+
+  if (path[0] == '\0') {
+    return g_strdup(host);
+  }
+  return g_strdup_printf("%s/%s", host, path);
+}
+
+static const gchar *content_type_for_path(const gchar *path) {
+  if (g_str_has_suffix(path, ".html")) {
+    return "text/html";
+  }
+  if (g_str_has_suffix(path, ".css")) {
+    return "text/css";
+  }
+  if (g_str_has_suffix(path, ".js")) {
+    return "text/javascript";
+  }
+  if (g_str_has_suffix(path, ".json")) {
+    return "application/json";
+  }
+  return "text/plain";
+}
+
 static gchar *repo_root(void) {
   g_autofree gchar *cwd = g_get_current_dir();
   gchar *current = g_strdup(cwd);
@@ -222,11 +279,20 @@ static void runtime_scheme_cb(WebKitURISchemeRequest *request, gpointer user_dat
   (void)user_data;
   const gchar *uri = webkit_uri_scheme_request_get_uri(request);
   g_autofree gchar *root = repo_root();
-  const gchar *path = g_str_has_prefix(uri, "app-runtime://") ? uri + strlen("app-runtime://") : "runtime/index.html";
-  g_autofree gchar *file_path = g_build_filename(root, path, NULL);
+  g_autofree gchar *logical_path = logical_path_for_runtime_uri(uri);
+  g_autofree gchar *file_path = resource_path_for_logical_path(root, logical_path);
+  if (file_path == NULL) {
+    webkit_uri_scheme_request_finish_error(request, g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Runtime resource was not found"));
+    return;
+  }
   GFile *file = g_file_new_for_path(file_path);
   GFileInputStream *stream = g_file_read(file, NULL, NULL);
-  webkit_uri_scheme_request_finish(request, G_INPUT_STREAM(stream), -1, "text/html");
+  if (stream == NULL) {
+    webkit_uri_scheme_request_finish_error(request, g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Runtime resource was not found"));
+    g_clear_object(&file);
+    return;
+  }
+  webkit_uri_scheme_request_finish(request, G_INPUT_STREAM(stream), -1, content_type_for_path(logical_path));
   g_clear_object(&stream);
   g_clear_object(&file);
 }
@@ -303,7 +369,7 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));
   g_autofree gchar *db_path = database_path();
   host->bridge = web_bridge_new(db_path, GTK_WINDOW(host->window));
-  webkit_web_view_load_uri(host->web_view, "app-runtime://runtime-web/index.html");
+  webkit_web_view_load_uri(host->web_view, "app-runtime://runtime/index.html");
   return host;
 }
 
