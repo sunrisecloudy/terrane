@@ -258,13 +258,19 @@ function checkCiWorkflow() {
     "tools/fake-platform-host",
     "tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --no-out",
     "tools/codex-platform-mcp",
+    "linux-native-smoke",
+    "NATIVE_AI_LINUX_SMOKE_LAUNCH",
+    "libwebkitgtk-6.0-dev",
+    "windows-native-smoke",
+    "NATIVE_AI_WINDOWS_SMOKE_LAUNCH",
+    "NATIVE_AI_WEBVIEW2_NUGET_DIR",
   ];
   for (const snippet of required) {
     if (!workflow.includes(snippet)) {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=smoke,native=linux/windows-smoke";
 }
 
 function checkPerformanceHarness() {

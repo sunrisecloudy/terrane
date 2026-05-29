@@ -139,7 +139,7 @@ Status snapshot: **2026-05-29**.
 
 ## CI
 
-Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-repo.mjs`, Zig core/server tests, fake-host tests, fake-host performance smoke, and Codex MCP contract tests. `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI gates:
+Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-repo.mjs`, Zig core/server tests, fake-host tests, fake-host performance smoke, Codex MCP contract tests, plus Linux GTK/WebKitGTK and Windows WebView2 native launch smoke jobs. `docs/12_RELEASE_AND_CI.md` describes the full matrix. First CI gates:
 
 1. **JSON validate** — every JSON in the repo parses; every fixture validates against its schema.
 2. **SQLite migrate** — `db/sqlite/*.sql` applies cleanly to an in-memory SQLite, required tables present.
@@ -148,6 +148,8 @@ Initial remote CI is wired in `.github/workflows/ci.yml` around `tools/check-rep
 5. **Spec lint** — section numbering contiguous; no `addJavascriptInterface` in native source; no `networkAllowlist` in manifests.
 6. **Zig tests** — install Zig 0.15.2 and SQLite headers, then run `zig build test` in `zig-core/` and `server/`.
 7. **Performance smoke** — run the fake-host latency harness with reduced CI samples to verify p50/p95 reporting and the storage/core control path.
+8. **Linux native smoke** — install GTK4/WebKitGTK/Meson/Xvfb dependencies on `ubuntu-24.04`, build the Linux host, launch it under Xvfb/DBus, and verify runtime load, bridge-backed storage persistence, and `libzig_core.so` backed `core.step`.
+9. **Windows native smoke** — download the pinned WebView2 SDK package on `windows-2022`, build the C++/WinRT host with CMake, launch it, and verify runtime load, bridge-backed storage persistence, and `zig_core.dll` backed `core.step`.
 
 ## How to update this file
 

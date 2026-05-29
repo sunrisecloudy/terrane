@@ -115,12 +115,16 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
 }
 
 function runSmoke(binaryPath, marker, env) {
-  const args = [];
+  let args = [];
   let command = binaryPath;
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     assert.equal(commandWorks("xvfb-run"), true, "xvfb-run is required for headless Linux smoke");
     command = "xvfb-run";
     args.push("-a", binaryPath);
+  }
+  if (commandWorks("dbus-run-session", ["--version"])) {
+    args = ["--", command, ...args];
+    command = "dbus-run-session";
   }
 
   const result = spawnSync(command, args, { env, cwd: repoRoot, encoding: "utf8", timeout: 30_000 });

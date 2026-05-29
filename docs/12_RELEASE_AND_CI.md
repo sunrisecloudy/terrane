@@ -52,22 +52,22 @@ Platform commands will vary by host OS.
 ## 4. Platform CI matrix
 
 ```text
-ubuntu-latest:
+ubuntu-24.04:
   Zig core tests
   server tests
   runtime tests
   package validator
-  Linux shell build where dependencies are available
+  Linux shell build and WebKitGTK smoke on ubuntu-24.04
 
 macos-latest:
   Zig core macOS/iOS build
   macOS shell build
   iOS simulator smoke
 
-windows-latest:
+windows-2022:
   Zig core Windows build
-  Windows shell build
-  WebView2 smoke where possible
+  Windows shell build on windows-2022
+  WebView2 smoke with the pinned WebView2 SDK package
 
 android emulator job:
   Android debug build
@@ -148,8 +148,8 @@ Optional/manual jobs:
 
 - iOS simulator smoke.
 - Android emulator smoke.
-- Windows WebView2 smoke.
-- Linux WebKitGTK smoke.
+- Release packaging/signing smoke.
+- Store-specific submission dry runs.
 
 The fake host is required so Codex can test the MCP server without needing every native toolchain installed.
 

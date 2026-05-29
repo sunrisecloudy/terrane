@@ -56,3 +56,80 @@ jobs:
       - name: Codex MCP tool contract
         working-directory: tools/codex-platform-mcp
         run: npm run build
+
+  linux-native-smoke:
+    name: Linux Native Smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            dbus-x11 \
+            libgtk-4-dev \
+            libjson-glib-dev \
+            libsoup-3.0-dev \
+            libsqlite3-dev \
+            libwebkitgtk-6.0-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            xvfb
+
+      - name: Linux native launch smoke
+        env:
+          GSETTINGS_BACKEND: memory
+          NATIVE_AI_LINUX_SMOKE_LAUNCH: "1"
+          NO_AT_BRIDGE: "1"
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+        run: node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js
+
+  windows-native-smoke:
+    name: Windows Native Smoke
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install WebView2 SDK
+        shell: pwsh
+        run: |
+          $version = "1.0.2592.51"
+          $packageRoot = Join-Path $env:RUNNER_TEMP "webview2"
+          $archive = Join-Path $env:RUNNER_TEMP "Microsoft.Web.WebView2.$version.zip"
+          Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$version" -OutFile $archive
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          Expand-Archive -Path $archive -DestinationPath $packageRoot
+          "NATIVE_AI_WEBVIEW2_NUGET_DIR=$packageRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Windows native launch smoke
+        env:
+          NATIVE_AI_WINDOWS_SMOKE_LAUNCH: "1"
+        run: node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js
