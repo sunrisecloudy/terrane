@@ -17,6 +17,10 @@ test("macOS dev control signs packages with Ed25519 instead of none-dev", () => 
   );
 
   assert.match(control, /Curve25519\.Signing\.PrivateKey/);
+  assert.match(control, /SecItemCopyMatching/);
+  assert.match(control, /SecItemAdd/);
+  assert.match(control, /kSecAttrAccessibleWhenUnlocked/);
+  assert.match(control, /"storage": "keychain"/);
   assert.match(control, /"algorithm": "ed25519"/);
   assert.match(control, /"permissionsHash": hashes\["permissionsHash"\]/);
   assert.match(control, /"policyHash": hashes\["policyHash"\]/);
@@ -24,6 +28,7 @@ test("macOS dev control signs packages with Ed25519 instead of none-dev", () => 
   assert.match(control, /signingKey\.signature/);
   assert.doesNotMatch(control, /"algorithm": "none-dev"/);
   assert.match(tests, /platform\.sign_webapp_package/);
+  assert.match(tests, /debugControlPlanePersistsSigningKeyInKeychain/);
   assert.match(tests, /signature\["algorithm"\] as\? String == "ed25519"/);
   assert.match(tests, /pendingSignature\["algorithm"\] as\? String == "ed25519"/);
 });

@@ -297,13 +297,53 @@ struct NativeHostTests {
         #expect(rollbackEvent.previousInstallId == "install-v2")
     }
 
+    @Test("debug control plane persists its signing key in Keychain")
+    func debugControlPlanePersistsSigningKeyInKeychain() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-signing-key-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "native-ai-macos-signing-key-\(UUID().uuidString)"
+        DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
+        }
+
+        let first = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tempDir.appendingPathComponent("first.token"),
+            databaseURL: tempDir.appendingPathComponent("first.sqlite"),
+            tokenOverride: "first-token",
+            signingKeyAccount: signingKeyAccount
+        ))
+        let firstKeyId = first.platformSigningKeyId
+        first.stop()
+
+        let second = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tempDir.appendingPathComponent("second.token"),
+            databaseURL: tempDir.appendingPathComponent("second.sqlite"),
+            tokenOverride: "second-token",
+            signingKeyAccount: signingKeyAccount
+        ))
+        defer {
+            second.stop()
+        }
+
+        #expect(second.platformSigningKeyId == firstKeyId)
+        #expect(second.platformSigningKeyId.hasPrefix("platform-host:macos:"))
+    }
+
     @Test("debug control plane writes token file, authenticates health, and audits requests")
     func debugControlPlaneAuthenticatesHealthAndAuditsRequests() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("native-ai-macos-control-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "native-ai-macos-control-\(UUID().uuidString)"
+        DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
+            DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
         }
         let tokenURL = tempDir.appendingPathComponent("control.token")
         let dbURL = tempDir.appendingPathComponent("platform.sqlite")
@@ -312,7 +352,8 @@ struct NativeHostTests {
             port: 0,
             tokenFileURL: tokenURL,
             databaseURL: dbURL,
-            tokenOverride: nil
+            tokenOverride: nil,
+            signingKeyAccount: signingKeyAccount
         ))
         try controlPlane.start(waitUntilReady: true)
         defer {
@@ -415,6 +456,8 @@ struct NativeHostTests {
         #expect(authorized.statusCode == 200)
         #expect(authorized.body.contains(#""platform":"macos""#))
         #expect(authorized.body.contains(#""devMode":true"#))
+        #expect(authorized.body.contains(#""signingPublicKey":{"#))
+        #expect(authorized.body.contains(#""storage":"keychain""#))
 
         let sessionURL = URL(string: "http://127.0.0.1:\(port)/control/sessions")!
         let session = try await httpRequest(

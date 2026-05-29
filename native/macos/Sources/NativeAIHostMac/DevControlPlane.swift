@@ -13,13 +13,16 @@ final class DevControlPlane: @unchecked Sendable {
         var tokenFileURL: URL
         var databaseURL: URL?
         var tokenOverride: String?
+        var signingKeyAccount = "native-ai-webapp.macos.dev-control.platform-key"
 
         static func defaultConfiguration() -> Configuration {
             Configuration(
                 port: UInt16(ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_CONTROL_PORT"] ?? ""),
                 tokenFileURL: defaultTokenFileURL(),
                 databaseURL: nil,
-                tokenOverride: nil
+                tokenOverride: nil,
+                signingKeyAccount: ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_SIGNING_KEY_ACCOUNT"]
+                    ?? "native-ai-webapp.macos.dev-control.platform-key"
             )
         }
 
@@ -34,6 +37,7 @@ final class DevControlPlane: @unchecked Sendable {
         case randomTokenFailed
         case listenerNotReady
         case portUnavailable
+        case signingKeyUnavailable(OSStatus)
     }
 
     private struct InjectedFault {
@@ -66,12 +70,14 @@ final class DevControlPlane: @unchecked Sendable {
     private let database: PlatformDatabase
     private let databaseURL: URL?
     private let core = ZigCoreBridge()
-    private let signingKey = Curve25519.Signing.PrivateKey()
+    private let signingKey: Curve25519.Signing.PrivateKey
+    private let signingKeyAccount: String
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
     private var activeRuntimeSessionId: String?
     private var activeAppId: String?
+    private static let signingKeyService = "native-ai-webapp.macos.dev-control"
     private static let snapshotTypes: Set<String> = [
         "bug-report",
         "pre-install",
@@ -86,12 +92,22 @@ final class DevControlPlane: @unchecked Sendable {
         listener?.port?.rawValue
     }
 
+    var platformSigningKeyId: String {
+        signingKeyId()
+    }
+
+    static func deleteSigningKeyForTests(account: String) {
+        _ = SecItemDelete(signingKeyQuery(account: account) as CFDictionary)
+    }
+
     init(configuration: Configuration = .defaultConfiguration()) throws {
         self.token = try configuration.tokenOverride ?? Self.generateToken()
         self.tokenFileURL = configuration.tokenFileURL
         self.controlSessionId = "control_\(UUID().uuidString.lowercased())"
         self.databaseURL = configuration.databaseURL
         self.database = PlatformDatabase(databaseURL: configuration.databaseURL)
+        self.signingKeyAccount = configuration.signingKeyAccount
+        self.signingKey = try Self.loadOrCreateSigningKey(account: configuration.signingKeyAccount)
         try writeTokenFile()
         try createControlSession()
         try configureListener(port: configuration.port)
@@ -509,6 +525,8 @@ final class DevControlPlane: @unchecked Sendable {
             "devMode": true,
             "controlSessionId": controlSessionId,
             "status": sessionStatus,
+            "keyId": signingKeyId(),
+            "signingPublicKey": signingPublicKeyDescriptor(),
         ]
     }
 
@@ -5096,8 +5114,81 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private static func loadOrCreateSigningKey(account: String) throws -> Curve25519.Signing.PrivateKey {
+        if let key = try loadSigningKey(account: account) {
+            return key
+        }
+        let key = Curve25519.Signing.PrivateKey()
+        try storeSigningKey(key, account: account)
+        return key
+    }
+
+    private static func loadSigningKey(account: String) throws -> Curve25519.Signing.PrivateKey? {
+        var query = signingKeyQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw ControlError.signingKeyUnavailable(status)
+        }
+        guard let data = item as? Data else {
+            throw ControlError.signingKeyUnavailable(errSecDecode)
+        }
+        do {
+            return try Curve25519.Signing.PrivateKey(rawRepresentation: data)
+        } catch {
+            _ = SecItemDelete(signingKeyQuery(account: account) as CFDictionary)
+            return nil
+        }
+    }
+
+    private static func storeSigningKey(_ key: Curve25519.Signing.PrivateKey, account: String) throws {
+        var attributes = signingKeyQuery(account: account)
+        attributes[kSecValueData as String] = key.rawRepresentation
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        if status == errSecSuccess {
+            return
+        }
+        if status == errSecDuplicateItem {
+            let updateStatus = SecItemUpdate(
+                signingKeyQuery(account: account) as CFDictionary,
+                [kSecValueData as String: key.rawRepresentation] as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw ControlError.signingKeyUnavailable(updateStatus)
+            }
+            return
+        }
+        throw ControlError.signingKeyUnavailable(status)
+    }
+
+    private static func signingKeyQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: signingKeyService,
+            kSecAttrAccount as String: account,
+        ]
+    }
+
     private func signingKeyId() -> String {
         "platform-host:macos:\(sha256Hex(signingKey.publicKey.rawRepresentation).prefix(16))"
+    }
+
+    private func signingPublicKeyDescriptor() -> [String: Any] {
+        [
+            "algorithm": "ed25519",
+            "keyId": signingKeyId(),
+            "format": "raw",
+            "publicKey": signingKey.publicKey.rawRepresentation.base64EncodedString(),
+            "storage": "keychain",
+        ]
     }
 
     private func signPayload(_ payload: String) -> String {
