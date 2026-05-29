@@ -39,6 +39,12 @@ const NETWORK_POLICY_ENTRY_KEYS = new Set([
   "timeoutMs",
 ]);
 const NETWORK_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const CONTENT_RATING_MINIMUM_AGE = new Map([
+  ["4+", 4],
+  ["9+", 9],
+  ["12+", 12],
+  ["17+", 17],
+]);
 const METHOD_PERMISSIONS = new Map([
   ["core.step", "core.step"],
   ["storage.get", "storage.read"],
@@ -225,6 +231,12 @@ function validateManifest(manifest, errors) {
     }));
   }
 
+  if (manifest.trust?.level === "bundled" && !manifest.contentRating) {
+    errors.push(issue("missing_content_rating", "bundled manifests require contentRating for iOS app indexing", {
+      field: "contentRating",
+    }));
+  }
+
   if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9-]{2,63}$/.test(manifest.id)) {
     errors.push(issue("invalid_manifest_id", "manifest.id must be lowercase kebab-case", { value: manifest.id }));
   }
@@ -280,8 +292,47 @@ function validateManifest(manifest, errors) {
     }
   }
 
+  if ("contentRating" in manifest) {
+    validateContentRating(manifest.contentRating, errors);
+  }
   validateResourceBudgetShape(manifest.resourceBudget, errors);
   validateNetworkPolicy(manifest.networkPolicy, errors);
+}
+
+function validateContentRating(contentRating, errors) {
+  if (!contentRating || typeof contentRating !== "object" || Array.isArray(contentRating)) {
+    errors.push(issue("invalid_content_rating", "manifest.contentRating must be an object", {}));
+    return;
+  }
+
+  for (const key of ["scheme", "label", "minimumAge", "descriptors"]) {
+    if (!(key in contentRating)) {
+      errors.push(issue("invalid_content_rating", `manifest.contentRating.${key} is required`, { key }));
+    }
+  }
+  if (contentRating.scheme !== "app-store") {
+    errors.push(issue("invalid_content_rating", "manifest.contentRating.scheme must be app-store", {
+      value: contentRating.scheme,
+    }));
+  }
+  const expectedMinimumAge = CONTENT_RATING_MINIMUM_AGE.get(contentRating.label);
+  if (!expectedMinimumAge) {
+    errors.push(issue("invalid_content_rating", "manifest.contentRating.label must be an App Store age band", {
+      value: contentRating.label,
+    }));
+  } else if (contentRating.minimumAge !== expectedMinimumAge) {
+    errors.push(issue("invalid_content_rating", "manifest.contentRating.minimumAge must match label", {
+      label: contentRating.label,
+      expected: expectedMinimumAge,
+      actual: contentRating.minimumAge,
+    }));
+  }
+  validateUniqueStringArray(
+    contentRating.descriptors,
+    "invalid_content_rating",
+    "manifest.contentRating.descriptors must be a unique string array",
+    errors,
+  );
 }
 
 function validateResourceBudgetShape(resourceBudget, errors) {

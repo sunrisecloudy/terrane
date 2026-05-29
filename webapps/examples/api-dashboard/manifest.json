@@ -5,6 +5,12 @@
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
   "description": "Network request demo with response table, tiny chart, and saved endpoint history.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "network.request",
     "storage.read",

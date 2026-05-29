@@ -273,6 +273,60 @@ test("runtime launcher, sandbox, bridge calls, debug log, and structured errors 
   }
 });
 
+test("runtime uses host app index with content ratings when available", async () => {
+  const manifestsById = new Map([
+    [
+      "notes-lite",
+      {
+        ...defaultRuntimeManifest(),
+        id: "notes-lite",
+        name: "Notes Lite",
+        description: "Allowed by the host content rating gate.",
+        storagePrefix: "notes-lite:",
+        permissions: ["storage.read"],
+      },
+    ],
+    [
+      "api-dashboard",
+      {
+        ...defaultRuntimeManifest(),
+        id: "api-dashboard",
+        name: "API Dashboard",
+        description: "Filtered out by the host app index.",
+        storagePrefix: "api-dashboard:",
+        permissions: ["storage.read"],
+      },
+    ],
+  ]);
+  const appIndex = {
+    source: "ios-bundled",
+    apps: [
+      {
+        id: "notes-lite",
+        name: "Notes Lite",
+        description: "Allowed by the host content rating gate.",
+        version: "0.1.0",
+        contentRating: { scheme: "app-store", label: "4+", minimumAge: 4, descriptors: [] },
+      },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, manifestsById });
+  try {
+    await loadRuntime(harness);
+    assert.equal(harness.fetchState.appIndexRequests, 1);
+    assert.equal(harness.document.getElementById("app-list").children.length, 1);
+    const appButton = harness.document.getElementById("app-list").children[0];
+    assert.equal(appButton.querySelector("strong").textContent, "Notes Lite");
+    assert.match(appButton.querySelector("span").textContent, /notes-lite v0\.1\.0 · 4\+/);
+
+    const frame = await mountAppAtIndex(harness, 0);
+    assert.equal(frame.title, "Notes Lite");
+    assert.match(frame.srcdoc, /<base href="\/webapps\/examples\/notes-lite\/">/);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime can mount every bundled app in a sandboxed frame", async () => {
   const manifestsById = new Map(
     runtimeExampleAppIds.map((appId) => [
@@ -364,6 +418,8 @@ function createRuntimeHarness(options = {}) {
   };
 
   const fetchState = {
+    appIndex: options.appIndex,
+    appIndexRequests: 0,
     bridgeRequests: [],
     manifest: options.manifest ?? defaultRuntimeManifest(),
     manifestsById: options.manifestsById ?? null,
@@ -562,6 +618,11 @@ class FakeElement {
 }
 
 async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
+  if (url === "/runtime/app-index.json") {
+    state.appIndexRequests = (state.appIndexRequests || 0) + 1;
+    if (state.appIndex) return jsonResponse(state.appIndex);
+    return notFoundResponse();
+  }
   const manifestMatch = url.match(/^\/webapps\/examples\/([^/]+)\/manifest\.json$/);
   if (manifestMatch) {
     const manifest = state.manifestsById?.get(manifestMatch[1]) ?? state.manifest ?? defaultRuntimeManifest();
@@ -591,12 +652,22 @@ function defaultRuntimeManifest() {
     name: "Notes Lite",
     version: "0.1.0",
     description: "Budget warning probe app.",
+    contentRating: { scheme: "app-store", label: "4+", minimumAge: 4, descriptors: [] },
     permissions: ["core.step", "storage.read", "storage.write"],
     storagePrefix: "notes-lite:",
     capabilities: [],
     dataVersion: "1.0.0",
     networkPolicy: { allow: [] },
     resourceBudget: { maxBridgeCallsPerMinute: 5 },
+  };
+}
+
+function notFoundResponse() {
+  return {
+    ok: false,
+    status: 404,
+    json: async () => ({ error: "not_found" }),
+    text: async () => "not found",
   };
 }
 

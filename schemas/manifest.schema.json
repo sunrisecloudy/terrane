@@ -49,6 +49,46 @@
       "minLength": 1,
       "maxLength": 500
     },
+    "contentRating": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "label",
+        "minimumAge",
+        "descriptors"
+      ],
+      "properties": {
+        "scheme": {
+          "const": "app-store"
+        },
+        "label": {
+          "enum": [
+            "4+",
+            "9+",
+            "12+",
+            "17+"
+          ]
+        },
+        "minimumAge": {
+          "enum": [
+            4,
+            9,
+            12,
+            17
+          ]
+        },
+        "descriptors": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        }
+      }
+    },
     "permissions": {
       "type": "array",
       "uniqueItems": true,

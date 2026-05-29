@@ -5,6 +5,12 @@
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
   "description": "Project/task workflow demo using core.step plus local storage.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "core.step",
     "storage.read",

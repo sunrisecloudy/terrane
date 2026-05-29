@@ -31,6 +31,12 @@ No build step is allowed.
   "dataVersion": 1,
   "entry": "index.html",
   "description": "Simple notes app",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "storage.read",
     "storage.write",
@@ -69,6 +75,7 @@ Field reference:
 | `dataVersion` | v0.3 | Positive integer; bump when storage shape changes |
 | `entry` | v0.1 | Must equal `index.html` in v0.4 |
 | `description` | v0.1 | One-line summary |
+| `contentRating` | v0.4 | Required for bundled/App Store distribution; object with `scheme`, `label`, `minimumAge`, and `descriptors` |
 | `permissions` | v0.1 | Subset of permission table in docs/03 §4 |
 | `storagePrefix` | v0.1 | Must equal `<id>:` |
 | `capabilities.required` | v0.3 | Capability ids the app cannot run without |

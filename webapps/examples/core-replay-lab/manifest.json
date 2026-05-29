@@ -5,6 +5,12 @@
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
   "description": "Send events to Zig core, keep a replay log, and export the fixture.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "core.step",
     "storage.read",

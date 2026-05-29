@@ -1,0 +1,12 @@
+{
+  "id": "invalid-content-rating",
+  "expectedError": "invalid_content_rating",
+  "manifestPatch": {
+    "contentRating": {
+      "scheme": "app-store",
+      "label": "9+",
+      "minimumAge": 4,
+      "descriptors": []
+    }
+  }
+}

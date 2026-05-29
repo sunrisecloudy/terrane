@@ -5,6 +5,12 @@
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
   "description": "Open a text file, transform content through Zig core, and save output.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "core.step",
     "dialog.openFile",

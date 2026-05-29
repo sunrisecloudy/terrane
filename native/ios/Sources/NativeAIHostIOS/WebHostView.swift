@@ -313,6 +313,24 @@ private struct StorageSmoke {
 
 final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        if let requestURL = urlSchemeTask.request.url,
+           RuntimeResourceLocator.isBundledAppIndexURL(requestURL) {
+            let data = BundledAppCatalog.appIndexData()
+            let response = HTTPURLResponse(
+                url: requestURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: [
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Content-Length": "\(data.count)"
+                ]
+            )!
+            urlSchemeTask.didReceive(response)
+            urlSchemeTask.didReceive(data)
+            urlSchemeTask.didFinish()
+            return
+        }
+
         guard let requestURL = urlSchemeTask.request.url,
               let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: requestURL)
         else {
@@ -347,6 +365,10 @@ enum RuntimeResourceLocator {
 
     static func runtimeIndexURL() -> URL {
         URL(string: "\(scheme)://runtime/index.html")!
+    }
+
+    static func isBundledAppIndexURL(_ url: URL) -> Bool {
+        url.scheme == scheme && logicalResourcePath(for: url) == "runtime/app-index.json"
     }
 
     static func exampleManifestURL(for appId: String) -> URL? {

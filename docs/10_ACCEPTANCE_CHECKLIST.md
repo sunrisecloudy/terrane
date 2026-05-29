@@ -52,6 +52,7 @@
 - [x] Bridge works.
 - [x] Storage persists.
 - [x] Zig core step works.
+- [x] Bundled app index exposes content ratings and enforces the iOS age gate.
 
 ### macOS
 

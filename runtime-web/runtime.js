@@ -1,5 +1,5 @@
 (function () {
-  const EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+  const FALLBACK_EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
   const appList = document.getElementById("app-list");
   const statusEl = document.getElementById("runtime-status");
   const frameWrap = document.getElementById("app-frame-wrap");
@@ -62,14 +62,30 @@
 
   async function loadApps() {
     setStatus("Loading apps");
+    const appIndex = await fetchAppIndex();
+    const appIndexRecords = new Map((appIndex?.apps || []).map((record) => [record.id, record]));
+    const appIds = appIndex ? appIndex.apps.map((record) => record.id) : FALLBACK_EXAMPLE_IDS;
     const loaded = [];
-    for (const id of EXAMPLE_IDS) {
+    for (const id of appIds) {
       const manifest = await fetchJson(`/webapps/examples/${id}/manifest.json`);
-      loaded.push(manifest);
+      loaded.push({ ...manifest, ...(appIndexRecords.get(id) || {}) });
     }
     apps = loaded;
     renderAppList();
     setStatus("Ready");
+  }
+
+  async function fetchAppIndex() {
+    try {
+      const appIndex = await fetchJson("/runtime/app-index.json");
+      if (!appIndex || !Array.isArray(appIndex.apps)) return null;
+      const apps = appIndex.apps.filter(function (record) {
+        return record && typeof record.id === "string" && record.id;
+      });
+      return { ...appIndex, apps: apps };
+    } catch (_) {
+      return null;
+    }
   }
 
   function renderAppList() {
@@ -80,7 +96,9 @@
       button.dataset.testid = `open-${app.id}-button`;
       button.innerHTML = `<strong></strong><span></span>`;
       button.querySelector("strong").textContent = app.name;
-      button.querySelector("span").textContent = `${app.id} v${app.version}`;
+      button.querySelector("span").textContent = app.contentRating && app.contentRating.label
+        ? `${app.id} v${app.version} · ${app.contentRating.label}`
+        : `${app.id} v${app.version}`;
       button.addEventListener("click", function () {
         mountApp(app);
       });

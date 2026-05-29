@@ -51,6 +51,25 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
 
         let request = BridgeRequest(body: envelope.requestBody, context: AppSandboxContext(message: message, envelope: envelope))
+        if !BundledAppCatalog.isAllowed(appId: request.context.appId) {
+            var details: [String: Any] = [
+                "appId": request.context.appId,
+                "reason": "content_rating"
+            ]
+            if let maximumAllowedAge = BundledAppCatalog.maximumAllowedAge() {
+                details["maximumAllowedAge"] = maximumAllowedAge
+            }
+            replyHandler(
+                BridgeResponse.failure(
+                    id: request.id,
+                    code: "permission_denied",
+                    message: "App \(request.context.appId) is blocked by the iOS content rating gate",
+                    details: details
+                ).asDictionary(),
+                nil
+            )
+            return
+        }
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
             replyHandler(

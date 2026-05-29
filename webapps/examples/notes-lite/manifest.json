@@ -5,6 +5,12 @@
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
   "description": "Create, search, edit, and delete notes using the storage bridge.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
   "permissions": [
     "storage.read",
     "storage.write",
