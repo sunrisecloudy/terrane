@@ -2,14 +2,14 @@
 
 ## Repository
 
-- [ ] Monorepo structure exists.
-- [ ] Documentation exists under `docs/`.
-- [ ] Schemas exist under `schemas/`.
-- [ ] Example apps exist under `webapps/examples/`.
-- [ ] Runtime web project exists.
-- [ ] Zig core project exists.
-- [ ] Native platform directories exist.
-- [ ] Server project exists.
+- [x] Monorepo structure exists.
+- [x] Documentation exists under `docs/`.
+- [x] Schemas exist under `schemas/`.
+- [x] Example apps exist under `webapps/examples/`.
+- [x] Runtime web project exists.
+- [x] Zig core project exists.
+- [x] Native platform directories exist.
+- [x] Server project exists.
 
 ## Runtime
 
@@ -39,9 +39,9 @@
 - [ ] File Transformer loads.
 - [ ] API Dashboard loads.
 - [ ] Core Replay Lab loads.
-- [ ] Each app declares permissions.
-- [ ] Each app has smoke tests.
-- [ ] Each app uses only `AppRuntime.call`.
+- [x] Each app declares permissions.
+- [x] Each app has smoke tests.
+- [x] Each app uses only `AppRuntime.call`.
 
 ## Platform shells
 
@@ -94,41 +94,41 @@
 
 ## Security
 
-- [ ] Unknown bridge method denied.
-- [ ] Missing permission denied.
-- [ ] Cross-app storage key denied.
-- [ ] Malicious package fixtures rejected.
-- [ ] Direct network use rejected by validator.
-- [ ] Remote scripts rejected.
-- [ ] Quota exceeded path tested.
+- [x] Unknown bridge method denied.
+- [x] Missing permission denied.
+- [x] Cross-app storage key denied.
+- [x] Malicious package fixtures rejected.
+- [x] Direct network use rejected by validator.
+- [x] Remote scripts rejected.
+- [x] Quota exceeded path tested.
 
 ## Tests
 
 - [ ] Zig tests pass.
 - [ ] Runtime unit tests pass.
-- [ ] Package validator tests pass.
+- [x] Package validator tests pass.
 - [ ] Bridge contract tests pass.
-- [ ] Example smoke tests pass.
+- [x] Example smoke tests pass.
 - [ ] Platform smoke tests pass or are documented for manual execution.
 
 
 ## Codex control acceptance
 
-- [ ] A local Codex plugin skeleton exists at `codex-plugin/platform-control`.
-- [ ] The plugin contains `.codex-plugin/plugin.json`, `.mcp.json`, and at least three skills.
-- [ ] The MCP server exposes tools for launch, install, open, inspect, interact, assert, mock, replay, and reset.
-- [ ] A dev host can be launched with a control token.
+- [x] A local Codex plugin skeleton exists at `codex-plugin/platform-control`.
+- [x] The plugin contains `.codex-plugin/plugin.json`, `.mcp.json`, and at least three skills.
+- [x] The MCP server exposes tools for launch, install, open, inspect, interact, assert, mock, replay, and reset.
+- [x] A dev host can be launched with a control token.
 - [ ] Codex can install and open all five example webapps through the control plane.
 - [ ] Codex can click/type/assert inside generated apps using `data-testid` selectors.
 - [ ] Codex can inspect console logs, bridge calls, runtime events, storage, and core action logs.
 - [ ] Codex can mock at least one network response and one file dialog result.
-- [ ] Codex can run every example app smoke test from `tests/micro`.
+- [x] Codex can run every example app smoke test from `tests/micro`.
 - [ ] Production builds do not expose the control plane.
 
 ## v0.3 acceptance checklist additions
 
-- [ ] All example manifests include `dataVersion`, `capabilities`, `resourceBudget`, and `networkPolicy`.
-- [ ] All example packages validate against updated schemas.
+- [x] All example manifests include `dataVersion`, `capabilities`, `resourceBudget`, and `networkPolicy`.
+- [x] All example packages validate against updated schemas.
 - [ ] Package install creates a signature and install report.
 - [ ] Runtime refuses tampered installed packages.
 - [ ] App registry stores immutable versions and active-version pointer.
@@ -137,27 +137,27 @@
 - [ ] Snapshot/replay works on fake-host.
 - [ ] Resource-budget violations are detected.
 - [ ] Network policy blocks disallowed requests.
-- [ ] Accessibility audit runs in fake-host.
+- [x] Accessibility audit runs in fake-host.
 - [ ] Codex repair loop can validate, install, test, patch, and retest an example app.
 
 ## v0.4 database persistence acceptance
 
-- [ ] SQLite schema exists under `db/sqlite`.
-- [ ] Postgres-compatible schema exists under `db/postgres`.
-- [ ] SQLite migrations apply cleanly to an in-memory database.
+- [x] SQLite schema exists under `db/sqlite`.
+- [x] Postgres-compatible schema exists under `db/postgres`.
+- [x] SQLite migrations apply cleanly to an in-memory database.
 - [ ] Native hosts use SQLite by default.
 - [ ] Server can use SQLite/Postgres logical schema.
 - [ ] Generated apps use storage bridge only; no SQL APIs are exposed.
-- [ ] App install transaction writes `apps`, `app_versions`, `app_files`, `app_permissions`, `app_install_reports`, and `app_installations`.
-- [ ] App data persists in `app_storage`.
+- [x] App install transaction writes `apps`, `app_versions`, `app_files`, `app_permissions`, `app_install_reports`, and `app_installations`.
+- [x] App data persists in `app_storage`.
 - [ ] Storage keys are scoped by `app_id` and `storagePrefix`.
 - [ ] Permission versioning is persisted per install id.
-- [ ] Rollback can restore previous app version.
+- [x] Rollback can restore previous app version.
 - [ ] Bridge/core logs are persisted.
 - [ ] Runtime snapshots are persisted.
-- [ ] Micro-test runs are persisted.
-- [ ] Declarative migration dry-run/apply works.
-- [ ] Backup export/import works for one generated app.
-- [ ] Codex can inspect DB state through safe control-plane tools.
+- [x] Micro-test runs are persisted.
+- [x] Declarative migration dry-run/apply works.
+- [x] Backup export/import works for one generated app.
+- [x] Codex can inspect DB state through safe control-plane tools.
 - [ ] Codex cannot run arbitrary SQL unless unsafe dev mode is explicitly enabled.
-- [ ] Database tests under `tests/db` pass.
+- [x] Database tests under `tests/db` pass.
