@@ -109,7 +109,7 @@
 - [x] Package validator tests pass.
 - [x] Bridge contract tests pass.
 - [x] Example smoke tests pass.
-- [ ] Platform smoke tests pass or are documented for manual execution.
+- [x] Platform smoke tests pass or are documented for manual execution.
 
 
 ## Codex control acceptance

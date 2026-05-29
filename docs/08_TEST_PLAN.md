@@ -239,7 +239,38 @@ For each platform shell:
 15. Open Core Replay Lab.
 16. Replay fixture and export.
 
-## 9. Security tests
+## 9. Platform smoke execution
+
+The checked-in suite is `tests/platform-smoke/all-example-apps.platform-smoke.json`. It targets `fake-host`, `macos`, `linux`, `windows`, `android-emulator`, and `ios-simulator` with the same per-app flow:
+
+1. `platform.open_webapp`
+2. `runtime.wait_for`
+3. `runtime.screenshot`
+4. `runtime.assert_no_console_errors`
+5. `runtime.run_smoke_tests`
+
+Automated baseline:
+
+```sh
+node --test --no-warnings tools/fake-platform-host/test/platform-smoke.test.js
+```
+
+Manual native execution, when the platform toolchain or device is available:
+
+1. Launch the target host and confirm its control endpoint/token are available.
+2. Run the same suite through `platform.run_platform_smoke` with the target `platform` value.
+3. Save the run output, screenshots, and any host logs with the release evidence.
+4. Treat any fake-host/native drift as a platform bug unless the fake host violates the bridge contract.
+
+Required manual target values:
+
+- `macos`
+- `linux`
+- `windows`
+- `android-emulator`
+- `ios-simulator`
+
+## 10. Security tests
 
 Create malicious packages under `tests/security/malicious-packages/`:
 
@@ -257,7 +288,7 @@ Create malicious packages under `tests/security/malicious-packages/`:
 
 Expected result: rejected at install or denied at runtime.
 
-## 10. Performance tests
+## 11. Performance tests
 
 Full methodology and targets live in docs/22 §7 (warm-up, sample size, p50/p95 reporting, per-platform context). Summary:
 
@@ -279,7 +310,7 @@ Required benchmark scenarios under `tests/performance/`:
 
 A p95 miss on any platform fails CI for that platform.
 
-## 11. Accessibility tests
+## 12. Accessibility tests
 
 - Keyboard navigation in runtime launcher.
 - Focus visible on buttons/inputs.
@@ -288,7 +319,7 @@ A p95 miss on any platform fails CI for that platform.
 - Labels for form fields.
 - Screen-reader-friendly names for major controls.
 
-## 12. Regression tests
+## 13. Regression tests
 
 Every bug should become one of:
 
@@ -299,7 +330,7 @@ Every bug should become one of:
 - platform smoke test
 - malicious package fixture
 
-## 13. CI matrix
+## 14. CI matrix
 
 ```text
 Ubuntu:
@@ -326,7 +357,7 @@ Android:
   JNI core tests
 ```
 
-## 14. Manual test checklist
+## 15. Manual test checklist
 
 Before release:
 
@@ -452,7 +483,7 @@ If a generated app fails a micro-test, Codex should:
 
 Add fixtures under `tests/mutation/` for missing manifest fields, forbidden JS APIs, invalid permissions, external scripts, invalid network policy, bad storage prefix, and post-signature tampering.
 
-## 14. Database and persistence tests
+## 16. Database and persistence tests
 
 Database test requirements:
 
