@@ -266,6 +266,16 @@ function checkCiWorkflow() {
     "linux-native-smoke",
     "NATIVE_AI_LINUX_SMOKE_LAUNCH",
     "libwebkitgtk-6.0-dev",
+    "macos-native-smoke",
+    "NATIVE_AI_MACOS_SMOKE_LAUNCH",
+    "ios-simulator-smoke",
+    "NATIVE_AI_IOS_SMOKE_LAUNCH",
+    "android-emulator-smoke",
+    "android-actions/setup-android@v3",
+    "gradle/actions/setup-gradle@v4",
+    "gradle-version: 8.10.2",
+    "reactivecircus/android-emulator-runner@v2",
+    "NATIVE_AI_ANDROID_SMOKE_LAUNCH=1",
     "windows-native-smoke",
     "NATIVE_AI_WINDOWS_SMOKE_LAUNCH",
     "NATIVE_AI_WEBVIEW2_NUGET_DIR",
@@ -275,7 +285,7 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,native=linux/windows-smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,native=linux/macos/ios/android/windows-smoke";
 }
 
 function checkPerformanceHarness() {
