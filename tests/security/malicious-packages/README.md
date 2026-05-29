@@ -8,6 +8,8 @@ Package fixtures here intentionally violate generated-app policy:
 - `remote-script/`
 - `remote-css-import/`
 - `cross-app-storage/`
+- `excessive-bridge-calls/`
+- `huge-package-size/`
 - `unknown-bridge-method/`
 - `parent-window-access/`
 - `huge-storage-write/`

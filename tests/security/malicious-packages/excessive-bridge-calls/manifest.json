@@ -1,0 +1,32 @@
+{
+  "id": "excessive-bridge-calls",
+  "name": "Excessive Bridge Calls",
+  "version": "0.1.0",
+  "runtimeVersion": "0.1.0",
+  "entry": "index.html",
+  "description": "Invalid fixture that exceeds the bridge-call rate budget.",
+  "permissions": [
+    "storage.read"
+  ],
+  "storagePrefix": "excessive-bridge-calls:",
+  "dataVersion": 1,
+  "capabilities": {
+    "required": [
+      "storage.read"
+    ],
+    "optional": []
+  },
+  "resourceBudget": {
+    "maxDomNodes": 100,
+    "maxStorageBytes": 1024,
+    "maxBridgeCallsPerMinute": 1,
+    "maxNetworkRequestsPerMinute": 0,
+    "maxTimers": 1,
+    "maxLogLinesPerMinute": 10,
+    "maxPackageBytes": 1048576,
+    "maxFileBytes": 524288
+  },
+  "networkPolicy": {
+    "allow": []
+  }
+}
