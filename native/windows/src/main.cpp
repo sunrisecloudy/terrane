@@ -1,11 +1,59 @@
 #include "WebViewHost.h"
 
 #include <Windows.h>
+#include <shellapi.h>
 #include <memory>
+#include <string_view>
 #include <winrt/base.h>
 
 namespace {
 std::unique_ptr<nativeai::WebViewHost> g_host;
+
+bool DebugBuildAllowsDevFlags() {
+#ifdef _DEBUG
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool IsForbiddenDevFlag(std::wstring_view argument) {
+  constexpr std::wstring_view flags[] = {
+      L"--control-plane-port",
+      L"--allow-runtime-mismatch",
+      L"--allow-unsigned-dev",
+  };
+  for (const auto flag : flags) {
+    if (argument == flag) {
+      return true;
+    }
+    if (argument.size() > flag.size() && argument.substr(0, flag.size()) == flag &&
+        argument[flag.size()] == L'=') {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool RejectDevOnlyFlagsIfNeeded() {
+  if (DebugBuildAllowsDevFlags()) {
+    return false;
+  }
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv) {
+    return false;
+  }
+  for (int index = 1; index < argc; ++index) {
+    if (IsForbiddenDevFlag(argv[index])) {
+      OutputDebugStringW(L"fatal: production build rejects dev-only startup flag\n");
+      LocalFree(argv);
+      return true;
+    }
+  }
+  LocalFree(argv);
+  return false;
+}
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
   switch (message) {
@@ -21,6 +69,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+  if (RejectDevOnlyFlagsIfNeeded()) {
+    return 1;
+  }
+
   winrt::init_apartment(winrt::apartment_type::single_threaded);
 
   WNDCLASS windowClass{};
