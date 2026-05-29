@@ -46,6 +46,7 @@ tests/db/sqlite-schema.dbtest.json
 tests/db/postgres-schema.dbtest.json
 tests/db/app-install-transaction.dbtest.json
 tests/db/storage-crud.dbtest.json
+tests/db/runtime-logging.dbtest.json
 tests/db/rollback.dbtest.json
 tests/db/migration-dry-run-apply.dbtest.json
 tests/db/backup-export-import.dbtest.json

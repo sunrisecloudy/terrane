@@ -14,6 +14,7 @@ test("checked-in database dbtest fixtures execute against fake-host contracts", 
     "postgres-schema.dbtest.json",
     "app-install-transaction.dbtest.json",
     "storage-crud.dbtest.json",
+    "runtime-logging.dbtest.json",
     "rollback.dbtest.json",
     "migration-dry-run-apply.dbtest.json",
     "backup-export-import.dbtest.json",
@@ -40,6 +41,8 @@ async function runDbFixture(fixture) {
       return runTransactionFixture();
     case "storage":
       return runStorageFixture();
+    case "runtime-logging":
+      return runRuntimeLoggingFixture();
     case "rollback":
       return runRollbackFixture();
     case "migration":
@@ -130,6 +133,87 @@ async function runStorageFixture() {
     });
     assert.equal(removed.ok, true);
     assert.equal(host.database.storageList("notes-lite", "notes-lite:").length, 0);
+  } finally {
+    host.close();
+  }
+}
+
+async function runRuntimeLoggingFixture() {
+  const host = new FakePlatformHost();
+  try {
+    host.installPackage(path.join(examplesDir, "task-workbench"));
+    const opened = await host.runControlCommand("platform.open_webapp", { appId: "task-workbench" });
+    assert.match(opened.sessionId, /^session_/);
+
+    const appLog = await host.runControlCommand("runtime.call_bridge", {
+      appId: "task-workbench",
+      sessionId: opened.sessionId,
+      method: "app.log",
+      params: { level: "info", message: "DB logging fixture" },
+    });
+    assert.equal(appLog.ok, true);
+
+    const coreStep = await host.runControlCommand("runtime.core_step", {
+      appId: "task-workbench",
+      sessionId: opened.sessionId,
+      event: { type: "task.created", title: "DB logging fixture" },
+    });
+    assert.equal(coreStep.ok, true);
+
+    const snapshot = await host.runControlCommand("platform.create_snapshot", {
+      appId: "task-workbench",
+      sessionId: opened.sessionId,
+      type: "post-test",
+    });
+    assert.match(snapshot.snapshotId, /^snapshot_/);
+
+    const smoke = await host.runControlCommand("runtime.run_smoke_tests", { appId: "task-workbench" });
+    assert.equal(smoke.status, "passed");
+
+    const runtimeSessions = host.database.all(
+      "SELECT * FROM runtime_sessions WHERE session_id = ? AND active_app_id = ?",
+      opened.sessionId,
+      "task-workbench",
+    );
+    assert.equal(runtimeSessions.length, 1);
+
+    const bridgeCalls = host.database.all(
+      "SELECT * FROM bridge_calls WHERE app_id = ? ORDER BY created_at",
+      "task-workbench",
+    );
+    assert.equal(bridgeCalls.some((row) => row.method === "app.log" && row.session_id === opened.sessionId), true);
+    assert.equal(bridgeCalls.some((row) => row.method === "core.step" && row.session_id === opened.sessionId), true);
+
+    const coreEvents = host.database.all(
+      "SELECT * FROM core_events WHERE app_id = ? AND session_id = ?",
+      "task-workbench",
+      opened.sessionId,
+    );
+    assert.equal(coreEvents.some((row) => JSON.parse(row.event_json).title === "DB logging fixture"), true);
+
+    const eventIds = new Set(coreEvents.map((row) => row.event_id));
+    const coreActions = host.database.all(
+      "SELECT * FROM core_actions WHERE app_id = ? AND session_id = ?",
+      "task-workbench",
+      opened.sessionId,
+    );
+    assert.equal(coreActions.some((row) => eventIds.has(row.event_id)), true);
+
+    const snapshots = host.database.all(
+      "SELECT * FROM runtime_snapshots WHERE app_id = ? AND session_id = ? AND type = ?",
+      "task-workbench",
+      opened.sessionId,
+      "post-test",
+    );
+    assert.equal(snapshots.length, 1);
+    assert.match(snapshots[0].content_hash, /^sha256:[a-f0-9]{64}$/);
+
+    const testRuns = host.database.all(
+      "SELECT * FROM test_runs WHERE app_id = ? AND micro_test_id = ?",
+      "task-workbench",
+      "smoke:task-workbench",
+    );
+    assert.equal(testRuns.some((row) => row.status === "passed"), true);
   } finally {
     host.close();
   }
