@@ -57,12 +57,15 @@ final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
 
         do {
             let data = try Data(contentsOf: fileURL)
-            let response = URLResponse(
+            let response = HTTPURLResponse(
                 url: requestURL,
-                mimeType: RuntimeResourceLocator.mimeType(for: fileURL),
-                expectedContentLength: data.count,
-                textEncodingName: "utf-8"
-            )
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: [
+                    "Content-Type": "\(RuntimeResourceLocator.mimeType(for: fileURL)); charset=utf-8",
+                    "Content-Length": "\(data.count)"
+                ]
+            )!
             urlSchemeTask.didReceive(response)
             urlSchemeTask.didReceive(data)
             urlSchemeTask.didFinish()

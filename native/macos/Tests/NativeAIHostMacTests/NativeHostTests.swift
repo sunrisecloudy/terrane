@@ -1,6 +1,7 @@
 import Foundation
 @testable import NativeAIHostMac
 import Testing
+import WebKit
 
 @Suite("macOS native host")
 struct NativeHostTests {
@@ -74,4 +75,107 @@ struct NativeHostTests {
         #expect(!denied.ok)
         #expect(denied.error?["code"] as? String == "permission_denied")
     }
+
+    @MainActor
+    @Test("WKWebView loads runtime resources and dispatches the native bridge")
+    func webViewLoadsRuntimeAndDispatchesBridge() async throws {
+        let bridge = WebBridge()
+        let contentController = WKUserContentController()
+        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "NativeAIPlatformBridge")
+        defer {
+            contentController.removeScriptMessageHandler(forName: "NativeAIPlatformBridge")
+        }
+
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = contentController
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(RuntimeSchemeHandler(), forURLScheme: RuntimeResourceLocator.scheme)
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
+        webView.load(URLRequest(url: RuntimeResourceLocator.runtimeIndexURL()))
+
+        let status = try await waitForJavaScript(
+            in: webView,
+            "document.querySelector('[data-testid=\"runtime-status\"]')?.textContent || ''",
+            as: String.self,
+            matching: { $0 == "Ready" }
+        )
+        #expect(status == "Ready")
+
+        let hasNotesButton = try await waitForJavaScript(
+            in: webView,
+            "Boolean(document.querySelector('[data-testid=\"open-notes-lite-button\"]'))",
+            as: Bool.self,
+            matching: { $0 }
+        )
+        #expect(hasNotesButton)
+
+        _ = try await webView.evaluateJavaScript("document.querySelector('[data-testid=\"open-notes-lite-button\"]').click(); true")
+
+        let activeTitle = try await waitForJavaScript(
+            in: webView,
+            "document.querySelector('[data-testid=\"active-app-title\"]')?.textContent || ''",
+            as: String.self,
+            matching: { $0 == "Notes Lite" }
+        )
+        #expect(activeTitle == "Notes Lite")
+
+        let hasFrame = try await waitForJavaScript(
+            in: webView,
+            "Boolean(document.querySelector('[data-testid=\"runtime-app-frame\"]'))",
+            as: Bool.self,
+            matching: { $0 }
+        )
+        #expect(hasFrame)
+
+        let bridgeLogText = try await waitForJavaScript(
+            in: webView,
+            "document.querySelector('[data-testid=\"bridge-log\"]')?.textContent || ''",
+            as: String.self,
+            matching: { $0.contains("notes-lite runtime.capabilities ok") }
+        )
+        #expect(bridgeLogText.contains("notes-lite runtime.capabilities ok"))
+    }
+}
+
+enum NativeHostTestError: Error, CustomStringConvertible {
+    case timedOut(String)
+
+    var description: String {
+        switch self {
+        case let .timedOut(script):
+            return "Timed out waiting for JavaScript condition: \(script)"
+        }
+    }
+}
+
+@MainActor
+private func waitForJavaScript<T>(
+    in webView: WKWebView,
+    _ script: String,
+    as type: T.Type,
+    matching predicate: (T) -> Bool,
+    timeoutSeconds: TimeInterval = 8.0
+) async throws -> T {
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    var latestValue: T?
+
+    while Date() < deadline {
+        do {
+            if let value = try await webView.evaluateJavaScript(script) as? T {
+                latestValue = value
+                if predicate(value) {
+                    return value
+                }
+            }
+        } catch {
+            // The page may still be navigating; keep polling until the timeout.
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    if let latestValue {
+        return latestValue
+    }
+    throw NativeHostTestError.timedOut(script)
 }
