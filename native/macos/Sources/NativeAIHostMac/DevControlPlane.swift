@@ -41,6 +41,7 @@ final class DevControlPlane: @unchecked Sendable {
     let controlSessionId: String
 
     private let database: PlatformDatabase
+    private let core = ZigCoreBridge()
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
@@ -222,6 +223,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
         case ("GET", "events"):
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
+        case ("GET", "capabilities"):
+            sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: nil))
         case ("POST", "command"):
             handleCommand(connection, request, startedAt: startedAt)
         default:
@@ -243,6 +246,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
         case "runtime.event_log":
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
+        case "runtime.capabilities":
+            sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: args["appId"] as? String))
         case "db.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
         case "db.query_app_storage":
@@ -328,6 +333,35 @@ final class DevControlPlane: @unchecked Sendable {
             "bridgeCalls": [],
             "coreEvents": [],
             "controlCommands": controlCommands(),
+        ]
+    }
+
+    private func runtimeCapabilities(appId: String?) -> [String: Any] {
+        [
+            "runtimeVersion": "0.1.0",
+            "platform": "macos",
+            "target": "macos",
+            "appId": appId ?? NSNull(),
+            "devMode": true,
+            "features": [
+                "storage.read": true,
+                "storage.write": true,
+                "storage.get": true,
+                "storage.set": true,
+                "storage.remove": true,
+                "storage.list": true,
+                "dialog.openFile": true,
+                "dialog.saveFile": true,
+                "notification.toast": true,
+                "network.request": true,
+                "core.step": core.isAvailable,
+                "runtime.capabilities": true,
+                "app.log": true,
+            ],
+            "limits": [
+                "maxPackageBytes": 1_048_576,
+                "maxFileBytes": 524_288,
+            ],
         ]
     }
 
@@ -493,23 +527,7 @@ final class DevControlPlane: @unchecked Sendable {
                 columns: ["report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"],
                 orderBy: "created_at"
             ),
-            "runtimeCapabilities": [
-                "platform": "macos",
-                "target": "macos",
-                "devMode": true,
-                "features": [
-                    "runtime.capabilities": true,
-                    "storage.get": true,
-                    "storage.set": true,
-                    "storage.remove": true,
-                    "storage.list": true,
-                    "dialog.openFile": true,
-                    "dialog.saveFile": true,
-                    "notification.toast": true,
-                    "network.request": true,
-                    "core.step": true,
-                ],
-            ],
+            "runtimeCapabilities": runtimeCapabilities(appId: nil),
             "debug": [
                 "runtimeSessions": tableRows(
                     table: "runtime_sessions",
@@ -825,6 +843,8 @@ private struct HTTPRequest {
             return "runtime.snapshot"
         case ("GET", let value) where value.hasSuffix("/events"):
             return "runtime.event_log"
+        case ("GET", let value) where value.hasSuffix("/capabilities"):
+            return "runtime.capabilities"
         default:
             return "\(method) \(path)"
         }

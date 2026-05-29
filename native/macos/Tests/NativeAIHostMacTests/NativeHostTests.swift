@@ -252,6 +252,22 @@ struct NativeHostTests {
         #expect(events.body.contains(#""bridgeCalls":[]"#))
         #expect(events.body.contains(#""controlCommands":["#))
 
+        let capabilitiesURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/capabilities")!
+        let capabilities = try await httpRequest(capabilitiesURL, headers: ["X-Platform-Control-Token": token])
+        #expect(capabilities.statusCode == 200)
+        #expect(capabilities.body.contains(#""runtimeVersion":"0.1.0""#))
+        #expect(capabilities.body.contains(#""runtime.capabilities":true"#))
+
+        let capabilitiesCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.capabilities","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(capabilitiesCommand.statusCode == 200)
+        #expect(capabilitiesCommand.body.contains(#""appId":"notes-lite""#))
+        #expect(capabilitiesCommand.body.contains(#""storage.get":true"#))
+
         let dbSnapshotURL = URL(string: "http://127.0.0.1:\(port)/control/db/snapshot")!
         let dbSnapshot = try await httpRequest(
             dbSnapshotURL,
@@ -347,7 +363,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 14)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 16)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
