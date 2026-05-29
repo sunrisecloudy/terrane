@@ -19,6 +19,8 @@ let package = Package(
                 .define("DEBUG", .when(configuration: .debug))
             ],
             linkerSettings: [
+                .linkedFramework("Network"),
+                .linkedFramework("Security"),
                 .linkedLibrary("sqlite3")
             ]
         ),

@@ -63,6 +63,7 @@
 - [x] Storage persists.
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.
+- [x] Debug dev control plane writes a 0600 token file, authenticates `/health`, and audits accepted/rejected requests.
 
 ### Android
 

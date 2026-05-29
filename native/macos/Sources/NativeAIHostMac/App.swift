@@ -3,11 +3,25 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var hostView: WebHostView?
+#if DEBUG
+    private var controlPlane: DevControlPlane?
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
 #if DEBUG
         if MacSmokeProbe.emitLaunchMarkerAndExitIfRequested() {
             return
+        }
+        do {
+            if let controlPlane = try DevControlPlane.enabledFromProcess() {
+                try controlPlane.start()
+                self.controlPlane = controlPlane
+                if let port = controlPlane.boundPort {
+                    print("NATIVE_AI_MACOS_CONTROL_READY port=\(port)")
+                }
+            }
+        } catch {
+            fputs("macOS dev control plane failed to start: \(error)\n", stderr)
         }
 #endif
 

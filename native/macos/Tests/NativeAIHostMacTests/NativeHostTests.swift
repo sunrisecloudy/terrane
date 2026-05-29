@@ -157,6 +157,51 @@ struct NativeHostTests {
         #expect(rollbackEvent.previousInstallId == "install-v2")
     }
 
+    @Test("debug control plane writes token file, authenticates health, and audits requests")
+    func debugControlPlaneAuthenticatesHealthAndAuditsRequests() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-control-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        #expect(token.count == 43)
+        #expect(try posixPermissions(at: tokenURL) == 0o600)
+
+        let port = try #require(controlPlane.boundPort)
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+
+        let unauthorized = try await httpRequest(healthURL)
+        #expect(unauthorized.statusCode == 401)
+        #expect(unauthorized.body.contains("control_auth_required"))
+
+        let authorized = try await httpRequest(
+            healthURL,
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(authorized.statusCode == 200)
+        #expect(authorized.body.contains(#""platform":"macos""#))
+        #expect(authorized.body.contains(#""devMode":true"#))
+
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") == 1)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") == 1)
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],
@@ -335,6 +380,46 @@ private func sqliteTableExists(dbURL: URL, table: String) throws -> Bool {
     defer { sqlite3_finalize(statement) }
     sqlite3_bind_text(statement, 1, table, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     return sqlite3_step(statement) == SQLITE_ROW
+}
+
+private func sqliteControlCommandCount(dbURL: URL, decision: String) throws -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return 0
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM control_commands WHERE decision = ?", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, decision, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        return 0
+    }
+    return Int(sqlite3_column_int(statement, 0))
+}
+
+private func posixPermissions(at url: URL) throws -> Int {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return attributes[.posixPermissions] as? Int ?? 0
+}
+
+private struct HTTPTestResponse {
+    let statusCode: Int
+    let body: String
+}
+
+private func httpRequest(_ url: URL, headers: [String: String] = [:]) async throws -> HTTPTestResponse {
+    var request = URLRequest(url: url)
+    for (name, value) in headers {
+        request.setValue(value, forHTTPHeaderField: name)
+    }
+    let (data, response) = try await URLSession.shared.data(for: request)
+    let httpResponse = try #require(response as? HTTPURLResponse)
+    return HTTPTestResponse(
+        statusCode: httpResponse.statusCode,
+        body: String(data: data, encoding: .utf8) ?? ""
+    )
 }
 
 enum NativeHostTestError: Error, CustomStringConvertible {
