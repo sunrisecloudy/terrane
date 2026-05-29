@@ -2568,7 +2568,7 @@ fn collectWebappPackageErrors(
         if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
         if (containsAny(js, &.{ "fetch(", "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
         if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
-        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec" })) try errors.append(allocator, "forbidden_native_bridge");
+        if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
         if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
         if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
         if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
@@ -10667,6 +10667,46 @@ test "resource budget bridge errors include repair details" {
     );
     defer std.testing.allocator.free(response);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"details\":{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600") != null);
+}
+
+test "server package validation rejects direct native bridge globals" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "native-bridge-test",
+        \\    "name": "Native Bridge Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "native-bridge-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Native bridge test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "NativeAIPlatformBridge.postMessage({});"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_native_bridge\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {

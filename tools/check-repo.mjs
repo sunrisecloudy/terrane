@@ -798,6 +798,7 @@ function checkServerStatic() {
     "fn hasUnknownRuntimeBridgeCall",
     "fn isAllowedRuntimeBridgeMethod",
     "\"unknown_method\"",
+    "\"NativeAIPlatformBridge\"",
   ];
   for (const snippet of required) {
     if (!source.includes(snippet)) {
