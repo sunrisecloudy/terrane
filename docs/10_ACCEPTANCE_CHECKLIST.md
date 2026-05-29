@@ -95,6 +95,7 @@
 - [x] Debug dev control plane runs bundled static smoke tests through `runtime.run_smoke_tests` and persists `test_runs`.
 - [x] Debug dev control plane signs webapp packages with Ed25519, not `none-dev`.
 - [x] Debug dev control plane persists its Ed25519 signing key in Keychain and exposes public-key metadata.
+- [x] Debug dev control plane verifies active installed package signatures/content before opening webapps.
 - [x] Debug dev control plane validates, signs, installs, and runs checked-in static micro-tests through `runtime.run_microtest`.
 - [x] Debug dev control plane runs the checked-in cross-platform smoke suite through `platform.run_platform_smoke`.
 - [x] Debug dev control plane runs declarative migration dry-run/apply with pre-migration snapshots and persisted `migration_runs`.

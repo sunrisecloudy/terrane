@@ -756,6 +756,18 @@ final class DevControlPlane: @unchecked Sendable {
             sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App has no active install", startedAt: startedAt)
             return
         }
+        if let installId = app.activeInstallId,
+           let verificationError = verifyActiveInstallForMount(appId: appId, installId: installId) {
+            sendRejected(
+                connection,
+                request,
+                status: 400,
+                code: verificationError.code,
+                message: verificationError.message,
+                startedAt: startedAt
+            )
+            return
+        }
         let sessionId = runtimeSessionId(appId: appId)
         sendAccepted(connection, request, startedAt: startedAt, result: [
             "sessionId": sessionId,
@@ -1821,6 +1833,131 @@ final class DevControlPlane: @unchecked Sendable {
             ])
         }
         return versions
+    }
+
+    private func verifyActiveInstallForMount(appId: String, installId: String) -> (code: String, message: String)? {
+        guard let version = installedVersionForMount(appId: appId, installId: installId) else {
+            return ("app_not_installed", "Active install is missing")
+        }
+        if version.status == "quarantined" {
+            return ("package_quarantined", "App version is quarantined")
+        }
+
+        let files = installedFiles(installId: installId)
+        if files.isEmpty {
+            return nil
+        }
+        guard let signature = version.signature else {
+            return ("signature_missing", "Installed package has no signature")
+        }
+
+        guard textValue(signature, keys: ["algorithm"]) == "ed25519" else {
+            return ("signature_untrusted", "Installed package signature algorithm is not trusted")
+        }
+        guard textValue(signature, keys: ["keyId"]) == signingKeyId() else {
+            return ("signature_untrusted", "Installed package signature key is not trusted")
+        }
+
+        let hashes = packageHashes(
+            manifest: version.manifest,
+            files: files,
+            permissions: permissionsForInstall(installId: installId)
+        )
+        guard textValue(signature, keys: ["manifestHash"]) == hashes["manifestHash"] else {
+            return ("manifest_tampered", "Stored manifest hash does not match the signature")
+        }
+        guard textValue(signature, keys: ["contentHash"]) == hashes["contentHash"],
+              version.contentHash == hashes["contentHash"]
+        else {
+            return ("content_tampered", "Stored app file content does not match the signature")
+        }
+        guard textValue(signature, keys: ["permissionsHash"]) == hashes["permissionsHash"] else {
+            return ("permission_tampered", "Stored permissions hash does not match the signature")
+        }
+        guard textValue(signature, keys: ["policyHash"]) == hashes["policyHash"] else {
+            return ("policy_tampered", "Stored policy hash does not match the signature")
+        }
+        guard textValue(signature, keys: ["runtimeVersion"]) == version.runtimeVersion,
+              intValue(signature["dataVersion"]) == version.dataVersion
+        else {
+            return ("signature_invalid", "Installed package signature metadata does not match the active version")
+        }
+
+        guard let signatureText = textValue(signature, keys: ["signature"]),
+              let signatureData = Data(base64Encoded: signatureText),
+              let signedAt = textValue(signature, keys: ["signedAt"]),
+              let trustLevel = textValue(signature, keys: ["trustLevel"]),
+              let keyId = textValue(signature, keys: ["keyId"])
+        else {
+            return ("signature_invalid", "Installed package signature is malformed")
+        }
+        let payload = signaturePayload(
+            appId: appId,
+            appVersion: version.version,
+            dataVersion: version.dataVersion,
+            runtimeVersion: version.runtimeVersion,
+            trustLevel: trustLevel,
+            keyId: keyId,
+            manifestHash: hashes["manifestHash"] ?? "",
+            contentHash: hashes["contentHash"] ?? "",
+            permissionsHash: hashes["permissionsHash"] ?? "",
+            policyHash: hashes["policyHash"] ?? "",
+            signedAt: signedAt
+        )
+        guard signingKey.publicKey.isValidSignature(signatureData, for: Data(payload.utf8)) else {
+            return ("signature_invalid", "Ed25519 signature verification failed")
+        }
+        return nil
+    }
+
+    private func installedVersionForMount(
+        appId: String,
+        installId: String
+    ) -> (version: String, runtimeVersion: String, dataVersion: Int, manifest: [String: Any], contentHash: String, signature: [String: Any]?, status: String)? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT version, runtime_version, data_version, manifest_json, content_hash, signature_json, status
+        FROM app_versions
+        WHERE app_id = ? AND install_id = ?
+        LIMIT 1
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, installId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        let manifest = jsonDictionary(columnText(statement, 3)) ?? [:]
+        let signature = jsonValue(columnNullableText(statement, 5)) as? [String: Any]
+        return (
+            version: columnText(statement, 0),
+            runtimeVersion: columnText(statement, 1),
+            dataVersion: Int(sqlite3_column_int64(statement, 2)),
+            manifest: manifest,
+            contentHash: columnText(statement, 4),
+            signature: signature,
+            status: columnText(statement, 6)
+        )
+    }
+
+    private func installedFiles(installId: String) -> [(path: String, content: String)] {
+        guard let db = database.handle else { return [] }
+        var statement: OpaquePointer?
+        let sql = "SELECT path, content_text FROM app_files WHERE install_id = ? ORDER BY path"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, installId)
+        var files: [(path: String, content: String)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            files.append((path: columnText(statement, 0), content: columnText(statement, 1)))
+        }
+        return files
     }
 
     private func reloadRuntime() -> [String: Any] {
@@ -5098,18 +5235,33 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func packageHashes(_ package: PackageRead) -> [String: String] {
-        let manifestHash = "sha256:\(sha256Hex(jsonString(package.manifest)))"
-        let content = package.files.map { "\($0.path)\n\($0.contentHash)\n" }.joined()
-        let permissions = (package.manifest["permissions"] as? [String] ?? []).sorted()
+        packageHashes(
+            manifest: package.manifest,
+            files: package.files.map { (path: $0.path, content: $0.content) },
+            permissions: package.manifest["permissions"] as? [String] ?? []
+        )
+    }
+
+    private func packageHashes(
+        manifest: [String: Any],
+        files: [(path: String, content: String)],
+        permissions: [String]
+    ) -> [String: String] {
+        let manifestHash = "sha256:\(sha256Hex(jsonString(manifest)))"
+        let content = files
+            .sorted { $0.path < $1.path }
+            .map { "\($0.path)\nsha256:\(sha256Hex($0.content))\n" }
+            .joined()
+        let sortedPermissions = permissions.sorted()
         let policy: [String: Any] = [
-            "capabilities": package.manifest["capabilities"] ?? [:],
-            "networkPolicy": package.manifest["networkPolicy"] ?? [:],
-            "resourceBudget": package.manifest["resourceBudget"] ?? [:],
+            "capabilities": manifest["capabilities"] ?? [:],
+            "networkPolicy": manifest["networkPolicy"] ?? [:],
+            "resourceBudget": manifest["resourceBudget"] ?? [:],
         ]
         return [
             "manifestHash": manifestHash,
             "contentHash": "sha256:\(sha256Hex(content))",
-            "permissionsHash": "sha256:\(sha256Hex(jsonString(permissions)))",
+            "permissionsHash": "sha256:\(sha256Hex(jsonString(sortedPermissions)))",
             "policyHash": "sha256:\(sha256Hex(jsonString(policy)))",
         ]
     }

@@ -334,6 +334,73 @@ struct NativeHostTests {
         #expect(second.platformSigningKeyId.hasPrefix("platform-host:macos:"))
     }
 
+    @Test("debug control plane rejects tampered installed packages before open")
+    func debugControlPlaneRejectsTamperedInstalledPackageBeforeOpen() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-verified-mount-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "native-ai-macos-verified-mount-\(UUID().uuidString)"
+        DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
+        }
+
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil,
+            signingKeyAccount: signingKeyAccount
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        let commandURL = URL(string: "http://127.0.0.1:\(try #require(controlPlane.boundPort))/control/command")!
+        let repoRoot = RuntimeResourceLocator.repoRootURL()
+        let install = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString([
+                "tool": "platform.install_webapp_package",
+                "args": ["path": repoRoot.appendingPathComponent("webapps/examples/notes-lite").path],
+            ])
+        )
+        #expect(install.statusCode == 200)
+        let installResult = try jsonResult(install)
+        let installId = try #require(installResult["installId"] as? String)
+
+        let openBeforeTamper = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.open_webapp","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(openBeforeTamper.statusCode == 200)
+
+        try sqliteAppendToAppFile(
+            dbURL: dbURL,
+            installId: installId,
+            path: "app.js",
+            suffix: "\n// tampered after signing"
+        )
+
+        let openAfterTamper = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.open_webapp","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(openAfterTamper.statusCode == 400)
+        #expect(openAfterTamper.body.contains("content_tampered"))
+    }
+
     @Test("debug control plane writes token file, authenticates health, and audits requests")
     func debugControlPlaneAuthenticatesHealthAndAuditsRequests() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2195,6 +2262,30 @@ private func sqliteAppDataVersion(dbURL: URL, appId: String) throws -> Int {
         return 0
     }
     return Int(sqlite3_column_int(statement, 0))
+}
+
+private func sqliteAppendToAppFile(dbURL: URL, installId: String, path: String, suffix: String) throws {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        throw NSError(domain: "sqlite", code: 1)
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(
+        db,
+        "UPDATE app_files SET content_text = content_text || ? WHERE install_id = ? AND path = ?",
+        -1,
+        &statement,
+        nil
+    )
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, suffix, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(statement, 2, installId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(statement, 3, path, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else {
+        throw NSError(domain: "sqlite", code: 2)
+    }
 }
 
 private func sqliteAppVersionStatus(dbURL: URL, appId: String, installId: String) throws -> String {

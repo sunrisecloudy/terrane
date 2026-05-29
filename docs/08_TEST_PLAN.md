@@ -483,6 +483,7 @@ If a generated app fails a micro-test, Codex should:
 - Real native dev targets run signing path, not unsigned direct execution.
 - macOS dev-control package signing is covered by `tools/fake-platform-host/test/macos-signing-source.test.js` and `tools/fake-platform-host/test/macos-native-build.test.js`, which verify Ed25519 signature fields and install-report storage.
 - macOS Keychain-backed signing-key persistence and `platform.health` public-key metadata are covered by `tools/fake-platform-host/test/macos-native-build.test.js`.
+- macOS active-install signature/content verification before `platform.open_webapp` is covered by `tools/fake-platform-host/test/macos-native-build.test.js`.
 - Fake-host configured platform key persistence and public-key health metadata are covered by `tools/fake-platform-host/test/signing.test.js`.
 
 ### Versioning/rollback tests

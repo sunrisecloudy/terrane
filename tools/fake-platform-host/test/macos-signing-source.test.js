@@ -26,9 +26,12 @@ test("macOS dev control signs packages with Ed25519 instead of none-dev", () => 
   assert.match(control, /"policyHash": hashes\["policyHash"\]/);
   assert.match(control, /signaturePayload\(/);
   assert.match(control, /signingKey\.signature/);
+  assert.match(control, /verifyActiveInstallForMount/);
+  assert.match(control, /isValidSignature/);
   assert.doesNotMatch(control, /"algorithm": "none-dev"/);
   assert.match(tests, /platform\.sign_webapp_package/);
   assert.match(tests, /debugControlPlanePersistsSigningKeyInKeychain/);
+  assert.match(tests, /debugControlPlaneRejectsTamperedInstalledPackageBeforeOpen/);
   assert.match(tests, /signature\["algorithm"\] as\? String == "ed25519"/);
   assert.match(tests, /pendingSignature\["algorithm"\] as\? String == "ed25519"/);
 });
