@@ -8,6 +8,14 @@ static gchar *runtime_session_id(const BridgeRequest *request) {
   return g_strdup_printf("runtime_linux_%s_%s", app_id, mount_token);
 }
 
+static gboolean native_dev_mode(void) {
+#ifndef NDEBUG
+  return TRUE;
+#else
+  return FALSE;
+#endif
+}
+
 static gchar *new_bridge_call_id(void) {
   static gint sequence = 0;
   gint next = g_atomic_int_add(&sequence, 1);
@@ -391,7 +399,7 @@ static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *r
   json_builder_set_member_name(builder, "runtimeVersion");
   json_builder_add_string_value(builder, "0.1.0");
   json_builder_set_member_name(builder, "devMode");
-  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_add_boolean_value(builder, native_dev_mode());
   json_builder_set_member_name(builder, "features");
   json_builder_begin_object(builder);
   const gchar *enabled[] = {"storage.read", "storage.write", "storage.get", "storage.set", "storage.remove", "storage.list", "notification.toast", "network.request", "runtime.capabilities", "app.log"};

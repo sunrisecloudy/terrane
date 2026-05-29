@@ -332,7 +332,7 @@ class NativeBridge(
             "target" to "android",
             "appId" to request.context.appId,
             "runtimeVersion" to "0.1.0",
-            "devMode" to true,
+            "devMode" to BuildConfig.DEBUG,
             "features" to JSONObject(
                 mapOf(
                     "storage.read" to true,

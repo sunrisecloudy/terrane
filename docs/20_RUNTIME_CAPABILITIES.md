@@ -44,6 +44,8 @@ Example:
 
 `appId` is derived from the runtime/native sandbox channel and is informational only. Apps must not put `appId` in bridge request bodies.
 
+`devMode` reflects the host build/runtime mode. Native release builds must report `false`; debug/simulator/dev-control hosts may report `true`.
+
 ## 3. Manifest capabilities
 
 Every manifest must include:

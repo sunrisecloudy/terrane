@@ -180,6 +180,7 @@ The host must enforce `manifest.networkPolicy` (docs/24). Disallowed origins, me
 ```
 
 Response validates against `schemas/runtime-capabilities.schema.json`. See §9.
+`devMode` must come from the host build/runtime mode, not from generated app input.
 
 ## 4. Permission mapping **[v0.1]**
 

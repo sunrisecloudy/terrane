@@ -15,6 +15,9 @@ let package = Package(
         .executableTarget(
             name: "NativeAIHostIOS",
             dependencies: ["CZigCoreBridge"],
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ],
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]

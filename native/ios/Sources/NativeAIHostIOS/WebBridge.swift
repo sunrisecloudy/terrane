@@ -12,6 +12,13 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let notifications = PlatformNotifications()
     private let network = PlatformNetwork()
     private let core = ZigCoreBridge()
+    private var nativeDevMode: Bool {
+#if DEBUG
+        true
+#else
+        false
+#endif
+    }
 
     func setDialogPresenterProvider(_ provider: @escaping @MainActor () -> UIViewController?) {
         dialogs.presenterProvider = provider
@@ -139,7 +146,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                 "target": "ios-simulator",
                 "appId": request.context.appId,
                 "runtimeVersion": "0.1.0",
-                "devMode": true,
+                "devMode": nativeDevMode,
                 "features": [
                     "storage.read": true,
                     "storage.write": true,

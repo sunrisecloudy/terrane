@@ -885,7 +885,7 @@ function checkNativeStatic() {
   const macRequired = [
     '"target": "macos"',
     '"appId": request.context.appId',
-    '"devMode": true',
+    '"devMode": nativeDevMode',
     '"limits":',
     '"storage.read": true',
     '"storage.write": true',
@@ -965,7 +965,7 @@ function checkNativeStatic() {
     [iosHost, "presentingViewController(from:"],
     [iosBridge, '"target": "ios-simulator"'],
     [iosBridge, '"appId": request.context.appId'],
-    [iosBridge, '"devMode": true'],
+    [iosBridge, '"devMode": nativeDevMode'],
     [iosBridge, '"limits":'],
     [iosBridge, '"storage.read": true'],
     [iosBridge, '"storage.write": true'],
@@ -1048,6 +1048,7 @@ function checkNativeStatic() {
     [windowsBridge, "permissionForBridgeMethod"],
     [windowsBridge, "approvedPermissions.contains(permission"],
     [windowsBridge, 'result.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId))'],
+    [windowsBridge, 'result.Insert(L"devMode", json::JsonValue::CreateBooleanValue(NativeDevMode()))'],
     [windowsBridge, 'features.Insert(L"storage.read", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"storage.write", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
@@ -1130,6 +1131,7 @@ function checkNativeStatic() {
     [linuxBridge, "approved_permissions_contains"],
     [linuxBridge, 'json_builder_set_member_name(builder, "appId")'],
     [linuxBridge, "request->context.app_id"],
+    [linuxBridge, "native_dev_mode()"],
     [linuxBridge, '"storage.read"'],
     [linuxBridge, '"storage.write"'],
     [linuxBridge, '"network.request"'],
@@ -1203,6 +1205,7 @@ function checkNativeStatic() {
     [androidBridge, '"core_events"'],
     [androidBridge, '"core_actions"'],
     [androidBridge, '"appId" to request.context.appId'],
+    [androidBridge, '"devMode" to BuildConfig.DEBUG'],
     [androidBridge, '"storage.read" to true'],
     [androidBridge, '"storage.write" to true'],
     [androidBridge, '"network.request" to true'],
@@ -1224,7 +1227,7 @@ function checkNativeStatic() {
     }
   }
   const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");
-  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', 'into("db/sqlite")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")', "androidx.activity:activity-ktx"]) {
+  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', 'into("db/sqlite")', "buildConfig = true", "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")', "androidx.activity:activity-ktx"]) {
     if (!androidGradle.includes(snippet)) {
       throw new Error(`Android Gradle asset sync missing ${snippet}`);
     }

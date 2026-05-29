@@ -29,6 +29,14 @@ std::wstring RuntimeSessionId(BridgeRequest const& request) {
   return L"runtime_windows_" + request.context.appId + L"_" + token;
 }
 
+bool NativeDevMode() {
+#ifdef _DEBUG
+  return true;
+#else
+  return false;
+#endif
+}
+
 void BindText(sqlite3_stmt* statement, int index, std::wstring const& value) {
   auto text = WideToUtf8(value);
   sqlite3_bind_text(statement, index, text.c_str(), -1, SQLITE_TRANSIENT);
@@ -238,7 +246,7 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   result.Insert(L"target", json::JsonValue::CreateStringValue(L"windows"));
   result.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
   result.Insert(L"runtimeVersion", json::JsonValue::CreateStringValue(L"0.1.0"));
-  result.Insert(L"devMode", json::JsonValue::CreateBooleanValue(true));
+  result.Insert(L"devMode", json::JsonValue::CreateBooleanValue(NativeDevMode()));
   result.Insert(L"features", features);
   result.Insert(L"limits", limits);
   return BridgeResponse::Success(request.id, request.hasId, result);
