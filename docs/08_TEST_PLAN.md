@@ -436,6 +436,8 @@ Fake-host console inspection is covered by `tools/fake-platform-host/test/contro
 and `tools/fake-platform-host/test/codex-control-acceptance.test.js`, which verify `app.log`
 bridge calls appear through `runtime.console_logs` and that `runtime.assert_no_console_errors`
 fails on error-level log rows.
+Fake-host notification capture is covered by the same tests, which verify `notification.toast`
+bridge calls are read back from persisted bridge rows through `runtime.notification_capture`.
 
 ### New test levels
 

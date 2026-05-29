@@ -66,7 +66,7 @@ test("fake-host exposes common control utility tools", async () => {
     });
     assert.equal(toast.ok, true);
     const notifications = await host.runControlCommand("runtime.notification_capture", { appId: "notes-lite" });
-    assert.equal(notifications.notifications.some((notification) => notification.message === "Saved"), true);
+    assert.equal(notifications.notifications.some((notification) => notification.message === "Saved" && notification.bridgeCallId), true);
 
     const bridgeAssertion = await host.runControlCommand("runtime.assert_bridge_call", {
       appId: "notes-lite",
@@ -196,6 +196,8 @@ test("fake-host exposes common control utility tools", async () => {
     assert.equal(cleared.ok, true);
     const calls = await host.runControlCommand("db.query_bridge_calls", { appId: "notes-lite" });
     assert.equal(calls.length, 0);
+    const clearedNotifications = await host.runControlCommand("runtime.notification_capture", { appId: "notes-lite" });
+    assert.deepEqual(clearedNotifications, { appId: "notes-lite", notifications: [] });
 
     const consoleAssertion = await host.runControlCommand("runtime.assert_no_console_errors", { appId: "notes-lite" });
     assert.equal(consoleAssertion.ok, true);

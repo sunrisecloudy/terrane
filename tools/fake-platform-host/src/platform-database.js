@@ -1292,6 +1292,25 @@ export class PlatformDatabase {
     });
   }
 
+  queryNotifications(appId = null) {
+    const rows = appId
+      ? this.all("SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' AND app_id = ? ORDER BY created_at", appId)
+      : this.all("SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' ORDER BY created_at");
+    return rows.map((row) => {
+      const params = row.params_json ? JSON.parse(row.params_json) : {};
+      return {
+        bridgeCallId: row.bridge_call_id,
+        appId: row.app_id,
+        message: params.message ?? null,
+        level: params.level ?? null,
+        params,
+        result: row.result_json ? JSON.parse(row.result_json) : null,
+        error: row.error_json ? JSON.parse(row.error_json) : null,
+        createdAt: row.created_at,
+      };
+    });
+  }
+
   queryControlCommands(controlSessionId = null) {
     if (controlSessionId) {
       return this.all("SELECT * FROM control_commands WHERE control_session_id = ? ORDER BY created_at", controlSessionId);

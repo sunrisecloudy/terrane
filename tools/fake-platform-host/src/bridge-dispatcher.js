@@ -21,7 +21,6 @@ export class BridgeDispatcher {
     this.runtimeVersion = runtimeVersion;
     this.allowRuntimeMismatch = allowRuntimeMismatch;
     this.capabilityOverrides = capabilityOverrides;
-    this.notifications = [];
     this.faults = [];
   }
 
@@ -137,7 +136,6 @@ export class BridgeDispatcher {
 
     if (method === "notification.toast") {
       assertNotificationToastParams(params);
-      this.notifications.push({ appId: context.appId, ...params });
       return { ok: true };
     }
 

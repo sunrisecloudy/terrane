@@ -114,6 +114,18 @@ test("Codex control plane installs, opens, drives, mocks, and inspects examples"
     assert.equal(dialogResponse.ok, true);
     assert.equal(dialogResponse.result.files[0].name, "codex.txt");
 
+    const notification = await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "notification.toast",
+      params: { level: "success", message: "Codex captured this toast" },
+    });
+    assert.equal(notification.ok, true);
+    const capturedNotifications = await host.runControlCommand("runtime.notification_capture", { appId: "notes-lite" });
+    assert.equal(
+      capturedNotifications.notifications.some((entry) => entry.message === "Codex captured this toast" && entry.level === "success"),
+      true,
+    );
+
     const logs = await host.runControlCommand("runtime.console_logs", { appId: "notes-lite" });
     assert.equal(logs.appId, "notes-lite");
     assert.equal(logs.logs.some((entry) => entry.level === "info" && entry.message === "Codex inspected this log"), true);

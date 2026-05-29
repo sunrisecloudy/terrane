@@ -745,7 +745,7 @@ export class FakePlatformHost {
       case "runtime.notification_capture":
         return {
           appId: args.appId ?? null,
-          notifications: this.bridge.notifications.filter((notification) => !args.appId || notification.appId === args.appId),
+          notifications: this.database.queryNotifications(args.appId ?? null),
         };
       case "db.snapshot":
         return this.database.snapshot();

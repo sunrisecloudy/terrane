@@ -424,6 +424,7 @@ function checkFakeHostStatic() {
     [bridgeDispatcher, "assertAppLogParams"],
     [bridgeDispatcher, "app.log requires message"],
     [fakeHost, "queryConsoleLogs"],
+    [fakeHost, "queryNotifications"],
     [fakeHost, "console_errors_found"],
     [browserRunner, "class BrowserSmokeRunner"],
     [browserRunner, "Chrome DevTools"],

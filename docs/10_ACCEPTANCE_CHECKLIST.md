@@ -164,6 +164,7 @@
 - [x] Codex can click/type/assert inside generated apps using `data-testid` selectors.
 - [x] Codex can inspect `app.log`-backed console logs, bridge calls, runtime events, storage, and core action logs.
 - [x] Codex can mock at least one network response and one file dialog result.
+- [x] Codex can capture `notification.toast` calls through persisted bridge logs.
 - [x] Codex can run every example app smoke test from `tests/micro`.
 - [x] Production builds do not expose the control plane.
 
