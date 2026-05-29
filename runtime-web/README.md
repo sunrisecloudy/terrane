@@ -18,5 +18,6 @@ Runtime responsibilities:
 - Per-minute bridge/network/log budget checks.
 - Debug console.
 - Local browser mock host for development.
+- Development-only `window.__APP_RUNTIME_DEVTOOLS__` helpers for Codex snapshot/query/bridge-log/console/storage/core/reset inspection.
 
 Generated apps must remain build-free HTML/CSS/vanilla JS packages.

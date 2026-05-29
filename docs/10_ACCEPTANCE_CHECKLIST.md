@@ -21,6 +21,7 @@
 - [x] Runtime enforces storage prefixes.
 - [x] Runtime logs bridge calls in debug console.
 - [x] Runtime shows structured errors.
+- [x] Runtime exposes `window.__APP_RUNTIME_DEVTOOLS__` only in dev/test mode.
 
 ## Zig core
 

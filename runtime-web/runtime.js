@@ -34,6 +34,8 @@
   const usageByApp = new Map();
   const devMockStorageByApp = new Map();
   const devMockCoreVersions = new Map();
+  const devMockCoreEvents = [];
+  const consoleEntries = [];
   const minuteMs = 60 * 1000;
 
   refreshButton.addEventListener("click", loadApps);
@@ -58,6 +60,7 @@
     attachBridgePort(event, mount);
   });
 
+  installRuntimeDevtools();
   loadApps();
 
   async function loadApps() {
@@ -521,6 +524,12 @@
       return { status: 200, headers: {}, bodyText: "{}" };
     }
     if (method === "app.log") {
+      consoleEntries.push({
+        appId: mount.appId,
+        level: params.level || "info",
+        message: params.message || "",
+        createdAt: new Date().toISOString(),
+      });
       if (params.level === "error") console.error("[app.log]", mount.appId, params.message);
       else console.log("[app.log]", mount.appId, params.message);
       return { ok: true };
@@ -535,11 +544,18 @@
     }
     const stateVersion = (devMockCoreVersions.get(appId) || 0) + 1;
     devMockCoreVersions.set(appId, stateVersion);
-    return {
+    const result = {
       ok: true,
       stateVersion: stateVersion,
       actions: devMockActionsForEvent(event),
     };
+    devMockCoreEvents.push({
+      appId: appId,
+      event: cloneJson(event),
+      result: cloneJson(result),
+      createdAt: new Date().toISOString(),
+    });
+    return result;
   }
 
   function validateDevMockCoreEvent(event) {
@@ -1056,6 +1072,140 @@
     const item = document.createElement("li");
     item.textContent = `${new Date().toISOString()} ${appId} ${method} ${status}`;
     bridgeLog.prepend(item);
+  }
+
+  function installRuntimeDevtools() {
+    if (!runtimeDevtoolsEnabled()) {
+      try {
+        delete window.__APP_RUNTIME_DEVTOOLS__;
+      } catch (_) {
+        window.__APP_RUNTIME_DEVTOOLS__ = undefined;
+      }
+      return;
+    }
+
+    window.__APP_RUNTIME_DEVTOOLS__ = {
+      snapshot: runtimeDevtoolsSnapshot,
+      query: runtimeDevtoolsQuery,
+      bridgeLog: runtimeDevtoolsBridgeLog,
+      consoleLog: runtimeDevtoolsConsoleLog,
+      storageSnapshot: runtimeDevtoolsStorageSnapshot,
+      coreEventLog: runtimeDevtoolsCoreEventLog,
+      reset: runtimeDevtoolsReset,
+    };
+  }
+
+  function runtimeDevtoolsEnabled() {
+    if (window.__APP_RUNTIME_DEVTOOLS_ENABLED__ === true || window.__APP_RUNTIME_DEV_MOCK__ === true) {
+      return true;
+    }
+    return false;
+  }
+
+  function runtimeDevtoolsSnapshot() {
+    return {
+      status: statusEl.textContent,
+      activeApp: activeApp ? {
+        appId: activeApp.id,
+        name: activeApp.name,
+        version: activeApp.version,
+        description: activeApp.description,
+      } : null,
+      mounted: Boolean(activeFrame && activeMount),
+      testIds: activeFrame ? testIdsFromHtml(activeFrame.srcdoc || "") : [],
+      bridgeCalls: runtimeDevtoolsBridgeLog(),
+      console: runtimeDevtoolsConsoleLog(),
+    };
+  }
+
+  function runtimeDevtoolsQuery(query) {
+    const html = activeFrame ? activeFrame.srcdoc || "" : "";
+    const requestedTestId = typeof query === "string" && query[0] !== "[" ? query : query && query.testId;
+    const selector = query && typeof query === "object" ? query.selector : null;
+    const testId = requestedTestId || testIdFromSelector(typeof query === "string" ? query : selector);
+    if (!testId) {
+      return { count: 0, matches: [] };
+    }
+    const pattern = new RegExp("<([a-z0-9-]+)([^>]*\\bdata-testid\\s*=\\s*[\"']" + escapeRegExp(testId) + "[\"'][^>]*)>([\\s\\S]*?)<\\/\\1>", "i");
+    const match = html.match(pattern);
+    if (!match) {
+      return { count: 0, matches: [] };
+    }
+    return {
+      count: 1,
+      matches: [{
+        testId: testId,
+        tagName: match[1].toLowerCase(),
+        text: stripTags(match[3]).trim(),
+      }],
+    };
+  }
+
+  function runtimeDevtoolsBridgeLog() {
+    return Array.from(bridgeLog.children || []).map(function (item) {
+      return item.textContent;
+    });
+  }
+
+  function runtimeDevtoolsConsoleLog() {
+    return consoleEntries.map(cloneJson);
+  }
+
+  function runtimeDevtoolsStorageSnapshot(appId) {
+    const targetAppId = appId || (activeApp && activeApp.id);
+    const storage = targetAppId ? devMockStorageByApp.get(targetAppId) : null;
+    return {
+      appId: targetAppId || null,
+      entries: storage
+        ? Array.from(storage.entries()).map(function ([key, value]) {
+            return { key: key, value: cloneJson(value) };
+          })
+        : [],
+    };
+  }
+
+  function runtimeDevtoolsCoreEventLog(appId) {
+    return devMockCoreEvents
+      .filter(function (entry) {
+        return !appId || entry.appId === appId;
+      })
+      .map(cloneJson);
+  }
+
+  function runtimeDevtoolsReset(appId) {
+    const targetAppId = appId || (activeApp && activeApp.id);
+    if (targetAppId) {
+      devMockStorageByApp.delete(targetAppId);
+      devMockCoreVersions.delete(targetAppId);
+      for (let index = devMockCoreEvents.length - 1; index >= 0; index -= 1) {
+        if (devMockCoreEvents[index].appId === targetAppId) {
+          devMockCoreEvents.splice(index, 1);
+        }
+      }
+    }
+    bridgeLog.textContent = "";
+    consoleEntries.length = 0;
+    return { ok: true, appId: targetAppId || null };
+  }
+
+  function testIdsFromHtml(html) {
+    return Array.from(html.matchAll(/\bdata-testid\s*=\s*["']([^"']+)["']/gi), function (match) {
+      return match[1];
+    }).sort();
+  }
+
+  function testIdFromSelector(selector) {
+    if (typeof selector !== "string") return null;
+    const match = selector.match(/\[data-testid=["']([^"']+)["']\]/);
+    return match ? match[1] : null;
+  }
+
+  function stripTags(value) {
+    return String(value || "").replace(/<[^>]*>/g, "");
+  }
+
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   async function fetchJson(url, options) {

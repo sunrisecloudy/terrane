@@ -766,7 +766,7 @@ export class FakePlatformHost {
       }
 
       if (req.method === "GET" && url.pathname === "/") {
-        return this.serveStatic(res, runtimeWebDir, "index.html");
+        return this.serveRuntimeIndex(res);
       }
 
       if (req.method === "GET" && url.pathname === "/webapps/examples.json") {
@@ -976,6 +976,17 @@ export class FakePlatformHost {
       return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "File not found", details: {} } });
     }
     sendText(res, 200, fs.readFileSync(filePath, "utf8"), contentType(filePath));
+  }
+
+  serveRuntimeIndex(res) {
+    const filePath = resolveInside(runtimeWebDir, "index.html");
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Runtime index not found", details: {} } });
+    }
+    const runtimeScript = '    <script src="/runtime/runtime.js"></script>';
+    const devtoolsFlag = '    <script>window.__APP_RUNTIME_DEVTOOLS_ENABLED__ = true;</script>';
+    const html = fs.readFileSync(filePath, "utf8").replace(runtimeScript, `${devtoolsFlag}\n${runtimeScript}`);
+    sendText(res, 200, html, "text/html");
   }
 
   exampleManifestList() {

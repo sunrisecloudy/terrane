@@ -142,6 +142,8 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
 
 The runtime capabilities contract is also covered by `tools/fake-platform-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target and checks each native/server implementation exposes the channel-derived `appId`, build/runtime-derived `devMode`, plus manifest-level `storage.read` / `storage.write` capability IDs.
 
+Development-only runtime hooks are covered by `tools/fake-platform-host/test/runtime-web.test.js`, which verifies `window.__APP_RUNTIME_DEVTOOLS__` exposes snapshot/query/bridge/console/storage/core/reset helpers in dev/test mode and is absent outside dev/test mode.
+
 The harness:
 
 1. Resolves the fixture file.

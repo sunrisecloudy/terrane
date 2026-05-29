@@ -15,6 +15,7 @@ test("http health and token-protected control command work", async () => {
 
     const runtimeHtml = await fetch(`${started.url}/`).then((response) => response.text());
     assert.match(runtimeHtml, /Native AI Webapp Platform/);
+    assert.match(runtimeHtml, /__APP_RUNTIME_DEVTOOLS_ENABLED__/);
 
     const examples = await fetch(`${started.url}/webapps/examples.json`).then((response) => response.json());
     assert.equal(examples.length, 5);

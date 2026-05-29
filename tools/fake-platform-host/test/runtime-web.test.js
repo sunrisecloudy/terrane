@@ -185,6 +185,85 @@ test("runtime dev mock handles bridge calls without host dispatch", async () => 
   }
 });
 
+test("runtime exposes development-only devtools hooks", async () => {
+  const harness = createRuntimeHarness({
+    devMock: true,
+    manifest: {
+      ...defaultRuntimeManifest(),
+      permissions: ["core.step", "storage.read", "storage.write", "app.log"],
+    },
+  });
+  try {
+    const frame = await mountFirstApp(harness);
+    const devtools = harness.parentWindow.__APP_RUNTIME_DEVTOOLS__;
+    assert.equal(typeof devtools.snapshot, "function");
+    assert.equal(typeof devtools.query, "function");
+    assert.equal(typeof devtools.bridgeLog, "function");
+    assert.equal(typeof devtools.consoleLog, "function");
+    assert.equal(typeof devtools.storageSnapshot, "function");
+    assert.equal(typeof devtools.coreEventLog, "function");
+    assert.equal(typeof devtools.reset, "function");
+
+    await vm.runInContext(
+      'window.AppRuntime.call("storage.set", { key: "notes-lite:devtools", value: { title: "Debuggable" } })',
+      frame.contentWindow.context,
+    );
+    await vm.runInContext(
+      [
+        'window.AppRuntime.call("core.step", {',
+        '  app: "notes-lite",',
+        '  event: { type: "TransformText", payload: { text: "Hi", mode: "lowercase" } }',
+        "})",
+      ].join("\n"),
+      frame.contentWindow.context,
+    );
+    await vm.runInContext(
+      'window.AppRuntime.call("app.log", { level: "info", message: "devtools ready" })',
+      frame.contentWindow.context,
+    );
+
+    const snapshot = devtools.snapshot();
+    assert.equal(snapshot.activeApp.appId, "notes-lite");
+    assert.equal(snapshot.mounted, true);
+    assert.equal(snapshot.testIds.includes("app-root"), true);
+    assert.equal(devtools.query({ testId: "app-root" }).matches[0].tagName, "main");
+    assert.equal(devtools.query('[data-testid="app-root"]').count, 1);
+    assert.equal(devtools.bridgeLog().some((line) => /notes-lite storage\.set ok/.test(line)), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(devtools.storageSnapshot("notes-lite").entries)), [
+      { key: "notes-lite:devtools", value: { title: "Debuggable" } },
+    ]);
+    assert.equal(devtools.coreEventLog("notes-lite").length, 1);
+    assert.equal(devtools.consoleLog().some((line) => line.message === "devtools ready"), true);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(devtools.reset("notes-lite"))), { ok: true, appId: "notes-lite" });
+    assert.deepEqual(JSON.parse(JSON.stringify(devtools.storageSnapshot("notes-lite").entries)), []);
+    assert.deepEqual(JSON.parse(JSON.stringify(devtools.coreEventLog("notes-lite"))), []);
+    assert.deepEqual(JSON.parse(JSON.stringify(devtools.consoleLog())), []);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime exposes devtools hooks when the host enables them", async () => {
+  const harness = createRuntimeHarness({ devtools: true });
+  try {
+    await loadRuntime(harness);
+    assert.equal(typeof harness.parentWindow.__APP_RUNTIME_DEVTOOLS__.snapshot, "function");
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime hides devtools hooks outside dev/test mode", async () => {
+  const harness = createRuntimeHarness();
+  try {
+    await loadRuntime(harness);
+    assert.equal(harness.parentWindow.__APP_RUNTIME_DEVTOOLS__, undefined);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime launcher, sandbox, bridge calls, debug log, and structured errors work", async () => {
   const manifestsById = new Map(
     runtimeExampleAppIds.map((appId) => [
@@ -403,6 +482,13 @@ async function mountFirstApp(harness) {
 function createRuntimeHarness(options = {}) {
   let parentWindow;
   const messageChannels = [];
+  const runtimeConsole = options.console ?? {
+    debug() {},
+    error() {},
+    info() {},
+    log() {},
+    warn() {},
+  };
   function HarnessMessageChannel() {
     const channel = new MessageChannel();
     messageChannels.push(channel);
@@ -413,6 +499,8 @@ function createRuntimeHarness(options = {}) {
   parentWindow.document = document;
   parentWindow.crypto = webcrypto;
   parentWindow.__APP_RUNTIME_DEV_MOCK__ = options.devMock === true;
+  parentWindow.__APP_RUNTIME_DEVTOOLS_ENABLED__ = options.devtools === true;
+  parentWindow.location = options.location ?? { hostname: "runtime.local.platform", search: "" };
   parentWindow.dispatchMessage = function (event) {
     parentWindow.dispatch("message", event);
   };
@@ -431,7 +519,7 @@ function createRuntimeHarness(options = {}) {
     btoa: (value) => Buffer.from(value, "binary").toString("base64"),
     clearInterval,
     clearTimeout,
-    console,
+    console: runtimeConsole,
     crypto: webcrypto,
     document,
     fetch: (url, options) => fakeFetch(url, options, fetchState),
