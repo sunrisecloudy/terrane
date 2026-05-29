@@ -360,6 +360,35 @@ test(
   },
 );
 
+test(
+  "Zig server package validation rejects bridge appId params",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-appid-param-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "appid-param-validation");
+      try {
+        const packageBody = packageForApp("notes-lite");
+        const appScript = packageBody.files.find((file) => file.path === "app.js");
+        appScript.content += '\nAppRuntime.call("storage.get", { appId: "other-app", key: "notes-lite:notes" });\n';
+
+        const result = await validateWebappPackage(started.url, packageBody);
+        assert.equal(result.status, 200);
+        assert.equal(result.body.ok, false);
+        assert.equal(result.body.errors.includes("forbidden_appid_param"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");

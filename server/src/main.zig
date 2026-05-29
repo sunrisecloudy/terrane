@@ -11236,6 +11236,7 @@ fn validateServerJsPolicy(
     if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
     if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
     if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
+    if (hasRuntimeBridgeCallAppIdParam(js)) try errors.append(allocator, "forbidden_appid_param");
     if (hasUnknownRuntimeBridgeCall(js)) try errors.append(allocator, "forbidden_bridge_method");
     if (hasRuntimeBridgeCallMissingPermission(manifest, js)) try errors.append(allocator, "missing_permission");
 }
@@ -11638,6 +11639,48 @@ fn hasRuntimeBridgeCallMissingPermission(manifest: std.json.Value, source: []con
     return false;
 }
 
+fn hasRuntimeBridgeCallAppIdParam(source: []const u8) bool {
+    var index: usize = 0;
+    while (nextRuntimeBridgeCall(source, &index)) |call| {
+        if (call.malformed) continue;
+        if (runtimeBridgeCallHasAppIdParam(source, call.next_index)) return true;
+    }
+    return false;
+}
+
+fn runtimeBridgeCallHasAppIdParam(source: []const u8, after_method: usize) bool {
+    var cursor = after_method;
+    while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+    if (cursor >= source.len or source[cursor] != ',') return false;
+    cursor += 1;
+    while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+    if (cursor >= source.len or source[cursor] != '{') return false;
+
+    const close = std.mem.indexOfScalarPos(u8, source, cursor, ')') orelse source.len;
+    const params = source[cursor..close];
+    return objectLiteralHasPropertyKey(params, "appId");
+}
+
+fn objectLiteralHasPropertyKey(source: []const u8, key: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, source, index, key)) |start| {
+        index = start + key.len;
+        var cursor = start + key.len;
+        if (start > 0 and (source[start - 1] == '"' or source[start - 1] == '\'')) {
+            const quote = source[start - 1];
+            if (cursor >= source.len or source[cursor] != quote) continue;
+            cursor += 1;
+            while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+            if (cursor < source.len and source[cursor] == ':') return true;
+            continue;
+        }
+        while (cursor < source.len and isJsonWhitespace(source[cursor])) : (cursor += 1) {}
+        if (cursor >= source.len or source[cursor] != ':') continue;
+        if (isJavaScriptStandaloneToken(source, start, key.len)) return true;
+    }
+    return false;
+}
+
 fn nextRuntimeBridgeCall(source: []const u8, index: *usize) ?RuntimeBridgeCall {
     const app_pattern = "AppRuntime.call";
     const bare_pattern = "call";
@@ -12008,6 +12051,18 @@ test "server package validation rejects direct native bridge globals" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_native_bridge\"") != null);
+}
+
+test "server JS policy detects bridge appId params" {
+    try std.testing.expect(hasRuntimeBridgeCallAppIdParam(
+        "AppRuntime.call(\"storage.get\", { appId: \"other-app\", key: \"notes-lite:notes\" });",
+    ));
+    try std.testing.expect(hasRuntimeBridgeCallAppIdParam(
+        "call('storage.get', { 'appId': 'other-app', key: 'notes-lite:notes' });",
+    ));
+    try std.testing.expect(!hasRuntimeBridgeCallAppIdParam(
+        "AppRuntime.call(\"storage.get\", { key: \"notes-lite:notes\" });",
+    ));
 }
 
 test "server package validation rejects bridge calls without manifest permission" {

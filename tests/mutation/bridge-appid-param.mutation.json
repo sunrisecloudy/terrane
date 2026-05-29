@@ -1,0 +1,6 @@
+{
+  "id": "bridge-appid-param",
+  "description": "Generated apps must not put appId in bridge request params.",
+  "expectedError": "forbidden_appid_param",
+  "source": "AppRuntime.call(\"storage.get\", { appId: \"other-app\", key: \"notes-lite:notes\" })"
+}

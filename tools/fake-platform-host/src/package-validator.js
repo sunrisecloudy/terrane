@@ -640,6 +640,9 @@ function validateJs(source, errors) {
       errors.push(issue(code, "app.js uses a forbidden JavaScript API", {}));
     }
   }
+  if (hasBridgeAppIdParam(source)) {
+    errors.push(issue("forbidden_appid_param", "AppRuntime.call params must not include appId", {}));
+  }
 
   const methods = new Set();
   const patterns = [
@@ -660,6 +663,14 @@ function validateJs(source, errors) {
   }
 
   return [...methods].sort();
+}
+
+function hasBridgeAppIdParam(source) {
+  const patterns = [
+    /\bAppRuntime\s*\.\s*call\s*\(\s*["'][^"']+["']\s*,\s*\{[^)]*(?:\bappId\b|["']appId["'])\s*:/m,
+    /\bcall\s*\(\s*["'][^"']+["']\s*,\s*\{[^)]*(?:\bappId\b|["']appId["'])\s*:/m,
+  ];
+  return patterns.some((pattern) => pattern.test(source));
 }
 
 function validateBridgePermissions(manifest, bridgeMethods, errors) {
