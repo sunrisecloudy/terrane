@@ -371,6 +371,7 @@ export class BridgeDispatcher {
     }
 
     assertNetworkHeaders(params.headers ?? {}, matching);
+    assertNetworkCredentials(params);
     assertNetworkRequestBody(params.body, matching);
     return matching;
   }
@@ -470,12 +471,26 @@ function assertNetworkHeaders(headers, policyEntry) {
   }
   const allowed = new Set((policyEntry.allowedHeaders ?? []).map((header) => String(header).toLowerCase()));
   for (const name of Object.keys(headers)) {
-    if (!allowed.has(name.toLowerCase())) {
+    const normalized = name.toLowerCase();
+    if (normalized === "cookie" || normalized === "set-cookie") {
+      throw new PlatformError("network_policy_denied", "network.request credential headers are not allowed", {
+        header: name,
+      });
+    }
+    if (!allowed.has(normalized)) {
       throw new PlatformError("network_policy_denied", "network.request header is outside manifest.networkPolicy", {
         header: name,
         allowedHeaders: [...allowed],
       });
     }
+  }
+}
+
+function assertNetworkCredentials(params) {
+  if (Object.prototype.hasOwnProperty.call(params, "credentials") && params.credentials != null) {
+    throw new PlatformError("network_policy_denied", "network.request credentials are not allowed", {
+      credentials: params.credentials,
+    });
   }
 }
 

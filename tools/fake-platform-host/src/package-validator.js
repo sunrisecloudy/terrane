@@ -341,6 +341,14 @@ function validateNetworkPolicy(networkPolicy, errors) {
       validateUniqueStringArray(entry.allowedHeaders, "invalid_network_policy", "networkPolicy allowedHeaders must be a unique string array", errors, {
         origin: entry.origin,
       });
+      for (const header of entry.allowedHeaders) {
+        if (typeof header === "string" && isCredentialHeader(header)) {
+          errors.push(issue("invalid_network_policy", "networkPolicy cannot allow credential headers", {
+            origin: entry.origin,
+            header,
+          }));
+        }
+      }
     }
     for (const key of ["maxRequestBytes", "maxResponseBytes"]) {
       if (key in entry && (!Number.isInteger(entry[key]) || entry[key] < 0)) {
@@ -356,6 +364,11 @@ function validateNetworkPolicy(networkPolicy, errors) {
       }));
     }
   }
+}
+
+function isCredentialHeader(name) {
+  const normalized = name.toLowerCase();
+  return normalized === "cookie" || normalized === "set-cookie";
 }
 
 function validateUniqueStringArray(value, code, message, errors, details = {}, allowed = null) {

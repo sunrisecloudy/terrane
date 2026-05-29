@@ -17,6 +17,24 @@ test("network policy rejects unallowlisted headers and oversized request bodies"
     assert.equal(badHeader.error.code, "network_policy_denied");
     assert.equal(badHeader.error.details.header, "x-debug");
 
+    const cookieHeader = await networkRequest(host, {
+      url: "https://api.example.com/status",
+      headers: { cookie: "sid=secret" },
+    });
+    assert.equal(cookieHeader.ok, false);
+    assert.equal(cookieHeader.error.code, "network_policy_denied");
+    assert.equal(cookieHeader.error.message, "network.request credential headers are not allowed");
+    assert.equal(cookieHeader.error.details.header, "cookie");
+
+    const credentialed = await networkRequest(host, {
+      url: "https://api.example.com/status",
+      credentials: "include",
+    });
+    assert.equal(credentialed.ok, false);
+    assert.equal(credentialed.error.code, "network_policy_denied");
+    assert.equal(credentialed.error.message, "network.request credentials are not allowed");
+    assert.equal(credentialed.error.details.credentials, "include");
+
     const largeBody = await networkRequest(host, {
       url: "https://api.example.com/status",
       method: "POST",
@@ -84,6 +102,7 @@ async function networkRequest(host, patch) {
         headers: patch.headers ?? {},
         body: patch.body ?? null,
         timeoutMs: patch.timeoutMs ?? 10000,
+        ...(patch.credentials == null ? {} : { credentials: patch.credentials }),
       },
     },
     { appId: "api-dashboard" },

@@ -93,6 +93,7 @@ test("networkPolicy validates methods, headers, sizes, and timeout bounds", () =
   const cases = [
     ["invalid_network_policy", { allow: [], allowCredentials: "yes" }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], allowedHeaders: ["x-debug", "x-debug"] }] }],
+    ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], allowedHeaders: ["cookie"] }] }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], pathPrefix: 42 }] }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], maxResponseBytes: -1 }] }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], timeoutMs: 120001 }] }],

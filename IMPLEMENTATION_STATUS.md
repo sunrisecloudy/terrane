@@ -123,12 +123,12 @@ Status snapshot: **2026-05-29**.
 
 | Path | Status |
 |---|---|
-| `tests/fixtures/bridge/` | partial (21 fixtures are exercised by fake-host bridge tests: the 16 docs/08 required fixtures plus network policy edge cases) |
+| `tests/fixtures/bridge/` | partial (25 fixtures are exercised by fake-host bridge tests: the 16 docs/08 required fixtures plus network policy edge cases) |
 | `tests/fixtures/db/` | partial |
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
-| `tests/mutation/` | partial (14 mutations now exercised by fake-host validator/runtime tests) |
+| `tests/mutation/` | partial (18 mutations now exercised by fake-host validator/runtime tests) |
 | `tests/accessibility/` | fixtures |
 | `tests/performance/` | partial (fake-host latency harness reports p50/p95 for storage and core bridge round-trips) |
 | `tests/security/malicious-packages/` | partial (static validator fixtures exercised by fake-host tests) |

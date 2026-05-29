@@ -803,6 +803,9 @@
     if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
       return bridgeError("invalid_request", "network.request headers must be an object");
     }
+    if ("credentials" in params && params.credentials != null) {
+      return bridgeError("network_policy_denied", "network.request credentials are not allowed");
+    }
     const headerNames = [];
     for (const [name, value] of Object.entries(headers)) {
       if (typeof value !== "string") {

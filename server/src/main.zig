@@ -875,6 +875,15 @@ fn handleNetworkRequestBridge(
     const params_json = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json);
 
+    if (networkRequestUsesCredentials(params)) {
+        const error_json = try bridgeErrorJsonAlloc(allocator, "network_policy_denied", "network.request credentials are not allowed");
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request credentials are not allowed");
+    }
+
     const policy_result = networkPolicyAllowsRequest(allocator, app_id, url, method, params) catch |err| switch (err) {
         error.InvalidNetworkUrl => {
             return writeBridgeError(allocator, stream, id, "invalid_request", "network.request url must be absolute");
@@ -5560,6 +5569,9 @@ fn networkRequestBridgeControl(
     const request_method_raw = valueString(params.object.get("method")) orelse "GET";
     const request_method = try upperAsciiAlloc(allocator, request_method_raw);
     defer allocator.free(request_method);
+    if (networkRequestUsesCredentials(params)) {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request credentials are not allowed");
+    }
     const allowed = networkPolicyAllowsRequest(allocator, app_id, url, request_method, params) catch |err| switch (err) {
         error.InvalidNetworkUrl => {
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request url must be absolute");
@@ -8809,6 +8821,9 @@ fn networkPolicyEntryAllowsRequest(
         const path_prefix = valueString(path_prefix_value) orelse return false;
         if (!std.mem.startsWith(u8, parts.path, path_prefix)) return false;
     }
+    if (params.object.get("credentials")) |credentials| {
+        if (credentials != .null) return false;
+    }
     if (!headersAllowed(params.object.get("headers"), entry.object.get("allowedHeaders"))) return false;
     if (!(try requestBodyAllowed(allocator, params.object.get("body"), entry.object.get("maxRequestBytes")))) return false;
     return true;
@@ -8889,9 +8904,28 @@ fn headersAllowed(headers_value: ?std.json.Value, allowed_value: ?std.json.Value
 
     var iterator = headers.object.iterator();
     while (iterator.next()) |entry| {
+        if (isCredentialHeader(entry.key_ptr.*)) return false;
         if (!stringArrayContains(allowed, entry.key_ptr.*)) return false;
     }
     return true;
+}
+
+fn networkRequestUsesCredentials(params: std.json.Value) bool {
+    if (params.object.get("credentials")) |credentials| {
+        if (credentials != .null) return true;
+    }
+    if (params.object.get("headers")) |headers| {
+        if (headers != .object) return false;
+        var iterator = headers.object.iterator();
+        while (iterator.next()) |entry| {
+            if (isCredentialHeader(entry.key_ptr.*)) return true;
+        }
+    }
+    return false;
+}
+
+fn isCredentialHeader(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "cookie") or std.ascii.eqlIgnoreCase(name, "set-cookie");
 }
 
 fn requestBodyAllowed(allocator: std.mem.Allocator, body_value: ?std.json.Value, max_value: ?std.json.Value) !bool {
@@ -10042,7 +10076,7 @@ fn validateServerNetworkPolicy(
                         try errors.append(allocator, "invalid_network_policy");
                         continue;
                     };
-                    if (stringValueAppearsBefore(headers.array.items, index, header_name)) {
+                    if (isCredentialHeader(header_name) or stringValueAppearsBefore(headers.array.items, index, header_name)) {
                         try errors.append(allocator, "invalid_network_policy");
                     }
                 }
@@ -10538,4 +10572,42 @@ test "network policy helper matches URL method headers and string body bytes" {
     );
     defer large_body_json.deinit();
     try std.testing.expect(!(try networkPolicyEntryAllowsRequest(std.testing.allocator, entry_json.value, parts, "POST", large_body_json.value)));
+
+    var cookie_entry_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "origin": "https://api.example.com",
+        \\  "methods": ["GET"],
+        \\  "allowedHeaders": ["cookie"],
+        \\  "maxRequestBytes": 64
+        \\}
+    ,
+        .{},
+    );
+    defer cookie_entry_json.deinit();
+    var cookie_params_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "headers": {"cookie": "sid=secret"}
+        \\}
+    ,
+        .{},
+    );
+    defer cookie_params_json.deinit();
+    try std.testing.expect(!(try networkPolicyEntryAllowsRequest(std.testing.allocator, cookie_entry_json.value, parts, "GET", cookie_params_json.value)));
+
+    var credentials_params_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "headers": {},
+        \\  "credentials": "include"
+        \\}
+    ,
+        .{},
+    );
+    defer credentials_params_json.deinit();
+    try std.testing.expect(!(try networkPolicyEntryAllowsRequest(std.testing.allocator, cookie_entry_json.value, parts, "GET", credentials_params_json.value)));
 }
