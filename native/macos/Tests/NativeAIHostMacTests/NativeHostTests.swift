@@ -194,7 +194,7 @@ struct NativeHostTests {
         )
         let storageContext = AppSandboxContext(
             appId: "notes-lite",
-            approvedPermissions: ["storage.write"],
+            approvedPermissions: ["storage.read", "storage.write"],
             networkPolicy: [],
             denyPrivateNetwork: true,
             mountToken: "control-test-mount"
@@ -231,12 +231,108 @@ struct NativeHostTests {
         #expect(session.statusCode == 200)
         #expect(session.body.contains(controlPlane.controlSessionId))
 
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
         let snapshotURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshot")!
         let snapshot = try await httpRequest(snapshotURL, headers: ["X-Platform-Control-Token": token])
         #expect(snapshot.statusCode == 200)
         #expect(snapshot.body.contains(#""runtimeAttached":false"#))
 
-        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        let createSnapshotURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshots")!
+        let createdAppSnapshot = try await httpRequest(
+            createSnapshotURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"appId":"notes-lite","type":"manual"}"#
+        )
+        #expect(createdAppSnapshot.statusCode == 200)
+        let createdAppSnapshotResult = try jsonResult(createdAppSnapshot)
+        let appSnapshotId = try #require(createdAppSnapshotResult["snapshotId"] as? String)
+        let appSnapshotStorage = try #require(createdAppSnapshotResult["storage"] as? [[String: Any]])
+        #expect(appSnapshotStorage.contains { row in
+            (row["key"] as? String) == "notes-lite:control-note"
+                && ((row["value_json"] as? String)?.contains("Visible to db.query_app_storage") ?? false)
+        })
+
+        let changedStorage = PlatformStorage(databaseURL: dbURL).set(BridgeRequest(
+            id: "control-change-after-snapshot",
+            method: "storage.set",
+            params: ["key": "notes-lite:control-note", "value": ["title": "Changed after snapshot"]],
+            context: storageContext
+        ))
+        #expect(changedStorage.ok)
+
+        let readAppSnapshot = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshots/\(appSnapshotId)")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"action":"read"}"#
+        )
+        #expect(readAppSnapshot.statusCode == 200)
+        let readAppSnapshotResult = try jsonResult(readAppSnapshot)
+        #expect(readAppSnapshotResult["snapshotId"] as? String == appSnapshotId)
+        let readSnapshotBody = try #require(readAppSnapshotResult["snapshot"] as? [String: Any])
+        let readSnapshotStorage = try #require(readSnapshotBody["storage"] as? [[String: Any]])
+        #expect(readSnapshotStorage.contains { row in
+            (row["key"] as? String) == "notes-lite:control-note"
+                && ((row["value_json"] as? String)?.contains("Visible to db.query_app_storage") ?? false)
+        })
+
+        let restoredSnapshot = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.restore_snapshot","args":{"snapshotId":"\#(appSnapshotId)"}}"#
+        )
+        #expect(restoredSnapshot.statusCode == 200)
+        #expect(restoredSnapshot.body.contains(#""restoredStorageKeys":1"#))
+
+        let restoredStorage = PlatformStorage(databaseURL: dbURL).get(BridgeRequest(
+            id: "control-read-restored-snapshot",
+            method: "storage.get",
+            params: ["key": "notes-lite:control-note", "defaultValue": NSNull()],
+            context: storageContext
+        ))
+        #expect(restoredStorage.ok)
+        let restoredStorageResult = try #require(restoredStorage.result as? [String: Any])
+        let restoredStorageValue = try #require(restoredStorageResult["value"] as? [String: Any])
+        #expect(restoredStorageValue["title"] as? String == "Visible to db.query_app_storage")
+
+        let createdSnapshotCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.create_snapshot","args":{"appId":"notes-lite","type":"manual"}}"#
+        )
+        #expect(createdSnapshotCommand.statusCode == 200)
+        #expect(createdSnapshotCommand.body.contains(#""snapshotId":"snapshot_"#))
+
+        let changedBeforeRouteRestore = PlatformStorage(databaseURL: dbURL).set(BridgeRequest(
+            id: "control-change-before-route-restore",
+            method: "storage.set",
+            params: ["key": "notes-lite:control-note", "value": ["title": "Changed before route restore"]],
+            context: storageContext
+        ))
+        #expect(changedBeforeRouteRestore.ok)
+
+        let routeRestoredSnapshot = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshots/\(appSnapshotId)")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"action":"restore"}"#
+        )
+        #expect(routeRestoredSnapshot.statusCode == 200)
+
+        let routeRestoredStorage = PlatformStorage(databaseURL: dbURL).get(BridgeRequest(
+            id: "control-read-route-restored-snapshot",
+            method: "storage.get",
+            params: ["key": "notes-lite:control-note", "defaultValue": NSNull()],
+            context: storageContext
+        ))
+        #expect(routeRestoredStorage.ok)
+        let routeRestoredStorageResult = try #require(routeRestoredStorage.result as? [String: Any])
+        let routeRestoredStorageValue = try #require(routeRestoredStorageResult["value"] as? [String: Any])
+        #expect(routeRestoredStorageValue["title"] as? String == "Visible to db.query_app_storage")
+
         let command = try await httpRequest(
             commandURL,
             method: "POST",
@@ -415,7 +511,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 22)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 27)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

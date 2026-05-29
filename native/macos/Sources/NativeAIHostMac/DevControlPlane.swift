@@ -45,6 +45,15 @@ final class DevControlPlane: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
+    private static let snapshotTypes: Set<String> = [
+        "bug-report",
+        "pre-install",
+        "pre-migration",
+        "post-test",
+        "golden",
+        "manual",
+        "debug-bundle",
+    ]
 
     var boundPort: UInt16? {
         listener?.port?.rawValue
@@ -229,6 +238,14 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: nil))
         case ("GET", "accessibility"):
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilityAudit(appId: nil))
+        case ("POST", "snapshots") where route.itemId == nil:
+            handleCreateSnapshot(connection, request, args: request.jsonBody ?? [:], startedAt: startedAt)
+        case ("POST", "snapshots") where route.itemId != nil:
+            if (request.jsonBody?["action"] as? String) == "restore" {
+                handleRestoreSnapshot(connection, request, snapshotId: route.itemId ?? "", startedAt: startedAt)
+            } else {
+                handleReadSnapshot(connection, request, snapshotId: route.itemId ?? "", startedAt: startedAt)
+            }
         case ("POST", "command"):
             handleCommand(connection, request, startedAt: startedAt)
         default:
@@ -260,6 +277,14 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilityAudit(appId: args["appId"] as? String))
         case "runtime.assert_accessibility":
             handleAccessibilityAssertion(connection, request, args: args, startedAt: startedAt)
+        case "platform.create_snapshot":
+            handleCreateSnapshot(connection, request, args: args, startedAt: startedAt)
+        case "platform.restore_snapshot":
+            guard let snapshotId = args["snapshotId"] as? String, !snapshotId.isEmpty else {
+                sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.restore_snapshot requires snapshotId", startedAt: startedAt)
+                return
+            }
+            handleRestoreSnapshot(connection, request, snapshotId: snapshotId, startedAt: startedAt)
         case "db.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
         case "db.query_app_storage":
@@ -477,6 +502,148 @@ final class DevControlPlane: @unchecked Sendable {
             "rule": rule ?? NSNull(),
             "report": report,
         ])
+    }
+
+    private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.create_snapshot requires appId", startedAt: startedAt)
+            return
+        }
+        let type = args["type"] as? String ?? "manual"
+        guard Self.snapshotTypes.contains(type) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "Snapshot type is not allowed", startedAt: startedAt)
+            return
+        }
+        guard let result = createSnapshot(appId: appId, type: type, sessionId: args["sessionId"] as? String) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Snapshot could not be created", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleReadSnapshot(_ connection: NWConnection, _ request: HTTPRequest, snapshotId: String, startedAt: Date) {
+        guard let snapshot = readSnapshot(snapshotId: snapshotId) else {
+            sendRejected(connection, request, status: 404, code: "snapshot_not_found", message: "Snapshot was not found", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: snapshot)
+    }
+
+    private func handleRestoreSnapshot(_ connection: NWConnection, _ request: HTTPRequest, snapshotId: String, startedAt: Date) {
+        guard let result = restoreSnapshot(snapshotId: snapshotId) else {
+            sendRejected(connection, request, status: 404, code: "snapshot_not_found", message: "Snapshot was not found", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func createSnapshot(appId: String, type: String, sessionId: String?) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let active = activeAppRecord(appId: appId)
+        let createdAt = Self.now()
+        let storage = tableRows(
+            table: "app_storage",
+            columns: ["app_id", "key", "value_json", "updated_at"],
+            orderBy: "key",
+            filterColumn: "app_id",
+            filterValue: appId
+        )
+        var snapshot: [String: Any] = [
+            "appId": appId,
+            "activeInstallId": active?.installId ?? NSNull(),
+            "activeVersion": active?.version ?? NSNull(),
+            "dataVersion": active?.dataVersion ?? NSNull(),
+            "storage": storage,
+            "createdAt": createdAt,
+        ]
+        let snapshotJSON = jsonBody(snapshot)
+        let contentHash = "sha256:\(sha256Hex(snapshotJSON))"
+        let snapshotId = "snapshot_\(UUID().uuidString.lowercased())"
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO runtime_snapshots (snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, snapshotId)
+        bindNullable(statement, 2, sessionId)
+        bind(statement, 3, appId)
+        bindNullable(statement, 4, active?.installId)
+        bind(statement, 5, type)
+        bind(statement, 6, snapshotJSON)
+        bind(statement, 7, contentHash)
+        bind(statement, 8, createdAt)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return nil
+        }
+        snapshot["snapshotId"] = snapshotId
+        return snapshot
+    }
+
+    private func readSnapshot(snapshotId: String) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT snapshot_id, snapshot_json, content_hash, created_at FROM runtime_snapshots WHERE snapshot_id = ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, snapshotId)
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let snapshot = jsonDictionary(columnText(statement, 1))
+        else {
+            return nil
+        }
+        return [
+            "snapshotId": columnText(statement, 0),
+            "snapshot": snapshot,
+            "contentHash": columnText(statement, 2),
+            "createdAt": columnText(statement, 3),
+        ]
+    }
+
+    private func restoreSnapshot(snapshotId: String) -> [String: Any]? {
+        guard let record = readSnapshot(snapshotId: snapshotId),
+              let snapshot = record["snapshot"] as? [String: Any]
+        else {
+            return nil
+        }
+        let appId = snapshot["appId"] as? String
+        let storage = snapshot["storage"] as? [[String: Any]] ?? []
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+        if let appId {
+            ok = deleteStorage(appId: appId)
+        }
+        if ok {
+            for item in storage {
+                guard insertStorageRow(item, fallbackAppId: appId) else {
+                    ok = false
+                    break
+                }
+            }
+        }
+        if ok, let activeInstallId = snapshot["activeInstallId"] as? String, let appId {
+            ok = updateActiveAppAfterRestore(
+                appId: appId,
+                activeInstallId: activeInstallId,
+                activeVersion: snapshot["activeVersion"] as? String,
+                dataVersion: intValue(snapshot["dataVersion"])
+            )
+        }
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            return nil
+        }
+        return [
+            "ok": true,
+            "snapshotId": snapshotId,
+            "appId": appId ?? NSNull(),
+            "restoredStorageKeys": storage.count,
+        ]
     }
 
     private func dbSnapshotResult() -> [String: Any] {
@@ -836,6 +1003,114 @@ final class DevControlPlane: @unchecked Sendable {
         sqlite3_step(statement)
     }
 
+    private func activeAppRecord(appId: String) -> (installId: String?, version: String?, dataVersion: Int)? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return (
+            installId: columnNullableText(statement, 0),
+            version: columnNullableText(statement, 1),
+            dataVersion: Int(sqlite3_column_int64(statement, 2))
+        )
+    }
+
+    private func deleteStorage(appId: String) -> Bool {
+        guard let db = database.handle else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM app_storage WHERE app_id = ?", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+
+    private func insertStorageRow(_ item: [String: Any], fallbackAppId: String?) -> Bool {
+        guard let db = database.handle else { return false }
+        let rowAppId = item["app_id"] as? String ?? item["appId"] as? String ?? fallbackAppId
+        guard let appId = rowAppId, let key = item["key"] as? String else {
+            return false
+        }
+        let valueJSON = item["value_json"] as? String ?? item["valueJson"] as? String ?? "null"
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, key)
+        bind(statement, 3, valueJSON)
+        bind(statement, 4, Self.now())
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+
+    private func updateActiveAppAfterRestore(
+        appId: String,
+        activeInstallId: String,
+        activeVersion: String?,
+        dataVersion: Int?
+    ) -> Bool {
+        guard let db = database.handle else { return false }
+        var statement: OpaquePointer?
+        let sql = """
+        UPDATE apps
+        SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ?
+        WHERE id = ?
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, activeInstallId)
+        bindNullable(statement, 2, activeVersion)
+        sqlite3_bind_int64(statement, 3, Int64(dataVersion ?? 1))
+        bind(statement, 4, Self.now())
+        bind(statement, 5, appId)
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+
+    private func executeSQL(_ sql: String) -> Bool {
+        guard let db = database.handle else { return false }
+        var error: UnsafeMutablePointer<CChar>?
+        let status = sqlite3_exec(db, sql, nil, nil, &error)
+        sqlite3_free(error)
+        return status == SQLITE_OK
+    }
+
+    private func jsonDictionary(_ text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        if let value = value as? String {
+            return Int(value)
+        }
+        return nil
+    }
+
     private func scalarInt(_ sql: String, values: [String] = []) -> Int {
         guard let db = database.handle else { return 0 }
         var statement: OpaquePointer?
@@ -1051,6 +1326,13 @@ private struct HTTPRequest {
             return "runtime.resource_usage"
         case ("GET", let value) where value.hasSuffix("/accessibility"):
             return "runtime.run_accessibility_audit"
+        case ("POST", let value) where value.hasSuffix("/snapshots"):
+            return "platform.create_snapshot"
+        case ("POST", let value) where value.contains("/snapshots/"):
+            if (jsonBody?["action"] as? String) == "restore" {
+                return "platform.restore_snapshot"
+            }
+            return "runtime.snapshot"
         default:
             return "\(method) \(path)"
         }
@@ -1071,6 +1353,7 @@ private struct HTTPRequest {
 private struct SessionRoute {
     let controlSessionId: String
     let subresource: String?
+    let itemId: String?
 
     init?(_ path: String) {
         let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
@@ -1079,6 +1362,7 @@ private struct SessionRoute {
         }
         self.controlSessionId = parts[1]
         self.subresource = parts.count > 2 ? parts[2] : nil
+        self.itemId = parts.count > 3 ? parts[3] : nil
     }
 }
 

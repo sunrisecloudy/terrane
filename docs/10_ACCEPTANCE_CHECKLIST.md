@@ -69,6 +69,7 @@
 - [x] Debug dev control plane exposes static accessibility audit/snapshot/assertion tools.
 - [x] Debug dev control plane exposes safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Debug dev control plane exports `db.export_debug_bundle` artifacts and records them in `backup_exports`.
+- [x] Debug dev control plane persists, reads, and restores runtime snapshots for app storage.
 
 ### Android
 
