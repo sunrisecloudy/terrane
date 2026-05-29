@@ -1,5 +1,6 @@
 #include <jni.h>
 
+#include <android/log.h>
 #include <dlfcn.h>
 #include <stdint.h>
 
@@ -7,6 +8,8 @@
 #include <string>
 
 namespace {
+
+constexpr const char* kLogTag = "NativeAIPlatformCore";
 
 struct ZigCoreBuffer {
   uint8_t* ptr;
@@ -37,6 +40,7 @@ bool ensure_loaded_locked() {
 
   void* handle = dlopen("libzig_core.so", RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "dlopen libzig_core.so failed: %s", dlerror());
     return false;
   }
 
@@ -45,12 +49,14 @@ bool ensure_loaded_locked() {
   auto step_json = reinterpret_cast<CoreStepJsonFn>(dlsym(handle, "core_step_json"));
   auto free_buffer = reinterpret_cast<CoreFreeFn>(dlsym(handle, "core_free"));
   if (create == nullptr || destroy == nullptr || step_json == nullptr || free_buffer == nullptr) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "libzig_core.so is missing required core symbols");
     dlclose(handle);
     return false;
   }
 
   void* core = create();
   if (core == nullptr) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "core_create returned null");
     dlclose(handle);
     return false;
   }

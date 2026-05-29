@@ -28,6 +28,8 @@ val buildAndroidZigCoreAbiTasks = androidZigCoreTargets.map { (abi, target) ->
         val outputDir = generatedZigCoreJniLibs.get().asFile.resolve(abi)
         val outputFile = outputDir.resolve("libzig_core.so")
         inputs.dir(zigCoreDir.resolve("src"))
+        inputs.property("zigTarget", target)
+        inputs.property("zigSoname", "libzig_core.so")
         outputs.file(outputFile)
         workingDir = zigCoreDir
         environment("ZIG_GLOBAL_CACHE_DIR", layout.buildDirectory.dir("zig-cache/android/global").get().asFile.absolutePath)
@@ -35,15 +37,18 @@ val buildAndroidZigCoreAbiTasks = androidZigCoreTargets.map { (abi, target) ->
         doFirst {
             outputDir.mkdirs()
         }
-        commandLine(
-            "zig",
-            "build-lib",
-            "src/lib.zig",
-            "-dynamic",
-            "-target",
-            target,
-            "-femit-bin=${outputFile.absolutePath}",
-        )
+                commandLine(
+                    "zig",
+                    "build-lib",
+                    "src/lib.zig",
+                    "--name",
+                    "zig_core",
+                    "-dynamic",
+                    "-target",
+                    target,
+                    "-fsoname=libzig_core.so",
+                    "-femit-bin=${outputFile.absolutePath}",
+                )
     }
 }
 val buildAndroidZigCore by tasks.registering {

@@ -1,9 +1,10 @@
 package com.nativeai.platform
 
+import android.util.Log
 import org.json.JSONObject
 
 class ZigCoreBridge {
-    fun isAvailable(): Boolean = jniLoaded && runCatching { nativeIsAvailable() }.getOrDefault(false)
+    fun isAvailable(): Boolean = zigCoreLoaded && jniLoaded && runCatching { nativeIsAvailable() }.getOrDefault(false)
 
     fun step(request: BridgeRequest): String {
         if (!isAvailable()) {
@@ -48,9 +49,18 @@ class ZigCoreBridge {
     private external fun nativeStep(inputJson: String): String?
 
     companion object {
+        private val zigCoreLoaded: Boolean = runCatching {
+            System.loadLibrary("zig_core")
+            true
+        }.onFailure { error ->
+            Log.e("NativeAIPlatformCore", "System.loadLibrary(\"zig_core\") failed", error)
+        }.getOrDefault(false)
+
         private val jniLoaded: Boolean = runCatching {
             System.loadLibrary("zig_core_jni")
             true
+        }.onFailure { error ->
+            Log.e("NativeAIPlatformCore", "System.loadLibrary(\"zig_core_jni\") failed", error)
         }.getOrDefault(false)
     }
 }

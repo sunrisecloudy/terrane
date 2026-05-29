@@ -1,7 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const max_input_bytes = 1024 * 1024;
 const ffi_allocator = std.heap.page_allocator;
+
+comptime {
+    if (builtin.abi == .android) {
+        @export(&androidGetAuxVal, .{ .name = "getauxval" });
+    }
+}
 
 pub const ZigCoreBuffer = extern struct {
     ptr: [*]u8,
@@ -146,6 +153,12 @@ pub export fn core_step_json(core: ?*Core, input_ptr: ?[*]const u8, input_len: u
 pub export fn core_free(buffer: ZigCoreBuffer) void {
     if (buffer.len == 0) return;
     ffi_allocator.free(buffer.ptr[0..buffer.len]);
+}
+
+fn androidGetAuxVal(key: usize) callconv(.c) usize {
+    const at_pagesz = 6;
+    if (key == at_pagesz) return 4096;
+    return 0;
 }
 
 fn okJson(allocator: std.mem.Allocator, state_version: u64, actions_json: []const u8) ![]u8 {

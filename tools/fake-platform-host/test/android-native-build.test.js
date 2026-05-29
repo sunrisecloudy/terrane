@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -7,10 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const androidDir = path.join(repoRoot, "native", "android");
+const packageName = "com.nativeai.platform";
+const activityName = `${packageName}/.MainActivity`;
+const smokeLogTag = "NativeAIPlatformSmoke";
 
 function commandExists(command) {
   try {
-    execFileSync(command, command === "zig" ? ["version"] : ["--version"], { stdio: "ignore" });
+    const executable = command === "emulator" ? emulatorCommand() : command;
+    const args = command === "zig" ? ["version"] : command === "emulator" ? ["-version"] : ["--version"];
+    execFileSync(executable, args, { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -18,7 +23,19 @@ function commandExists(command) {
 }
 
 function hasAndroidSdk() {
-  return Boolean(process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || fs.existsSync(path.join(process.env.HOME ?? "", "Library", "Android", "sdk")));
+  return Boolean(androidSdkPath());
+}
+
+function androidSdkPath() {
+  return [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT, path.join(process.env.HOME ?? "", "Library", "Android", "sdk")]
+    .filter(Boolean)
+    .find((candidate) => fs.existsSync(candidate));
+}
+
+function emulatorCommand() {
+  const sdkPath = androidSdkPath();
+  const modern = sdkPath ? path.join(sdkPath, "emulator", "emulator") : null;
+  return modern && fs.existsSync(modern) ? modern : "emulator";
 }
 
 function findFiles(directory, predicate) {
@@ -50,7 +67,7 @@ test(
     timeout: 180_000,
   },
   () => {
-    const output = execFileSync("gradle", [":app:assembleDebug"], {
+    const output = execFileSync("gradle", ["--rerun-tasks", ":app:assembleDebug"], {
       cwd: androidDir,
       encoding: "utf8",
       env: process.env,
@@ -58,7 +75,8 @@ test(
     });
 
     assert.match(output, /BUILD SUCCESSFUL/);
-    assert.equal(fs.existsSync(path.join(androidDir, "app", "build", "outputs", "apk", "debug", "app-debug.apk")), true);
+    const apkPath = path.join(androidDir, "app", "build", "outputs", "apk", "debug", "app-debug.apk");
+    assert.equal(fs.existsSync(apkPath), true);
     assert.equal(
       fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "runtime", "index.html")),
       true,
@@ -91,5 +109,177 @@ test(
         `Zig core shared library should be packaged for ${abi}`,
       );
     }
+
+    runOptionalEmulatorSmoke(apkPath);
   },
 );
+
+function runOptionalEmulatorSmoke(apkPath) {
+  if (process.env.NATIVE_AI_ANDROID_SMOKE_LAUNCH !== "1") return;
+  assert.equal(commandExists("adb"), true, "adb is required for Android emulator smoke");
+  assert.equal(commandExists("emulator"), true, "emulator is required for Android emulator smoke");
+
+  let emulatorProcess = null;
+  let serial = process.env.NATIVE_AI_ANDROID_SMOKE_SERIAL || listAdbDevices()[0] || null;
+  if (!serial) {
+    const avd = process.env.NATIVE_AI_ANDROID_SMOKE_AVD || listAvds()[0];
+    assert.ok(avd, "No Android AVD is available for emulator smoke");
+    emulatorProcess = spawn(
+      emulatorCommand(),
+      [
+        "-avd",
+        avd,
+        "-no-window",
+        "-no-audio",
+        "-no-boot-anim",
+        "-gpu",
+        "swiftshader_indirect",
+        "-no-snapshot-load",
+        "-no-snapshot-save",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    serial = waitForAnyDevice();
+  }
+
+  try {
+    waitForBoot(serial);
+    adb(["-s", serial, "install", "-r", apkPath]);
+    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_RUNTIME_LOADED", [
+      "--ez",
+      "native_ai_smoke_runtime_load",
+      "true",
+    ]);
+
+    const storageKey = `notes-lite:android-smoke-${process.pid}-${Date.now()}`;
+    const storageValue = `android-smoke-${process.pid}-${Date.now()}`;
+    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_STORAGE_SET_OK", [
+      "--es",
+      "native_ai_smoke_storage_action",
+      "set",
+      "--es",
+      "native_ai_smoke_storage_key",
+      storageKey,
+      "--es",
+      "native_ai_smoke_storage_value",
+      storageValue,
+    ]);
+    adb(["-s", serial, "shell", "am", "force-stop", packageName]);
+    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_STORAGE_GET_OK", [
+      "--es",
+      "native_ai_smoke_storage_action",
+      "get",
+      "--es",
+      "native_ai_smoke_storage_key",
+      storageKey,
+      "--es",
+      "native_ai_smoke_storage_value",
+      storageValue,
+    ]);
+
+    adb(["-s", serial, "shell", "am", "force-stop", packageName]);
+    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_CORE_STEP_OK", [
+      "--ez",
+      "native_ai_smoke_core_step",
+      "true",
+    ]);
+  } finally {
+    try {
+      if (serial) adb(["-s", serial, "shell", "am", "force-stop", packageName]);
+    } catch {}
+    if (emulatorProcess) {
+      try {
+        adb(["-s", serial, "emu", "kill"]);
+      } catch {
+        emulatorProcess.kill("SIGTERM");
+      }
+    }
+  }
+}
+
+function launchAndWaitForMarker(serial, marker, extras) {
+  adb(["-s", serial, "shell", "am", "force-stop", packageName]);
+  adb(["-s", serial, "logcat", "-c"]);
+  adb([
+    "-s",
+    serial,
+    "shell",
+    "am",
+    "start",
+    "-W",
+    "-n",
+    activityName,
+    "--ez",
+    "native_ai_smoke_exit_after",
+    "true",
+    ...extras,
+  ]);
+  waitForSmokeMarker(serial, marker);
+}
+
+function waitForSmokeMarker(serial, marker) {
+  const deadline = Date.now() + 60_000;
+  let latest = "";
+  while (Date.now() < deadline) {
+    latest = adb(["-s", serial, "logcat", "-d", "-v", "brief", "-s", smokeLogTag], { allowFailure: true });
+    assert.equal(latest.includes("NATIVE_AI_ANDROID_SMOKE_FAILED"), false, `${latest}\n${coreLog(serial)}`);
+    if (latest.includes(marker)) return;
+    sleep(500);
+  }
+  assert.fail(`Timed out waiting for ${marker}\n${latest}`);
+}
+
+function coreLog(serial) {
+  return adb(["-s", serial, "logcat", "-d", "-v", "brief", "-s", "NativeAIPlatformCore"], { allowFailure: true });
+}
+
+function waitForAnyDevice() {
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    const devices = listAdbDevices();
+    if (devices.length > 0) return devices[0];
+    sleep(1000);
+  }
+  assert.fail("Timed out waiting for Android emulator device");
+}
+
+function waitForBoot(serial) {
+  adb(["-s", serial, "wait-for-device"]);
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    const booted = adb(["-s", serial, "shell", "getprop", "sys.boot_completed"], { allowFailure: true }).trim();
+    if (booted === "1") return;
+    sleep(1000);
+  }
+  assert.fail(`Timed out waiting for Android device ${serial} to boot`);
+}
+
+function listAdbDevices() {
+  const output = adb(["devices"], { allowFailure: true });
+  return output
+    .split(/\r?\n/)
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([serial, state]) => serial && state === "device")
+    .map(([serial]) => serial);
+}
+
+function listAvds() {
+  return execFileSync(emulatorCommand(), ["-list-avds"], { encoding: "utf8" })
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function adb(args, { allowFailure = false } = {}) {
+  try {
+    return execFileSync("adb", args, { encoding: "utf8" });
+  } catch (error) {
+    if (allowFailure) return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
+    throw error;
+  }
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}

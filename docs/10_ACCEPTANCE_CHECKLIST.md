@@ -64,11 +64,11 @@
 
 ### Android
 
-- [ ] Android emulator launches.
-- [ ] Runtime loads from assets.
-- [ ] Bridge works.
-- [ ] JNI Zig core step works.
-- [ ] Storage persists.
+- [x] Android emulator launches.
+- [x] Runtime loads from assets.
+- [x] Bridge works.
+- [x] JNI Zig core step works.
+- [x] Storage persists.
 
 ### Windows
 
