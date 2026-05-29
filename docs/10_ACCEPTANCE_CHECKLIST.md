@@ -129,9 +129,9 @@
 
 - [x] All example manifests include `dataVersion`, `capabilities`, `resourceBudget`, and `networkPolicy`.
 - [x] All example packages validate against updated schemas.
-- [ ] Package install creates a signature and install report.
-- [ ] Runtime refuses tampered installed packages.
-- [ ] App registry stores immutable versions and active-version pointer.
+- [x] Package install creates a signature and install report.
+- [x] Runtime refuses tampered installed packages.
+- [x] App registry stores immutable versions and active-version pointer.
 - [ ] Rollback works on fake-host and at least one desktop target.
 - [ ] Runtime capabilities API works on every target.
 - [ ] Snapshot/replay works on fake-host.
