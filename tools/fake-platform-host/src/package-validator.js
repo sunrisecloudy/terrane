@@ -305,6 +305,11 @@ function validateNetworkPolicy(networkPolicy, errors) {
       errors.push(issue("invalid_network_policy", `manifest.networkPolicy.${key} must be a boolean`, { key }));
     }
   }
+  if (networkPolicy.allowCredentials === true) {
+    errors.push(issue("invalid_network_policy", "manifest.networkPolicy.allowCredentials must be false in v0.4", {
+      key: "allowCredentials",
+    }));
+  }
 
   if (!Array.isArray(networkPolicy.allow)) {
     errors.push(issue("invalid_network_policy", "manifest.networkPolicy.allow must be an array", {}));

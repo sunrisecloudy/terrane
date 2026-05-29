@@ -10165,6 +10165,9 @@ fn validateServerNetworkPolicy(
             if (value != .bool) try errors.append(allocator, "invalid_network_policy");
         }
     }
+    if (network_policy.object.get("allowCredentials")) |value| {
+        if (value == .bool and value.bool) try errors.append(allocator, "invalid_network_policy");
+    }
     const allow = network_policy.object.get("allow") orelse {
         try errors.append(allocator, "invalid_network_policy");
         return;
@@ -10719,6 +10722,30 @@ test "network policy helper denies private network hosts by default" {
     const public = try parseNetworkUrlAlloc(std.testing.allocator, "https://api.example.com/status");
     defer freeUrlParts(std.testing.allocator, public);
     try std.testing.expect(!isPrivateNetworkHost(public.host));
+}
+
+test "server network policy validation rejects credential opt-in" {
+    var policy_json = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "allow": [],
+        \\  "allowCredentials": true
+        \\}
+    ,
+        .{},
+    );
+    defer policy_json.deinit();
+
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(std.testing.allocator);
+    try validateServerNetworkPolicy(std.testing.allocator, policy_json.value, &errors);
+    try std.testing.expect(errors.items.len > 0);
+    var found = false;
+    for (errors.items) |error_name| {
+        if (std.mem.eql(u8, error_name, "invalid_network_policy")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "network policy helper matches URL method headers and string body bytes" {

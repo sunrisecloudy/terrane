@@ -58,7 +58,7 @@ The network bridge must reject:
 
 `denyPrivateNetwork` defaults to `true`. When enabled, hosts reject loopback, link-local, RFC1918, carrier-grade NAT, IPv6 unique-local, and IPv6 link-local literal hosts before applying allow rules. Redirect targets are checked the same way. Apps that genuinely need a local-device endpoint must set `denyPrivateNetwork: false` and still declare exact `allow` rules.
 
-`allowCredentials` defaults to `false` in v0.4. Hosts must reject `credentials` request params and `cookie` / `set-cookie` headers until a future credential design is specified.
+`allowCredentials` defaults to `false` in v0.4, and validators must reject `allowCredentials: true`. Hosts must reject `credentials` request params and `cookie` / `set-cookie` headers until a future credential design is specified.
 
 ## 4. Response shape
 

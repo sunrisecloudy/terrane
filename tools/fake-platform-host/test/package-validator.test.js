@@ -92,6 +92,7 @@ test("bridge capabilities must be covered by permissions", () => {
 test("networkPolicy validates methods, headers, sizes, and timeout bounds", () => {
   const cases = [
     ["invalid_network_policy", { allow: [], allowCredentials: "yes" }],
+    ["invalid_network_policy", { allow: [], allowCredentials: true }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], allowedHeaders: ["x-debug", "x-debug"] }] }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], allowedHeaders: ["cookie"] }] }],
     ["invalid_network_policy", { allow: [{ origin: "https://api.example.com", methods: ["GET"], pathPrefix: 42 }] }],
