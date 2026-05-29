@@ -10,6 +10,7 @@ typedef struct {
   GtkWidget *window;
   WebKitWebView *web_view;
   WebBridge *bridge;
+  gboolean smoke_ran;
 } WebKitHost;
 
 WebKitHost *webkit_host_new(GtkApplication *application);

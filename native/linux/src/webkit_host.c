@@ -4,6 +4,8 @@
 
 static const gchar *k_runtime_scheme = "app-runtime";
 
+static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gchar *mount_token);
+
 static gboolean logical_path_is_allowed(const gchar *path) {
   return path != NULL &&
          path[0] != '\0' &&
@@ -147,6 +149,158 @@ static gchar *bridge_error_text(const gchar *request_id, const gchar *code, cons
   };
   JsonNode *response = bridge_failure(&request, code, message, NULL);
   return bridge_response_to_string(response);
+}
+
+static gboolean json_response_ok(const gchar *text) {
+  JsonParser *parser = json_parser_new();
+  gboolean ok = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    ok = json_object_get_boolean_member_with_default(root, "ok", FALSE);
+  }
+  g_object_unref(parser);
+  return ok;
+}
+
+static gchar *request_json(const gchar *id, const gchar *method, JsonNode *params) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method);
+  json_builder_set_member_name(builder, "params");
+  json_builder_add_value(builder, json_node_copy(params));
+  json_builder_end_object(builder);
+
+  JsonGenerator *generator = json_generator_new();
+  JsonNode *root = json_builder_get_root(builder);
+  json_generator_set_root(generator, root);
+  gchar *text = json_generator_to_data(generator, NULL);
+  json_node_unref(root);
+  g_object_unref(generator);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *bridge_call(WebKitHost *host, const gchar *app_id, const gchar *id, const gchar *method, JsonNode *params) {
+  g_autofree gchar *body = request_json(id, method, params);
+  AppSandboxContext context = sandbox_context_for_app(app_id, "linux-smoke");
+  return web_bridge_handle_json(host->bridge, body, context);
+}
+
+static void finish_smoke(WebKitHost *host) {
+  if (g_strcmp0(g_getenv("NATIVE_AI_LINUX_SMOKE_EXIT_AFTER"), "1") == 0) {
+    g_application_quit(G_APPLICATION(host->application));
+  }
+}
+
+static void smoke_failure(WebKitHost *host, const gchar *message) {
+  g_printerr("NATIVE_AI_LINUX_SMOKE_FAILED: %s\n", message);
+  finish_smoke(host);
+}
+
+static void smoke_success(WebKitHost *host, const gchar *marker) {
+  g_print("%s\n", marker);
+  finish_smoke(host);
+}
+
+static void run_storage_smoke(WebKitHost *host, gboolean set_value) {
+  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  if (key == NULL || value == NULL) {
+    smoke_failure(host, "storage smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "key");
+  json_builder_add_string_value(builder, key);
+  if (set_value) {
+    json_builder_set_member_name(builder, "value");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "smokeValue");
+    json_builder_add_string_value(builder, value);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_object(builder);
+  JsonNode *params = json_builder_get_root(builder);
+  g_autofree gchar *response = bridge_call(host, "notes-lite", set_value ? "linux_smoke_storage_set" : "linux_smoke_storage_get", set_value ? "storage.set" : "storage.get", params);
+  json_node_unref(params);
+  g_object_unref(builder);
+
+  if (!json_response_ok(response)) {
+    smoke_failure(host, response);
+    return;
+  }
+
+  if (!set_value) {
+    JsonParser *parser = json_parser_new();
+    gboolean matches = FALSE;
+    if (json_parser_load_from_data(parser, response, -1, NULL)) {
+      JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+      JsonObject *result = json_object_get_object_member(root, "result");
+      JsonObject *stored = result == NULL ? NULL : json_object_get_object_member(result, "value");
+      matches = stored != NULL && g_strcmp0(json_object_get_string_member_with_default(stored, "smokeValue", ""), value) == 0;
+    }
+    g_object_unref(parser);
+    if (!matches) {
+      smoke_failure(host, response);
+      return;
+    }
+  }
+
+  smoke_success(host, set_value ? "NATIVE_AI_LINUX_SMOKE_STORAGE_SET_OK" : "NATIVE_AI_LINUX_SMOKE_STORAGE_GET_OK");
+}
+
+static void run_core_smoke(WebKitHost *host) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "event");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "type");
+  json_builder_add_string_value(builder, "CreateTask");
+  json_builder_set_member_name(builder, "payload");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "title");
+  json_builder_add_string_value(builder, "Linux smoke task");
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  JsonNode *params = json_builder_get_root(builder);
+  g_autofree gchar *response = bridge_call(host, "task-workbench", "linux_smoke_core_step", "core.step", params);
+  json_node_unref(params);
+  g_object_unref(builder);
+
+  if (!json_response_ok(response)) {
+    smoke_failure(host, response);
+    return;
+  }
+  smoke_success(host, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK");
+}
+
+static void run_smoke(WebKitHost *host) {
+  if (host->smoke_ran) {
+    return;
+  }
+  const gchar *action = g_getenv("NATIVE_AI_LINUX_SMOKE");
+  if (action == NULL || action[0] == '\0') {
+    return;
+  }
+  host->smoke_ran = TRUE;
+  g_print("NATIVE_AI_LINUX_SMOKE_STARTED_%s\n", action);
+  if (g_strcmp0(action, "runtime-load") == 0) {
+    smoke_success(host, "NATIVE_AI_LINUX_SMOKE_RUNTIME_LOADED");
+  } else if (g_strcmp0(action, "storage-set") == 0) {
+    run_storage_smoke(host, TRUE);
+  } else if (g_strcmp0(action, "storage-get") == 0) {
+    run_storage_smoke(host, FALSE);
+  } else if (g_strcmp0(action, "core-step") == 0) {
+    run_core_smoke(host);
+  } else {
+    smoke_failure(host, "unknown smoke action");
+  }
 }
 
 static GHashTable *permissions_for_app(const gchar *app_id) {
@@ -297,6 +451,17 @@ static void runtime_scheme_cb(WebKitURISchemeRequest *request, gpointer user_dat
   g_clear_object(&file);
 }
 
+static void on_load_changed(WebKitWebView *web_view, WebKitLoadEvent load_event, gpointer user_data) {
+  if (load_event != WEBKIT_LOAD_FINISHED) {
+    return;
+  }
+  WebKitHost *host = user_data;
+  const gchar *uri = webkit_web_view_get_uri(web_view);
+  if (g_strcmp0(uri, "app-runtime://runtime/index.html") == 0 || g_strcmp0(uri, "app-runtime://runtime-web/index.html") == 0) {
+    run_smoke(host);
+  }
+}
+
 static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, JSCValue *value, WebKitScriptMessageReply *reply, gpointer user_data) {
   (void)manager;
   WebKitHost *host = user_data;
@@ -366,6 +531,7 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   g_signal_connect(content_manager, "script-message-with-reply-received::NativeAIPlatformBridge", G_CALLBACK(on_script_message_with_reply), host);
 
   host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(content_manager));
+  g_signal_connect(host->web_view, "load-changed", G_CALLBACK(on_load_changed), host);
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));
   g_autofree gchar *db_path = database_path();
   host->bridge = web_bridge_new(db_path, GTK_WINDOW(host->window));

@@ -229,6 +229,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Bridge dispatch works.
 - Storage under XDG data directory works.
 - Zig shared library loads.
+- Local Linux build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
+- Full Linux smoke runs with `NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, bridge-backed SQLite storage across relaunch, and `core.step` through `libzig_core.so`.
 
 ### Server
 
