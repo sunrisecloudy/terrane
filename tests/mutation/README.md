@@ -8,6 +8,9 @@ Required mutation categories:
 - invalid permission;
 - forbidden bridge method;
 - direct network APIs (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`);
+- direct browser persistence APIs (`localStorage`, `IndexedDB`, cookies);
+- direct sandbox escape APIs (`window.parent`, `window.top`, `window.opener`);
+- service worker registration;
 - `eval` or `new Function`;
 - remote script or stylesheet;
 - invalid storage prefix;
