@@ -11385,6 +11385,13 @@ fn validateServerSmokeTestPolicy(
             try errors.append(allocator, "invalid_smoke_tests");
             continue;
         }
+        var test_iterator = test_case.object.iterator();
+        while (test_iterator.next()) |entry| {
+            if (!isAllowedSmokeTestKey(entry.key_ptr.*)) try errors.append(allocator, "invalid_smoke_tests");
+        }
+        if (test_case.object.get("name")) |name| {
+            if (name != .string) try errors.append(allocator, "invalid_smoke_tests");
+        }
         const steps = test_case.object.get("steps") orelse continue;
         if (steps != .array) {
             try errors.append(allocator, "invalid_smoke_tests");
@@ -11395,11 +11402,104 @@ fn validateServerSmokeTestPolicy(
                 try errors.append(allocator, "invalid_smoke_tests");
                 continue;
             }
-            if (valueString(step.object.get("selector"))) |selector| {
-                if (selectorDataTestId(selector) == null) {
-                    try errors.append(allocator, "invalid_smoke_selector");
-                }
+            try validateServerSmokeStepPolicy(allocator, step, errors);
+        }
+        if (test_case.object.get("expected")) |expected| {
+            try validateServerSmokeExpectedPolicy(allocator, expected, errors);
+        }
+    }
+}
+
+fn isAllowedSmokeTestKey(key: []const u8) bool {
+    const keys = [_][]const u8{ "name", "steps", "expected" };
+    for (keys) |candidate| {
+        if (std.mem.eql(u8, key, candidate)) return true;
+    }
+    return false;
+}
+
+fn validateServerSmokeStepPolicy(
+    allocator: std.mem.Allocator,
+    step: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    const step_type = valueString(step.object.get("type")) orelse {
+        try errors.append(allocator, "invalid_smoke_tests");
+        return;
+    };
+    if (!isAllowedSmokeStepType(step_type)) {
+        try errors.append(allocator, "invalid_smoke_tests");
+    }
+
+    var iterator = step.object.iterator();
+    while (iterator.next()) |entry| {
+        if (!isAllowedSmokeStepKey(step_type, entry.key_ptr.*)) {
+            try errors.append(allocator, "invalid_smoke_tests");
+        }
+    }
+
+    const selector = valueString(step.object.get("selector")) orelse {
+        try errors.append(allocator, "invalid_smoke_tests");
+        return;
+    };
+    if (selectorDataTestId(selector) == null) {
+        try errors.append(allocator, "invalid_smoke_selector");
+    }
+
+    if ((std.mem.eql(u8, step_type, "fill") or std.mem.eql(u8, step_type, "select"))) {
+        if (valueString(step.object.get("value")) == null) try errors.append(allocator, "invalid_smoke_tests");
+    }
+}
+
+fn isAllowedSmokeStepType(step_type: []const u8) bool {
+    const types = [_][]const u8{ "click", "fill", "select" };
+    for (types) |candidate| {
+        if (std.mem.eql(u8, step_type, candidate)) return true;
+    }
+    return false;
+}
+
+fn isAllowedSmokeStepKey(step_type: []const u8, key: []const u8) bool {
+    if (std.mem.eql(u8, key, "type") or std.mem.eql(u8, key, "selector")) return true;
+    return (std.mem.eql(u8, step_type, "fill") or std.mem.eql(u8, step_type, "select")) and std.mem.eql(u8, key, "value");
+}
+
+fn validateServerSmokeExpectedPolicy(
+    allocator: std.mem.Allocator,
+    expected: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (expected != .object) {
+        try errors.append(allocator, "invalid_smoke_tests");
+        return;
+    }
+    var iterator = expected.object.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "textIncludes") and !std.mem.eql(u8, key, "bridgeCallsInclude")) {
+            try errors.append(allocator, "invalid_smoke_tests");
+        }
+    }
+    if (expected.object.get("textIncludes")) |text| {
+        if (text != .string) try errors.append(allocator, "invalid_smoke_tests");
+    }
+    if (expected.object.get("bridgeCallsInclude")) |methods| {
+        if (methods != .array) {
+            try errors.append(allocator, "invalid_smoke_tests");
+            return;
+        }
+        var seen = std.StringArrayHashMap(void).init(allocator);
+        defer seen.deinit();
+        for (methods.array.items) |method_value| {
+            const method = valueString(method_value) orelse {
+                try errors.append(allocator, "invalid_smoke_tests");
+                continue;
+            };
+            if (!isAllowedRuntimeBridgeMethod(method) or seen.contains(method)) {
+                try errors.append(allocator, "invalid_smoke_tests");
+                continue;
             }
+            try seen.put(method, {});
         }
     }
 }
@@ -12768,6 +12868,47 @@ test "server package validation rejects brittle smoke selectors" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_smoke_selector\"") != null);
+}
+
+test "server package validation rejects smoke micro-test commands" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "smoke-command-test",
+        \\    "name": "Smoke Command Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "smoke-command-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"styles.css\"><main><button data-testid=\"go-button\">Go</button></main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"},
+        \\    {"path": "smoke-tests.json", "content": "[{\"name\":\"uses mock\",\"steps\":[{\"tool\":\"runtime.network_mock_set\",\"args\":{}}]}]"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_smoke_tests\"") != null);
 }
 
 test "server package validation requires a plain styles.css link" {

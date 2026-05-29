@@ -42,6 +42,9 @@ const NETWORK_POLICY_ENTRY_KEYS = new Set([
 const RESOURCE_HINT_RELS = new Set(["dns-prefetch", "modulepreload", "preconnect", "prefetch", "preload", "prerender"]);
 const URL_ATTRIBUTE_TAGS_HANDLED_ELSEWHERE = new Set(["base", "form", "link", "script"]);
 const NETWORK_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const SMOKE_TEST_KEYS = new Set(["name", "steps", "expected"]);
+const SMOKE_STEP_TYPES = new Set(["click", "fill", "select"]);
+const SMOKE_EXPECTED_KEYS = new Set(["textIncludes", "bridgeCallsInclude"]);
 const CONTENT_RATING_MINIMUM_AGE = new Map([
   ["4+", 4],
   ["9+", 9],
@@ -705,6 +708,14 @@ function validateSmokeTests(source, errors) {
       errors.push(issue("invalid_smoke_tests", "Each smoke test must be an object", {}));
       continue;
     }
+    for (const key of Object.keys(testCase)) {
+      if (!SMOKE_TEST_KEYS.has(key)) {
+        errors.push(issue("invalid_smoke_tests", "Smoke tests may only declare name, steps, and expected", { key }));
+      }
+    }
+    if ("name" in testCase && typeof testCase.name !== "string") {
+      errors.push(issue("invalid_smoke_tests", "Smoke test name must be a string", {}));
+    }
     if (testCase.steps !== undefined && !Array.isArray(testCase.steps)) {
       errors.push(issue("invalid_smoke_tests", "Smoke test steps must be an array", {}));
       continue;
@@ -714,10 +725,62 @@ function validateSmokeTests(source, errors) {
         errors.push(issue("invalid_smoke_tests", "Smoke test steps must be objects", {}));
         continue;
       }
-      if ("selector" in step && !isDataTestIdSelector(step.selector)) {
-        errors.push(issue("invalid_smoke_selector", "Smoke test selectors must use data-testid", { selector: step.selector }));
-      }
+      validateSmokeStep(step, errors);
     }
+    if (testCase.expected !== undefined) {
+      validateSmokeExpected(testCase.expected, errors);
+    }
+  }
+}
+
+function validateSmokeStep(step, errors) {
+  const allowedKeys = step.type === "click" ? new Set(["type", "selector"]) : new Set(["type", "selector", "value"]);
+  for (const key of Object.keys(step)) {
+    if (!allowedKeys.has(key)) {
+      errors.push(issue("invalid_smoke_tests", "Bundled smoke steps cannot use micro-test-only fields", { key }));
+    }
+  }
+
+  if (!SMOKE_STEP_TYPES.has(step.type)) {
+    errors.push(issue("invalid_smoke_tests", "Smoke step type must be click, fill, or select", { type: step.type }));
+  }
+
+  if (!("selector" in step)) {
+    errors.push(issue("invalid_smoke_tests", "Smoke steps must include a selector", { type: step.type }));
+  } else if (!isDataTestIdSelector(step.selector)) {
+    errors.push(issue("invalid_smoke_selector", "Smoke test selectors must use data-testid", { selector: step.selector }));
+  }
+
+  if ((step.type === "fill" || step.type === "select") && typeof step.value !== "string") {
+    errors.push(issue("invalid_smoke_tests", "Smoke fill/select steps must include a string value", { type: step.type }));
+  }
+}
+
+function validateSmokeExpected(expected, errors) {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) {
+    errors.push(issue("invalid_smoke_tests", "Smoke test expected must be an object", {}));
+    return;
+  }
+
+  for (const key of Object.keys(expected)) {
+    if (!SMOKE_EXPECTED_KEYS.has(key)) {
+      errors.push(issue("invalid_smoke_tests", "Smoke expected may only declare textIncludes and bridgeCallsInclude", { key }));
+    }
+  }
+
+  if ("textIncludes" in expected && typeof expected.textIncludes !== "string") {
+    errors.push(issue("invalid_smoke_tests", "Smoke expected.textIncludes must be a string", {}));
+  }
+
+  if ("bridgeCallsInclude" in expected) {
+    validateUniqueStringArray(
+      expected.bridgeCallsInclude,
+      "invalid_smoke_tests",
+      "Smoke expected.bridgeCallsInclude must be a unique array of bridge method names",
+      errors,
+      {},
+      ALLOWED_METHODS,
+    );
   }
 }
 

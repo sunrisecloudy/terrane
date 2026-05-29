@@ -196,6 +196,14 @@ Disallowed:
 
 Step vocabulary is a strict subset of the micro-test vocabulary in docs/15 so that the same runner can execute both. Selectors must use `data-testid` (see docs/15).
 
+Allowed bundled smoke step types are:
+
+- `click` with `selector`.
+- `fill` with `selector` and string `value`.
+- `select` with `selector` and string `value`.
+
+Allowed `expected` assertions are `textIncludes` and `bridgeCallsInclude`. Bundled smoke tests must not contain micro-test-only commands such as `runtime.network_mock_set`, `runtime.dialog_mock_set`, `runtime.timer_advance`, `db.assert_*`, setup, or teardown steps.
+
 Relationship to `tests/micro/*.microtest.json`:
 
 - `smoke-tests.json` is **package-bundled**, runs **at install time**, and exists to gate activation of a new version. It must pass on the fake host.

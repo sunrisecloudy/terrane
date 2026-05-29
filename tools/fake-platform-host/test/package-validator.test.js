@@ -218,6 +218,23 @@ test("smoke test selectors must use data-testid", () => {
   assert.equal(result.errors.some((error) => error.code === "invalid_smoke_selector"), true);
 });
 
+test("bundled smoke tests reject micro-test-only commands", () => {
+  const dir = copyExamplePackage("notes-lite");
+  fs.writeFileSync(
+    path.join(dir, "smoke-tests.json"),
+    JSON.stringify([
+      {
+        name: "uses a mock",
+        steps: [{ tool: "runtime.network_mock_set", args: { match: { url: "https://example.test" } } }],
+      },
+    ], null, 2),
+  );
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "invalid_smoke_tests"), true);
+});
+
 test("external HTML resource URLs are rejected", () => {
   const cases = [
     '<img src="https://tracker.example/pixel.png" alt="">',

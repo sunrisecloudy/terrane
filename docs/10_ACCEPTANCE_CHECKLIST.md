@@ -151,6 +151,7 @@
 - [x] Package validator tests pass.
 - [x] Bridge contract tests pass.
 - [x] Example smoke tests pass.
+- [x] Bundled smoke tests use `data-testid` selectors and install-time-safe step/assertion vocabulary.
 - [x] Platform smoke tests pass or are documented for manual execution.
 
 

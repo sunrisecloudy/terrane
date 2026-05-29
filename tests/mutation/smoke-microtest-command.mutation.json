@@ -1,0 +1,11 @@
+{
+  "id": "smoke-microtest-command",
+  "expectedError": "invalid_smoke_tests",
+  "description": "Bundled smoke tests must not use micro-test-only commands such as mocks.",
+  "files": [
+    {
+      "path": "smoke-tests.json",
+      "content": "[{\"name\":\"uses mock\",\"steps\":[{\"tool\":\"runtime.network_mock_set\",\"args\":{\"match\":{\"url\":\"https://api.example.test/status\"},\"response\":{\"status\":200}}}],\"expected\":{\"textIncludes\":\"No notes yet\"}}]"
+    }
+  ]
+}

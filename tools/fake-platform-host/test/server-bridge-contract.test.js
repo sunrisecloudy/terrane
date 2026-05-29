@@ -253,6 +253,14 @@ test(
         assert.equal(smokeSelector.status, 200);
         assert.equal(smokeSelector.body.ok, false);
         assert.equal(smokeSelector.body.errors.includes("invalid_smoke_selector"), true);
+
+        const unsafeSmoke = packageForApp("notes-lite");
+        const unsafeSmokeFile = unsafeSmoke.files.find((file) => file.path === "smoke-tests.json");
+        unsafeSmokeFile.content = JSON.stringify([{ name: "uses mock", steps: [{ tool: "runtime.network_mock_set", args: {} }] }]);
+        const smokeCommand = await validateWebappPackage(started.url, unsafeSmoke);
+        assert.equal(smokeCommand.status, 200);
+        assert.equal(smokeCommand.body.ok, false);
+        assert.equal(smokeCommand.body.errors.includes("invalid_smoke_tests"), true);
       } finally {
         await stopServer(started);
       }
