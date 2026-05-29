@@ -126,14 +126,20 @@ final class PlatformAppRegistry {
         return try requireVersion(installId: installId)
     }
 
-    func rollback(appId: String, actor: String = "macos-test") throws -> AppRollbackResult {
+    func rollback(appId: String, targetInstallId: String? = nil, actor: String = "macos-test") throws -> AppRollbackResult {
         let createdAt = now()
         var result: AppRollbackResult?
         try transaction {
             guard let current = try activeVersion(appId: appId) else {
                 throw PlatformAppRegistryError.appNotInstalled
             }
-            guard let target = try rollbackTarget(appId: appId, excluding: current.installId) else {
+            let target: InstalledAppVersion?
+            if let targetInstallId {
+                target = try rollbackTarget(appId: appId, installId: targetInstallId)
+            } else {
+                target = try rollbackTarget(appId: appId, excluding: current.installId)
+            }
+            guard let target, target.installId != current.installId else {
                 throw PlatformAppRegistryError.noRollbackTarget
             }
             guard target.dataVersion == current.dataVersion else {
@@ -206,8 +212,20 @@ final class PlatformAppRegistry {
             """
             SELECT install_id, app_id, version, data_version, status
             FROM app_versions
-            WHERE app_id = ? AND install_id != ? AND status IN ('installed','enabled')
+            WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled')
             ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            [appId, installId]
+        )
+    }
+
+    private func rollbackTarget(appId: String, installId: String) throws -> InstalledAppVersion? {
+        try queryVersion(
+            """
+            SELECT install_id, app_id, version, data_version, status
+            FROM app_versions
+            WHERE app_id = ? AND install_id = ? AND status NOT IN ('quarantined','uninstalled')
             LIMIT 1
             """,
             [appId, installId]

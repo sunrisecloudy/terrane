@@ -41,6 +41,7 @@ final class DevControlPlane: @unchecked Sendable {
     let controlSessionId: String
 
     private let database: PlatformDatabase
+    private let databaseURL: URL?
     private let core = ZigCoreBridge()
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
@@ -63,6 +64,7 @@ final class DevControlPlane: @unchecked Sendable {
         self.token = try configuration.tokenOverride ?? Self.generateToken()
         self.tokenFileURL = configuration.tokenFileURL
         self.controlSessionId = "control_\(UUID().uuidString.lowercased())"
+        self.databaseURL = configuration.databaseURL
         self.database = PlatformDatabase(databaseURL: configuration.databaseURL)
         try writeTokenFile()
         try createControlSession()
@@ -186,7 +188,12 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryTestRuns(args: parsed.jsonBody ?? [:]))
         case ("POST", "/db/export-debug-bundle"):
             sendAccepted(connection, parsed, startedAt: startedAt, result: exportDebugBundle())
+        case ("GET", "/apps"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: listWebapps(includeUninstalled: false))
         default:
+            if handleAppRoute(connection, parsed, startedAt: startedAt) {
+                return
+            }
             handleSessionRoute(connection, parsed, startedAt: startedAt)
         }
     }
@@ -253,6 +260,26 @@ final class DevControlPlane: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    private func handleAppRoute(_ connection: NWConnection, _ request: HTTPRequest, startedAt: Date) -> Bool {
+        guard let route = AppRoute(request.normalizedPath) else {
+            return false
+        }
+        switch (request.method, route.subresource) {
+        case ("GET", "versions"):
+            handleListWebappVersions(connection, request, appId: route.appId, startedAt: startedAt)
+        case ("POST", "rollback"):
+            var args = request.jsonBody ?? [:]
+            args["appId"] = route.appId
+            handleRollbackWebapp(connection, request, args: args, startedAt: startedAt)
+        case ("GET", "install-report"):
+            handleInstallReport(connection, request, appId: route.appId, installId: nil, startedAt: startedAt)
+        default:
+            sendRejected(connection, request, status: 404, code: "not_found", message: "App control endpoint was not found", startedAt: startedAt)
+        }
+        return true
+    }
+
     private func handleCommand(_ connection: NWConnection, _ request: HTTPRequest, startedAt: Date) {
         guard let body = request.jsonBody else {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "Control command body must be JSON", startedAt: startedAt)
@@ -277,6 +304,22 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilityAudit(appId: args["appId"] as? String))
         case "runtime.assert_accessibility":
             handleAccessibilityAssertion(connection, request, args: args, startedAt: startedAt)
+        case "platform.list_webapps":
+            sendAccepted(connection, request, startedAt: startedAt, result: listWebapps(includeUninstalled: args["includeUninstalled"] as? Bool == true))
+        case "platform.list_webapp_versions":
+            guard let appId = args["appId"] as? String, !appId.isEmpty else {
+                sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.list_webapp_versions requires appId", startedAt: startedAt)
+                return
+            }
+            handleListWebappVersions(connection, request, appId: appId, startedAt: startedAt)
+        case "platform.rollback_webapp":
+            handleRollbackWebapp(connection, request, args: args, startedAt: startedAt)
+        case "platform.install_report":
+            guard let appId = args["appId"] as? String, !appId.isEmpty else {
+                sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.install_report requires appId", startedAt: startedAt)
+                return
+            }
+            handleInstallReport(connection, request, appId: appId, installId: args["installId"] as? String, startedAt: startedAt)
         case "platform.create_snapshot":
             handleCreateSnapshot(connection, request, args: args, startedAt: startedAt)
         case "platform.restore_snapshot":
@@ -501,6 +544,44 @@ final class DevControlPlane: @unchecked Sendable {
             "appId": report["appId"] ?? NSNull(),
             "rule": rule ?? NSNull(),
             "report": report,
+        ])
+    }
+
+    private func handleListWebappVersions(_ connection: NWConnection, _ request: HTTPRequest, appId: String, startedAt: Date) {
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "appId": appId,
+            "versions": listWebappVersions(appId: appId),
+        ])
+    }
+
+    private func handleRollbackWebapp(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.rollback_webapp requires appId", startedAt: startedAt)
+            return
+        }
+        do {
+            let registry = try PlatformAppRegistry(databaseURL: databaseURL)
+            let result = try registry.rollback(
+                appId: appId,
+                targetInstallId: args["installId"] as? String,
+                actor: "codex"
+            )
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "appId": result.appId,
+                "activeInstallId": result.activeInstallId,
+                "rolledBackInstallId": result.rolledBackInstallId,
+                "activeVersion": result.activeVersion,
+            ])
+        } catch {
+            sendRejected(connection, request, status: 400, code: "rollback_failed", message: "Rollback could not be completed", startedAt: startedAt)
+        }
+    }
+
+    private func handleInstallReport(_ connection: NWConnection, _ request: HTTPRequest, appId: String, installId: String?, startedAt: Date) {
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "appId": appId,
+            "installId": installId ?? NSNull(),
+            "report": installReport(appId: appId, installId: installId) ?? NSNull(),
         ])
     }
 
@@ -763,6 +844,119 @@ final class DevControlPlane: @unchecked Sendable {
                 filterColumn: "app_id",
                 filterValue: args["appId"] as? String
             ),
+        ]
+    }
+
+    private func listWebapps(includeUninstalled: Bool) -> [String: Any] {
+        guard let db = database.handle else { return ["apps": []] }
+        let filterSQL = includeUninstalled ? "" : "WHERE a.status <> 'uninstalled'"
+        let sql = """
+        SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version, a.created_at, a.updated_at, v.runtime_version, v.trust_level
+        FROM apps a
+        LEFT JOIN app_versions v ON v.install_id = a.active_install_id
+        \(filterSQL)
+        ORDER BY a.id
+        LIMIT 100
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return ["apps": []]
+        }
+        defer { sqlite3_finalize(statement) }
+        var apps: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            apps.append([
+                "appId": columnText(statement, 0),
+                "name": columnText(statement, 1),
+                "status": columnText(statement, 2),
+                "activeInstallId": columnNullableText(statement, 3) ?? NSNull(),
+                "activeVersion": columnNullableText(statement, 4) ?? NSNull(),
+                "dataVersion": Int(sqlite3_column_int64(statement, 5)),
+                "createdAt": columnText(statement, 6),
+                "updatedAt": columnText(statement, 7),
+                "runtimeVersion": columnNullableText(statement, 8) ?? NSNull(),
+                "trustLevel": columnNullableText(statement, 9) ?? NSNull(),
+            ])
+        }
+        return ["apps": apps]
+    }
+
+    private func listWebappVersions(appId: String) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at
+        FROM app_versions
+        WHERE app_id = ?
+        ORDER BY created_at DESC
+        LIMIT 100
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        var versions: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            versions.append([
+                "installId": columnText(statement, 0),
+                "appId": columnText(statement, 1),
+                "appVersion": columnText(statement, 2),
+                "runtimeVersion": columnText(statement, 3),
+                "dataVersion": Int(sqlite3_column_int64(statement, 4)),
+                "manifestHash": columnText(statement, 5),
+                "contentHash": columnText(statement, 6),
+                "signature": jsonValue(columnNullableText(statement, 7)),
+                "trustLevel": columnText(statement, 8),
+                "status": columnText(statement, 9),
+                "installedAt": columnText(statement, 10),
+                "activatedAt": columnNullableText(statement, 11) ?? NSNull(),
+            ])
+        }
+        return versions
+    }
+
+    private func installReport(appId: String, installId: String?) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let sql = installId == nil
+            ? """
+            SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at
+            FROM app_install_reports
+            WHERE app_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+            : """
+            SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at
+            FROM app_install_reports
+            WHERE app_id = ? AND install_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        if let installId {
+            bind(statement, 2, installId)
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return [
+            "reportId": columnText(statement, 0),
+            "appId": columnText(statement, 1),
+            "installId": columnNullableText(statement, 2) ?? NSNull(),
+            "status": columnText(statement, 3),
+            "validation": jsonValue(columnNullableText(statement, 4)),
+            "security": jsonValue(columnNullableText(statement, 5)),
+            "permissions": jsonValue(columnNullableText(statement, 6)),
+            "compatibility": jsonValue(columnNullableText(statement, 7)),
+            "smokeTest": jsonValue(columnNullableText(statement, 8)),
+            "contentHash": columnNullableText(statement, 9) ?? NSNull(),
+            "createdAt": columnText(statement, 10),
         ]
     }
 
@@ -1098,6 +1292,16 @@ final class DevControlPlane: @unchecked Sendable {
         return object
     }
 
+    private func jsonValue(_ text: String?) -> Any {
+        guard let text,
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data)
+        else {
+            return NSNull()
+        }
+        return object
+    }
+
     private func intValue(_ value: Any?) -> Int? {
         if let value = value as? Int {
             return value
@@ -1314,6 +1518,14 @@ private struct HTTPRequest {
             return "db.query_test_runs"
         case ("POST", "/db/export-debug-bundle"):
             return "db.export_debug_bundle"
+        case ("GET", "/apps"):
+            return "platform.list_webapps"
+        case ("GET", let value) where value.hasSuffix("/versions"):
+            return "platform.list_webapp_versions"
+        case ("POST", let value) where value.hasSuffix("/rollback"):
+            return "platform.rollback_webapp"
+        case ("GET", let value) where value.hasSuffix("/install-report"):
+            return "platform.install_report"
         case ("DELETE", _):
             return "platform.stop"
         case ("GET", let value) where value.hasSuffix("/snapshot"):
@@ -1363,6 +1575,20 @@ private struct SessionRoute {
         self.controlSessionId = parts[1]
         self.subresource = parts.count > 2 ? parts[2] : nil
         self.itemId = parts.count > 3 ? parts[3] : nil
+    }
+}
+
+private struct AppRoute {
+    let appId: String
+    let subresource: String
+
+    init?(_ path: String) {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count == 3, parts[0] == "apps" else {
+            return nil
+        }
+        self.appId = parts[1]
+        self.subresource = parts[2]
     }
 }
 

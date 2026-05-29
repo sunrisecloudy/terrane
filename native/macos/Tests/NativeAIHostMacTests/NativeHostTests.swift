@@ -192,6 +192,14 @@ struct NativeHostTests {
             contentHash: "control-hash",
             installId: "install-control"
         )
+        try registry.installVersion(
+            appId: "notes-lite",
+            name: "Notes Lite",
+            version: "0.2.0",
+            manifestJSON: #"{"id":"notes-lite","version":"0.2.0","dataVersion":1}"#,
+            contentHash: "control-hash-v2",
+            installId: "install-control-v2"
+        )
         let storageContext = AppSandboxContext(
             appId: "notes-lite",
             approvedPermissions: ["storage.read", "storage.write"],
@@ -454,6 +462,39 @@ struct NativeHostTests {
         #expect(appVersionsQuery.statusCode == 200)
         #expect(appVersionsQuery.body.contains("install-control"))
 
+        let listWebapps = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.list_webapps","args":{}}"#
+        )
+        #expect(listWebapps.statusCode == 200)
+        #expect(listWebapps.body.contains(#""activeInstallId":"install-control-v2""#))
+
+        let versionsRoute = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/apps/notes-lite/versions")!,
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(versionsRoute.statusCode == 200)
+        #expect(versionsRoute.body.contains(#""installId":"install-control-v2""#))
+
+        let installReportRoute = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/apps/notes-lite/install-report")!,
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(installReportRoute.statusCode == 200)
+        #expect(installReportRoute.body.contains(#""report":null"#))
+
+        let rollbackCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.rollback_webapp","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(rollbackCommand.statusCode == 200)
+        #expect(rollbackCommand.body.contains(#""activeInstallId":"install-control""#))
+        #expect(rollbackCommand.body.contains(#""rolledBackInstallId":"install-control-v2""#))
+
         let bridgeCallsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/bridge-calls")!,
             method: "POST",
@@ -511,7 +552,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 27)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 31)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
