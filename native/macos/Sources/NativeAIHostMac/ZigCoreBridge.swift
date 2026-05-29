@@ -1,7 +1,40 @@
 import CZigCoreBridge
 import Foundation
 
-final class ZigCoreBridge {
+final class ZigCoreBridge: @unchecked Sendable {
+    private final class StepCompletion: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+
+        func complete(_ response: BridgeResponse, completion: @escaping @Sendable (BridgeResponse) -> Void) {
+            lock.lock()
+            guard !completed else {
+                lock.unlock()
+                return
+            }
+            completed = true
+            lock.unlock()
+            completion(response)
+        }
+    }
+
+    private final class StepResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var response: BridgeResponse?
+
+        func store(_ response: BridgeResponse) {
+            lock.lock()
+            self.response = response
+            lock.unlock()
+        }
+
+        func load() -> BridgeResponse? {
+            lock.lock()
+            defer { lock.unlock() }
+            return response
+        }
+    }
+
     private final class Library {
         let path: String
         private let bridge: OpaquePointer
@@ -53,17 +86,74 @@ final class ZigCoreBridge {
     }
 
     private let library: Library?
+    private let stepQueue = DispatchQueue(label: "native-ai.macos.zig-core-step")
+    private let stepTimeoutMilliseconds: Int
+    private let testStep: ((Data) throws -> Any)?
 
     var isAvailable: Bool {
-        library != nil
+        library != nil || testStep != nil
     }
 
-    init(libraryPathOverride: String? = nil) {
-        self.library = Self.loadLibrary(libraryPathOverride: libraryPathOverride)
+    init(
+        libraryPathOverride: String? = nil,
+        stepTimeoutMilliseconds: Int = 2_000,
+        testStep: ((Data) throws -> Any)? = nil
+    ) {
+        self.stepTimeoutMilliseconds = stepTimeoutMilliseconds
+        self.testStep = testStep
+        self.library = testStep == nil ? Self.loadLibrary(libraryPathOverride: libraryPathOverride) : nil
     }
 
     func step(_ request: BridgeRequest) -> BridgeResponse {
+        let result = StepResultBox()
+        let finished = DispatchSemaphore(value: 0)
+        stepAsync(request) { response in
+            result.store(response)
+            finished.signal()
+        }
+        let deadline = DispatchTime.now() + .milliseconds(stepTimeoutMilliseconds + 500)
+        guard finished.wait(timeout: deadline) == .success,
+              let response = result.load()
+        else {
+            return timeoutResponse(id: request.id)
+        }
+        return response
+    }
+
+    func stepAsync(_ request: BridgeRequest, completion: @escaping @Sendable (BridgeResponse) -> Void) {
+        let state = StepCompletion()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(stepTimeoutMilliseconds)) { [stepTimeoutMilliseconds] in
+            state.complete(
+                BridgeResponse.failure(
+                    id: request.id,
+                    code: "timeout",
+                    message: "core.step timed out",
+                    details: ["timeoutMs": stepTimeoutMilliseconds]
+                ),
+                completion: completion
+            )
+        }
+        stepQueue.async { [self] in
+            state.complete(stepWithoutTimeout(request), completion: completion)
+        }
+    }
+
+    private func stepWithoutTimeout(_ request: BridgeRequest) -> BridgeResponse {
         guard let library else {
+            guard testStep != nil else {
+                return .failure(
+                    id: request.id,
+                    code: "platform_unsupported",
+                    message: "core.step requires a loadable libzig_core.dylib"
+                )
+            }
+            return stepWithAvailableCore(request)
+        }
+        return stepWithAvailableCore(request, library: library)
+    }
+
+    private func stepWithAvailableCore(_ request: BridgeRequest, library: Library? = nil) -> BridgeResponse {
+        guard library != nil || testStep != nil else {
             return .failure(
                 id: request.id,
                 code: "platform_unsupported",
@@ -95,7 +185,7 @@ final class ZigCoreBridge {
         }
 
         do {
-            let result = try library.step(input: inputData)
+            let result = try performStep(input: inputData, library: library)
             return .success(id: request.id, result: result)
         } catch ZigCoreError.stepFailed(let code) {
             return .failure(
@@ -111,6 +201,25 @@ final class ZigCoreBridge {
                 message: "core.step returned invalid JSON"
             )
         }
+    }
+
+    private func performStep(input: Data, library: Library?) throws -> Any {
+        if let testStep {
+            return try testStep(input)
+        }
+        guard let library else {
+            throw ZigCoreError.emptyOutput
+        }
+        return try library.step(input: input)
+    }
+
+    private func timeoutResponse(id: String?) -> BridgeResponse {
+        .failure(
+            id: id,
+            code: "timeout",
+            message: "core.step timed out",
+            details: ["timeoutMs": stepTimeoutMilliseconds]
+        )
     }
 
     private static func loadLibrary(libraryPathOverride: String?) -> Library? {

@@ -1781,6 +1781,36 @@ struct NativeHostTests {
         })
     }
 
+    @Test("core.step returns timeout when Zig core exceeds the host timeout")
+    func coreStepReturnsTimeoutWhenZigCoreExceedsHostTimeout() throws {
+        let core = ZigCoreBridge(stepTimeoutMilliseconds: 25) { _ in
+            Thread.sleep(forTimeInterval: 0.4)
+            return ["stateVersion": 1, "actions": []]
+        }
+        let context = AppSandboxContext(
+            appId: "task-workbench",
+            approvedPermissions: ["core.step"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "core-timeout-test-mount"
+        )
+        let startedAt = Date()
+        let response = core.step(BridgeRequest(
+            id: "core-timeout",
+            method: "core.step",
+            params: ["event": ["type": "SlowEvent"]],
+            context: context
+        ))
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        #expect(elapsed < 0.3)
+        #expect(!response.ok)
+        #expect(response.error?["code"] as? String == "timeout")
+        #expect(response.error?["message"] as? String == "core.step timed out")
+        let details = try #require(response.error?["details"] as? [String: Any])
+        #expect(jsonInt(details["timeoutMs"]) == 25)
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],

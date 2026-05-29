@@ -66,6 +66,20 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(response.asDictionary(), nil)
             return
         }
+        if request.method == "core.step" {
+            core.stepAsync(request) { [weak self] result in
+                Task { @MainActor in
+                    guard let self else {
+                        replyHandler(result.asDictionary(), nil)
+                        return
+                    }
+                    self.recordBridgeCall(request: request, response: result, startedAt: startedAt)
+                    self.recordCoreStep(request: request, response: result)
+                    replyHandler(result.asDictionary(), nil)
+                }
+            }
+            return
+        }
 
         let result = dispatch(request)
         recordBridgeCall(request: request, response: result, startedAt: startedAt)
@@ -410,6 +424,8 @@ struct BridgeRequest {
     }
 }
 
+extension BridgeRequest: @unchecked Sendable {}
+
 struct AppSandboxContext {
     let appId: String
     let storagePrefix: String
@@ -497,6 +513,8 @@ struct AppSandboxContext {
     }
 }
 
+extension AppSandboxContext: @unchecked Sendable {}
+
 struct BridgeResponse {
     let id: String?
     let ok: Bool
@@ -530,6 +548,8 @@ struct BridgeResponse {
         return body
     }
 }
+
+extension BridgeResponse: @unchecked Sendable {}
 
 private let SQLITE_TRANSIENT_BRIDGE = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
