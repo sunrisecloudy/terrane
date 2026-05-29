@@ -1522,6 +1522,122 @@ struct NativeHostTests {
         #expect(secondLog.body.contains(#""budget":"maxLogLinesPerMinute""#))
     }
 
+    @Test("debug control bridge enforces bridge and network rate budgets")
+    func debugControlBridgeEnforcesBridgeAndNetworkRateBudgets() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-rate-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let registry = try PlatformAppRegistry(databaseURL: dbURL)
+        try registry.installVersion(
+            appId: "bridge-budget-app",
+            name: "Bridge Budget App",
+            version: "0.1.0",
+            manifestJSON: try jsonObjectString([
+                "id": "bridge-budget-app",
+                "name": "Bridge Budget App",
+                "version": "0.1.0",
+                "runtimeVersion": "0.1.0",
+                "entry": "index.html",
+                "permissions": [],
+                "storagePrefix": "bridge-budget-app:",
+                "dataVersion": 1,
+                "capabilities": ["required": [], "optional": []],
+                "resourceBudget": ["maxBridgeCallsPerMinute": 1],
+                "networkPolicy": ["allow": []],
+            ]),
+            contentHash: "bridge-budget-hash",
+            installId: "install-bridge-budget"
+        )
+        try registry.installVersion(
+            appId: "network-budget-app",
+            name: "Network Budget App",
+            version: "0.1.0",
+            manifestJSON: try jsonObjectString([
+                "id": "network-budget-app",
+                "name": "Network Budget App",
+                "version": "0.1.0",
+                "runtimeVersion": "0.1.0",
+                "entry": "index.html",
+                "permissions": ["network.request"],
+                "storagePrefix": "network-budget-app:",
+                "dataVersion": 1,
+                "capabilities": ["required": [], "optional": ["network.request"]],
+                "resourceBudget": ["maxNetworkRequestsPerMinute": 0],
+                "networkPolicy": [
+                    "allow": [
+                        ["origin": "https://api.example.test", "methods": ["GET"], "headers": [], "maxRequestBytes": 1024]
+                    ]
+                ],
+            ]),
+            contentHash: "network-budget-hash",
+            installId: "install-network-budget"
+        )
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        let port = try #require(controlPlane.boundPort)
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        func callBridgeBody(appId: String, method: String, params: [String: Any]) throws -> String {
+            try jsonObjectString([
+                "tool": "runtime.call_bridge",
+                "args": [
+                    "appId": appId,
+                    "method": method,
+                    "params": params,
+                ],
+            ])
+        }
+
+        let firstBridgeCall = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(appId: "bridge-budget-app", method: "runtime.capabilities", params: [:])
+        )
+        #expect(firstBridgeCall.statusCode == 200)
+        #expect(firstBridgeCall.body.contains(#""ok":true"#))
+
+        let secondBridgeCall = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(appId: "bridge-budget-app", method: "runtime.capabilities", params: [:])
+        )
+        #expect(secondBridgeCall.statusCode == 200)
+        #expect(secondBridgeCall.body.contains(#""code":"resource_budget_exceeded""#))
+        #expect(secondBridgeCall.body.contains(#""budget":"maxBridgeCallsPerMinute""#))
+
+        let networkCall = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(
+                appId: "network-budget-app",
+                method: "network.request",
+                params: ["url": "https://api.example.test/data", "method": "GET"]
+            )
+        )
+        #expect(networkCall.statusCode == 200)
+        #expect(networkCall.body.contains(#""code":"resource_budget_exceeded""#))
+        #expect(networkCall.body.contains(#""budget":"maxNetworkRequestsPerMinute""#))
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],

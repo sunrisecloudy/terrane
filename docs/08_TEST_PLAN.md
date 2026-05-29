@@ -186,6 +186,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - JS bridge receives request.
 - Storage persists across relaunch.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
+- Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Core step returns real Zig output.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -199,6 +200,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
+- Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Core bridge works.
 - SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -213,6 +215,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - JS bridge dispatches messages.
 - Storage persists.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
+- Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
@@ -227,6 +230,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Bridge dispatch works.
 - Storage under LocalAppData works.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
+- Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Zig DLL loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local Windows build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available.
@@ -239,6 +243,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Bridge dispatch works.
 - Storage under XDG data directory works.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
+- Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Zig shared library loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local Linux build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.

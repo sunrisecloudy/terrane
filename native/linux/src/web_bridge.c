@@ -270,6 +270,62 @@ static gint bridge_call_count_since(WebBridge *bridge, const gchar *app_id, cons
   return count;
 }
 
+static gint bridge_call_count_since_any(WebBridge *bridge, const gchar *app_id, gint seconds) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL) {
+    return 0;
+  }
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return 0;
+  }
+  g_autofree gchar *window = g_strdup_printf("-%d seconds", seconds);
+  bind_text(statement, 1, app_id);
+  bind_text(statement, 2, window);
+  gint count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
+static JsonNode *resource_budget_failure(WebBridge *bridge, const BridgeRequest *request) {
+  guint limit = 0;
+  if (resource_budget_limit(&request->context, "maxBridgeCallsPerMinute", &limit)) {
+    gint current = bridge_call_count_since_any(bridge, request->context.app_id, 60);
+    if (current >= (gint)limit) {
+      JsonObject *details = json_object_new();
+      json_object_set_string_member(details, "appId", request->context.app_id);
+      json_object_set_string_member(details, "budget", "maxBridgeCallsPerMinute");
+      json_object_set_int_member(details, "current", current);
+      json_object_set_int_member(details, "max", limit);
+      json_object_set_int_member(details, "limit", limit);
+      return bridge_failure(
+          request,
+          "resource_budget_exceeded",
+          "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+          details);
+    }
+  }
+  if (g_strcmp0(request->method, "network.request") == 0 &&
+      resource_budget_limit(&request->context, "maxNetworkRequestsPerMinute", &limit)) {
+    gint current = bridge_call_count_since(bridge, request->context.app_id, "network.request", 60);
+    if (current >= (gint)limit) {
+      JsonObject *details = json_object_new();
+      json_object_set_string_member(details, "appId", request->context.app_id);
+      json_object_set_string_member(details, "budget", "maxNetworkRequestsPerMinute");
+      json_object_set_int_member(details, "current", current);
+      json_object_set_int_member(details, "max", limit);
+      json_object_set_int_member(details, "limit", limit);
+      return bridge_failure(
+          request,
+          "resource_budget_exceeded",
+          "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+          details);
+    }
+  }
+  return NULL;
+}
+
 static gboolean valid_log_level(const gchar *level) {
   return g_strcmp0(level, "debug") == 0 || g_strcmp0(level, "info") == 0 ||
       g_strcmp0(level, "warn") == 0 || g_strcmp0(level, "error") == 0;
@@ -449,6 +505,15 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
     gchar *text = bridge_response_to_string(response);
     record_bridge_call(bridge, &request, response, started_at_us);
     json_node_unref(response);
+    bridge_request_clear(&request);
+    g_object_unref(parser);
+    return text;
+  }
+  JsonNode *budget_response = resource_budget_failure(bridge, &request);
+  if (budget_response != NULL) {
+    gchar *text = bridge_response_to_string(budget_response);
+    record_bridge_call(bridge, &request, budget_response, started_at_us);
+    json_node_unref(budget_response);
     bridge_request_clear(&request);
     g_object_unref(parser);
     return text;

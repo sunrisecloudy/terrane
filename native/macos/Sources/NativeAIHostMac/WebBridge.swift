@@ -61,6 +61,11 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             )
             return
         }
+        if let response = bridgeRateBudgetFailure(request) {
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            replyHandler(response.asDictionary(), nil)
+            return
+        }
 
         let result = dispatch(request)
         recordBridgeCall(request: request, response: result, startedAt: startedAt)
@@ -153,6 +158,58 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         NSLog("Generated app log [\(level)]: \(message)")
         return .success(id: request.id, result: ["ok": true])
+    }
+
+    private func bridgeRateBudgetFailure(_ request: BridgeRequest) -> BridgeResponse? {
+        if let limit = request.context.resourceBudget["maxBridgeCallsPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+                    details: [
+                        "appId": request.context.appId,
+                        "budget": "maxBridgeCallsPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        if request.method == "network.request",
+           let limit = request.context.resourceBudget["maxNetworkRequestsPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, method: "network.request", seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+                    details: [
+                        "appId": request.context.appId,
+                        "budget": "maxNetworkRequestsPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        return nil
+    }
+
+    private func bridgeCallCount(appId: String, seconds: Int) -> Int {
+        guard let db = storage.databaseHandle else { return 0 }
+        let sql = "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, "-\(seconds) seconds")
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
     }
 
     private func bridgeCallCount(appId: String, method: String, seconds: Int) -> Int {

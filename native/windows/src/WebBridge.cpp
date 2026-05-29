@@ -106,6 +106,10 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
     RecordBridgeCall(request, response, startedAtMs);
     return response.Stringify().c_str();
   }
+  if (auto budgetResponse = ResourceBudgetFailure(request); budgetResponse.has_value()) {
+    RecordBridgeCall(request, budgetResponse.value(), startedAtMs);
+    return budgetResponse.value().Stringify().c_str();
+  }
 
   auto response = Dispatch(request);
   RecordBridgeCall(request, response, startedAtMs);
@@ -162,6 +166,48 @@ json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {
     return AppLog(request);
   }
   return BridgeResponse::Failure(request.id, request.hasId, L"unknown_method", L"Unknown bridge method: " + request.method);
+}
+
+std::optional<json::JsonObject> WebBridge::ResourceBudgetFailure(BridgeRequest const& request) const {
+  if (auto limit = request.context.resourceBudget.find(L"maxBridgeCallsPerMinute");
+      limit != request.context.resourceBudget.end()) {
+    auto current = BridgeCallCountSince(request.context.appId, 60);
+    if (current >= static_cast<int>(limit->second)) {
+      json::JsonObject details;
+      details.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
+      details.Insert(L"budget", json::JsonValue::CreateStringValue(L"maxBridgeCallsPerMinute"));
+      details.Insert(L"current", json::JsonValue::CreateNumberValue(current));
+      details.Insert(L"max", json::JsonValue::CreateNumberValue(limit->second));
+      details.Insert(L"limit", json::JsonValue::CreateNumberValue(limit->second));
+      return BridgeResponse::Failure(
+          request.id,
+          request.hasId,
+          L"resource_budget_exceeded",
+          L"Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+          details);
+    }
+  }
+  if (request.method == L"network.request") {
+    if (auto limit = request.context.resourceBudget.find(L"maxNetworkRequestsPerMinute");
+        limit != request.context.resourceBudget.end()) {
+      auto current = BridgeCallCountSince(request.context.appId, L"network.request", 60);
+      if (current >= static_cast<int>(limit->second)) {
+        json::JsonObject details;
+        details.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
+        details.Insert(L"budget", json::JsonValue::CreateStringValue(L"maxNetworkRequestsPerMinute"));
+        details.Insert(L"current", json::JsonValue::CreateNumberValue(current));
+        details.Insert(L"max", json::JsonValue::CreateNumberValue(limit->second));
+        details.Insert(L"limit", json::JsonValue::CreateNumberValue(limit->second));
+        return BridgeResponse::Failure(
+            request.id,
+            request.hasId,
+            L"resource_budget_exceeded",
+            L"Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+            details);
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
@@ -232,6 +278,24 @@ json::JsonObject WebBridge::AppLog(BridgeRequest const& request) const {
   json::JsonObject result;
   result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true));
   return BridgeResponse::Success(request.id, request.hasId, result);
+}
+
+int WebBridge::BridgeCallCountSince(std::wstring const& appId, int seconds) const {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr) {
+    return 0;
+  }
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return 0;
+  }
+  BindText(statement, 1, appId);
+  BindText(statement, 2, L"-" + std::to_wstring(seconds) + L" seconds");
+  int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
 }
 
 int WebBridge::BridgeCallCountSince(std::wstring const& appId, std::wstring const& method, int seconds) const {

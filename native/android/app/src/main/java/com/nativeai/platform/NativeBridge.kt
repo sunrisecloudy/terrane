@@ -86,6 +86,11 @@ class NativeBridge(
             ).toString())
             return
         }
+        val budgetFailure = bridgeRateBudgetFailure(request)
+        if (budgetFailure != null) {
+            respondWithLog(budgetFailure)
+            return
+        }
 
         when (request.method) {
             "storage.get" -> respondWithLog(storage.get(request))
@@ -143,6 +148,59 @@ class NativeBridge(
             "error" -> Log.e("NativeAIPlatformAppLog", line)
         }
         return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString()
+    }
+
+    private fun bridgeRateBudgetFailure(request: BridgeRequest): String? {
+        val bridgeLimit = request.context.resourceBudget.optInt("maxBridgeCallsPerMinute", -1)
+        if (bridgeLimit >= 0) {
+            val current = bridgeCallCount(request.context.appId, seconds = 60)
+            if (current >= bridgeLimit) {
+                return BridgeResponse.failure(
+                    request.id,
+                    "resource_budget_exceeded",
+                    "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+                    JSONObject(
+                        mapOf(
+                            "appId" to request.context.appId,
+                            "budget" to "maxBridgeCallsPerMinute",
+                            "current" to current,
+                            "max" to bridgeLimit,
+                            "limit" to bridgeLimit,
+                        ),
+                    ),
+                ).toString()
+            }
+        }
+        val networkLimit = request.context.resourceBudget.optInt("maxNetworkRequestsPerMinute", -1)
+        if (request.method == "network.request" && networkLimit >= 0) {
+            val current = bridgeCallCount(request.context.appId, "network.request", seconds = 60)
+            if (current >= networkLimit) {
+                return BridgeResponse.failure(
+                    request.id,
+                    "resource_budget_exceeded",
+                    "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+                    JSONObject(
+                        mapOf(
+                            "appId" to request.context.appId,
+                            "budget" to "maxNetworkRequestsPerMinute",
+                            "current" to current,
+                            "max" to networkLimit,
+                            "limit" to networkLimit,
+                        ),
+                    ),
+                ).toString()
+            }
+        }
+        return null
+    }
+
+    private fun bridgeCallCount(appId: String, seconds: Int): Int {
+        database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)",
+            arrayOf(appId, "-$seconds seconds"),
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
     }
 
     private fun bridgeCallCount(appId: String, method: String, seconds: Int): Int {

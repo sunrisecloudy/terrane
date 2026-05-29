@@ -2702,6 +2702,8 @@ final class DevControlPlane: @unchecked Sendable {
                 message: "App \(appId) cannot call \(method)",
                 details: ["appId": appId, "method": method, "requiredPermission": permission]
             )
+        } else if let budgetResponse = bridgeRateBudgetFailure(request) {
+            response = budgetResponse
         } else {
             response = dispatchAllowedControlBridge(request)
         }
@@ -2740,6 +2742,45 @@ final class DevControlPlane: @unchecked Sendable {
         }
     }
 
+    private func bridgeRateBudgetFailure(_ request: BridgeRequest) -> BridgeResponse? {
+        if let limit = request.context.resourceBudget["maxBridgeCallsPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+                    details: [
+                        "appId": request.context.appId,
+                        "budget": "maxBridgeCallsPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        if request.method == "network.request",
+           let limit = request.context.resourceBudget["maxNetworkRequestsPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, method: "network.request", seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+                    details: [
+                        "appId": request.context.appId,
+                        "budget": "maxNetworkRequestsPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        return nil
+    }
+
     private func appLog(_ request: BridgeRequest) -> BridgeResponse {
         guard let level = request.params["level"] as? String,
               ["debug", "info", "warn", "error"].contains(level)
@@ -2767,6 +2808,13 @@ final class DevControlPlane: @unchecked Sendable {
         }
         NSLog("Generated app log [\(level)]: \(message)")
         return .success(id: request.id, result: ["ok": true])
+    }
+
+    private func bridgeCallCount(appId: String, seconds: Int) -> Int {
+        scalarInt(
+            "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)",
+            values: [appId, "-\(seconds) seconds"]
+        )
     }
 
     private func bridgeCallCount(appId: String, method: String, seconds: Int) -> Int {
