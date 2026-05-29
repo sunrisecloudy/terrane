@@ -816,6 +816,88 @@ struct NativeHostTests {
         #expect(approvedReport.body.contains(#""approvalGranted":true"#))
         #expect(approvedReport.body.contains("network.request"))
 
+        let migrationApprovalPackageURL = repoRoot
+            .appendingPathComponent("native/macos/.build/data-version-update-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(
+            at: repoRoot.appendingPathComponent("webapps/examples/api-dashboard"),
+            to: migrationApprovalPackageURL
+        )
+        defer {
+            try? FileManager.default.removeItem(at: migrationApprovalPackageURL)
+        }
+        let migrationApprovalManifestURL = migrationApprovalPackageURL.appendingPathComponent("manifest.json")
+        let migrationApprovalManifestData = try Data(contentsOf: migrationApprovalManifestURL)
+        var migrationApprovalManifest = try #require(try JSONSerialization.jsonObject(with: migrationApprovalManifestData) as? [String: Any])
+        migrationApprovalManifest["version"] = "0.2.0"
+        migrationApprovalManifest["dataVersion"] = 2
+        try jsonObjectString(migrationApprovalManifest).write(to: migrationApprovalManifestURL, atomically: true, encoding: .utf8)
+
+        let packagedMigrationDirectory = migrationApprovalPackageURL.appendingPathComponent("migrations", isDirectory: true)
+        try FileManager.default.createDirectory(at: packagedMigrationDirectory, withIntermediateDirectories: true)
+        let packagedMigration: [String: Any] = [
+            "appId": "api-dashboard",
+            "fromDataVersion": 1,
+            "toDataVersion": 2,
+            "steps": [
+                [
+                    "op": "setDefault",
+                    "key": "api-dashboard:migration-sentinel",
+                    "to": "$.approved",
+                    "value": true,
+                ],
+            ],
+        ]
+        try jsonObjectString(packagedMigration)
+            .write(to: packagedMigrationDirectory.appendingPathComponent("1_to_2.json"), atomically: true, encoding: .utf8)
+
+        let pendingMigrationInstall = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.install_webapp_package", "args": ["path": migrationApprovalPackageURL.path]])
+        )
+        #expect(pendingMigrationInstall.statusCode == 200)
+        let pendingMigrationInstallResult = try jsonResult(pendingMigrationInstall)
+        let pendingMigrationInstallId = try #require(pendingMigrationInstallResult["installId"] as? String)
+        #expect(pendingMigrationInstallResult["status"] as? String == "requires-approval")
+        let migrationApproval = try #require(pendingMigrationInstallResult["approval"] as? [String: Any])
+        let migrationApprovalReasons = try #require(migrationApproval["reasons"] as? [String])
+        #expect(migrationApprovalReasons.contains("dataVersion"))
+
+        let approveMigratedUpdate = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.approve_webapp_update", "args": ["appId": "api-dashboard", "installId": pendingMigrationInstallId]])
+        )
+        #expect(approveMigratedUpdate.statusCode == 200)
+        let approveMigratedUpdateResult = try jsonResult(approveMigratedUpdate)
+        #expect(approveMigratedUpdateResult["status"] as? String == "enabled")
+        let packagedMigrationRuns = try #require(approveMigratedUpdateResult["migrationRuns"] as? [[String: Any]])
+        #expect(packagedMigrationRuns.count == 1)
+        #expect(packagedMigrationRuns.contains { run in
+            (run["mode"] as? String) == "apply" && (run["status"] as? String) == "passed"
+        })
+        #expect(try sqliteMigrationRunCount(dbURL: dbURL, appId: "api-dashboard") >= 1)
+        #expect(try sqliteAppDataVersion(dbURL: dbURL, appId: "api-dashboard") == 2)
+
+        let migratedApprovalStorage = PlatformStorage(databaseURL: dbURL).get(BridgeRequest(
+            id: "migration-approval-storage",
+            method: "storage.get",
+            params: ["key": "api-dashboard:migration-sentinel", "defaultValue": NSNull()],
+            context: AppSandboxContext(
+                appId: "api-dashboard",
+                approvedPermissions: ["storage.read"],
+                networkPolicy: [],
+                denyPrivateNetwork: true,
+                mountToken: "migration-approval-mount"
+            )
+        ))
+        #expect(migratedApprovalStorage.ok)
+        let migratedApprovalStorageResult = try #require(migratedApprovalStorage.result as? [String: Any])
+        let migratedApprovalStorageValue = try #require(migratedApprovalStorageResult["value"] as? [String: Any])
+        #expect(migratedApprovalStorageValue["approved"] as? Bool == true)
+
         let backupExport = try await httpRequest(
             commandURL,
             method: "POST",
