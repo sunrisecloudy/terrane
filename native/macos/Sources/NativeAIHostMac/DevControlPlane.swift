@@ -46,6 +46,8 @@ final class DevControlPlane: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
+    private var activeRuntimeSessionId: String?
+    private var activeAppId: String?
     private static let snapshotTypes: Set<String> = [
         "bug-report",
         "pre-install",
@@ -228,6 +230,8 @@ final class DevControlPlane: @unchecked Sendable {
         switch (request.method, route.subresource) {
         case ("DELETE", nil):
             sessionStatus = "ended"
+            activeRuntimeSessionId = nil
+            activeAppId = nil
             markControlSessionEnded()
             sendAccepted(connection, request, startedAt: startedAt, result: [
                 "controlSessionId": controlSessionId,
@@ -290,6 +294,24 @@ final class DevControlPlane: @unchecked Sendable {
         switch tool {
         case "platform.health":
             sendAccepted(connection, request, startedAt: startedAt, result: healthResult())
+        case "platform.list_targets":
+            sendAccepted(connection, request, startedAt: startedAt, result: listTargets())
+        case "platform.launch":
+            sessionStatus = "running"
+            sendAccepted(connection, request, startedAt: startedAt, result: sessionResult())
+        case "platform.stop":
+            sessionStatus = "ended"
+            activeRuntimeSessionId = nil
+            activeAppId = nil
+            markControlSessionEnded()
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "ok": true,
+                "target": "macos",
+                "status": "stopped",
+                "controlSessionId": controlSessionId,
+            ])
+        case "platform.reload_runtime":
+            sendAccepted(connection, request, startedAt: startedAt, result: reloadRuntime())
         case "runtime.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
         case "runtime.event_log":
@@ -324,6 +346,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleAccessibilityAssertion(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapps":
             sendAccepted(connection, request, startedAt: startedAt, result: listWebapps(includeUninstalled: args["includeUninstalled"] as? Bool == true))
+        case "platform.open_webapp":
+            handleOpenWebapp(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapp_versions":
             guard let appId = args["appId"] as? String, !appId.isEmpty else {
                 sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.list_webapp_versions requires appId", startedAt: startedAt)
@@ -400,12 +424,36 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func listTargets() -> [String: Any] {
+        [
+            "targets": [
+                [
+                    "id": "macos",
+                    "platform": "macos",
+                    "status": sessionStatus == "running" ? "available" : "stopped",
+                    "runtimeVersion": "0.1.0",
+                    "controlSessionId": controlSessionId,
+                ],
+                [
+                    "id": "server",
+                    "platform": "server",
+                    "status": "not-attached",
+                ],
+                [
+                    "id": "fake-host",
+                    "platform": "fake-host",
+                    "status": "not-attached",
+                ],
+            ],
+        ]
+    }
+
     private func sessionResult() -> [String: Any] {
         [
             "controlSessionId": controlSessionId,
-            "runtimeSessionId": NSNull(),
+            "runtimeSessionId": activeRuntimeSessionId.map { $0 as Any } ?? NSNull(),
             "target": "macos",
-            "appId": NSNull(),
+            "appId": activeAppId.map { $0 as Any } ?? NSNull(),
             "status": sessionStatus,
         ]
     }
@@ -416,8 +464,9 @@ final class DevControlPlane: @unchecked Sendable {
             "snapshot": [
                 "platform": "macos",
                 "target": "macos",
-                "activeAppId": NSNull(),
-                "runtimeAttached": false,
+                "activeAppId": activeAppId.map { $0 as Any } ?? NSNull(),
+                "runtimeSessionId": activeRuntimeSessionId.map { $0 as Any } ?? NSNull(),
+                "runtimeAttached": activeRuntimeSessionId != nil,
                 "controlCommands": controlCommandCount(),
             ],
         ]
@@ -426,10 +475,16 @@ final class DevControlPlane: @unchecked Sendable {
     private func eventsResult() -> [String: Any] {
         [
             "controlSessionId": controlSessionId,
-            "runtimeSessionId": NSNull(),
-            "appId": NSNull(),
-            "bridgeCalls": [],
-            "coreEvents": [],
+            "runtimeSessionId": activeRuntimeSessionId.map { $0 as Any } ?? NSNull(),
+            "appId": activeAppId.map { $0 as Any } ?? NSNull(),
+            "bridgeCalls": bridgeCallRows(appId: activeAppId),
+            "coreEvents": tableRows(
+                table: "core_events",
+                columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+                orderBy: "created_at",
+                filterColumn: "app_id",
+                filterValue: activeAppId
+            ),
             "controlCommands": controlCommands(),
         ]
     }
@@ -569,6 +624,24 @@ final class DevControlPlane: @unchecked Sendable {
         sendAccepted(connection, request, startedAt: startedAt, result: [
             "appId": appId,
             "versions": listWebappVersions(appId: appId),
+        ])
+    }
+
+    private func handleOpenWebapp(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.open_webapp requires appId", startedAt: startedAt)
+            return
+        }
+        guard activeAppRecord(appId: appId)?.installId != nil else {
+            sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App is not installed", startedAt: startedAt)
+            return
+        }
+        let sessionId = runtimeSessionId(appId: appId)
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "sessionId": sessionId,
+            "runtimeSessionId": sessionId,
+            "appId": appId,
+            "target": "macos",
         ])
     }
 
@@ -1016,6 +1089,26 @@ final class DevControlPlane: @unchecked Sendable {
         return versions
     }
 
+    private func reloadRuntime() -> [String: Any] {
+        guard let appId = activeAppId else {
+            return [
+                "ok": true,
+                "target": "macos",
+                "status": "reloaded",
+                "runtimeSessionId": NSNull(),
+                "appId": NSNull(),
+            ]
+        }
+        let sessionId = runtimeSessionId(appId: appId)
+        return [
+            "ok": true,
+            "target": "macos",
+            "status": "reloaded",
+            "runtimeSessionId": sessionId,
+            "appId": appId,
+        ]
+    }
+
     private func installReport(appId: String, installId: String?) -> [String: Any]? {
         guard let db = database.handle else { return nil }
         let sql = installId == nil
@@ -1403,6 +1496,8 @@ final class DevControlPlane: @unchecked Sendable {
 
     private func runtimeSessionId(appId: String) -> String {
         let sessionId = "runtime_\(controlSessionId)"
+        activeRuntimeSessionId = sessionId
+        activeAppId = appId
         guard let db = database.handle else { return sessionId }
         let active = activeAppRecord(appId: appId)
         let now = Self.now()

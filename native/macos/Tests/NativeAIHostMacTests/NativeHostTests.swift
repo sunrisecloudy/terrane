@@ -350,6 +350,53 @@ struct NativeHostTests {
         #expect(command.statusCode == 200)
         #expect(command.body.contains(#""target":"macos""#))
 
+        let targets = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.list_targets","args":{}}"#
+        )
+        #expect(targets.statusCode == 200)
+        #expect(targets.body.contains(#""platform":"macos""#))
+
+        let launchCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.launch","args":{"target":"macos"}}"#
+        )
+        #expect(launchCommand.statusCode == 200)
+        #expect(launchCommand.body.contains(controlPlane.controlSessionId))
+
+        let openWebapp = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.open_webapp","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(openWebapp.statusCode == 200)
+        #expect(openWebapp.body.contains(#""appId":"notes-lite""#))
+        #expect(openWebapp.body.contains(#""runtimeSessionId":"runtime_"#))
+
+        let attachedSnapshot = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.snapshot","args":{}}"#
+        )
+        #expect(attachedSnapshot.statusCode == 200)
+        #expect(attachedSnapshot.body.contains(#""activeAppId":"notes-lite""#))
+        #expect(attachedSnapshot.body.contains(#""runtimeAttached":true"#))
+
+        let reloadRuntime = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.reload_runtime","args":{"target":"macos"}}"#
+        )
+        #expect(reloadRuntime.statusCode == 200)
+        #expect(reloadRuntime.body.contains(#""status":"reloaded""#))
+
         let eventsURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/events")!
         let events = try await httpRequest(eventsURL, headers: ["X-Platform-Control-Token": token])
         #expect(events.statusCode == 200)
@@ -625,7 +672,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 39)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 44)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
