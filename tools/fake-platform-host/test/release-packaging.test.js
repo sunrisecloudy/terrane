@@ -15,6 +15,15 @@ function hasZig() {
   }
 }
 
+function hasSwift() {
+  try {
+    execFileSync("swift", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test("release packaging creates deterministic static artifact archives and manifest", () => {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-artifacts-"));
   try {
@@ -81,6 +90,45 @@ test(
       assert.equal(fs.existsSync(path.join(outDir, "zig-core", "linux", "linux-x86_64", "libzig_core.so")), true);
       assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.dll")), true);
       assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.lib")), true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "release packaging can build the macOS native host app artifact",
+  {
+    skip: process.platform !== "darwin"
+      ? "macOS native release artifact only builds on Darwin hosts"
+      : !hasSwift()
+        ? "swift is not available"
+        : !hasZig()
+          ? "zig is not available"
+          : false,
+    timeout: 120_000,
+  },
+  () => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-macos-artifacts-"));
+    try {
+      const result = packageReleaseArtifacts({ outDir, buildNativeMacOS: true });
+      const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
+      const nativeArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "native-host-app");
+      assert.equal(nativeArtifacts.length, 1);
+
+      const [nativeArtifact] = nativeArtifacts;
+      assert.match(nativeArtifact.target, /^macos-(arm64|x86_64)$/);
+      for (const relativePath of [
+        "Contents/MacOS/NativeAIHostMac",
+        "Contents/Resources/runtime/index.html",
+        "Contents/Resources/webapps/examples/notes-lite/manifest.json",
+        "Contents/Resources/db/sqlite/001_initial.sql",
+        "Contents/Frameworks/libzig_core.dylib",
+      ]) {
+        const manifestPath = path.join(nativeArtifact.path, relativePath).split(path.sep).join("/");
+        assert.equal(nativeArtifact.files.some((file) => file.path === manifestPath && file.sha256.length === 64), true);
+        assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
+      }
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }

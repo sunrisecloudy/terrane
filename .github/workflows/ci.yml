@@ -137,6 +137,35 @@ jobs:
           name: server-release-artifacts
           path: artifacts/
 
+  macos-native-release-artifacts:
+    name: macOS Native Release Artifacts
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Package macOS native release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
+
+      - name: Upload macOS native release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-release-artifacts
+          path: artifacts/
+
   linux-native-smoke:
     name: Linux Native Smoke
     runs-on: ubuntu-24.04

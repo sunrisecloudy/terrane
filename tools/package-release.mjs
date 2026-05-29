@@ -13,6 +13,8 @@ const FIXED_DOS_DATE = 33;
 const PLATFORM_VERSION = "0.1.0";
 const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
 const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server";
+const MACOS_HOST_EXECUTABLE_NAME = "NativeAIHostMac";
+const MACOS_HOST_BUNDLE_NAME = "NativeAIHostMac.app";
 const ZIG_CORE_ARTIFACTS = [
   {
     id: "ios-arm64-device",
@@ -77,6 +79,7 @@ export function packageReleaseArtifacts({
   outDir = path.join(repoRoot, "artifacts"),
   buildZigCore = false,
   buildServer = false,
+  buildNativeMacOS = false,
 } = {}) {
   const resolvedOutDir = path.resolve(outDir);
   fs.mkdirSync(resolvedOutDir, { recursive: true });
@@ -91,6 +94,7 @@ export function packageReleaseArtifacts({
 
   const zigCoreArtifacts = buildZigCore ? buildZigCoreArtifacts({ outDir: resolvedOutDir }) : [];
   const serverArtifacts = buildServer ? buildServerArtifacts({ outDir: resolvedOutDir }) : [];
+  const nativeArtifacts = buildNativeMacOS ? buildMacOSNativeArtifacts({ outDir: resolvedOutDir }) : [];
   const directoryArtifacts = [
     ...(buildZigCore
       ? []
@@ -133,6 +137,7 @@ export function packageReleaseArtifacts({
       }),
       ...zigCoreArtifacts,
       ...serverArtifacts,
+      ...nativeArtifacts,
       ...directoryArtifacts.map((artifact) => ({
         id: artifact.id,
         path: artifact.path,
@@ -250,6 +255,141 @@ export function buildServerArtifacts({ outDir = path.join(repoRoot, "artifacts")
   }
 }
 
+export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+  if (process.platform !== "darwin") {
+    throw new Error("--build-native-macos requires a macOS host");
+  }
+  const resolvedOutDir = path.resolve(outDir);
+  const targetId = `macos-${hostArchitectureId()}`;
+  const macosDir = path.join(repoRoot, "native", "macos");
+  const artifactDir = path.join(resolvedOutDir, "native-apps", "macos", targetId);
+  const appBundleDir = path.join(artifactDir, MACOS_HOST_BUNDLE_NAME);
+  const contentsDir = path.join(appBundleDir, "Contents");
+  const macosContentsDir = path.join(contentsDir, "MacOS");
+  const resourcesDir = path.join(contentsDir, "Resources");
+  const frameworksDir = path.join(contentsDir, "Frameworks");
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-macos-release-cache-"));
+  const scratchPath = path.join(cacheRoot, "swiftpm");
+  const moduleCachePath = path.join(cacheRoot, "module-cache");
+  const env = {
+    ...process.env,
+    CLANG_MODULE_CACHE_PATH: moduleCachePath,
+    MACOSX_DEPLOYMENT_TARGET: "13.0",
+    SWIFT_MODULE_CACHE_PATH: moduleCachePath,
+    SWIFTPM_MODULECACHE_OVERRIDE: moduleCachePath,
+    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
+    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
+  };
+
+  try {
+    execFileSync(
+      "swift",
+      [
+        "build",
+        "--disable-sandbox",
+        "--configuration",
+        "release",
+        "--cache-path",
+        path.join(cacheRoot, "swift-cache"),
+        "--config-path",
+        path.join(cacheRoot, "swift-config"),
+        "--security-path",
+        path.join(cacheRoot, "swift-security"),
+        "--scratch-path",
+        scratchPath,
+        "-Xcc",
+        `-fmodules-cache-path=${moduleCachePath}`,
+        "-Xswiftc",
+        "-module-cache-path",
+        "-Xswiftc",
+        moduleCachePath,
+      ],
+      {
+        cwd: macosDir,
+        env,
+        stdio: "ignore",
+      },
+    );
+    const builtExecutable = path.join(scratchPath, "release", MACOS_HOST_EXECUTABLE_NAME);
+    if (!fs.existsSync(builtExecutable)) {
+      throw new Error(`macOS host build did not produce ${path.relative(scratchPath, builtExecutable)}`);
+    }
+
+    fs.rmSync(appBundleDir, { recursive: true, force: true });
+    fs.mkdirSync(macosContentsDir, { recursive: true });
+    fs.mkdirSync(resourcesDir, { recursive: true });
+    fs.mkdirSync(frameworksDir, { recursive: true });
+    fs.copyFileSync(builtExecutable, path.join(macosContentsDir, MACOS_HOST_EXECUTABLE_NAME));
+    fs.chmodSync(path.join(macosContentsDir, MACOS_HOST_EXECUTABLE_NAME), 0o755);
+    fs.writeFileSync(path.join(contentsDir, "Info.plist"), macOSInfoPlist());
+
+    fs.cpSync(path.join(repoRoot, "runtime-web"), path.join(resourcesDir, "runtime"), { recursive: true });
+    fs.mkdirSync(path.join(resourcesDir, "webapps"), { recursive: true });
+    fs.cpSync(path.join(repoRoot, "webapps", "examples"), path.join(resourcesDir, "webapps", "examples"), { recursive: true });
+    fs.mkdirSync(path.join(resourcesDir, "db"), { recursive: true });
+    fs.cpSync(path.join(repoRoot, "db", "sqlite"), path.join(resourcesDir, "db", "sqlite"), { recursive: true });
+    buildMacOSZigCoreDylib({ outputPath: path.join(frameworksDir, "libzig_core.dylib"), env });
+
+    return [
+      {
+        id: `native-macos-${targetId}`,
+        path: path.join("native-apps", "macos", targetId, MACOS_HOST_BUNDLE_NAME),
+        kind: "native-host-app",
+        target: targetId,
+        files: describeDirectoryFiles(appBundleDir, path.join("native-apps", "macos", targetId, MACOS_HOST_BUNDLE_NAME)),
+      },
+    ];
+  } finally {
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+function buildMacOSZigCoreDylib({ outputPath, env }) {
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  execFileSync(
+    "zig",
+    [
+      "build-lib",
+      "src/lib.zig",
+      "--name",
+      "zig_core",
+      "-dynamic",
+      "-target",
+      `${arch}-macos.15.0.0`,
+      "-lc",
+      `-femit-bin=${outputPath}`,
+    ],
+    {
+      cwd: path.join(repoRoot, "zig-core"),
+      env,
+      stdio: "ignore",
+    },
+  );
+  fs.chmodSync(outputPath, 0o755);
+}
+
+function macOSInfoPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key><string>dev.nativeai.host.macos</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
+  <key>CFBundleDisplayName</key><string>Native AI Webapp Platform</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${PLATFORM_VERSION}</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+`;
+}
+
 function zigServerModuleArgs() {
   return ["--dep", "zig_core", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig"];
 }
@@ -276,6 +416,17 @@ function hostServerTargetId() {
   return `${platform}-${arch}`;
 }
 
+function hostArchitectureId() {
+  const arch = {
+    arm64: "arm64",
+    x64: "x86_64",
+  }[process.arch];
+  if (!arch) {
+    throw new Error(`Unsupported host architecture: ${process.arch}`);
+  }
+  return arch;
+}
+
 function describeFileArtifact({ id, archivePath, relativePath, source, fileCount }) {
   const data = fs.readFileSync(archivePath);
   return {
@@ -296,6 +447,13 @@ function describeFile(filePath, relativePath) {
     bytes: data.length,
     sha256: crypto.createHash("sha256").update(data).digest("hex"),
   };
+}
+
+function describeDirectoryFiles(rootDir, archivePrefix) {
+  return walk(rootDir)
+    .filter((filePath) => fs.statSync(filePath).isFile())
+    .map((filePath) => describeFile(filePath, path.join(archivePrefix, path.relative(rootDir, filePath))))
+    .sort((left, right) => compareStrings(left.path, right.path));
 }
 
 function collectFiles(rootDir, archivePrefix) {
@@ -437,6 +595,8 @@ function parseCliArgs(argv) {
       options.buildZigCore = true;
     } else if (arg === "--build-server") {
       options.buildServer = true;
+    } else if (arg === "--build-native-macos") {
+      options.buildNativeMacOS = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }

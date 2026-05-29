@@ -270,6 +270,8 @@ function checkCiWorkflow() {
     "tools/package-release.mjs --out artifacts --build-zig-core",
     "server-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-server",
+    "macos-native-release-artifacts",
+    "tools/package-release.mjs --out artifacts --build-native-macos",
     "linux-native-smoke",
     "NATIVE_AI_LINUX_SMOKE_LAUNCH",
     "libwebkitgtk-6.0-dev",
@@ -292,7 +294,7 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server,native=linux/macos/ios/android/windows-smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native,native=linux/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
@@ -307,15 +309,19 @@ function checkReleasePackaging() {
     "writeStoredZip",
     "buildZigCoreArtifacts",
     "buildServerArtifacts",
+    "buildMacOSNativeArtifacts",
     "--build-zig-core",
     "--build-server",
+    "--build-native-macos",
     "sha256",
     "server-executable",
+    "native-host-app",
     "ZIG_CORE_TARGETS",
     "ios-arm64-device",
     "windows-x86_64",
     "zig_core.lib",
     "native-ai-server",
+    "NativeAIHostMac.app",
   ];
   for (const snippet of requiredScriptSnippets) {
     if (!script.includes(snippet)) {
@@ -325,6 +331,8 @@ function checkReleasePackaging() {
   for (const snippet of [
     "tools/package-release.mjs --out artifacts --build-zig-core --build-server",
     "linux-x86_64/native-ai-server",
+    "native-apps/macos/macos-arm64/NativeAIHostMac.app",
+    "tools/package-release.mjs --out artifacts --build-native-macos",
     "release-manifest.json",
   ]) {
     if (!docs.includes(snippet)) {
@@ -338,7 +346,9 @@ function checkReleasePackaging() {
     "listZipEntries",
     "buildZigCore: true",
     "buildServer: true",
+    "buildNativeMacOS: true",
     "server-executable",
+    "native-host-app",
     "runtime-web/index.html",
     "webapps/examples/notes-lite/manifest.json",
   ]) {
@@ -346,7 +356,7 @@ function checkReleasePackaging() {
       throw new Error(`release packaging test missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

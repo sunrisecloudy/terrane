@@ -79,10 +79,10 @@ android emulator job:
 The release artifact packager is:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server
+node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -102,12 +102,21 @@ artifacts/
   example-webapps.zip
   release-manifest.json
   native-apps/
+    macos/macos-arm64/NativeAIHostMac.app/
 ```
+
+The macOS native app artifact path is `native-apps/macos/macos-arm64/NativeAIHostMac.app` on Apple Silicon CI runners.
 
 The dedicated Linux server artifact job runs:
 
 ```text
 node --no-warnings tools/package-release.mjs --out artifacts --build-server
+```
+
+The dedicated macOS native artifact job runs on `macos-latest`:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
 ```
 
 The default static packaging command without build flags still creates placeholder target directories for downstream jobs.
