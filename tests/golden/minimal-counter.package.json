@@ -64,6 +64,10 @@
     {
       "path": "app.js",
       "content": "let n=0;document.querySelector('[data-testid=\"inc\"]').onclick=()=>{n++;document.querySelector('[data-testid=\"count\"]').textContent=String(n)};"
+    },
+    {
+      "path": "smoke-tests.json",
+      "content": "[\n  {\n    \"name\": \"increments counter control exists\",\n    \"steps\": [\n      {\n        \"type\": \"click\",\n        \"selector\": \"[data-testid=\\\"inc\\\"]\"\n      }\n    ],\n    \"expected\": {\n      \"textIncludes\": \"Minimal Counter\"\n    }\n  }\n]\n"
     }
   ]
 }
