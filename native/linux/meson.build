@@ -14,6 +14,7 @@ executable('native-ai-webapp-host',
   [
     'src/main.c',
     'src/bridge_types.c',
+    'src/platform_database.c',
     'src/webkit_host.c',
     'src/web_bridge.c',
     'src/platform_storage.c',

@@ -1,5 +1,19 @@
 #include "platform_storage.h"
 
+static void ensure_app_row(PlatformStorage *storage, const gchar *app_id) {
+  sqlite3_stmt *statement = NULL;
+  sqlite3_prepare_v2(
+      storage->db,
+      "INSERT OR IGNORE INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', 1, datetime('now'), datetime('now'))",
+      -1,
+      &statement,
+      NULL);
+  sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
 static gboolean has_storage_prefix(const BridgeRequest *request, const gchar *key) {
   return g_str_has_prefix(key, request->context.storage_prefix);
 }
@@ -14,15 +28,7 @@ static JsonNode *storage_prefix_failure(const BridgeRequest *request, const gcha
 
 PlatformStorage *platform_storage_new(const gchar *database_path) {
   PlatformStorage *storage = g_new0(PlatformStorage, 1);
-  g_autofree gchar *parent = g_path_get_dirname(database_path);
-  g_mkdir_with_parents(parent, 0700);
-  sqlite3_open(database_path, &storage->db);
-  sqlite3_exec(
-      storage->db,
-      "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));",
-      NULL,
-      NULL,
-      NULL);
+  storage->db = platform_database_open(database_path);
   return storage;
 }
 
@@ -30,9 +36,7 @@ void platform_storage_free(PlatformStorage *storage) {
   if (storage == NULL) {
     return;
   }
-  if (storage->db != NULL) {
-    sqlite3_close(storage->db);
-  }
+  platform_database_close(storage->db);
   g_free(storage);
 }
 
@@ -78,6 +82,7 @@ JsonNode *platform_storage_set(PlatformStorage *storage, const BridgeRequest *re
   if (!has_storage_prefix(request, key)) {
     return storage_prefix_failure(request, key);
   }
+  ensure_app_row(storage, request->context.app_id);
 
   JsonGenerator *generator = json_generator_new();
   json_generator_set_root(generator, json_object_get_member(request->params, "value"));

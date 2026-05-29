@@ -93,14 +93,27 @@ const targetAssertions = [
     name: "Linux",
     files: [
       {
+        path: "native/linux/src/platform_database.h",
+        contains: ["sqlite3 *platform_database_open", "platform_database_close"],
+      },
+      {
+        path: "native/linux/src/platform_database.c",
+        contains: [
+          "PRAGMA foreign_keys = ON",
+          "PRAGMA integrity_check",
+          '"db", "sqlite"',
+          "CREATE TABLE IF NOT EXISTS apps",
+        ],
+      },
+      {
         path: "native/linux/src/platform_storage.h",
-        contains: ["#include <sqlite3.h>", "sqlite3 *db"],
+        contains: ['#include "platform_database.h"', "sqlite3 *db"],
       },
       {
         path: "native/linux/src/platform_storage.c",
         contains: [
-          "sqlite3_open",
-          "CREATE TABLE IF NOT EXISTS app_storage",
+          "platform_database_open",
+          "INSERT OR IGNORE INTO apps",
           "WHERE app_id = ? AND key = ?",
           "request->context.app_id",
         ],
@@ -111,7 +124,7 @@ const targetAssertions = [
       },
       {
         path: "native/linux/meson.build",
-        contains: ["dependency('sqlite3')", "sqlite_dep"],
+        contains: ["dependency('sqlite3')", "sqlite_dep", "'src/platform_database.c'"],
       },
     ],
   },

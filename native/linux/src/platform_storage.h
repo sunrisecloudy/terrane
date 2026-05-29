@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bridge_types.h"
+#include "platform_database.h"
 
 #include <sqlite3.h>
 
