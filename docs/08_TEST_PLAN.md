@@ -208,6 +208,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Slow `core.step` calls return structured `timeout` errors through the host timeout path.
 - SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
+- Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside DEBUG builds.
 - Local build and native SwiftPM tests run with `node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js` on macOS hosts.
 - When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
 - Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js`.

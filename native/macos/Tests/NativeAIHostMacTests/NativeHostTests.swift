@@ -63,6 +63,45 @@ struct NativeHostTests {
         #expect(row.metadata.contains(#""canAutoRemount":false"#))
     }
 
+    @Test("production guard rejects exact dev-only startup flags")
+    func productionGuardRejectsExactDevOnlyStartupFlags() throws {
+        #expect(NativeProductionGuard.rejectedDevOnlyFlag(
+            in: ["NativeAIHostMac", "--control-plane-port"],
+            allowDevFlags: false
+        ) == "--control-plane-port")
+        #expect(NativeProductionGuard.rejectedDevOnlyFlag(
+            in: ["NativeAIHostMac", "--allow-runtime-mismatch=true"],
+            allowDevFlags: false
+        ) == "--allow-runtime-mismatch=true")
+        #expect(NativeProductionGuard.rejectedDevOnlyFlag(
+            in: ["NativeAIHostMac", "--allow-unsigned-dev"],
+            allowDevFlags: false
+        ) == "--allow-unsigned-dev")
+        #expect(NativeProductionGuard.rejectedDevOnlyFlag(
+            in: ["NativeAIHostMac", "--control-plane-portish"],
+            allowDevFlags: false
+        ) == nil)
+        #expect(NativeProductionGuard.rejectedDevOnlyFlag(
+            in: ["NativeAIHostMac", "--control-plane-port"],
+            allowDevFlags: true
+        ) == nil)
+
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-production-guard-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let rejected = NativeProductionGuard.rejectDevOnlyFlagsIfNeeded(
+            arguments: ["NativeAIHostMac", "--allow-unsigned-dev"],
+            allowDevFlags: false,
+            databaseURL: dbURL
+        )
+        #expect(rejected)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") == 1)
+    }
+
     @Test("SQLite storage persists by app id and storage prefix")
     func sqliteStoragePersistsWithAppScope() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

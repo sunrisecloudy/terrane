@@ -66,6 +66,7 @@
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.
 - [x] `core.step` times out with structured `timeout` errors without blocking the WebView reply path.
+- [x] Production guard rejects and audits dev-only startup flags outside DEBUG builds.
 - [x] Debug dev control plane writes a 0600 token file, authenticates health/session/snapshot/events/command routes, and audits accepted/rejected requests.
 - [x] Debug dev control plane exposes `runtime.capabilities` through session and command routes.
 - [x] Debug dev control plane exposes DB-backed `runtime.resource_usage` through session and command routes.
