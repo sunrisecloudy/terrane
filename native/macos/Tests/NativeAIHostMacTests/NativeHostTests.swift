@@ -718,6 +718,104 @@ struct NativeHostTests {
         #expect(rollbackCommand.body.contains(#""activeInstallId":"install-control""#))
         #expect(rollbackCommand.body.contains(#""rolledBackInstallId":"install-control-v2""#))
 
+        let repoRoot = RuntimeResourceLocator.repoRootURL()
+        let approvalPackageURL = repoRoot
+            .appendingPathComponent("native/macos/.build/approval-update-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: approvalPackageURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(
+            at: repoRoot.appendingPathComponent("webapps/examples/notes-lite"),
+            to: approvalPackageURL
+        )
+        defer {
+            try? FileManager.default.removeItem(at: approvalPackageURL)
+        }
+        let approvalManifestURL = approvalPackageURL.appendingPathComponent("manifest.json")
+        let approvalManifestData = try Data(contentsOf: approvalManifestURL)
+        var approvalManifest = try #require(try JSONSerialization.jsonObject(with: approvalManifestData) as? [String: Any])
+        approvalManifest["version"] = "0.3.0"
+        var approvalPermissions = approvalManifest["permissions"] as? [String] ?? []
+        if !approvalPermissions.contains("network.request") {
+            approvalPermissions.append("network.request")
+        }
+        approvalManifest["permissions"] = approvalPermissions
+        var approvalCapabilities = approvalManifest["capabilities"] as? [String: Any] ?? [:]
+        var optionalCapabilities = approvalCapabilities["optional"] as? [String] ?? []
+        if !optionalCapabilities.contains("network.request") {
+            optionalCapabilities.append("network.request")
+        }
+        approvalCapabilities["optional"] = optionalCapabilities
+        approvalManifest["capabilities"] = approvalCapabilities
+        approvalManifest["networkPolicy"] = [
+            "allow": [
+                [
+                    "origin": "https://api.example.test",
+                    "methods": ["GET"],
+                    "pathPrefix": "/status",
+                ],
+            ],
+            "denyPrivateNetwork": true,
+        ]
+        try jsonObjectString(approvalManifest).write(to: approvalManifestURL, atomically: true, encoding: .utf8)
+
+        let pendingInstall = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.install_webapp_package", "args": ["path": approvalPackageURL.path]])
+        )
+        #expect(pendingInstall.statusCode == 200)
+        let pendingInstallResult = try jsonResult(pendingInstall)
+        let pendingInstallId = try #require(pendingInstallResult["installId"] as? String)
+        #expect(pendingInstallResult["status"] as? String == "requires-approval")
+        let pendingApproval = try #require(pendingInstallResult["approval"] as? [String: Any])
+        let approvalReasons = try #require(pendingApproval["reasons"] as? [String])
+        #expect(approvalReasons.contains("permissions"))
+        #expect(approvalReasons.contains("networkPolicy"))
+        #expect(approvalReasons.contains("capabilities"))
+
+        let pendingList = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.list_webapps","args":{}}"#
+        )
+        #expect(pendingList.statusCode == 200)
+        #expect(pendingList.body.contains(#""activeInstallId":"install-control""#))
+
+        let pendingReport = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.install_report", "args": ["appId": "notes-lite", "installId": pendingInstallId]])
+        )
+        #expect(pendingReport.statusCode == 200)
+        #expect(pendingReport.body.contains(#""status":"requires-approval""#))
+        #expect(pendingReport.body.contains(#""requiresUserApproval":true"#))
+
+        let approveUpdate = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.approve_webapp_update", "args": ["appId": "notes-lite", "installId": pendingInstallId]])
+        )
+        #expect(approveUpdate.statusCode == 200)
+        #expect(approveUpdate.body.contains(#""status":"enabled""#))
+        #expect(approveUpdate.body.contains(#""previousInstallId":"install-control""#))
+
+        let approvedReport = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "platform.install_report", "args": ["appId": "notes-lite", "installId": pendingInstallId]])
+        )
+        #expect(approvedReport.statusCode == 200)
+        #expect(approvedReport.body.contains(#""status":"accepted""#))
+        #expect(approvedReport.body.contains(#""approvalGranted":true"#))
+        #expect(approvedReport.body.contains("network.request"))
+
         let backupExport = try await httpRequest(
             commandURL,
             method: "POST",
@@ -1199,7 +1297,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 89)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 95)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

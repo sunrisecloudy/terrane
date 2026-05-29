@@ -433,6 +433,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRollbackWebapp(connection, request, args: args, startedAt: startedAt)
         case "platform.quarantine_webapp":
             handleQuarantineWebapp(connection, request, args: args, startedAt: startedAt)
+        case "platform.approve_webapp_update":
+            handleApproveWebappUpdate(connection, request, args: args, startedAt: startedAt)
         case "platform.install_report":
             guard let appId = args["appId"] as? String, !appId.isEmpty else {
                 sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.install_report requires appId", startedAt: startedAt)
@@ -937,6 +939,22 @@ final class DevControlPlane: @unchecked Sendable {
             restorePrevious: args["restorePrevious"] as? Bool == true
         ) else {
             sendRejected(connection, request, status: 400, code: "quarantine_failed", message: "Quarantine could not be completed", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleApproveWebappUpdate(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.approve_webapp_update requires appId", startedAt: startedAt)
+            return
+        }
+        guard let installId = args["installId"] as? String, !installId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.approve_webapp_update requires installId", startedAt: startedAt)
+            return
+        }
+        guard let result = approveWebappUpdate(appId: appId, installId: installId) else {
+            sendRejected(connection, request, status: 400, code: "approval_failed", message: "Update approval could not be completed", startedAt: startedAt)
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: result)
@@ -3124,8 +3142,9 @@ final class DevControlPlane: @unchecked Sendable {
         )
         let compatibility = runtimeCompatibilityResult(package.manifest["runtimeVersion"] as? String)
         let ok = (smoke["ok"] as? Bool) == true && (accessibility["status"] as? String) != "fail" && (compatibility["ok"] as? Bool) == true
-        let reportStatus = ok ? "accepted" : "failed"
-        guard let install = insertInstalledPackage(package: package, smoke: smoke, accessibility: accessibility, compatibility: compatibility, reportStatus: reportStatus) else {
+        let approval = updateApproval(for: package.manifest)
+        let reportStatus = ok ? ((approval["requiresUserApproval"] as? Bool) == true ? "requires-approval" : "accepted") : "failed"
+        guard let install = insertInstalledPackage(package: package, smoke: smoke, accessibility: accessibility, compatibility: compatibility, reportStatus: reportStatus, approval: approval) else {
             return [
                 "ok": false,
                 "status": "failed",
@@ -3145,12 +3164,13 @@ final class DevControlPlane: @unchecked Sendable {
         )
         return [
             "ok": ok,
-            "status": ok ? "enabled" : "quarantined",
+            "status": ok ? (((approval["requiresUserApproval"] as? Bool) == true) ? "requires-approval" : "enabled") : "quarantined",
             "installId": install["installId"] ?? NSNull(),
             "reportId": install["reportId"] ?? NSNull(),
             "appId": install["appId"] ?? NSNull(),
             "version": install["version"] ?? NSNull(),
             "contentHash": install["contentHash"] ?? NSNull(),
+            "approval": approval,
             "smokeTest": smoke,
             "accessibility": accessibility,
             "compatibility": compatibility,
@@ -3312,7 +3332,8 @@ final class DevControlPlane: @unchecked Sendable {
         smoke: [String: Any],
         accessibility: [String: Any],
         compatibility: [String: Any],
-        reportStatus: String
+        reportStatus: String,
+        approval: [String: Any]
     ) -> [String: Any]? {
         guard let db = database.handle,
               let appId = package.manifest["id"] as? String,
@@ -3327,21 +3348,26 @@ final class DevControlPlane: @unchecked Sendable {
         let now = Self.now()
         let installId = "install_\(appId)_\(version.replacingOccurrences(of: ".", with: "_"))_\(UUID().uuidString.lowercased())"
         let reportId = "report_\(UUID().uuidString.lowercased())"
-        let previousInstallId = activeAppRecord(appId: appId)?.installId
+        let previous = appRecord(appId: appId)
+        let previousInstallId = previous?.activeInstallId
         let signature = signPackageResult(args: ["path": package.directory.path])?["signature"] ?? NSNull()
-        let status = reportStatus == "accepted" ? "enabled" : "quarantined"
+        let shouldActivate = reportStatus == "accepted"
+        let status = shouldActivate ? "enabled" : (reportStatus == "requires-approval" ? "installed" : "quarantined")
+        let appStatus = shouldActivate || previousInstallId != nil ? "enabled" : (status == "quarantined" ? "quarantined" : "disabled")
+        let appDataVersion = shouldActivate || previous == nil ? dataVersion : previous?.dataVersion ?? dataVersion
+        let approvedPermissions = shouldActivate ? (package.manifest["permissions"] as? [String] ?? []) : []
 
         guard executeSQL("BEGIN IMMEDIATE") else { return nil }
         var ok = true
         ok = ok && executePrepared(
             """
             INSERT INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at)
-            VALUES (?, ?, 'enabled', NULL, NULL, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = 'enabled', updated_at = excluded.updated_at
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status, data_version = excluded.data_version, updated_at = excluded.updated_at
             """,
-            [appId, name, dataVersion, now, now]
+            [appId, name, appStatus, appDataVersion, now, now]
         )
-        if let previousInstallId {
+        if let previousInstallId, shouldActivate {
             ok = ok && executePrepared("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", [previousInstallId])
         }
         ok = ok && executePrepared(
@@ -3366,9 +3392,12 @@ final class DevControlPlane: @unchecked Sendable {
                 INSERT INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason)
                 VALUES (?, ?, ?, 1, ?, ?, 'dev-control install')
                 """,
-                [installId, appId, permission, status == "enabled" ? 1 : 0, status == "enabled" ? now : nil]
+                [installId, appId, permission, shouldActivate ? 1 : 0, shouldActivate ? now : nil]
             )
         }
+        var permissionsReport = approval
+        permissionsReport["approved"] = approvedPermissions
+        permissionsReport["requested"] = package.manifest["permissions"] as? [String] ?? []
         ok = ok && executePrepared(
             """
             INSERT INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at)
@@ -3381,7 +3410,7 @@ final class DevControlPlane: @unchecked Sendable {
                 reportStatus,
                 jsonBody(["ok": true, "errors": package.errors, "warnings": package.warnings]),
                 jsonBody(["ok": true, "signature": signature, "accessibility": accessibility]),
-                jsonBody(["approved": package.manifest["permissions"] as? [String] ?? [], "requested": package.manifest["permissions"] as? [String] ?? []] as [String: Any]),
+                jsonBody(permissionsReport),
                 jsonBody(compatibility),
                 jsonBody(smoke),
                 hashes["contentHash"] ?? "",
@@ -3393,9 +3422,9 @@ final class DevControlPlane: @unchecked Sendable {
             INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
             VALUES (?, ?, ?, 'install', ?, 'codex', ?, ?, ?)
             """,
-            ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["source": "macos-dev-control"] as [String: Any])]
+            ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["source": "macos-dev-control", "status": status] as [String: Any])]
         )
-        if status == "enabled" {
+        if shouldActivate {
             ok = ok && executePrepared(
                 "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, updated_at = ? WHERE id = ?",
                 [installId, version, dataVersion, now, appId]
@@ -3406,6 +3435,14 @@ final class DevControlPlane: @unchecked Sendable {
                 VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, ?)
                 """,
                 ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["source": "macos-dev-control"] as [String: Any])]
+            )
+        } else if status == "quarantined" {
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
+                VALUES (?, ?, ?, 'quarantine', ?, 'codex', ?, ?, ?)
+                """,
+                ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["reason": "install gate failed"] as [String: Any])]
             )
         }
 
@@ -3420,6 +3457,30 @@ final class DevControlPlane: @unchecked Sendable {
             "appId": appId,
             "version": version,
             "contentHash": hashes["contentHash"] ?? "",
+        ]
+    }
+
+    private func updateApproval(for manifest: [String: Any]) -> [String: Any] {
+        guard let appId = manifest["id"] as? String,
+              let active = activeManifest(appId: appId)
+        else {
+            return ["requiresUserApproval": false, "reasons": []]
+        }
+        let checks: [(String, Any, Any)] = [
+            ("permissions", sortedStringArray(active["permissions"]), sortedStringArray(manifest["permissions"])),
+            ("networkPolicy", active["networkPolicy"] ?? [:], manifest["networkPolicy"] ?? [:]),
+            ("resourceBudget", active["resourceBudget"] ?? [:], manifest["resourceBudget"] ?? [:]),
+            ("capabilities", active["capabilities"] ?? [:], manifest["capabilities"] ?? [:]),
+            ("dataVersion", active["dataVersion"] ?? NSNull(), manifest["dataVersion"] ?? NSNull()),
+        ]
+        let reasons = checks.compactMap { field, before, after in
+            canonicalJSONEqual(before, after) ? nil : field
+        }
+        return [
+            "requiresUserApproval": !reasons.isEmpty,
+            "reasons": reasons,
+            "approvalReasons": reasons,
+            "previousInstallId": activeAppRecord(appId: appId)?.installId ?? NSNull(),
         ]
     }
 
@@ -4268,6 +4329,157 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func approveWebappUpdate(appId: String, installId: String) -> [String: Any]? {
+        guard let target = versionRecord(appId: appId, installId: installId),
+              target.status != "quarantined",
+              target.status != "uninstalled",
+              let report = installReportRecord(appId: appId, installId: installId),
+              report.status == "requires-approval"
+        else {
+            return nil
+        }
+        let previousInstallId = activeAppRecord(appId: appId)?.installId
+        let migrationRuns = applyPendingInstallMigrations(appId: appId, target: target)
+        if migrationRuns == nil {
+            return nil
+        }
+        let approvedAt = Self.now()
+        var permissionsReport = report.permissions
+        permissionsReport["requiresUserApproval"] = true
+        permissionsReport["approvalGranted"] = true
+        permissionsReport["approvedAt"] = approvedAt
+        permissionsReport["approved"] = permissionsForInstall(installId: installId)
+
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+        if let previousInstallId, previousInstallId != installId {
+            ok = ok && executePrepared("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", [previousInstallId])
+        }
+        ok = ok && executePrepared(
+            "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?",
+            [approvedAt, installId]
+        )
+        ok = ok && executePrepared(
+            "UPDATE app_permissions SET approved = 1, approved_at = ?, reason = 'approved update' WHERE install_id = ?",
+            [approvedAt, installId]
+        )
+        ok = ok && executePrepared(
+            "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+            [installId, target.version, target.dataVersion, approvedAt, appId]
+        )
+        ok = ok && executePrepared(
+            "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
+            [jsonBody(permissionsReport), report.reportId]
+        )
+        ok = ok && executePrepared(
+            """
+            INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
+            VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, ?)
+            """,
+            [
+                "event_\(UUID().uuidString.lowercased())",
+                appId,
+                installId,
+                previousInstallId,
+                report.reportId,
+                approvedAt,
+                jsonBody(["approved": true, "previousInstallId": previousInstallId ?? NSNull(), "migrationRuns": migrationRuns ?? []] as [String: Any]),
+            ]
+        )
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            return nil
+        }
+        return [
+            "appId": appId,
+            "installId": installId,
+            "status": "enabled",
+            "previousInstallId": previousInstallId ?? NSNull(),
+            "migrationRuns": migrationRuns ?? [],
+        ]
+    }
+
+    private func applyPendingInstallMigrations(
+        appId: String,
+        target: (installId: String, version: String, dataVersion: Int, status: String)
+    ) -> [[String: Any]]? {
+        guard let active = activeAppRecord(appId: appId) else {
+            return []
+        }
+        guard target.dataVersion > active.dataVersion else {
+            return []
+        }
+        var runs: [[String: Any]] = []
+        for fromVersion in active.dataVersion..<target.dataVersion {
+            let path = "migrations/\(fromVersion)_to_\(fromVersion + 1).json"
+            guard let migration = packageFileJSON(installId: target.installId, path: path) else {
+                return nil
+            }
+            do {
+                runs.append(try runMigration(migration: migration, mode: "apply"))
+            } catch {
+                return nil
+            }
+        }
+        return runs
+    }
+
+    private func packageFileJSON(installId: String, path: String) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT content_text FROM app_files WHERE install_id = ? AND path = ?", -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, installId)
+        bind(statement, 2, path)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return jsonDictionary(columnText(statement, 0))
+    }
+
+    private func installReportRecord(appId: String, installId: String) -> (reportId: String, status: String, permissions: [String: Any])? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT report_id, status, permissions_json
+        FROM app_install_reports
+        WHERE app_id = ? AND install_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, installId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return (
+            reportId: columnText(statement, 0),
+            status: columnText(statement, 1),
+            permissions: jsonDictionary(columnText(statement, 2)) ?? [:]
+        )
+    }
+
+    private func permissionsForInstall(installId: String) -> [String] {
+        guard let db = database.handle else { return [] }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT permission FROM app_permissions WHERE install_id = ? ORDER BY permission", -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, installId)
+        var permissions: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            permissions.append(columnText(statement, 0))
+        }
+        return permissions
+    }
+
     private func deleteStorage(appId: String) -> Bool {
         guard let db = database.handle else { return false }
         var statement: OpaquePointer?
@@ -4508,6 +4720,10 @@ final class DevControlPlane: @unchecked Sendable {
             return jsonString(value)
         }
         return fallback
+    }
+
+    private func sortedStringArray(_ value: Any?) -> [String] {
+        (value as? [String] ?? []).sorted()
     }
 
     private func scalarInt(_ sql: String, values: [String] = []) -> Int {
