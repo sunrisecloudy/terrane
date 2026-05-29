@@ -67,6 +67,7 @@
 - [x] Debug dev control plane exposes `runtime.capabilities` through session and command routes.
 - [x] Debug dev control plane exposes DB-backed `runtime.resource_usage` through session and command routes.
 - [x] Debug dev control plane exposes static accessibility audit/snapshot/assertion tools.
+- [x] Debug dev control plane supports static `runtime.query`, `runtime.assert_visible`, and `runtime.assert_text` over generated app HTML.
 - [x] Debug dev control plane exposes safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Debug dev control plane exports `db.export_debug_bundle` artifacts and records them in `backup_exports`.
 - [x] Debug dev control plane persists, reads, and restores runtime snapshots for app storage.

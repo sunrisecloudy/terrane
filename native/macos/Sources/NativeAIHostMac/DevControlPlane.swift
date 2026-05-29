@@ -320,6 +320,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: args["appId"] as? String))
         case "runtime.resource_usage":
             sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: args["appId"] as? String))
+        case "runtime.query":
+            handleRuntimeQuery(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_get":
             handleRuntimeStorageGet(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_set":
@@ -336,6 +338,10 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: clearRuntimeLogs(appId: args["appId"] as? String))
         case "runtime.console_logs":
             sendAccepted(connection, request, startedAt: startedAt, result: consoleLogs(appId: args["appId"] as? String))
+        case "runtime.assert_visible":
+            handleVisibleAssertion(connection, request, args: args, startedAt: startedAt)
+        case "runtime.assert_text":
+            handleTextAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_bridge_call":
             handleBridgeCallAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_no_console_errors":
@@ -652,6 +658,51 @@ final class DevControlPlane: @unchecked Sendable {
             "runtimeSessionId": sessionId,
             "appId": appId,
             "target": "macos",
+        ])
+    }
+
+    private func handleRuntimeQuery(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.query requires appId", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: runtimeQuery(appId: appId, args: args))
+    }
+
+    private func handleVisibleAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.assert_visible requires appId", startedAt: startedAt)
+            return
+        }
+        let result = runtimeQuery(appId: appId, args: args)
+        let matches = result["matches"] as? [[String: Any]] ?? []
+        guard let target = matches.first else {
+            sendRejected(connection, request, status: 400, code: "selector.not_found", message: "Expected runtime target is not visible", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "matches": matches.count,
+            "target": target,
+        ])
+    }
+
+    private func handleTextAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let text = args["text"] as? String, !text.isEmpty
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.assert_text requires appId and text", startedAt: startedAt)
+            return
+        }
+        guard htmlText(htmlForBundledApp(appId)).contains(text) else {
+            sendRejected(connection, request, status: 400, code: "text.not_found", message: "Expected text was not found in installed package HTML", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "text": text,
         ])
     }
 
@@ -2083,6 +2134,68 @@ final class DevControlPlane: @unchecked Sendable {
             .appendingPathComponent(appId)
             .appendingPathComponent("index.html")
         return (try? String(contentsOf: htmlURL, encoding: .utf8)) ?? ""
+    }
+
+    private func runtimeQuery(appId: String, args: [String: Any]) -> [String: Any] {
+        let html = htmlForBundledApp(appId)
+        let query: String
+        if let testId = args["testId"] as? String {
+            query = #"[data-testid="\#(testId)"]"#
+        } else {
+            query = args["selector"] as? String ?? args["text"] as? String ?? ""
+        }
+        let matches = queryMatches(html: html, args: args)
+        return [
+            "ok": !matches.isEmpty,
+            "appId": appId,
+            "query": query,
+            "matches": matches,
+        ]
+    }
+
+    private func queryMatches(html: String, args: [String: Any]) -> [[String: Any]] {
+        if let testId = args["testId"] as? String, let tag = tagForAttribute(html: html, attr: "data-testid", value: testId) {
+            return [["kind": "testId", "value": testId, "tag": tag]]
+        }
+        if let selector = args["selector"] as? String, selector.hasPrefix("#") {
+            let id = String(selector.dropFirst())
+            if let tag = tagForAttribute(html: html, attr: "id", value: id) {
+                return [["kind": "selector", "value": selector, "tag": tag]]
+            }
+        }
+        if let selector = args["selector"] as? String,
+           let testId = testIdSelectorValue(selector),
+           let tag = tagForAttribute(html: html, attr: "data-testid", value: testId)
+        {
+            return [["kind": "selector", "value": selector, "tag": tag]]
+        }
+        if let text = args["text"] as? String, htmlText(html).contains(text) {
+            return [["kind": "text", "value": text]]
+        }
+        if let selector = args["selector"] as? String, isSimpleTagSelector(selector) {
+            let escaped = NSRegularExpression.escapedPattern(for: selector.lowercased())
+            if html.range(of: #"<\#(escaped)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                return [["kind": "selector", "value": selector, "tag": selector.lowercased()]]
+            }
+        }
+        return []
+    }
+
+    private func tagForAttribute(html: String, attr: String, value: String) -> String? {
+        let escapedAttr = NSRegularExpression.escapedPattern(for: attr)
+        let escapedValue = NSRegularExpression.escapedPattern(for: value)
+        return regexMatches(
+            in: html,
+            pattern: #"<([a-z0-9-]+)\b[^>]*\b\#(escapedAttr)=["']\#(escapedValue)["'][^>]*>"#
+        ).first?[safe: 1]?.lowercased()
+    }
+
+    private func testIdSelectorValue(_ selector: String) -> String? {
+        regexMatches(in: selector, pattern: #"\[data-testid=["']([^"']+)["']\]"#).first?[safe: 1]
+    }
+
+    private func isSimpleTagSelector(_ selector: String) -> Bool {
+        selector.range(of: #"^[a-z][a-z0-9-]*$"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private func headingRecords(_ html: String) -> [[String: Any]] {
