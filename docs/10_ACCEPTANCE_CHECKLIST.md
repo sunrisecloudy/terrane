@@ -13,14 +13,14 @@
 
 ## Runtime
 
-- [ ] Runtime launcher displays installed/bundled apps.
+- [x] Runtime launcher displays installed/bundled apps.
 - [ ] Runtime can load each app in sandbox.
-- [ ] Runtime exposes `AppRuntime.call`.
-- [ ] Runtime rejects unknown methods.
-- [ ] Runtime enforces manifest permissions.
-- [ ] Runtime enforces storage prefixes.
-- [ ] Runtime logs bridge calls in debug console.
-- [ ] Runtime shows structured errors.
+- [x] Runtime exposes `AppRuntime.call`.
+- [x] Runtime rejects unknown methods.
+- [x] Runtime enforces manifest permissions.
+- [x] Runtime enforces storage prefixes.
+- [x] Runtime logs bridge calls in debug console.
+- [x] Runtime shows structured errors.
 
 ## Zig core
 
@@ -105,7 +105,7 @@
 ## Tests
 
 - [ ] Zig tests pass.
-- [ ] Runtime unit tests pass.
+- [x] Runtime unit tests pass.
 - [x] Package validator tests pass.
 - [ ] Bridge contract tests pass.
 - [x] Example smoke tests pass.

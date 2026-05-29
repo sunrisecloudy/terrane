@@ -184,6 +184,94 @@ test("runtime dev mock handles bridge calls without host dispatch", async () => 
   }
 });
 
+test("runtime launcher, sandbox, bridge calls, debug log, and structured errors work", async () => {
+  const manifestsById = new Map(
+    ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"].map((appId) => [
+      appId,
+      {
+        ...defaultRuntimeManifest(),
+        id: appId,
+        name: appId,
+        description: `${appId} acceptance fixture`,
+        storagePrefix: `${appId}:`,
+        permissions: ["core.step", "storage.read", "storage.write"],
+        resourceBudget: { maxBridgeCallsPerMinute: 20 },
+      },
+    ]),
+  );
+  const harness = createRuntimeHarness({ manifestsById });
+  try {
+    const frame = await mountFirstApp(harness);
+    assert.equal(harness.document.getElementById("app-list").children.length, 5);
+    assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
+    assert.equal(typeof frame.contentWindow.AppRuntime.call, "function");
+
+    vm.runInContext(
+      'window.__appErrors = []; window.AppRuntime.on("app.error", function (payload) { window.__appErrors.push(payload); });',
+      frame.contentWindow.context,
+    );
+
+    const storageResult = await vm.runInContext(
+      'window.AppRuntime.call("storage.get", { key: "notes-lite:notes", defaultValue: [] })',
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(storageResult, {});
+
+    await assert.rejects(
+      vm.runInContext('window.AppRuntime.call("runtime.not_real", {})', frame.contentWindow.context),
+      (error) => {
+        assert.equal(error.code, "unknown_method");
+        assert.equal(error.message, "Unknown bridge method: runtime.not_real");
+        assert.deepEqual(error.details, { method: "runtime.not_real" });
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      vm.runInContext(
+        'window.AppRuntime.call("notification.toast", { message: "Denied" })',
+        frame.contentWindow.context,
+      ),
+      (error) => {
+        assert.equal(error.code, "permission_denied");
+        assert.equal(error.details.requiredPermission, "notification.toast");
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      vm.runInContext(
+        'window.AppRuntime.call("storage.get", { key: "task-workbench:tasks", defaultValue: [] })',
+        frame.contentWindow.context,
+      ),
+      (error) => {
+        assert.equal(error.code, "permission_denied");
+        assert.equal(error.details.prefix, "notes-lite:");
+        return true;
+      },
+    );
+
+    await flushAsync();
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.method === "storage.get"), true);
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.method === "runtime.not_real"), false);
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.method === "notification.toast"), false);
+    const bridgeLogText = harness.document
+      .getElementById("bridge-log")
+      .children.map((child) => child.textContent)
+      .join("\n");
+    assert.match(bridgeLogText, /notes-lite storage\.get ok/);
+    assert.match(bridgeLogText, /notes-lite runtime\.not_real unknown_method/);
+    assert.match(bridgeLogText, /notes-lite notification\.toast permission_denied/);
+    assert.match(bridgeLogText, /notes-lite storage\.get permission_denied/);
+    assert.deepEqual(
+      Array.from(frame.contentWindow.__appErrors, (error) => error.code),
+      ["unknown_method", "permission_denied", "permission_denied"],
+    );
+  } finally {
+    harness.close();
+  }
+});
+
 async function mountFirstApp(harness) {
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
   vm.runInContext(runtimeSource, harness.parentContext);
@@ -221,7 +309,11 @@ function createRuntimeHarness(options = {}) {
     parentWindow.dispatch("message", event);
   };
 
-  const fetchState = { bridgeRequests: [], manifest: options.manifest ?? defaultRuntimeManifest() };
+  const fetchState = {
+    bridgeRequests: [],
+    manifest: options.manifest ?? defaultRuntimeManifest(),
+    manifestsById: options.manifestsById ?? null,
+  };
   const parentContext = vm.createContext({
     MessageChannel: HarnessMessageChannel,
     TextEncoder,
@@ -354,7 +446,7 @@ class FakeElement {
     this.listeners = new Map();
     this.queryChildren = new Map();
     this.tagName = tagName.toUpperCase();
-    this.textContent = "";
+    this._textContent = "";
   }
 
   set innerHTML(value) {
@@ -366,6 +458,15 @@ class FakeElement {
 
   get innerHTML() {
     return this.html || "";
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  get textContent() {
+    return this._textContent;
   }
 
   get classList() {
@@ -407,6 +508,11 @@ class FakeElement {
 }
 
 async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
+  const manifestMatch = url.match(/^\/webapps\/examples\/([^/]+)\/manifest\.json$/);
+  if (manifestMatch) {
+    const manifest = state.manifestsById?.get(manifestMatch[1]) ?? state.manifest ?? defaultRuntimeManifest();
+    return jsonResponse(manifest);
+  }
   if (url.endsWith("/manifest.json")) {
     return jsonResponse(state.manifest ?? defaultRuntimeManifest());
   }
