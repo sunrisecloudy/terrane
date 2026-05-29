@@ -24,7 +24,7 @@
 
 ## Zig core
 
-- [ ] Zig core builds.
+- [x] Zig core builds.
 - [x] Zig core tests pass.
 - [x] FFI API works.
 - [x] `core.step` accepts valid JSON event.
@@ -88,9 +88,9 @@
 
 ### Server
 
-- [ ] Server starts.
-- [ ] `/health` works.
-- [ ] `/core/step` works.
+- [x] Server starts.
+- [x] `/health` works.
+- [x] `/core/step` works.
 - [ ] Contract tests pass.
 
 ## Security
@@ -105,7 +105,7 @@
 
 ## Tests
 
-- [ ] Zig tests pass.
+- [x] Zig tests pass.
 - [x] Runtime unit tests pass.
 - [x] Package validator tests pass.
 - [x] Bridge contract tests pass.

@@ -123,10 +123,10 @@ fn argValueAlloc(allocator: std.mem.Allocator, flag: []const u8) !?[]u8 {
     while (index < args.len) : (index += 1) {
         if (std.mem.eql(u8, args[index], flag)) {
             if (index + 1 >= args.len) return error.MissingControlTokenFileValue;
-            return allocator.dupe(u8, args[index + 1]);
+            return try allocator.dupe(u8, args[index + 1]);
         }
         if (std.mem.startsWith(u8, args[index], flag) and args[index].len > flag.len and args[index][flag.len] == '=') {
-            return allocator.dupe(u8, args[index][flag.len + 1 ..]);
+            return try allocator.dupe(u8, args[index][flag.len + 1 ..]);
         }
     }
     return null;
@@ -2902,7 +2902,7 @@ fn uninstallWebappControl(allocator: std.mem.Allocator, app_id: []const u8, conf
     defer if (snapshot_id) |actual_snapshot_id| allocator.free(actual_snapshot_id);
 
     const cleared_storage_keys = try int64QueryDb(db, "SELECT COUNT(*) FROM app_storage WHERE app_id = ?", app_id);
-    try deleteRowsForApp(db, "DELETE FROM app_storage WHERE app_id = ?", app_id);
+    _ = try deleteRowsForApp(db, "DELETE FROM app_storage WHERE app_id = ?", app_id);
     try markAllAppVersionsStatus(db, app_id, "uninstalled");
     try markAppUninstalled(db, app_id);
     if (active_install_id) |active| {
@@ -4053,7 +4053,7 @@ fn platformRunRepairLoopControl(allocator: std.mem.Allocator, args: ?std.json.Va
         try appendRepairStepJson(allocator, &steps, &step_count, "platform.sign_webapp_package", "passed", signed);
 
         const install = installWebappPackage(allocator, package_root, true, trust_level) catch |err| switch (err) {
-            error.InvalidPackage => blk: {
+            error.InvalidWebappPackage => blk: {
                 const failed = try allocator.dupe(u8, "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_package\"}");
                 break :blk failed;
             },
@@ -4837,7 +4837,7 @@ fn firstUnlabeledControlSelectorAlloc(allocator: std.mem.Allocator, html: []cons
         if (name.len == 0) {
             const test_id = try htmlAttrValueAlloc(allocator, attrs, "data-testid");
             defer if (test_id) |actual| allocator.free(actual);
-            return controlSelectorAlloc(allocator, best_tag, test_id, id);
+            return try controlSelectorAlloc(allocator, best_tag, test_id, id);
         }
         cursor = open_end + 1;
         best_start = nextControlStart(html, tags[0..], cursor, &best_tag);
@@ -7809,8 +7809,8 @@ fn importBackupApps(value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []c
         const data_version = objectI64Any(app, "data_version", "dataVersion") orelse 1;
         const row_created_at = objectStringAny(app, "created_at", "createdAt") orelse created_at;
         const row_updated_at = objectStringAny(app, "updated_at", "updatedAt") orelse created_at;
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, app_id);
         bindText(statement, 2, name);
         bindText(statement, 3, status);
@@ -7849,8 +7849,8 @@ fn importBackupAppVersions(allocator: std.mem.Allocator, value: ?std.json.Value,
         defer allocator.free(manifest_json);
         const signature_json = try optionalJsonDocumentFieldAlloc(allocator, version, "signature_json", "signatureJson", "signature");
         defer if (signature_json) |json| allocator.free(json);
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, install_id);
         bindText(statement, 2, app_id);
         bindText(statement, 3, version_name);
@@ -7890,8 +7890,8 @@ fn importBackupAppFiles(allocator: std.mem.Allocator, value: ?std.json.Value, db
         const content = objectStringAny(file, "content_text", "contentText") orelse "";
         const generated_hash = try sha256PrefixedAlloc(allocator, content);
         defer allocator.free(generated_hash);
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, install_id);
         bindText(statement, 2, path);
         bindText(statement, 3, content);
@@ -7920,8 +7920,8 @@ fn importBackupAppPermissions(value: ?std.json.Value, db: *sqlite.sqlite3) !usiz
     var count: usize = 0;
     for (permissions.array.items) |permission| {
         if (permission != .object) return error.InvalidBackup;
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, objectStringAny(permission, "install_id", "installId") orelse return error.InvalidBackup);
         bindText(statement, 2, objectStringAny(permission, "app_id", "appId") orelse "");
         bindText(statement, 3, objectString(permission, "permission") orelse return error.InvalidBackup);
@@ -7948,8 +7948,8 @@ fn importBackupAppStorage(allocator: std.mem.Allocator, value: ?std.json.Value, 
         if (storage != .object) return error.InvalidBackup;
         const value_json = try jsonDocumentFieldAlloc(allocator, storage, "value_json", "valueJson", "value", "null");
         defer allocator.free(value_json);
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, objectStringAny(storage, "app_id", "appId") orelse return error.InvalidBackup);
         bindText(statement, 2, objectString(storage, "key") orelse return error.InvalidBackup);
         bindText(statement, 3, value_json);
@@ -7981,8 +7981,8 @@ fn importBackupAppMigrations(allocator: std.mem.Allocator, value: ?std.json.Valu
         defer allocator.free(migration_json);
         const generated_hash = try sha256PrefixedAlloc(allocator, migration_json);
         defer allocator.free(generated_hash);
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, objectStringAny(migration, "migration_id", "migrationId") orelse fallback_id);
         bindText(statement, 2, objectStringAny(migration, "app_id", "appId") orelse return error.InvalidBackup);
         _ = sqlite.sqlite3_bind_int64(statement, 3, objectI64Any(migration, "from_data_version", "fromDataVersion") orelse return error.InvalidBackup);
@@ -8023,8 +8023,8 @@ fn importBackupInstallReports(allocator: std.mem.Allocator, value: ?std.json.Val
         defer if (compatibility_json) |json| allocator.free(json);
         const smoke_test_json = try optionalJsonDocumentFieldAlloc(allocator, report, "smoke_test_json", "smokeTestJson", "smokeTest");
         defer if (smoke_test_json) |json| allocator.free(json);
-        sqlite.sqlite3_reset(statement);
-        sqlite.sqlite3_clear_bindings(statement);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
         bindText(statement, 1, objectStringAny(report, "report_id", "reportId") orelse fallback_id);
         bindText(statement, 2, objectStringAny(report, "app_id", "appId") orelse return error.InvalidBackup);
         bindNullableText(statement, 3, objectStringAny(report, "install_id", "installId"));
@@ -8108,9 +8108,9 @@ fn optionalJsonDocumentFieldAlloc(
     camel_field: []const u8,
     value_field: []const u8,
 ) !?[]u8 {
-    if (objectStringAny(object, raw_field, camel_field)) |json| return allocator.dupe(u8, json);
+    if (objectStringAny(object, raw_field, camel_field)) |json| return try allocator.dupe(u8, json);
     if (object == .object) {
-        if (object.object.get(value_field)) |value| return jsonValueAlloc(allocator, value);
+        if (object.object.get(value_field)) |value| return try jsonValueAlloc(allocator, value);
     }
     return null;
 }

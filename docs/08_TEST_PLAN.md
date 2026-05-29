@@ -51,6 +51,7 @@ Low volume but required:
 - `core_free` releases output buffer.
 - Invalid JSON returns structured logical error.
 - Oversized input returns safe error.
+- Local Zig core build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/zig-core-build.test.js`, which executes `zig test` and builds native static/shared libraries. On macOS it pins `macos.15.0.0` to avoid the local Zig build-runner Darwin 26 linker issue.
 
 ### Property/fuzz tests
 
@@ -223,6 +224,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - `/health` returns success.
 - `/core/step` matches core contract.
 - Invalid request returns structured error.
+- Source compile/executable smoke runs with `node --test --no-warnings tools/fake-platform-host/test/server-zig-build.test.js`.
+- API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
 
 ## 8. End-to-end tests
 
