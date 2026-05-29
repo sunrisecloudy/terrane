@@ -200,6 +200,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - WebView content-process termination records a failed `runtime_sessions` row and shows a reload action.
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
+- Storage bridge open/prepare/step failures return structured `storage_error` responses.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Native bridge/control dispatch quarantines an active install after three `resource_budget_exceeded` bridge responses in 60 seconds and restores the previous active install.

@@ -3434,7 +3434,7 @@ final class DevControlPlane: @unchecked Sendable {
         reportStatus: String,
         approval: [String: Any]
     ) -> [String: Any]? {
-        guard let db = database.handle,
+        guard database.handle != nil,
               let appId = package.manifest["id"] as? String,
               let name = package.manifest["name"] as? String,
               let version = package.manifest["version"] as? String,
@@ -3547,7 +3547,15 @@ final class DevControlPlane: @unchecked Sendable {
 
         guard ok, executeSQL("COMMIT") else {
             _ = executeSQL("ROLLBACK")
-            _ = db
+            recordInstallStorageFailureReport(
+                appId: appId,
+                name: name,
+                installId: installId,
+                reportId: reportId,
+                dataVersion: dataVersion,
+                contentHash: hashes["contentHash"] ?? "",
+                createdAt: now
+            )
             return nil
         }
         return [
@@ -3557,6 +3565,53 @@ final class DevControlPlane: @unchecked Sendable {
             "version": version,
             "contentHash": hashes["contentHash"] ?? "",
         ]
+    }
+
+    private func recordInstallStorageFailureReport(
+        appId: String,
+        name: String,
+        installId: String,
+        reportId: String,
+        dataVersion: Int,
+        contentHash: String,
+        createdAt: String
+    ) {
+        guard executeSQL("BEGIN IMMEDIATE") else { return }
+        var ok = true
+        ok = ok && executePrepared(
+            """
+            INSERT INTO apps (id, name, status, data_version, created_at, updated_at)
+            VALUES (?, ?, 'disabled', ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            [appId, name, dataVersion, createdAt, createdAt]
+        )
+        ok = ok && executePrepared(
+            """
+            INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at)
+            VALUES (?, ?, NULL, 'failed', ?, '{}', '{}', '{}', '{}', ?, ?)
+            """,
+            [
+                reportId,
+                appId,
+                jsonBody([
+                    "ok": false,
+                    "errors": [
+                        [
+                            "code": "storage_error",
+                            "message": "Package install transaction failed while writing platform storage",
+                            "details": ["installId": installId],
+                        ],
+                    ],
+                ] as [String: Any]),
+                contentHash,
+                createdAt,
+            ]
+        )
+        if ok, executeSQL("COMMIT") {
+            return
+        }
+        _ = executeSQL("ROLLBACK")
     }
 
     private func updateApproval(for manifest: [String: Any]) -> [String: Any] {

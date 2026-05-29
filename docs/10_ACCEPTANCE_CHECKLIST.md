@@ -61,6 +61,7 @@
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
+- [x] Storage bridge failures return structured `storage_error` responses.
 - [x] WebView content-process termination records a failed runtime session and offers a reload action.
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.

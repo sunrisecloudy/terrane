@@ -148,6 +148,37 @@ struct NativeHostTests {
         #expect(jsonInt(details["limit"]) == 8)
     }
 
+    @Test("SQLite storage returns storage_error when the database cannot open")
+    func sqliteStorageReturnsStorageErrorWhenDatabaseCannotOpen() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-storage-error-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let context = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["storage.read", "storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "storage-error-test-mount"
+        )
+
+        let response = PlatformStorage(databaseURL: tempDir).set(BridgeRequest(
+            id: "storage-error",
+            method: "storage.set",
+            params: ["key": "notes-lite:note", "value": ["title": "Cannot write"]],
+            context: context
+        ))
+
+        #expect(!response.ok)
+        #expect(response.error?["code"] as? String == "storage_error")
+        #expect(response.error?["message"] as? String == "storage.set failed")
+        let details = try #require(response.error?["details"] as? [String: Any])
+        #expect(details["operation"] as? String == "storage.set")
+        #expect(details["appId"] as? String == "notes-lite")
+    }
+
     @Test("SQLite app registry rolls back active version and preserves storage")
     func sqliteAppRegistryRollsBackActiveVersion() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())

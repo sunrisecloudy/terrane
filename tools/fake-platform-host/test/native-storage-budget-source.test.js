@@ -25,6 +25,11 @@ test("native storage bridges enforce maxStorageBytes", () => {
     assert.match(source, /"projectedBytes": projectedBytes/, `${target} reports projected bytes`);
   }
 
+  assert.match(macosStorage, /code: "storage_error"/);
+  assert.match(macosStorage, /message: "\\\(operation\) failed"/);
+  assert.match(macosStorage, /guard sqlite3_prepare_v2\(db, sql, -1, &statement, nil\) == SQLITE_OK else/);
+  assert.match(macosStorage, /guard sqlite3_step\(statement\) == SQLITE_DONE else/);
+
   assert.match(androidStorage, /request\.context\.resourceBudget\.optInt\("maxStorageBytes", -1\)/);
   assert.match(androidStorage, /private fun storageBytesAfterSet\(appId: String, key: String, valueBytes: Int\): Int/);
   assert.match(androidStorage, /"resource_budget_exceeded"/);
@@ -43,6 +48,16 @@ test("native storage bridges enforce maxStorageBytes", () => {
   assert.match(linuxStorage, /"resource_budget_exceeded"/);
   assert.match(linuxStorage, /"Storage write exceeds manifest\.resourceBudget\.maxStorageBytes"/);
   assert.match(linuxStorage, /json_object_set_int_member\(details, "projectedBytes", projected_bytes\)/);
+});
+
+test("macOS install transaction storage failures write failed install reports", () => {
+  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+
+  assert.match(macosControl, /recordInstallStorageFailureReport\(/);
+  assert.match(macosControl, /INSERT OR REPLACE INTO app_install_reports/);
+  assert.match(macosControl, /VALUES \(\?, \?, NULL, 'failed'/);
+  assert.match(macosControl, /"code": "storage_error"/);
+  assert.match(macosControl, /Package install transaction failed while writing platform storage/);
 });
 
 function read(relativePath) {
