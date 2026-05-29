@@ -3,6 +3,7 @@ import Foundation
 import Network
 import Security
 import SQLite3
+import CryptoKit
 
 private let SQLITE_TRANSIENT_CONTROL = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -173,6 +174,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryCoreEvents(args: parsed.jsonBody ?? [:]))
         case ("POST", "/db/test-runs"):
             sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryTestRuns(args: parsed.jsonBody ?? [:]))
+        case ("POST", "/db/export-debug-bundle"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: exportDebugBundle())
         default:
             handleSessionRoute(connection, parsed, startedAt: startedAt)
         }
@@ -252,6 +255,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: dbQueryCoreEvents(args: args))
         case "db.query_test_runs":
             sendAccepted(connection, request, startedAt: startedAt, result: dbQueryTestRuns(args: args))
+        case "db.export_debug_bundle":
+            sendAccepted(connection, request, startedAt: startedAt, result: exportDebugBundle())
         default:
             sendRejected(
                 connection,
@@ -378,6 +383,11 @@ final class DevControlPlane: @unchecked Sendable {
                 columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"],
                 orderBy: "created_at"
             ),
+            "backup_exports": tableRows(
+                table: "backup_exports",
+                columns: ["export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"],
+                orderBy: "created_at"
+            ),
         ]
     }
 
@@ -439,6 +449,110 @@ final class DevControlPlane: @unchecked Sendable {
                 filterValue: args["appId"] as? String
             ),
         ]
+    }
+
+    private func exportDebugBundle() -> [String: Any] {
+        let exportId = "export_\(UUID().uuidString.lowercased())"
+        let createdAt = Self.now()
+        var document: [String: Any] = [
+            "exportId": exportId,
+            "type": "debug-bundle",
+            "createdAt": createdAt,
+            "runtimeVersion": "0.4.0",
+            "source": [
+                "platform": "macos",
+                "target": "macos",
+            ],
+            "apps": tableRows(
+                table: "apps",
+                columns: ["id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"],
+                orderBy: "id"
+            ),
+            "appVersions": tableRows(
+                table: "app_versions",
+                columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "content_hash", "status", "created_at", "activated_at"],
+                orderBy: "created_at"
+            ),
+            "appFiles": tableRows(
+                table: "app_files",
+                columns: ["install_id", "path", "content_text", "content_hash", "size_bytes", "mime", "created_at"],
+                orderBy: "path"
+            ),
+            "appPermissions": tableRows(
+                table: "app_permissions",
+                columns: ["install_id", "app_id", "permission", "requested", "approved", "approved_at", "reason"],
+                orderBy: "permission"
+            ),
+            "appStorage": tableRows(
+                table: "app_storage",
+                columns: ["app_id", "key", "value_json", "updated_at"],
+                orderBy: "updated_at"
+            ),
+            "appInstallReports": tableRows(
+                table: "app_install_reports",
+                columns: ["report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"],
+                orderBy: "created_at"
+            ),
+            "runtimeCapabilities": [
+                "platform": "macos",
+                "target": "macos",
+                "devMode": true,
+                "features": [
+                    "runtime.capabilities": true,
+                    "storage.get": true,
+                    "storage.set": true,
+                    "storage.remove": true,
+                    "storage.list": true,
+                    "dialog.openFile": true,
+                    "dialog.saveFile": true,
+                    "notification.toast": true,
+                    "network.request": true,
+                    "core.step": true,
+                ],
+            ],
+            "debug": [
+                "runtimeSessions": tableRows(
+                    table: "runtime_sessions",
+                    columns: ["session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"],
+                    orderBy: "started_at"
+                ),
+                "bridgeCalls": tableRows(
+                    table: "bridge_calls",
+                    columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"],
+                    orderBy: "created_at"
+                ),
+                "controlSessions": tableRows(
+                    table: "control_sessions",
+                    columns: ["control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"],
+                    orderBy: "started_at"
+                ),
+                "controlCommands": controlCommands(),
+                "coreEvents": tableRows(
+                    table: "core_events",
+                    columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+                    orderBy: "created_at"
+                ),
+                "coreActions": tableRows(
+                    table: "core_actions",
+                    columns: ["action_id", "event_id", "session_id", "app_id", "action_json", "created_at"],
+                    orderBy: "created_at"
+                ),
+                "runtimeSnapshots": tableRows(
+                    table: "runtime_snapshots",
+                    columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"],
+                    orderBy: "created_at"
+                ),
+                "testRuns": tableRows(
+                    table: "test_runs",
+                    columns: ["test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"],
+                    orderBy: "started_at"
+                ),
+            ],
+        ]
+        let contentHash = "sha256:\(sha256Hex(jsonBody(document)))"
+        document["contentHash"] = contentHash
+        recordBackupExport(document, contentHash: contentHash, createdAt: createdAt)
+        return document
     }
 
     private func send(_ connection: NWConnection, status: Int, body: String) {
@@ -572,6 +686,24 @@ final class DevControlPlane: @unchecked Sendable {
         return rows
     }
 
+    private func recordBackupExport(_ document: [String: Any], contentHash: String, createdAt: String) {
+        guard let db = database.handle else { return }
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at)
+        VALUES (?, 'debug-bundle', 'macos', '0.4.0', ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, document["exportId"] as? String ?? "")
+        bind(statement, 2, jsonBody(document))
+        bind(statement, 3, contentHash)
+        bind(statement, 4, createdAt)
+        sqlite3_step(statement)
+    }
+
     private func tableRows(
         table: String,
         columns: [String],
@@ -685,6 +817,8 @@ private struct HTTPRequest {
             return "db.query_core_events"
         case ("POST", "/db/test-runs"):
             return "db.query_test_runs"
+        case ("POST", "/db/export-debug-bundle"):
+            return "db.export_debug_bundle"
         case ("DELETE", _):
             return "platform.stop"
         case ("GET", let value) where value.hasSuffix("/snapshot"):
@@ -808,6 +942,11 @@ private func sqliteValue(_ statement: OpaquePointer?, _ index: Int32) -> Any {
     default:
         return columnText(statement, index)
     }
+}
+
+private func sha256Hex(_ text: String) -> String {
+    let digest = SHA256.hash(data: Data(text.utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
 }
 
 private func statusReason(_ status: Int) -> String {

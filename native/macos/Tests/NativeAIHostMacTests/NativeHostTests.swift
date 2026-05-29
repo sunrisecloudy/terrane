@@ -317,6 +317,27 @@ struct NativeHostTests {
         #expect(testRunsQuery.statusCode == 200)
         #expect(testRunsQuery.body.contains(#""rows":[]"#))
 
+        let debugBundle = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/db/export-debug-bundle")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(debugBundle.statusCode == 200)
+        #expect(debugBundle.body.contains(#""type":"debug-bundle""#))
+        #expect(debugBundle.body.contains(#""contentHash":"sha256:"#))
+        #expect(debugBundle.body.contains(#""appStorage":["#))
+        #expect(debugBundle.body.contains(#""runtimeCapabilities":{"#))
+
+        let debugBundleCommand = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"db.export_debug_bundle","args":{}}"#
+        )
+        #expect(debugBundleCommand.statusCode == 200)
+        #expect(debugBundleCommand.body.contains(#""debug":{"#))
+        #expect(try sqliteBackupExportCount(dbURL: dbURL) == 2)
+
         let ended = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)")!,
             method: "DELETE",
@@ -326,7 +347,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 12)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 14)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
@@ -520,6 +541,22 @@ private func sqliteControlCommandCount(dbURL: URL, decision: String) throws -> I
     sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM control_commands WHERE decision = ?", -1, &statement, nil)
     defer { sqlite3_finalize(statement) }
     sqlite3_bind_text(statement, 1, decision, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        return 0
+    }
+    return Int(sqlite3_column_int(statement, 0))
+}
+
+private func sqliteBackupExportCount(dbURL: URL) throws -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return 0
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_exports WHERE type = 'debug-bundle'", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
     guard sqlite3_step(statement) == SQLITE_ROW else {
         return 0
     }
