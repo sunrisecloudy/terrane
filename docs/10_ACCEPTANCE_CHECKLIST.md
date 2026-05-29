@@ -65,6 +65,7 @@
 - [x] Zig core step works.
 - [x] Debug dev control plane writes a 0600 token file, authenticates health/session/snapshot/events/command routes, and audits accepted/rejected requests.
 - [x] Debug dev control plane exposes `runtime.capabilities` through session and command routes.
+- [x] Debug dev control plane exposes DB-backed `runtime.resource_usage` through session and command routes.
 - [x] Debug dev control plane exposes safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Debug dev control plane exports `db.export_debug_bundle` artifacts and records them in `backup_exports`.
 

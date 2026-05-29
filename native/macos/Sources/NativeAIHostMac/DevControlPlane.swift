@@ -225,6 +225,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
         case ("GET", "capabilities"):
             sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: nil))
+        case ("GET", "resource-usage"):
+            sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: nil))
         case ("POST", "command"):
             handleCommand(connection, request, startedAt: startedAt)
         default:
@@ -248,6 +250,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
         case "runtime.capabilities":
             sendAccepted(connection, request, startedAt: startedAt, result: runtimeCapabilities(appId: args["appId"] as? String))
+        case "runtime.resource_usage":
+            sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: args["appId"] as? String))
         case "db.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
         case "db.query_app_storage":
@@ -362,6 +366,46 @@ final class DevControlPlane: @unchecked Sendable {
                 "maxPackageBytes": 1_048_576,
                 "maxFileBytes": 524_288,
             ],
+        ]
+    }
+
+    private func resourceUsage(appId: String?) -> [String: Any] {
+        let since = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60))
+        let storageSQL = appId == nil
+            ? "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage"
+            : "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?"
+        let bridgeSQL = appId == nil
+            ? "SELECT COUNT(*) FROM bridge_calls"
+            : "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?"
+        let coreSQL = appId == nil
+            ? "SELECT COUNT(*) FROM core_events"
+            : "SELECT COUNT(*) FROM core_events WHERE app_id = ?"
+        let packageSQL = appId == nil
+            ? "SELECT COALESCE(SUM(size_bytes), 0) FROM app_files"
+            : """
+            SELECT COALESCE(SUM(f.size_bytes), 0)
+            FROM app_files f
+            JOIN app_versions v ON v.install_id = f.install_id
+            WHERE v.app_id = ?
+            """
+        let networkSQL = appId == nil
+            ? "SELECT COUNT(*) FROM bridge_calls WHERE method = 'network.request' AND created_at >= ?"
+            : "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'network.request' AND created_at >= ?"
+        let logSQL = appId == nil
+            ? "SELECT COUNT(*) FROM bridge_calls WHERE method = 'app.log' AND created_at >= ?"
+            : "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'app.log' AND created_at >= ?"
+        let appValues = appId.map { [$0] } ?? []
+
+        return [
+            "appId": appId ?? NSNull(),
+            "storageBytes": scalarInt(storageSQL, values: appValues),
+            "bridgeCalls": scalarInt(bridgeSQL, values: appValues),
+            "coreEvents": scalarInt(coreSQL, values: appValues),
+            "networkRequestsLastMinute": scalarInt(networkSQL, values: appId.map { [$0, since] } ?? [since]),
+            "logLinesLastMinute": scalarInt(logSQL, values: appId.map { [$0, since] } ?? [since]),
+            "domNodes": 0,
+            "timers": 0,
+            "packageBytes": scalarInt(packageSQL, values: appValues),
         ]
     }
 
@@ -722,6 +766,22 @@ final class DevControlPlane: @unchecked Sendable {
         sqlite3_step(statement)
     }
 
+    private func scalarInt(_ sql: String, values: [String] = []) -> Int {
+        guard let db = database.handle else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            bind(statement, Int32(index + 1), value)
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return 0
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
     private func tableRows(
         table: String,
         columns: [String],
@@ -845,6 +905,8 @@ private struct HTTPRequest {
             return "runtime.event_log"
         case ("GET", let value) where value.hasSuffix("/capabilities"):
             return "runtime.capabilities"
+        case ("GET", let value) where value.hasSuffix("/resource-usage"):
+            return "runtime.resource_usage"
         default:
             return "\(method) \(path)"
         }

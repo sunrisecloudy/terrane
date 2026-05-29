@@ -268,6 +268,24 @@ struct NativeHostTests {
         #expect(capabilitiesCommand.body.contains(#""appId":"notes-lite""#))
         #expect(capabilitiesCommand.body.contains(#""storage.get":true"#))
 
+        let resourceUsageURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/resource-usage")!
+        let resourceUsage = try await httpRequest(resourceUsageURL, headers: ["X-Platform-Control-Token": token])
+        #expect(resourceUsage.statusCode == 200)
+        let resourceUsageResult = try jsonResult(resourceUsage)
+        #expect(jsonInt(resourceUsageResult["storageBytes"]) > 0)
+        #expect(jsonInt(resourceUsageResult["bridgeCalls"]) == 0)
+
+        let appResourceUsage = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.resource_usage","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(appResourceUsage.statusCode == 200)
+        let appResourceUsageResult = try jsonResult(appResourceUsage)
+        #expect(appResourceUsageResult["appId"] as? String == "notes-lite")
+        #expect(jsonInt(appResourceUsageResult["storageBytes"]) > 0)
+
         let dbSnapshotURL = URL(string: "http://127.0.0.1:\(port)/control/db/snapshot")!
         let dbSnapshot = try await httpRequest(
             dbSnapshotURL,
@@ -363,7 +381,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 16)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 18)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
@@ -610,6 +628,22 @@ private func httpRequest(
         statusCode: httpResponse.statusCode,
         body: String(data: data, encoding: .utf8) ?? ""
     )
+}
+
+private func jsonResult(_ response: HTTPTestResponse) throws -> [String: Any] {
+    let data = try #require(response.body.data(using: .utf8))
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    return try #require(object["result"] as? [String: Any])
+}
+
+private func jsonInt(_ value: Any?) -> Int {
+    if let value = value as? Int {
+        return value
+    }
+    if let value = value as? NSNumber {
+        return value.intValue
+    }
+    return 0
 }
 
 enum NativeHostTestError: Error, CustomStringConvertible {
