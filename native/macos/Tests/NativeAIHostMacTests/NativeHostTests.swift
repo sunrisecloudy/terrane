@@ -183,6 +183,30 @@ struct NativeHostTests {
         #expect(token.count == 43)
         #expect(try posixPermissions(at: tokenURL) == 0o600)
 
+        let registry = try PlatformAppRegistry(databaseURL: dbURL)
+        try registry.installVersion(
+            appId: "notes-lite",
+            name: "Notes Lite",
+            version: "0.1.0",
+            manifestJSON: #"{"id":"notes-lite","version":"0.1.0","dataVersion":1}"#,
+            contentHash: "control-hash",
+            installId: "install-control"
+        )
+        let storageContext = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "control-test-mount"
+        )
+        let storageSet = PlatformStorage(databaseURL: dbURL).set(BridgeRequest(
+            id: "control-seed",
+            method: "storage.set",
+            params: ["key": "notes-lite:control-note", "value": ["title": "Visible to db.query_app_storage"]],
+            context: storageContext
+        ))
+        #expect(storageSet.ok)
+
         let port = try #require(controlPlane.boundPort)
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
 
@@ -248,6 +272,51 @@ struct NativeHostTests {
         #expect(dbSnapshotCommand.statusCode == 200)
         #expect(dbSnapshotCommand.body.contains(#""app_storage":["#))
 
+        let storageQuery = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/db/app-storage")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"appId":"notes-lite"}"#
+        )
+        #expect(storageQuery.statusCode == 200)
+        #expect(storageQuery.body.contains("notes-lite:control-note"))
+
+        let appVersionsQuery = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"db.query_app_versions","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(appVersionsQuery.statusCode == 200)
+        #expect(appVersionsQuery.body.contains("install-control"))
+
+        let bridgeCallsQuery = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/db/bridge-calls")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"appId":"notes-lite"}"#
+        )
+        #expect(bridgeCallsQuery.statusCode == 200)
+        #expect(bridgeCallsQuery.body.contains(#""rows":[]"#))
+
+        let coreEventsQuery = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"db.query_core_events","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(coreEventsQuery.statusCode == 200)
+        #expect(coreEventsQuery.body.contains(#""rows":[]"#))
+
+        let testRunsQuery = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/db/test-runs")!,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"appId":"notes-lite"}"#
+        )
+        #expect(testRunsQuery.statusCode == 200)
+        #expect(testRunsQuery.body.contains(#""rows":[]"#))
+
         let ended = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)")!,
             method: "DELETE",
@@ -257,7 +326,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 7)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 12)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

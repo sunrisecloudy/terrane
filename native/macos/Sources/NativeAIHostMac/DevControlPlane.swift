@@ -163,6 +163,16 @@ final class DevControlPlane: @unchecked Sendable {
             handleCommand(connection, parsed, startedAt: startedAt)
         case ("POST", "/db/snapshot"):
             sendAccepted(connection, parsed, startedAt: startedAt, result: dbSnapshotResult())
+        case ("POST", "/db/app-storage"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryAppStorage(args: parsed.jsonBody ?? [:]))
+        case ("POST", "/db/app-versions"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryAppVersions(args: parsed.jsonBody ?? [:]))
+        case ("POST", "/db/bridge-calls"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryBridgeCalls(args: parsed.jsonBody ?? [:]))
+        case ("POST", "/db/core-events"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryCoreEvents(args: parsed.jsonBody ?? [:]))
+        case ("POST", "/db/test-runs"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryTestRuns(args: parsed.jsonBody ?? [:]))
         default:
             handleSessionRoute(connection, parsed, startedAt: startedAt)
         }
@@ -222,6 +232,7 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         let tool = body["tool"] as? String ?? ""
+        let args = body["args"] as? [String: Any] ?? [:]
         switch tool {
         case "platform.health":
             sendAccepted(connection, request, startedAt: startedAt, result: healthResult())
@@ -231,6 +242,16 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
         case "db.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
+        case "db.query_app_storage":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbQueryAppStorage(args: args))
+        case "db.query_app_versions":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbQueryAppVersions(args: args))
+        case "db.query_bridge_calls":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbQueryBridgeCalls(args: args))
+        case "db.query_core_events":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbQueryCoreEvents(args: args))
+        case "db.query_test_runs":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbQueryTestRuns(args: args))
         default:
             sendRejected(
                 connection,
@@ -356,6 +377,66 @@ final class DevControlPlane: @unchecked Sendable {
                 table: "runtime_snapshots",
                 columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"],
                 orderBy: "created_at"
+            ),
+        ]
+    }
+
+    private func dbQueryAppStorage(args: [String: Any]) -> [String: Any] {
+        [
+            "rows": tableRows(
+                table: "app_storage",
+                columns: ["app_id", "key", "value_json", "updated_at"],
+                orderBy: "updated_at",
+                filterColumn: "app_id",
+                filterValue: args["appId"] as? String
+            ),
+        ]
+    }
+
+    private func dbQueryAppVersions(args: [String: Any]) -> [String: Any] {
+        [
+            "rows": tableRows(
+                table: "app_versions",
+                columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"],
+                orderBy: "created_at",
+                filterColumn: "app_id",
+                filterValue: args["appId"] as? String
+            ),
+        ]
+    }
+
+    private func dbQueryBridgeCalls(args: [String: Any]) -> [String: Any] {
+        [
+            "rows": tableRows(
+                table: "bridge_calls",
+                columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"],
+                orderBy: "created_at",
+                filterColumn: "app_id",
+                filterValue: args["appId"] as? String
+            ),
+        ]
+    }
+
+    private func dbQueryCoreEvents(args: [String: Any]) -> [String: Any] {
+        [
+            "rows": tableRows(
+                table: "core_events",
+                columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+                orderBy: "created_at",
+                filterColumn: "app_id",
+                filterValue: args["appId"] as? String
+            ),
+        ]
+    }
+
+    private func dbQueryTestRuns(args: [String: Any]) -> [String: Any] {
+        [
+            "rows": tableRows(
+                table: "test_runs",
+                columns: ["test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"],
+                orderBy: "started_at",
+                filterColumn: "app_id",
+                filterValue: args["appId"] as? String
             ),
         ]
     }
@@ -491,14 +572,24 @@ final class DevControlPlane: @unchecked Sendable {
         return rows
     }
 
-    private func tableRows(table: String, columns: [String], orderBy: String) -> [[String: Any]] {
+    private func tableRows(
+        table: String,
+        columns: [String],
+        orderBy: String,
+        filterColumn: String? = nil,
+        filterValue: String? = nil
+    ) -> [[String: Any]] {
         guard let db = database.handle else { return [] }
         var statement: OpaquePointer?
-        let sql = "SELECT \(columns.joined(separator: ", ")) FROM \(table) ORDER BY \(orderBy) LIMIT 100"
+        let filterSQL = filterColumn != nil && filterValue != nil ? " WHERE \(filterColumn!) = ?" : ""
+        let sql = "SELECT \(columns.joined(separator: ", ")) FROM \(table)\(filterSQL) ORDER BY \(orderBy) LIMIT 100"
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             return []
         }
         defer { sqlite3_finalize(statement) }
+        if let filterValue {
+            bind(statement, 1, filterValue)
+        }
 
         var rows: [[String: Any]] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -584,6 +675,16 @@ private struct HTTPRequest {
             return "platform.launch"
         case ("POST", "/db/snapshot"):
             return "db.snapshot"
+        case ("POST", "/db/app-storage"):
+            return "db.query_app_storage"
+        case ("POST", "/db/app-versions"):
+            return "db.query_app_versions"
+        case ("POST", "/db/bridge-calls"):
+            return "db.query_bridge_calls"
+        case ("POST", "/db/core-events"):
+            return "db.query_core_events"
+        case ("POST", "/db/test-runs"):
+            return "db.query_test_runs"
         case ("DELETE", _):
             return "platform.stop"
         case ("GET", let value) where value.hasSuffix("/snapshot"):

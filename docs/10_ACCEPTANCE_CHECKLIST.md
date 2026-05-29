@@ -64,7 +64,7 @@
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.
 - [x] Debug dev control plane writes a 0600 token file, authenticates health/session/snapshot/events/command routes, and audits accepted/rejected requests.
-- [x] Debug dev control plane exposes safe `db.snapshot` inspection without arbitrary SQL.
+- [x] Debug dev control plane exposes safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 
 ### Android
 
