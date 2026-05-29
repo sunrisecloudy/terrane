@@ -174,6 +174,48 @@ test("remote stylesheet links and CSS imports are rejected", () => {
   assert.equal(importResult.errors.some((error) => error.code === "forbidden_css_import"), true);
 });
 
+test("stylesheet link must load plain styles.css exactly once", () => {
+  const missingStylesheet = copyExamplePackage("notes-lite");
+  const missingIndexPath = path.join(missingStylesheet, "index.html");
+  fs.writeFileSync(
+    missingIndexPath,
+    fs.readFileSync(missingIndexPath, "utf8").replace('<link rel="stylesheet" href="styles.css">', ""),
+  );
+  const missingResult = validatePackage(missingStylesheet);
+  assert.equal(missingResult.ok, false);
+  assert.equal(missingResult.errors.some((error) => error.code === "missing_stylesheet"), true);
+
+  const alternateStylesheet = copyExamplePackage("notes-lite");
+  const alternateIndexPath = path.join(alternateStylesheet, "index.html");
+  fs.writeFileSync(
+    alternateIndexPath,
+    fs.readFileSync(alternateIndexPath, "utf8").replace('href="styles.css"', 'href="theme.css"'),
+  );
+  const alternateResult = validatePackage(alternateStylesheet);
+  assert.equal(alternateResult.ok, false);
+  assert.equal(alternateResult.errors.some((error) => error.code === "forbidden_stylesheet_href"), true);
+
+  const duplicateStylesheet = copyExamplePackage("notes-lite");
+  const duplicateIndexPath = path.join(duplicateStylesheet, "index.html");
+  fs.writeFileSync(
+    duplicateIndexPath,
+    fs.readFileSync(duplicateIndexPath, "utf8").replace("</head>", '<link rel="stylesheet" href="styles.css"></head>'),
+  );
+  const duplicateResult = validatePackage(duplicateStylesheet);
+  assert.equal(duplicateResult.ok, false);
+  assert.equal(duplicateResult.errors.some((error) => error.code === "invalid_stylesheet_count"), true);
+
+  const nonPlainStylesheet = copyExamplePackage("notes-lite");
+  const nonPlainIndexPath = path.join(nonPlainStylesheet, "index.html");
+  fs.writeFileSync(
+    nonPlainIndexPath,
+    fs.readFileSync(nonPlainIndexPath, "utf8").replace('href="styles.css"', 'href="styles.css" media="print"'),
+  );
+  const nonPlainResult = validatePackage(nonPlainStylesheet);
+  assert.equal(nonPlainResult.ok, false);
+  assert.equal(nonPlainResult.errors.some((error) => error.code === "forbidden_stylesheet_attribute"), true);
+});
+
 test("inline styles and unsafe-inline style CSP are rejected", () => {
   const inlineStyle = copyExamplePackage("notes-lite");
   const inlineIndexPath = path.join(inlineStyle, "index.html");

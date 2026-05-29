@@ -455,6 +455,7 @@ function validateUniqueStringArray(value, code, message, errors, details = {}, a
 function validateHtml(source, errors) {
   validateCsp(source, errors);
   validateScriptTags(source, errors);
+  validateStylesheetLinks(source, errors);
   if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
     errors.push(issue("forbidden_inline_style", "generated apps must use styles.css instead of inline styles", {}));
   }
@@ -482,6 +483,17 @@ function validateHtml(source, errors) {
       errors.push(issue("forbidden_form_action", "generated app forms must not submit directly", { action }));
     }
   }
+  for (const match of source.matchAll(/<(button|input|select|textarea|a)\b([^>]*)>/gi)) {
+    const tag = match[1].toLowerCase();
+    const attrs = match[2] ?? "";
+    if (!/\bdata-testid\s*=/.test(attrs)) {
+      errors.push(issue("missing_testid", "Interactive HTML elements must declare data-testid", { tag }));
+    }
+  }
+}
+
+function validateStylesheetLinks(source, errors) {
+  let stylesheetCount = 0;
   for (const match of source.matchAll(/<link\b([^>]*)>/gi)) {
     const attrs = match[1] ?? "";
     const rel = htmlAttr(attrs, "rel") ?? "";
@@ -491,16 +503,27 @@ function validateHtml(source, errors) {
     const href = htmlAttr(attrs, "href") ?? "";
     if (/^https?:\/\//i.test(href)) {
       errors.push(issue("forbidden_remote_stylesheet", "remote stylesheets are forbidden", {}));
-    } else if (href !== "styles.css") {
+      continue;
+    }
+    if (href !== "styles.css") {
       errors.push(issue("forbidden_stylesheet_href", "index.html may only load styles.css", { href }));
+      continue;
+    }
+    stylesheetCount += 1;
+    const disallowedAttrs = htmlAttrNames(attrs).filter((name) => name !== "rel" && name !== "href");
+    if (disallowedAttrs.length > 0) {
+      errors.push(issue("forbidden_stylesheet_attribute", "styles.css link tag must only declare rel and href", {
+        attributes: disallowedAttrs,
+      }));
     }
   }
-  for (const match of source.matchAll(/<(button|input|select|textarea|a)\b([^>]*)>/gi)) {
-    const tag = match[1].toLowerCase();
-    const attrs = match[2] ?? "";
-    if (!/\bdata-testid\s*=/.test(attrs)) {
-      errors.push(issue("missing_testid", "Interactive HTML elements must declare data-testid", { tag }));
-    }
+
+  if (stylesheetCount === 0) {
+    errors.push(issue("missing_stylesheet", "index.html must load styles.css", {}));
+  } else if (stylesheetCount > 1) {
+    errors.push(issue("invalid_stylesheet_count", "index.html must load styles.css exactly once", {
+      count: stylesheetCount,
+    }));
   }
 }
 

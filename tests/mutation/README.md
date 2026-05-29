@@ -14,6 +14,7 @@ Required mutation categories:
 - `eval` or `new Function`;
 - inline styles or CSP that allows inline styles;
 - missing, duplicate, or non-plain `app.js` script tags;
+- missing, alternate, duplicate, or non-plain `styles.css` stylesheet links;
 - remote script or stylesheet;
 - invalid storage prefix;
 - invalid network policy;

@@ -1,0 +1,6 @@
+{
+  "id": "nonplain-stylesheet-link",
+  "description": "Generated app HTML must load styles.css with a plain stylesheet link tag.",
+  "expectedError": "forbidden_stylesheet_attribute",
+  "html": "<link rel=\"stylesheet\" href=\"styles.css\" media=\"print\">"
+}

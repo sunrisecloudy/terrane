@@ -1,0 +1,11 @@
+{
+  "id": "missing-stylesheet-link",
+  "description": "Generated app HTML must load styles.css.",
+  "expectedError": "missing_stylesheet",
+  "files": [
+    {
+      "path": "index.html",
+      "content": "<!doctype html><html><head><title>Missing stylesheet</title></head><body><main><button data-testid=\"go-button\">Go</button></main><script src=\"app.js\"></script></body></html>"
+    }
+  ]
+}
