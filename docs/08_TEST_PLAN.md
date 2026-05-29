@@ -481,6 +481,7 @@ If a generated app fails a micro-test, Codex should:
 - Modified permissions after signing fail mount.
 - `none-dev` signatures are accepted only on fake-host/dev mode.
 - Real native dev targets run signing path, not unsigned direct execution.
+- macOS dev-control package signing is covered by `tools/fake-platform-host/test/macos-signing-source.test.js` and `tools/fake-platform-host/test/macos-native-build.test.js`, which verify Ed25519 signature fields and install-report storage.
 
 ### Versioning/rollback tests
 

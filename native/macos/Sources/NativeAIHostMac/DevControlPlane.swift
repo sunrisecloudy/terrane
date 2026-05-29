@@ -66,6 +66,7 @@ final class DevControlPlane: @unchecked Sendable {
     private let database: PlatformDatabase
     private let databaseURL: URL?
     private let core = ZigCoreBridge()
+    private let signingKey = Curve25519.Signing.PrivateKey()
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
@@ -3197,23 +3198,45 @@ final class DevControlPlane: @unchecked Sendable {
         }
         let hashes = packageHashes(package)
         let trustLevel = args["trustLevel"] as? String ?? package.manifest["trust"].flatMap { ($0 as? [String: Any])?["level"] as? String } ?? "developer"
-        let signature: [String: Any] = [
-            "algorithm": "none-dev",
-            "keyId": "macos-dev-control",
-            "appId": package.manifest["id"] ?? NSNull(),
-            "appVersion": package.manifest["version"] ?? NSNull(),
-            "runtimeVersion": package.manifest["runtimeVersion"] ?? NSNull(),
-            "dataVersion": package.manifest["dataVersion"] ?? NSNull(),
+        let appId = package.manifest["id"] as? String ?? ""
+        let appVersion = package.manifest["version"] as? String ?? ""
+        let runtimeVersion = package.manifest["runtimeVersion"] as? String ?? ""
+        let dataVersion = intValue(package.manifest["dataVersion"]) ?? 1
+        let signedAt = Self.now()
+        let keyId = signingKeyId()
+        var signature: [String: Any] = [
+            "algorithm": "ed25519",
+            "keyId": keyId,
+            "appId": appId,
+            "appVersion": appVersion,
+            "runtimeVersion": runtimeVersion,
+            "dataVersion": dataVersion,
             "manifestHash": hashes["manifestHash"] ?? "",
             "contentHash": hashes["contentHash"] ?? "",
+            "permissionsHash": hashes["permissionsHash"] ?? "",
+            "policyHash": hashes["policyHash"] ?? "",
             "trustLevel": trustLevel,
-            "signedAt": Self.now(),
+            "signedAt": signedAt,
+            "signedBy": "macos-dev-control",
         ]
+        signature["signature"] = signPayload(signaturePayload(
+            appId: appId,
+            appVersion: appVersion,
+            dataVersion: dataVersion,
+            runtimeVersion: runtimeVersion,
+            trustLevel: trustLevel,
+            keyId: keyId,
+            manifestHash: hashes["manifestHash"] ?? "",
+            contentHash: hashes["contentHash"] ?? "",
+            permissionsHash: hashes["permissionsHash"] ?? "",
+            policyHash: hashes["policyHash"] ?? "",
+            signedAt: signedAt
+        ))
         return [
             "ok": package.errors.isEmpty,
             "appId": package.manifest["id"] ?? NSNull(),
             "version": package.manifest["version"] ?? NSNull(),
-            "keyId": "macos-dev-control",
+            "keyId": keyId,
             "signature": signature,
             "hashes": hashes,
             "errors": package.errors,
@@ -5057,12 +5080,57 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func packageHashes(_ package: PackageRead) -> [String: String] {
-        let manifestHash = "sha256:\(sha256Hex(package.manifestJSON))"
-        let content = package.files.map { "\($0.path):\($0.contentHash)" }.joined(separator: "\n")
+        let manifestHash = "sha256:\(sha256Hex(jsonString(package.manifest)))"
+        let content = package.files.map { "\($0.path)\n\($0.contentHash)\n" }.joined()
+        let permissions = (package.manifest["permissions"] as? [String] ?? []).sorted()
+        let policy: [String: Any] = [
+            "capabilities": package.manifest["capabilities"] ?? [:],
+            "networkPolicy": package.manifest["networkPolicy"] ?? [:],
+            "resourceBudget": package.manifest["resourceBudget"] ?? [:],
+        ]
         return [
             "manifestHash": manifestHash,
             "contentHash": "sha256:\(sha256Hex(content))",
+            "permissionsHash": "sha256:\(sha256Hex(jsonString(permissions)))",
+            "policyHash": "sha256:\(sha256Hex(jsonString(policy)))",
         ]
+    }
+
+    private func signingKeyId() -> String {
+        "platform-host:macos:\(sha256Hex(signingKey.publicKey.rawRepresentation).prefix(16))"
+    }
+
+    private func signPayload(_ payload: String) -> String {
+        (try? signingKey.signature(for: Data(payload.utf8)).base64EncodedString()) ?? ""
+    }
+
+    private func signaturePayload(
+        appId: String,
+        appVersion: String,
+        dataVersion: Int,
+        runtimeVersion: String,
+        trustLevel: String,
+        keyId: String,
+        manifestHash: String,
+        contentHash: String,
+        permissionsHash: String,
+        policyHash: String,
+        signedAt: String
+    ) -> String {
+        [
+            "native-ai-webapp/sig/v1",
+            appId,
+            appVersion,
+            String(dataVersion),
+            runtimeVersion,
+            trustLevel,
+            keyId,
+            manifestHash,
+            contentHash,
+            permissionsHash,
+            policyHash,
+            signedAt,
+        ].joined(separator: "\n")
     }
 
     private func bridgeMethods(in appJs: String) -> Set<String> {
@@ -5691,7 +5759,11 @@ private func accessibilityCheck(id: String, ok: Bool, message: String, selector:
 }
 
 private func sha256Hex(_ text: String) -> String {
-    let digest = SHA256.hash(data: Data(text.utf8))
+    sha256Hex(Data(text.utf8))
+}
+
+private func sha256Hex(_ data: Data) -> String {
+    let digest = SHA256.hash(data: data)
     return digest.map { String(format: "%02x", $0) }.joined()
 }
 

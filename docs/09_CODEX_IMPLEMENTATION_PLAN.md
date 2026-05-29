@@ -57,7 +57,7 @@ Deliverables (`tools/fake-platform-host/`):
 Acceptance:
 
 - `node tools/fake-platform-host` starts and serves `/health`.
-- All 5 examples install (signed via `algorithm = "none-dev"` in dev mode), enable, and pass their bundled smoke tests.
+- All 5 examples install (fake-host may use dev signing; real native dev hosts use local Ed25519 signing), enable, and pass their bundled smoke tests.
 - All bridge contract fixtures under `tests/fixtures/bridge/` pass.
 - The control plane refuses requests without `X-Platform-Control-Token`.
 

@@ -426,6 +426,26 @@ struct NativeHostTests {
         #expect(session.body.contains(controlPlane.controlSessionId))
 
         let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        let repoRoot = RuntimeResourceLocator.repoRootURL()
+        let signedPackage = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString([
+                "tool": "platform.sign_webapp_package",
+                "args": ["path": repoRoot.appendingPathComponent("webapps/examples/notes-lite").path],
+            ])
+        )
+        #expect(signedPackage.statusCode == 200)
+        let signedPackageResult = try jsonResult(signedPackage)
+        let signature = try #require(signedPackageResult["signature"] as? [String: Any])
+        #expect(signature["algorithm"] as? String == "ed25519")
+        #expect((signature["keyId"] as? String)?.hasPrefix("platform-host:macos:") == true)
+        #expect(signature["permissionsHash"] as? String != nil)
+        #expect(signature["policyHash"] as? String != nil)
+        let signatureText = try #require(signature["signature"] as? String)
+        #expect(!signatureText.isEmpty)
+
         let snapshotURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshot")!
         let snapshot = try await httpRequest(snapshotURL, headers: ["X-Platform-Control-Token": token])
         #expect(snapshot.statusCode == 200)
@@ -858,7 +878,6 @@ struct NativeHostTests {
         #expect(rollbackCommand.body.contains(#""activeInstallId":"install-control""#))
         #expect(rollbackCommand.body.contains(#""rolledBackInstallId":"install-control-v2""#))
 
-        let repoRoot = RuntimeResourceLocator.repoRootURL()
         let approvalPackageURL = repoRoot
             .appendingPathComponent("native/macos/.build/approval-update-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -934,6 +953,12 @@ struct NativeHostTests {
         #expect(pendingReport.statusCode == 200)
         #expect(pendingReport.body.contains(#""status":"requires-approval""#))
         #expect(pendingReport.body.contains(#""requiresUserApproval":true"#))
+        let pendingReportResult = try jsonResult(pendingReport)
+        let pendingReportBody = try #require(pendingReportResult["report"] as? [String: Any])
+        let pendingSecurity = try #require(pendingReportBody["security"] as? [String: Any])
+        let pendingSignature = try #require(pendingSecurity["signature"] as? [String: Any])
+        #expect(pendingSignature["algorithm"] as? String == "ed25519")
+        #expect((pendingSignature["signature"] as? String)?.isEmpty == false)
 
         let approveUpdate = try await httpRequest(
             commandURL,
