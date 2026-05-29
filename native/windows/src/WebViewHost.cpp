@@ -140,6 +140,43 @@ bool StorageSmokeResponseMatches(std::wstring const& response, std::wstring cons
   return std::wstring(stored.GetNamedString(L"smokeValue", L"").c_str()) == value;
 }
 
+bool StorageListResponseContains(std::wstring const& response, std::wstring const& key) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto result = parsed.GetNamedObject(L"result", json::JsonObject());
+  auto keysValue = result.GetNamedValue(L"keys", json::JsonValue::CreateNullValue());
+  if (keysValue.ValueType() != json::JsonValueType::Array) {
+    return false;
+  }
+  for (auto const& item : keysValue.GetArray()) {
+    if (item.ValueType() == json::JsonValueType::String && std::wstring(item.GetString().c_str()) == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool StorageGetResponseIsNull(std::wstring const& response) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto result = parsed.GetNamedObject(L"result", json::JsonObject());
+  auto storedValue = result.GetNamedValue(L"value", json::JsonValue::CreateBooleanValue(false));
+  return storedValue.ValueType() == json::JsonValueType::Null;
+}
+
+bool JsonResponseErrorCodeMatches(std::wstring const& response, std::wstring const& code) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto error = parsed.GetNamedObject(L"error", json::JsonObject());
+  return std::wstring(error.GetNamedString(L"code", L"").c_str()) == code;
+}
+
 std::wstring ScriptStringResult(PCWSTR resultObjectAsJson) {
   if (resultObjectAsJson == nullptr) {
     return L"";
@@ -306,6 +343,8 @@ void WebViewHost::RunSmoke() {
     RunStorageSmoke(false);
   } else if (action == L"core-step") {
     RunCoreSmoke();
+  } else if (action == L"fixed-bridge-surface") {
+    RunFixedBridgeSurfaceSmoke();
   } else if (action == L"bridge-storage-set") {
     RunWebBridgeStorageSmoke(true);
   } else if (action == L"bridge-storage-get") {
@@ -382,6 +421,84 @@ void WebViewHost::RunCoreSmoke() {
     return;
   }
   SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK");
+}
+
+void WebViewHost::RunFixedBridgeSurfaceSmoke() {
+  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  if (key.empty() || value.empty()) {
+    SmokeFailure(L"fixed bridge surface smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  auto requireOk = [this](std::wstring const& response) -> bool {
+    if (!JsonResponseOk(response)) {
+      SmokeFailure(response);
+      return false;
+    }
+    return true;
+  };
+
+  json::JsonObject setParams;
+  setParams.Insert(L"key", json::JsonValue::CreateStringValue(key));
+  json::JsonObject stored;
+  stored.Insert(L"smokeValue", json::JsonValue::CreateStringValue(value));
+  setParams.Insert(L"value", stored);
+  if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_storage_set", L"storage.set", setParams))) {
+    return;
+  }
+
+  json::JsonObject listParams;
+  listParams.Insert(L"prefix", json::JsonValue::CreateStringValue(L"notes-lite:"));
+  auto listResponse = BridgeCall(L"notes-lite", L"windows_smoke_fixed_storage_list", L"storage.list", listParams);
+  if (!JsonResponseOk(listResponse) || !StorageListResponseContains(listResponse, key)) {
+    SmokeFailure(listResponse);
+    return;
+  }
+
+  json::JsonObject removeParams;
+  removeParams.Insert(L"key", json::JsonValue::CreateStringValue(key));
+  if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_storage_remove", L"storage.remove", removeParams))) {
+    return;
+  }
+
+  json::JsonObject getParams;
+  getParams.Insert(L"key", json::JsonValue::CreateStringValue(key));
+  auto getResponse = BridgeCall(L"notes-lite", L"windows_smoke_fixed_storage_get_removed", L"storage.get", getParams);
+  if (!JsonResponseOk(getResponse) || !StorageGetResponseIsNull(getResponse)) {
+    SmokeFailure(getResponse);
+    return;
+  }
+
+  json::JsonObject notificationParams;
+  notificationParams.Insert(L"title", json::JsonValue::CreateStringValue(L"Native AI smoke"));
+  notificationParams.Insert(L"body", json::JsonValue::CreateStringValue(L"Fixed bridge surface smoke"));
+  if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_notification", L"notification.toast", notificationParams))) {
+    return;
+  }
+
+  json::JsonObject logParams;
+  logParams.Insert(L"level", json::JsonValue::CreateStringValue(L"info"));
+  logParams.Insert(L"message", json::JsonValue::CreateStringValue(L"Fixed bridge surface smoke"));
+  if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_app_log", L"app.log", logParams))) {
+    return;
+  }
+
+  json::JsonObject capabilitiesParams;
+  if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_capabilities", L"runtime.capabilities", capabilitiesParams))) {
+    return;
+  }
+
+  json::JsonObject networkParams;
+  networkParams.Insert(L"url", json::JsonValue::CreateStringValue(L"https://blocked.example.com/status"));
+  networkParams.Insert(L"method", json::JsonValue::CreateStringValue(L"GET"));
+  auto networkResponse = BridgeCall(L"api-dashboard", L"windows_smoke_fixed_network_denied", L"network.request", networkParams);
+  if (!JsonResponseErrorCodeMatches(networkResponse, L"network_policy_denied")) {
+    SmokeFailure(networkResponse);
+    return;
+  }
+
+  SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK");
 }
 
 void WebViewHost::RunWebBridgeStorageSmoke(bool setValue) {

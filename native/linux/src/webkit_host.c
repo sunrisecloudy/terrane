@@ -179,6 +179,52 @@ static gboolean storage_smoke_response_matches(const gchar *text, const gchar *v
   return matches;
 }
 
+static gboolean storage_list_response_contains(const gchar *text, const gchar *key) {
+  JsonParser *parser = json_parser_new();
+  gboolean matches = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    JsonObject *result = json_object_get_object_member(root, "result");
+    JsonArray *keys = result == NULL ? NULL : json_object_get_array_member(result, "keys");
+    if (keys != NULL) {
+      guint length = json_array_get_length(keys);
+      for (guint index = 0; index < length; ++index) {
+        if (g_strcmp0(json_array_get_string_element(keys, index), key) == 0) {
+          matches = TRUE;
+          break;
+        }
+      }
+    }
+  }
+  g_object_unref(parser);
+  return matches;
+}
+
+static gboolean storage_get_response_is_null(const gchar *text) {
+  JsonParser *parser = json_parser_new();
+  gboolean matches = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    JsonObject *result = json_object_get_object_member(root, "result");
+    JsonNode *value = result == NULL ? NULL : json_object_get_member(result, "value");
+    matches = value != NULL && json_node_get_node_type(value) == JSON_NODE_NULL;
+  }
+  g_object_unref(parser);
+  return matches;
+}
+
+static gboolean json_response_error_code_matches(const gchar *text, const gchar *code) {
+  JsonParser *parser = json_parser_new();
+  gboolean matches = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    JsonObject *error = json_object_get_object_member(root, "error");
+    matches = error != NULL && g_strcmp0(json_object_get_string_member_with_default(error, "code", ""), code) == 0;
+  }
+  g_object_unref(parser);
+  return matches;
+}
+
 static gchar *request_json(const gchar *id, const gchar *method, JsonNode *params) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -325,6 +371,141 @@ static void run_core_smoke(WebKitHost *host) {
   smoke_success(host, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK");
 }
 
+static gboolean require_smoke_ok(WebKitHost *host, const gchar *response) {
+  if (!json_response_ok(response)) {
+    smoke_failure(host, response);
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static void run_fixed_bridge_surface_smoke(WebKitHost *host) {
+  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  if (key == NULL || value == NULL) {
+    smoke_failure(host, "fixed bridge surface smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  JsonBuilder *set_builder = json_builder_new();
+  json_builder_begin_object(set_builder);
+  json_builder_set_member_name(set_builder, "key");
+  json_builder_add_string_value(set_builder, key);
+  json_builder_set_member_name(set_builder, "value");
+  json_builder_begin_object(set_builder);
+  json_builder_set_member_name(set_builder, "smokeValue");
+  json_builder_add_string_value(set_builder, value);
+  json_builder_end_object(set_builder);
+  json_builder_end_object(set_builder);
+  JsonNode *set_params = json_builder_get_root(set_builder);
+  g_autofree gchar *set_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_storage_set", "storage.set", set_params);
+  json_node_unref(set_params);
+  g_object_unref(set_builder);
+  if (!require_smoke_ok(host, set_response)) {
+    return;
+  }
+
+  JsonBuilder *list_builder = json_builder_new();
+  json_builder_begin_object(list_builder);
+  json_builder_set_member_name(list_builder, "prefix");
+  json_builder_add_string_value(list_builder, "notes-lite:");
+  json_builder_end_object(list_builder);
+  JsonNode *list_params = json_builder_get_root(list_builder);
+  g_autofree gchar *list_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_storage_list", "storage.list", list_params);
+  json_node_unref(list_params);
+  g_object_unref(list_builder);
+  if (!json_response_ok(list_response) || !storage_list_response_contains(list_response, key)) {
+    smoke_failure(host, list_response);
+    return;
+  }
+
+  JsonBuilder *remove_builder = json_builder_new();
+  json_builder_begin_object(remove_builder);
+  json_builder_set_member_name(remove_builder, "key");
+  json_builder_add_string_value(remove_builder, key);
+  json_builder_end_object(remove_builder);
+  JsonNode *remove_params = json_builder_get_root(remove_builder);
+  g_autofree gchar *remove_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_storage_remove", "storage.remove", remove_params);
+  json_node_unref(remove_params);
+  g_object_unref(remove_builder);
+  if (!require_smoke_ok(host, remove_response)) {
+    return;
+  }
+
+  JsonBuilder *get_builder = json_builder_new();
+  json_builder_begin_object(get_builder);
+  json_builder_set_member_name(get_builder, "key");
+  json_builder_add_string_value(get_builder, key);
+  json_builder_end_object(get_builder);
+  JsonNode *get_params = json_builder_get_root(get_builder);
+  g_autofree gchar *get_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_storage_get_removed", "storage.get", get_params);
+  json_node_unref(get_params);
+  g_object_unref(get_builder);
+  if (!json_response_ok(get_response) || !storage_get_response_is_null(get_response)) {
+    smoke_failure(host, get_response);
+    return;
+  }
+
+  JsonBuilder *notification_builder = json_builder_new();
+  json_builder_begin_object(notification_builder);
+  json_builder_set_member_name(notification_builder, "title");
+  json_builder_add_string_value(notification_builder, "Native AI smoke");
+  json_builder_set_member_name(notification_builder, "body");
+  json_builder_add_string_value(notification_builder, "Fixed bridge surface smoke");
+  json_builder_end_object(notification_builder);
+  JsonNode *notification_params = json_builder_get_root(notification_builder);
+  g_autofree gchar *notification_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_notification", "notification.toast", notification_params);
+  json_node_unref(notification_params);
+  g_object_unref(notification_builder);
+  if (!require_smoke_ok(host, notification_response)) {
+    return;
+  }
+
+  JsonBuilder *log_builder = json_builder_new();
+  json_builder_begin_object(log_builder);
+  json_builder_set_member_name(log_builder, "level");
+  json_builder_add_string_value(log_builder, "info");
+  json_builder_set_member_name(log_builder, "message");
+  json_builder_add_string_value(log_builder, "Fixed bridge surface smoke");
+  json_builder_end_object(log_builder);
+  JsonNode *log_params = json_builder_get_root(log_builder);
+  g_autofree gchar *log_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_app_log", "app.log", log_params);
+  json_node_unref(log_params);
+  g_object_unref(log_builder);
+  if (!require_smoke_ok(host, log_response)) {
+    return;
+  }
+
+  JsonBuilder *capabilities_builder = json_builder_new();
+  json_builder_begin_object(capabilities_builder);
+  json_builder_end_object(capabilities_builder);
+  JsonNode *capabilities_params = json_builder_get_root(capabilities_builder);
+  g_autofree gchar *capabilities_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_capabilities", "runtime.capabilities", capabilities_params);
+  json_node_unref(capabilities_params);
+  g_object_unref(capabilities_builder);
+  if (!require_smoke_ok(host, capabilities_response)) {
+    return;
+  }
+
+  JsonBuilder *network_builder = json_builder_new();
+  json_builder_begin_object(network_builder);
+  json_builder_set_member_name(network_builder, "url");
+  json_builder_add_string_value(network_builder, "https://blocked.example.com/status");
+  json_builder_set_member_name(network_builder, "method");
+  json_builder_add_string_value(network_builder, "GET");
+  json_builder_end_object(network_builder);
+  JsonNode *network_params = json_builder_get_root(network_builder);
+  g_autofree gchar *network_response = bridge_call(host, "api-dashboard", "linux_smoke_fixed_network_denied", "network.request", network_params);
+  json_node_unref(network_params);
+  g_object_unref(network_builder);
+  if (!json_response_error_code_matches(network_response, "network_policy_denied")) {
+    smoke_failure(host, network_response);
+    return;
+  }
+
+  smoke_success(host, "NATIVE_AI_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK");
+}
+
 static void maybe_finish_web_bridge_smoke(WebKitHost *host, const gchar *request_id, const gchar *response) {
   if (request_id == NULL || response == NULL) {
     return;
@@ -460,6 +641,8 @@ static void run_smoke(WebKitHost *host) {
     run_storage_smoke(host, FALSE);
   } else if (g_strcmp0(action, "core-step") == 0) {
     run_core_smoke(host);
+  } else if (g_strcmp0(action, "fixed-bridge-surface") == 0) {
+    run_fixed_bridge_surface_smoke(host);
   } else if (g_strcmp0(action, "bridge-storage-set") == 0) {
     run_web_bridge_storage_smoke(host, TRUE);
   } else if (g_strcmp0(action, "bridge-storage-get") == 0) {

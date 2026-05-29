@@ -21,6 +21,7 @@ class WebViewHost {
   void RunSmoke();
   void RunStorageSmoke(bool setValue);
   void RunCoreSmoke();
+  void RunFixedBridgeSurfaceSmoke();
   void RunWebBridgeStorageSmoke(bool setValue);
   void RunWebBridgeCoreSmoke();
   void RunRuntimeAppBridgeSmoke();
