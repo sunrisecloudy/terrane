@@ -1382,6 +1382,112 @@ struct NativeHostTests {
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 95)
     }
 
+    @Test("debug control bridge validates and budgets app.log")
+    func debugControlBridgeValidatesAndBudgetsAppLog() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-log-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let appId = "log-budget-app"
+
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let manifest: [String: Any] = [
+            "id": appId,
+            "name": "Log Budget App",
+            "version": "0.1.0",
+            "runtimeVersion": "0.1.0",
+            "entry": "index.html",
+            "permissions": ["app.log"],
+            "storagePrefix": "\(appId):",
+            "dataVersion": 1,
+            "capabilities": [
+                "required": [],
+                "optional": ["app.log"],
+            ],
+            "resourceBudget": [
+                "maxLogLinesPerMinute": 1,
+            ],
+            "networkPolicy": [
+                "allow": [],
+            ],
+        ]
+        let registry = try PlatformAppRegistry(databaseURL: dbURL)
+        try registry.installVersion(
+            appId: appId,
+            name: "Log Budget App",
+            version: "0.1.0",
+            manifestJSON: try jsonObjectString(manifest),
+            contentHash: "log-budget-hash",
+            installId: "install-log-budget"
+        )
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        let port = try #require(controlPlane.boundPort)
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        func callBridgeBody(method: String, params: [String: Any]) throws -> String {
+            try jsonObjectString([
+                "tool": "runtime.call_bridge",
+                "args": [
+                    "appId": appId,
+                    "method": method,
+                    "params": params,
+                ],
+            ])
+        }
+
+        let capabilities = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(method: "runtime.capabilities", params: [:])
+        )
+        #expect(capabilities.statusCode == 200)
+        #expect(capabilities.body.contains(#""maxLogLinesPerMinute":1"#))
+
+        let invalidLevel = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(method: "app.log", params: ["level": "verbose", "message": "Bad level"])
+        )
+        #expect(invalidLevel.statusCode == 200)
+        #expect(invalidLevel.body.contains(#""code":"invalid_request""#))
+        #expect(invalidLevel.body.contains("app.log level must be debug, info, warn, or error"))
+
+        let firstLog = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(method: "app.log", params: ["level": "info", "message": "First log"])
+        )
+        #expect(firstLog.statusCode == 200)
+        #expect(firstLog.body.contains(#""ok":true"#))
+
+        let secondLog = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try callBridgeBody(method: "app.log", params: ["level": "info", "message": "Second log"])
+        )
+        #expect(secondLog.statusCode == 200)
+        #expect(secondLog.body.contains(#""code":"resource_budget_exceeded""#))
+        #expect(secondLog.body.contains(#""budget":"maxLogLinesPerMinute""#))
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],

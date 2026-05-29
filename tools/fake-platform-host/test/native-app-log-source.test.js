@@ -10,6 +10,8 @@ test("native bridges validate and budget app.log", () => {
   const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
   const androidHost = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
   const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
+  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
+  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
@@ -33,6 +35,17 @@ test("native bridges validate and budget app.log", () => {
   assert.match(iosBridge, /bridgeCallCount\(appId: request\.context\.appId, method: "app\.log", seconds: 60\)/);
   assert.match(iosBridge, /for \(key, value\) in request\.context\.resourceBudget/);
   assert.match(iosBridge, /let resourceBudget: \[String: Int\]/);
+
+  assert.match(macosBridge, /private func appLog\(_ request: BridgeRequest\) -> BridgeResponse/);
+  assert.match(macosBridge, /app\.log level must be debug, info, warn, or error/);
+  assert.match(macosBridge, /app\.log requires message/);
+  assert.match(macosBridge, /resource_budget_exceeded/);
+  assert.match(macosBridge, /maxLogLinesPerMinute/);
+  assert.match(macosBridge, /bridgeCallCount\(appId: request\.context\.appId, method: "app\.log", seconds: 60\)/);
+  assert.match(macosBridge, /for \(key, value\) in request\.context\.resourceBudget/);
+  assert.match(macosBridge, /let resourceBudget: \[String: Int\]/);
+  assert.match(macosBridge, /metadata_json\)\n\s+VALUES \(\?, 'macos', 'macos', '0\.1\.0'/);
+  assert.match(macosControl, /resourceBudget: AppSandboxContext\.resourceBudget\(from: manifest\)/);
 
   assert.match(windowsBridge, /json::JsonObject WebBridge::AppLog\(BridgeRequest const& request\) const/);
   assert.match(windowsBridge, /app\.log level must be debug, info, warn, or error/);

@@ -577,7 +577,16 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func runtimeCapabilities(appId: String?) -> [String: Any] {
-        [
+        var limits: [String: Any] = [
+            "maxPackageBytes": 1_048_576,
+            "maxFileBytes": 524_288,
+        ]
+        if let appId {
+            for (key, value) in AppSandboxContext.resourceBudget(from: manifestForApp(appId)) {
+                limits[key] = value
+            }
+        }
+        return [
             "runtimeVersion": "0.1.0",
             "platform": "macos",
             "target": "macos",
@@ -598,10 +607,7 @@ final class DevControlPlane: @unchecked Sendable {
                 "runtime.capabilities": true,
                 "app.log": true,
             ],
-            "limits": [
-                "maxPackageBytes": 1_048_576,
-                "maxFileBytes": 524_288,
-            ],
+            "limits": limits,
         ]
     }
 
@@ -2676,6 +2682,7 @@ final class DevControlPlane: @unchecked Sendable {
             approvedPermissions: manifestPermissions(manifest),
             networkPolicy: NetworkPolicyRule.fromManifest(manifest),
             denyPrivateNetwork: manifestDenyPrivateNetwork(manifest),
+            resourceBudget: AppSandboxContext.resourceBudget(from: manifest),
             mountToken: controlSessionId
         )
         let request = BridgeRequest(id: requestId, method: method, params: params, context: context)
@@ -2724,14 +2731,49 @@ final class DevControlPlane: @unchecked Sendable {
         case "runtime.capabilities":
             return .success(id: request.id, result: runtimeCapabilities(appId: request.context.appId))
         case "app.log":
-            NSLog("Generated app log: \(request.params)")
-            return .success(id: request.id, result: ["ok": true])
+            return appLog(request)
         case "dialog.openFile", "dialog.saveFile":
             return mockedDialogResponse(request)
                 ?? .failure(id: request.id, code: "platform_unsupported", message: "\(request.method) requires an interactive macOS dialog")
         default:
             return .failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)")
         }
+    }
+
+    private func appLog(_ request: BridgeRequest) -> BridgeResponse {
+        guard let level = request.params["level"] as? String,
+              ["debug", "info", "warn", "error"].contains(level)
+        else {
+            return .failure(id: request.id, code: "invalid_request", message: "app.log level must be debug, info, warn, or error")
+        }
+        guard let message = request.params["message"] as? String, !message.isEmpty else {
+            return .failure(id: request.id, code: "invalid_request", message: "app.log requires message")
+        }
+        if let limit = request.context.resourceBudget["maxLogLinesPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, method: "app.log", seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+                    details: [
+                        "budget": "maxLogLinesPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        NSLog("Generated app log [\(level)]: \(message)")
+        return .success(id: request.id, result: ["ok": true])
+    }
+
+    private func bridgeCallCount(appId: String, method: String, seconds: Int) -> Int {
+        scalarInt(
+            "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND datetime(created_at) >= datetime('now', ?)",
+            values: [appId, method, "-\(seconds) seconds"]
+        )
     }
 
     private func mockedNetworkResponse(_ request: BridgeRequest) -> BridgeResponse? {
