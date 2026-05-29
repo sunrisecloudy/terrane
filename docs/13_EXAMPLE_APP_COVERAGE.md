@@ -9,7 +9,7 @@ This document is the normative coverage map for the five bundled generated apps 
 - Each app calls platform features only through `AppRuntime.call(method, params)`.
 - Each app declares every bridge permission it uses in `manifest.permissions` and `manifest.capabilities`.
 - Each app includes `dataVersion`, `resourceBudget`, `networkPolicy`, `trust`, `compatibility`, and App Store `contentRating`.
-- Each app has stable `data-testid` selectors for interactive controls; smoke tests may use selectors or DOM text, but user-facing interaction targets must stay testable.
+- Each app has stable `data-testid` selectors for interactive controls; smoke tests must use `data-testid` selectors or DOM text, and user-facing interaction targets must stay testable.
 
 ## App Matrix
 
@@ -30,10 +30,10 @@ This document is the normative coverage map for the five bundled generated apps 
 | `storage.remove` | Notes Lite clear-all path | Source fixture and package validation; targeted bridge fixture covers the response contract |
 | `storage.list` | Bridge fixture suite | Not required in a reference UI flow, but must stay covered by `tests/fixtures/bridge/valid-storage-list.json` |
 | `core.step` | Task Workbench, File Transformer, Core Replay Lab | Smoke tests assert `core.step`; Zig replay/unit tests verify deterministic core behavior |
-| `dialog.openFile` | File Transformer | Smoke test asserts open-file call with a dialog mock |
-| `dialog.saveFile` | File Transformer, Core Replay Lab | Smoke tests assert save-file calls with dialog mocks |
+| `dialog.openFile` | File Transformer | Smoke test asserts the bridge call; micro-tests/golden flows provide dialog mocks |
+| `dialog.saveFile` | File Transformer, Core Replay Lab | Smoke tests assert the bridge calls; micro-tests/golden flows provide dialog mocks |
 | `notification.toast` | All five apps | Smoke tests assert toast on state-changing paths |
-| `network.request` | API Dashboard | Smoke test asserts request against a manifest-allowed origin and network mock |
+| `network.request` | API Dashboard | Smoke test asserts the bridge call against manifest-allowed source code; micro-tests/golden flows provide network mocks |
 | `app.log` | Notes Lite and optional support in all manifests | Source fixture plus bridge contract; not every smoke path must assert a log line |
 | `runtime.capabilities` | Runtime/host contract, not generated app UI | Covered by runtime capability fixtures and host bridge tests |
 
