@@ -120,6 +120,7 @@ export function validatePackage(packageDir) {
 
   validateHtml(files.get("index.html"), errors);
   validateCss(files.get("styles.css"), errors, files);
+  validateSmokeTests(files.get("smoke-tests.json"), errors);
   const bridgeMethods = validateJs(files.get("app.js"), errors);
 
   if (manifest) {
@@ -684,6 +685,44 @@ function isForbiddenCssUrl(value, files) {
   if (isForbiddenHtmlUrl(trimmed)) return true;
   const packagePath = trimmed.split(/[?#]/, 1)[0];
   return !files.has(packagePath);
+}
+
+function validateSmokeTests(source, errors) {
+  if (!source) return;
+  let tests;
+  try {
+    tests = JSON.parse(source);
+  } catch (error) {
+    errors.push(issue("invalid_smoke_tests", "smoke-tests.json must parse as JSON", { message: error.message }));
+    return;
+  }
+  if (!Array.isArray(tests)) {
+    errors.push(issue("invalid_smoke_tests", "smoke-tests.json must be an array", {}));
+    return;
+  }
+  for (const testCase of tests) {
+    if (!testCase || typeof testCase !== "object" || Array.isArray(testCase)) {
+      errors.push(issue("invalid_smoke_tests", "Each smoke test must be an object", {}));
+      continue;
+    }
+    if (testCase.steps !== undefined && !Array.isArray(testCase.steps)) {
+      errors.push(issue("invalid_smoke_tests", "Smoke test steps must be an array", {}));
+      continue;
+    }
+    for (const step of testCase.steps ?? []) {
+      if (!step || typeof step !== "object" || Array.isArray(step)) {
+        errors.push(issue("invalid_smoke_tests", "Smoke test steps must be objects", {}));
+        continue;
+      }
+      if ("selector" in step && !isDataTestIdSelector(step.selector)) {
+        errors.push(issue("invalid_smoke_selector", "Smoke test selectors must use data-testid", { selector: step.selector }));
+      }
+    }
+  }
+}
+
+function isDataTestIdSelector(selector) {
+  return typeof selector === "string" && /^\[data-testid=(["'])[^"']+\1\]$/.test(selector.trim());
 }
 
 function validateJs(source, errors) {

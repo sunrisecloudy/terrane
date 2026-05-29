@@ -4,15 +4,15 @@
     "steps": [
       {
         "type": "click",
-        "selector": "#open"
+        "selector": "[data-testid=\"open-file-button\"]"
       },
       {
         "type": "click",
-        "selector": "#transform"
+        "selector": "[data-testid=\"transform-button\"]"
       },
       {
         "type": "click",
-        "selector": "#save"
+        "selector": "[data-testid=\"save-file-button\"]"
       }
     ],
     "expected": {

@@ -918,6 +918,8 @@ function checkServerStatic() {
     "\"forbidden_stylesheet_attribute\"",
     "fn validateServerCssPolicy",
     "\"forbidden_css_url\"",
+    "fn validateServerSmokeTestPolicy",
+    "\"invalid_smoke_selector\"",
     "fn validateServerJsPolicy",
     "\"forbidden_function_constructor\"",
     "\"forbidden_dynamic_import\"",

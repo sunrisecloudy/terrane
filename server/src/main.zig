@@ -2595,6 +2595,9 @@ fn collectWebappPackageErrors(
     if (findPackageFile(files, "styles.css")) |css| {
         try validateServerCssPolicy(allocator, css, files, errors);
     }
+    if (findPackageFile(files, "smoke-tests.json")) |smoke_tests| {
+        try validateServerSmokeTestPolicy(allocator, smoke_tests, errors);
+    }
     if (findPackageFile(files, "app.js")) |js| {
         try validateServerJsPolicy(allocator, manifest, js, errors);
     }
@@ -11363,6 +11366,44 @@ fn isCssIdentifierChar(char: u8) bool {
     return std.ascii.isAlphanumeric(char) or char == '-' or char == '_';
 }
 
+fn validateServerSmokeTestPolicy(
+    allocator: std.mem.Allocator,
+    smoke_tests: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, smoke_tests, .{}) catch {
+        try errors.append(allocator, "invalid_smoke_tests");
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .array) {
+        try errors.append(allocator, "invalid_smoke_tests");
+        return;
+    }
+    for (parsed.value.array.items) |test_case| {
+        if (test_case != .object) {
+            try errors.append(allocator, "invalid_smoke_tests");
+            continue;
+        }
+        const steps = test_case.object.get("steps") orelse continue;
+        if (steps != .array) {
+            try errors.append(allocator, "invalid_smoke_tests");
+            continue;
+        }
+        for (steps.array.items) |step| {
+            if (step != .object) {
+                try errors.append(allocator, "invalid_smoke_tests");
+                continue;
+            }
+            if (valueString(step.object.get("selector"))) |selector| {
+                if (selectorDataTestId(selector) == null) {
+                    try errors.append(allocator, "invalid_smoke_selector");
+                }
+            }
+        }
+    }
+}
+
 fn validateServerJsPolicy(
     allocator: std.mem.Allocator,
     manifest: std.json.Value,
@@ -12686,6 +12727,47 @@ test "server package validation rejects external html resources" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_external_resource\"") != null);
+}
+
+test "server package validation rejects brittle smoke selectors" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "smoke-selector-test",
+        \\    "name": "Smoke Selector Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "smoke-selector-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"styles.css\"><main><button id=\"go\" data-testid=\"go-button\">Go</button></main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"},
+        \\    {"path": "smoke-tests.json", "content": "[{\"name\":\"brittle\",\"steps\":[{\"type\":\"click\",\"selector\":\"#go\"}]}]"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"invalid_smoke_selector\"") != null);
 }
 
 test "server package validation requires a plain styles.css link" {

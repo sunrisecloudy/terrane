@@ -4,17 +4,17 @@
     "steps": [
       {
         "type": "fill",
-        "selector": "#title",
+        "selector": "[data-testid=\"task-title-input\"]",
         "value": "Implement bridge"
       },
       {
         "type": "select",
-        "selector": "#priority",
+        "selector": "[data-testid=\"task-priority-select\"]",
         "value": "high"
       },
       {
         "type": "click",
-        "selector": "#add"
+        "selector": "[data-testid=\"add-task-button\"]"
       }
     ],
     "expected": {

@@ -70,7 +70,7 @@ test("failing install smoke test quarantines new version and preserves active ve
         [
           {
             name: "broken selector",
-            steps: [{ type: "click", selector: "#missing-control" }],
+            steps: [{ type: "click", selector: "[data-testid=\"missing-control\"]" }],
             expected: { textIncludes: "No notes yet" },
           },
         ],

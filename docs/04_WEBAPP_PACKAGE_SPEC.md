@@ -182,9 +182,9 @@ Disallowed:
   {
     "name": "creates a note",
     "steps": [
-      { "type": "click", "selector": "#new-note" },
-      { "type": "fill", "selector": "#note-title", "value": "Hello" },
-      { "type": "click", "selector": "#save-note" }
+      { "type": "click", "selector": "[data-testid=\"new-note-button\"]" },
+      { "type": "fill", "selector": "[data-testid=\"note-title-input\"]", "value": "Hello" },
+      { "type": "click", "selector": "[data-testid=\"save-note-button\"]" }
     ],
     "expected": {
       "textIncludes": "Hello",
@@ -194,7 +194,7 @@ Disallowed:
 ]
 ```
 
-Step vocabulary is a strict subset of the micro-test vocabulary in docs/15 so that the same runner can execute both. Selectors must prefer `data-testid` (see docs/15).
+Step vocabulary is a strict subset of the micro-test vocabulary in docs/15 so that the same runner can execute both. Selectors must use `data-testid` (see docs/15).
 
 Relationship to `tests/micro/*.microtest.json`:
 

@@ -11,21 +11,21 @@
     "steps": [
       {
         "type": "click",
-        "selector": "#new-note"
+        "selector": "[data-testid=\"new-note-button\"]"
       },
       {
         "type": "fill",
-        "selector": "#note-title",
+        "selector": "[data-testid=\"note-title-input\"]",
         "value": "Hello"
       },
       {
         "type": "fill",
-        "selector": "#note-body",
+        "selector": "[data-testid=\"note-body-input\"]",
         "value": "World"
       },
       {
         "type": "click",
-        "selector": "#save-note"
+        "selector": "[data-testid=\"save-note-button\"]"
       }
     ],
     "expected": {

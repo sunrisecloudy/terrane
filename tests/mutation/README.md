@@ -15,6 +15,7 @@ Required mutation categories:
 - inline styles or CSP that allows inline styles;
 - missing, duplicate, or non-plain `app.js` script tags;
 - missing, alternate, duplicate, or non-plain `styles.css` stylesheet links;
+- smoke tests using selectors other than `data-testid`;
 - remote script, stylesheet, resource hint, or HTML resource URL;
 - CSS `url()` references to missing package files;
 - invalid storage prefix;

@@ -41,7 +41,7 @@
 - [x] API Dashboard loads.
 - [x] Core Replay Lab loads.
 - [x] Each app declares permissions.
-- [x] Each app has smoke tests.
+- [x] Each app has smoke tests using `data-testid` selectors.
 - [x] Each app uses only `AppRuntime.call`.
 
 ## Platform shells

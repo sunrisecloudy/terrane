@@ -4,7 +4,7 @@
     "steps": [
       {
         "type": "click",
-        "selector": "#send"
+        "selector": "[data-testid=\"refresh-status-button\"]"
       }
     ],
     "expected": {

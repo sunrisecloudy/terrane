@@ -4,11 +4,11 @@
     "steps": [
       {
         "type": "click",
-        "selector": "#send"
+        "selector": "[data-testid=\"send-event-button\"]"
       },
       {
         "type": "click",
-        "selector": "#export"
+        "selector": "[data-testid=\"export-fixture-button\"]"
       }
     ],
     "expected": {

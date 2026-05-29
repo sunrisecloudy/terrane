@@ -245,6 +245,14 @@ test(
         assert.equal(externalResource.status, 200);
         assert.equal(externalResource.body.ok, false);
         assert.equal(externalResource.body.errors.includes("forbidden_external_resource"), true);
+
+        const brittleSmoke = packageForApp("notes-lite");
+        const smokeFile = brittleSmoke.files.find((file) => file.path === "smoke-tests.json");
+        smokeFile.content = JSON.stringify([{ name: "brittle selector", steps: [{ type: "click", selector: "#new-note" }] }]);
+        const smokeSelector = await validateWebappPackage(started.url, brittleSmoke);
+        assert.equal(smokeSelector.status, 200);
+        assert.equal(smokeSelector.body.ok, false);
+        assert.equal(smokeSelector.body.errors.includes("invalid_smoke_selector"), true);
       } finally {
         await stopServer(started);
       }

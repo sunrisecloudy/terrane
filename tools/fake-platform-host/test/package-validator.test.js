@@ -206,6 +206,18 @@ test("resource hint links are rejected", () => {
   assert.equal(result.errors.some((error) => error.code === "forbidden_resource_hint"), true);
 });
 
+test("smoke test selectors must use data-testid", () => {
+  const dir = copyExamplePackage("notes-lite");
+  fs.writeFileSync(
+    path.join(dir, "smoke-tests.json"),
+    JSON.stringify([{ name: "brittle id selector", steps: [{ type: "click", selector: "#new-note" }] }], null, 2),
+  );
+
+  const result = validatePackage(dir);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.code === "invalid_smoke_selector"), true);
+});
+
 test("external HTML resource URLs are rejected", () => {
   const cases = [
     '<img src="https://tracker.example/pixel.png" alt="">',
