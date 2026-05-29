@@ -792,6 +792,8 @@ function checkServerStatic() {
     "fn isKnownPackagePermission",
     "\"unknown_permission\"",
     "fn validateServerResourceBudget",
+    "fn validateServerPackageBudget",
+    "\"resource_budget_exceeded\"",
     "fn manifestPermissionsContain",
     "fn validateServerNetworkPolicy",
     "\"invalid_network_origin\"",

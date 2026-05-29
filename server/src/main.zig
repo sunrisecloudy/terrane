@@ -2541,6 +2541,7 @@ fn collectWebappPackageErrors(
     }
     if (manifest.object.get("resourceBudget")) |resource_budget| {
         try validateServerResourceBudget(allocator, resource_budget, errors);
+        try validateServerPackageBudget(allocator, files, resource_budget, errors);
     }
     if (manifest.object.get("networkPolicy")) |network_policy| {
         try validateServerNetworkPolicy(allocator, network_policy, errors);
@@ -10146,6 +10147,31 @@ fn validateServerResourceBudget(
     }
 }
 
+fn validateServerPackageBudget(
+    allocator: std.mem.Allocator,
+    files: std.json.Value,
+    resource_budget: std.json.Value,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    if (files != .array or resource_budget != .object) return;
+
+    const max_file_bytes = valueI64(resource_budget.object.get("maxFileBytes"));
+    const max_package_bytes = valueI64(resource_budget.object.get("maxPackageBytes"));
+    var package_bytes: i64 = 0;
+    for (files.array.items) |file| {
+        if (file != .object) continue;
+        const content = valueString(file.object.get("content")) orelse continue;
+        const file_bytes = @as(i64, @intCast(content.len));
+        package_bytes += file_bytes;
+        if (max_file_bytes) |limit| {
+            if (limit >= 0 and file_bytes > limit) try errors.append(allocator, "resource_budget_exceeded");
+        }
+    }
+    if (max_package_bytes) |limit| {
+        if (limit >= 0 and package_bytes > limit) try errors.append(allocator, "resource_budget_exceeded");
+    }
+}
+
 fn validateServerNetworkPolicy(
     allocator: std.mem.Allocator,
     network_policy: std.json.Value,
@@ -10832,6 +10858,46 @@ test "server package validation rejects bridge calls without manifest permission
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"missing_permission\"") != null);
+}
+
+test "server package validation rejects package files over resource budget" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "budget-test",
+        \\    "name": "Budget Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "budget-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 8
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Budget test</main>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"resource_budget_exceeded\"") != null);
 }
 
 test "notification toast levels follow runtime spec" {
