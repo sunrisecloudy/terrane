@@ -187,6 +187,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Storage persists across relaunch.
 - Core step returns real Zig output.
 - Permission denied path works.
+- Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local simulator build/package smoke runs with `node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
 - Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
 
@@ -210,6 +211,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Storage persists.
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
+- Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
 - Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
 

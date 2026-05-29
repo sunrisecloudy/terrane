@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.os.SystemClock
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -97,8 +98,59 @@ class NativeBridge(
             "network.request" -> respondWithLog(network.request(request))
             "core.step" -> respondWithLog(core.step(request))
             "runtime.capabilities" -> respondWithLog(BridgeResponse.success(request.id, capabilities(request)).toString())
-            "app.log" -> respondWithLog(BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString())
+            "app.log" -> respondWithLog(appLog(request))
             else -> respondWithLog(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
+        }
+    }
+
+    private fun appLog(request: BridgeRequest): String {
+        val level = request.params.opt("level")
+        if (level !is String || level !in setOf("debug", "info", "warn", "error")) {
+            return BridgeResponse.failure(
+                request.id,
+                "invalid_request",
+                "app.log level must be debug, info, warn, or error",
+            ).toString()
+        }
+        val message = request.params.opt("message")
+        if (message !is String || message.isEmpty()) {
+            return BridgeResponse.failure(request.id, "invalid_request", "app.log requires message").toString()
+        }
+        val limit = request.context.resourceBudget.optInt("maxLogLinesPerMinute", -1)
+        if (limit >= 0) {
+            val current = bridgeCallCount(request.context.appId, "app.log", seconds = 60)
+            if (current >= limit) {
+                return BridgeResponse.failure(
+                    request.id,
+                    "resource_budget_exceeded",
+                    "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+                    JSONObject(
+                        mapOf(
+                            "budget" to "maxLogLinesPerMinute",
+                            "current" to current,
+                            "max" to limit,
+                            "limit" to limit,
+                        ),
+                    ),
+                ).toString()
+            }
+        }
+        val line = "Generated app log [${request.context.appId}] $message"
+        when (level) {
+            "debug" -> Log.d("NativeAIPlatformAppLog", line)
+            "info" -> Log.i("NativeAIPlatformAppLog", line)
+            "warn" -> Log.w("NativeAIPlatformAppLog", line)
+            "error" -> Log.e("NativeAIPlatformAppLog", line)
+        }
+        return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString()
+    }
+
+    private fun bridgeCallCount(appId: String, method: String, seconds: Int): Int {
+        database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND datetime(created_at) >= datetime('now', ?)",
+            arrayOf(appId, method, "-$seconds seconds"),
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getInt(0) else 0
         }
     }
 
@@ -240,7 +292,10 @@ class NativeBridge(
                     "app.log" to true,
                 ),
             ),
-            "limits" to JSONObject(mapOf("maxPackageBytes" to 1_048_576, "maxFileBytes" to 524_288)),
+            "limits" to JSONObject(
+                mapOf("maxPackageBytes" to 1_048_576, "maxFileBytes" to 524_288) +
+                    request.context.resourceBudget.toMap(),
+            ),
         ),
     )
 }
@@ -251,8 +306,12 @@ data class AppSandboxContext(
     val approvedPermissions: Set<String>,
     val networkPolicy: List<NetworkPolicyRule> = emptyList(),
     val denyPrivateNetwork: Boolean = true,
+    val resourceBudget: JSONObject = JSONObject(),
     val mountToken: String? = null,
 )
+
+private fun JSONObject.toMap(): Map<String, Any> =
+    keys().asSequence().associateWith { key -> opt(key) }
 
 class BridgeRequest(body: JSONObject, val context: AppSandboxContext) {
     val id: String? = body.optString("id").ifBlank { null }

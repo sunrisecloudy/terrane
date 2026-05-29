@@ -122,6 +122,13 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "core.step":
             reply(core.step(request))
         case "runtime.capabilities":
+            var limits: [String: Any] = [
+                "maxPackageBytes": 1_048_576,
+                "maxFileBytes": 524_288
+            ]
+            for (key, value) in request.context.resourceBudget {
+                limits[key] = value
+            }
             reply(.success(id: request.id, result: [
                 "platform": "ios",
                 "target": "ios-simulator",
@@ -143,17 +150,56 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "runtime.capabilities": true,
                     "app.log": true
                 ],
-                "limits": [
-                    "maxPackageBytes": 1_048_576,
-                    "maxFileBytes": 524_288
-                ]
+                "limits": limits
             ]))
         case "app.log":
-            NSLog("Generated app log: \(request.params)")
-            reply(.success(id: request.id, result: ["ok": true]))
+            reply(appLog(request))
         default:
             reply(.failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)"))
         }
+    }
+
+    private func appLog(_ request: BridgeRequest) -> BridgeResponse {
+        guard let level = request.params["level"] as? String,
+              ["debug", "info", "warn", "error"].contains(level)
+        else {
+            return .failure(id: request.id, code: "invalid_request", message: "app.log level must be debug, info, warn, or error")
+        }
+        guard let message = request.params["message"] as? String, !message.isEmpty else {
+            return .failure(id: request.id, code: "invalid_request", message: "app.log requires message")
+        }
+        if let limit = request.context.resourceBudget["maxLogLinesPerMinute"] {
+            let current = bridgeCallCount(appId: request.context.appId, method: "app.log", seconds: 60)
+            if current >= limit {
+                return .failure(
+                    id: request.id,
+                    code: "resource_budget_exceeded",
+                    message: "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+                    details: [
+                        "budget": "maxLogLinesPerMinute",
+                        "current": current,
+                        "max": limit,
+                        "limit": limit
+                    ]
+                )
+            }
+        }
+        NSLog("Generated app log [\(level)]: \(message)")
+        return .success(id: request.id, result: ["ok": true])
+    }
+
+    private func bridgeCallCount(appId: String, method: String, seconds: Int) -> Int {
+        guard let db = storage.databaseHandle else { return 0 }
+        let sql = "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND datetime(created_at) >= datetime('now', ?)"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, method)
+        bind(statement, 3, "-\(seconds) seconds")
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
     }
 
     private func recordBridgeCall(request: BridgeRequest, response: BridgeResponse, startedAt: Date) {
@@ -324,6 +370,7 @@ struct AppSandboxContext {
     let approvedPermissions: Set<String>
     let networkPolicy: [NetworkPolicyRule]
     let denyPrivateNetwork: Bool
+    let resourceBudget: [String: Int]
     let mountToken: String?
 
     @MainActor
@@ -336,6 +383,7 @@ struct AppSandboxContext {
         self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
         self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
         self.denyPrivateNetwork = AppSandboxContext.denyPrivateNetwork(from: manifest)
+        self.resourceBudget = AppSandboxContext.resourceBudget(from: manifest)
         self.mountToken = envelope.mountToken
     }
 
@@ -368,6 +416,19 @@ struct AppSandboxContext {
     private static func denyPrivateNetwork(from manifest: [String: Any]) -> Bool {
         guard let policy = manifest["networkPolicy"] as? [String: Any] else { return true }
         return (policy["denyPrivateNetwork"] as? Bool) ?? true
+    }
+
+    private static func resourceBudget(from manifest: [String: Any]) -> [String: Int] {
+        guard let budget = manifest["resourceBudget"] as? [String: Any] else { return [:] }
+        var normalized: [String: Int] = [:]
+        for (key, value) in budget {
+            if let intValue = value as? Int {
+                normalized[key] = intValue
+            } else if let number = value as? NSNumber {
+                normalized[key] = number.intValue
+            }
+        }
+        return normalized
     }
 }
 

@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
             approvedPermissions = manifest.optJSONArray("permissions").toStringSet { it },
             networkPolicy = NetworkPolicyRule.fromManifest(manifest),
             denyPrivateNetwork = manifest.optJSONObject("networkPolicy")?.optBoolean("denyPrivateNetwork", true) ?: true,
+            resourceBudget = manifest.optJSONObject("resourceBudget") ?: JSONObject(),
         )
     }
 
