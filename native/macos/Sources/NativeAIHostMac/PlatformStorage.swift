@@ -2,19 +2,11 @@ import Foundation
 import SQLite3
 
 final class PlatformStorage {
-    private var db: OpaquePointer?
-    private let configuredDatabaseURL: URL?
+    private let database: PlatformDatabase
+    private var db: OpaquePointer? { database.handle }
 
     init(databaseURL: URL? = nil) {
-        self.configuredDatabaseURL = databaseURL
-        let url = resolvedDatabaseURL()
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        sqlite3_open(url.path, &db)
-        sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));", nil, nil, nil)
-    }
-
-    deinit {
-        sqlite3_close(db)
+        self.database = PlatformDatabase(databaseURL: databaseURL)
     }
 
     func get(_ request: BridgeRequest) -> BridgeResponse {
@@ -46,6 +38,7 @@ final class PlatformStorage {
             return storagePrefixFailure(request, key: key)
         }
         let appId = request.context.appId
+        ensureAppRow(appId)
         let value = encodeJson(request.params["value"] ?? NSNull())
         let sql = "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at"
         var statement: OpaquePointer?
@@ -98,14 +91,6 @@ final class PlatformStorage {
         return .success(id: request.id, result: ["keys": keys])
     }
 
-    private func resolvedDatabaseURL() -> URL {
-        if let configuredDatabaseURL {
-            return configuredDatabaseURL
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
-    }
-
     private func storagePrefixFailure(_ request: BridgeRequest, key: String) -> BridgeResponse {
         .failure(
             id: request.id,
@@ -113,6 +98,19 @@ final class PlatformStorage {
             message: "Storage key must begin with \(request.context.storagePrefix)",
             details: ["key": key, "prefix": request.context.storagePrefix, "appId": request.context.appId]
         )
+    }
+
+    private func ensureAppRow(_ appId: String) {
+        let sql = "INSERT OR IGNORE INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', 1, ?, ?)"
+        let now = ISO8601DateFormatter().string(from: Date())
+        var statement: OpaquePointer?
+        sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, appId)
+        bind(statement, 3, now)
+        bind(statement, 4, now)
+        sqlite3_step(statement)
     }
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {

@@ -1,5 +1,6 @@
 import Foundation
 @testable import NativeAIHostMac
+import SQLite3
 import Testing
 import WebKit
 
@@ -65,6 +66,7 @@ struct NativeHostTests {
         let getResult = try #require(get.result as? [String: Any])
         let value = try #require(getResult["value"] as? [String: Any])
         #expect(value["title"] as? String == "First note")
+        #expect(try sqliteTableExists(dbURL: dbURL, table: "app_install_reports"))
 
         let denied = reopened.get(BridgeRequest(
             id: "denied",
@@ -319,6 +321,20 @@ struct NativeHostTests {
         )
         #expect(bridgeLogText.contains("notes-lite runtime.capabilities ok"))
     }
+}
+
+private func sqliteTableExists(dbURL: URL, table: String) throws -> Bool {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return false
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, table, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    return sqlite3_step(statement) == SQLITE_ROW
 }
 
 enum NativeHostTestError: Error, CustomStringConvertible {

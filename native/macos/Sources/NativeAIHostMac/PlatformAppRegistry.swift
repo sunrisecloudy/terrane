@@ -35,24 +35,17 @@ enum PlatformAppRegistryError: Error, Equatable {
 final class PlatformAppRegistry {
     typealias RollbackSmokeTest = (InstalledAppVersion) throws -> Void
 
-    private var db: OpaquePointer?
-    private let configuredDatabaseURL: URL?
+    private let database: PlatformDatabase
+    private var db: OpaquePointer? { database.handle }
     private let rollbackSmokeTest: RollbackSmokeTest
 
     init(databaseURL: URL? = nil, rollbackSmokeTest: @escaping RollbackSmokeTest = { _ in }) throws {
-        self.configuredDatabaseURL = databaseURL
+        self.database = PlatformDatabase(databaseURL: databaseURL)
         self.rollbackSmokeTest = rollbackSmokeTest
-        let url = resolvedDatabaseURL()
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard sqlite3_open(url.path, &db) == SQLITE_OK else {
+        guard db != nil else {
             throw PlatformAppRegistryError.sqlite("sqlite open failed")
         }
         try execute("PRAGMA foreign_keys = ON;")
-        try ensureSchema()
-    }
-
-    deinit {
-        sqlite3_close(db)
     }
 
     @discardableResult
@@ -269,58 +262,6 @@ final class PlatformAppRegistry {
         )
     }
 
-    private func ensureSchema() throws {
-        try execute(
-            """
-            CREATE TABLE IF NOT EXISTS apps (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'enabled' CHECK (status IN ('enabled','disabled','quarantined','uninstalled')),
-              active_install_id TEXT,
-              active_version TEXT,
-              data_version INTEGER NOT NULL DEFAULT 1,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS app_versions (
-              install_id TEXT PRIMARY KEY,
-              app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-              version TEXT NOT NULL,
-              runtime_version TEXT NOT NULL,
-              data_version INTEGER NOT NULL,
-              manifest_json TEXT NOT NULL,
-              manifest_hash TEXT NOT NULL,
-              content_hash TEXT NOT NULL,
-              signature_json TEXT,
-              trust_level TEXT NOT NULL DEFAULT 'user-generated',
-              status TEXT NOT NULL DEFAULT 'installed' CHECK (status IN ('installed','enabled','disabled','quarantined','rolled-back','uninstalled')),
-              created_at TEXT NOT NULL,
-              activated_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS app_installations (
-              installation_event_id TEXT PRIMARY KEY,
-              app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-              install_id TEXT NOT NULL REFERENCES app_versions(install_id) ON DELETE CASCADE,
-              action TEXT NOT NULL CHECK (action IN ('install','activate','disable','rollback','quarantine','uninstall','import')),
-              previous_install_id TEXT,
-              actor TEXT NOT NULL DEFAULT 'system',
-              report_id TEXT,
-              created_at TEXT NOT NULL,
-              details_json TEXT
-            );
-            CREATE TABLE IF NOT EXISTS app_storage (
-              app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
-              key TEXT NOT NULL,
-              value_json TEXT,
-              updated_at TEXT NOT NULL,
-              PRIMARY KEY (app_id, key)
-            );
-            CREATE INDEX IF NOT EXISTS idx_app_versions_app_version ON app_versions(app_id, version);
-            CREATE INDEX IF NOT EXISTS idx_app_installations_app_created ON app_installations(app_id, created_at);
-            """
-        )
-    }
-
     private func transaction(_ body: () throws -> Void) throws {
         try execute("BEGIN IMMEDIATE TRANSACTION;")
         do {
@@ -377,14 +318,6 @@ final class PlatformAppRegistry {
             return .sqlite(String(cString: message))
         }
         return .sqlite("sqlite error")
-    }
-
-    private func resolvedDatabaseURL() -> URL {
-        if let configuredDatabaseURL {
-            return configuredDatabaseURL
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
     }
 
     private func now() -> String {

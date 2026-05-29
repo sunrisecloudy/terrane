@@ -35,12 +35,22 @@ const targetAssertions = [
         contains: ['.linkedLibrary("sqlite3")'],
       },
       {
+        path: "native/macos/Sources/NativeAIHostMac/PlatformDatabase.swift",
+        contains: [
+          "final class PlatformDatabase",
+          "sqlite3_open",
+          "PRAGMA foreign_keys = ON",
+          "PRAGMA integrity_check",
+          'appendingPathComponent("db/sqlite")',
+          "CREATE TABLE IF NOT EXISTS apps",
+        ],
+      },
+      {
         path: "native/macos/Sources/NativeAIHostMac/PlatformStorage.swift",
         contains: [
           "import SQLite3",
-          "sqlite3_open",
-          "CREATE TABLE IF NOT EXISTS app_storage",
-          "platform.sqlite",
+          "PlatformDatabase(databaseURL: databaseURL)",
+          "INSERT OR IGNORE INTO apps",
           "WHERE app_id = ? AND key = ?",
           "request.context.appId",
         ],
