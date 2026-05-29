@@ -221,6 +221,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Bridge dispatch works.
 - Storage under LocalAppData works.
 - Zig DLL loads.
+- Local Windows build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available.
+- Full Windows smoke runs with `NATIVE_AI_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, bridge-backed SQLite storage across relaunch, and `core.step` through `zig_core.dll`.
 
 ### Linux
 

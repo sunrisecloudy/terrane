@@ -25,6 +25,16 @@ std::wstring ReadTextFile(std::filesystem::path const& path) {
   return Utf8ToWide(text);
 }
 
+std::filesystem::path ExecutableDirectory() {
+  std::wstring buffer(MAX_PATH, L'\0');
+  DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0) {
+    return std::filesystem::current_path();
+  }
+  buffer.resize(length);
+  return std::filesystem::path(buffer).parent_path();
+}
+
 json::JsonObject ManifestForApp(std::filesystem::path const& repoRoot, std::wstring const& appId) {
   auto manifest = ReadTextFile(repoRoot / L"webapps" / L"examples" / appId / L"manifest.json");
   json::JsonObject parsed{nullptr};
@@ -79,6 +89,42 @@ std::wstring ToLower(std::wstring value) {
   std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
   return value;
 }
+
+std::wstring EnvironmentValue(wchar_t const* name) {
+  DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+  if (required == 0) {
+    return L"";
+  }
+  std::wstring value(required, L'\0');
+  DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+  if (written == 0 || written >= required) {
+    return L"";
+  }
+  value.resize(written);
+  return value;
+}
+
+bool EnvironmentIsOne(wchar_t const* name) {
+  return EnvironmentValue(name) == L"1";
+}
+
+void WriteSmokeLine(std::wstring const& line) {
+  auto markerPath = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE");
+  if (!markerPath.empty()) {
+    std::ofstream file{std::filesystem::path(markerPath), std::ios::binary | std::ios::app};
+    file << WideToUtf8(line) << "\n";
+  }
+  OutputDebugStringW((line + L"\n").c_str());
+}
+
+bool JsonResponseOk(std::wstring const& response) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed) || !parsed.HasKey(L"ok")) {
+    return false;
+  }
+  auto ok = parsed.GetNamedValue(L"ok");
+  return ok.ValueType() == json::JsonValueType::Boolean && ok.GetBoolean();
+}
 }  // namespace
 
 WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
@@ -122,6 +168,16 @@ void WebViewHost::Initialize() {
                               .Get(),
                           &token);
 
+                      EventRegistrationToken navigationToken{};
+                      webview_->add_NavigationCompleted(
+                          Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                              [this](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                OnNavigationCompleted(args);
+                                return S_OK;
+                              })
+                              .Get(),
+                          &navigationToken);
+
                       webview_->Navigate(L"https://runtime.local.platform/runtime/index.html");
                       return S_OK;
                     })
@@ -129,6 +185,22 @@ void WebViewHost::Initialize() {
             return S_OK;
           })
           .Get());
+}
+
+void WebViewHost::OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args) {
+  BOOL success = FALSE;
+  args->get_IsSuccess(&success);
+  if (!success || webview_ == nullptr) {
+    return;
+  }
+
+  PWSTR source = nullptr;
+  webview_->get_Source(&source);
+  std::wstring sourceText = source == nullptr ? L"" : source;
+  CoTaskMemFree(source);
+  if (sourceText == L"https://runtime.local.platform/runtime/index.html") {
+    RunSmoke();
+  }
 }
 
 void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
@@ -180,6 +252,120 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
   webview_->PostWebMessageAsString(response.c_str());
 }
 
+void WebViewHost::RunSmoke() {
+  if (smokeRan_) {
+    return;
+  }
+  auto action = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE");
+  if (action.empty()) {
+    return;
+  }
+  smokeRan_ = true;
+  WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_STARTED_" + action);
+  if (action == L"runtime-load") {
+    SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED");
+  } else if (action == L"storage-set") {
+    RunStorageSmoke(true);
+  } else if (action == L"storage-get") {
+    RunStorageSmoke(false);
+  } else if (action == L"core-step") {
+    RunCoreSmoke();
+  } else {
+    SmokeFailure(L"unknown smoke action");
+  }
+}
+
+void WebViewHost::RunStorageSmoke(bool setValue) {
+  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  if (key.empty() || value.empty()) {
+    SmokeFailure(L"storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  json::JsonObject params;
+  params.Insert(L"key", json::JsonValue::CreateStringValue(key));
+  if (setValue) {
+    json::JsonObject stored;
+    stored.Insert(L"smokeValue", json::JsonValue::CreateStringValue(value));
+    params.Insert(L"value", stored);
+  }
+
+  auto response = BridgeCall(
+      L"notes-lite",
+      setValue ? L"windows_smoke_storage_set" : L"windows_smoke_storage_get",
+      setValue ? L"storage.set" : L"storage.get",
+      params);
+  if (!JsonResponseOk(response)) {
+    SmokeFailure(response);
+    return;
+  }
+
+  if (!setValue) {
+    json::JsonObject parsed{nullptr};
+    bool matches = false;
+    if (json::JsonObject::TryParse(response, parsed)) {
+      auto result = parsed.GetNamedObject(L"result", json::JsonObject());
+      auto storedValue = result.GetNamedValue(L"value", json::JsonValue::CreateNullValue());
+      if (storedValue.ValueType() == json::JsonValueType::Object) {
+        auto stored = storedValue.GetObject();
+        matches = std::wstring(stored.GetNamedString(L"smokeValue", L"").c_str()) == value;
+      }
+    }
+    if (!matches) {
+      SmokeFailure(response);
+      return;
+    }
+  }
+
+  SmokeSuccess(setValue ? L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_SET_OK" : L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_GET_OK");
+}
+
+void WebViewHost::RunCoreSmoke() {
+  json::JsonObject payload;
+  payload.Insert(L"title", json::JsonValue::CreateStringValue(L"Windows smoke task"));
+
+  json::JsonObject event;
+  event.Insert(L"type", json::JsonValue::CreateStringValue(L"CreateTask"));
+  event.Insert(L"payload", payload);
+
+  json::JsonObject params;
+  params.Insert(L"event", event);
+
+  auto response = BridgeCall(L"task-workbench", L"windows_smoke_core_step", L"core.step", params);
+  if (!JsonResponseOk(response)) {
+    SmokeFailure(response);
+    return;
+  }
+  SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK");
+}
+
+void WebViewHost::SmokeSuccess(std::wstring const& marker) {
+  WriteSmokeLine(marker);
+  if (EnvironmentIsOne(L"NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER")) {
+    PostQuitMessage(0);
+  }
+}
+
+void WebViewHost::SmokeFailure(std::wstring const& message) {
+  WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_FAILED: " + message);
+  if (EnvironmentIsOne(L"NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER")) {
+    PostQuitMessage(0);
+  }
+}
+
+std::wstring WebViewHost::BridgeCall(
+    std::wstring const& appId,
+    std::wstring const& id,
+    std::wstring const& method,
+    json::JsonObject const& params) {
+  json::JsonObject request;
+  request.Insert(L"id", json::JsonValue::CreateStringValue(id));
+  request.Insert(L"method", json::JsonValue::CreateStringValue(method));
+  request.Insert(L"params", params);
+  return bridge_->HandleJson(std::wstring(request.Stringify().c_str()), SandboxContextForApp(appId, L"windows-smoke"));
+}
+
 AppSandboxContext WebViewHost::SandboxContextFromSource(std::wstring const& source) const {
   auto appId = AppIdFromSource(source);
   return SandboxContextForApp(appId, L"");
@@ -210,7 +396,7 @@ std::wstring WebViewHost::AppIdFromSource(std::wstring const& source) const {
 }
 
 std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId) const {
-  auto parsed = ManifestForApp(RepoRoot(), appId);
+  auto parsed = ManifestForApp(RuntimeRoot(), appId);
   if (!parsed.HasKey(L"permissions")) {
     return {};
   }
@@ -223,7 +409,7 @@ std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId)
 }
 
 bool WebViewHost::DenyPrivateNetworkForApp(std::wstring const& appId) const {
-  auto parsed = ManifestForApp(RepoRoot(), appId);
+  auto parsed = ManifestForApp(RuntimeRoot(), appId);
   if (!parsed.HasKey(L"networkPolicy")) {
     return true;
   }
@@ -233,7 +419,7 @@ bool WebViewHost::DenyPrivateNetworkForApp(std::wstring const& appId) const {
 }
 
 std::vector<NetworkPolicyRule> WebViewHost::NetworkPolicyForApp(std::wstring const& appId) const {
-  auto parsed = ManifestForApp(RepoRoot(), appId);
+  auto parsed = ManifestForApp(RuntimeRoot(), appId);
   if (!parsed.HasKey(L"networkPolicy")) {
     return {};
   }
@@ -279,10 +465,20 @@ std::filesystem::path WebViewHost::RepoRoot() {
 }
 
 std::filesystem::path WebViewHost::RuntimeRoot() {
+  auto resourceRoot = ExecutableDirectory() / L"resources";
+  if (std::filesystem::exists(resourceRoot / L"runtime" / L"index.html") &&
+      std::filesystem::exists(resourceRoot / L"webapps" / L"examples")) {
+    return resourceRoot;
+  }
   return RepoRoot();
 }
 
 std::filesystem::path WebViewHost::DatabasePath() {
+  auto smokeDataHome = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_DATA_HOME");
+  if (!smokeDataHome.empty()) {
+    return std::filesystem::path(smokeDataHome) / L"NativeAIWebappPlatform" / L"platform.sqlite";
+  }
+
   PWSTR localAppData = nullptr;
   SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppData);
   std::filesystem::path path(localAppData == nullptr ? L"." : localAppData);

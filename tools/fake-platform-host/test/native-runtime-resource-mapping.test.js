@@ -60,3 +60,16 @@ test("Android native host packages runtime-web under the /runtime asset path", (
   assertContains(activity, 'path.startsWith("runtime/")', "Android Activity");
   assertContains(activity, 'path.startsWith("webapps/examples/")', "Android Activity");
 });
+
+test("Windows native host stages runtime-web under the /runtime WebView2 path", () => {
+  const cmake = readRepoFile("native/windows/CMakeLists.txt");
+  const host = readRepoFile("native/windows/src/WebViewHost.cpp");
+
+  assertContains(cmake, 'copy_directory "${NATIVE_AI_REPO_ROOT}/runtime-web"', "Windows CMake");
+  assertContains(cmake, "resources/runtime", "Windows CMake");
+  assertContains(cmake, 'copy_directory "${NATIVE_AI_REPO_ROOT}/webapps/examples"', "Windows CMake");
+  assertContains(cmake, "resources/webapps/examples", "Windows CMake");
+  assertContains(host, 'webview_->Navigate(L"https://runtime.local.platform/runtime/index.html")', "Windows host");
+  assertContains(host, 'resourceRoot / L"runtime" / L"index.html"', "Windows host");
+  assertContains(host, 'resourceRoot / L"webapps" / L"examples"', "Windows host");
+});

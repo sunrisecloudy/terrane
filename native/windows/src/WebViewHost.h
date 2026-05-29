@@ -16,7 +16,18 @@ class WebViewHost {
   void Initialize();
 
  private:
+  void OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args);
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
+  void RunSmoke();
+  void RunStorageSmoke(bool setValue);
+  void RunCoreSmoke();
+  void SmokeSuccess(std::wstring const& marker);
+  void SmokeFailure(std::wstring const& message);
+  std::wstring BridgeCall(
+      std::wstring const& appId,
+      std::wstring const& id,
+      std::wstring const& method,
+      winrt::Windows::Data::Json::JsonObject const& params);
   AppSandboxContext SandboxContextFromSource(std::wstring const& source) const;
   AppSandboxContext SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const;
   std::set<std::wstring> PermissionsForApp(std::wstring const& appId) const;
@@ -32,6 +43,7 @@ class WebViewHost {
   Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller_;
   Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
   std::unique_ptr<WebBridge> bridge_;
+  bool smokeRan_ = false;
 };
 
 }  // namespace nativeai
