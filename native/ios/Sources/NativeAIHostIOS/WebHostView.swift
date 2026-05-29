@@ -61,32 +61,41 @@ struct WebHostView: UIViewRepresentable {
 #if DEBUG
 final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static let loadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED"
+    static let storageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
+    static let storageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
     static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
 
     private let exitAfterLoad: Bool
+    private let storageSmoke: StorageSmoke?
 
-    private init(exitAfterLoad: Bool) {
+    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?) {
         self.exitAfterLoad = exitAfterLoad
+        self.storageSmoke = storageSmoke
     }
 
     static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
         let args = CommandLine.arguments
+        let storageSmoke = StorageSmoke.fromCommandLine(args)
         guard args.contains("--native-ai-smoke-runtime-load") ||
-            args.contains("--native-ai-smoke-exit-on-runtime-load")
+            args.contains("--native-ai-smoke-exit-on-runtime-load") ||
+            storageSmoke != nil
         else {
             return nil
         }
-        return IOSSmokeRuntimeProbe(exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"))
+        return IOSSmokeRuntimeProbe(
+            exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"),
+            storageSmoke: storageSmoke
+        )
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard webView.url == RuntimeResourceLocator.runtimeIndexURL() else { return }
         emitSmokeMarker(Self.loadedMarker)
-        if exitAfterLoad {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                Darwin.exit(0)
-            }
+        if let storageSmoke {
+            runStorageSmoke(storageSmoke, in: webView)
+            return
         }
+        exitIfRequested()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -102,6 +111,143 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         fflush(stdout)
         let markerURL = FileManager.default.temporaryDirectory.appendingPathComponent(Self.markerFileName)
         try? marker.write(to: markerURL, atomically: true, encoding: .utf8)
+    }
+
+    private func runStorageSmoke(_ smoke: StorageSmoke, in webView: WKWebView) {
+        Task { @MainActor [weak self, weak webView] in
+            guard let webView else {
+                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: web view released")
+                self?.exitIfRequested()
+                return
+            }
+            do {
+                let value = try await webView.callAsyncJavaScript(smoke.javaScript(), arguments: [:], in: nil, contentWorld: .page)
+                guard let marker = value as? String, marker == smoke.successMarker else {
+                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: unexpected result \(String(describing: value))")
+                    self?.exitIfRequested()
+                    return
+                }
+                self?.emitSmokeMarker(marker)
+                self?.exitIfRequested()
+            } catch {
+                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
+                self?.exitIfRequested()
+            }
+        }
+    }
+
+    private func exitIfRequested() {
+        guard exitAfterLoad else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            Darwin.exit(0)
+        }
+    }
+}
+
+private struct StorageSmoke {
+    enum Action {
+        case set
+        case get
+    }
+
+    let action: Action
+    let key: String
+    let value: String
+
+    var successMarker: String {
+        switch action {
+        case .set:
+            return "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
+        case .get:
+            return "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
+        }
+    }
+
+    static func fromCommandLine(_ args: [String]) -> StorageSmoke? {
+        let action: Action?
+        if args.contains("--native-ai-smoke-storage-set") {
+            action = .set
+        } else if args.contains("--native-ai-smoke-storage-get") {
+            action = .get
+        } else {
+            action = nil
+        }
+        guard let action,
+              let key = value(after: "--native-ai-smoke-storage-key", in: args),
+              let value = value(after: "--native-ai-smoke-storage-value", in: args)
+        else {
+            return nil
+        }
+        return StorageSmoke(action: action, key: key, value: value)
+    }
+
+    func javaScript() -> String {
+        let keyLiteral = javaScriptStringLiteral(key)
+        let valueLiteral = javaScriptStringLiteral(value)
+        let markerLiteral = javaScriptStringLiteral(successMarker)
+        let actionScript: String
+        switch action {
+        case .set:
+            actionScript = """
+            const setResponse = await bridge.postMessage(request("ios_smoke_storage_set", "storage.set", { key: key, value: { smokeValue: value } }));
+            if (!setResponse || !setResponse.ok) {
+              throw new Error("storage.set failed: " + JSON.stringify(setResponse));
+            }
+            return marker;
+            """
+        case .get:
+            actionScript = """
+            const getResponse = await bridge.postMessage(request("ios_smoke_storage_get", "storage.get", { key: key }));
+            const actual = getResponse && getResponse.result && getResponse.result.value && getResponse.result.value.smokeValue;
+            if (!getResponse || !getResponse.ok || actual !== value) {
+              throw new Error("storage.get mismatch: " + JSON.stringify(getResponse));
+            }
+            return marker;
+            """
+        }
+        return """
+        try {
+          const bridge = window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.NativeAIPlatformBridge;
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            throw new Error("NativeAIPlatformBridge is unavailable");
+          }
+          const appId = "notes-lite";
+          const mountToken = "ios-smoke";
+          const key = \(keyLiteral);
+          const value = \(valueLiteral);
+          const marker = \(markerLiteral);
+          function request(id, method, params) {
+            return { appId, mountToken, request: { id, method, params: params || {} } };
+          }
+          const capabilities = await bridge.postMessage(request("ios_smoke_capabilities", "runtime.capabilities", {}));
+          if (!capabilities || !capabilities.ok || !capabilities.result || capabilities.result.platform !== "ios") {
+            throw new Error("runtime.capabilities failed: " + JSON.stringify(capabilities));
+          }
+        \(actionScript)
+        } catch (error) {
+          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+        }
+        """
+    }
+
+    private static func value(after name: String, in args: [String]) -> String? {
+        guard let index = args.firstIndex(of: name),
+              args.indices.contains(args.index(after: index))
+        else {
+            return nil
+        }
+        return args[args.index(after: index)]
+    }
+
+    private func javaScriptStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let encoded = String(data: data, encoding: .utf8)
+        else {
+            return "\"\""
+        }
+        return encoded
     }
 }
 #endif
@@ -145,6 +291,13 @@ enum RuntimeResourceLocator {
     }
 
     static func exampleManifestURL(for appId: String) -> URL? {
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("webapps/examples")
+            .appendingPathComponent(appId)
+            .appendingPathComponent("manifest.json"),
+            FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
+        }
         if let bundled = Bundle.main.url(forResource: "manifest", withExtension: "json", subdirectory: "examples/\(appId)") {
             return bundled
         }

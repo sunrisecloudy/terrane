@@ -49,8 +49,8 @@
 
 - [x] iOS simulator launches.
 - [x] Runtime loads from bundle.
-- [ ] Bridge works.
-- [ ] Storage persists.
+- [x] Bridge works.
+- [x] Storage persists.
 - [ ] Zig core step works.
 
 ### macOS

@@ -10,6 +10,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const iosDir = path.join(repoRoot, "native", "ios");
 const bundleId = "dev.nativeai.host.ios";
 const smokeLoadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED";
+const smokeStorageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK";
+const smokeStorageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK";
 const smokeMarkerFile = "native-ai-ios-smoke-runtime-loaded.txt";
 
 function commandWorks(command, args) {
@@ -138,13 +140,13 @@ function selectIOSDevice() {
     devices[0];
 }
 
-function waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, timeoutMs }) {
+function waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, expectedMarker, timeoutMs }) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const markerFile = fs.existsSync(markerPath) ? fs.readFileSync(markerPath, "utf8") : "";
     const stdout = fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, "utf8") : "";
     const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, "utf8") : "";
-    if (`${markerFile}\n${stdout}\n${stderr}`.includes(smokeLoadedMarker)) {
+    if (`${markerFile}\n${stdout}\n${stderr}`.includes(expectedMarker)) {
       return { markerFile, stdout, stderr };
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
@@ -154,6 +156,37 @@ function waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, timeoutMs }) {
     stdout: fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, "utf8") : "",
     stderr: fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, "utf8") : "",
   };
+}
+
+function launchAndWaitForMarker({ device, scratchRoot, markerPath, expectedMarker, launchArgs }) {
+  fs.rmSync(markerPath, { force: true });
+  const logStem = expectedMarker.toLowerCase().replaceAll("_", "-");
+  const stdoutPath = path.join(scratchRoot, `${logStem}.stdout.log`);
+  const stderrPath = path.join(scratchRoot, `${logStem}.stderr.log`);
+  fs.rmSync(stdoutPath, { force: true });
+  fs.rmSync(stderrPath, { force: true });
+
+  execFileSync(
+    "xcrun",
+    [
+      "simctl",
+      "launch",
+      "--terminate-running-process",
+      `--stdout=${stdoutPath}`,
+      `--stderr=${stderrPath}`,
+      device.udid,
+      bundleId,
+      ...launchArgs,
+    ],
+    { encoding: "utf8" },
+  );
+
+  const logs = waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, expectedMarker, timeoutMs: 30_000 });
+  if (!`${logs.markerFile}\n${logs.stdout}\n${logs.stderr}`.includes(expectedMarker)) {
+    const screenshotPath = path.join(scratchRoot, `${logStem}.png`);
+    execFileSync("xcrun", ["simctl", "io", device.udid, "screenshot", screenshotPath], { stdio: "ignore" });
+    assert.fail(`iOS smoke marker ${expectedMarker} was not emitted; marker: ${markerPath}; screenshot: ${screenshotPath}\nmarker file:\n${logs.markerFile}\nstdout:\n${logs.stdout}\nstderr:\n${logs.stderr}`);
+  }
 }
 
 function launchInSimulator({ scratchRoot, appBundle }) {
@@ -170,31 +203,45 @@ function launchInSimulator({ scratchRoot, appBundle }) {
     execFileSync("xcrun", ["simctl", "install", device.udid, appBundle], { stdio: "ignore" });
     const dataContainer = execFileSync("xcrun", ["simctl", "get_app_container", device.udid, bundleId, "data"], { encoding: "utf8" }).trim();
     const markerPath = path.join(dataContainer, "tmp", smokeMarkerFile);
-    fs.rmSync(markerPath, { force: true });
-    const stdoutPath = path.join(scratchRoot, "ios-smoke.stdout.log");
-    const stderrPath = path.join(scratchRoot, "ios-smoke.stderr.log");
-    execFileSync(
-      "xcrun",
-      [
-        "simctl",
-        "launch",
-        "--terminate-running-process",
-        `--stdout=${stdoutPath}`,
-        `--stderr=${stderrPath}`,
-        device.udid,
-        bundleId,
-        "--native-ai-smoke-runtime-load",
+
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
+      expectedMarker: smokeLoadedMarker,
+      launchArgs: ["--native-ai-smoke-runtime-load", "--native-ai-smoke-exit-on-runtime-load"],
+    });
+
+    const storageKey = `notes-lite:ios-smoke-${process.pid}-${Date.now()}`;
+    const storageValue = `ios-smoke-${process.pid}-${Date.now()}`;
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
+      expectedMarker: smokeStorageSetMarker,
+      launchArgs: [
+        "--native-ai-smoke-storage-set",
+        "--native-ai-smoke-storage-key",
+        storageKey,
+        "--native-ai-smoke-storage-value",
+        storageValue,
         "--native-ai-smoke-exit-on-runtime-load",
       ],
-      { encoding: "utf8" },
-    );
-
-    const logs = waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, timeoutMs: 30_000 });
-    if (!`${logs.markerFile}\n${logs.stdout}\n${logs.stderr}`.includes(smokeLoadedMarker)) {
-      const screenshotPath = path.join(scratchRoot, "ios-smoke.png");
-      execFileSync("xcrun", ["simctl", "io", device.udid, "screenshot", screenshotPath], { stdio: "ignore" });
-      assert.fail(`iOS runtime load smoke marker was not emitted; marker: ${markerPath}; screenshot: ${screenshotPath}\nmarker file:\n${logs.markerFile}\nstdout:\n${logs.stdout}\nstderr:\n${logs.stderr}`);
-    }
+    });
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
+      expectedMarker: smokeStorageGetMarker,
+      launchArgs: [
+        "--native-ai-smoke-storage-get",
+        "--native-ai-smoke-storage-key",
+        storageKey,
+        "--native-ai-smoke-storage-value",
+        storageValue,
+        "--native-ai-smoke-exit-on-runtime-load",
+      ],
+    });
   } finally {
     if (!wasBooted) {
       execFileSync("xcrun", ["simctl", "shutdown", device.udid], { stdio: "ignore" });
