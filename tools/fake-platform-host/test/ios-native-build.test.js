@@ -134,6 +134,8 @@ function createSimulatorAppBundle(scratchRoot, binaryPath, zigCoreDylibPath = nu
   fs.cpSync(path.join(repoRoot, "runtime-web"), path.join(appBundle, "runtime"), { recursive: true });
   fs.mkdirSync(path.join(appBundle, "webapps"), { recursive: true });
   fs.cpSync(path.join(repoRoot, "webapps", "examples"), path.join(appBundle, "webapps", "examples"), { recursive: true });
+  fs.mkdirSync(path.join(appBundle, "db"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "db", "sqlite"), path.join(appBundle, "db", "sqlite"), { recursive: true });
 
   fs.writeFileSync(
     path.join(appBundle, "Info.plist"),
@@ -336,6 +338,7 @@ test(
       assert.equal(fs.existsSync(path.join(appBundle, "runtime", "index.html")), true);
       assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "notes-lite", "manifest.json")), true);
       assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "task-workbench", "manifest.json")), true);
+      assert.equal(fs.existsSync(path.join(appBundle, "db", "sqlite", "001_initial.sql")), true);
       if (zigCoreDylibPath) {
         assert.equal(fs.existsSync(path.join(appBundle, "libzig_core.dylib")), true);
       }
