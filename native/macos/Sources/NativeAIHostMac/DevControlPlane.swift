@@ -338,6 +338,10 @@ final class DevControlPlane: @unchecked Sendable {
             handleBridgeCallAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_no_console_errors":
             handleNoConsoleErrorsAssertion(connection, request, args: args, startedAt: startedAt)
+        case "runtime.call_bridge":
+            handleRuntimeCallBridge(connection, request, args: args, startedAt: startedAt)
+        case "runtime.core_step":
+            handleRuntimeCoreStep(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
@@ -756,6 +760,41 @@ final class DevControlPlane: @unchecked Sendable {
             "ok": true,
             "errors": 0,
         ])
+    }
+
+    private func handleRuntimeCallBridge(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let method = args["method"] as? String, !method.isEmpty
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.call_bridge requires appId and method", startedAt: startedAt)
+            return
+        }
+        let params = args["params"] as? [String: Any] ?? [:]
+        let response = dispatchControlBridge(
+            appId: appId,
+            method: method,
+            params: params,
+            requestId: args["id"] as? String ?? "control_call_bridge",
+            startedAt: startedAt
+        )
+        sendAccepted(connection, request, startedAt: startedAt, result: response.asDictionary())
+    }
+
+    private func handleRuntimeCoreStep(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let event = args["event"]
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.core_step requires appId and event", startedAt: startedAt)
+            return
+        }
+        let response = dispatchControlBridge(
+            appId: appId,
+            method: "core.step",
+            params: ["event": event],
+            requestId: args["id"] as? String ?? "control_core_step",
+            startedAt: startedAt
+        )
+        sendAccepted(connection, request, startedAt: startedAt, result: response.asDictionary())
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -1464,6 +1503,131 @@ final class DevControlPlane: @unchecked Sendable {
         )
     }
 
+    private func dispatchControlBridge(
+        appId: String,
+        method: String,
+        params: [String: Any],
+        requestId: String,
+        startedAt: Date
+    ) -> BridgeResponse {
+        let manifest = manifestForApp(appId)
+        let context = AppSandboxContext(
+            appId: appId,
+            storagePrefix: manifest["storagePrefix"] as? String,
+            approvedPermissions: manifestPermissions(manifest),
+            networkPolicy: NetworkPolicyRule.fromManifest(manifest),
+            denyPrivateNetwork: manifestDenyPrivateNetwork(manifest),
+            mountToken: controlSessionId
+        )
+        let request = BridgeRequest(id: requestId, method: method, params: params, context: context)
+        let response: BridgeResponse
+        if let permission = permissionForBridgeMethod(method),
+           !context.approvedPermissions.contains(permission) {
+            response = .failure(
+                id: requestId,
+                code: "permission_denied",
+                message: "App \(appId) cannot call \(method)",
+                details: ["appId": appId, "method": method, "requiredPermission": permission]
+            )
+        } else {
+            response = dispatchAllowedControlBridge(request)
+        }
+        recordBridgeCall(appId: appId, method: method, params: params, response: response, startedAt: startedAt)
+        if method == "core.step", response.ok, let event = params["event"], let result = response.result {
+            recordCoreStep(appId: appId, event: event, result: result)
+        }
+        return response
+    }
+
+    private func dispatchAllowedControlBridge(_ request: BridgeRequest) -> BridgeResponse {
+        switch request.method {
+        case "storage.get":
+            return PlatformStorage(databaseURL: databaseURL).get(request)
+        case "storage.set":
+            return PlatformStorage(databaseURL: databaseURL).set(request)
+        case "storage.remove":
+            return PlatformStorage(databaseURL: databaseURL).remove(request)
+        case "storage.list":
+            return PlatformStorage(databaseURL: databaseURL).list(request)
+        case "notification.toast":
+            return PlatformNotifications().toast(request)
+        case "network.request":
+            return PlatformNetwork().request(request)
+        case "core.step":
+            return core.step(request)
+        case "runtime.capabilities":
+            return .success(id: request.id, result: runtimeCapabilities(appId: request.context.appId))
+        case "app.log":
+            NSLog("Generated app log: \(request.params)")
+            return .success(id: request.id, result: ["ok": true])
+        case "dialog.openFile", "dialog.saveFile":
+            return .failure(id: request.id, code: "platform_unsupported", message: "\(request.method) requires an interactive macOS dialog")
+        default:
+            return .failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)")
+        }
+    }
+
+    private func permissionForBridgeMethod(_ method: String) -> String? {
+        switch method {
+        case "storage.get", "storage.list":
+            return "storage.read"
+        case "storage.set", "storage.remove":
+            return "storage.write"
+        case "dialog.openFile", "dialog.saveFile", "notification.toast", "network.request", "core.step":
+            return method
+        default:
+            return nil
+        }
+    }
+
+    private func manifestForApp(_ appId: String) -> [String: Any] {
+        if let manifest = activeManifest(appId: appId),
+           manifest["permissions"] != nil || manifest["networkPolicy"] != nil {
+            return manifest
+        }
+        let manifestURL = RuntimeResourceLocator.repoRootURL()
+            .appendingPathComponent("webapps/examples")
+            .appendingPathComponent(appId)
+            .appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return [:]
+        }
+        return object
+    }
+
+    private func activeManifest(appId: String) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT v.manifest_json
+        FROM apps a
+        JOIN app_versions v ON v.install_id = a.active_install_id
+        WHERE a.id = ?
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return jsonDictionary(columnText(statement, 0))
+    }
+
+    private func manifestPermissions(_ manifest: [String: Any]) -> Set<String> {
+        Set(manifest["permissions"] as? [String] ?? [])
+    }
+
+    private func manifestDenyPrivateNetwork(_ manifest: [String: Any]) -> Bool {
+        guard let policy = manifest["networkPolicy"] as? [String: Any] else {
+            return true
+        }
+        return (policy["denyPrivateNetwork"] as? Bool) ?? true
+    }
+
     private func recordBridgeCall(
         appId: String,
         method: String,
@@ -1492,6 +1656,58 @@ final class DevControlPlane: @unchecked Sendable {
         sqlite3_bind_int64(statement, 9, Int64(Date().timeIntervalSince(startedAt) * 1000))
         bind(statement, 10, Self.now())
         sqlite3_step(statement)
+    }
+
+    private func recordCoreStep(appId: String, event: Any, result: Any) {
+        guard let db = database.handle else { return }
+        let sessionId = runtimeSessionId(appId: appId)
+        let eventId = "core_event_\(UUID().uuidString.lowercased())"
+        let resultObject = result as? [String: Any]
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, eventId)
+        bind(statement, 2, sessionId)
+        bind(statement, 3, appId)
+        bindNullable(statement, 4, activeAppRecord(appId: appId)?.installId)
+        bindNullableInt(statement, 5, stateVersionBefore(resultObject))
+        bind(statement, 6, jsonString(event))
+        bind(statement, 7, Self.now())
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return
+        }
+        for action in resultObject?["actions"] as? [[String: Any]] ?? [] {
+            recordCoreAction(eventId: eventId, sessionId: sessionId, appId: appId, action: action)
+        }
+    }
+
+    private func recordCoreAction(eventId: String, sessionId: String, appId: String, action: [String: Any]) {
+        guard let db = database.handle else { return }
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, "core_action_\(UUID().uuidString.lowercased())")
+        bind(statement, 2, eventId)
+        bind(statement, 3, sessionId)
+        bind(statement, 4, appId)
+        bind(statement, 5, jsonBody(action))
+        bind(statement, 6, Self.now())
+        sqlite3_step(statement)
+    }
+
+    private func stateVersionBefore(_ result: [String: Any]?) -> Int? {
+        guard let value = intValue(result?["stateVersion"]) else {
+            return nil
+        }
+        return max(0, value - 1)
     }
 
     private func runtimeSessionId(appId: String) -> String {
@@ -1813,6 +2029,14 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         bind(statement, index, value)
+    }
+
+    private func bindNullableInt(_ statement: OpaquePointer?, _ index: Int32, _ value: Int?) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        sqlite3_bind_int64(statement, index, Int64(value))
     }
 
     private static func now() -> String {

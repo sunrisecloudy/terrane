@@ -200,6 +200,14 @@ struct NativeHostTests {
             contentHash: "control-hash-v2",
             installId: "install-control-v2"
         )
+        try registry.installVersion(
+            appId: "task-workbench",
+            name: "Task Workbench",
+            version: "0.1.0",
+            manifestJSON: #"{"id":"task-workbench","version":"0.1.0","dataVersion":1}"#,
+            contentHash: "task-control-hash",
+            installId: "install-task-control"
+        )
         let storageContext = AppSandboxContext(
             appId: "notes-lite",
             approvedPermissions: ["storage.read", "storage.write"],
@@ -615,6 +623,51 @@ struct NativeHostTests {
         #expect(bridgeCallsAfterClear.statusCode == 200)
         #expect(bridgeCallsAfterClear.body.contains(#""bridgeCalls":[]"#))
 
+        let callBridgeLog = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"notes-lite","method":"app.log","params":{"level":"info","message":"Bridge harness log"}}}"#
+        )
+        #expect(callBridgeLog.statusCode == 200)
+        #expect(callBridgeLog.body.contains(#""id":"control_call_bridge""#))
+
+        let consoleLogs = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.console_logs","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(consoleLogs.statusCode == 200)
+        #expect(consoleLogs.body.contains("Bridge harness log"))
+
+        let callBridgeStorageList = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"notes-lite","method":"storage.list","params":{"prefix":"notes-lite:"}}}"#
+        )
+        #expect(callBridgeStorageList.statusCode == 200)
+        #expect(callBridgeStorageList.body.contains(#""keys":["#))
+
+        let coreStep = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.core_step","args":{"appId":"task-workbench","event":{"type":"CreateTask","payload":{"title":"Control task"}}}}"#
+        )
+        #expect(coreStep.statusCode == 200)
+        #expect(coreStep.body.contains(#""id":"control_core_step""#))
+
+        let coreBridgeCallAssert = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.assert_bridge_call","args":{"appId":"task-workbench","method":"core.step"}}"#
+        )
+        #expect(coreBridgeCallAssert.statusCode == 200)
+        #expect(coreBridgeCallAssert.body.contains(#""method":"core.step""#))
+
         let storageReset = try await httpRequest(
             commandURL,
             method: "POST",
@@ -672,7 +725,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 44)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 49)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
