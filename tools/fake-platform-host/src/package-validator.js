@@ -6,6 +6,8 @@ import { readJsonFile } from "./util.js";
 
 const REQUIRED_FILES = ["manifest.json", "index.html", "styles.css", "app.js"];
 const OPTIONAL_FILES = new Set(["smoke-tests.json", "README.md"]);
+const MAX_PACKAGE_FILES = 32;
+const MAX_MIGRATION_FILES = 16;
 const REQUIRED_BUDGET_KEYS = [
   "maxDomNodes",
   "maxStorageBytes",
@@ -148,6 +150,13 @@ export function packageHashes(manifest, files) {
 function readPackageFiles(packageDir) {
   const files = new Map();
   walk(packageDir, "");
+
+  if (files.size > MAX_PACKAGE_FILES) {
+    throw new PlatformError("resource_budget_exceeded", "Package exceeds hard file count cap", {
+      files: files.size,
+      maxFiles: MAX_PACKAGE_FILES,
+    });
+  }
 
   for (const filePath of files.keys()) {
     if (filePath.startsWith("assets/")) {
@@ -528,6 +537,14 @@ function validateBudgets(manifest, files, errors) {
 }
 
 function validateMigrations(manifest, files, errors) {
+  const migrationFileCount = [...files.keys()].filter((filePath) => filePath.startsWith("migrations/")).length;
+  if (migrationFileCount > MAX_MIGRATION_FILES) {
+    errors.push(issue("resource_budget_exceeded", "Package exceeds hard migration file count cap", {
+      files: migrationFileCount,
+      maxMigrationFiles: MAX_MIGRATION_FILES,
+    }));
+  }
+
   const migrations = new Map(
     [...files.entries()]
       .filter(([filePath]) => filePath.startsWith("migrations/") && filePath.endsWith(".json"))

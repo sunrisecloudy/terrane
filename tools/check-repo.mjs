@@ -387,6 +387,7 @@ function checkFakeHostStatic() {
   const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "bridge-dispatcher.js"), "utf8");
   const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
   const capabilities = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "capabilities.js"), "utf8");
+  const packageValidator = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "package-validator.js"), "utf8");
   const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
   const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
   const bridgeFixturesTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "bridge-fixtures.test.js"), "utf8");
@@ -422,6 +423,8 @@ function checkFakeHostStatic() {
     [capabilities, "devMode: true"],
     [capabilities, '"storage.read": true'],
     [capabilities, '"runtime.snapshot": true'],
+    [packageValidator, "MAX_PACKAGE_FILES"],
+    [packageValidator, "MAX_MIGRATION_FILES"],
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {
@@ -789,6 +792,8 @@ function checkServerStatic() {
     "\"missing_testid\"",
     "fn validateServerPackageFileList",
     "\"unexpected_package_path\"",
+    "max_package_files",
+    "max_migration_files",
     "fn isKnownPackagePermission",
     "\"unknown_permission\"",
     "fn validateServerResourceBudget",

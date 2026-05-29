@@ -6,6 +6,8 @@ const sqlite = @cImport({
 });
 
 const max_request_bytes = 1024 * 1024;
+const max_package_files = 32;
+const max_migration_files = 16;
 const runtime_version = "0.1.0";
 const signature_prefix = "native-ai-webapp/sig/v1";
 const control_auth_failure_limit = 3;
@@ -10790,6 +10792,8 @@ fn validateServerPackageFileList(
         try errors.append(allocator, "invalid_files");
         return;
     }
+    if (files.array.items.len > max_package_files) try errors.append(allocator, "resource_budget_exceeded");
+    var migration_file_count: usize = 0;
     for (files.array.items) |file| {
         if (file != .object) {
             try errors.append(allocator, "invalid_files");
@@ -10802,7 +10806,9 @@ fn validateServerPackageFileList(
         if (std.mem.startsWith(u8, file_path, "assets/") or !isAllowedServerPackagePath(file_path)) {
             try errors.append(allocator, "unexpected_package_path");
         }
+        if (std.mem.startsWith(u8, file_path, "migrations/")) migration_file_count += 1;
     }
+    if (migration_file_count > max_migration_files) try errors.append(allocator, "resource_budget_exceeded");
 }
 
 fn isAllowedServerPackagePath(file_path: []const u8) bool {
@@ -11299,6 +11305,52 @@ test "server package validation rejects package files over resource budget" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"resource_budget_exceeded\"") != null);
+}
+
+test "server package validation enforces hard package and migration file caps" {
+    var files_json: std.io.Writer.Allocating = .init(std.testing.allocator);
+    errdefer files_json.deinit();
+    try files_json.writer.writeAll("[");
+    for (0..(max_package_files + 1)) |index| {
+        if (index > 0) try files_json.writer.writeAll(",");
+        try files_json.writer.print("{{\"path\":\"app.js\",\"content\":\"{d}\"}}", .{index});
+    }
+    try files_json.writer.writeAll("]");
+    const files_raw = try files_json.toOwnedSlice();
+    defer std.testing.allocator.free(files_raw);
+    var files = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, files_raw, .{});
+    defer files.deinit();
+
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(std.testing.allocator);
+    try validateServerPackageFileList(std.testing.allocator, files.value, &errors);
+    var found_package_cap = false;
+    for (errors.items) |error_name| {
+        if (std.mem.eql(u8, error_name, "resource_budget_exceeded")) found_package_cap = true;
+    }
+    try std.testing.expect(found_package_cap);
+
+    var migrations_json: std.io.Writer.Allocating = .init(std.testing.allocator);
+    errdefer migrations_json.deinit();
+    try migrations_json.writer.writeAll("[");
+    for (0..(max_migration_files + 1)) |index| {
+        if (index > 0) try migrations_json.writer.writeAll(",");
+        try migrations_json.writer.print("{{\"path\":\"migrations/{d}_to_{d}.json\",\"content\":\"{{}}\"}}", .{ index + 1, index + 2 });
+    }
+    try migrations_json.writer.writeAll("]");
+    const migrations_raw = try migrations_json.toOwnedSlice();
+    defer std.testing.allocator.free(migrations_raw);
+    var migrations = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, migrations_raw, .{});
+    defer migrations.deinit();
+
+    var migration_errors: std.ArrayList([]const u8) = .empty;
+    defer migration_errors.deinit(std.testing.allocator);
+    try validateServerPackageFileList(std.testing.allocator, migrations.value, &migration_errors);
+    var found_migration_cap = false;
+    for (migration_errors.items) |error_name| {
+        if (std.mem.eql(u8, error_name, "resource_budget_exceeded")) found_migration_cap = true;
+    }
+    try std.testing.expect(found_migration_cap);
 }
 
 test "server package validation requires consecutive migration files" {

@@ -238,6 +238,31 @@ test("migration steps cannot escape the app storage prefix", () => {
   assert.equal(result.errors.some((error) => error.code === "invalid_migration_prefix"), true);
 });
 
+test("package validation enforces hard package and migration file caps", () => {
+  const tooManyFilesDir = copyExamplePackage("notes-lite");
+  fs.mkdirSync(path.join(tooManyFilesDir, "migrations"), { recursive: true });
+  for (let index = 0; index < 29; index += 1) {
+    fs.writeFileSync(path.join(tooManyFilesDir, "migrations", `extra-${index}.txt`), "");
+  }
+  const tooManyFiles = validatePackage(tooManyFilesDir);
+  assert.equal(tooManyFiles.ok, false);
+  assert.equal(tooManyFiles.errors.some((error) => error.code === "resource_budget_exceeded"), true);
+
+  const tooManyMigrationsDir = copyExamplePackage("notes-lite");
+  fs.mkdirSync(path.join(tooManyMigrationsDir, "migrations"), { recursive: true });
+  for (let index = 0; index < 17; index += 1) {
+    fs.writeFileSync(path.join(tooManyMigrationsDir, "migrations", `${index + 1}_to_${index + 2}.json`), JSON.stringify({
+      appId: "notes-lite",
+      fromDataVersion: index + 1,
+      toDataVersion: index + 2,
+      steps: [],
+    }));
+  }
+  const tooManyMigrations = validatePackage(tooManyMigrationsDir);
+  assert.equal(tooManyMigrations.ok, false);
+  assert.equal(tooManyMigrations.errors.some((error) => error.code === "resource_budget_exceeded"), true);
+});
+
 function copyExamplePackage(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
   fs.cpSync(path.join(examplesDir, name), dir, { recursive: true });
