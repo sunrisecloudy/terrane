@@ -43,8 +43,13 @@ test("iOS host serves a content-rating gated bundled app index", () => {
   assert.match(catalog, /"contentRating": contentRating/);
   assert.match(catalog, /NATIVE_AI_IOS_MAX_CONTENT_AGE/);
   assert.match(catalog, /--native-ai-max-content-age/);
+  assert.match(catalog, /static func denialReason\(appId: String\) -> String\?/);
+  assert.match(catalog, /guard bundledAppIds\.contains\(appId\)/);
+  assert.match(catalog, /return "not_bundled"/);
+  assert.match(catalog, /return record\.minimumAge <= maximumAge \? nil : "content_rating"/);
   assert.match(webHost, /runtime\/app-index\.json/);
   assert.match(webHost, /BundledAppCatalog\.appIndexData\(\)/);
-  assert.match(bridge, /BundledAppCatalog\.isAllowed/);
-  assert.match(bridge, /reason": "content_rating"/);
+  assert.match(bridge, /BundledAppCatalog\.denialReason/);
+  assert.match(bridge, /reason": denialReason/);
+  assert.match(bridge, /not part of the bundled iOS app index/);
 });

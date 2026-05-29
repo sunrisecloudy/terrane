@@ -28,13 +28,17 @@ enum BundledAppCatalog {
     }
 
     static func isAllowed(appId: String) -> Bool {
-        guard let maximumAge = maximumAllowedAge() else {
-            return true
-        }
+        denialReason(appId: appId) == nil
+    }
+
+    static func denialReason(appId: String) -> String? {
         guard let record = record(for: appId) else {
-            return false
+            return "not_bundled"
         }
-        return record.minimumAge <= maximumAge
+        guard let maximumAge = maximumAllowedAge() else {
+            return nil
+        }
+        return record.minimumAge <= maximumAge ? nil : "content_rating"
     }
 
     static func maximumAllowedAge() -> Int? {
@@ -49,7 +53,8 @@ enum BundledAppCatalog {
     }
 
     private static func record(for appId: String) -> BundledAppRecord? {
-        guard let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: appId),
+        guard bundledAppIds.contains(appId),
+              let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: appId),
               let data = try? Data(contentsOf: manifestURL),
               let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = manifest["id"] as? String,

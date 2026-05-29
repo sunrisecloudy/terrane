@@ -53,6 +53,7 @@
 - [x] Storage persists.
 - [x] Zig core step works.
 - [x] Bundled app index exposes content ratings and enforces the iOS age gate.
+- [x] iOS bridge rejects app ids outside the bundled app index.
 
 ### macOS
 
