@@ -996,6 +996,16 @@ struct NativeHostTests {
             #expect(microtestRun.body.contains(#""status":"passed""#))
         }
 
+        let platformSmokeRun = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.run_platform_smoke","args":{"smokePath":"tests/platform-smoke/all-example-apps.platform-smoke.json","platform":"macos"}}"#
+        )
+        #expect(platformSmokeRun.statusCode == 200)
+        #expect(platformSmokeRun.body.contains(#""microTestId":"platform-smoke:all-example-apps-cross-platform-smoke:macos""#))
+        #expect(platformSmokeRun.body.contains(#""status":"passed""#))
+
         let testRunsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/test-runs")!,
             method: "POST",
@@ -1037,7 +1047,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 82)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 83)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

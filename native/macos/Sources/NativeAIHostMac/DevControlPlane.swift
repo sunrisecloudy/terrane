@@ -415,6 +415,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleSignPackage(connection, request, args: args, startedAt: startedAt)
         case "platform.install_webapp_package":
             handleInstallPackage(connection, request, args: args, startedAt: startedAt)
+        case "platform.run_platform_smoke":
+            handleRunPlatformSmoke(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapps":
             sendAccepted(connection, request, startedAt: startedAt, result: listWebapps(includeUninstalled: args["includeUninstalled"] as? Bool == true))
         case "platform.open_webapp":
@@ -1310,6 +1312,28 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleRunPlatformSmoke(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let smoke = platformSmokeSpec(args: args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.run_platform_smoke requires spec or smokePath", startedAt: startedAt)
+            return
+        }
+        let platform = args["platform"] as? String ?? "macos"
+        let result = runPlatformSmoke(smoke: smoke, platform: platform)
+        guard let run = recordTestRun(
+            microTestId: "platform-smoke:\(smoke["id"] as? String ?? "unnamed"):\(platform)",
+            name: "\(smoke["id"] as? String ?? "platform smoke") (\(platform))",
+            appId: nil,
+            spec: smoke,
+            status: (result["ok"] as? Bool) == true ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "native-macos-static"]
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Platform smoke run could not be recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: run)
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -2699,6 +2723,24 @@ final class DevControlPlane: @unchecked Sendable {
         return spec
     }
 
+    private func platformSmokeSpec(args: [String: Any]) -> [String: Any]? {
+        if let spec = args["spec"] as? [String: Any] {
+            return spec
+        }
+        guard let path = args["smokePath"] as? String ?? args["path"] as? String,
+              let url = repoRelativeURL(path)
+        else {
+            return nil
+        }
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let data = text.data(using: .utf8),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return spec
+    }
+
     private func validatePackageResult(args: [String: Any]) -> [String: Any]? {
         guard let package = readPackage(args: args) else {
             return nil
@@ -3063,6 +3105,54 @@ final class DevControlPlane: @unchecked Sendable {
             "appId": appId,
             "version": version,
             "contentHash": hashes["contentHash"] ?? "",
+        ]
+    }
+
+    private func runPlatformSmoke(smoke: [String: Any], platform: String) -> [String: Any] {
+        let apps = smoke["apps"] as? [String] ?? []
+        let stepsPerApp = smoke["stepsPerApp"] as? [[String: Any]] ?? []
+        var appResults: [[String: Any]] = []
+        var failures: [[String: Any]] = []
+
+        for appId in apps {
+            var commands: [[String: Any]] = []
+            let installStep: [String: Any] = [
+                "tool": "platform.install_webapp_package",
+                "args": ["path": "webapps/examples/\(appId)"],
+            ]
+            let install = executeMicrotestStep(phase: "setup", index: 0, step: installStep, appId: appId)
+            commands.append(install)
+            if (install["status"] as? String) == "failed" {
+                var failure = install
+                failure["appId"] = appId
+                failures.append(failure)
+            }
+
+            for (index, step) in stepsPerApp.enumerated() {
+                let expanded = expandPlatformSmokeStep(step, values: ["appId": appId, "platform": platform])
+                let execution = executeMicrotestStep(phase: "steps", index: index, step: expanded, appId: appId)
+                commands.append(execution)
+                if (execution["status"] as? String) == "failed" {
+                    var failure = execution
+                    failure["appId"] = appId
+                    failures.append(failure)
+                }
+            }
+
+            appResults.append([
+                "appId": appId,
+                "ok": !commands.contains { ($0["status"] as? String) == "failed" },
+                "commands": commands,
+            ])
+        }
+
+        return [
+            "ok": failures.isEmpty,
+            "id": smoke["id"] ?? NSNull(),
+            "platform": platform,
+            "totalApps": apps.count,
+            "failures": failures,
+            "apps": appResults,
         ]
     }
 
@@ -3860,6 +3950,29 @@ final class DevControlPlane: @unchecked Sendable {
                 collectText(item, values: &values)
             }
         }
+    }
+
+    private func expandPlatformSmokeStep(_ step: [String: Any], values: [String: String]) -> [String: Any] {
+        var expanded = step
+        expanded["args"] = expandPlaceholders(step["args"] as? [String: Any] ?? [:], values: values)
+        return expanded
+    }
+
+    private func expandPlaceholders(_ value: Any, values: [String: String]) -> Any {
+        if let string = value as? String {
+            var output = string
+            for (name, replacement) in values {
+                output = output.replacingOccurrences(of: "${\(name)}", with: replacement)
+            }
+            return output
+        }
+        if let array = value as? [Any] {
+            return array.map { expandPlaceholders($0, values: values) }
+        }
+        if let dict = value as? [String: Any] {
+            return dict.mapValues { expandPlaceholders($0, values: values) }
+        }
+        return value
     }
 
     private func runtimeQuery(appId: String, args: [String: Any]) -> [String: Any] {
