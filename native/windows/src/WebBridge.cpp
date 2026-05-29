@@ -1,12 +1,55 @@
 #include "WebBridge.h"
 
+#include <atomic>
+#include <string>
+
 namespace nativeai {
 namespace json = winrt::Windows::Data::Json;
+
+namespace {
+
+uint64_t NowMs() {
+  return GetTickCount64();
+}
+
+std::wstring NewBridgeCallId() {
+  static std::atomic_uint64_t sequence{0};
+  return L"bridge_windows_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+      std::to_wstring(NowMs()) + L"_" + std::to_wstring(sequence.fetch_add(1));
+}
+
+std::wstring RuntimeSessionId(BridgeRequest const& request) {
+  auto token = request.context.mountToken.empty() ? L"native" : request.context.mountToken;
+  return L"runtime_windows_" + request.context.appId + L"_" + token;
+}
+
+void BindText(sqlite3_stmt* statement, int index, std::wstring const& value) {
+  auto text = WideToUtf8(value);
+  sqlite3_bind_text(statement, index, text.c_str(), -1, SQLITE_TRANSIENT);
+}
+
+void BindNullableText(sqlite3_stmt* statement, int index, std::wstring const& value) {
+  if (value.empty()) {
+    sqlite3_bind_null(statement, index);
+    return;
+  }
+  BindText(statement, index, value);
+}
+
+std::wstring JsonMemberString(json::JsonObject const& object, std::wstring const& member) {
+  if (!object.HasKey(member)) {
+    return L"";
+  }
+  return std::wstring(object.GetNamedValue(member).Stringify().c_str());
+}
+
+}  // namespace
 
 WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
     : storage_(std::move(databasePath)), dialogs_(ownerWindow) {}
 
 std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext const& context) {
+  auto startedAtMs = NowMs();
   BridgeRequest request;
   request.context = context;
 
@@ -28,17 +71,19 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
     details.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
     details.Insert(L"method", json::JsonValue::CreateStringValue(request.method));
     details.Insert(L"requiredPermission", json::JsonValue::CreateStringValue(permission.value()));
-    return BridgeResponse::Failure(
-               request.id,
-               request.hasId,
-               L"permission_denied",
-               L"App " + request.context.appId + L" cannot call " + request.method,
-               details)
-        .Stringify()
-        .c_str();
+    auto response = BridgeResponse::Failure(
+        request.id,
+        request.hasId,
+        L"permission_denied",
+        L"App " + request.context.appId + L" cannot call " + request.method,
+        details);
+    RecordBridgeCall(request, response, startedAtMs);
+    return response.Stringify().c_str();
   }
 
-  return Dispatch(request).Stringify().c_str();
+  auto response = Dispatch(request);
+  RecordBridgeCall(request, response, startedAtMs);
+  return response.Stringify().c_str();
 }
 
 std::optional<std::wstring> WebBridge::permissionForBridgeMethod(std::wstring const& method) const {
@@ -123,6 +168,57 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   result.Insert(L"features", features);
   result.Insert(L"limits", limits);
   return BridgeResponse::Success(request.id, request.hasId, result);
+}
+
+void WebBridge::EnsureRuntimeSession(BridgeRequest const& request) {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr || request.context.appId.empty()) {
+    return;
+  }
+
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "INSERT INTO runtime_sessions "
+      "(session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json) "
+      "VALUES (?, 'windows', 'windows', '0.1.0', ?, NULL, datetime('now'), 'running', '{}', '{\"source\":\"native-windows-bridge\"}') "
+      "ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, status = 'running'";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return;
+  }
+  BindText(statement, 1, RuntimeSessionId(request));
+  BindText(statement, 2, request.context.appId);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
+void WebBridge::RecordBridgeCall(
+    BridgeRequest const& request,
+    json::JsonObject const& response,
+    uint64_t startedAtMs) {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr || request.context.appId.empty()) {
+    return;
+  }
+  EnsureRuntimeSession(request);
+
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "INSERT INTO bridge_calls "
+      "(bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) "
+      "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return;
+  }
+  BindText(statement, 1, NewBridgeCallId());
+  BindText(statement, 2, RuntimeSessionId(request));
+  BindText(statement, 3, request.context.appId);
+  BindText(statement, 4, request.method);
+  BindText(statement, 5, std::wstring(request.params.Stringify().c_str()));
+  BindNullableText(statement, 6, JsonMemberString(response, L"result"));
+  BindNullableText(statement, 7, JsonMemberString(response, L"error"));
+  sqlite3_bind_int64(statement, 8, static_cast<sqlite3_int64>(NowMs() - startedAtMs));
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
 }
 
 }  // namespace nativeai

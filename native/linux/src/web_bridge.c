@@ -1,5 +1,110 @@
 #include "web_bridge.h"
 
+static gchar *runtime_session_id(const BridgeRequest *request) {
+  const gchar *app_id = request->context.app_id != NULL ? request->context.app_id : "";
+  const gchar *mount_token = request->context.mount_token != NULL && request->context.mount_token[0] != '\0'
+      ? request->context.mount_token
+      : "native";
+  return g_strdup_printf("runtime_linux_%s_%s", app_id, mount_token);
+}
+
+static gchar *new_bridge_call_id(void) {
+  static gint sequence = 0;
+  gint next = g_atomic_int_add(&sequence, 1);
+  return g_strdup_printf("bridge_linux_%" G_GINT64_FORMAT "_%d", g_get_real_time(), next);
+}
+
+static void bind_text(sqlite3_stmt *statement, int index, const gchar *value) {
+  sqlite3_bind_text(statement, index, value != NULL ? value : "", -1, SQLITE_TRANSIENT);
+}
+
+static void bind_nullable_text(sqlite3_stmt *statement, int index, const gchar *value) {
+  if (value == NULL || value[0] == '\0') {
+    sqlite3_bind_null(statement, index);
+    return;
+  }
+  sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT);
+}
+
+static gchar *json_object_to_string(JsonObject *object) {
+  if (object == NULL) {
+    return g_strdup("{}");
+  }
+  JsonNode *node = json_node_init_object(json_node_alloc(), json_object_ref(object));
+  JsonGenerator *generator = json_generator_new();
+  json_generator_set_root(generator, node);
+  gchar *text = json_generator_to_data(generator, NULL);
+  g_object_unref(generator);
+  json_node_unref(node);
+  return text;
+}
+
+static gchar *json_member_to_string(JsonObject *object, const gchar *member) {
+  if (object == NULL || !json_object_has_member(object, member)) {
+    return NULL;
+  }
+  JsonNode *copy = json_node_copy(json_object_get_member(object, member));
+  JsonGenerator *generator = json_generator_new();
+  json_generator_set_root(generator, copy);
+  gchar *text = json_generator_to_data(generator, NULL);
+  g_object_unref(generator);
+  json_node_unref(copy);
+  return text;
+}
+
+static void ensure_runtime_session(WebBridge *bridge, const BridgeRequest *request) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL || request->context.app_id == NULL) {
+    return;
+  }
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "INSERT INTO runtime_sessions "
+      "(session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json) "
+      "VALUES (?, 'linux', 'linux', '0.1.0', ?, NULL, datetime('now'), 'running', '{}', '{\"source\":\"native-linux-bridge\"}') "
+      "ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, status = 'running'";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return;
+  }
+  g_autofree gchar *session_id = runtime_session_id(request);
+  bind_text(statement, 1, session_id);
+  bind_text(statement, 2, request->context.app_id);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
+static void record_bridge_call(WebBridge *bridge, const BridgeRequest *request, JsonNode *response, gint64 started_at_us) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL || request->context.app_id == NULL) {
+    return;
+  }
+  ensure_runtime_session(bridge, request);
+
+  JsonObject *response_object = response != NULL && JSON_NODE_HOLDS_OBJECT(response) ? json_node_get_object(response) : NULL;
+  g_autofree gchar *bridge_call_id = new_bridge_call_id();
+  g_autofree gchar *session_id = runtime_session_id(request);
+  g_autofree gchar *params_json = json_object_to_string(request->params);
+  g_autofree gchar *result_json = json_member_to_string(response_object, "result");
+  g_autofree gchar *error_json = json_member_to_string(response_object, "error");
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "INSERT INTO bridge_calls "
+      "(bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) "
+      "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, datetime('now'))";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return;
+  }
+  bind_text(statement, 1, bridge_call_id);
+  bind_text(statement, 2, session_id);
+  bind_text(statement, 3, request->context.app_id);
+  bind_text(statement, 4, request->method);
+  bind_text(statement, 5, params_json);
+  bind_nullable_text(statement, 6, result_json);
+  bind_nullable_text(statement, 7, error_json);
+  sqlite3_bind_int64(statement, 8, (sqlite3_int64)((g_get_monotonic_time() - started_at_us) / 1000));
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
 static const gchar *permission_for_bridge_method(const gchar *method) {
   if (g_strcmp0(method, "storage.get") == 0 || g_strcmp0(method, "storage.list") == 0) {
     return "storage.read";
@@ -118,11 +223,16 @@ void web_bridge_free(WebBridge *bridge) {
 }
 
 gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxContext context) {
+  gint64 started_at_us = g_get_monotonic_time();
   BridgeRequest request = {.context = context};
   JsonParser *parser = json_parser_new();
   if (!json_parser_load_from_data(parser, body, -1, NULL)) {
     JsonNode *error = bridge_failure(NULL, "invalid_request", "Bridge message body must be JSON", NULL);
-    return bridge_response_to_string(error);
+    gchar *text = bridge_response_to_string(error);
+    json_node_unref(error);
+    g_object_unref(parser);
+    app_sandbox_context_clear(&request.context);
+    return text;
   }
 
   JsonObject *root = json_node_get_object(json_parser_get_root(parser));
@@ -131,20 +241,28 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
     request.id = g_strdup(json_object_get_string_member(root, "id"));
   }
   request.method = g_strdup(json_object_get_string_member_with_default(root, "method", ""));
-  request.params = json_object_ref(json_object_get_object_member(root, "params"));
+  JsonObject *params = json_object_get_object_member(root, "params");
+  request.params = params == NULL ? json_object_new() : json_object_ref(params);
 
   const gchar *permission = permission_for_bridge_method(request.method);
   if (permission != NULL && !approved_permissions_contains(&request.context, permission)) {
     JsonObject *details = json_object_new();
-    json_object_set_string_member(details, "appId", request.context.app_id);
+    json_object_set_string_member(details, "appId", request.context.app_id != NULL ? request.context.app_id : "");
     json_object_set_string_member(details, "method", request.method);
     json_object_set_string_member(details, "requiredPermission", permission);
     JsonNode *response = bridge_failure(&request, "permission_denied", "App cannot call requested bridge method", details);
-    return bridge_response_to_string(response);
+    gchar *text = bridge_response_to_string(response);
+    record_bridge_call(bridge, &request, response, started_at_us);
+    json_node_unref(response);
+    bridge_request_clear(&request);
+    g_object_unref(parser);
+    return text;
   }
 
   JsonNode *response = dispatch(bridge, &request);
   gchar *text = bridge_response_to_string(response);
+  record_bridge_call(bridge, &request, response, started_at_us);
+  json_node_unref(response);
   bridge_request_clear(&request);
   g_object_unref(parser);
   return text;

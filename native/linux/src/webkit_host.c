@@ -296,6 +296,26 @@ static void smoke_success(WebKitHost *host, const gchar *marker) {
   finish_smoke(host);
 }
 
+static gint bridge_log_count(WebKitHost *host, const gchar *app_id, const gchar *method) {
+  if (host == NULL || host->bridge == NULL || host->bridge->storage == NULL || host->bridge->storage->db == NULL) {
+    return 0;
+  }
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(
+          host->bridge->storage->db,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ?",
+          -1,
+          &statement,
+          NULL) != SQLITE_OK) {
+    return 0;
+  }
+  sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, method, -1, SQLITE_TRANSIENT);
+  gint count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
 static void run_storage_smoke(WebKitHost *host, gboolean set_value) {
   const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
   const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
@@ -500,6 +520,11 @@ static void run_fixed_bridge_surface_smoke(WebKitHost *host) {
   g_object_unref(network_builder);
   if (!json_response_error_code_matches(network_response, "network_policy_denied")) {
     smoke_failure(host, network_response);
+    return;
+  }
+
+  if (bridge_log_count(host, "notes-lite", "storage.set") <= 0 || bridge_log_count(host, "api-dashboard", "network.request") <= 0) {
+    smoke_failure(host, "fixed bridge surface smoke did not persist bridge_calls rows");
     return;
   }
 

@@ -108,6 +108,11 @@ bool EnvironmentIsOne(wchar_t const* name) {
   return EnvironmentValue(name) == L"1";
 }
 
+void BindSmokeSqlText(sqlite3_stmt* statement, int index, std::wstring const& value) {
+  auto text = WideToUtf8(value);
+  sqlite3_bind_text(statement, index, text.c_str(), -1, SQLITE_TRANSIENT);
+}
+
 void WriteSmokeLine(std::wstring const& line) {
   auto markerPath = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE");
   if (!markerPath.empty()) {
@@ -498,6 +503,11 @@ void WebViewHost::RunFixedBridgeSurfaceSmoke() {
     return;
   }
 
+  if (BridgeLogCount(L"notes-lite", L"storage.set") <= 0 || BridgeLogCount(L"api-dashboard", L"network.request") <= 0) {
+    SmokeFailure(L"fixed bridge surface smoke did not persist bridge_calls rows");
+    return;
+  }
+
   SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK");
 }
 
@@ -668,6 +678,27 @@ void WebViewHost::SmokeFailure(std::wstring const& message) {
   if (EnvironmentIsOne(L"NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER")) {
     PostQuitMessage(0);
   }
+}
+
+int WebViewHost::BridgeLogCount(std::wstring const& appId, std::wstring const& method) const {
+  auto db = bridge_ == nullptr ? nullptr : bridge_->DatabaseHandle();
+  if (db == nullptr) {
+    return 0;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ?",
+          -1,
+          &statement,
+          nullptr) != SQLITE_OK) {
+    return 0;
+  }
+  BindSmokeSqlText(statement, 1, appId);
+  BindSmokeSqlText(statement, 2, method);
+  int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
 }
 
 std::wstring WebViewHost::BridgeCall(

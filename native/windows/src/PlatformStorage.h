@@ -20,6 +20,7 @@ class PlatformStorage {
   winrt::Windows::Data::Json::JsonObject Set(BridgeRequest const& request);
   winrt::Windows::Data::Json::JsonObject Remove(BridgeRequest const& request);
   winrt::Windows::Data::Json::JsonObject List(BridgeRequest const& request);
+  sqlite3* DatabaseHandle() const { return database_.handle(); }
 
  private:
   void EnsureAppRow(std::wstring const& appId);
