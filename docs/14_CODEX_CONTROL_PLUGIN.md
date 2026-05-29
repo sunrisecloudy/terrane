@@ -142,6 +142,12 @@ Codex should never call generated app APIs directly. It calls MCP tools. The MCP
 
 ## Required MCP tool behavior
 
+Every MCP tool must expose a focused `inputSchema`. The MCP server validates
+arguments against that schema before sending the command to the dev control
+plane. Required identifiers such as `appId`, `packagePath`, `snapshotId`,
+`migration`, and storage keys must fail fast at the MCP boundary when missing
+or malformed.
+
 All tools must return structured JSON:
 
 ```json
@@ -179,6 +185,8 @@ The control plugin must enforce:
 - Session token required (see "Authentication" below).
 - Every target has a declared platform id.
 - Destructive operations require `confirm: true`.
+- Destructive-operation confirmation must be enforced before forwarding the
+  MCP call to the control plane.
 - No production build may expose `/sessions` or runtime test hooks.
 - Arbitrary JS evaluation must be absent by default. If implemented for debugging, it must be named `runtime.unsafe_eval`, disabled by default, and blocked in CI.
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TOOL_NAMES, toolDefinitions } from "../src/tool-contract.js";
+import { TOOL_NAMES, toolDefinitions, inputSchemaFor, validateToolArguments } from "../src/tool-contract.js";
 
 test("tool names are unique", () => {
   assert.equal(new Set(TOOL_NAMES).size, TOOL_NAMES.length);
@@ -51,4 +51,25 @@ test("tool definitions are MCP list compatible", () => {
     TOOL_NAMES,
   );
   assert.equal(definitions.every((tool) => tool.inputSchema.type === "object"), true);
+});
+
+test("tool definitions expose focused input schemas", () => {
+  assert.deepEqual(inputSchemaFor("platform.open_webapp").required, ["appId"]);
+  assert.deepEqual(inputSchemaFor("platform.validate_package").anyOf, [{ required: ["packagePath"] }, { required: ["path"] }]);
+  assert.deepEqual(inputSchemaFor("runtime.storage_set").required, ["appId", "key", "value"]);
+  assert.deepEqual(inputSchemaFor("runtime.type").required, ["appId", "text"]);
+  assert.equal(inputSchemaFor("platform.uninstall_webapp").properties.confirm.const, true);
+  assert.equal(TOOL_NAMES.includes("runtime.unsafe_eval"), false);
+});
+
+test("tool argument validation rejects missing, malformed, and unconfirmed calls", () => {
+  assert.equal(validateToolArguments("platform.open_webapp", { appId: "notes-lite" }).ok, true);
+  assert.match(validateToolArguments("platform.open_webapp", {}).error, /missing required argument: appId/);
+  assert.match(validateToolArguments("platform.open_webapp", { appId: "" }).error, /must not be empty/);
+  assert.match(validateToolArguments("platform.validate_package", {}).error, /missing one required argument group/);
+  assert.equal(validateToolArguments("platform.validate_package", { path: "webapps/examples/notes-lite" }).ok, true);
+  assert.match(validateToolArguments("platform.uninstall_webapp", { appId: "notes-lite" }).error, /confirm/);
+  assert.equal(validateToolArguments("platform.uninstall_webapp", { appId: "notes-lite", confirm: true }).ok, true);
+  assert.match(validateToolArguments("runtime.storage_set", { appId: "notes-lite", key: "notes-lite:x" }).error, /value/);
+  assert.match(validateToolArguments("runtime.storage_set", null).error, /arguments must be an object/);
 });

@@ -1,7 +1,7 @@
 import { stdin, stdout } from "node:process";
 import { resolveControlConfig } from "./config.js";
 import { ControlClient } from "./control-client.js";
-import { TOOL_NAMES, toolDefinitions } from "./tool-contract.js";
+import { TOOL_NAMES, toolDefinitions, validateToolArguments } from "./tool-contract.js";
 
 export class McpStdioServer {
   constructor({ input = stdin, output = stdout, client = defaultControlClient() } = {}) {
@@ -61,7 +61,13 @@ export class McpStdioServer {
       return this.error(message.id, -32602, `Unknown tool: ${name}`);
     }
 
-    const result = await this.client.command(name, message.params?.arguments ?? {});
+    const args = message.params?.arguments ?? {};
+    const validation = validateToolArguments(name, args);
+    if (!validation.ok) {
+      return this.error(message.id, -32602, validation.error, validation.details);
+    }
+
+    const result = await this.client.command(name, args);
     return this.reply(message.id, {
       content: [
         {

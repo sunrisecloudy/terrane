@@ -327,6 +327,9 @@ function checkPluginMcp() {
   if (!mcpServer.includes("resolveControlConfig") || mcpServer.includes("dev-token-change-me")) {
     throw new Error("codex MCP server must resolve token-file config and avoid hardcoded tokens");
   }
+  if (!mcpServer.includes("validateToolArguments")) {
+    throw new Error("codex MCP server must validate tool arguments before forwarding");
+  }
   return `servers=${servers.length}`;
 }
 
@@ -356,6 +359,7 @@ function assertSameList(label, actual, expected) {
 
 function checkControlToolContract() {
   const toolNames = mcpToolNames();
+  const contractSource = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "tool-contract.js"), "utf8");
   if (toolNames.length === 0) {
     throw new Error("MCP tool contract declares no tools");
   }
@@ -384,7 +388,12 @@ function checkControlToolContract() {
   if (serverMissing.length > 0) {
     throw new Error(`server missing MCP tools: ${serverMissing.join(", ")}`);
   }
-  return `tools=${toolNames.length},schema=fixed,fake-host=covered,server=covered`;
+  for (const snippet of ["inputSchemaFor", "validateToolArguments", "CONFIRM_TRUE", "platform.uninstall_webapp", "runtime.storage_set"]) {
+    if (!contractSource.includes(snippet)) {
+      throw new Error(`MCP tool contract missing typed argument support: ${snippet}`);
+    }
+  }
+  return `tools=${toolNames.length},schema=fixed,args=validated,fake-host=covered,server=covered`;
 }
 
 function checkFakeHostStatic() {

@@ -427,6 +427,12 @@ Before release:
 
 The platform must support granular AI-agent-driven tests through the Codex control plugin.
 
+The MCP tool contract is covered by `tools/codex-platform-mcp/test/tool-contract.test.js`,
+which verifies unique tool names, per-tool JSON Schema input definitions,
+safe database tool exposure, and MCP-boundary argument validation including
+`confirm: true` gates for destructive calls. `tools/codex-platform-mcp/test/server.test.js`
+verifies invalid tool arguments are rejected before any control-plane request is forwarded.
+
 ### New test levels
 
 | Level | Scope | Driver |

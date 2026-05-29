@@ -30,8 +30,11 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 ## Implementation notes
 
 The current implementation is dependency-free and speaks the MCP JSON-RPC
-stdio framing directly. Each declared tool forwards mechanically to
-`POST /control/command` on the configured platform control URL.
+stdio framing directly. Each declared tool exposes a focused JSON Schema,
+validates incoming arguments before forwarding, and then sends accepted calls
+to `POST /control/command` on the configured platform control URL.
+Destructive MCP calls such as app uninstall/reset, storage reset, rollback,
+quarantine, snapshot restore, and migration apply require `confirm: true`.
 
 Run:
 
