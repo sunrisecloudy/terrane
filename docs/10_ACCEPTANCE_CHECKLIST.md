@@ -159,5 +159,5 @@
 - [x] Declarative migration dry-run/apply works.
 - [x] Backup export/import works for one generated app.
 - [x] Codex can inspect DB state through safe control-plane tools.
-- [ ] Codex cannot run arbitrary SQL unless unsafe dev mode is explicitly enabled.
+- [x] Codex cannot run arbitrary SQL unless unsafe dev mode is explicitly enabled.
 - [x] Database tests under `tests/db` pass.
