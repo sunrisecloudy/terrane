@@ -17,7 +17,7 @@
     {
       "tool": "runtime.assert_visible",
       "args": {
-        "selector": "[data-testid='note-title']"
+        "selector": "[data-testid='note-title-input']"
       }
     },
     {

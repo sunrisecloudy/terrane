@@ -11,13 +11,17 @@
     {
       "tool": "runtime.dialog_mock_set",
       "args": {
-        "files": [
-          {
-            "name": "sample.txt",
-            "mime": "text/plain",
-            "text": "hello"
-          }
-        ]
+        "appId": "file-transformer",
+        "dialogType": "openFile",
+        "response": {
+          "files": [
+            {
+              "name": "sample.txt",
+              "mime": "text/plain",
+              "text": "hello"
+            }
+          ]
+        }
       }
     },
     {
@@ -29,13 +33,19 @@
     {
       "tool": "runtime.click",
       "args": {
-        "selector": "[data-testid='open-file']"
+        "selector": "[data-testid='open-file-button']"
       }
     },
     {
       "tool": "runtime.assert_bridge_call",
       "args": {
         "method": "dialog.openFile"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "selector": "[data-testid='transform-button']"
       }
     },
     {

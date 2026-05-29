@@ -1,0 +1,40 @@
+{
+  "id": "core-step",
+  "description": "Generated app sends a core.step event and persists the event log.",
+  "targetApps": [
+    "core-replay-lab"
+  ],
+  "platforms": [
+    "fake-host"
+  ],
+  "steps": [
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "core-replay-lab"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "selector": "[data-testid='send-event-button']"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "storage.set"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ]
+}

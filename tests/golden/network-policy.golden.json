@@ -1,0 +1,48 @@
+{
+  "id": "network-policy",
+  "description": "network.request goes through the host bridge and records a successful response.",
+  "targetApps": [
+    "api-dashboard"
+  ],
+  "platforms": [
+    "fake-host"
+  ],
+  "setup": [
+    {
+      "tool": "runtime.network_mock_set",
+      "args": {
+        "appId": "api-dashboard",
+        "method": "GET",
+        "urlPattern": "https://api.example.com/*",
+        "response": {
+          "status": 200,
+          "bodyText": "{\"ok\":true}"
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "api-dashboard"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "selector": "[data-testid='refresh-status-button']"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "network.request"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ]
+}
