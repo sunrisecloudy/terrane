@@ -14,7 +14,7 @@
 ## Runtime
 
 - [x] Runtime launcher displays installed/bundled apps.
-- [ ] Runtime can load each app in sandbox.
+- [x] Runtime can load each app in sandbox.
 - [x] Runtime exposes `AppRuntime.call`.
 - [x] Runtime rejects unknown methods.
 - [x] Runtime enforces manifest permissions.

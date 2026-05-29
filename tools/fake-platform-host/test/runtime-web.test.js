@@ -8,6 +8,7 @@ import { MessageChannel } from "node:worker_threads";
 
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
+const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
 
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
   const harness = createRuntimeHarness();
@@ -186,7 +187,7 @@ test("runtime dev mock handles bridge calls without host dispatch", async () => 
 
 test("runtime launcher, sandbox, bridge calls, debug log, and structured errors work", async () => {
   const manifestsById = new Map(
-    ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"].map((appId) => [
+    runtimeExampleAppIds.map((appId) => [
       appId,
       {
         ...defaultRuntimeManifest(),
@@ -272,14 +273,62 @@ test("runtime launcher, sandbox, bridge calls, debug log, and structured errors 
   }
 });
 
-async function mountFirstApp(harness) {
+test("runtime can mount every bundled app in a sandboxed frame", async () => {
+  const manifestsById = new Map(
+    runtimeExampleAppIds.map((appId) => [
+      appId,
+      {
+        ...defaultRuntimeManifest(),
+        id: appId,
+        name: appId,
+        description: `${appId} sandbox fixture`,
+        storagePrefix: `${appId}:`,
+        permissions: ["storage.read"],
+        resourceBudget: { maxBridgeCallsPerMinute: 20 },
+      },
+    ]),
+  );
+  const harness = createRuntimeHarness({ manifestsById });
+  try {
+    await loadRuntime(harness);
+    assert.equal(harness.document.getElementById("app-list").children.length, runtimeExampleAppIds.length);
+
+    for (const [index, appId] of runtimeExampleAppIds.entries()) {
+      const frame = await mountAppAtIndex(harness, index);
+      assert.equal(harness.document.getElementById("active-title").textContent, appId);
+      assert.equal(frame.title, appId);
+      assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
+      assert.match(frame.srcdoc, new RegExp(`<base href="/webapps/examples/${appId}/">`));
+      assert.equal(typeof frame.contentWindow.AppRuntime.call, "function");
+
+      await vm.runInContext(
+        `window.AppRuntime.call("storage.get", { key: "${appId}:probe", defaultValue: [] })`,
+        frame.contentWindow.context,
+      );
+      await flushAsync();
+
+      const request = harness.fetchState.bridgeRequests.at(-1);
+      assert.equal(request.method, "storage.get");
+      assert.equal(request.params.key, `${appId}:probe`);
+      assert.equal(request.headers["x-app-id"], appId);
+    }
+  } finally {
+    harness.close();
+  }
+});
+
+async function loadRuntime(harness) {
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
   vm.runInContext(runtimeSource, harness.parentContext);
 
   await flushAsync();
-  const firstAppButton = harness.document.getElementById("app-list").children[0];
-  assert.ok(firstAppButton, "runtime launcher should render app buttons");
-  firstAppButton.dispatch("click");
+  assert.ok(harness.document.getElementById("app-list").children[0], "runtime launcher should render app buttons");
+}
+
+async function mountAppAtIndex(harness, index) {
+  const appButton = harness.document.getElementById("app-list").children[index];
+  assert.ok(appButton, `runtime launcher should render app button ${index}`);
+  appButton.dispatch("click");
   await flushAsync();
 
   const frame = harness.document.getElementById("app-frame-wrap").children[0];
@@ -290,6 +339,11 @@ async function mountFirstApp(harness) {
 
   await flushAsync();
   return frame;
+}
+
+async function mountFirstApp(harness) {
+  await loadRuntime(harness);
+  return mountAppAtIndex(harness, 0);
 }
 
 function createRuntimeHarness(options = {}) {
@@ -521,7 +575,7 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
   }
   if (url === "/bridge") {
     const request = JSON.parse(options.body);
-    state.bridgeRequests.push(request);
+    state.bridgeRequests.push({ ...request, headers: options.headers ?? {} });
     return jsonResponse({
       id: request.id,
       ok: true,
