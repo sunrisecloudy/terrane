@@ -161,6 +161,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, parsed, startedAt: startedAt, result: sessionResult())
         case ("POST", "/command"):
             handleCommand(connection, parsed, startedAt: startedAt)
+        case ("POST", "/db/snapshot"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: dbSnapshotResult())
         default:
             handleSessionRoute(connection, parsed, startedAt: startedAt)
         }
@@ -227,6 +229,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
         case "runtime.event_log":
             sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
+        case "db.snapshot":
+            sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
         default:
             sendRejected(
                 connection,
@@ -298,6 +302,61 @@ final class DevControlPlane: @unchecked Sendable {
             "bridgeCalls": [],
             "coreEvents": [],
             "controlCommands": controlCommands(),
+        ]
+    }
+
+    private func dbSnapshotResult() -> [String: Any] {
+        [
+            "apps": tableRows(
+                table: "apps",
+                columns: ["id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"],
+                orderBy: "id"
+            ),
+            "app_versions": tableRows(
+                table: "app_versions",
+                columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"],
+                orderBy: "created_at"
+            ),
+            "app_storage": tableRows(
+                table: "app_storage",
+                columns: ["app_id", "key", "value_json", "updated_at"],
+                orderBy: "updated_at"
+            ),
+            "bridge_calls": tableRows(
+                table: "bridge_calls",
+                columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"],
+                orderBy: "created_at"
+            ),
+            "core_events": tableRows(
+                table: "core_events",
+                columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+                orderBy: "created_at"
+            ),
+            "test_runs": tableRows(
+                table: "test_runs",
+                columns: ["test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"],
+                orderBy: "started_at"
+            ),
+            "control_sessions": tableRows(
+                table: "control_sessions",
+                columns: ["control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"],
+                orderBy: "started_at"
+            ),
+            "control_commands": tableRows(
+                table: "control_commands",
+                columns: ["command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "created_at", "duration_ms"],
+                orderBy: "created_at"
+            ),
+            "runtime_sessions": tableRows(
+                table: "runtime_sessions",
+                columns: ["session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"],
+                orderBy: "started_at"
+            ),
+            "runtime_snapshots": tableRows(
+                table: "runtime_snapshots",
+                columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"],
+                orderBy: "created_at"
+            ),
         ]
     }
 
@@ -432,6 +491,26 @@ final class DevControlPlane: @unchecked Sendable {
         return rows
     }
 
+    private func tableRows(table: String, columns: [String], orderBy: String) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        var statement: OpaquePointer?
+        let sql = "SELECT \(columns.joined(separator: ", ")) FROM \(table) ORDER BY \(orderBy) LIMIT 100"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            var row: [String: Any] = [:]
+            for (index, column) in columns.enumerated() {
+                row[column] = sqliteValue(statement, Int32(index))
+            }
+            rows.append(row)
+        }
+        return rows
+    }
+
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
         sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT_CONTROL)
     }
@@ -503,6 +582,8 @@ private struct HTTPRequest {
             return "platform.health"
         case ("POST", "/sessions"):
             return "platform.launch"
+        case ("POST", "/db/snapshot"):
+            return "db.snapshot"
         case ("DELETE", _):
             return "platform.stop"
         case ("GET", let value) where value.hasSuffix("/snapshot"):
@@ -611,6 +692,21 @@ private func columnNullableText(_ statement: OpaquePointer?, _ index: Int32) -> 
         return nil
     }
     return String(cString: pointer)
+}
+
+private func sqliteValue(_ statement: OpaquePointer?, _ index: Int32) -> Any {
+    switch sqlite3_column_type(statement, index) {
+    case SQLITE_INTEGER:
+        return Int(sqlite3_column_int64(statement, index))
+    case SQLITE_FLOAT:
+        return sqlite3_column_double(statement, index)
+    case SQLITE_TEXT:
+        return columnText(statement, index)
+    case SQLITE_NULL:
+        return NSNull()
+    default:
+        return columnText(statement, index)
+    }
 }
 
 private func statusReason(_ status: Int) -> String {
