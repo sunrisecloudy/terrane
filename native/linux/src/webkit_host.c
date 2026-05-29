@@ -112,6 +112,10 @@ static gboolean is_runtime_envelope(JsonObject *root) {
   return json_object_has_member(root, "appId") || json_object_has_member(root, "mountToken") || json_object_has_member(root, "request");
 }
 
+static gboolean is_trusted_runtime_uri(const gchar *uri) {
+  return uri != NULL && g_str_has_prefix(uri, "app-runtime://runtime/");
+}
+
 static JsonObject *runtime_envelope_request(JsonObject *root) {
   JsonNode *request = json_object_get_member(root, "request");
   if (request == NULL || !JSON_NODE_HOLDS_OBJECT(request)) {
@@ -457,7 +461,7 @@ static void on_load_changed(WebKitWebView *web_view, WebKitLoadEvent load_event,
   }
   WebKitHost *host = user_data;
   const gchar *uri = webkit_web_view_get_uri(web_view);
-  if (g_strcmp0(uri, "app-runtime://runtime/index.html") == 0 || g_strcmp0(uri, "app-runtime://runtime-web/index.html") == 0) {
+  if (g_strcmp0(uri, "app-runtime://runtime/index.html") == 0) {
     run_smoke(host);
   }
 }
@@ -469,7 +473,7 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
   g_autofree gchar *payload = jsc_value_to_json(value, 0);
   gchar *response = NULL;
 
-  if (uri == NULL || !g_str_has_prefix(uri, "app-runtime://runtime-web/")) {
+  if (!is_trusted_runtime_uri(uri)) {
     response = bridge_error_text(NULL, "bridge.unauthorized_channel", "Runtime bridge envelope must come from the trusted runtime view");
   } else if (payload == NULL) {
     response = bridge_error_text(NULL, "invalid_request", "Runtime bridge envelope must be JSON");

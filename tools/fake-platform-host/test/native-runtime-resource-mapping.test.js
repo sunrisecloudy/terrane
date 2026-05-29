@@ -47,6 +47,10 @@ test("Linux native host maps app-runtime /runtime paths to runtime-web files", (
   assertContains(source, 'strstr(path, "..") == NULL', "Linux");
   assertContains(source, "content_type_for_path", "Linux");
   assertContains(source, 'webkit_web_view_load_uri(host->web_view, "app-runtime://runtime/index.html")', "Linux");
+  assertContains(source, "is_trusted_runtime_uri", "Linux");
+  assertContains(source, 'g_str_has_prefix(uri, "app-runtime://runtime/")', "Linux");
+  assertContains(source, "if (!is_trusted_runtime_uri(uri))", "Linux");
+  assert.equal(source.includes('!g_str_has_prefix(uri, "app-runtime://runtime-web/")'), false, "Linux bridge must trust the loaded runtime URI");
 });
 
 test("Android native host packages runtime-web under the /runtime asset path", () => {
