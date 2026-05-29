@@ -686,6 +686,24 @@ struct NativeHostTests {
         #expect(callBridgeStorageList.statusCode == 200)
         #expect(callBridgeStorageList.body.contains(#""keys":["#))
 
+        let callBridgeToast = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"notes-lite","method":"notification.toast","params":{"message":"Saved","level":"success"}}}"#
+        )
+        #expect(callBridgeToast.statusCode == 200)
+        #expect(callBridgeToast.body.contains(#""id":"control_call_bridge""#))
+
+        let notificationCapture = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.notification_capture","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(notificationCapture.statusCode == 200)
+        #expect(notificationCapture.body.contains(#""message":"Saved""#))
+
         let coreStep = try await httpRequest(
             commandURL,
             method: "POST",
@@ -784,7 +802,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 54)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 56)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

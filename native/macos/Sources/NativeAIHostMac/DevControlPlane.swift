@@ -338,6 +338,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: clearRuntimeLogs(appId: args["appId"] as? String))
         case "runtime.console_logs":
             sendAccepted(connection, request, startedAt: startedAt, result: consoleLogs(appId: args["appId"] as? String))
+        case "runtime.notification_capture":
+            sendAccepted(connection, request, startedAt: startedAt, result: notificationCapture(appId: args["appId"] as? String))
         case "runtime.assert_visible":
             handleVisibleAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_text":
@@ -1430,6 +1432,25 @@ final class DevControlPlane: @unchecked Sendable {
             ])
         }
         return rows
+    }
+
+    private func notificationCapture(appId: String?) -> [String: Any] {
+        [
+            "appId": appId ?? NSNull(),
+            "notifications": bridgeCallRows(appId: appId)
+                .filter { ($0["method"] as? String) == "notification.toast" }
+                .map { row in
+                    let params = jsonDictionary(row["params_json"] as? String ?? "") ?? [:]
+                    return [
+                        "bridgeCallId": row["bridge_call_id"] ?? NSNull(),
+                        "appId": row["app_id"] ?? NSNull(),
+                        "message": params["message"] ?? NSNull(),
+                        "level": params["level"] ?? NSNull(),
+                        "params": params,
+                        "createdAt": row["created_at"] ?? NSNull(),
+                    ]
+                },
+        ]
     }
 
     private func clearRuntimeLogs(appId: String?) -> [String: Any] {
