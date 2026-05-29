@@ -732,6 +732,39 @@ struct NativeHostTests {
         #expect(storageAssert.statusCode == 200)
         #expect(storageAssert.body.contains(#""key":"notes-lite:control-effect""#))
 
+        let migrationJSON = #"{"appId":"notes-lite","fromDataVersion":1,"toDataVersion":2,"steps":[{"op":"setDefault","key":"notes-lite:control-effect","to":"$.migrated","value":true}]}"#
+        let migrationDryRun = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.migration_dry_run","args":{"migration":\#(migrationJSON)}}"#
+        )
+        #expect(migrationDryRun.statusCode == 200)
+        #expect(migrationDryRun.body.contains(#""mode":"dry-run""#))
+        #expect(migrationDryRun.body.contains(#""snapshotId":"snapshot_"#))
+        #expect(migrationDryRun.body.contains("notes-lite:control-effect"))
+
+        let migrationApply = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.migration_apply","args":{"migration":\#(migrationJSON)}}"#
+        )
+        #expect(migrationApply.statusCode == 200)
+        #expect(migrationApply.body.contains(#""mode":"apply""#))
+        #expect(migrationApply.body.contains(#""status":"passed""#))
+        #expect(try sqliteMigrationRunCount(dbURL: dbURL, appId: "notes-lite") >= 2)
+        #expect(try sqliteAppDataVersion(dbURL: dbURL, appId: "notes-lite") == 2)
+
+        let migratedStorageGet = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.storage_get","args":{"appId":"notes-lite","key":"notes-lite:control-effect"}}"#
+        )
+        #expect(migratedStorageGet.statusCode == 200)
+        #expect(migratedStorageGet.body.contains(#""migrated":true"#))
+
         let bridgeCallAssert = try await httpRequest(
             commandURL,
             method: "POST",
@@ -767,7 +800,7 @@ struct NativeHostTests {
             body: #"{"tool":"runtime.clear_logs","args":{"appId":"notes-lite"}}"#
         )
         #expect(clearedLogs.statusCode == 200)
-        #expect(clearedLogs.body.contains(#""bridgeCallsCleared":2"#))
+        #expect(clearedLogs.body.contains(#""bridgeCallsCleared":3"#))
 
         let bridgeCallsAfterClear = try await httpRequest(
             commandURL,
@@ -1047,7 +1080,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 83)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 86)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
@@ -1257,6 +1290,40 @@ private func sqliteBackupExportCount(dbURL: URL) throws -> Int {
     var statement: OpaquePointer?
     sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_exports WHERE type = 'debug-bundle'", -1, &statement, nil)
     defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        return 0
+    }
+    return Int(sqlite3_column_int(statement, 0))
+}
+
+private func sqliteMigrationRunCount(dbURL: URL, appId: String) throws -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return 0
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM migration_runs WHERE app_id = ?", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, appId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        return 0
+    }
+    return Int(sqlite3_column_int(statement, 0))
+}
+
+private func sqliteAppDataVersion(dbURL: URL, appId: String) throws -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return 0
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT data_version FROM apps WHERE id = ?", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, appId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     guard sqlite3_step(statement) == SQLITE_ROW else {
         return 0
     }

@@ -443,6 +443,10 @@ final class DevControlPlane: @unchecked Sendable {
                 return
             }
             handleRestoreSnapshot(connection, request, snapshotId: snapshotId, startedAt: startedAt)
+        case "platform.migration_dry_run":
+            handleMigrationRun(connection, request, args: args, mode: "dry-run", startedAt: startedAt)
+        case "platform.migration_apply":
+            handleMigrationRun(connection, request, args: args, mode: "apply", startedAt: startedAt)
         case "db.snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: dbSnapshotResult())
         case "db.query_app_storage":
@@ -1334,6 +1338,19 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: run)
+    }
+
+    private func handleMigrationRun(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], mode: String, startedAt: Date) {
+        guard let migration = args["migration"] as? [String: Any] else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "\(request.toolName) requires migration", startedAt: startedAt)
+            return
+        }
+        do {
+            let result = try runMigration(migration: migration, mode: mode)
+            sendAccepted(connection, request, startedAt: startedAt, result: result)
+        } catch {
+            sendRejected(connection, request, status: 400, code: "migration_failed", message: "\(request.toolName) could not complete", startedAt: startedAt)
+        }
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -3154,6 +3171,306 @@ final class DevControlPlane: @unchecked Sendable {
             "failures": failures,
             "apps": appResults,
         ]
+    }
+
+    private func runMigration(migration: [String: Any], mode: String) throws -> [String: Any] {
+        guard mode == "dry-run" || mode == "apply" else {
+            throw NSError(domain: "DevControlPlane", code: 1)
+        }
+        guard let appId = migration["appId"] as? String,
+              let fromDataVersion = intValue(migration["fromDataVersion"]),
+              let toDataVersion = intValue(migration["toDataVersion"]),
+              toDataVersion == fromDataVersion + 1
+        else {
+            throw NSError(domain: "DevControlPlane", code: 2)
+        }
+        guard let active = activeAppRecord(appId: appId), active.installId != nil else {
+            throw NSError(domain: "DevControlPlane", code: 3)
+        }
+        guard active.dataVersion == fromDataVersion else {
+            throw NSError(domain: "DevControlPlane", code: 4)
+        }
+
+        let startedAt = Self.now()
+        let migrationId = "migration_\(appId)_\(fromDataVersion)_to_\(toDataVersion)"
+        let runId = "mrun_\(UUID().uuidString.lowercased())"
+        let preSnapshot = createSnapshot(appId: appId, type: "pre-migration", sessionId: runtimeSessionId(appId: appId))
+        let preview = try previewMigration(migration: migration)
+        let report: [String: Any] = [
+            "changedKeys": preview["changedKeys"] ?? [],
+            "operationCounts": preview["operationCounts"] ?? [:],
+        ]
+
+        guard executePrepared(
+            """
+            INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                migrationId,
+                appId,
+                fromDataVersion,
+                toDataVersion,
+                jsonBody(migration),
+                "sha256:\(sha256Hex(jsonString(migration)))",
+                startedAt,
+            ]
+        ) else {
+            throw NSError(domain: "DevControlPlane", code: 5)
+        }
+
+        if mode == "dry-run" {
+            guard recordMigrationRun(
+                runId: runId,
+                migrationId: migrationId,
+                appId: appId,
+                installId: active.installId,
+                mode: mode,
+                status: "passed",
+                preSnapshotId: preSnapshot?["snapshotId"] as? String,
+                report: report,
+                startedAt: startedAt
+            ) else {
+                throw NSError(domain: "DevControlPlane", code: 6)
+            }
+            return migrationRunResult(runId: runId, mode: mode, status: "passed", snapshotId: preSnapshot?["snapshotId"] as? String, preview: preview)
+        }
+
+        guard executeSQL("BEGIN IMMEDIATE") else {
+            throw NSError(domain: "DevControlPlane", code: 7)
+        }
+        var ok = true
+        for change in preview["changes"] as? [[String: Any]] ?? [] {
+            guard let key = change["key"] as? String else {
+                ok = false
+                break
+            }
+            if change["delete"] as? Bool == true {
+                ok = ok && executePrepared("DELETE FROM app_storage WHERE app_id = ? AND key = ?", [appId, key])
+            } else {
+                ok = ok && executePrepared(
+                    """
+                    INSERT INTO app_storage (app_id, key, value_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+                    """,
+                    [appId, key, jsonString(change["value"] ?? NSNull()), Self.now()]
+                )
+            }
+        }
+        ok = ok && executePrepared("UPDATE apps SET data_version = ?, updated_at = ? WHERE id = ?", [toDataVersion, Self.now(), appId])
+        ok = ok && recordMigrationRun(
+            runId: runId,
+            migrationId: migrationId,
+            appId: appId,
+            installId: active.installId,
+            mode: mode,
+            status: "passed",
+            preSnapshotId: preSnapshot?["snapshotId"] as? String,
+            report: report,
+            startedAt: startedAt
+        )
+
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            throw NSError(domain: "DevControlPlane", code: 8)
+        }
+        return migrationRunResult(runId: runId, mode: mode, status: "passed", snapshotId: preSnapshot?["snapshotId"] as? String, preview: preview)
+    }
+
+    private func previewMigration(migration: [String: Any]) throws -> [String: Any] {
+        guard let appId = migration["appId"] as? String else {
+            throw NSError(domain: "DevControlPlane", code: 9)
+        }
+        var values = storageValues(appId: appId)
+        var changes: [[String: Any]] = []
+        var operationCounts: [String: Int] = [:]
+        for step in migration["steps"] as? [[String: Any]] ?? [] {
+            guard let op = step["op"] as? String else {
+                throw NSError(domain: "DevControlPlane", code: 10)
+            }
+            operationCounts[op] = (operationCounts[op] ?? 0) + 1
+            switch op {
+            case "setDefault":
+                let keys = migrationKeys(step: step, values: values)
+                let path = step["to"] as? String ?? step["jsonPath"] as? String ?? "$"
+                for key in keys {
+                    let next = setDefaultValue(values[key] ?? NSNull(), path: path, value: step["value"] ?? NSNull())
+                    values[key] = next
+                    changes.append(["key": key, "value": next])
+                }
+            case "renameKey", "moveStorageKey":
+                guard let from = step["from"] as? String, let to = step["to"] as? String else {
+                    throw NSError(domain: "DevControlPlane", code: 11)
+                }
+                let value = values[from] ?? NSNull()
+                values.removeValue(forKey: from)
+                values[to] = value
+                changes.append(["key": from, "delete": true])
+                changes.append(["key": to, "value": value])
+            case "deleteKey", "deleteStorageKey":
+                guard let key = step["key"] as? String else {
+                    throw NSError(domain: "DevControlPlane", code: 12)
+                }
+                values.removeValue(forKey: key)
+                changes.append(["key": key, "delete": true])
+            case "copyKey":
+                guard let from = step["from"] as? String, let to = step["to"] as? String else {
+                    throw NSError(domain: "DevControlPlane", code: 13)
+                }
+                let value = values[from] ?? NSNull()
+                values[to] = value
+                changes.append(["key": to, "value": value])
+            case "transformEnum":
+                let keys = migrationKeys(step: step, values: values)
+                let path = step["to"] as? String ?? step["jsonPath"] as? String ?? "$"
+                let mapping = step["mapping"] as? [String: Any] ?? step["map"] as? [String: Any] ?? [:]
+                for key in keys {
+                    let next = transformEnumValue(values[key] ?? NSNull(), path: path, mapping: mapping, defaultValue: step["defaultMapping"])
+                    values[key] = next
+                    changes.append(["key": key, "value": next])
+                }
+            default:
+                throw NSError(domain: "DevControlPlane", code: 14)
+            }
+        }
+        let changedKeys = Array(Set(changes.compactMap { $0["key"] as? String })).sorted()
+        return [
+            "changedKeys": changedKeys,
+            "operationCounts": operationCounts,
+            "changes": changes,
+        ]
+    }
+
+    private func recordMigrationRun(
+        runId: String,
+        migrationId: String,
+        appId: String,
+        installId: String?,
+        mode: String,
+        status: String,
+        preSnapshotId: String?,
+        report: [String: Any],
+        startedAt: String
+    ) -> Bool {
+        executePrepared(
+            """
+            INSERT INTO migration_runs (migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, report_json, started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [runId, migrationId, appId, installId, mode, status, preSnapshotId, jsonBody(report), startedAt, Self.now()]
+        )
+    }
+
+    private func migrationRunResult(runId: String, mode: String, status: String, snapshotId: String?, preview: [String: Any]) -> [String: Any] {
+        var result = preview
+        result["runId"] = runId
+        result["mode"] = mode
+        result["status"] = status
+        result["snapshotId"] = snapshotId ?? NSNull()
+        return result
+    }
+
+    private func storageValues(appId: String) -> [String: Any] {
+        guard let db = database.handle else { return [:] }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT key, value_json FROM app_storage WHERE app_id = ? ORDER BY key", -1, &statement, nil) == SQLITE_OK else {
+            return [:]
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        var values: [String: Any] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            values[columnText(statement, 0)] = jsonValue(columnNullableText(statement, 1))
+        }
+        return values
+    }
+
+    private func migrationKeys(step: [String: Any], values: [String: Any]) -> [String] {
+        if let key = step["key"] as? String {
+            return [key]
+        }
+        guard let pattern = step["keyPattern"] as? String else {
+            return []
+        }
+        if pattern.contains("*") || pattern.contains("?") {
+            let regex = "^" + NSRegularExpression.escapedPattern(for: pattern)
+                .replacingOccurrences(of: "\\*", with: ".*")
+                .replacingOccurrences(of: "\\?", with: ".") + "$"
+            return values.keys.filter { $0.range(of: regex, options: .regularExpression) != nil }.sorted()
+        }
+        return values.keys.filter { $0 == pattern }.sorted()
+    }
+
+    private func setDefaultValue(_ source: Any, path: String, value: Any) -> Any {
+        var root = normalizedJSONObject(source)
+        let components = migrationPathComponents(path)
+        guard !components.isEmpty else {
+            return source is NSNull ? value : source
+        }
+        setDefaultInObject(&root, components: components, value: value)
+        return root
+    }
+
+    private func transformEnumValue(_ source: Any, path: String, mapping: [String: Any], defaultValue: Any?) -> Any {
+        var root = normalizedJSONObject(source)
+        let components = migrationPathComponents(path)
+        guard !components.isEmpty else {
+            let key = String(describing: source)
+            return mapping[key] ?? defaultValue ?? source
+        }
+        transformEnumInObject(&root, components: components, mapping: mapping, defaultValue: defaultValue)
+        return root
+    }
+
+    private func normalizedJSONObject(_ source: Any) -> Any {
+        if source is NSNull {
+            return [:] as [String: Any]
+        }
+        return source
+    }
+
+    private func migrationPathComponents(_ path: String) -> [String] {
+        var value = path
+        if value.hasPrefix("$.") {
+            value.removeFirst(2)
+        } else if value == "$" {
+            return []
+        }
+        return value.split(separator: ".").map(String.init).filter { !$0.isEmpty && $0 != "*" && $0 != "[*]" }
+    }
+
+    private func setDefaultInObject(_ object: inout Any, components: [String], value: Any) {
+        guard let first = components.first else { return }
+        if components.count == 1 {
+            var dict = object as? [String: Any] ?? [:]
+            if dict[first] == nil || dict[first] is NSNull {
+                dict[first] = value
+            }
+            object = dict
+            return
+        }
+        var dict = object as? [String: Any] ?? [:]
+        var child: Any = dict[first] ?? [:] as [String: Any]
+        setDefaultInObject(&child, components: Array(components.dropFirst()), value: value)
+        dict[first] = child
+        object = dict
+    }
+
+    private func transformEnumInObject(_ object: inout Any, components: [String], mapping: [String: Any], defaultValue: Any?) {
+        guard let first = components.first else { return }
+        var dict = object as? [String: Any] ?? [:]
+        if components.count == 1 {
+            if let current = dict[first] {
+                dict[first] = mapping[String(describing: current)] ?? defaultValue ?? current
+            }
+            object = dict
+            return
+        }
+        var child: Any = dict[first] ?? [:] as [String: Any]
+        transformEnumInObject(&child, components: Array(components.dropFirst()), mapping: mapping, defaultValue: defaultValue)
+        dict[first] = child
+        object = dict
     }
 
     private func executeMicrotestPhase(_ phase: String, steps: [[String: Any]], appId: String) -> [String: Any] {
