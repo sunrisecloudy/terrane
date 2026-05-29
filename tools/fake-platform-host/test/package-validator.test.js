@@ -340,6 +340,7 @@ test("document policy rejects navigation and viewport escape hatches", () => {
   const cssCases = [
     ["forbidden_external_font", "@font-face { font-family: Bad; src: url(font.woff2); }"],
     ["forbidden_fixed_position", ".escape { position: fixed; inset: 0; }"],
+    ["forbidden_css_url", ".logo { background-image: url(icon.png); }"],
   ];
 
   for (const [code, snippet] of cssCases) {

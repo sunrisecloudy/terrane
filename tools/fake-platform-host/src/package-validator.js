@@ -119,7 +119,7 @@ export function validatePackage(packageDir) {
   }
 
   validateHtml(files.get("index.html"), errors);
-  validateCss(files.get("styles.css"), errors);
+  validateCss(files.get("styles.css"), errors, files);
   const bridgeMethods = validateJs(files.get("app.js"), errors);
 
   if (manifest) {
@@ -654,7 +654,7 @@ function htmlAttrNames(attrs) {
     .map((match) => match[1].toLowerCase());
 }
 
-function validateCss(source, errors) {
+function validateCss(source, errors, files = new Map()) {
   if (/@import\b/i.test(source)) {
     errors.push(issue("forbidden_css_import", "remote CSS imports are forbidden", {}));
   }
@@ -664,9 +664,26 @@ function validateCss(source, errors) {
   if (/\bposition\s*:\s*fixed\b/i.test(source)) {
     errors.push(issue("forbidden_fixed_position", "generated app CSS must not escape the host viewport", {}));
   }
-  if (/url\(\s*["']?(?:https?:|data:|\/)/i.test(source)) {
-    errors.push(issue("forbidden_css_url", "CSS url() may only reference relative package files", {}));
+  for (const value of cssUrlValues(source)) {
+    if (isForbiddenCssUrl(value, files)) {
+      errors.push(issue("forbidden_css_url", "CSS url() may only reference relative package files", { value }));
+      break;
+    }
   }
+}
+
+function cssUrlValues(source) {
+  return [...source.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s]+))\s*\)/gi)].map(
+    (match) => match[1] ?? match[2] ?? match[3] ?? "",
+  );
+}
+
+function isForbiddenCssUrl(value, files) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("#")) return false;
+  if (isForbiddenHtmlUrl(trimmed)) return true;
+  const packagePath = trimmed.split(/[?#]/, 1)[0];
+  return !files.has(packagePath);
 }
 
 function validateJs(source, errors) {

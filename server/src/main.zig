@@ -2593,7 +2593,7 @@ fn collectWebappPackageErrors(
         if (hasInteractiveWithoutTestId(html)) try errors.append(allocator, "missing_testid");
     }
     if (findPackageFile(files, "styles.css")) |css| {
-        try validateServerCssPolicy(allocator, css, errors);
+        try validateServerCssPolicy(allocator, css, files, errors);
     }
     if (findPackageFile(files, "app.js")) |js| {
         try validateServerJsPolicy(allocator, manifest, js, errors);
@@ -11284,12 +11284,13 @@ fn isHttpUrl(value: []const u8) bool {
 fn validateServerCssPolicy(
     allocator: std.mem.Allocator,
     css: []const u8,
+    files: std.json.Value,
     errors: *std.ArrayList([]const u8),
 ) !void {
     if (containsIgnoreCase(css, "@import")) try errors.append(allocator, "forbidden_css_import");
     if (containsIgnoreCase(css, "@font-face")) try errors.append(allocator, "forbidden_external_font");
     if (cssHasFixedPosition(css)) try errors.append(allocator, "forbidden_fixed_position");
-    if (cssHasForbiddenUrl(css)) try errors.append(allocator, "forbidden_css_url");
+    if (cssHasForbiddenUrl(css, files)) try errors.append(allocator, "forbidden_css_url");
 }
 
 fn cssHasFixedPosition(css: []const u8) bool {
@@ -11312,21 +11313,48 @@ fn cssHasFixedPosition(css: []const u8) bool {
     return false;
 }
 
-fn cssHasForbiddenUrl(css: []const u8) bool {
+fn cssHasForbiddenUrl(css: []const u8, files: std.json.Value) bool {
     var index: usize = 0;
     while (indexOfIgnoreCasePos(css, index, "url(")) |start| {
         var cursor = start + "url(".len;
         while (cursor < css.len and htmlSpace(css[cursor])) : (cursor += 1) {}
-        if (cursor < css.len and (css[cursor] == '"' or css[cursor] == '\'')) cursor += 1;
-        const value = css[cursor..];
-        if (startsWithIgnoreCase(value, "http:") or
-            startsWithIgnoreCase(value, "https:") or
-            startsWithIgnoreCase(value, "data:") or
-            startsWithIgnoreCase(value, "/"))
-        {
-            return true;
+        const quote: ?u8 = if (cursor < css.len and (css[cursor] == '"' or css[cursor] == '\'')) css[cursor] else null;
+        if (quote != null) cursor += 1;
+        const value_start = cursor;
+        while (cursor < css.len) : (cursor += 1) {
+            if (quote) |actual_quote| {
+                if (css[cursor] == actual_quote) break;
+            } else if (css[cursor] == ')' or htmlSpace(css[cursor])) {
+                break;
+            }
         }
+        if (cssUrlIsForbidden(css[value_start..cursor], files)) return true;
         index = cursor + 1;
+    }
+    return false;
+}
+
+fn cssUrlIsForbidden(value: []const u8, files: std.json.Value) bool {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] == '#') return false;
+    if (htmlUrlIsExternalOrAbsolute(trimmed)) return true;
+    const path = cssUrlPackagePath(trimmed);
+    if (path.len == 0) return true;
+    return !packageJsonHasFile(files, path);
+}
+
+fn cssUrlPackagePath(value: []const u8) []const u8 {
+    var end: usize = 0;
+    while (end < value.len and value[end] != '?' and value[end] != '#') : (end += 1) {}
+    return value[0..end];
+}
+
+fn packageJsonHasFile(files: std.json.Value, file_path: []const u8) bool {
+    if (files != .array) return false;
+    for (files.array.items) |file| {
+        if (file != .object) continue;
+        const path = valueString(file.object.get("path")) orelse continue;
+        if (std.mem.eql(u8, path, file_path)) return true;
     }
     return false;
 }
@@ -12768,7 +12796,7 @@ test "server package validation rejects css policy variants" {
         \\  "files": [
         \\    {"path": "manifest.json", "content": "{}"},
         \\    {"path": "index.html", "content": "<main>CSS policy test</main>"},
-        \\    {"path": "styles.css", "content": ".escape { POSITION : fixed; background: URL( 'https://cdn.example.test/pixel.png'); }"},
+        \\    {"path": "styles.css", "content": ".escape { POSITION : fixed; background: URL(icon.png); border-image: url('https://cdn.example.test/pixel.png'); }"},
         \\    {"path": "app.js", "content": "const value = 1;"}
         \\  ]
         \\}

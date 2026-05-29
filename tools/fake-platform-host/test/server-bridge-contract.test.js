@@ -333,6 +333,14 @@ test(
         assert.equal(scriptCsp.status, 200);
         assert.equal(scriptCsp.body.ok, false);
         assert.equal(scriptCsp.body.errors.includes("forbidden_inline_script_csp"), true);
+
+        const missingCssResourcePackage = packageForApp("notes-lite");
+        const cssFile = missingCssResourcePackage.files.find((file) => file.path === "styles.css");
+        cssFile.content = `.logo { background-image: url(icon.png); }\n${cssFile.content}`;
+        const missingCssResource = await validateWebappPackage(started.url, missingCssResourcePackage);
+        assert.equal(missingCssResource.status, 200);
+        assert.equal(missingCssResource.body.ok, false);
+        assert.equal(missingCssResource.body.errors.includes("forbidden_css_url"), true);
       } finally {
         await stopServer(started);
       }

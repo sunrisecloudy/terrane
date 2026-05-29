@@ -16,6 +16,7 @@ Required mutation categories:
 - missing, duplicate, or non-plain `app.js` script tags;
 - missing, alternate, duplicate, or non-plain `styles.css` stylesheet links;
 - remote script, stylesheet, resource hint, or HTML resource URL;
+- CSS `url()` references to missing package files;
 - invalid storage prefix;
 - invalid network policy;
 - oversized package/file;
