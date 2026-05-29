@@ -12,6 +12,7 @@ const bundleId = "dev.nativeai.host.ios";
 const smokeLoadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED";
 const smokeStorageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK";
 const smokeStorageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK";
+const smokeCoreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
 const smokeMarkerFile = "native-ai-ios-smoke-runtime-loaded.txt";
 
 function commandWorks(command, args) {
@@ -83,11 +84,52 @@ function buildIOSHost(scratchRoot) {
   return { buildScratch, binaryPath, output };
 }
 
-function createSimulatorAppBundle(scratchRoot, binaryPath) {
+function buildIOSZigCore(scratchRoot) {
+  const dylibPath = path.join(scratchRoot, "libzig_core.dylib");
+  execFileSync(
+    "zig",
+    [
+      "build-lib",
+      "src/lib.zig",
+      "-dynamic",
+      "-target",
+      "aarch64-ios-simulator",
+      "-lc",
+      "-L",
+      path.join(simulatorSdkPath(), "usr", "lib"),
+      `-femit-bin=${dylibPath}`,
+    ],
+    {
+      cwd: path.join(repoRoot, "zig-core"),
+      env: {
+        ...process.env,
+        ZIG_GLOBAL_CACHE_DIR: path.join(scratchRoot, "zig-global-cache"),
+        ZIG_LOCAL_CACHE_DIR: path.join(scratchRoot, "zig-local-cache"),
+      },
+      stdio: "ignore",
+    },
+  );
+  assert.equal(fs.existsSync(dylibPath), true);
+  const loadCommands = execFileSync("otool", ["-l", dylibPath], { encoding: "utf8" });
+  assert.match(loadCommands, /platform 7/);
+  const symbols = execFileSync("nm", ["-gU", dylibPath], { encoding: "utf8" });
+  assert.match(symbols, /_core_create/);
+  assert.match(symbols, /_core_step_json/);
+  assert.match(symbols, /_core_free/);
+  return dylibPath;
+}
+
+function createSimulatorAppBundle(scratchRoot, binaryPath, zigCoreDylibPath = null) {
   const appBundle = path.join(scratchRoot, "NativeAIHostIOS.app");
   fs.mkdirSync(appBundle, { recursive: true });
   fs.copyFileSync(binaryPath, path.join(appBundle, "NativeAIHostIOS"));
   fs.chmodSync(path.join(appBundle, "NativeAIHostIOS"), 0o755);
+  if (zigCoreDylibPath) {
+    const bundledCorePath = path.join(appBundle, "libzig_core.dylib");
+    fs.copyFileSync(zigCoreDylibPath, bundledCorePath);
+    fs.chmodSync(bundledCorePath, 0o755);
+    execFileSync("codesign", ["--force", "--sign", "-", bundledCorePath], { stdio: "ignore" });
+  }
 
   fs.cpSync(path.join(repoRoot, "runtime-web"), path.join(appBundle, "runtime"), { recursive: true });
   fs.mkdirSync(path.join(appBundle, "webapps"), { recursive: true });
@@ -242,6 +284,13 @@ function launchInSimulator({ scratchRoot, appBundle }) {
         "--native-ai-smoke-exit-on-runtime-load",
       ],
     });
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
+      expectedMarker: smokeCoreStepMarker,
+      launchArgs: ["--native-ai-smoke-core-step", "--native-ai-smoke-exit-on-runtime-load"],
+    });
   } finally {
     if (!wasBooted) {
       execFileSync("xcrun", ["simctl", "shutdown", device.udid], { stdio: "ignore" });
@@ -258,9 +307,11 @@ test(
         ? "swift is not available"
         : process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" && !commandWorks("xcrun", ["simctl", "help"])
           ? "simctl is not available"
-          : !hasIPhoneSimulatorSdk()
-            ? "iPhone simulator SDK is not available"
-            : false,
+          : process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" && !commandWorks("zig", ["version"])
+            ? "zig is not available"
+            : !hasIPhoneSimulatorSdk()
+              ? "iPhone simulator SDK is not available"
+              : false,
     timeout: process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" ? 180_000 : 120_000,
   },
   () => {
@@ -280,10 +331,14 @@ test(
       assert.match(linkedLibraries, /WebKit\.framework\/WebKit/);
       assert.match(linkedLibraries, /libsqlite3\.dylib/);
 
-      const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath);
+      const zigCoreDylibPath = process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" ? buildIOSZigCore(scratchRoot) : null;
+      const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath, zigCoreDylibPath);
       assert.equal(fs.existsSync(path.join(appBundle, "runtime", "index.html")), true);
       assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "notes-lite", "manifest.json")), true);
       assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "task-workbench", "manifest.json")), true);
+      if (zigCoreDylibPath) {
+        assert.equal(fs.existsSync(path.join(appBundle, "libzig_core.dylib")), true);
+      }
 
       if (process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1") {
         launchInSimulator({ scratchRoot, appBundle });

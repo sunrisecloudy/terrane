@@ -63,28 +63,34 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static let loadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED"
     static let storageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
     static let storageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
+    static let coreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK"
     static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
 
     private let exitAfterLoad: Bool
     private let storageSmoke: StorageSmoke?
+    private let coreStepSmoke: Bool
 
-    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?) {
+    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?, coreStepSmoke: Bool) {
         self.exitAfterLoad = exitAfterLoad
         self.storageSmoke = storageSmoke
+        self.coreStepSmoke = coreStepSmoke
     }
 
     static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
         let args = CommandLine.arguments
         let storageSmoke = StorageSmoke.fromCommandLine(args)
+        let coreStepSmoke = args.contains("--native-ai-smoke-core-step")
         guard args.contains("--native-ai-smoke-runtime-load") ||
             args.contains("--native-ai-smoke-exit-on-runtime-load") ||
-            storageSmoke != nil
+            storageSmoke != nil ||
+            coreStepSmoke
         else {
             return nil
         }
         return IOSSmokeRuntimeProbe(
             exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"),
-            storageSmoke: storageSmoke
+            storageSmoke: storageSmoke,
+            coreStepSmoke: coreStepSmoke
         )
     }
 
@@ -93,6 +99,10 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         emitSmokeMarker(Self.loadedMarker)
         if let storageSmoke {
             runStorageSmoke(storageSmoke, in: webView)
+            return
+        }
+        if coreStepSmoke {
+            runCoreStepSmoke(in: webView)
             return
         }
         exitIfRequested()
@@ -113,7 +123,23 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         try? marker.write(to: markerURL, atomically: true, encoding: .utf8)
     }
 
+    private func runCoreStepSmoke(in webView: WKWebView) {
+        runAsyncBridgeSmoke(
+            script: CoreStepSmoke.javaScript(),
+            successMarker: Self.coreStepMarker,
+            in: webView
+        )
+    }
+
     private func runStorageSmoke(_ smoke: StorageSmoke, in webView: WKWebView) {
+        runAsyncBridgeSmoke(
+            script: smoke.javaScript(),
+            successMarker: smoke.successMarker,
+            in: webView
+        )
+    }
+
+    private func runAsyncBridgeSmoke(script: String, successMarker: String, in webView: WKWebView) {
         Task { @MainActor [weak self, weak webView] in
             guard let webView else {
                 self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: web view released")
@@ -121,8 +147,8 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
                 return
             }
             do {
-                let value = try await webView.callAsyncJavaScript(smoke.javaScript(), arguments: [:], in: nil, contentWorld: .page)
-                guard let marker = value as? String, marker == smoke.successMarker else {
+                let value = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
+                guard let marker = value as? String, marker == successMarker else {
                     self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: unexpected result \(String(describing: value))")
                     self?.exitIfRequested()
                     return
@@ -141,6 +167,39 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             Darwin.exit(0)
         }
+    }
+}
+
+private struct CoreStepSmoke {
+    static func javaScript() -> String {
+        """
+        try {
+          const bridge = window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.NativeAIPlatformBridge;
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            throw new Error("NativeAIPlatformBridge is unavailable");
+          }
+          const appId = "task-workbench";
+          const mountToken = "ios-smoke";
+          function request(id, method, params) {
+            return { appId, mountToken, request: { id, method, params: params || {} } };
+          }
+          const capabilities = await bridge.postMessage(request("ios_smoke_capabilities", "runtime.capabilities", {}));
+          if (!capabilities || !capabilities.ok || !capabilities.result || capabilities.result.features["core.step"] !== true) {
+            throw new Error("core.step is not available: " + JSON.stringify(capabilities));
+          }
+          const response = await bridge.postMessage(request("ios_smoke_core_step", "core.step", {
+            event: { type: "CreateTask", payload: { title: "iOS smoke task" } }
+          }));
+          if (!response || !response.ok || !response.result || response.result.ok !== true || !Array.isArray(response.result.actions)) {
+            throw new Error("core.step failed: " + JSON.stringify(response));
+          }
+          return "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
+        } catch (error) {
+          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+        }
+        """
     }
 }
 

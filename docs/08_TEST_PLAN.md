@@ -177,7 +177,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Core step returns real Zig output.
 - Permission denied path works.
 - Local simulator build/package smoke runs with `node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
-- Runtime-load, WK bridge, and storage-persistence launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` when CoreSimulator is available.
+- Runtime-load, WK bridge, storage-persistence, and `core.step` launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
 
 ### macOS
 

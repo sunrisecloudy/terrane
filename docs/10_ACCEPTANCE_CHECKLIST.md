@@ -51,7 +51,7 @@
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
-- [ ] Zig core step works.
+- [x] Zig core step works.
 
 ### macOS
 
