@@ -3,9 +3,11 @@ import SQLite3
 
 final class PlatformStorage {
     private var db: OpaquePointer?
+    private let configuredDatabaseURL: URL?
 
-    init() {
-        let url = databaseURL()
+    init(databaseURL: URL? = nil) {
+        self.configuredDatabaseURL = databaseURL
+        let url = resolvedDatabaseURL()
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         sqlite3_open(url.path, &db)
         sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));", nil, nil, nil)
@@ -96,7 +98,10 @@ final class PlatformStorage {
         return .success(id: request.id, result: ["keys": keys])
     }
 
-    private func databaseURL() -> URL {
+    private func resolvedDatabaseURL() -> URL {
+        if let configuredDatabaseURL {
+            return configuredDatabaseURL
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
     }

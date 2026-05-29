@@ -18,7 +18,7 @@ function hasSwift() {
 }
 
 test(
-  "macOS native scaffold builds with SwiftPM",
+  "macOS native scaffold builds and passes SwiftPM tests",
   {
     skip: process.platform !== "darwin" ? "macOS SwiftPM build smoke only runs on Darwin hosts" : !hasSwift() ? "swift is not available" : false,
     timeout: 120_000,
@@ -26,7 +26,7 @@ test(
   () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-macos-swiftpm-"));
     try {
-      const output = execFileSync("swift", ["build", "--scratch-path", scratch], {
+      const output = execFileSync("swift", ["test", "--scratch-path", scratch], {
         cwd: path.join(repoRoot, "native", "macos"),
         encoding: "utf8",
         env: {
@@ -35,7 +35,7 @@ test(
         },
       });
 
-      assert.match(output, /Build complete!/);
+      assert.match(output, /Test run with 2 tests in 1 suite passed/);
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

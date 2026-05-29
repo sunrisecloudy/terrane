@@ -58,6 +58,7 @@
 - [ ] macOS app launches.
 - [ ] Runtime loads from bundle.
 - [ ] Bridge works.
+- [x] Storage persists.
 - [ ] Dialogs work or return structured unsupported errors.
 - [ ] Zig core step works.
 

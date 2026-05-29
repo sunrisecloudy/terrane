@@ -159,6 +159,13 @@ struct BridgeRequest {
     let params: [String: Any]
     let context: AppSandboxContext
 
+    init(id: String?, method: String, params: [String: Any], context: AppSandboxContext) {
+        self.id = id
+        self.method = method
+        self.params = params
+        self.context = context
+    }
+
     init(body: [String: Any], context: AppSandboxContext) {
         self.id = body["id"] as? String
         self.method = body["method"] as? String ?? ""
@@ -174,6 +181,22 @@ struct AppSandboxContext {
     let networkPolicy: [NetworkPolicyRule]
     let denyPrivateNetwork: Bool
     let mountToken: String?
+
+    init(
+        appId: String,
+        storagePrefix: String? = nil,
+        approvedPermissions: Set<String>,
+        networkPolicy: [NetworkPolicyRule],
+        denyPrivateNetwork: Bool,
+        mountToken: String?
+    ) {
+        self.appId = appId
+        self.storagePrefix = storagePrefix ?? "\(appId):"
+        self.approvedPermissions = approvedPermissions
+        self.networkPolicy = networkPolicy
+        self.denyPrivateNetwork = denyPrivateNetwork
+        self.mountToken = mountToken
+    }
 
     @MainActor
     init(message: WKScriptMessage, envelope: BridgeEnvelope) {
