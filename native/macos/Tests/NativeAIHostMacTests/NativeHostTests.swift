@@ -198,8 +198,46 @@ struct NativeHostTests {
         #expect(authorized.body.contains(#""platform":"macos""#))
         #expect(authorized.body.contains(#""devMode":true"#))
 
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") == 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") == 1)
+        let sessionURL = URL(string: "http://127.0.0.1:\(port)/control/sessions")!
+        let session = try await httpRequest(
+            sessionURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(session.statusCode == 200)
+        #expect(session.body.contains(controlPlane.controlSessionId))
+
+        let snapshotURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/snapshot")!
+        let snapshot = try await httpRequest(snapshotURL, headers: ["X-Platform-Control-Token": token])
+        #expect(snapshot.statusCode == 200)
+        #expect(snapshot.body.contains(#""runtimeAttached":false"#))
+
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        let command = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.health","args":{}}"#
+        )
+        #expect(command.statusCode == 200)
+        #expect(command.body.contains(#""target":"macos""#))
+
+        let eventsURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/events")!
+        let events = try await httpRequest(eventsURL, headers: ["X-Platform-Control-Token": token])
+        #expect(events.statusCode == 200)
+        #expect(events.body.contains(#""bridgeCalls":[]"#))
+        #expect(events.body.contains(#""controlCommands":["#))
+
+        let ended = try await httpRequest(
+            URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)")!,
+            method: "DELETE",
+            headers: ["X-Platform-Control-Token": token]
+        )
+        #expect(ended.statusCode == 200)
+        #expect(ended.body.contains(#""status":"ended""#))
+
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 5)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
@@ -409,10 +447,20 @@ private struct HTTPTestResponse {
     let body: String
 }
 
-private func httpRequest(_ url: URL, headers: [String: String] = [:]) async throws -> HTTPTestResponse {
+private func httpRequest(
+    _ url: URL,
+    method: String = "GET",
+    headers: [String: String] = [:],
+    body: String? = nil
+) async throws -> HTTPTestResponse {
     var request = URLRequest(url: url)
+    request.httpMethod = method
     for (name, value) in headers {
         request.setValue(value, forHTTPHeaderField: name)
+    }
+    if let body {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body.data(using: .utf8)
     }
     let (data, response) = try await URLSession.shared.data(for: request)
     let httpResponse = try #require(response as? HTTPURLResponse)

@@ -42,6 +42,7 @@ final class DevControlPlane: @unchecked Sendable {
     private let database: PlatformDatabase
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
     private var listener: NWListener?
+    private var sessionStatus = "running"
 
     var boundPort: UInt16? {
         listener?.port?.rawValue
@@ -112,46 +113,192 @@ final class DevControlPlane: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: queue)
+        receiveRequest(on: connection, accumulated: Data())
+    }
+
+    private func receiveRequest(on connection: NWConnection, accumulated: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
             guard let self else {
                 connection.cancel()
                 return
             }
-            let startedAt = Date()
-            guard let data,
-                  let request = String(data: data, encoding: .utf8),
-                  let parsed = HTTPRequest(request)
-            else {
-                self.send(connection, status: 400, body: errorBody("invalid_request", "Control request must be HTTP text"))
+            var requestData = accumulated
+            if let data {
+                requestData.append(data)
+            }
+            guard !requestData.isEmpty else {
+                self.send(connection, status: 400, body: errorBody("invalid_request", "Control request must not be empty", sessionId: self.controlSessionId))
                 return
             }
-
-            guard parsed.headers["x-platform-control-token"] == self.token else {
-                self.audit(parsed, decision: "rejected", errorCode: "control_auth_required", startedAt: startedAt, result: nil)
-                self.send(connection, status: 401, body: errorBody("control_auth_required", "Control token is required"))
+            guard self.isCompleteHTTPRequest(requestData) else {
+                self.receiveRequest(on: connection, accumulated: requestData)
                 return
             }
-
-            switch (parsed.method, parsed.path) {
-            case ("GET", "/health"):
-                let body = """
-                {"ok":true,"platform":"macos","target":"macos","devMode":true,"controlSessionId":"\(controlSessionId)"}
-                """
-                self.audit(parsed, decision: "accepted", errorCode: nil, startedAt: startedAt, result: body)
-                self.send(connection, status: 200, body: body)
-            case ("POST", "/sessions"):
-                let body = """
-                {"ok":true,"controlSessionId":"\(controlSessionId)","target":"macos","status":"running"}
-                """
-                self.audit(parsed, decision: "accepted", errorCode: nil, startedAt: startedAt, result: body)
-                self.send(connection, status: 200, body: body)
-            default:
-                let code = parsed.isAllowedControlPath ? "platform_unsupported" : "not_found"
-                let status = parsed.isAllowedControlPath ? 501 : 404
-                self.audit(parsed, decision: "rejected", errorCode: code, startedAt: startedAt, result: nil)
-                self.send(connection, status: status, body: errorBody(code, "Control endpoint is not implemented by the macOS host yet"))
-            }
+            self.process(requestData, on: connection)
         }
+    }
+
+    private func process(_ data: Data, on connection: NWConnection) {
+        let startedAt = Date()
+        guard let request = String(data: data, encoding: .utf8),
+              let parsed = HTTPRequest(request)
+        else {
+            send(connection, status: 400, body: errorBody("invalid_request", "Control request must be HTTP text", sessionId: controlSessionId))
+            return
+        }
+
+        guard parsed.headers["x-platform-control-token"] == token else {
+            audit(parsed, decision: "rejected", errorCode: "control_auth_required", startedAt: startedAt, result: nil)
+            send(connection, status: 401, body: errorBody("control_auth_required", "Control token is required", sessionId: controlSessionId))
+            return
+        }
+
+        switch (parsed.method, parsed.normalizedPath) {
+        case ("GET", "/health"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: healthResult())
+        case ("POST", "/sessions"):
+            sessionStatus = "running"
+            sendAccepted(connection, parsed, startedAt: startedAt, result: sessionResult())
+        case ("POST", "/command"):
+            handleCommand(connection, parsed, startedAt: startedAt)
+        default:
+            handleSessionRoute(connection, parsed, startedAt: startedAt)
+        }
+    }
+
+    private func isCompleteHTTPRequest(_ data: Data) -> Bool {
+        guard let raw = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
+        guard let headerEnd = normalized.range(of: "\n\n") else {
+            return false
+        }
+        let headerLines = normalized[..<headerEnd.lowerBound].split(separator: "\n").map(String.init)
+        let contentLengthLine = headerLines.first { $0.lowercased().hasPrefix("content-length:") }
+        let contentLength = contentLengthLine
+            .flatMap { line in line.split(separator: ":", maxSplits: 1).last }
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+        let body = normalized[headerEnd.upperBound...]
+        return body.utf8.count >= contentLength
+    }
+
+    private func handleSessionRoute(_ connection: NWConnection, _ request: HTTPRequest, startedAt: Date) {
+        guard let route = SessionRoute(request.normalizedPath) else {
+            sendRejected(connection, request, status: 404, code: "not_found", message: "Control endpoint was not found", startedAt: startedAt)
+            return
+        }
+        guard route.controlSessionId == controlSessionId else {
+            sendRejected(connection, request, status: 404, code: "not_found", message: "Control session was not found", startedAt: startedAt)
+            return
+        }
+
+        switch (request.method, route.subresource) {
+        case ("DELETE", nil):
+            sessionStatus = "ended"
+            markControlSessionEnded()
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "controlSessionId": controlSessionId,
+                "target": "macos",
+                "status": sessionStatus,
+                "endedAt": Self.now(),
+            ])
+        case ("GET", "snapshot"):
+            sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
+        case ("GET", "events"):
+            sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
+        case ("POST", "command"):
+            handleCommand(connection, request, startedAt: startedAt)
+        default:
+            sendRejected(connection, request, status: 404, code: "not_found", message: "Control session route was not found", startedAt: startedAt)
+        }
+    }
+
+    private func handleCommand(_ connection: NWConnection, _ request: HTTPRequest, startedAt: Date) {
+        guard let body = request.jsonBody else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "Control command body must be JSON", startedAt: startedAt)
+            return
+        }
+        let tool = body["tool"] as? String ?? ""
+        switch tool {
+        case "platform.health":
+            sendAccepted(connection, request, startedAt: startedAt, result: healthResult())
+        case "runtime.snapshot":
+            sendAccepted(connection, request, startedAt: startedAt, result: snapshotResult())
+        case "runtime.event_log":
+            sendAccepted(connection, request, startedAt: startedAt, result: eventsResult())
+        default:
+            sendRejected(
+                connection,
+                request,
+                status: 501,
+                code: "platform_unsupported",
+                message: "Control command is not implemented by the macOS host yet",
+                startedAt: startedAt
+            )
+        }
+    }
+
+    private func sendAccepted(_ connection: NWConnection, _ request: HTTPRequest, startedAt: Date, result: [String: Any]) {
+        let body = controlResponse(result: result, sessionId: controlSessionId)
+        audit(request, decision: "accepted", errorCode: nil, startedAt: startedAt, result: jsonBody(result))
+        send(connection, status: 200, body: body)
+    }
+
+    private func sendRejected(
+        _ connection: NWConnection,
+        _ request: HTTPRequest,
+        status: Int,
+        code: String,
+        message: String,
+        startedAt: Date
+    ) {
+        audit(request, decision: "rejected", errorCode: code, startedAt: startedAt, result: nil)
+        send(connection, status: status, body: errorBody(code, message, sessionId: controlSessionId))
+    }
+
+    private func healthResult() -> [String: Any] {
+        [
+            "platform": "macos",
+            "target": "macos",
+            "devMode": true,
+            "controlSessionId": controlSessionId,
+            "status": sessionStatus,
+        ]
+    }
+
+    private func sessionResult() -> [String: Any] {
+        [
+            "controlSessionId": controlSessionId,
+            "runtimeSessionId": NSNull(),
+            "target": "macos",
+            "appId": NSNull(),
+            "status": sessionStatus,
+        ]
+    }
+
+    private func snapshotResult() -> [String: Any] {
+        [
+            "controlSessionId": controlSessionId,
+            "snapshot": [
+                "platform": "macos",
+                "target": "macos",
+                "activeAppId": NSNull(),
+                "runtimeAttached": false,
+                "controlCommands": controlCommandCount(),
+            ],
+        ]
+    }
+
+    private func eventsResult() -> [String: Any] {
+        [
+            "controlSessionId": controlSessionId,
+            "runtimeSessionId": NSNull(),
+            "appId": NSNull(),
+            "bridgeCalls": [],
+            "coreEvents": [],
+            "controlCommands": controlCommands(),
+        ]
     }
 
     private func send(_ connection: NWConnection, status: Int, body: String) {
@@ -234,10 +381,55 @@ final class DevControlPlane: @unchecked Sendable {
         bind(statement, 6, decision)
         bindNullable(statement, 7, errorCode)
         bindNullable(statement, 8, result)
-        bindNullable(statement, 9, errorCode.map { errorBody($0, "Control request rejected") })
+        bindNullable(statement, 9, errorCode.map { errorBody($0, "Control request rejected", sessionId: controlSessionId) })
         bind(statement, 10, Self.now())
         sqlite3_bind_int64(statement, 11, Int64(Date().timeIntervalSince(startedAt) * 1000))
         sqlite3_step(statement)
+    }
+
+    private func controlCommandCount() -> Int {
+        guard let db = database.handle else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM control_commands WHERE control_session_id = ?", -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, controlSessionId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return 0
+        }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func controlCommands() -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT command_id, tool, http_method, path, decision, error_code, created_at, duration_ms
+        FROM control_commands
+        WHERE control_session_id = ?
+        ORDER BY created_at, command_id
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, controlSessionId)
+
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append([
+                "commandId": columnText(statement, 0),
+                "tool": columnText(statement, 1),
+                "method": columnText(statement, 2),
+                "path": columnText(statement, 3),
+                "decision": columnText(statement, 4),
+                "errorCode": columnNullableText(statement, 5) ?? NSNull(),
+                "createdAt": columnText(statement, 6),
+                "durationMs": Int(sqlite3_column_int64(statement, 7)),
+            ])
+        }
+        return rows
     }
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
@@ -260,7 +452,9 @@ final class DevControlPlane: @unchecked Sendable {
 private struct HTTPRequest {
     let method: String
     let path: String
+    let normalizedPath: String
     let headers: [String: String]
+    let body: String
 
     init?(_ raw: String) {
         let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
@@ -269,33 +463,80 @@ private struct HTTPRequest {
         let parts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else { return nil }
         self.method = parts[0].uppercased()
-        self.path = parts[1]
+        self.path = parts[1].split(separator: "?", maxSplits: 1).first.map(String.init) ?? parts[1]
+        if self.path == "/control" {
+            self.normalizedPath = "/"
+        } else if self.path.hasPrefix("/control/") {
+            self.normalizedPath = String(self.path.dropFirst("/control".count))
+        } else {
+            self.normalizedPath = self.path
+        }
         var headers: [String: String] = [:]
-        for line in lines.dropFirst() {
-            if line.isEmpty { break }
+        var bodyStartIndex: Int?
+        for (index, line) in lines.enumerated().dropFirst() {
+            if line.isEmpty {
+                bodyStartIndex = index + 1
+                break
+            }
             guard let colon = line.firstIndex(of: ":") else { continue }
             let name = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             headers[name] = value
         }
         self.headers = headers
+        if let bodyStartIndex, bodyStartIndex < lines.count {
+            self.body = lines[bodyStartIndex...].joined(separator: "\n")
+        } else {
+            self.body = ""
+        }
     }
 
     var toolName: String {
-        switch (method, path) {
+        if normalizedPath == "/command" || normalizedPath.hasSuffix("/command"),
+           let tool = jsonBody?["tool"] as? String,
+           !tool.isEmpty
+        {
+            return tool
+        }
+        switch (method, normalizedPath) {
         case ("GET", "/health"):
             return "platform.health"
         case ("POST", "/sessions"):
             return "platform.launch"
+        case ("DELETE", _):
+            return "platform.stop"
+        case ("GET", let value) where value.hasSuffix("/snapshot"):
+            return "runtime.snapshot"
+        case ("GET", let value) where value.hasSuffix("/events"):
+            return "runtime.event_log"
         default:
             return "\(method) \(path)"
         }
     }
 
-    var isAllowedControlPath: Bool {
-        path == "/health" ||
-            path == "/sessions" ||
-            path.hasPrefix("/sessions/")
+    var jsonBody: [String: Any]? {
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let data = body.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data),
+              let object = raw as? [String: Any]
+        else {
+            return nil
+        }
+        return object
+    }
+}
+
+private struct SessionRoute {
+    let controlSessionId: String
+    let subresource: String?
+
+    init?(_ path: String) {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count >= 2, parts[0] == "sessions" else {
+            return nil
+        }
+        self.controlSessionId = parts[1]
+        self.subresource = parts.count > 2 ? parts[2] : nil
     }
 }
 
@@ -321,8 +562,55 @@ private final class LockedBox<T>: @unchecked Sendable {
     }
 }
 
-private func errorBody(_ code: String, _ message: String) -> String {
-    #"{"ok":false,"error":{"code":"\#(code)","message":"\#(message)","details":{}}}"#
+private func controlResponse(result: [String: Any], sessionId: String) -> String {
+    jsonBody([
+        "ok": true,
+        "result": result,
+        "diagnostics": diagnostics(sessionId: sessionId),
+    ])
+}
+
+private func errorBody(_ code: String, _ message: String, sessionId: String) -> String {
+    jsonBody([
+        "ok": false,
+        "error": [
+            "code": code,
+            "message": message,
+            "details": [:],
+        ],
+        "diagnostics": diagnostics(sessionId: sessionId),
+    ])
+}
+
+private func diagnostics(sessionId: String) -> [String: Any] {
+    [
+        "target": "macos",
+        "sessionId": sessionId,
+        "timestamp": ISO8601DateFormatter().string(from: Date()),
+    ]
+}
+
+private func jsonBody(_ object: [String: Any]) -> String {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+          let string = String(data: data, encoding: .utf8)
+    else {
+        return #"{"ok":false,"error":{"code":"json_encode_failed","message":"Control response could not be encoded","details":{}},"diagnostics":{}}"#
+    }
+    return string
+}
+
+private func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
+    columnNullableText(statement, index) ?? ""
+}
+
+private func columnNullableText(_ statement: OpaquePointer?, _ index: Int32) -> String? {
+    guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+          let pointer = sqlite3_column_text(statement, index)
+    else {
+        return nil
+    }
+    return String(cString: pointer)
 }
 
 private func statusReason(_ status: Int) -> String {
