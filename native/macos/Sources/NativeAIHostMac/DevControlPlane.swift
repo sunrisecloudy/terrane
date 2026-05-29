@@ -36,6 +36,12 @@ final class DevControlPlane: @unchecked Sendable {
         case portUnavailable
     }
 
+    private struct InjectedFault {
+        let code: String
+        let message: String
+        let details: [String: Any]
+    }
+
     let token: String
     let tokenFileURL: URL
     let controlSessionId: String
@@ -330,6 +336,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeWaitFor(connection, request, args: args, startedAt: startedAt)
         case "runtime.timer_advance":
             handleRuntimeTimerAdvance(connection, request, args: args, startedAt: startedAt)
+        case "runtime.fault_inject":
+            handleRuntimeFaultInject(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_get":
             handleRuntimeStorageGet(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_set":
@@ -773,6 +781,35 @@ final class DevControlPlane: @unchecked Sendable {
             "ok": true,
             "advancedMs": max(0, milliseconds),
         ])
+    }
+
+    private func handleRuntimeFaultInject(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let method = args["method"] as? String ?? methodForFaultKind(args["kind"] as? String)
+        guard let method, !method.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.fault_inject requires a bridge method", startedAt: startedAt)
+            return
+        }
+        guard isKnownControlBridgeMethod(method) else {
+            sendRejected(connection, request, status: 400, code: "unknown_method", message: "Unknown bridge method: \(method)", startedAt: startedAt)
+            return
+        }
+        let code = args["code"] as? String ?? "fault_injected"
+        let message = args["message"] as? String ?? "Injected bridge fault"
+        let details = args["details"] ?? faultDetails(kind: args["kind"] as? String)
+        let once = (args["once"] as? Bool) ?? true
+        guard let result = addFaultInjection(
+            sessionId: args["sessionId"] as? String,
+            appId: args["appId"] as? String,
+            method: method,
+            code: code,
+            message: message,
+            details: details,
+            once: once
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Fault injection could not be registered", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
     }
 
     private func handleVisibleAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -1572,6 +1609,42 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func addFaultInjection(sessionId: String?, appId: String?, method: String, code: String, message: String, details: Any, once: Bool) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let faultId = "fault_\(UUID().uuidString.lowercased())"
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, faultId)
+        bindNullable(statement, 2, sessionId)
+        bindNullable(statement, 3, appId)
+        bind(statement, 4, method)
+        bind(statement, 5, code)
+        bind(statement, 6, message)
+        bind(statement, 7, jsonString(details))
+        sqlite3_bind_int64(statement, 8, once ? 1 : 0)
+        bind(statement, 9, Self.now())
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return nil
+        }
+        return [
+            "ok": true,
+            "faultId": faultId,
+            "appId": appId ?? NSNull(),
+            "method": method,
+            "code": code,
+            "message": message,
+            "details": details,
+            "once": once,
+        ]
+    }
+
     private func findNetworkMock(sessionId: String?, appId: String, method: String, url: String) -> Any? {
         guard let db = database.handle else { return nil }
         let sql = """
@@ -1617,6 +1690,38 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         return jsonValue(columnNullableText(statement, 0))
+    }
+
+    private func takeInjectedFault(appId: String, sessionId: String?, method: String) -> InjectedFault? {
+        guard let db = database.handle else { return nil }
+        let sql = """
+        SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections
+        WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, method)
+        bind(statement, 2, appId)
+        bind(statement, 3, sessionId ?? "")
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        let faultId = columnText(statement, 0)
+        let code = columnText(statement, 1)
+        let message = columnText(statement, 2)
+        var details = jsonDictionary(columnText(statement, 3)) ?? [:]
+        details["faultId"] = faultId
+        details["appId"] = appId
+        details["method"] = method
+        if sqlite3_column_int64(statement, 4) != 0 {
+            _ = deleteRows("UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?", values: [faultId])
+        }
+        return InjectedFault(code: code, message: message, details: details)
     }
 
     private func bridgeCallRows(appId: String?) -> [[String: Any]] {
@@ -1993,7 +2098,14 @@ final class DevControlPlane: @unchecked Sendable {
         )
         let request = BridgeRequest(id: requestId, method: method, params: params, context: context)
         let response: BridgeResponse
-        if let permission = permissionForBridgeMethod(method),
+        if let fault = takeInjectedFault(appId: appId, sessionId: activeRuntimeSessionId, method: method) {
+            response = .failure(
+                id: requestId,
+                code: fault.code,
+                message: fault.message,
+                details: fault.details
+            )
+        } else if let permission = permissionForBridgeMethod(method),
            !context.approvedPermissions.contains(permission) {
             response = .failure(
                 id: requestId,
@@ -2100,6 +2212,41 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         return raw
+    }
+
+    private func methodForFaultKind(_ kind: String?) -> String? {
+        switch kind {
+        case "storage.read":
+            return "storage.get"
+        case "storage.write":
+            return "storage.set"
+        case "network", "network.request":
+            return "network.request"
+        case "core", "core.step":
+            return "core.step"
+        case let value?:
+            return value
+        case nil:
+            return nil
+        }
+    }
+
+    private func faultDetails(kind: String?) -> [String: Any] {
+        guard let kind else {
+            return [:]
+        }
+        return ["kind": kind]
+    }
+
+    private func isKnownControlBridgeMethod(_ method: String) -> Bool {
+        switch method {
+        case "storage.get", "storage.set", "storage.remove", "storage.list",
+             "notification.toast", "network.request", "core.step",
+             "runtime.capabilities", "app.log", "dialog.openFile", "dialog.saveFile":
+            return true
+        default:
+            return false
+        }
     }
 
     private func permissionForBridgeMethod(_ method: String) -> String? {

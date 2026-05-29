@@ -80,6 +80,7 @@
 - [x] Debug dev control plane supports `runtime.assert_storage`, `runtime.core_snapshot`, and DB-backed `runtime.assert_core_action` for storage/core-log assertions.
 - [x] Debug dev control plane captures `notification.toast` calls through `runtime.notification_capture`.
 - [x] Debug dev control plane supports DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
+- [x] Debug dev control plane supports DB-backed one-shot `runtime.fault_inject` for bridge calls.
 
 ### Android
 

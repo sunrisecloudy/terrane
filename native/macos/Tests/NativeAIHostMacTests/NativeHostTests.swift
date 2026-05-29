@@ -748,6 +748,34 @@ struct NativeHostTests {
         #expect(bridgeCallsAfterClear.statusCode == 200)
         #expect(bridgeCallsAfterClear.body.contains(#""bridgeCalls":[]"#))
 
+        let storageFault = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.fault_inject","args":{"appId":"notes-lite","method":"storage.get","code":"injected_storage","message":"Injected storage fault","details":{"source":"control-test"},"once":true}}"#
+        )
+        #expect(storageFault.statusCode == 200)
+        #expect(storageFault.body.contains(#""code":"injected_storage""#))
+
+        let faultedStorageGet = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"notes-lite","method":"storage.get","params":{"key":"notes-lite:control-effect","defaultValue":null}}}"#
+        )
+        #expect(faultedStorageGet.statusCode == 200)
+        #expect(faultedStorageGet.body.contains(#""code":"injected_storage""#))
+        #expect(faultedStorageGet.body.contains(#""faultId":"fault_"#))
+
+        let recoveredStorageGet = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"notes-lite","method":"storage.get","params":{"key":"notes-lite:control-effect","defaultValue":null}}}"#
+        )
+        #expect(recoveredStorageGet.statusCode == 200)
+        #expect(recoveredStorageGet.body.contains("Seeded by control"))
+
         let callBridgeLog = try await httpRequest(
             commandURL,
             method: "POST",
@@ -936,7 +964,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 69)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 72)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
