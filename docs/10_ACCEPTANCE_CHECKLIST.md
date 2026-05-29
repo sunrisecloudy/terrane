@@ -134,9 +134,9 @@
 - [x] App registry stores immutable versions and active-version pointer.
 - [ ] Rollback works on fake-host and at least one desktop target.
 - [ ] Runtime capabilities API works on every target.
-- [ ] Snapshot/replay works on fake-host.
-- [ ] Resource-budget violations are detected.
-- [ ] Network policy blocks disallowed requests.
+- [x] Snapshot/replay works on fake-host.
+- [x] Resource-budget violations are detected.
+- [x] Network policy blocks disallowed requests.
 - [x] Accessibility audit runs in fake-host.
 - [ ] Codex repair loop can validate, install, test, patch, and retest an example app.
 
@@ -153,8 +153,8 @@
 - [ ] Storage keys are scoped by `app_id` and `storagePrefix`.
 - [ ] Permission versioning is persisted per install id.
 - [x] Rollback can restore previous app version.
-- [ ] Bridge/core logs are persisted.
-- [ ] Runtime snapshots are persisted.
+- [x] Bridge/core logs are persisted.
+- [x] Runtime snapshots are persisted.
 - [x] Micro-test runs are persisted.
 - [x] Declarative migration dry-run/apply works.
 - [x] Backup export/import works for one generated app.
