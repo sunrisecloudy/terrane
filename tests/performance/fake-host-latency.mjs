@@ -10,6 +10,8 @@ import { examplesDir, repoRoot } from "../../tools/fake-platform-host/src/paths.
 const DEFAULT_WARMUP = 50;
 const DEFAULT_SAMPLES = 500;
 const DEFAULT_LIFECYCLE_LOOPS = 50;
+const DEFAULT_THROUGHPUT_CALLS = 1200;
+const DESKTOP_BRIDGE_THROUGHPUT_TARGET_PER_MINUTE = 1200;
 const ONE_KIB = "x".repeat(1024);
 const MEMORY_GROWTH_LIMIT_BYTES = 50 * 1024 * 1024;
 const NETWORK_TIMEOUT_TOLERANCE = 0.1;
@@ -25,14 +27,15 @@ export async function runFakeHostLatencyBenchmark({
   warmup = DEFAULT_WARMUP,
   samples = DEFAULT_SAMPLES,
   lifecycleLoops = DEFAULT_LIFECYCLE_LOOPS,
+  throughputCalls = DEFAULT_THROUGHPUT_CALLS,
   outputDir = null,
   enforceTargets = false,
 } = {}) {
   const host = new FakePlatformHost();
   const packageDirs = [
-    prepareBenchmarkPackage({ appId: "notes-lite", warmup, samples }),
-    prepareBenchmarkPackage({ appId: "task-workbench", warmup, samples }),
-    prepareBenchmarkPackage({ appId: "api-dashboard", warmup, samples }),
+    prepareBenchmarkPackage({ appId: "notes-lite", warmup, samples, lifecycleLoops, throughputCalls }),
+    prepareBenchmarkPackage({ appId: "task-workbench", warmup, samples, lifecycleLoops, throughputCalls }),
+    prepareBenchmarkPackage({ appId: "api-dashboard", warmup, samples, lifecycleLoops, throughputCalls }),
   ];
   const startedAt = new Date().toISOString();
   try {
@@ -96,6 +99,7 @@ export async function runFakeHostLatencyBenchmark({
     ];
     const scenarios = [
       await runNetworkTimeoutScenario(host),
+      await runBridgeThroughputScenario({ host, appId: "notes-lite", calls: throughputCalls }),
       await runInstallUninstallScenario({
         host,
         packageDir: packageDirs[0],
@@ -114,6 +118,7 @@ export async function runFakeHostLatencyBenchmark({
         warmup,
         samples,
         lifecycleLoops,
+        throughputCalls,
         reporting: ["p50", "p95"],
         targetProfile: "desktop",
       },
@@ -183,6 +188,30 @@ async function runNetworkTimeoutScenario(host) {
     delayMs: response?.error?.details?.delayMs ?? null,
     toleranceRatio: NETWORK_TIMEOUT_TOLERANCE,
     driftRatio: round(driftRatio),
+  };
+}
+
+async function runBridgeThroughputScenario({ host, appId, calls }) {
+  const opened = await openAndWait(host, appId);
+  const started = performance.now();
+  for (let index = 0; index < calls; index += 1) {
+    const result = await host.runControlCommand("runtime.storage_get", {
+      appId,
+      sessionId: opened.sessionId,
+      key: `${appId}:throughput`,
+      defaultValue: null,
+    });
+    assertControlResult("bridge_throughput", result);
+  }
+  const elapsedMs = performance.now() - started;
+  const callsPerMinute = elapsedMs === 0 ? Number.POSITIVE_INFINITY : (calls / elapsedMs) * 60_000;
+  return {
+    id: "bridge_throughput",
+    ok: callsPerMinute >= DESKTOP_BRIDGE_THROUGHPUT_TARGET_PER_MINUTE,
+    calls,
+    elapsedMs: round(elapsedMs),
+    callsPerMinute: Math.round(callsPerMinute),
+    targetCallsPerMinute: DESKTOP_BRIDGE_THROUGHPUT_TARGET_PER_MINUTE,
   };
 }
 
@@ -298,14 +327,15 @@ async function measureMetric({ id, warmup, samples, target, run }) {
   };
 }
 
-function prepareBenchmarkPackage({ appId, warmup, samples }) {
+function prepareBenchmarkPackage({ appId, warmup, samples, lifecycleLoops, throughputCalls }) {
   const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-perf-package-"));
   fs.cpSync(path.join(examplesDir, appId), packageDir, { recursive: true });
   const manifestPath = path.join(packageDir, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const bridgeCallBudget = (warmup + samples) * 4 + lifecycleLoops + throughputCalls + 250;
   manifest.resourceBudget = {
     ...manifest.resourceBudget,
-    maxBridgeCallsPerMinute: Math.max(manifest.resourceBudget.maxBridgeCallsPerMinute, (warmup + samples) * 3 + 100),
+    maxBridgeCallsPerMinute: Math.max(manifest.resourceBudget.maxBridgeCallsPerMinute, bridgeCallBudget),
   };
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return packageDir;
@@ -347,6 +377,7 @@ function parseCliArgs(argv) {
     warmup: DEFAULT_WARMUP,
     samples: DEFAULT_SAMPLES,
     lifecycleLoops: DEFAULT_LIFECYCLE_LOOPS,
+    throughputCalls: DEFAULT_THROUGHPUT_CALLS,
     outputDir: path.join(repoRoot, "performance_runs"),
     enforceTargets: false,
   };
@@ -358,6 +389,8 @@ function parseCliArgs(argv) {
       options.samples = Number.parseInt(argv[(index += 1)], 10);
     } else if (arg === "--lifecycle-loops") {
       options.lifecycleLoops = Number.parseInt(argv[(index += 1)], 10);
+    } else if (arg === "--throughput-calls") {
+      options.throughputCalls = Number.parseInt(argv[(index += 1)], 10);
     } else if (arg === "--out") {
       options.outputDir = path.resolve(argv[(index += 1)]);
     } else if (arg === "--no-out") {
@@ -376,6 +409,9 @@ function parseCliArgs(argv) {
   }
   if (!Number.isInteger(options.lifecycleLoops) || options.lifecycleLoops < 1) {
     throw new Error("--lifecycle-loops must be a positive integer");
+  }
+  if (!Number.isInteger(options.throughputCalls) || options.throughputCalls < 1) {
+    throw new Error("--throughput-calls must be a positive integer");
   }
   return options;
 }

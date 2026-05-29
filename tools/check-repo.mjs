@@ -286,9 +286,11 @@ function checkPerformanceHarness() {
     "runtime.storage_set",
     "runtime.core_step",
     "platform.open_webapp",
+    "bridge_throughput",
     "network_timeout",
     "install_uninstall_loop",
     "DEFAULT_LIFECYCLE_LOOPS = 50",
+    "DEFAULT_THROUGHPUT_CALLS = 1200",
     "p50",
     "p95",
     "performance_runs",
@@ -299,7 +301,7 @@ function checkPerformanceHarness() {
       throw new Error(`tests/performance/fake-host-latency.mjs missing ${snippet}`);
     }
   }
-  return "fake-host-latency warmup=50 samples=500 lifecycle=50 metrics=open,switch,storage,core scenarios=network-timeout,install-uninstall p50/p95";
+  return "fake-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=open,switch,storage,core scenarios=network-timeout,bridge-throughput,install-uninstall p50/p95";
 }
 
 function checkPluginMcp() {

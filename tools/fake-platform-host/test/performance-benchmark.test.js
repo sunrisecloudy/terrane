@@ -3,7 +3,13 @@ import test from "node:test";
 import { runFakeHostLatencyBenchmark } from "../../../tests/performance/fake-host-latency.mjs";
 
 test("fake-host performance benchmark reports p50 and p95 latency", async () => {
-  const report = await runFakeHostLatencyBenchmark({ warmup: 1, samples: 5, lifecycleLoops: 3, outputDir: null });
+  const report = await runFakeHostLatencyBenchmark({
+    warmup: 1,
+    samples: 5,
+    lifecycleLoops: 3,
+    throughputCalls: 10,
+    outputDir: null,
+  });
 
   assert.equal(report.ok, true);
   assert.equal(report.runner, "fake-host");
@@ -16,7 +22,7 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   );
   assert.deepEqual(
     report.scenarios.map((scenario) => scenario.id),
-    ["network_timeout", "install_uninstall_loop"],
+    ["network_timeout", "bridge_throughput", "install_uninstall_loop"],
   );
 
   for (const metric of report.metrics) {
@@ -32,6 +38,11 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   const timeout = report.scenarios.find((scenario) => scenario.id === "network_timeout");
   assert.equal(timeout.ok, true);
   assert.equal(timeout.actualTimeoutMs, timeout.expectedTimeoutMs);
+
+  const throughput = report.scenarios.find((scenario) => scenario.id === "bridge_throughput");
+  assert.equal(throughput.ok, true);
+  assert.equal(throughput.calls, 10);
+  assert.equal(throughput.callsPerMinute >= throughput.targetCallsPerMinute, true);
 
   const lifecycle = report.scenarios.find((scenario) => scenario.id === "install_uninstall_loop");
   assert.equal(lifecycle.ok, true);
