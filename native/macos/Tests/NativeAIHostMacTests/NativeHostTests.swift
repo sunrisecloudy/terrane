@@ -522,6 +522,24 @@ struct NativeHostTests {
         #expect(textAssert.statusCode == 200)
         #expect(textAssert.body.contains(#""text":"Notes Lite""#))
 
+        let waitForText = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.wait_for","args":{"appId":"notes-lite","kind":"text","text":"Notes Lite"}}"#
+        )
+        #expect(waitForText.statusCode == 200)
+        #expect(waitForText.body.contains(#""kind":"text""#))
+
+        let timerAdvance = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.timer_advance","args":{"ms":250}}"#
+        )
+        #expect(timerAdvance.statusCode == 200)
+        #expect(timerAdvance.body.contains(#""advancedMs":250"#))
+
         let dbSnapshotURL = URL(string: "http://127.0.0.1:\(port)/control/db/snapshot")!
         let dbSnapshot = try await httpRequest(
             dbSnapshotURL,
@@ -863,7 +881,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 61)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 63)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

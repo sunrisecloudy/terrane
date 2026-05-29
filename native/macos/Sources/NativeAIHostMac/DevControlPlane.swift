@@ -322,6 +322,10 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: resourceUsage(appId: args["appId"] as? String))
         case "runtime.query":
             handleRuntimeQuery(connection, request, args: args, startedAt: startedAt)
+        case "runtime.wait_for":
+            handleRuntimeWaitFor(connection, request, args: args, startedAt: startedAt)
+        case "runtime.timer_advance":
+            handleRuntimeTimerAdvance(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_get":
             handleRuntimeStorageGet(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_set":
@@ -675,6 +679,59 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: runtimeQuery(appId: appId, args: args))
+    }
+
+    private func handleRuntimeWaitFor(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let kind = args["kind"] as? String ?? "idle"
+        if kind == "idle" {
+            sendAccepted(connection, request, startedAt: startedAt, result: ["ok": true, "kind": kind])
+            return
+        }
+        if kind == "bridge_call" || kind == "bridgeCall" {
+            guard let appId = args["appId"] as? String, !appId.isEmpty,
+                  let method = args["method"] as? String, !method.isEmpty
+            else {
+                sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.wait_for bridge_call requires appId and method", startedAt: startedAt)
+                return
+            }
+            let rows = bridgeCallRows(appId: appId).filter { ($0["method"] as? String) == method }
+            guard let latest = rows.last else {
+                sendRejected(connection, request, status: 400, code: "wait_timeout", message: "Expected bridge call was not recorded", startedAt: startedAt)
+                return
+            }
+            sendAccepted(connection, request, startedAt: startedAt, result: [
+                "ok": true,
+                "kind": kind,
+                "appId": appId,
+                "method": method,
+                "latest": latest,
+            ])
+            return
+        }
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.wait_for requires appId for selector/text waits", startedAt: startedAt)
+            return
+        }
+        let query = runtimeQuery(appId: appId, args: args)
+        let matches = query["matches"] as? [[String: Any]] ?? []
+        guard !matches.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "wait_timeout", message: "Expected runtime condition did not appear", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "kind": kind,
+            "appId": appId,
+            "matches": matches.count,
+        ])
+    }
+
+    private func handleRuntimeTimerAdvance(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let milliseconds = intValue(args["ms"]) ?? intValue(args["milliseconds"]) ?? 0
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "advancedMs": max(0, milliseconds),
+        ])
     }
 
     private func handleVisibleAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
