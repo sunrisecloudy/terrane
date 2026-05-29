@@ -13,6 +13,7 @@ Required mutation categories:
 - service worker registration;
 - `eval` or `new Function`;
 - inline styles or CSP that allows inline styles;
+- missing, duplicate, or non-plain `app.js` script tags;
 - remote script or stylesheet;
 - invalid storage prefix;
 - invalid network policy;

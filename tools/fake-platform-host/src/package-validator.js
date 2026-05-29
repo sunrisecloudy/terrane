@@ -454,14 +454,9 @@ function validateUniqueStringArray(value, code, message, errors, details = {}, a
 
 function validateHtml(source, errors) {
   validateCsp(source, errors);
-  if (/<script(?![^>]*\bsrc=["']app\.js["'])[^>]*>/i.test(source)) {
-    errors.push(issue("forbidden_inline_script", "index.html may only load app.js", {}));
-  }
+  validateScriptTags(source, errors);
   if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
     errors.push(issue("forbidden_inline_style", "generated apps must use styles.css instead of inline styles", {}));
-  }
-  if (/<script[^>]+\bsrc=["']https?:\/\//i.test(source)) {
-    errors.push(issue("forbidden_remote_script", "remote scripts are forbidden", {}));
   }
   if (/\son[a-z]+\s*=/i.test(source)) {
     errors.push(issue("forbidden_inline_handler", "inline event handlers are forbidden", {}));
@@ -509,6 +504,49 @@ function validateHtml(source, errors) {
   }
 }
 
+function validateScriptTags(source, errors) {
+  const scripts = [...source.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  if (scripts.length === 0) {
+    errors.push(issue("missing_app_script", "index.html must load app.js", {}));
+    return;
+  }
+
+  let appScriptCount = 0;
+  for (const match of scripts) {
+    const attrs = match[1] ?? "";
+    const body = match[2] ?? "";
+    const src = htmlAttr(attrs, "src");
+    if (!src) {
+      errors.push(issue("forbidden_inline_script", "index.html may only load app.js", {}));
+      continue;
+    }
+    if (/^https?:\/\//i.test(src)) {
+      errors.push(issue("forbidden_remote_script", "remote scripts are forbidden", {}));
+      continue;
+    }
+    if (src !== "app.js") {
+      errors.push(issue("forbidden_app_script_src", "index.html may only load app.js", { src }));
+      continue;
+    }
+    appScriptCount += 1;
+    const disallowedAttrs = htmlAttrNames(attrs).filter((name) => name !== "src");
+    if (disallowedAttrs.length > 0) {
+      errors.push(issue("forbidden_app_script_attribute", "app.js script tag must only declare src", {
+        attributes: disallowedAttrs,
+      }));
+    }
+    if (body.trim()) {
+      errors.push(issue("forbidden_inline_script", "app.js script tag must not contain inline script body", {}));
+    }
+  }
+
+  if (appScriptCount !== 1) {
+    errors.push(issue("invalid_app_script_count", "index.html must load app.js exactly once", {
+      count: appScriptCount,
+    }));
+  }
+}
+
 function validateCsp(source, errors) {
   for (const match of source.matchAll(/<meta\b([^>]*)>/gi)) {
     const attrs = match[1] ?? "";
@@ -544,6 +582,11 @@ function parseCspDirectives(content) {
 function htmlAttr(attrs, name) {
   const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
   return match?.[1] ?? match?.[2] ?? null;
+}
+
+function htmlAttrNames(attrs) {
+  return [...attrs.matchAll(/\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\b(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>`]+))?/g)]
+    .map((match) => match[1].toLowerCase());
 }
 
 function validateCss(source, errors) {

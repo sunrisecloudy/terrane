@@ -1,0 +1,11 @@
+{
+  "id": "missing-app-script",
+  "description": "Generated app HTML must load app.js.",
+  "expectedError": "missing_app_script",
+  "files": [
+    {
+      "path": "index.html",
+      "content": "<!doctype html><html><head><title>Missing app script</title><link rel=\"stylesheet\" href=\"styles.css\"></head><body><main><button data-testid=\"go-button\">Go</button></main></body></html>"
+    }
+  ]
+}

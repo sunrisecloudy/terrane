@@ -196,6 +196,38 @@ test("inline styles and unsafe-inline style CSP are rejected", () => {
   assert.equal(cspResult.errors.some((error) => error.code === "forbidden_inline_style_csp"), true);
 });
 
+test("app script tag must load plain app.js exactly once", () => {
+  const moduleScript = copyExamplePackage("notes-lite");
+  const moduleIndexPath = path.join(moduleScript, "index.html");
+  fs.writeFileSync(
+    moduleIndexPath,
+    fs.readFileSync(moduleIndexPath, "utf8").replace('<script src="app.js"></script>', '<script src="app.js" type="module"></script>'),
+  );
+  const moduleResult = validatePackage(moduleScript);
+  assert.equal(moduleResult.ok, false);
+  assert.equal(moduleResult.errors.some((error) => error.code === "forbidden_app_script_attribute"), true);
+
+  const duplicateScript = copyExamplePackage("notes-lite");
+  const duplicateIndexPath = path.join(duplicateScript, "index.html");
+  fs.writeFileSync(
+    duplicateIndexPath,
+    fs.readFileSync(duplicateIndexPath, "utf8").replace("</body>", '<script src="app.js"></script></body>'),
+  );
+  const duplicateResult = validatePackage(duplicateScript);
+  assert.equal(duplicateResult.ok, false);
+  assert.equal(duplicateResult.errors.some((error) => error.code === "invalid_app_script_count"), true);
+
+  const missingScript = copyExamplePackage("notes-lite");
+  const missingIndexPath = path.join(missingScript, "index.html");
+  fs.writeFileSync(
+    missingIndexPath,
+    fs.readFileSync(missingIndexPath, "utf8").replace('<script src="app.js"></script>', ""),
+  );
+  const missingResult = validatePackage(missingScript);
+  assert.equal(missingResult.ok, false);
+  assert.equal(missingResult.errors.some((error) => error.code === "missing_app_script"), true);
+});
+
 test("document policy rejects navigation and viewport escape hatches", () => {
   const htmlCases = [
     ["forbidden_meta_refresh", '<meta http-equiv="refresh" content="0;url=https://example.test">'],
