@@ -326,6 +326,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeStorageSet(connection, request, args: args, startedAt: startedAt)
         case "runtime.storage_reset", "platform.reset_webapp":
             handleRuntimeStorageReset(connection, request, args: args, startedAt: startedAt)
+        case "runtime.assert_storage":
+            handleStorageAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.bridge_calls":
             sendAccepted(connection, request, startedAt: startedAt, result: [
                 "bridgeCalls": bridgeCallRows(appId: args["appId"] as? String),
@@ -342,6 +344,10 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeCallBridge(connection, request, args: args, startedAt: startedAt)
         case "runtime.core_step":
             handleRuntimeCoreStep(connection, request, args: args, startedAt: startedAt)
+        case "runtime.core_snapshot":
+            handleRuntimeCoreSnapshot(connection, request, args: args, startedAt: startedAt)
+        case "runtime.assert_core_action":
+            handleCoreActionAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
@@ -726,6 +732,31 @@ final class DevControlPlane: @unchecked Sendable {
         sendAccepted(connection, request, startedAt: startedAt, result: result)
     }
 
+    private func handleStorageAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty,
+              let key = args["key"] as? String, !key.isEmpty,
+              args.keys.contains("value")
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.assert_storage requires appId, key, and value", startedAt: startedAt)
+            return
+        }
+        let expected = args["value"] ?? NSNull()
+        guard let actual = storageValue(appId: appId, key: key) else {
+            sendRejected(connection, request, status: 400, code: "assertion_failed", message: "Expected storage key was not found", startedAt: startedAt)
+            return
+        }
+        guard canonicalJSONEqual(actual, expected) else {
+            sendRejected(connection, request, status: 400, code: "assertion_failed", message: "Storage value did not match expected value", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "key": key,
+            "value": actual,
+        ])
+    }
+
     private func handleBridgeCallAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
         guard let appId = args["appId"] as? String, !appId.isEmpty,
               let method = args["method"] as? String, !method.isEmpty
@@ -795,6 +826,45 @@ final class DevControlPlane: @unchecked Sendable {
             startedAt: startedAt
         )
         sendAccepted(connection, request, startedAt: startedAt, result: response.asDictionary())
+    }
+
+    private func handleRuntimeCoreSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String ?? activeAppId, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.core_snapshot requires appId or an active runtime app", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: coreSnapshot(appId: appId))
+    }
+
+    private func handleCoreActionAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.assert_core_action requires appId", startedAt: startedAt)
+            return
+        }
+        let expectedType = args["type"] as? String ?? args["actionType"] as? String
+        let expectedAction = args["action"]
+        let rows = coreActionRows(appId: appId).filter { row in
+            let action = jsonDictionary(row["action_json"] as? String ?? "") ?? [:]
+            if let expectedType, (action["type"] as? String) != expectedType {
+                return false
+            }
+            if let expectedAction, !canonicalJSONEqual(action, expectedAction) {
+                return false
+            }
+            return true
+        }
+        guard let latest = rows.last else {
+            sendRejected(connection, request, status: 400, code: "assertion_failed", message: "Expected core action was not recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: [
+            "ok": true,
+            "appId": appId,
+            "type": expectedType ?? NSNull(),
+            "count": rows.count,
+            "latest": latest,
+            "action": jsonValue(latest["action_json"] as? String),
+        ])
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -1206,10 +1276,66 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func storageValue(appId: String, key: String) -> Any? {
+        guard let db = database.handle else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, key)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return jsonValue(columnNullableText(statement, 0))
+    }
+
     private func bridgeCallRows(appId: String?) -> [[String: Any]] {
         tableRows(
             table: "bridge_calls",
             columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "params_json", "result_json", "error_json", "duration_ms", "created_at"],
+            orderBy: "created_at",
+            filterColumn: "app_id",
+            filterValue: appId
+        )
+    }
+
+    private func coreSnapshot(appId: String) -> [String: Any] {
+        [
+            "appId": appId,
+            "stateVersion": scalarInt(
+                "SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?",
+                values: [appId]
+            ),
+            "coreEvents": coreEventRows(appId: appId).map { row in
+                var event = row
+                event["event"] = jsonValue(row["event_json"] as? String)
+                return event
+            },
+            "coreActions": coreActionRows(appId: appId).map { row in
+                var action = row
+                action["action"] = jsonValue(row["action_json"] as? String)
+                return action
+            },
+        ]
+    }
+
+    private func coreEventRows(appId: String?) -> [[String: Any]] {
+        tableRows(
+            table: "core_events",
+            columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+            orderBy: "created_at",
+            filterColumn: "app_id",
+            filterValue: appId
+        )
+    }
+
+    private func coreActionRows(appId: String?) -> [[String: Any]] {
+        tableRows(
+            table: "core_actions",
+            columns: ["action_id", "event_id", "session_id", "app_id", "action_json", "created_at"],
             orderBy: "created_at",
             filterColumn: "app_id",
             filterValue: appId
@@ -1886,6 +2012,10 @@ final class DevControlPlane: @unchecked Sendable {
             return NSNull()
         }
         return object
+    }
+
+    private func canonicalJSONEqual(_ left: Any, _ right: Any) -> Bool {
+        jsonString(left) == jsonString(right)
     }
 
     private func intValue(_ value: Any?) -> Int? {

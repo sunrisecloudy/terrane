@@ -74,6 +74,7 @@
 - [x] Debug dev control plane supports runtime storage get/set/reset, bridge-call inspection/assertion, and log clearing.
 - [x] Debug dev control plane supports lifecycle target list/launch/reload and opening installed webapps into runtime sessions.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch.
+- [x] Debug dev control plane supports `runtime.assert_storage`, `runtime.core_snapshot`, and DB-backed `runtime.assert_core_action` for storage/core-log assertions.
 
 ### Android
 

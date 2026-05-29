@@ -577,6 +577,15 @@ struct NativeHostTests {
         #expect(controlStorageGet.statusCode == 200)
         #expect(controlStorageGet.body.contains("Seeded by control"))
 
+        let storageAssert = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.assert_storage","args":{"appId":"notes-lite","key":"notes-lite:control-effect","value":{"title":"Seeded by control"}}}"#
+        )
+        #expect(storageAssert.statusCode == 200)
+        #expect(storageAssert.body.contains(#""key":"notes-lite:control-effect""#))
+
         let bridgeCallAssert = try await httpRequest(
             commandURL,
             method: "POST",
@@ -668,6 +677,29 @@ struct NativeHostTests {
         #expect(coreBridgeCallAssert.statusCode == 200)
         #expect(coreBridgeCallAssert.body.contains(#""method":"core.step""#))
 
+        let coreSnapshot = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.core_snapshot","args":{"appId":"task-workbench"}}"#
+        )
+        #expect(coreSnapshot.statusCode == 200)
+        #expect(coreSnapshot.body.contains(#""appId":"task-workbench""#))
+        #expect(coreSnapshot.body.contains(#""coreEvents":["#))
+        #expect(coreSnapshot.body.contains(#""coreActions":["#))
+
+        let coreStepResult = try jsonResult(coreStep)
+        if coreStepResult["ok"] as? Bool == true {
+            let coreActionAssert = try await httpRequest(
+                commandURL,
+                method: "POST",
+                headers: ["X-Platform-Control-Token": token],
+                body: #"{"tool":"runtime.assert_core_action","args":{"appId":"task-workbench","type":"Toast"}}"#
+            )
+            #expect(coreActionAssert.statusCode == 200)
+            #expect(coreActionAssert.body.contains(#""type":"Toast""#))
+        }
+
         let storageReset = try await httpRequest(
             commandURL,
             method: "POST",
@@ -725,7 +757,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 49)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 51)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
