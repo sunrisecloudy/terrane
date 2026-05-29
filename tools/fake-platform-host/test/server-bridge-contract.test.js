@@ -286,6 +286,50 @@ test(
   },
 );
 
+test(
+  "Zig server package validation rejects inline style policy drift",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-inline-style-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "inline-style-validation");
+      try {
+        const styleAttribute = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("<main", '<main style="color:red"')));
+        assert.equal(styleAttribute.status, 200);
+        assert.equal(styleAttribute.body.ok, false);
+        assert.equal(styleAttribute.body.errors.includes("forbidden_inline_style"), true);
+
+        const styleElement = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("</head>", "<style>body { color: red; }</style></head>")));
+        assert.equal(styleElement.status, 200);
+        assert.equal(styleElement.body.ok, false);
+        assert.equal(styleElement.body.errors.includes("forbidden_inline_style"), true);
+
+        const styleCsp = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")));
+        assert.equal(styleCsp.status, 200);
+        assert.equal(styleCsp.body.ok, false);
+        assert.equal(styleCsp.body.errors.includes("forbidden_inline_style_csp"), true);
+
+        const scriptCsp = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")));
+        assert.equal(scriptCsp.status, 200);
+        assert.equal(scriptCsp.body.ok, false);
+        assert.equal(scriptCsp.body.errors.includes("forbidden_inline_script_csp"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");

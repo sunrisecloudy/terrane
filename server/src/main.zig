@@ -10791,8 +10791,10 @@ fn validateServerHtmlPolicy(
     html: []const u8,
     errors: *std.ArrayList([]const u8),
 ) !void {
+    try validateServerCsp(allocator, html, errors);
     try validateServerScriptTags(allocator, html, errors);
     if (htmlHasInlineEventHandler(html)) try errors.append(allocator, "forbidden_inline_handler");
+    if (try htmlHasInlineStyle(allocator, html)) try errors.append(allocator, "forbidden_inline_style");
     if (containsIgnoreCase(html, "javascript:")) try errors.append(allocator, "forbidden_javascript_url");
     if (try htmlHasMetaRefresh(allocator, html)) try errors.append(allocator, "forbidden_meta_refresh");
     if (findOpeningTag(html, "base", 0) != null) try errors.append(allocator, "forbidden_base_href");
@@ -10805,6 +10807,67 @@ fn validateServerHtmlPolicy(
         try errors.append(allocator, "forbidden_embedded_context");
     }
     try validateServerStylesheetLinks(allocator, html, errors);
+}
+
+fn validateServerCsp(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    var index: usize = 0;
+    while (findOpeningTag(html, "meta", index)) |start| {
+        index = start + 1;
+        const attrs = htmlOpeningTagAttrs(html, start, "meta") orelse continue;
+        const http_equiv = try htmlAttrValueAlloc(allocator, attrs, "http-equiv");
+        defer if (http_equiv) |actual| allocator.free(actual);
+        if (http_equiv == null or !std.ascii.eqlIgnoreCase(http_equiv.?, "Content-Security-Policy")) continue;
+
+        const content = try htmlAttrValueAlloc(allocator, attrs, "content");
+        defer if (content) |actual| allocator.free(actual);
+        const actual = content orelse continue;
+        if (cspAllowsUnsafeInline(actual, "style-src")) {
+            try errors.append(allocator, "forbidden_inline_style_csp");
+        }
+        if (cspAllowsUnsafeInline(actual, "script-src")) {
+            try errors.append(allocator, "forbidden_inline_script_csp");
+        }
+    }
+}
+
+fn cspAllowsUnsafeInline(content: []const u8, directive: []const u8) bool {
+    if (cspDirectiveHasToken(content, directive, "'unsafe-inline'")) return true;
+    if (!std.ascii.eqlIgnoreCase(directive, "default-src") and !cspHasDirective(content, directive)) {
+        return cspDirectiveHasToken(content, "default-src", "'unsafe-inline'");
+    }
+    return false;
+}
+
+fn cspHasDirective(content: []const u8, directive: []const u8) bool {
+    var directives = std.mem.splitScalar(u8, content, ';');
+    while (directives.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (cspDirectiveNameMatches(trimmed, directive)) return true;
+    }
+    return false;
+}
+
+fn cspDirectiveHasToken(content: []const u8, directive: []const u8, token: []const u8) bool {
+    var directives = std.mem.splitScalar(u8, content, ';');
+    while (directives.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (!cspDirectiveNameMatches(trimmed, directive)) continue;
+        var tokens = std.mem.tokenizeAny(u8, trimmed[directive.len..], " \t\r\n");
+        while (tokens.next()) |actual| {
+            if (std.mem.eql(u8, actual, token)) return true;
+        }
+    }
+    return false;
+}
+
+fn cspDirectiveNameMatches(directive_source: []const u8, directive: []const u8) bool {
+    if (directive_source.len < directive.len) return false;
+    if (!std.ascii.eqlIgnoreCase(directive_source[0..directive.len], directive)) return false;
+    return directive_source.len == directive.len or htmlSpace(directive_source[directive.len]);
 }
 
 fn htmlHasForbiddenScriptTag(allocator: std.mem.Allocator, html: []const u8) !bool {
@@ -10883,6 +10946,21 @@ fn validateServerScriptTags(
     } else if (app_script_count != 1) {
         try errors.append(allocator, "invalid_app_script_count");
     }
+}
+
+fn htmlHasInlineStyle(allocator: std.mem.Allocator, html: []const u8) !bool {
+    if (findOpeningTag(html, "style", 0) != null) return true;
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |start| {
+        index = start + 1;
+        const end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return false;
+        const attrs = html[start + 1 .. end];
+        const style = try htmlAttrValueAlloc(allocator, attrs, "style");
+        defer if (style) |actual| allocator.free(actual);
+        if (style != null) return true;
+        index = end + 1;
+    }
+    return false;
 }
 
 fn htmlHasMetaRefresh(allocator: std.mem.Allocator, html: []const u8) !bool {
