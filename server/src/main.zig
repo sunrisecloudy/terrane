@@ -10805,8 +10805,7 @@ fn validateServerHtmlPolicy(
     {
         try errors.append(allocator, "forbidden_embedded_context");
     }
-    if (try htmlHasRemoteStylesheet(allocator, html)) try errors.append(allocator, "forbidden_remote_stylesheet");
-    if (try htmlHasForbiddenStylesheetHref(allocator, html)) try errors.append(allocator, "forbidden_stylesheet_href");
+    try validateServerStylesheetLinks(allocator, html, errors);
 }
 
 fn htmlHasForbiddenScriptTag(allocator: std.mem.Allocator, html: []const u8) !bool {
@@ -10893,6 +10892,47 @@ fn htmlHasForbiddenStylesheetHref(allocator: std.mem.Allocator, html: []const u8
     return false;
 }
 
+fn validateServerStylesheetLinks(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    var stylesheet_count: usize = 0;
+    var index: usize = 0;
+    while (findOpeningTag(html, "link", index)) |start| {
+        index = start + 1;
+        const attrs = htmlOpeningTagAttrs(html, start, "link") orelse continue;
+        if (!try htmlRelIncludesStylesheet(allocator, attrs)) continue;
+
+        const href = try htmlAttrValueAlloc(allocator, attrs, "href");
+        defer if (href) |actual| allocator.free(actual);
+        if (href) |actual| {
+            if (isHttpUrl(actual)) {
+                try errors.append(allocator, "forbidden_remote_stylesheet");
+                continue;
+            }
+            if (!std.mem.eql(u8, actual, "styles.css")) {
+                try errors.append(allocator, "forbidden_stylesheet_href");
+                continue;
+            }
+        } else {
+            try errors.append(allocator, "forbidden_stylesheet_href");
+            continue;
+        }
+
+        stylesheet_count += 1;
+        if (htmlAttrsContainDisallowedNames(attrs, &.{ "rel", "href" })) {
+            try errors.append(allocator, "forbidden_stylesheet_attribute");
+        }
+    }
+
+    if (stylesheet_count == 0) {
+        try errors.append(allocator, "missing_stylesheet");
+    } else if (stylesheet_count > 1) {
+        try errors.append(allocator, "invalid_stylesheet_count");
+    }
+}
+
 fn htmlRelIncludesStylesheet(allocator: std.mem.Allocator, attrs: []const u8) !bool {
     const rel = try htmlAttrValueAlloc(allocator, attrs, "rel");
     defer if (rel) |actual| allocator.free(actual);
@@ -10902,6 +10942,48 @@ fn htmlRelIncludesStylesheet(allocator: std.mem.Allocator, attrs: []const u8) !b
         if (std.ascii.eqlIgnoreCase(token, "stylesheet")) return true;
     }
     return false;
+}
+
+fn htmlAttrsContainDisallowedNames(attrs: []const u8, allowed: []const []const u8) bool {
+    var cursor: usize = 0;
+    while (cursor < attrs.len) {
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor >= attrs.len or attrs[cursor] == '/') break;
+
+        const name_start = cursor;
+        while (cursor < attrs.len and htmlAttrNameChar(attrs[cursor])) : (cursor += 1) {}
+        if (cursor == name_start) {
+            cursor += 1;
+            continue;
+        }
+        if (!htmlAttrNameAllowed(attrs[name_start..cursor], allowed)) return true;
+
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor >= attrs.len or attrs[cursor] != '=') continue;
+        cursor += 1;
+        while (cursor < attrs.len and htmlSpace(attrs[cursor])) : (cursor += 1) {}
+        if (cursor >= attrs.len) break;
+        if (attrs[cursor] == '"' or attrs[cursor] == '\'') {
+            const quote = attrs[cursor];
+            cursor += 1;
+            while (cursor < attrs.len and attrs[cursor] != quote) : (cursor += 1) {}
+            if (cursor < attrs.len) cursor += 1;
+        } else {
+            while (cursor < attrs.len and !htmlSpace(attrs[cursor]) and attrs[cursor] != '>') : (cursor += 1) {}
+        }
+    }
+    return false;
+}
+
+fn htmlAttrNameAllowed(name: []const u8, allowed: []const []const u8) bool {
+    for (allowed) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
+}
+
+fn htmlAttrNameChar(char: u8) bool {
+    return htmlNameChar(char) or char == '_' or char == ':';
 }
 
 fn htmlOpeningTagAttrs(html: []const u8, start: usize, tag: []const u8) ?[]const u8 {
@@ -12150,6 +12232,85 @@ test "server package validation rejects unexpected stylesheet hrefs" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_stylesheet_href\"") != null);
+}
+
+test "server package validation requires a plain styles.css link" {
+    const missing_report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "missing-stylesheet-test",
+        \\    "name": "Missing Stylesheet Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "missing-stylesheet-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<main>Missing stylesheet test</main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(missing_report);
+
+    try std.testing.expect(std.mem.indexOf(u8, missing_report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_report, "\"missing_stylesheet\"") != null);
+
+    const non_plain_report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "non-plain-stylesheet-test",
+        \\    "name": "Non Plain Stylesheet Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "non-plain-stylesheet-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"styles.css\" media=\"print\"><link rel=\"stylesheet\" href=\"styles.css\"><main>Non plain stylesheet test</main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(non_plain_report);
+
+    try std.testing.expect(std.mem.indexOf(u8, non_plain_report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, non_plain_report, "\"forbidden_stylesheet_attribute\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, non_plain_report, "\"invalid_stylesheet_count\"") != null);
 }
 
 test "server package validation rejects css policy variants" {

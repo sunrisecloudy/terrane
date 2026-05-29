@@ -204,6 +204,44 @@ test(
   },
 );
 
+test(
+  "Zig server package validation enforces plain stylesheet links",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-stylesheet-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "stylesheet-validation");
+      try {
+        const missing = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace('<link rel="stylesheet" href="styles.css">', "")));
+        assert.equal(missing.status, 200);
+        assert.equal(missing.body.ok, false);
+        assert.equal(missing.body.errors.includes("missing_stylesheet"), true);
+
+        const nonPlain = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace('href="styles.css"', 'href="styles.css" media="print"')));
+        assert.equal(nonPlain.status, 200);
+        assert.equal(nonPlain.body.ok, false);
+        assert.equal(nonPlain.body.errors.includes("forbidden_stylesheet_attribute"), true);
+
+        const duplicate = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("</head>", '<link rel="stylesheet" href="styles.css"></head>')));
+        assert.equal(duplicate.status, 200);
+        assert.equal(duplicate.body.ok, false);
+        assert.equal(duplicate.body.errors.includes("invalid_stylesheet_count"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
@@ -299,6 +337,10 @@ async function controlCommand(baseUrl, tool, args = {}) {
     "x-platform-control-token": controlToken,
   });
   return response.body;
+}
+
+async function validateWebappPackage(baseUrl, packageBody) {
+  return postJson(`${baseUrl}/webapps/validate`, packageBody);
 }
 
 async function bridgeCall(baseUrl, appId, sessionId, request) {
