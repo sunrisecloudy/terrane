@@ -100,6 +100,7 @@ export async function runFakeHostLatencyBenchmark({
       await runNetworkTimeoutScenario(host),
       await runBridgeThroughputScenario({ host, appId: "notes-lite", calls: throughputCalls }),
       await runOpenAllExamplesMemoryScenario({ host, appIds: EXAMPLE_APP_IDS }),
+      await runLargeListScenario({ host, appId: "task-workbench" }),
       await runInstallUninstallScenario({
         host,
         packageDir: packageDirs[0],
@@ -239,6 +240,46 @@ async function runOpenAllExamplesMemoryScenario({ host, appIds }) {
     heapDeltaBytes,
     memoryGrowthLimitBytes: MEMORY_GROWTH_LIMIT_BYTES,
   };
+}
+
+async function runLargeListScenario({ host, appId }) {
+  const rowCount = 1000;
+  const packageRecord = host.database.activeInstallPackage(appId);
+  const appJs = packageRecord.files.get("app.js") ?? "";
+  const pageSize = extractTaskPageSize(appJs);
+  const hasWindowedSlice = /filtered\.slice\(start,start\+PAGE_SIZE\)/.test(appJs);
+  const rows = Array.from({ length: rowCount }, (_, index) => ({
+    id: `perf_task_${index}`,
+    title: `Large list task ${index + 1}`,
+    priority: index % 10 === 0 ? "high" : index % 3 === 0 ? "low" : "medium",
+    done: index % 5 === 0,
+    createdAt: index,
+  }));
+  const storage = await host.runControlCommand("runtime.storage_set", {
+    appId,
+    key: `${appId}:tasks`,
+    value: rows,
+  });
+  assertControlResult("large_list_storage_set", storage);
+  await openAndWait(host, appId);
+  const usage = await host.runControlCommand("runtime.resource_usage", { appId });
+  const maxStorageBytes = packageRecord.manifest.resourceBudget.maxStorageBytes;
+  const renderedRows = Math.min(rowCount, pageSize ?? rowCount);
+  return {
+    id: "large_list",
+    ok: Boolean(pageSize && pageSize <= 100 && hasWindowedSlice && usage.storageBytes > 0 && usage.storageBytes < maxStorageBytes),
+    rowCount,
+    pageSize,
+    renderedRows,
+    hasWindowedSlice,
+    storageBytes: usage.storageBytes,
+    maxStorageBytes,
+  };
+}
+
+function extractTaskPageSize(source) {
+  const match = source.match(/\bPAGE_SIZE\s*=\s*(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 async function runInstallUninstallScenario({ host, packageDir, appId, loops }) {

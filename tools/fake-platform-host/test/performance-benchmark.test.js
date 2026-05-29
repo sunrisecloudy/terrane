@@ -22,7 +22,7 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   );
   assert.deepEqual(
     report.scenarios.map((scenario) => scenario.id),
-    ["network_timeout", "bridge_throughput", "open_all_examples_memory", "install_uninstall_loop"],
+    ["network_timeout", "bridge_throughput", "open_all_examples_memory", "large_list", "install_uninstall_loop"],
   );
 
   for (const metric of report.metrics) {
@@ -55,6 +55,14 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
     "notes-lite",
     "task-workbench",
   ]);
+
+  const largeList = report.scenarios.find((scenario) => scenario.id === "large_list");
+  assert.equal(largeList.ok, true);
+  assert.equal(largeList.rowCount, 1000);
+  assert.equal(largeList.pageSize, 40);
+  assert.equal(largeList.renderedRows, 40);
+  assert.equal(largeList.hasWindowedSlice, true);
+  assert.equal(largeList.storageBytes < largeList.maxStorageBytes, true);
 
   const lifecycle = report.scenarios.find((scenario) => scenario.id === "install_uninstall_loop");
   assert.equal(lifecycle.ok, true);

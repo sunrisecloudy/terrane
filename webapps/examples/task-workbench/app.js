@@ -1,8 +1,10 @@
 (function(){
   const APP_ID='task-workbench';
   const KEY=APP_ID+':tasks';
+  const PAGE_SIZE=40;
   let tasks=[];
   let filter='all';
+  let page=0;
   const $=(id)=>document.getElementById(id);
   async function call(method, params){
     if(window.AppRuntime&&typeof window.AppRuntime.call==='function') return window.AppRuntime.call(method, params);
@@ -21,7 +23,7 @@
     const priority=$('priority').value;
     const core=await call('core.step',{app:APP_ID,event:{type:'CreateTask',payload:{title,priority}}});
     $('core-output').textContent=JSON.stringify(core,null,2);
-    tasks.unshift({id:'task_'+Date.now(),title,priority,done:false,createdAt:Date.now()});
+    tasks.unshift({id:'task_'+Date.now(),title,priority,done:false,createdAt:Date.now()}); page=0;
     $('title').value=''; await persist(); await call('notification.toast',{message:'Task added',level:'success'}); render();
   }
   async function toggle(id){ tasks=tasks.map(t=>t.id===id?{...t,done:!t.done}:t); await call('core.step',{app:APP_ID,event:{type:'ToggleTask',payload:{id}}}).then(r=>{$('core-output').textContent=JSON.stringify(r,null,2)}); await persist(); render(); }
@@ -29,7 +31,11 @@
   function visible(t){ return filter==='all'||(filter==='open'&&!t.done)||(filter==='done'&&t.done)||(filter==='high'&&t.priority==='high'); }
   function render(){
     const list=$('tasks'); list.innerHTML=''; const filtered=tasks.filter(visible); $('empty').hidden=filtered.length!==0;
-    for(const task of filtered){
+    const maxPage=Math.max(0,Math.ceil(filtered.length/PAGE_SIZE)-1); page=Math.min(page,maxPage);
+    const start=page*PAGE_SIZE; const pageTasks=filtered.slice(start,start+PAGE_SIZE);
+    $('page-status').textContent=filtered.length?`Showing ${start+1}-${start+pageTasks.length} of ${filtered.length}`:'Showing 0 of 0';
+    $('prev-page').disabled=page===0; $('next-page').disabled=page>=maxPage;
+    for(const task of pageTasks){
       const li=document.createElement('li'); li.className='task';
       const check=document.createElement('input'); check.type='checkbox'; check.dataset.testid='task-toggle-checkbox'; check.checked=task.done; check.addEventListener('change',()=>toggle(task.id));
       const title=document.createElement('div'); title.className='title'+(task.done?' done':''); title.textContent=task.title;
@@ -38,6 +44,8 @@
     }
   }
   $('add').addEventListener('click',add); $('title').addEventListener('keydown',e=>{if(e.key==='Enter')add();});
-  for(const b of document.querySelectorAll('[data-filter]')) b.addEventListener('click',()=>{filter=b.dataset.filter; document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b)); render();});
+  $('prev-page').addEventListener('click',()=>{page=Math.max(0,page-1);render();});
+  $('next-page').addEventListener('click',()=>{page+=1;render();});
+  for(const b of document.querySelectorAll('[data-filter]')) b.addEventListener('click',()=>{filter=b.dataset.filter; page=0; document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b)); render();});
   load().catch(e=>{$('empty').textContent='Failed to load: '+e.message;});
 })();
