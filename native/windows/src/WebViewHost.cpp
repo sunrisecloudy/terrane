@@ -246,6 +246,8 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
 
   std::wstring response;
   std::wstring smokeRequestId;
+  std::wstring smokeAppId;
+  std::wstring smokeMethod;
   json::JsonObject parsed{nullptr};
   if (json::JsonObject::TryParse(body, parsed) && IsRuntimeEnvelope(parsed)) {
     auto requestId = RuntimeEnvelopeRequestId(parsed);
@@ -270,7 +272,10 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
                        .c_str();
       } else {
         auto mountToken = std::wstring(parsed.GetNamedString(L"mountToken", L"").c_str());
-        auto requestJson = std::wstring(parsed.GetNamedObject(L"request").Stringify().c_str());
+        auto requestObject = parsed.GetNamedObject(L"request");
+        smokeAppId = appId;
+        smokeMethod = std::wstring(requestObject.GetNamedString(L"method", L"").c_str());
+        auto requestJson = std::wstring(requestObject.Stringify().c_str());
         response = bridge_->HandleJson(requestJson, SandboxContextForApp(appId, mountToken));
       }
     }
@@ -279,6 +284,7 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
   }
 
   HandleWebBridgeSmokeResponse(smokeRequestId, response);
+  HandleRuntimeAppBridgeSmokeResponse(smokeAppId, smokeMethod, response);
   webview_->PostWebMessageAsString(response.c_str());
 }
 
@@ -306,6 +312,8 @@ void WebViewHost::RunSmoke() {
     RunWebBridgeStorageSmoke(false);
   } else if (action == L"bridge-core-step") {
     RunWebBridgeCoreSmoke();
+  } else if (action == L"runtime-app-storage-get") {
+    RunRuntimeAppBridgeSmoke();
   } else {
     SmokeFailure(L"unknown smoke action");
   }
@@ -413,6 +421,45 @@ void WebViewHost::RunWebBridgeCoreSmoke() {
   StartWebBridgeSmoke(L"task-workbench", L"windows_smoke_bridge_core_step", L"core.step", params);
 }
 
+void WebViewHost::RunRuntimeAppBridgeSmoke() {
+  if (webview_ == nullptr) {
+    SmokeFailure(L"WebView2 is not initialized");
+    return;
+  }
+
+  constexpr wchar_t kScript[] = LR"JS((function () {
+  var deadline = Date.now() + 5000;
+  function openNotesLiteWhenReady() {
+    var button = document.querySelector('[data-testid="open-notes-lite-button"]');
+    if (button) {
+      button.click();
+      return;
+    }
+    if (Date.now() < deadline) {
+      window.setTimeout(openNotesLiteWhenReady, 50);
+    }
+  }
+  openNotesLiteWhenReady();
+  return "started";
+})())JS";
+
+  webview_->ExecuteScript(
+      kScript,
+      Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+          [this](HRESULT errorCode, PCWSTR resultObjectAsJson) -> HRESULT {
+            if (FAILED(errorCode)) {
+              SmokeFailure(L"WebView2 runtime app smoke script failed");
+              return S_OK;
+            }
+            auto result = ScriptStringResult(resultObjectAsJson);
+            if (result != L"started") {
+              SmokeFailure(L"WebView2 runtime app smoke script did not start: " + result);
+            }
+            return S_OK;
+          })
+          .Get());
+}
+
 void WebViewHost::StartWebBridgeSmoke(
     std::wstring const& appId,
     std::wstring const& id,
@@ -474,6 +521,20 @@ void WebViewHost::HandleWebBridgeSmokeResponse(std::wstring const& requestId, st
   } else if (requestId == L"windows_smoke_bridge_core_step") {
     JsonResponseOk(response)
         ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK")
+        : SmokeFailure(response);
+  }
+}
+
+void WebViewHost::HandleRuntimeAppBridgeSmokeResponse(
+    std::wstring const& appId,
+    std::wstring const& method,
+    std::wstring const& response) {
+  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE") != L"runtime-app-storage-get") {
+    return;
+  }
+  if (appId == L"notes-lite" && method == L"storage.get") {
+    JsonResponseOk(response)
+        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
         : SmokeFailure(response);
   }
 }

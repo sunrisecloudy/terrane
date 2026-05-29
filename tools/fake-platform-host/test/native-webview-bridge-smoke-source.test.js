@@ -16,17 +16,23 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsHost, /windows_smoke_bridge_storage_set/);
   assert.match(windowsHost, /windows_smoke_bridge_storage_get/);
   assert.match(windowsHost, /windows_smoke_bridge_core_step/);
+  assert.match(windowsHost, /runtime-app-storage-get/);
+  assert.match(windowsHost, /open-notes-lite-button/);
   assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK/);
   assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK/);
   assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
 
   assert.match(linuxHost, /messageHandlers && window\.webkit\.messageHandlers\.NativeAIPlatformBridge/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_set/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_get/);
   assert.match(linuxHost, /linux_smoke_bridge_core_step/);
+  assert.match(linuxHost, /runtime-app-storage-get/);
+  assert.match(linuxHost, /open-notes-lite-button/);
   assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK/);
   assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK/);
   assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
 });
 
 function read(relativePath) {

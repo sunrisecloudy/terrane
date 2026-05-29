@@ -128,6 +128,10 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
     ...baseEnv,
     NATIVE_AI_LINUX_SMOKE: "bridge-core-step",
   });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "runtime-app-storage-get",
+  });
 }
 
 function runSmoke(binaryPath, marker, env) {

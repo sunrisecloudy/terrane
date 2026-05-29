@@ -141,6 +141,10 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreDll }) {
     ...baseEnv,
     NATIVE_AI_WINDOWS_SMOKE: "bridge-core-step",
   });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "runtime-app-storage-get",
+  });
 }
 
 function runSmoke(binaryPath, resultFile, marker, env) {

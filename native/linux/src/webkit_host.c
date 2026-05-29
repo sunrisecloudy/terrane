@@ -341,6 +341,17 @@ static void maybe_finish_web_bridge_smoke(WebKitHost *host, const gchar *request
   }
 }
 
+static void maybe_finish_runtime_app_bridge_smoke(WebKitHost *host, const gchar *app_id, const gchar *method, const gchar *response) {
+  if (g_strcmp0(g_getenv("NATIVE_AI_LINUX_SMOKE"), "runtime-app-storage-get") != 0) {
+    return;
+  }
+  if (g_strcmp0(app_id, "notes-lite") == 0 && g_strcmp0(method, "storage.get") == 0) {
+    json_response_ok(response)
+        ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
+        : smoke_failure(host, response);
+  }
+}
+
 static void smoke_script_done(GObject *source_object, GAsyncResult *result, gpointer user_data) {
   WebKitHost *host = user_data;
   GError *error = NULL;
@@ -351,10 +362,25 @@ static void smoke_script_done(GObject *source_object, GAsyncResult *result, gpoi
     return;
   }
   g_autofree gchar *status = value == NULL ? g_strdup("") : jsc_value_to_string(value);
-  if (g_strcmp0(status, "posted") != 0) {
+  if (g_strcmp0(status, "posted") != 0 && g_strcmp0(status, "started") != 0) {
     smoke_failure(host, status);
   }
   g_clear_object(&value);
+}
+
+static void run_runtime_app_bridge_smoke(WebKitHost *host) {
+  const gchar *script =
+      "(function () {"
+      "var deadline = Date.now() + 5000;"
+      "function openNotesLiteWhenReady() {"
+      "var button = document.querySelector('[data-testid=\"open-notes-lite-button\"]');"
+      "if (button) { button.click(); return; }"
+      "if (Date.now() < deadline) window.setTimeout(openNotesLiteWhenReady, 50);"
+      "}"
+      "openNotesLiteWhenReady();"
+      "return 'started';"
+      "})()";
+  webkit_web_view_evaluate_javascript(host->web_view, script, -1, NULL, NULL, NULL, smoke_script_done, host);
 }
 
 static void start_web_bridge_smoke(WebKitHost *host, const gchar *app_id, const gchar *id, const gchar *method, JsonNode *params) {
@@ -440,6 +466,8 @@ static void run_smoke(WebKitHost *host) {
     run_web_bridge_storage_smoke(host, FALSE);
   } else if (g_strcmp0(action, "bridge-core-step") == 0) {
     run_web_bridge_core_smoke(host);
+  } else if (g_strcmp0(action, "runtime-app-storage-get") == 0) {
+    run_runtime_app_bridge_smoke(host);
   } else {
     smoke_failure(host, "unknown smoke action");
   }
@@ -610,6 +638,8 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
   const gchar *uri = webkit_web_view_get_uri(host->web_view);
   g_autofree gchar *payload = jsc_value_to_json(value, 0);
   g_autofree gchar *request_id = NULL;
+  g_autofree gchar *request_app_id = NULL;
+  g_autofree gchar *request_method = NULL;
   gchar *response = NULL;
 
   if (!is_trusted_runtime_uri(uri)) {
@@ -635,6 +665,9 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
           if (!is_known_example_app_id(app_id)) {
             response = bridge_error_text(request_id, "invalid_request", "Runtime bridge envelope references an unknown app");
           } else {
+            JsonObject *request = runtime_envelope_request(root);
+            request_app_id = g_strdup(app_id);
+            request_method = g_strdup(json_object_get_string_member_with_default(request, "method", ""));
             JsonNode *request_node = json_object_get_member(root, "request");
             g_autofree gchar *request_body = json_node_to_string(request_node);
             AppSandboxContext context = sandbox_context_for_app(app_id, mount_token);
@@ -650,6 +683,7 @@ static gboolean on_script_message_with_reply(WebKitUserContentManager *manager, 
   }
 
   maybe_finish_web_bridge_smoke(host, request_id, response);
+  maybe_finish_runtime_app_bridge_smoke(host, request_app_id, request_method, response);
   JSCContext *js_context = jsc_value_get_context(value);
   JSCValue *reply_value = jsc_value_new_from_json(js_context, response);
   webkit_script_message_reply_return_value(reply, reply_value);
