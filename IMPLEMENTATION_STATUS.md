@@ -40,7 +40,7 @@ Status snapshot: **2026-05-29**.
 | `docs/20_RUNTIME_CAPABILITIES.md` | spec-only | runtime |
 | `docs/21_SNAPSHOT_AND_REPLAY_FORMAT.md` | spec-only | runtime |
 | `docs/22_RESOURCE_BUDGETS.md` | spec-only (v0.4) | runtime |
-| `docs/23_ACCESSIBILITY_CONTRACT.md` | spec-only (thin — needs tooling decision) | runtime |
+| `docs/23_ACCESSIBILITY_CONTRACT.md` | spec-only (v0.4) | runtime |
 | `docs/24_NETWORK_POLICY.md` | spec-only | runtime |
 | `docs/25_CODEX_REPAIR_LOOP.md` | spec-only | codex |
 | `docs/26_PLATFORM_CAPABILITY_MATRIX.md` | spec-only | native |

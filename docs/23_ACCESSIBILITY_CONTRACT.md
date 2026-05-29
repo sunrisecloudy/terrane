@@ -2,57 +2,108 @@
 
 ## 1. Purpose
 
-AI-generated UI must be testable and usable. Accessibility is not optional because the platform will generate many apps and bad defaults will multiply.
+AI-generated UI must be testable and usable. Accessibility is part of the platform contract because this runtime will host many generated apps, and poor defaults would be copied into every repair loop.
 
-## 2. Required generated-app rules
+Accessibility has two roles:
+
+- user quality: generated apps need semantic, keyboard-friendly interfaces;
+- agent quality: Codex needs stable selectors, names, roles, and snapshots to inspect and repair apps.
+
+## 2. Generated-App Requirements
 
 Generated apps must:
 
-- use semantic HTML where possible;
-- provide labels for all inputs;
-- provide accessible names for all buttons and controls;
+- use semantic HTML landmarks, headings, labels, lists, tables, and buttons where possible;
+- include a non-empty document `<title>`;
+- include a visible screen title, normally one `<h1>`;
+- include a `<main>` landmark for the primary app surface;
+- provide accessible names for every button, link, input, select, textarea, and custom control;
+- provide explicit labels for inputs;
 - keep focus visible;
 - support keyboard navigation for interactive controls;
 - avoid pointer-only interactions;
 - use dialogs that trap focus and restore focus on close;
-- expose status changes through visible text and, when available, ARIA live regions;
+- expose status changes through visible text and, when useful, ARIA live regions;
 - pass contrast thresholds for normal and dark themes;
-- avoid text inside images unless redundant text exists.
+- avoid text inside images unless equivalent text exists.
 
-## 3. Runtime support
+Every interactive element must also have a stable `data-testid`. `data-testid` is not the accessible name; it is the automation handle.
 
-The runtime should provide:
+## 3. Automated v0.4 Gate
 
-- focus manager;
-- dialog primitive;
-- toast/status primitive;
-- accessibility tree snapshot in dev mode;
-- automated audit tool in the control plane.
+The v0.4 automated gate is intentionally static and deterministic so it can run in the fake host, server control plane, and CI without a browser dependency. It must produce `schemas/accessibility-report.schema.json`.
 
-## 4. Required test signals
+Required checks:
 
-Micro-tests should verify:
+| Check id | Failure condition | Severity |
+|---|---|---|
+| `document_title` | Missing or empty document title | fail |
+| `main_landmark` | No `<main>` landmark | fail |
+| `screen_title` | No level-1 heading | fail |
+| `no_unlabeled_controls` | Any interactive control lacks an accessible name | fail |
+
+The fake host and server must expose the same control tools:
 
 ```text
 runtime.accessibility_snapshot
 runtime.run_accessibility_audit
-runtime.assert_visible
-runtime.press_key
-runtime.assert_text
+runtime.assert_accessibility
 ```
 
-Use `schemas/accessibility-report.schema.json` for audit reports.
+`runtime.accessibility_snapshot` returns at least:
 
-## 5. Install gate
+- `appId`;
+- document title;
+- landmarks with role/name;
+- headings with level/name;
+- controls with role/name/test id when available.
 
-The app installer may accept apps with non-critical accessibility warnings in dev mode, but production/bundled release builds should fail on:
+`runtime.run_accessibility_audit` returns a report with `appId`, `checkedAt`, `status`, and `checks`. `runtime.assert_accessibility` must support at least the rule `no_unlabeled_controls`.
 
-- unlabeled inputs;
-- buttons without accessible names;
-- missing document title/screen title;
-- keyboard traps;
-- severe color contrast failures.
+## 4. Browser/Manual Checks
 
-## 6. Prompt requirement
+Some requirements cannot be trusted from static HTML alone. Before a release can claim broader accessibility coverage, a browser-backed or manual pass must verify:
 
-AI generation prompts must explicitly require accessible, semantic HTML and keyboard-friendly controls. Codex repair prompts must include accessibility failures as first-class bugs.
+- keyboard tab order and focus visibility;
+- dialog focus trap and restoration;
+- status announcements and live regions;
+- responsive text reflow;
+- color contrast;
+- behavior after runtime errors and permission denials.
+
+Unchecked browser/manual items are unknown, not passed. Do not mark them complete in `docs/10_ACCEPTANCE_CHECKLIST.md` unless the relevant target and test path were actually run.
+
+## 5. Install And Repair Behavior
+
+Dev installs may accept warnings, but they must preserve the accessibility report in install/test output so Codex can repair it.
+
+Bundled and production release builds must fail installation when any required v0.4 automated check returns `fail`.
+
+Codex repair loops must treat accessibility failures as first-class bugs:
+
+1. run package validation;
+2. run static policy audit;
+3. run `runtime.run_accessibility_audit`;
+4. run app smoke tests and affected microtests;
+5. patch the smallest app files needed;
+6. rerun the failed checks before enabling the app version.
+
+## 6. Test Fixtures
+
+Accessibility fixtures live under `tests/accessibility/` and are executable microtests. Every bundled app must pass:
+
+- `runtime.run_accessibility_audit`;
+- `runtime.accessibility_snapshot`;
+- `runtime.assert_accessibility` with `rule = "no_unlabeled_controls"`.
+
+The primary regression test is:
+
+```text
+node --test --no-warnings tools/fake-platform-host/test/accessibility.test.js
+```
+
+The full fake-host test suite also runs accessibility checks through package smoke, microtests, and repair-loop coverage.
+
+## 7. Prompt Requirement
+
+AI generation prompts must explicitly require accessible, semantic HTML, keyboard-friendly controls, and stable `data-testid` selectors. Repair prompts must include accessibility failures with the check id, selector when available, and the expected semantic fix.
