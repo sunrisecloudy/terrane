@@ -76,6 +76,14 @@ android emulator job:
 
 ## 5. Release artifacts
 
+The static release artifact packager is:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts
+```
+
+It produces deterministic archives for the build-free runtime and example packages, plus a manifest that records hashes and the target-specific directories populated by platform CI jobs.
+
 ```text
 artifacts/
   zig-core/
@@ -86,6 +94,7 @@ artifacts/
     linux/
   runtime-web.zip
   example-webapps.zip
+  release-manifest.json
   server/
   native-apps/
 ```

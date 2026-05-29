@@ -64,6 +64,16 @@ jobs:
         working-directory: tools/codex-platform-mcp
         run: npm run build
 
+      - name: Package static release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts
+
+      - name: Upload static release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-release-artifacts
+          path: artifacts/
+
   linux-native-smoke:
     name: Linux Native Smoke
     runs-on: ubuntu-24.04

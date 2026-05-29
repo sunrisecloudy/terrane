@@ -18,6 +18,7 @@ await runCheck("examples.canonical", checkCanonicalExamples);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
+await runCheck("release.packaging", checkReleasePackaging);
 await runCheck("plugin.mcp", checkPluginMcp);
 await runCheck("control.openapi", checkControlOpenApi);
 await runCheck("control.tools", checkControlToolContract);
@@ -263,6 +264,8 @@ function checkCiWorkflow() {
     "actions/upload-artifact@v4",
     "fake-host-performance-runs",
     "tools/codex-platform-mcp",
+    "tools/package-release.mjs --out artifacts",
+    "static-release-artifacts",
     "linux-native-smoke",
     "NATIVE_AI_LINUX_SMOKE_LAUNCH",
     "libwebkitgtk-6.0-dev",
@@ -286,6 +289,40 @@ function checkCiWorkflow() {
     }
   }
   return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,native=linux/macos/ios/android/windows-smoke";
+}
+
+function checkReleasePackaging() {
+  const script = fs.readFileSync(path.join(repoRoot, "tools", "package-release.mjs"), "utf8");
+  const docs = fs.readFileSync(path.join(repoRoot, "docs", "12_RELEASE_AND_CI.md"), "utf8");
+  const ignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
+  const test = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "release-packaging.test.js"), "utf8");
+  const requiredScriptSnippets = [
+    "runtime-web.zip",
+    "example-webapps.zip",
+    "release-manifest.json",
+    "writeStoredZip",
+    "sha256",
+    "ZIG_CORE_TARGETS",
+  ];
+  for (const snippet of requiredScriptSnippets) {
+    if (!script.includes(snippet)) {
+      throw new Error(`tools/package-release.mjs missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["tools/package-release.mjs --out artifacts", "release-manifest.json"]) {
+    if (!docs.includes(snippet)) {
+      throw new Error(`docs/12 release artifacts missing ${snippet}`);
+    }
+  }
+  if (!ignore.includes("artifacts/")) {
+    throw new Error(".gitignore must ignore generated release artifacts");
+  }
+  for (const snippet of ["listZipEntries", "runtime-web/index.html", "webapps/examples/notes-lite/manifest.json"]) {
+    if (!test.includes(snippet)) {
+      throw new Error(`release packaging test missing ${snippet}`);
+    }
+  }
+  return "static-artifacts=runtime-web.zip,example-webapps.zip,manifest";
 }
 
 function checkPerformanceHarness() {
