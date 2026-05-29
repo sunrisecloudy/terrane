@@ -15,13 +15,11 @@
       "maxStorageBytes": 5242880,
       "maxBridgeCallsPerMinute": 600,
       "maxNetworkRequestsPerMinute": 60,
-      "maxNetworkResponseBytes": 1048576,
       "maxDomNodes": 2000,
       "maxTimers": 64,
-      "maxLogEntriesPerMinute": 120,
-      "maxAppJsBytes": 262144,
-      "maxHtmlBytes": 262144,
-      "maxCssBytes": 262144
+      "maxLogLinesPerMinute": 120,
+      "maxPackageBytes": 1048576,
+      "maxFileBytes": 524288
     },
     "networkPolicy": {
       "allow": [],
@@ -29,9 +27,6 @@
       "allowCredentials": false
     },
     "authorId": "example-fixture",
-    "requiredCapabilities": [
-      "app.log"
-    ],
     "trust": {
       "level": "bundled",
       "requiresUserApproval": false

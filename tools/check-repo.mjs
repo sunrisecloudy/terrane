@@ -59,6 +59,8 @@ function checkSchemaFixtures() {
     ["app-migration.schema.json", walk(examplesDir).filter((filePath) => /\/migrations\/\d+_to_\d+\.json$/.test(filePath))],
     ["micro-test.schema.json", jsonFiles(path.join(repoRoot, "tests", "micro"))],
     ["micro-test.schema.json", jsonFiles(path.join(repoRoot, "tests", "accessibility")).filter((filePath) => filePath.endsWith(".microtest.json"))],
+    ["micro-test.schema.json", jsonFiles(path.join(repoRoot, "tests", "golden")).filter((filePath) => filePath.endsWith(".golden.json"))],
+    ["app-package.schema.json", jsonFiles(path.join(repoRoot, "tests", "golden")).filter((filePath) => filePath.endsWith(".package.json"))],
     ["mutation-fixture.schema.json", jsonFiles(path.join(repoRoot, "tests", "mutation")).filter((filePath) => filePath.endsWith(".mutation.json"))],
     ["bridge-contract-fixture.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "bridge"))],
     ["core-step.schema.json", jsonFiles(path.join(repoRoot, "tests", "fixtures", "core"))],

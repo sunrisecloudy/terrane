@@ -127,7 +127,7 @@ Status snapshot: **2026-05-29**.
 | `tests/fixtures/capabilities/` | partial (schema-shaped runtime capability fixtures for fake-host, server, macOS, iOS simulator, Android, Windows, and Linux are exercised by runtime capability contract tests) |
 | `tests/fixtures/db/` | partial (schema-shaped app/install/runtime/test/control fixture records include control audit fields plus network, dialog, and fault-injection effect mocks) |
 | `tests/fixtures/snapshots/` | fixtures |
-| `tests/golden/` | fixtures (5 golden flows) |
+| `tests/golden/` | fixtures (4 checked-in golden fixtures are schema-validated: one package fixture plus three micro-test style flows; network-policy and core-step golden flows remain planned) |
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |
 | `tests/mutation/` | partial (37 mutations now exercised by fake-host validator/runtime tests, including direct network/storage/native-bridge APIs, sendBeacon, Cookie Store API use, appId bridge-param rejection, service workers, sandbox escape APIs, inline-style CSP drift, app script/stylesheet tag drift, platform-generated artifact rejection, invalid manifests/capabilities/resource budgets, tampering, and runtime-denied paths) |
 | `tests/accessibility/` | fixtures |
