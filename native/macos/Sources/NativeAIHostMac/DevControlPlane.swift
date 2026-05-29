@@ -463,6 +463,10 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, request, startedAt: startedAt, result: dbQueryCoreEvents(args: args))
         case "db.query_test_runs":
             sendAccepted(connection, request, startedAt: startedAt, result: dbQueryTestRuns(args: args))
+        case "db.export_backup":
+            sendAccepted(connection, request, startedAt: startedAt, result: exportBackup(type: "backup", includeDebug: false))
+        case "db.import_backup":
+            handleImportBackup(connection, request, args: args, startedAt: startedAt)
         case "db.export_debug_bundle":
             sendAccepted(connection, request, startedAt: startedAt, result: exportDebugBundle())
         default:
@@ -949,6 +953,18 @@ final class DevControlPlane: @unchecked Sendable {
         }
         guard let result = uninstallWebapp(appId: appId) else {
             sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App is not installed", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleImportBackup(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let backup = args["backup"] as? [String: Any] else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "db.import_backup requires backup", startedAt: startedAt)
+            return
+        }
+        guard let result = importBackup(backup) else {
+            sendRejected(connection, request, status: 400, code: "invalid_backup", message: "Backup import could not be completed", startedAt: startedAt)
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: result)
@@ -2163,11 +2179,15 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func exportDebugBundle() -> [String: Any] {
+        exportBackup(type: "debug-bundle", includeDebug: true)
+    }
+
+    private func exportBackup(type: String, includeDebug: Bool) -> [String: Any] {
         let exportId = "export_\(UUID().uuidString.lowercased())"
         let createdAt = Self.now()
         var document: [String: Any] = [
             "exportId": exportId,
-            "type": "debug-bundle",
+            "type": type,
             "createdAt": createdAt,
             "runtimeVersion": "0.4.0",
             "source": [
@@ -2181,7 +2201,7 @@ final class DevControlPlane: @unchecked Sendable {
             ),
             "appVersions": tableRows(
                 table: "app_versions",
-                columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "content_hash", "status", "created_at", "activated_at"],
+                columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "manifest_hash", "content_hash", "signature_json", "trust_level", "status", "created_at", "activated_at"],
                 orderBy: "created_at"
             ),
             "appFiles": tableRows(
@@ -2204,8 +2224,13 @@ final class DevControlPlane: @unchecked Sendable {
                 columns: ["report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"],
                 orderBy: "created_at"
             ),
+            "appMigrations": tableRows(
+                table: "app_migrations",
+                columns: ["migration_id", "app_id", "from_data_version", "to_data_version", "migration_json", "content_hash", "created_at"],
+                orderBy: "created_at"
+            ),
             "runtimeCapabilities": runtimeCapabilities(appId: nil),
-            "debug": [
+            "debug": includeDebug ? [
                 "runtimeSessions": tableRows(
                     table: "runtime_sessions",
                     columns: ["session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"],
@@ -2242,12 +2267,240 @@ final class DevControlPlane: @unchecked Sendable {
                     columns: ["test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"],
                     orderBy: "started_at"
                 ),
-            ],
+            ] : [:],
         ]
         let contentHash = "sha256:\(sha256Hex(jsonBody(document)))"
         document["contentHash"] = contentHash
-        recordBackupExport(document, contentHash: contentHash, createdAt: createdAt)
+        recordBackupExport(document, type: type, contentHash: contentHash, createdAt: createdAt)
         return document
+    }
+
+    private func importBackup(_ document: [String: Any]) -> [String: Any]? {
+        guard ["backup", "debug-bundle", "test-fixture"].contains(document["type"] as? String ?? ""),
+              document["apps"] is [[String: Any]],
+              document["appVersions"] is [[String: Any]],
+              document["appFiles"] is [[String: Any]],
+              document["appPermissions"] is [[String: Any]],
+              document["appStorage"] is [[String: Any]]
+        else {
+            return nil
+        }
+        let createdAt = Self.now()
+        let apps = document["apps"] as? [[String: Any]] ?? []
+        let versions = document["appVersions"] as? [[String: Any]] ?? []
+        let files = document["appFiles"] as? [[String: Any]] ?? []
+        let permissions = document["appPermissions"] as? [[String: Any]] ?? []
+        let storageRows = document["appStorage"] as? [[String: Any]] ?? []
+        let migrations = document["appMigrations"] as? [[String: Any]] ?? []
+        let reports = document["appInstallReports"] as? [[String: Any]] ?? []
+
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+
+        for app in apps {
+            guard let appId = textValue(app, keys: ["id", "appId"]) else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    appId,
+                    textValue(app, keys: ["name"]) ?? appId,
+                    textValue(app, keys: ["status"]) ?? "enabled",
+                    textValue(app, keys: ["active_install_id", "activeInstallId"]),
+                    textValue(app, keys: ["active_version", "activeVersion"]),
+                    intValue(firstValue(app, keys: ["data_version", "dataVersion"])) ?? 1,
+                    textValue(app, keys: ["created_at", "createdAt"]) ?? createdAt,
+                    textValue(app, keys: ["updated_at", "updatedAt"]) ?? createdAt,
+                ]
+            )
+        }
+
+        for version in versions where ok {
+            guard let installId = textValue(version, keys: ["install_id", "installId"]),
+                  let appId = textValue(version, keys: ["app_id", "appId"]),
+                  let appVersion = textValue(version, keys: ["version", "appVersion"])
+            else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    installId,
+                    appId,
+                    appVersion,
+                    textValue(version, keys: ["runtime_version", "runtimeVersion"]) ?? "0.1.0",
+                    intValue(firstValue(version, keys: ["data_version", "dataVersion"])) ?? 1,
+                    jsonTextValue(version, stringKeys: ["manifest_json", "manifestJson"], objectKeys: ["manifest"], fallback: "{}"),
+                    textValue(version, keys: ["manifest_hash", "manifestHash"]) ?? "",
+                    textValue(version, keys: ["content_hash", "contentHash"]) ?? "",
+                    jsonTextValue(version, stringKeys: ["signature_json", "signatureJson"], objectKeys: ["signature"], fallback: nil),
+                    textValue(version, keys: ["trust_level", "trustLevel"]) ?? "developer",
+                    textValue(version, keys: ["status"]) ?? "installed",
+                    textValue(version, keys: ["created_at", "installedAt", "createdAt"]) ?? createdAt,
+                    textValue(version, keys: ["activated_at", "activatedAt"]),
+                ]
+            )
+        }
+
+        for file in files where ok {
+            guard let installId = textValue(file, keys: ["install_id", "installId"]),
+                  let path = textValue(file, keys: ["path"])
+            else {
+                ok = false
+                break
+            }
+            let content = textValue(file, keys: ["content_text", "contentText"]) ?? ""
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    installId,
+                    path,
+                    content,
+                    textValue(file, keys: ["content_hash", "contentHash"]) ?? "sha256:\(sha256Hex(content))",
+                    intValue(firstValue(file, keys: ["size_bytes", "sizeBytes"])) ?? content.utf8.count,
+                    textValue(file, keys: ["mime"]) ?? "text/plain",
+                    textValue(file, keys: ["created_at", "createdAt"]) ?? createdAt,
+                ]
+            )
+        }
+
+        for permission in permissions where ok {
+            guard let installId = textValue(permission, keys: ["install_id", "installId"]),
+                  let appId = textValue(permission, keys: ["app_id", "appId"]),
+                  let name = textValue(permission, keys: ["permission"])
+            else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    installId,
+                    appId,
+                    name,
+                    intValue(firstValue(permission, keys: ["requested"])) ?? 1,
+                    intValue(firstValue(permission, keys: ["approved"])) ?? 0,
+                    textValue(permission, keys: ["approved_at", "approvedAt"]),
+                    textValue(permission, keys: ["reason"]) ?? "imported",
+                ]
+            )
+        }
+
+        for storage in storageRows where ok {
+            guard let appId = textValue(storage, keys: ["app_id", "appId"]),
+                  let key = textValue(storage, keys: ["key"])
+            else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    appId,
+                    key,
+                    jsonTextValue(storage, stringKeys: ["value_json", "valueJson"], objectKeys: ["value"], fallback: "null") ?? "null",
+                    textValue(storage, keys: ["updated_at", "updatedAt"]) ?? createdAt,
+                ]
+            )
+        }
+
+        for migration in migrations where ok {
+            guard let migrationId = textValue(migration, keys: ["migration_id", "migrationId"]),
+                  let appId = textValue(migration, keys: ["app_id", "appId"])
+            else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    migrationId,
+                    appId,
+                    intValue(firstValue(migration, keys: ["from_data_version", "fromDataVersion"])) ?? 1,
+                    intValue(firstValue(migration, keys: ["to_data_version", "toDataVersion"])) ?? 1,
+                    jsonTextValue(migration, stringKeys: ["migration_json", "migrationJson"], objectKeys: ["migration"], fallback: "{}"),
+                    textValue(migration, keys: ["content_hash", "contentHash"]) ?? "",
+                    textValue(migration, keys: ["created_at", "createdAt"]) ?? createdAt,
+                ]
+            )
+        }
+
+        for report in reports where ok {
+            guard let reportId = textValue(report, keys: ["report_id", "reportId"]),
+                  let appId = textValue(report, keys: ["app_id", "appId"])
+            else {
+                ok = false
+                break
+            }
+            ok = ok && executePrepared(
+                """
+                INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    reportId,
+                    appId,
+                    textValue(report, keys: ["install_id", "installId"]),
+                    textValue(report, keys: ["status"]) ?? "accepted",
+                    jsonTextValue(report, stringKeys: ["validation_json", "validationJson"], objectKeys: ["validation"], fallback: nil),
+                    jsonTextValue(report, stringKeys: ["security_json", "securityJson"], objectKeys: ["security"], fallback: nil),
+                    jsonTextValue(report, stringKeys: ["permissions_json", "permissionsJson"], objectKeys: ["permissions"], fallback: nil),
+                    jsonTextValue(report, stringKeys: ["compatibility_json", "compatibilityJson"], objectKeys: ["compatibility"], fallback: nil),
+                    jsonTextValue(report, stringKeys: ["smoke_test_json", "smokeTestJson"], objectKeys: ["smokeTest"], fallback: nil),
+                    textValue(report, keys: ["content_hash", "contentHash"]),
+                    textValue(report, keys: ["created_at", "createdAt"]) ?? createdAt,
+                ]
+            )
+        }
+
+        let source = document["source"] as? [String: Any] ?? [:]
+        ok = ok && executePrepared(
+            """
+            INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at)
+            VALUES (?, 'import', ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "import_\(UUID().uuidString.lowercased())",
+                textValue(source, keys: ["platform"]) ?? "unknown",
+                textValue(document, keys: ["runtimeVersion"]) ?? "0.4.0",
+                jsonBody(document),
+                textValue(document, keys: ["contentHash"]) ?? "sha256:\(sha256Hex(jsonBody(document)))",
+                createdAt,
+                createdAt,
+            ]
+        )
+
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            return nil
+        }
+        return [
+            "ok": true,
+            "apps": apps.count,
+            "appVersions": versions.count,
+            "appStorage": storageRows.count,
+        ]
     }
 
     private func send(_ connection: NWConnection, status: Int, body: String) {
@@ -3783,21 +4036,22 @@ final class DevControlPlane: @unchecked Sendable {
         return sessionId
     }
 
-    private func recordBackupExport(_ document: [String: Any], contentHash: String, createdAt: String) {
+    private func recordBackupExport(_ document: [String: Any], type: String, contentHash: String, createdAt: String) {
         guard let db = database.handle else { return }
         var statement: OpaquePointer?
         let sql = """
         INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at)
-        VALUES (?, 'debug-bundle', 'macos', '0.4.0', ?, ?, ?)
+        VALUES (?, ?, 'macos', '0.4.0', ?, ?, ?)
         """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             return
         }
         defer { sqlite3_finalize(statement) }
         bind(statement, 1, document["exportId"] as? String ?? "")
-        bind(statement, 2, jsonBody(document))
-        bind(statement, 3, contentHash)
-        bind(statement, 4, createdAt)
+        bind(statement, 2, type)
+        bind(statement, 3, jsonBody(document))
+        bind(statement, 4, contentHash)
+        bind(statement, 5, createdAt)
         sqlite3_step(statement)
     }
 
@@ -4217,6 +4471,43 @@ final class DevControlPlane: @unchecked Sendable {
             return Int(value)
         }
         return nil
+    }
+
+    private func firstValue(_ object: [String: Any], keys: [String]) -> Any? {
+        for key in keys {
+            if let value = object[key], !(value is NSNull) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func textValue(_ object: [String: Any], keys: [String]) -> String? {
+        guard let value = firstValue(object, keys: keys) else {
+            return nil
+        }
+        if let value = value as? String {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.stringValue
+        }
+        return nil
+    }
+
+    private func jsonTextValue(
+        _ object: [String: Any],
+        stringKeys: [String],
+        objectKeys: [String],
+        fallback: String?
+    ) -> String? {
+        if let text = textValue(object, keys: stringKeys) {
+            return text
+        }
+        if let value = firstValue(object, keys: objectKeys) {
+            return jsonString(value)
+        }
+        return fallback
     }
 
     private func scalarInt(_ sql: String, values: [String] = []) -> Int {

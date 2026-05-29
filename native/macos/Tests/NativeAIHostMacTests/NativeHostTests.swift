@@ -718,6 +718,22 @@ struct NativeHostTests {
         #expect(rollbackCommand.body.contains(#""activeInstallId":"install-control""#))
         #expect(rollbackCommand.body.contains(#""rolledBackInstallId":"install-control-v2""#))
 
+        let backupExport = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"db.export_backup","args":{}}"#
+        )
+        #expect(backupExport.statusCode == 200)
+        #expect(backupExport.body.contains(#""type":"backup""#))
+        #expect(backupExport.body.contains(#""contentHash":"sha256:"#))
+        let backupDocument = try jsonResult(backupExport)
+        let backupStorage = try #require(backupDocument["appStorage"] as? [[String: Any]])
+        #expect(backupStorage.contains { row in
+            (row["key"] as? String) == "core-replay-lab:state"
+                && ((row["value_json"] as? String)?.contains("Delete me on uninstall") ?? false)
+        })
+
         let quarantineCommand = try await httpRequest(
             commandURL,
             method: "POST",
@@ -766,6 +782,38 @@ struct NativeHostTests {
         #expect(listWithUninstalled.statusCode == 200)
         #expect(listWithUninstalled.body.contains(#""appId":"core-replay-lab""#))
         #expect(listWithUninstalled.body.contains(#""status":"uninstalled""#))
+
+        let importBackup = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString(["tool": "db.import_backup", "args": ["backup": backupDocument]])
+        )
+        #expect(importBackup.statusCode == 200)
+        #expect(importBackup.body.contains(#""ok":true"#))
+        #expect(importBackup.body.contains(#""appStorage":"#))
+
+        let restoredCoreOpen = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"platform.open_webapp","args":{"appId":"core-replay-lab"}}"#
+        )
+        #expect(restoredCoreOpen.statusCode == 200)
+        #expect(restoredCoreOpen.body.contains(#""appId":"core-replay-lab""#))
+
+        let restoredCoreStorage = PlatformStorage(databaseURL: dbURL).get(BridgeRequest(
+            id: "control-import-restored-storage",
+            method: "storage.get",
+            params: ["key": "core-replay-lab:state", "defaultValue": NSNull()],
+            context: uninstallStorageContext
+        ))
+        #expect(restoredCoreStorage.ok)
+        let restoredCoreStorageResult = try #require(restoredCoreStorage.result as? [String: Any])
+        let restoredCoreStorageValue = try #require(restoredCoreStorageResult["value"] as? [String: Any])
+        #expect(restoredCoreStorageValue["title"] as? String == "Delete me on uninstall")
+        #expect(try sqliteBackupExportCount(dbURL: dbURL, type: "backup") == 1)
+        #expect(try sqliteBackupExportCount(dbURL: dbURL, type: "import") == 1)
 
         let bridgeCallsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/bridge-calls")!,
@@ -1140,7 +1188,7 @@ struct NativeHostTests {
         )
         #expect(debugBundleCommand.statusCode == 200)
         #expect(debugBundleCommand.body.contains(#""debug":{"#))
-        #expect(try sqliteBackupExportCount(dbURL: dbURL) == 2)
+        #expect(try sqliteBackupExportCount(dbURL: dbURL, type: "debug-bundle") == 2)
 
         let ended = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)")!,
@@ -1351,7 +1399,7 @@ private func sqliteControlCommandCount(dbURL: URL, decision: String) throws -> I
     return Int(sqlite3_column_int(statement, 0))
 }
 
-private func sqliteBackupExportCount(dbURL: URL) throws -> Int {
+private func sqliteBackupExportCount(dbURL: URL, type: String) throws -> Int {
     var db: OpaquePointer?
     guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
         return 0
@@ -1359,8 +1407,9 @@ private func sqliteBackupExportCount(dbURL: URL) throws -> Int {
     defer { sqlite3_close(db) }
 
     var statement: OpaquePointer?
-    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_exports WHERE type = 'debug-bundle'", -1, &statement, nil)
+    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_exports WHERE type = ?", -1, &statement, nil)
     defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, type, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     guard sqlite3_step(statement) == SQLITE_ROW else {
         return 0
     }
@@ -1448,6 +1497,11 @@ private func jsonInt(_ value: Any?) -> Int {
         return value.intValue
     }
     return 0
+}
+
+private func jsonObjectString(_ object: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return try #require(String(data: data, encoding: .utf8))
 }
 
 enum NativeHostTestError: Error, CustomStringConvertible {
