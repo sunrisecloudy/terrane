@@ -10807,6 +10807,7 @@ fn validateServerHtmlPolicy(
         try errors.append(allocator, "forbidden_embedded_context");
     }
     try validateServerStylesheetLinks(allocator, html, errors);
+    try validateServerHtmlUrlAttrs(allocator, html, errors);
 }
 
 fn validateServerCsp(
@@ -11095,6 +11096,95 @@ fn htmlRelIncludesStylesheet(allocator: std.mem.Allocator, attrs: []const u8) !b
     var tokens = std.mem.tokenizeAny(u8, actual, " \t\r\n");
     while (tokens.next()) |token| {
         if (std.ascii.eqlIgnoreCase(token, "stylesheet")) return true;
+    }
+    return false;
+}
+
+fn validateServerHtmlUrlAttrs(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    var index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, html, index, '<')) |start| {
+        index = start + 1;
+        const tag = htmlOpeningTagName(html, start) orelse continue;
+        if (htmlUrlTagHandledElsewhere(tag)) continue;
+        const open_end = std.mem.indexOfScalarPos(u8, html, start, '>') orelse return;
+        const attrs = html[start + 1 + tag.len .. open_end];
+        try validateServerHtmlUrlAttr(allocator, tag, attrs, "href", errors);
+        try validateServerHtmlUrlAttr(allocator, tag, attrs, "src", errors);
+        try validateServerHtmlUrlAttr(allocator, tag, attrs, "poster", errors);
+        const srcset = try htmlAttrValueAlloc(allocator, attrs, "srcset");
+        defer if (srcset) |actual| allocator.free(actual);
+        if (srcset) |actual_srcset| {
+            if (htmlSrcsetHasForbiddenUrl(actual_srcset)) try errors.append(allocator, "forbidden_external_resource");
+        }
+    }
+}
+
+fn validateServerHtmlUrlAttr(
+    allocator: std.mem.Allocator,
+    tag: []const u8,
+    attrs: []const u8,
+    attr: []const u8,
+    errors: *std.ArrayList([]const u8),
+) !void {
+    _ = tag;
+    const value = try htmlAttrValueAlloc(allocator, attrs, attr);
+    defer if (value) |actual| allocator.free(actual);
+    if (value) |actual_value| {
+        if (htmlUrlIsExternalOrAbsolute(actual_value)) try errors.append(allocator, "forbidden_external_resource");
+    }
+}
+
+fn htmlOpeningTagName(html: []const u8, start: usize) ?[]const u8 {
+    if (start + 1 >= html.len) return null;
+    const first = html[start + 1];
+    if (first == '/' or first == '!' or first == '?') return null;
+    const name_start = start + 1;
+    var name_end = name_start;
+    while (name_end < html.len and htmlNameChar(html[name_end])) : (name_end += 1) {}
+    if (name_end == name_start) return null;
+    return html[name_start..name_end];
+}
+
+fn htmlUrlTagHandledElsewhere(tag: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(tag, "base") or
+        std.ascii.eqlIgnoreCase(tag, "form") or
+        std.ascii.eqlIgnoreCase(tag, "link") or
+        std.ascii.eqlIgnoreCase(tag, "script");
+}
+
+fn htmlSrcsetHasForbiddenUrl(srcset: []const u8) bool {
+    var entries = std.mem.splitScalar(u8, srcset, ',');
+    while (entries.next()) |raw_entry| {
+        const entry = std.mem.trim(u8, raw_entry, " \t\r\n");
+        var parts = std.mem.tokenizeAny(u8, entry, " \t\r\n");
+        if (parts.next()) |url| {
+            if (htmlUrlIsExternalOrAbsolute(url)) return true;
+        }
+    }
+    return false;
+}
+
+fn htmlUrlIsExternalOrAbsolute(value: []const u8) bool {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] == '#') return false;
+    if (std.mem.startsWith(u8, trimmed, "/")) return true;
+    if (std.mem.startsWith(u8, trimmed, "//")) return true;
+    if (htmlUrlHasScheme(trimmed)) return true;
+    return false;
+}
+
+fn htmlUrlHasScheme(value: []const u8) bool {
+    if (value.len == 0 or !std.ascii.isAlphabetic(value[0])) return false;
+    var index: usize = 1;
+    while (index < value.len) : (index += 1) {
+        const char = value[index];
+        if (char == ':') return true;
+        if (char == '/' or char == '?' or char == '#') return false;
+        if (!(std.ascii.isAlphanumeric(char) or char == '+' or char == '.' or char == '-')) return false;
     }
     return false;
 }
@@ -12528,6 +12618,46 @@ test "server package validation rejects resource hint links" {
 
     try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_resource_hint\"") != null);
+}
+
+test "server package validation rejects external html resources" {
+    const report = try validateWebappPackage(std.testing.allocator,
+        \\{
+        \\  "manifest": {
+        \\    "id": "external-resource-test",
+        \\    "name": "External Resource Test",
+        \\    "version": "0.1.0",
+        \\    "runtimeVersion": "0.1.0",
+        \\    "entry": "index.html",
+        \\    "description": "Validator regression fixture.",
+        \\    "permissions": [],
+        \\    "storagePrefix": "external-resource-test:",
+        \\    "dataVersion": 1,
+        \\    "capabilities": {"required": [], "optional": []},
+        \\    "resourceBudget": {
+        \\      "maxDomNodes": 2000,
+        \\      "maxStorageBytes": 5242880,
+        \\      "maxBridgeCallsPerMinute": 600,
+        \\      "maxNetworkRequestsPerMinute": 60,
+        \\      "maxTimers": 64,
+        \\      "maxLogLinesPerMinute": 120,
+        \\      "maxPackageBytes": 1048576,
+        \\      "maxFileBytes": 524288
+        \\    },
+        \\    "networkPolicy": {"allow": []}
+        \\  },
+        \\  "files": [
+        \\    {"path": "manifest.json", "content": "{}"},
+        \\    {"path": "index.html", "content": "<link rel=\"stylesheet\" href=\"styles.css\"><main><img src=\"https://tracker.example/pixel.png\" alt=\"\"><a data-testid=\"external-link\" href=\"https://example.test\">External</a></main><script src=\"app.js\"></script>"},
+        \\    {"path": "styles.css", "content": ""},
+        \\    {"path": "app.js", "content": "const value = 1;"}
+        \\  ]
+        \\}
+    );
+    defer std.testing.allocator.free(report);
+
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report, "\"forbidden_external_resource\"") != null);
 }
 
 test "server package validation requires a plain styles.css link" {

@@ -100,6 +100,7 @@ Disallowed:
 - Remote scripts.
 - Remote stylesheets.
 - Resource hint links such as `dns-prefetch`, `preconnect`, `prefetch`, `preload`, `prerender`, or `modulepreload`.
+- Remote, absolute, or scheme-based element URLs in ordinary HTML attributes such as `href`, `src`, `srcset`, or `poster`.
 - Inline event handlers such as `onclick="..."`.
 - Inline `<script>` blocks of any kind.
 - `iframe` inside generated apps.

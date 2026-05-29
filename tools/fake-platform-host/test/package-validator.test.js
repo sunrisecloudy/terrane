@@ -206,6 +206,25 @@ test("resource hint links are rejected", () => {
   assert.equal(result.errors.some((error) => error.code === "forbidden_resource_hint"), true);
 });
 
+test("external HTML resource URLs are rejected", () => {
+  const cases = [
+    '<img src="https://tracker.example/pixel.png" alt="">',
+    '<a data-testid="external-link" href="https://example.test">External</a>',
+    '<video src="//media.example.test/video.mp4"></video>',
+    '<img srcset="small.png 1x, https://tracker.example/large.png 2x" alt="">',
+  ];
+
+  for (const snippet of cases) {
+    const dir = copyExamplePackage("notes-lite");
+    const indexPath = path.join(dir, "index.html");
+    fs.writeFileSync(indexPath, fs.readFileSync(indexPath, "utf8").replace("</main>", `${snippet}</main>`));
+
+    const result = validatePackage(dir);
+    assert.equal(result.ok, false, snippet);
+    assert.equal(result.errors.some((error) => error.code === "forbidden_external_resource"), true, snippet);
+  }
+});
+
 test("stylesheet link must load plain styles.css exactly once", () => {
   const missingStylesheet = copyExamplePackage("notes-lite");
   const missingIndexPath = path.join(missingStylesheet, "index.html");

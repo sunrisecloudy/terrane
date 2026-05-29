@@ -117,6 +117,7 @@ Reject generated apps containing:
 - `XMLHttpRequest`;
 - WebSocket / EventSource;
 - resource hints such as `dns-prefetch`, `preconnect`, `prefetch`, `preload`, `prerender`, or `modulepreload`;
+- remote or absolute HTML resources through ordinary `href`, `src`, `srcset`, or `poster` attributes;
 - localStorage / sessionStorage / IndexedDB / cookies;
 - direct use of platform bridge objects (`webkit.messageHandlers`, `chrome.webview`, `Android.*`);
 - forms with external action;
@@ -242,7 +243,7 @@ When a generated app violates policy, exceeds budgets, fails signature checks, o
 
 ### Network policy
 
-Generated apps cannot call `fetch`, `XMLHttpRequest`, WebSocket, EventSource, remote scripts, or remote styles. All network access must go through `network.request` and match `manifest.networkPolicy`. See docs/24.
+Generated apps cannot call `fetch`, `XMLHttpRequest`, WebSocket, EventSource, remote scripts, remote styles, resource hints, or remote HTML resources. All network access must go through `network.request` and match `manifest.networkPolicy`. See docs/24.
 
 ### Resource budgets
 

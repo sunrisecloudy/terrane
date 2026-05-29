@@ -911,6 +911,7 @@ function checkServerStatic() {
     "fn htmlHasInlineStyle",
     "\"forbidden_stylesheet_href\"",
     "\"forbidden_resource_hint\"",
+    "\"forbidden_external_resource\"",
     "\"forbidden_link_tag\"",
     "\"missing_stylesheet\"",
     "\"invalid_stylesheet_count\"",

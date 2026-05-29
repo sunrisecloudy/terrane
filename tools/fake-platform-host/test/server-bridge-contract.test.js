@@ -239,6 +239,12 @@ test(
         assert.equal(resourceHint.status, 200);
         assert.equal(resourceHint.body.ok, false);
         assert.equal(resourceHint.body.errors.includes("forbidden_resource_hint"), true);
+
+        const externalResource = await validateWebappPackage(started.url, packageForApp("notes-lite", (html) => html
+          .replace("</main>", '<img src="https://tracker.example/pixel.png" alt=""></main>')));
+        assert.equal(externalResource.status, 200);
+        assert.equal(externalResource.body.ok, false);
+        assert.equal(externalResource.body.errors.includes("forbidden_external_resource"), true);
       } finally {
         await stopServer(started);
       }

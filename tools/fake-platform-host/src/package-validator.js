@@ -40,6 +40,7 @@ const NETWORK_POLICY_ENTRY_KEYS = new Set([
   "timeoutMs",
 ]);
 const RESOURCE_HINT_RELS = new Set(["dns-prefetch", "modulepreload", "preconnect", "prefetch", "preload", "prerender"]);
+const URL_ATTRIBUTE_TAGS_HANDLED_ELSEWHERE = new Set(["base", "form", "link", "script"]);
 const NETWORK_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const CONTENT_RATING_MINIMUM_AGE = new Map([
   ["4+", 4],
@@ -464,6 +465,7 @@ function validateHtml(source, errors) {
   validateCsp(source, errors);
   validateScriptTags(source, errors);
   validateStylesheetLinks(source, errors);
+  validateHtmlUrlAttributes(source, errors);
   if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
     errors.push(issue("forbidden_inline_style", "generated apps must use styles.css instead of inline styles", {}));
   }
@@ -498,6 +500,32 @@ function validateHtml(source, errors) {
       errors.push(issue("missing_testid", "Interactive HTML elements must declare data-testid", { tag }));
     }
   }
+}
+
+function validateHtmlUrlAttributes(source, errors) {
+  for (const match of source.matchAll(/<([a-zA-Z][a-zA-Z0-9:-]*)\b([^>]*)>/g)) {
+    const tag = match[1].toLowerCase();
+    if (URL_ATTRIBUTE_TAGS_HANDLED_ELSEWHERE.has(tag)) continue;
+    const attrs = match[2] ?? "";
+
+    for (const attrName of ["href", "src", "poster"]) {
+      const value = htmlAttr(attrs, attrName);
+      if (value && isForbiddenHtmlUrl(value)) {
+        errors.push(issue("forbidden_external_resource", "generated app HTML URLs must be package-relative", { tag, attribute: attrName, value }));
+      }
+    }
+
+    const srcset = htmlAttr(attrs, "srcset");
+    if (srcset && srcset.split(",").some((candidate) => isForbiddenHtmlUrl(candidate.trim().split(/\s+/)[0] ?? ""))) {
+      errors.push(issue("forbidden_external_resource", "generated app HTML srcset URLs must be package-relative", { tag, attribute: "srcset" }));
+    }
+  }
+}
+
+function isForbiddenHtmlUrl(value) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("#")) return false;
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(trimmed);
 }
 
 function validateStylesheetLinks(source, errors) {

@@ -139,7 +139,7 @@
 - [x] Missing permission denied.
 - [x] Cross-app storage key denied.
 - [x] Malicious package fixtures rejected.
-- [x] Direct network use and resource hints rejected by validator.
+- [x] Direct network use, resource hints, and external HTML resources rejected by validator.
 - [x] Remote scripts rejected.
 - [x] Quota exceeded path tested.
 - [x] Native bridges reject `appId` in bridge params and use the channel-derived app id.
