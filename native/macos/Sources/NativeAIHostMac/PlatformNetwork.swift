@@ -86,7 +86,7 @@ final class PlatformNetwork {
         ])
     }
 
-    fileprivate static func origin(for url: URL) -> String? {
+    static func origin(for url: URL) -> String? {
         guard let scheme = url.scheme?.lowercased(),
               let host = url.host?.lowercased(),
               scheme == "http" || scheme == "https"
@@ -143,7 +143,7 @@ final class PlatformNetwork {
         return headers
     }
 
-    fileprivate static func isPrivateNetworkHost(_ rawHost: String?) -> Bool {
+    static func isPrivateNetworkHost(_ rawHost: String?) -> Bool {
         var host = (rawHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if host.hasPrefix("[") && host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())

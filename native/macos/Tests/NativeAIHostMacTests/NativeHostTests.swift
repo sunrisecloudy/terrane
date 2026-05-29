@@ -208,6 +208,22 @@ struct NativeHostTests {
             contentHash: "task-control-hash",
             installId: "install-task-control"
         )
+        try registry.installVersion(
+            appId: "api-dashboard",
+            name: "API Dashboard",
+            version: "0.1.0",
+            manifestJSON: #"{"id":"api-dashboard","version":"0.1.0","dataVersion":1}"#,
+            contentHash: "api-control-hash",
+            installId: "install-api-control"
+        )
+        try registry.installVersion(
+            appId: "file-transformer",
+            name: "File Transformer",
+            version: "0.1.0",
+            manifestJSON: #"{"id":"file-transformer","version":"0.1.0","dataVersion":1}"#,
+            contentHash: "file-control-hash",
+            installId: "install-file-control"
+        )
         let storageContext = AppSandboxContext(
             appId: "notes-lite",
             approvedPermissions: ["storage.read", "storage.write"],
@@ -704,6 +720,51 @@ struct NativeHostTests {
         #expect(notificationCapture.statusCode == 200)
         #expect(notificationCapture.body.contains(#""message":"Saved""#))
 
+        let networkMock = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.network_mock_set","args":{"appId":"api-dashboard","method":"GET","urlPattern":"https://api.example.com/status","response":{"status":200,"headers":{"content-type":"application/json"},"body":{"ok":true,"source":"macos-control"}}}}"#
+        )
+        #expect(networkMock.statusCode == 200)
+        #expect(networkMock.body.contains(#""urlPattern":"https:\/\/api.example.com\/status""#))
+
+        let networkBridge = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"api-dashboard","method":"network.request","params":{"url":"https://api.example.com/status","method":"GET","headers":{},"body":null}}}"#
+        )
+        #expect(networkBridge.statusCode == 200)
+        #expect(networkBridge.body.contains(#""source":"macos-control""#))
+
+        let resetNetworkMocks = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.network_mock_reset","args":{"appId":"api-dashboard"}}"#
+        )
+        #expect(resetNetworkMocks.statusCode == 200)
+        #expect(resetNetworkMocks.body.contains(#""cleared":1"#))
+
+        let dialogMock = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.dialog_mock_set","args":{"appId":"file-transformer","method":"dialog.openFile","response":{"files":[{"name":"codex.txt","mimeType":"text/plain","size":5,"text":"hello"}],"cancelled":false}}}"#
+        )
+        #expect(dialogMock.statusCode == 200)
+        #expect(dialogMock.body.contains(#""dialogType":"openFile""#))
+
+        let dialogBridge = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"file-transformer","method":"dialog.openFile","params":{"accept":["text/plain"],"multiple":false}}}"#
+        )
+        #expect(dialogBridge.statusCode == 200)
+        #expect(dialogBridge.body.contains(#""name":"codex.txt""#))
+
         let coreStep = try await httpRequest(
             commandURL,
             method: "POST",
@@ -802,7 +863,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 56)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 61)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

@@ -330,6 +330,12 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeStorageReset(connection, request, args: args, startedAt: startedAt)
         case "runtime.assert_storage":
             handleStorageAssertion(connection, request, args: args, startedAt: startedAt)
+        case "runtime.network_mock_set":
+            handleNetworkMockSet(connection, request, args: args, startedAt: startedAt)
+        case "runtime.network_mock_reset":
+            handleNetworkMockReset(connection, request, args: args, startedAt: startedAt)
+        case "runtime.dialog_mock_set":
+            handleDialogMockSet(connection, request, args: args, startedAt: startedAt)
         case "runtime.bridge_calls":
             sendAccepted(connection, request, startedAt: startedAt, result: [
                 "bridgeCalls": bridgeCallRows(appId: args["appId"] as? String),
@@ -808,6 +814,67 @@ final class DevControlPlane: @unchecked Sendable {
             "key": key,
             "value": actual,
         ])
+    }
+
+    private func handleNetworkMockSet(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let match = args["match"] as? [String: Any] ?? [:]
+        guard let urlPattern = args["urlPattern"] as? String ?? match["urlPattern"] as? String ?? match["url"] as? String,
+              !urlPattern.isEmpty,
+              args.keys.contains("response")
+        else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.network_mock_set requires urlPattern or match.url and response", startedAt: startedAt)
+            return
+        }
+        let method = (args["method"] as? String ?? match["method"] as? String ?? "GET").uppercased()
+        guard let result = addNetworkMock(
+            sessionId: args["sessionId"] as? String,
+            appId: args["appId"] as? String,
+            method: method,
+            urlPattern: urlPattern,
+            response: args["response"] ?? NSNull()
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Network mock could not be registered", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleNetworkMockReset(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        let sessionId = args["sessionId"] as? String
+        let appId = args["appId"] as? String
+        let result: [String: Any]
+        if let sessionId, let appId {
+            result = ["ok": true, "cleared": deleteRows("DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?", values: [sessionId, appId])]
+        } else if let sessionId {
+            result = ["ok": true, "cleared": deleteRows("DELETE FROM network_mocks WHERE session_id = ?", values: [sessionId])]
+        } else if let appId {
+            result = ["ok": true, "cleared": deleteRows("DELETE FROM network_mocks WHERE app_id = ?", values: [appId])]
+        } else {
+            result = ["ok": true, "cleared": deleteRows("DELETE FROM network_mocks")]
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleDialogMockSet(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let dialogType = normalizedDialogType(args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.dialog_mock_set requires dialogType or method", startedAt: startedAt)
+            return
+        }
+        let response = args["response"] ?? [
+            "files": args["files"] ?? [],
+            "selectedPath": args["selectedPath"] ?? NSNull(),
+            "cancelled": args["cancelled"] ?? false,
+        ]
+        guard let result = addDialogMock(
+            sessionId: args["sessionId"] as? String,
+            appId: args["appId"] as? String,
+            dialogType: dialogType,
+            response: response
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Dialog mock could not be registered", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
     }
 
     private func handleBridgeCallAssertion(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -1345,6 +1412,115 @@ final class DevControlPlane: @unchecked Sendable {
         return jsonValue(columnNullableText(statement, 0))
     }
 
+    private func addNetworkMock(sessionId: String?, appId: String?, method: String, urlPattern: String, response: Any) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let mockId = "netmock_\(UUID().uuidString.lowercased())"
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, mockId)
+        bindNullable(statement, 2, sessionId)
+        bindNullable(statement, 3, appId)
+        bind(statement, 4, method)
+        bind(statement, 5, urlPattern)
+        bind(statement, 6, jsonString(response))
+        bind(statement, 7, Self.now())
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return nil
+        }
+        return [
+            "ok": true,
+            "mockId": mockId,
+            "sessionId": sessionId ?? NSNull(),
+            "appId": appId ?? NSNull(),
+            "method": method,
+            "urlPattern": urlPattern,
+        ]
+    }
+
+    private func addDialogMock(sessionId: String?, appId: String?, dialogType: String, response: Any) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let mockId = "dialogmock_\(UUID().uuidString.lowercased())"
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, mockId)
+        bindNullable(statement, 2, sessionId)
+        bindNullable(statement, 3, appId)
+        bind(statement, 4, dialogType)
+        bind(statement, 5, jsonString(response))
+        bind(statement, 6, Self.now())
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            return nil
+        }
+        return [
+            "ok": true,
+            "mockId": mockId,
+            "sessionId": sessionId ?? NSNull(),
+            "appId": appId ?? NSNull(),
+            "dialogType": dialogType,
+        ]
+    }
+
+    private func findNetworkMock(sessionId: String?, appId: String, method: String, url: String) -> Any? {
+        guard let db = database.handle else { return nil }
+        let sql = """
+        SELECT response_json, url_pattern FROM network_mocks
+        WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at DESC
+        LIMIT 100
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, method.uppercased())
+        bind(statement, 2, appId)
+        bind(statement, 3, sessionId ?? "")
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let pattern = columnText(statement, 1)
+            if urlMatches(pattern: pattern, url: url) {
+                return jsonValue(columnNullableText(statement, 0))
+            }
+        }
+        return nil
+    }
+
+    private func findDialogMock(sessionId: String?, appId: String, dialogType: String) -> Any? {
+        guard let db = database.handle else { return nil }
+        let sql = """
+        SELECT response_json FROM dialog_mocks
+        WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, dialogType)
+        bind(statement, 2, appId)
+        bind(statement, 3, sessionId ?? "")
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return jsonValue(columnNullableText(statement, 0))
+    }
+
     private func bridgeCallRows(appId: String?) -> [[String: Any]] {
         tableRows(
             table: "bridge_calls",
@@ -1750,7 +1926,7 @@ final class DevControlPlane: @unchecked Sendable {
         case "notification.toast":
             return PlatformNotifications().toast(request)
         case "network.request":
-            return PlatformNetwork().request(request)
+            return mockedNetworkResponse(request) ?? PlatformNetwork().request(request)
         case "core.step":
             return core.step(request)
         case "runtime.capabilities":
@@ -1759,10 +1935,73 @@ final class DevControlPlane: @unchecked Sendable {
             NSLog("Generated app log: \(request.params)")
             return .success(id: request.id, result: ["ok": true])
         case "dialog.openFile", "dialog.saveFile":
-            return .failure(id: request.id, code: "platform_unsupported", message: "\(request.method) requires an interactive macOS dialog")
+            return mockedDialogResponse(request)
+                ?? .failure(id: request.id, code: "platform_unsupported", message: "\(request.method) requires an interactive macOS dialog")
         default:
             return .failure(id: request.id, code: "unknown_method", message: "Unknown bridge method: \(request.method)")
         }
+    }
+
+    private func mockedNetworkResponse(_ request: BridgeRequest) -> BridgeResponse? {
+        guard let urlText = request.params["url"] as? String,
+              let url = URL(string: urlText),
+              let origin = PlatformNetwork.origin(for: url)
+        else {
+            return nil
+        }
+        if request.context.denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host) {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request private network targets are denied")
+        }
+        if let credentials = request.params["credentials"], !(credentials is NSNull) {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request credentials are not allowed")
+        }
+        let method = (request.params["method"] as? String ?? "GET").uppercased()
+        guard let headers = stringHeaders(request.params["headers"]) else {
+            return .failure(id: request.id, code: "invalid_request", message: "network.request headers must be strings")
+        }
+        guard let bodyBytes = bodyByteCount(request.params["body"]) else {
+            return .failure(id: request.id, code: "invalid_request", message: "network.request body must be a string or null")
+        }
+        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, headers: Array(headers.keys)) }) else {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
+        }
+        if bodyBytes > rule.maxRequestBytes {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request body exceeds manifest.networkPolicy maxRequestBytes")
+        }
+        guard let mock = findNetworkMock(
+            sessionId: activeRuntimeSessionId,
+            appId: request.context.appId,
+            method: method,
+            url: urlText
+        ) else {
+            return nil
+        }
+        let response = networkResponsePayload(mock)
+        if responseByteCount(response) > rule.maxResponseBytes {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
+        }
+        return .success(id: request.id, result: response)
+    }
+
+    private func mockedDialogResponse(_ request: BridgeRequest) -> BridgeResponse? {
+        guard let dialogType = normalizedDialogType(["method": request.method]) else {
+            return nil
+        }
+        if let mock = findDialogMock(sessionId: activeRuntimeSessionId, appId: request.context.appId, dialogType: dialogType) {
+            return .success(id: request.id, result: mock)
+        }
+        if dialogType == "saveFile" {
+            return .success(id: request.id, result: ["ok": true])
+        }
+        return nil
+    }
+
+    private func normalizedDialogType(_ args: [String: Any]) -> String? {
+        let raw = args["dialogType"] as? String ?? (args["method"] as? String)?.replacingOccurrences(of: "dialog.", with: "")
+        guard raw == "openFile" || raw == "saveFile" else {
+            return nil
+        }
+        return raw
     }
 
     private func permissionForBridgeMethod(_ method: String) -> String? {
@@ -2088,6 +2327,66 @@ final class DevControlPlane: @unchecked Sendable {
 
     private func canonicalJSONEqual(_ left: Any, _ right: Any) -> Bool {
         jsonString(left) == jsonString(right)
+    }
+
+    private func stringHeaders(_ value: Any?) -> [String: String]? {
+        guard let value, !(value is NSNull) else {
+            return [:]
+        }
+        guard let raw = value as? [String: Any] else {
+            return nil
+        }
+        var headers: [String: String] = [:]
+        for (name, headerValue) in raw {
+            guard let text = headerValue as? String else {
+                return nil
+            }
+            headers[name.lowercased()] = text
+        }
+        return headers
+    }
+
+    private func bodyByteCount(_ value: Any?) -> Int? {
+        guard let value, !(value is NSNull) else {
+            return 0
+        }
+        guard let text = value as? String else {
+            return nil
+        }
+        return text.utf8.count
+    }
+
+    private func networkResponsePayload(_ value: Any) -> Any {
+        guard var object = value as? [String: Any] else {
+            return value
+        }
+        object.removeValue(forKey: "delayMs")
+        return object
+    }
+
+    private func responseByteCount(_ value: Any) -> Int {
+        guard let object = value as? [String: Any] else {
+            return jsonString(value).utf8.count
+        }
+        if let text = object["bodyText"] as? String {
+            return text.utf8.count
+        }
+        if let text = object["body"] as? String {
+            return text.utf8.count
+        }
+        if let body = object["body"], !(body is NSNull) {
+            return jsonString(body).utf8.count
+        }
+        return 0
+    }
+
+    private func urlMatches(pattern: String, url: String) -> Bool {
+        if pattern == url || pattern == "*" {
+            return true
+        }
+        let escaped = NSRegularExpression.escapedPattern(for: pattern)
+            .replacingOccurrences(of: #"\\\*"#, with: ".*", options: .regularExpression)
+        return url.range(of: #"^\#(escaped)$"#, options: .regularExpression) != nil
     }
 
     private func intValue(_ value: Any?) -> Int? {
