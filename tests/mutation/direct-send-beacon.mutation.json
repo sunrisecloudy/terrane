@@ -1,0 +1,6 @@
+{
+  "id": "direct-send-beacon",
+  "description": "Generated apps must not use navigator.sendBeacon directly.",
+  "expectedError": "forbidden_network_api",
+  "source": "navigator.sendBeacon('https://example.com/collect', '{}')"
+}

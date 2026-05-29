@@ -23,6 +23,7 @@ test("forbidden JS source snippets are rejected with policy codes", () => {
     ["forbidden_network_api", "new XMLHttpRequest()"],
     ["forbidden_network_api", "new WebSocket('wss://example.com')"],
     ["forbidden_network_api", "new EventSource('https://example.com/events')"],
+    ["forbidden_network_api", "navigator.sendBeacon('https://example.com/collect', '{}')"],
     ["forbidden_eval", "eval('1 + 1')"],
     ["forbidden_storage_api", "localStorage.setItem('x', 'y')"],
     ["forbidden_storage_api", "cookieStore.get('session')"],

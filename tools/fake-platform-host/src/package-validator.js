@@ -80,7 +80,7 @@ const JS_POLICY = [
   ["forbidden_trusted_types_policy", /\btrustedTypes\.createPolicy\s*\(/],
   ["forbidden_network_api", /\bfetch\s*\(/],
   ["forbidden_network_api", /\bXMLHttpRequest\b/],
-  ["forbidden_network_api", /\bWebSocket\b|\bEventSource\b/],
+  ["forbidden_network_api", /\bWebSocket\b|\bEventSource\b|\bnavigator\.sendBeacon\b/],
   ["forbidden_storage_api", /\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bdocument\.cookie\b|\bcookieStore\b/],
   ["forbidden_sql_api", /\bopenDatabase\s*\(|\bexecuteSql\s*\(|\bSQLDatabase\b|\bsqlite3\b/],
   ["forbidden_native_bridge", /\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bnative\.exec\b|\bNativeAIPlatformBridge\b/],

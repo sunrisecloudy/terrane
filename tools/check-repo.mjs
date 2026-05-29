@@ -502,6 +502,7 @@ function checkFakeHostStatic() {
     [packageValidator, "MAX_PACKAGE_FILES"],
     [packageValidator, "MAX_MIGRATION_FILES"],
     [packageValidator, "forbidden_sql_api"],
+    [packageValidator, "sendBeacon"],
     [packageValidator, "cookieStore"],
   ];
   for (const [source, snippet] of required) {
@@ -915,6 +916,7 @@ function checkServerStatic() {
     "fn validateServerJsPolicy",
     "\"forbidden_function_constructor\"",
     "\"forbidden_dynamic_import\"",
+    "\"navigator.sendBeacon\"",
     "\"forbidden_sql_api\"",
     "\"cookieStore\"",
     "\"forbidden_appid_param\"",
