@@ -68,6 +68,20 @@ test("native bridges persist bridge and core logs", () => {
   assert.match(linuxHost, /core smoke did not persist core_events\/core_actions rows/);
 });
 
+test("macOS WebView crash recovery records failed runtime session and reload action", () => {
+  const macosHost = read("native/macos/Sources/NativeAIHostMac/WebHostView.swift");
+  const macosCrashRecovery = read("native/macos/Sources/NativeAIHostMac/RuntimeCrashRecovery.swift");
+
+  assert.match(macosHost, /WKNavigationDelegate/);
+  assert.match(macosHost, /webViewWebContentProcessDidTerminate\(_ webView: WKWebView\)/);
+  assert.match(macosHost, /showCrashBanner\(canAutoRemount: crash\.canAutoRemount\)/);
+  assert.match(macosHost, /#selector\(reloadAfterCrash\)/);
+  assert.match(macosCrashRecovery, /status = 'failed'/);
+  assert.match(macosCrashRecovery, /"reason": "web_content_process_terminated"/);
+  assert.match(macosCrashRecovery, /"reloadOffered": true/);
+  assert.match(macosCrashRecovery, /"canAutoRemount": previousMountCompletedReady/);
+});
+
 function read(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }

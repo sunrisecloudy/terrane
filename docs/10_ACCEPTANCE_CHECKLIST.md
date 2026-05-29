@@ -61,6 +61,7 @@
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
+- [x] WebView content-process termination records a failed runtime session and offers a reload action.
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.
 - [x] Debug dev control plane writes a 0600 token file, authenticates health/session/snapshot/events/command routes, and audits accepted/rejected requests.

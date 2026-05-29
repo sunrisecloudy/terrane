@@ -197,6 +197,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 
 - App launches.
 - Runtime loads from bundle.
+- WebView content-process termination records a failed `runtime_sessions` row and shows a reload action.
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.

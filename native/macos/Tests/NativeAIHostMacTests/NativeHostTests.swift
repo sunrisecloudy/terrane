@@ -27,6 +27,42 @@ struct NativeHostTests {
         #expect(RuntimeResourceLocator.fileURL(forRuntimeURL: escapedURL) == nil)
     }
 
+    @Test("runtime crash recovery records a failed session and reload offer")
+    func runtimeCrashRecoveryRecordsFailedSessionAndReloadOffer() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-crash-recovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let recovery = RuntimeCrashRecovery(databaseURL: dbURL)
+        let sessionId = RuntimeCrashRecovery.newSessionId()
+
+        recovery.startRuntimeSession(
+            sessionId: sessionId,
+            activeAppId: "notes-lite",
+            activeInstallId: "install-notes-lite"
+        )
+        let crash = recovery.recordWebContentProcessTerminated(
+            sessionId: sessionId,
+            previousMountCompletedReady: false
+        )
+
+        #expect(crash.sessionId == sessionId)
+        #expect(crash.reloadOffered)
+        #expect(!crash.canAutoRemount)
+        let storedSession = try sqliteRuntimeSession(dbURL: dbURL, sessionId: sessionId)
+        let row = try #require(storedSession)
+        #expect(row.status == "failed")
+        #expect(row.activeAppId == "notes-lite")
+        #expect(row.activeInstallId == "install-notes-lite")
+        #expect(row.endedAt != nil)
+        #expect(row.metadata.contains(#""reason":"web_content_process_terminated""#))
+        #expect(row.metadata.contains(#""reloadOffered":true"#))
+        #expect(row.metadata.contains(#""canAutoRemount":false"#))
+    }
+
     @Test("SQLite storage persists by app id and storage prefix")
     func sqliteStoragePersistsWithAppScope() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2009,6 +2045,52 @@ private func sqliteAppVersionStatus(dbURL: URL, appId: String, installId: String
           let pointer = sqlite3_column_text(statement, 0)
     else {
         return ""
+    }
+    return String(cString: pointer)
+}
+
+private struct RuntimeSessionRow {
+    let status: String
+    let activeAppId: String?
+    let activeInstallId: String?
+    let endedAt: String?
+    let metadata: String
+}
+
+private func sqliteRuntimeSession(dbURL: URL, sessionId: String) throws -> RuntimeSessionRow? {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return nil
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(
+        db,
+        "SELECT status, active_app_id, active_install_id, ended_at, metadata_json FROM runtime_sessions WHERE session_id = ?",
+        -1,
+        &statement,
+        nil
+    )
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        return nil
+    }
+    return RuntimeSessionRow(
+        status: sqliteColumnText(statement, 0) ?? "",
+        activeAppId: sqliteColumnText(statement, 1),
+        activeInstallId: sqliteColumnText(statement, 2),
+        endedAt: sqliteColumnText(statement, 3),
+        metadata: sqliteColumnText(statement, 4) ?? ""
+    )
+}
+
+private func sqliteColumnText(_ statement: OpaquePointer?, _ index: Int32) -> String? {
+    guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+          let pointer = sqlite3_column_text(statement, index)
+    else {
+        return nil
     }
     return String(cString: pointer)
 }
