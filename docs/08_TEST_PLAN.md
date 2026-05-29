@@ -236,6 +236,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Runtime loads from resources/local folder.
 - Bridge dispatch works.
 - Storage under LocalAppData works.
+- Storage bridge prepare/step failures return structured `storage_error` responses.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Zig DLL loads.
@@ -250,6 +251,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - WebKitGTK loads runtime.
 - Bridge dispatch works.
 - Storage under XDG data directory works.
+- Storage bridge prepare/step failures return structured `storage_error` responses.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
 - Zig shared library loads.

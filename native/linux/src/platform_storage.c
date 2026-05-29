@@ -1,17 +1,27 @@
 #include "platform_storage.h"
 
-static void ensure_app_row(PlatformStorage *storage, const gchar *app_id) {
+static JsonNode *storage_error(const BridgeRequest *request, sqlite3 *db, const gchar *operation) {
+  JsonObject *details = json_object_new();
+  json_object_set_string_member(details, "sqliteMessage", db != NULL ? sqlite3_errmsg(db) : "database unavailable");
+  g_autofree gchar *message = g_strdup_printf("%s failed", operation);
+  return bridge_failure(request, "storage_error", message, details);
+}
+
+static gboolean ensure_app_row(PlatformStorage *storage, const gchar *app_id) {
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(
+  if (sqlite3_prepare_v2(
       storage->db,
       "INSERT OR IGNORE INTO apps (id, name, status, data_version, created_at, updated_at) VALUES (?, ?, 'enabled', 1, datetime('now'), datetime('now'))",
       -1,
       &statement,
-      NULL);
+      NULL) != SQLITE_OK) {
+    return FALSE;
+  }
   sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, app_id, -1, SQLITE_TRANSIENT);
-  sqlite3_step(statement);
+  gboolean ok = sqlite3_step(statement) == SQLITE_DONE;
   sqlite3_finalize(statement);
+  return ok;
 }
 
 static gboolean has_storage_prefix(const BridgeRequest *request, const gchar *key) {
@@ -30,19 +40,26 @@ static gboolean resource_budget_limit(const BridgeRequest *request, const gchar 
   return TRUE;
 }
 
-static gint64 storage_bytes_after_set(PlatformStorage *storage, const gchar *app_id, const gchar *key, gint64 value_bytes) {
+static gboolean storage_bytes_after_set(PlatformStorage *storage, const gchar *app_id, const gchar *key, gint64 value_bytes, gint64 *out) {
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(
+  if (sqlite3_prepare_v2(
       storage->db,
       "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ? AND key != ?",
       -1,
       &statement,
-      NULL);
+      NULL) != SQLITE_OK) {
+    return FALSE;
+  }
   sqlite3_bind_text(statement, 1, app_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT);
-  gint64 current_other_bytes = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+  if (sqlite3_step(statement) != SQLITE_ROW) {
+    sqlite3_finalize(statement);
+    return FALSE;
+  }
+  gint64 current_other_bytes = sqlite3_column_int64(statement, 0);
   sqlite3_finalize(statement);
-  return current_other_bytes + value_bytes;
+  *out = current_other_bytes + value_bytes;
+  return TRUE;
 }
 
 static JsonNode *storage_prefix_failure(const BridgeRequest *request, const gchar *key) {
@@ -77,14 +94,17 @@ JsonNode *platform_storage_get(PlatformStorage *storage, const BridgeRequest *re
   }
 
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(storage->db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, NULL);
+  if (sqlite3_prepare_v2(storage->db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, NULL) != SQLITE_OK) {
+    return storage_error(request, storage->db, "storage.get");
+  }
   sqlite3_bind_text(statement, 1, request->context.app_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT);
 
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
   json_builder_set_member_name(builder, "value");
-  if (sqlite3_step(statement) == SQLITE_ROW) {
+  gint step = sqlite3_step(statement);
+  if (step == SQLITE_ROW) {
     const gchar *json_text = (const gchar *)sqlite3_column_text(statement, 0);
     JsonParser *parser = json_parser_new();
     if (json_text != NULL && json_parser_load_from_data(parser, json_text, -1, NULL)) {
@@ -93,8 +113,12 @@ JsonNode *platform_storage_get(PlatformStorage *storage, const BridgeRequest *re
       json_builder_add_null_value(builder);
     }
     g_object_unref(parser);
-  } else {
+  } else if (step == SQLITE_DONE) {
     json_builder_add_null_value(builder);
+  } else {
+    sqlite3_finalize(statement);
+    g_object_unref(builder);
+    return storage_error(request, storage->db, "storage.get");
   }
   json_builder_end_object(builder);
   sqlite3_finalize(statement);
@@ -109,14 +133,33 @@ JsonNode *platform_storage_set(PlatformStorage *storage, const BridgeRequest *re
   if (!has_storage_prefix(request, key)) {
     return storage_prefix_failure(request, key);
   }
-  ensure_app_row(storage, request->context.app_id);
+  if (!ensure_app_row(storage, request->context.app_id)) {
+    return storage_error(request, storage->db, "storage.set");
+  }
 
   JsonGenerator *generator = json_generator_new();
-  json_generator_set_root(generator, json_object_get_member(request->params, "value"));
+  JsonNode *null_value = NULL;
+  JsonNode *value = json_object_get_member(request->params, "value");
+  if (value == NULL) {
+    null_value = json_node_new(JSON_NODE_NULL);
+    value = null_value;
+  }
+  json_generator_set_root(generator, value);
   g_autofree gchar *value_json = json_generator_to_data(generator, NULL);
+  if (null_value != NULL) {
+    json_node_unref(null_value);
+  }
+  if (value_json == NULL) {
+    g_object_unref(generator);
+    return bridge_failure(request, "invalid_request", "storage.set value must be JSON-serializable", NULL);
+  }
   guint limit = 0;
   if (resource_budget_limit(request, "maxStorageBytes", &limit)) {
-    gint64 projected_bytes = storage_bytes_after_set(storage, request->context.app_id, key, (gint64)strlen(value_json));
+    gint64 projected_bytes = 0;
+    if (!storage_bytes_after_set(storage, request->context.app_id, key, (gint64)strlen(value_json), &projected_bytes)) {
+      g_object_unref(generator);
+      return storage_error(request, storage->db, "storage.set");
+    }
     if (projected_bytes > (gint64)limit) {
       JsonObject *details = json_object_new();
       json_object_set_string_member(details, "appId", request->context.app_id);
@@ -131,17 +174,24 @@ JsonNode *platform_storage_set(PlatformStorage *storage, const BridgeRequest *re
     }
   }
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(
+  if (sqlite3_prepare_v2(
       storage->db,
       "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, datetime('now')) "
       "ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
       -1,
       &statement,
-      NULL);
+      NULL) != SQLITE_OK) {
+    g_object_unref(generator);
+    return storage_error(request, storage->db, "storage.set");
+  }
   sqlite3_bind_text(statement, 1, request->context.app_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 3, value_json, -1, SQLITE_TRANSIENT);
-  sqlite3_step(statement);
+  if (sqlite3_step(statement) != SQLITE_DONE) {
+    sqlite3_finalize(statement);
+    g_object_unref(generator);
+    return storage_error(request, storage->db, "storage.set");
+  }
   sqlite3_finalize(statement);
   g_object_unref(generator);
 
@@ -165,10 +215,15 @@ JsonNode *platform_storage_remove(PlatformStorage *storage, const BridgeRequest 
   }
 
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(storage->db, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, NULL);
+  if (sqlite3_prepare_v2(storage->db, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, NULL) != SQLITE_OK) {
+    return storage_error(request, storage->db, "storage.remove");
+  }
   sqlite3_bind_text(statement, 1, request->context.app_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(statement, 2, key, -1, SQLITE_TRANSIENT);
-  sqlite3_step(statement);
+  if (sqlite3_step(statement) != SQLITE_DONE) {
+    sqlite3_finalize(statement);
+    return storage_error(request, storage->db, "storage.remove");
+  }
   sqlite3_finalize(statement);
 
   JsonBuilder *builder = json_builder_new();
@@ -189,7 +244,9 @@ JsonNode *platform_storage_list(PlatformStorage *storage, const BridgeRequest *r
   }
 
   sqlite3_stmt *statement = NULL;
-  sqlite3_prepare_v2(storage->db, "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key", -1, &statement, NULL);
+  if (sqlite3_prepare_v2(storage->db, "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key", -1, &statement, NULL) != SQLITE_OK) {
+    return storage_error(request, storage->db, "storage.list");
+  }
   sqlite3_bind_text(statement, 1, request->context.app_id, -1, SQLITE_TRANSIENT);
   g_autofree gchar *like_prefix = g_strdup_printf("%s%%", prefix);
   sqlite3_bind_text(statement, 2, like_prefix, -1, SQLITE_TRANSIENT);
@@ -198,8 +255,14 @@ JsonNode *platform_storage_list(PlatformStorage *storage, const BridgeRequest *r
   json_builder_begin_object(builder);
   json_builder_set_member_name(builder, "keys");
   json_builder_begin_array(builder);
-  while (sqlite3_step(statement) == SQLITE_ROW) {
+  gint step = SQLITE_ROW;
+  while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
     json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
+  }
+  if (step != SQLITE_DONE) {
+    sqlite3_finalize(statement);
+    g_object_unref(builder);
+    return storage_error(request, storage->db, "storage.list");
   }
   json_builder_end_array(builder);
   json_builder_end_object(builder);

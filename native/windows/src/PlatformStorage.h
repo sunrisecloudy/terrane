@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <winsqlite/winsqlite3.h>
 
 namespace nativeai {
@@ -24,8 +25,8 @@ class PlatformStorage {
   sqlite3* DatabaseHandle() const { return database_.handle(); }
 
  private:
-  void EnsureAppRow(std::wstring const& appId);
-  int64_t StorageBytesAfterSet(std::wstring const& appId, std::wstring const& key, int64_t valueBytes) const;
+  bool EnsureAppRow(std::wstring const& appId);
+  std::optional<int64_t> StorageBytesAfterSet(std::wstring const& appId, std::wstring const& key, int64_t valueBytes) const;
   winrt::Windows::Data::Json::JsonObject storagePrefixFailure(BridgeRequest const& request, std::wstring const& key);
   bool HasStoragePrefix(BridgeRequest const& request, std::wstring const& key) const;
 

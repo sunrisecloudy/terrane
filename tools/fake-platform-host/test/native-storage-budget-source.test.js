@@ -38,16 +38,27 @@ test("native storage bridges enforce maxStorageBytes", () => {
 
   assert.match(windowsStorageHeader, /StorageBytesAfterSet\(std::wstring const& appId, std::wstring const& key, int64_t valueBytes\) const/);
   assert.match(windowsStorage, /request\.context\.resourceBudget\.find\(L"maxStorageBytes"\)/);
-  assert.match(windowsStorage, /int64_t PlatformStorage::StorageBytesAfterSet/);
+  assert.match(windowsStorage, /std::optional<int64_t> PlatformStorage::StorageBytesAfterSet/);
   assert.match(windowsStorage, /L"resource_budget_exceeded"/);
   assert.match(windowsStorage, /L"Storage write exceeds manifest\.resourceBudget\.maxStorageBytes"/);
   assert.match(windowsStorage, /details\.Insert\(L"projectedBytes"/);
+  assert.match(windowsStorage, /L"storage_error"/);
+  assert.match(windowsStorage, /L"sqliteMessage"/);
+  assert.match(windowsStorage, /StorageError\(request, database_\.handle\(\), L"storage\.set"\)/);
+  assert.match(windowsStorage, /sqlite3_prepare_v2\([\s\S]*\) != SQLITE_OK/);
+  assert.match(windowsStorage, /sqlite3_step\(statement\) != SQLITE_DONE/);
 
   assert.match(linuxStorage, /resource_budget_limit\(request, "maxStorageBytes", &limit\)/);
-  assert.match(linuxStorage, /static gint64 storage_bytes_after_set/);
+  assert.match(linuxStorage, /static gboolean storage_bytes_after_set/);
   assert.match(linuxStorage, /"resource_budget_exceeded"/);
   assert.match(linuxStorage, /"Storage write exceeds manifest\.resourceBudget\.maxStorageBytes"/);
   assert.match(linuxStorage, /json_object_set_int_member\(details, "projectedBytes", projected_bytes\)/);
+  assert.match(linuxStorage, /bridge_failure\(request, "storage_error"/);
+  assert.match(linuxStorage, /"sqliteMessage"/);
+  assert.match(linuxStorage, /storage_error\(request, storage->db, "storage\.set"\)/);
+  assert.match(linuxStorage, /json_node_new\(JSON_NODE_NULL\)/);
+  assert.match(linuxStorage, /sqlite3_prepare_v2\([\s\S]*\) != SQLITE_OK/);
+  assert.match(linuxStorage, /sqlite3_step\(statement\) != SQLITE_DONE/);
 });
 
 test("macOS install transaction storage failures write failed install reports", () => {
