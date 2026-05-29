@@ -127,6 +127,7 @@ data class AppSandboxContext(
     val storagePrefix: String,
     val approvedPermissions: Set<String>,
     val networkPolicy: List<NetworkPolicyRule> = emptyList(),
+    val denyPrivateNetwork: Boolean = true,
     val mountToken: String? = null,
 )
 

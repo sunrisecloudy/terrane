@@ -22,6 +22,7 @@ struct AppSandboxContext {
   std::wstring storagePrefix;
   std::set<std::wstring> approvedPermissions;
   std::vector<NetworkPolicyRule> networkPolicy;
+  bool denyPrivateNetwork = true;
   std::wstring mountToken;
 };
 

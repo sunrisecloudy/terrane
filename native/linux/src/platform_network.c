@@ -129,6 +129,127 @@ static gchar *absolute_redirect_url(const gchar *current_url, const gchar *locat
   return NULL;
 }
 
+static gboolean parse_ipv4_host(const gchar *host, guint8 octets[4]) {
+  const gchar *cursor = host;
+  for (guint index = 0; index < 4; ++index) {
+    guint value = 0;
+    guint digits = 0;
+    while (g_ascii_isdigit(*cursor)) {
+      value = value * 10 + (guint)(*cursor - '0');
+      if (value > 255) {
+        return FALSE;
+      }
+      cursor++;
+      digits++;
+    }
+    if (digits == 0) {
+      return FALSE;
+    }
+    octets[index] = (guint8)value;
+    if (index < 3) {
+      if (*cursor != '.') {
+        return FALSE;
+      }
+      cursor++;
+    } else if (*cursor != '\0') {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+static gboolean is_private_ipv4(guint8 octets[4]) {
+  guint8 first = octets[0];
+  guint8 second = octets[1];
+  return first == 0 ||
+      first == 10 ||
+      first == 127 ||
+      (first == 100 && second >= 64 && second <= 127) ||
+      (first == 169 && second == 254) ||
+      (first == 172 && second >= 16 && second <= 31) ||
+      (first == 192 && second == 168);
+}
+
+static gboolean parse_hex16(const gchar *text, guint16 *out) {
+  gsize len = strlen(text);
+  if (len == 0 || len > 4) {
+    return FALSE;
+  }
+  guint value = 0;
+  for (const gchar *cursor = text; *cursor != '\0'; ++cursor) {
+    gint digit = g_ascii_xdigit_value(*cursor);
+    if (digit < 0) {
+      return FALSE;
+    }
+    value = value * 16 + (guint)digit;
+  }
+  *out = (guint16)value;
+  return TRUE;
+}
+
+static gboolean is_private_ipv4_mapped_host(const gchar *tail) {
+  guint8 dotted[4] = {0};
+  if (parse_ipv4_host(tail, dotted)) {
+    return is_private_ipv4(dotted);
+  }
+  gchar **parts = g_strsplit(tail, ":", -1);
+  if (g_strv_length(parts) != 2) {
+    g_strfreev(parts);
+    return FALSE;
+  }
+  guint16 high = 0;
+  guint16 low = 0;
+  if (!parse_hex16(parts[0], &high) || !parse_hex16(parts[1], &low)) {
+    g_strfreev(parts);
+    return FALSE;
+  }
+  g_strfreev(parts);
+  guint8 octets[4] = {
+      (guint8)(high >> 8),
+      (guint8)(high & 0x00ff),
+      (guint8)(low >> 8),
+      (guint8)(low & 0x00ff),
+  };
+  return is_private_ipv4(octets);
+}
+
+static gboolean is_private_network_host(const gchar *raw_host) {
+  if (raw_host == NULL || *raw_host == '\0') {
+    return FALSE;
+  }
+  g_autofree gchar *lower = g_ascii_strdown(raw_host, -1);
+  gchar *host = lower;
+  gsize len = strlen(host);
+  if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
+    host[len - 1] = '\0';
+    host++;
+  }
+  gchar *zone = strchr(host, '%');
+  if (zone != NULL) {
+    *zone = '\0';
+  }
+  if (g_strcmp0(host, "localhost") == 0 || g_str_has_suffix(host, ".localhost")) {
+    return TRUE;
+  }
+  guint8 octets[4] = {0};
+  if (parse_ipv4_host(host, octets)) {
+    return is_private_ipv4(octets);
+  }
+  if (g_strcmp0(host, "::1") == 0) {
+    return TRUE;
+  }
+  if (g_str_has_prefix(host, "fc") || g_str_has_prefix(host, "fd")) {
+    return TRUE;
+  }
+  if (g_str_has_prefix(host, "fe8") || g_str_has_prefix(host, "fe9") || g_str_has_prefix(host, "fea") || g_str_has_prefix(host, "feb")) {
+    return TRUE;
+  }
+  if (g_str_has_prefix(host, "::ffff:")) {
+    return is_private_ipv4_mapped_host(host + strlen("::ffff:"));
+  }
+  return FALSE;
+}
+
 static JsonNode *network_failure(const BridgeRequest *request, const gchar *code, const gchar *message) {
   return bridge_failure(request, code, message, NULL);
 }
@@ -143,9 +264,13 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     return network_failure(request, "invalid_request", "network.request requires an absolute http or https url");
   }
   g_autofree gchar *origin = origin_for_uri(uri);
+  gboolean private_denied = request->context.deny_private_network && is_private_network_host(g_uri_get_host(uri));
   g_uri_unref(uri);
   if (origin == NULL) {
     return network_failure(request, "invalid_request", "network.request requires an absolute http or https url");
+  }
+  if (private_denied) {
+    return network_failure(request, "network_policy_denied", "network.request private network targets are denied");
   }
 
   g_autofree gchar *method = g_ascii_strup(json_object_get_string_member_with_default(request->params, "method", "GET"), -1);
@@ -212,11 +337,12 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
       }
       GUri *next_uri = g_uri_parse(next_url, G_URI_FLAGS_NONE, NULL);
       g_autofree gchar *next_origin = next_uri == NULL ? NULL : origin_for_uri(next_uri);
+      gboolean next_private_denied = request->context.deny_private_network && next_uri != NULL && is_private_network_host(g_uri_get_host(next_uri));
       if (next_uri != NULL) {
         g_uri_unref(next_uri);
       }
       NetworkPolicyRule *next_rule = next_origin == NULL ? NULL : find_rule(request->context.network_policy, next_origin, method, headers);
-      if (next_rule == NULL) {
+      if (next_private_denied || next_rule == NULL) {
         g_free(body.bytes);
         g_hash_table_unref(headers);
         g_object_unref(session);

@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
             storagePrefix = manifest.optString("storagePrefix", "$actualAppId:"),
             approvedPermissions = manifest.optJSONArray("permissions").toStringSet { it },
             networkPolicy = NetworkPolicyRule.fromManifest(manifest),
+            denyPrivateNetwork = manifest.optJSONObject("networkPolicy")?.optBoolean("denyPrivateNetwork", true) ?: true,
         )
     }
 

@@ -191,6 +191,7 @@ AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, s
       .storagePrefix = appId + L":",
       .approvedPermissions = PermissionsForApp(appId),
       .networkPolicy = NetworkPolicyForApp(appId),
+      .denyPrivateNetwork = DenyPrivateNetworkForApp(appId),
       .mountToken = mountToken,
   };
 }
@@ -219,6 +220,16 @@ std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId)
     permissions.insert(std::wstring(value.GetString().c_str()));
   }
   return permissions;
+}
+
+bool WebViewHost::DenyPrivateNetworkForApp(std::wstring const& appId) const {
+  auto parsed = ManifestForApp(RepoRoot(), appId);
+  if (!parsed.HasKey(L"networkPolicy")) {
+    return true;
+  }
+  auto policy = parsed.GetNamedObject(L"networkPolicy", json::JsonObject());
+  auto value = policy.GetNamedValue(L"denyPrivateNetwork", json::JsonValue::CreateBooleanValue(true));
+  return value.ValueType() == json::JsonValueType::Boolean ? value.GetBoolean() : true;
 }
 
 std::vector<NetworkPolicyRule> WebViewHost::NetworkPolicyForApp(std::wstring const& appId) const {

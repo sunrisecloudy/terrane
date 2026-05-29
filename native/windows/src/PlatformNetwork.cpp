@@ -3,6 +3,7 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <array>
 #include <cwctype>
 #include <map>
 #include <optional>
@@ -159,6 +160,121 @@ NetworkPolicyRule const* FindRule(
   return nullptr;
 }
 
+bool EndsWith(std::wstring const& value, std::wstring const& suffix) {
+  return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::optional<std::array<uint8_t, 4>> ParseIpv4Host(std::wstring const& host) {
+  std::array<uint8_t, 4> octets{};
+  size_t start = 0;
+  for (size_t index = 0; index < 4; ++index) {
+    auto end = index == 3 ? host.size() : host.find(L".", start);
+    if (end == std::wstring::npos || end == start || end - start > 3) {
+      return std::nullopt;
+    }
+    uint32_t value = 0;
+    for (size_t pos = start; pos < end; ++pos) {
+      if (host[pos] < L'0' || host[pos] > L'9') {
+        return std::nullopt;
+      }
+      value = value * 10 + static_cast<uint32_t>(host[pos] - L'0');
+      if (value > 255) {
+        return std::nullopt;
+      }
+    }
+    octets[index] = static_cast<uint8_t>(value);
+    start = end + 1;
+  }
+  if (start != host.size() + 1) {
+    return std::nullopt;
+  }
+  return octets;
+}
+
+bool IsPrivateIpv4(std::array<uint8_t, 4> const& octets) {
+  auto first = octets[0];
+  auto second = octets[1];
+  return first == 0 ||
+      first == 10 ||
+      first == 127 ||
+      (first == 100 && second >= 64 && second <= 127) ||
+      (first == 169 && second == 254) ||
+      (first == 172 && second >= 16 && second <= 31) ||
+      (first == 192 && second == 168);
+}
+
+std::optional<uint16_t> ParseHex16(std::wstring const& text) {
+  if (text.empty() || text.size() > 4) {
+    return std::nullopt;
+  }
+  uint16_t value = 0;
+  for (wchar_t ch : text) {
+    uint16_t digit = 0;
+    if (ch >= L'0' && ch <= L'9') {
+      digit = static_cast<uint16_t>(ch - L'0');
+    } else if (ch >= L'a' && ch <= L'f') {
+      digit = static_cast<uint16_t>(ch - L'a' + 10);
+    } else if (ch >= L'A' && ch <= L'F') {
+      digit = static_cast<uint16_t>(ch - L'A' + 10);
+    } else {
+      return std::nullopt;
+    }
+    value = static_cast<uint16_t>(value * 16 + digit);
+  }
+  return value;
+}
+
+bool IsPrivateIpv4MappedHost(std::wstring const& tail) {
+  if (auto dotted = ParseIpv4Host(tail)) {
+    return IsPrivateIpv4(dotted.value());
+  }
+  auto separator = tail.find(L":");
+  if (separator == std::wstring::npos || tail.find(L":", separator + 1) != std::wstring::npos) {
+    return false;
+  }
+  auto high = ParseHex16(tail.substr(0, separator));
+  auto low = ParseHex16(tail.substr(separator + 1));
+  if (!high.has_value() || !low.has_value()) {
+    return false;
+  }
+  std::array<uint8_t, 4> octets{
+      static_cast<uint8_t>(high.value() >> 8),
+      static_cast<uint8_t>(high.value() & 0x00ff),
+      static_cast<uint8_t>(low.value() >> 8),
+      static_cast<uint8_t>(low.value() & 0x00ff),
+  };
+  return IsPrivateIpv4(octets);
+}
+
+bool IsPrivateNetworkHost(std::wstring host) {
+  host = ToLower(host);
+  if (host.size() >= 2 && host.front() == L'[' && host.back() == L']') {
+    host = host.substr(1, host.size() - 2);
+  }
+  if (auto zone = host.find(L"%"); zone != std::wstring::npos) {
+    host = host.substr(0, zone);
+  }
+  if (host == L"localhost" || EndsWith(host, L".localhost")) {
+    return true;
+  }
+  if (auto ipv4 = ParseIpv4Host(host)) {
+    return IsPrivateIpv4(ipv4.value());
+  }
+  if (host == L"::1") {
+    return true;
+  }
+  if (host.starts_with(L"fc") || host.starts_with(L"fd")) {
+    return true;
+  }
+  if (host.starts_with(L"fe8") || host.starts_with(L"fe9") || host.starts_with(L"fea") || host.starts_with(L"feb")) {
+    return true;
+  }
+  if (host.starts_with(L"::ffff:")) {
+    return IsPrivateIpv4MappedHost(host.substr(7));
+  }
+  return false;
+}
+
 json::JsonObject Failure(BridgeRequest const& request, std::wstring const& code, std::wstring const& message) {
   return BridgeResponse::Failure(request.id, request.hasId, code, message);
 }
@@ -280,6 +396,9 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
   if (!body.valid) {
     return Failure(request, L"invalid_request", L"network.request body must be a string or null");
   }
+  if (request.context.denyPrivateNetwork && IsPrivateNetworkHost(parsed->host)) {
+    return Failure(request, L"network_policy_denied", L"network.request private network targets are denied");
+  }
 
   auto rule = FindRule(request.context.networkPolicy, parsed->origin, method, headers.value());
   if (rule == nullptr) {
@@ -328,7 +447,7 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
       auto next = RedirectUrl(current, httpRequest.value);
       auto nextParsed = next.has_value() ? ParseUrl(next.value()) : std::nullopt;
       auto nextRule = nextParsed.has_value() ? FindRule(request.context.networkPolicy, nextParsed->origin, method, headers.value()) : nullptr;
-      if (!nextParsed.has_value() || nextRule == nullptr) {
+      if (!nextParsed.has_value() || (request.context.denyPrivateNetwork && IsPrivateNetworkHost(nextParsed->host)) || nextRule == nullptr) {
         return Failure(request, L"network_policy_denied", L"network.request redirect is not allowed by manifest.networkPolicy");
       }
       rule = nextRule;

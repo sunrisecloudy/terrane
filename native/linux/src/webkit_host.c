@@ -169,6 +169,32 @@ static GPtrArray *network_policy_for_app(const gchar *app_id) {
   return rules;
 }
 
+static gboolean deny_private_network_for_app(const gchar *app_id) {
+  g_autofree gchar *root = repo_root();
+  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *contents = NULL;
+  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+    return TRUE;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, contents, -1, NULL)) {
+    g_object_unref(parser);
+    return TRUE;
+  }
+  JsonObject *manifest = json_node_get_object(json_parser_get_root(parser));
+  JsonObject *policy = json_object_get_object_member(manifest, "networkPolicy");
+  gboolean deny = TRUE;
+  if (policy != NULL && json_object_has_member(policy, "denyPrivateNetwork")) {
+    JsonNode *value = json_object_get_member(policy, "denyPrivateNetwork");
+    if (json_node_get_value_type(value) == G_TYPE_BOOLEAN) {
+      deny = json_node_get_boolean(value);
+    }
+  }
+  g_object_unref(parser);
+  return deny;
+}
+
 static AppSandboxContext sandbox_context_from_uri(const gchar *uri) {
   g_autofree gchar *app_id = app_id_from_uri(uri);
   return (AppSandboxContext){
@@ -176,6 +202,7 @@ static AppSandboxContext sandbox_context_from_uri(const gchar *uri) {
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
       .network_policy = network_policy_for_app(app_id),
+      .deny_private_network = deny_private_network_for_app(app_id),
       .mount_token = NULL,
   };
 }
@@ -186,6 +213,7 @@ static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gcha
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
       .network_policy = network_policy_for_app(app_id),
+      .deny_private_network = deny_private_network_for_app(app_id),
       .mount_token = g_strdup(mount_token),
   };
 }

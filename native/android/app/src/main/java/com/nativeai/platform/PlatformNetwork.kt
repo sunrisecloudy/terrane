@@ -20,6 +20,9 @@ class PlatformNetwork {
         }
         val origin = origin(url)
             ?: return BridgeResponse.failure(request.id, "invalid_request", "network.request requires an http or https url").toString()
+        if (request.context.denyPrivateNetwork && isPrivateNetworkHost(url.host)) {
+            return BridgeResponse.failure(request.id, "network_policy_denied", "network.request private network targets are denied").toString()
+        }
         val method = request.params.optString("method", "GET").uppercase(Locale.US)
         val headers = parseHeaders(request)
             ?: return BridgeResponse.failure(request.id, "invalid_request", "network.request headers must be strings").toString()
@@ -35,7 +38,7 @@ class PlatformNetwork {
             return BridgeResponse.failure(request.id, "network_policy_denied", "network.request body exceeds manifest.networkPolicy maxRequestBytes").toString()
         }
 
-        return performRequestOffMainThread(request, url, method, headers, body, rule, request.context.networkPolicy)
+        return performRequestOffMainThread(request, url, method, headers, body, rule, request.context.networkPolicy, request.context.denyPrivateNetwork)
     }
 
     private fun performRequestOffMainThread(
@@ -46,12 +49,13 @@ class PlatformNetwork {
         body: ByteArray?,
         rule: NetworkPolicyRule,
         policy: List<NetworkPolicyRule>,
+        denyPrivateNetwork: Boolean,
     ): String {
         val result = AtomicReference<String>()
         val latch = CountDownLatch(1)
         Thread {
             try {
-                result.set(performRequest(request, initialUrl, method, headers, body, rule, policy))
+                result.set(performRequest(request, initialUrl, method, headers, body, rule, policy, denyPrivateNetwork))
             } catch (error: Exception) {
                 result.set(BridgeResponse.failure(request.id, "network_error", error.localizedMessage ?: "network.request failed").toString())
             } finally {
@@ -74,6 +78,7 @@ class PlatformNetwork {
         body: ByteArray?,
         rule: NetworkPolicyRule,
         policy: List<NetworkPolicyRule>,
+        denyPrivateNetwork: Boolean,
     ): String {
         var currentUrl = initialUrl
         repeat(6) { redirectCount ->
@@ -97,7 +102,7 @@ class PlatformNetwork {
                 if (status in 300..399 && location != null) {
                     val nextUrl = URL(currentUrl, location)
                     val nextOrigin = origin(nextUrl)
-                    if (nextOrigin == null || policy.none { it.allows(nextOrigin, method, headers.keys) }) {
+                    if (nextOrigin == null || (denyPrivateNetwork && isPrivateNetworkHost(nextUrl.host)) || policy.none { it.allows(nextOrigin, method, headers.keys) }) {
                         connection.disconnect()
                         return BridgeResponse.failure(request.id, "network_policy_denied", "network.request redirect is not allowed by manifest.networkPolicy").toString()
                     }
@@ -191,6 +196,59 @@ class PlatformNetwork {
                 return "$protocol://$host:$port"
             }
             return "$protocol://$host"
+        }
+
+        fun isPrivateNetworkHost(rawHost: String?): Boolean {
+            var host = rawHost?.trim()?.lowercase(Locale.US) ?: return false
+            if (host.startsWith("[") && host.endsWith("]")) {
+                host = host.substring(1, host.length - 1)
+            }
+            host = host.substringBefore("%")
+            if (host == "localhost" || host.endsWith(".localhost")) return true
+            parseIpv4Host(host)?.let { return isPrivateIpv4(it) }
+            if (host == "::1") return true
+            if (host.startsWith("fc") || host.startsWith("fd")) return true
+            if (host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true
+            if (host.startsWith("::ffff:")) return isPrivateIpv4MappedHost(host.removePrefix("::ffff:"))
+            return false
+        }
+
+        private fun isPrivateIpv4MappedHost(tail: String): Boolean {
+            parseIpv4Host(tail)?.let { return isPrivateIpv4(it) }
+            val parts = tail.split(":")
+            if (parts.size != 2) return false
+            val high = parts[0].toIntOrNull(16) ?: return false
+            val low = parts[1].toIntOrNull(16) ?: return false
+            return isPrivateIpv4(listOf(
+                (high shr 8) and 255,
+                high and 255,
+                (low shr 8) and 255,
+                low and 255,
+            ))
+        }
+
+        private fun parseIpv4Host(host: String): List<Int>? {
+            val parts = host.split(".")
+            if (parts.size != 4) return null
+            return parts.map { part ->
+                if (part.isEmpty() || part.any { !it.isDigit() }) return null
+                val value = part.toIntOrNull() ?: return null
+                if (value !in 0..255) return null
+                value
+            }
+        }
+
+        private fun isPrivateIpv4(octets: List<Int>): Boolean {
+            if (octets.size != 4) return false
+            val first = octets[0]
+            val second = octets[1]
+            return first == 0 ||
+                first == 10 ||
+                first == 127 ||
+                (first == 100 && second in 64..127) ||
+                (first == 169 && second == 254) ||
+                (first == 172 && second in 16..31) ||
+                (first == 192 && second == 168)
         }
     }
 }

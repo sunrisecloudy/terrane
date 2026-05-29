@@ -8,6 +8,9 @@ final class PlatformNetwork {
         else {
             return .failure(id: request.id, code: "invalid_request", message: "network.request requires an absolute url")
         }
+        if request.context.denyPrivateNetwork && Self.isPrivateNetworkHost(url.host) {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.request private network targets are denied")
+        }
 
         let method = (request.params["method"] as? String ?? "GET").uppercased()
         guard let headers = Self.headers(from: request.params["headers"]) else {
@@ -42,7 +45,7 @@ final class PlatformNetwork {
         configuration.timeoutIntervalForRequest = urlRequest.timeoutInterval
         configuration.timeoutIntervalForResource = urlRequest.timeoutInterval
 
-        let redirectGuard = NetworkRedirectGuard(policy: request.context.networkPolicy, method: method, headers: Array(headers.keys))
+        let redirectGuard = NetworkRedirectGuard(policy: request.context.networkPolicy, denyPrivateNetwork: request.context.denyPrivateNetwork, method: method, headers: Array(headers.keys))
         let session = URLSession(configuration: configuration, delegate: redirectGuard, delegateQueue: nil)
         defer {
             session.invalidateAndCancel()
@@ -136,6 +139,78 @@ final class PlatformNetwork {
         }
         return headers
     }
+
+    fileprivate static func isPrivateNetworkHost(_ rawHost: String?) -> Bool {
+        var host = (rawHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("[") && host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if let zone = host.firstIndex(of: "%") {
+            host = String(host[..<zone])
+        }
+        if host == "localhost" || host.hasSuffix(".localhost") {
+            return true
+        }
+        if let octets = ipv4Octets(host) {
+            return privateIpv4Octets(octets)
+        }
+        if host == "::1" {
+            return true
+        }
+        if host.hasPrefix("fc") || host.hasPrefix("fd") {
+            return true
+        }
+        if host.hasPrefix("fe8") || host.hasPrefix("fe9") || host.hasPrefix("fea") || host.hasPrefix("feb") {
+            return true
+        }
+        if host.hasPrefix("::ffff:") {
+            return privateIpv4MappedHost(String(host.dropFirst("::ffff:".count)))
+        }
+        return false
+    }
+
+    private static func ipv4Octets(_ host: String) -> [UInt8]? {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var octets: [UInt8] = []
+        for part in parts {
+            guard let value = UInt8(String(part)) else { return nil }
+            octets.append(value)
+        }
+        return octets
+    }
+
+    private static func privateIpv4MappedHost(_ tail: String) -> Bool {
+        if let octets = ipv4Octets(tail) {
+            return privateIpv4Octets(octets)
+        }
+        let parts = tail.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let high = UInt16(String(parts[0]), radix: 16),
+              let low = UInt16(String(parts[1]), radix: 16)
+        else {
+            return false
+        }
+        return privateIpv4Octets([
+            UInt8((high >> 8) & 0x00ff),
+            UInt8(high & 0x00ff),
+            UInt8((low >> 8) & 0x00ff),
+            UInt8(low & 0x00ff)
+        ])
+    }
+
+    private static func privateIpv4Octets(_ octets: [UInt8]) -> Bool {
+        guard octets.count == 4 else { return false }
+        let first = octets[0]
+        let second = octets[1]
+        return first == 0 ||
+            first == 10 ||
+            first == 127 ||
+            (first == 100 && second >= 64 && second <= 127) ||
+            (first == 169 && second == 254) ||
+            (first == 172 && second >= 16 && second <= 31) ||
+            (first == 192 && second == 168)
+    }
 }
 
 struct NetworkPolicyRule {
@@ -186,6 +261,7 @@ struct NetworkPolicyRule {
 
 private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
     private let policy: [NetworkPolicyRule]
+    private let denyPrivateNetwork: Bool
     private let method: String
     private let headers: [String]
     private let state = NetworkRedirectState()
@@ -194,8 +270,9 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
         state.denied
     }
 
-    init(policy: [NetworkPolicyRule], method: String, headers: [String]) {
+    init(policy: [NetworkPolicyRule], denyPrivateNetwork: Bool, method: String, headers: [String]) {
         self.policy = policy
+        self.denyPrivateNetwork = denyPrivateNetwork
         self.method = method
         self.headers = headers
     }
@@ -209,6 +286,7 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
     ) {
         guard let url = request.url,
               let origin = PlatformNetwork.origin(for: url),
+              !(denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host)),
               policy.contains(where: { $0.allows(origin: origin, method: method, headers: headers) })
         else {
             state.markDenied()

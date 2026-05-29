@@ -172,6 +172,7 @@ struct AppSandboxContext {
     let storagePrefix: String
     let approvedPermissions: Set<String>
     let networkPolicy: [NetworkPolicyRule]
+    let denyPrivateNetwork: Bool
     let mountToken: String?
 
     @MainActor
@@ -183,6 +184,7 @@ struct AppSandboxContext {
         self.storagePrefix = "\(appId):"
         self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
         self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
+        self.denyPrivateNetwork = AppSandboxContext.denyPrivateNetwork(from: manifest)
         self.mountToken = envelope.mountToken
     }
 
@@ -211,6 +213,11 @@ struct AppSandboxContext {
     private static func permissions(from manifest: [String: Any]) -> Set<String> {
         guard let permissions = manifest["permissions"] as? [String] else { return [] }
         return Set(permissions)
+    }
+
+    private static func denyPrivateNetwork(from manifest: [String: Any]) -> Bool {
+        guard let policy = manifest["networkPolicy"] as? [String: Any] else { return true }
+        return (policy["denyPrivateNetwork"] as? Bool) ?? true
     }
 }
 

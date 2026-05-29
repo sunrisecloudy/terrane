@@ -857,6 +857,7 @@ function checkNativeStatic() {
     "message.frameInfo.isMainFrame",
     "mountToken",
     "networkPolicy",
+    "denyPrivateNetwork",
     "permissionForBridgeMethod",
     "approvedPermissions.contains(permission)",
   ];
@@ -873,7 +874,7 @@ function checkNativeStatic() {
   if (macStorage.includes("appId(for:")) {
     throw new Error("macOS storage must not derive app id from storage key");
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
     if (!macNetwork.includes(snippet)) {
       throw new Error(`macOS network missing policy enforcement: ${snippet}`);
     }
@@ -938,6 +939,7 @@ function checkNativeStatic() {
     [iosBridge, "mountToken"],
     [iosBridge, "struct AppSandboxContext"],
     [iosBridge, "networkPolicy"],
+    [iosBridge, "denyPrivateNetwork"],
     [iosBridge, "permissionForBridgeMethod"],
     [iosBridge, "approvedPermissions.contains(permission)"],
     [iosStorage, "request.context.appId"],
@@ -952,7 +954,7 @@ function checkNativeStatic() {
   if (iosStorage.includes("appId(for:")) {
     throw new Error("iOS storage must not derive app id from storage key");
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
     if (!iosNetwork.includes(snippet)) {
       throw new Error(`iOS network missing policy enforcement: ${snippet}`);
     }
@@ -1005,7 +1007,9 @@ function checkNativeStatic() {
     [windowsBridge, "approvedPermissions.contains(permission"],
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
+    [windowsHost, "DenyPrivateNetworkForApp"],
     [windowsHost, ".networkPolicy"],
+    [windowsHost, ".denyPrivateNetwork"],
     [windowsHost, "std::make_unique<WebBridge>(DatabasePath(), window)"],
     [windowsBridge, 'features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(true))'],
@@ -1022,7 +1026,7 @@ function checkNativeStatic() {
   if (windowsStorage.includes("appIdFor")) {
     throw new Error("Windows storage must not derive app id from storage key");
   }
-  for (const snippet of ["WinHttpOpenRequest", "network_policy_denied", "NetworkPolicyRule", "WINHTTP_DISABLE_REDIRECTS"]) {
+  for (const snippet of ["WinHttpOpenRequest", "network_policy_denied", "NetworkPolicyRule", "WINHTTP_DISABLE_REDIRECTS", "IsPrivateNetworkHost", "network.request private network targets are denied"]) {
     if (!windowsNetwork.includes(snippet)) {
       throw new Error(`Windows network missing policy enforcement: ${snippet}`);
     }
@@ -1070,7 +1074,9 @@ function checkNativeStatic() {
     [linuxHost, "is_known_example_app_id"],
     [linuxHost, "mount_token"],
     [linuxHost, "network_policy_for_app"],
+    [linuxHost, "deny_private_network_for_app"],
     [linuxHost, ".network_policy"],
+    [linuxHost, ".deny_private_network"],
     [linuxHost, "web_bridge_new(db_path, GTK_WINDOW(host->window))"],
     [linuxBridge, "permission_for_bridge_method"],
     [linuxBridge, "approved_permissions_contains"],
@@ -1091,7 +1097,7 @@ function checkNativeStatic() {
   if (linuxStorage.includes("app_id_for_key")) {
     throw new Error("Linux storage must not derive app id from storage key");
   }
-  for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT"]) {
+  for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT", "is_private_network_host", "network.request private network targets are denied"]) {
     if (!linuxNetwork.includes(snippet)) {
       throw new Error(`Linux network missing policy enforcement: ${snippet}`);
     }
@@ -1129,6 +1135,7 @@ function checkNativeStatic() {
     [androidMain, "sandboxContextFromManifest"],
     [androidMain, "exampleAppIds.contains(appId)"],
     [androidMain, "NetworkPolicyRule.fromManifest"],
+    [androidMain, "denyPrivateNetwork"],
     [androidMain, "webapps/examples/$appId/manifest.json"],
     [androidMain, 'webView.loadUrl("https://appassets.androidplatform.net/runtime/index.html")'],
     [androidBridge, "fun handleEnvelope"],
@@ -1144,6 +1151,7 @@ function checkNativeStatic() {
     [androidBridge, '"dialog.saveFile" to true'],
     [androidBridge, '"core.step" to core.isAvailable()'],
     [androidBridge, "networkPolicy"],
+    [androidBridge, "denyPrivateNetwork"],
     [androidStorage, "SQLiteOpenHelper"],
     [androidStorage, "request.context.appId"],
     [androidStorage, "request.context.storagePrefix"],
@@ -1167,7 +1175,7 @@ function checkNativeStatic() {
   if (androidDialogs.includes("is not implemented on Android yet") || androidBridge.includes('"dialog.openFile" to false')) {
     throw new Error("Android dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch"]) {
+  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied"]) {
     if (!androidNetwork.includes(snippet)) {
       throw new Error(`Android network missing policy enforcement: ${snippet}`);
     }
