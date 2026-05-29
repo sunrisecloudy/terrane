@@ -966,6 +966,17 @@ struct NativeHostTests {
         #expect(coreEventsQuery.statusCode == 200)
         #expect(coreEventsQuery.body.contains(#""rows":[]"#))
 
+        let smokeRun = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.run_smoke_tests","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(smokeRun.statusCode == 200)
+        #expect(smokeRun.body.contains(#""microTestId":"smoke:notes-lite""#))
+        #expect(smokeRun.body.contains(#""status":"passed""#))
+        #expect(smokeRun.body.contains(#""runner":"static""#))
+
         let testRunsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/test-runs")!,
             method: "POST",
@@ -973,7 +984,8 @@ struct NativeHostTests {
             body: #"{"appId":"notes-lite"}"#
         )
         #expect(testRunsQuery.statusCode == 200)
-        #expect(testRunsQuery.body.contains(#""rows":[]"#))
+        #expect(testRunsQuery.body.contains(#""micro_test_id":"smoke:notes-lite""#))
+        #expect(testRunsQuery.body.contains(#""status":"passed""#))
 
         let debugBundle = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/export-debug-bundle")!,
@@ -1005,7 +1017,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 76)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 77)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

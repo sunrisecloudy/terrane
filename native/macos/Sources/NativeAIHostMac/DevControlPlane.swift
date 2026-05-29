@@ -382,6 +382,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleCoreActionAssertion(connection, request, args: args, startedAt: startedAt)
         case "runtime.compare_snapshot":
             handleRuntimeCompareSnapshot(connection, request, args: args, startedAt: startedAt)
+        case "runtime.run_smoke_tests":
+            handleRuntimeRunSmokeTests(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
@@ -1178,8 +1180,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.compare_snapshot requires left/right snapshots or snapshot ids", startedAt: startedAt)
             return
         }
-        let leftJSON = jsonString(left)
-        let rightJSON = jsonString(right)
+        let leftJSON = jsonString(comparableSnapshotValue(left))
+        let rightJSON = jsonString(comparableSnapshotValue(right))
         let equal = leftJSON == rightJSON
         sendAccepted(connection, request, startedAt: startedAt, result: [
             "ok": equal,
@@ -1187,6 +1189,39 @@ final class DevControlPlane: @unchecked Sendable {
             "leftHash": "sha256:\(sha256Hex(leftJSON))",
             "rightHash": "sha256:\(sha256Hex(rightJSON))",
         ])
+    }
+
+    private func handleRuntimeRunSmokeTests(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let appId = args["appId"] as? String, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.run_smoke_tests requires appId", startedAt: startedAt)
+            return
+        }
+        guard activeAppRecord(appId: appId)?.installId != nil else {
+            sendRejected(connection, request, status: 400, code: "app_not_installed", message: "App is not installed", startedAt: startedAt)
+            return
+        }
+        guard let smokeText = bundledAppText(appId: appId, path: "smoke-tests.json") else {
+            sendRejected(connection, request, status: 400, code: "smoke_tests_missing", message: "App has no smoke-tests.json: \(appId)", startedAt: startedAt)
+            return
+        }
+        guard let tests = bundledSmokeTests(text: smokeText) else {
+            sendRejected(connection, request, status: 400, code: "invalid_smoke_tests", message: "App smoke-tests.json is invalid: \(appId)", startedAt: startedAt)
+            return
+        }
+        let result = evaluateSmokeTests(appId: appId, tests: tests)
+        guard let run = recordTestRun(
+            microTestId: "smoke:\(appId)",
+            name: "\(appId) bundled smoke tests",
+            appId: appId,
+            spec: tests,
+            status: (result["ok"] as? Bool) == true ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "native-macos-static"]
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Smoke test run could not be recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: run)
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -1298,6 +1333,31 @@ final class DevControlPlane: @unchecked Sendable {
             return value
         }
         return nil
+    }
+
+    private func comparableSnapshotValue(_ value: Any) -> Any {
+        guard var snapshot = value as? [String: Any] else {
+            return value
+        }
+        snapshot.removeValue(forKey: "createdAt")
+        snapshot.removeValue(forKey: "snapshotId")
+        if let storage = snapshot["storage"] as? [[String: Any]] {
+            snapshot["storage"] = storage.map { row in
+                var stable = row
+                stable.removeValue(forKey: "updated_at")
+                stable.removeValue(forKey: "updatedAt")
+                return stable
+            }.sorted { left, right in
+                storageSortKey(left) < storageSortKey(right)
+            }
+        }
+        return snapshot
+    }
+
+    private func storageSortKey(_ row: [String: Any]) -> String {
+        let appId = row["app_id"] as? String ?? row["appId"] as? String ?? ""
+        let key = row["key"] as? String ?? ""
+        return "\(appId)|\(key)"
     }
 
     private func restoreSnapshot(snapshotId: String) -> [String: Any]? {
@@ -2462,6 +2522,77 @@ final class DevControlPlane: @unchecked Sendable {
         sqlite3_step(statement)
     }
 
+    private func recordTestRun(
+        microTestId: String,
+        name: String,
+        appId: String?,
+        spec: Any,
+        status: String,
+        result: [String: Any],
+        diagnostics: [String: Any]
+    ) -> [String: Any]? {
+        guard let db = database.handle else { return nil }
+        let startedAt = Self.now()
+        let finishedAt = Self.now()
+        let testRunId = "testrun_\(UUID().uuidString.lowercased())"
+        let sessionId = appId.map { runtimeSessionId(appId: $0) }
+
+        var microStatement: OpaquePointer?
+        let microSQL = """
+        INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(micro_test_id) DO UPDATE SET
+          app_id = excluded.app_id,
+          name = excluded.name,
+          spec_json = excluded.spec_json,
+          updated_at = excluded.updated_at
+        """
+        guard sqlite3_prepare_v2(db, microSQL, -1, &microStatement, nil) == SQLITE_OK else {
+            return nil
+        }
+        bind(microStatement, 1, microTestId)
+        bindNullable(microStatement, 2, appId)
+        bind(microStatement, 3, name)
+        bind(microStatement, 4, jsonString(spec))
+        bind(microStatement, 5, startedAt)
+        bind(microStatement, 6, startedAt)
+        guard sqlite3_step(microStatement) == SQLITE_DONE else {
+            sqlite3_finalize(microStatement)
+            return nil
+        }
+        sqlite3_finalize(microStatement)
+
+        var runStatement: OpaquePointer?
+        let runSQL = """
+        INSERT INTO test_runs (test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, runSQL, -1, &runStatement, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_finalize(runStatement) }
+        bind(runStatement, 1, testRunId)
+        bind(runStatement, 2, microTestId)
+        bindNullable(runStatement, 3, sessionId)
+        bind(runStatement, 4, controlSessionId)
+        bindNullable(runStatement, 5, appId)
+        bind(runStatement, 6, status)
+        bind(runStatement, 7, startedAt)
+        bind(runStatement, 8, finishedAt)
+        bind(runStatement, 9, jsonBody(result))
+        bind(runStatement, 10, jsonBody(diagnostics))
+        guard sqlite3_step(runStatement) == SQLITE_DONE else {
+            return nil
+        }
+        return [
+            "testRunId": testRunId,
+            "microTestId": microTestId,
+            "appId": appId ?? NSNull(),
+            "status": status,
+            "result": result,
+        ]
+    }
+
     private func stateVersionBefore(_ result: [String: Any]?) -> Int? {
         guard let value = intValue(result?["stateVersion"]) else {
             return nil
@@ -2771,11 +2902,81 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func htmlForBundledApp(_ appId: String) -> String {
-        let htmlURL = RuntimeResourceLocator.repoRootURL()
+        bundledAppText(appId: appId, path: "index.html") ?? ""
+    }
+
+    private func bundledAppText(appId: String, path: String) -> String? {
+        let fileURL = RuntimeResourceLocator.repoRootURL()
             .appendingPathComponent("webapps/examples")
             .appendingPathComponent(appId)
-            .appendingPathComponent("index.html")
-        return (try? String(contentsOf: htmlURL, encoding: .utf8)) ?? ""
+            .appendingPathComponent(path)
+        return try? String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    private func bundledSmokeTests(text: String) -> [[String: Any]]? {
+        guard let data = text.data(using: .utf8),
+              let tests = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return nil
+        }
+        return tests
+    }
+
+    private func evaluateSmokeTests(appId: String, tests: [[String: Any]]) -> [String: Any] {
+        let html = htmlForBundledApp(appId)
+        let appJs = bundledAppText(appId: appId, path: "app.js") ?? ""
+        var failures: [[String: Any]] = []
+        var dynamicText = Set<String>()
+
+        for test in tests {
+            let testName = test["name"] as? String ?? "unnamed"
+            for step in test["steps"] as? [[String: Any]] ?? [] {
+                if let selector = step["selector"] as? String,
+                   queryMatches(html: html, args: ["selector": selector]).isEmpty
+                {
+                    failures.append(["test": testName, "code": "selector.not_found", "selector": selector])
+                }
+                if let type = step["type"] as? String,
+                   (type == "fill" || type == "select"),
+                   let value = step["value"] as? String
+                {
+                    dynamicText.insert(value)
+                }
+            }
+
+            let expected = test["expected"] as? [String: Any] ?? [:]
+            for method in expected["bridgeCallsInclude"] as? [String] ?? [] {
+                if !bridgeMethodReferenced(appJs, method) {
+                    failures.append(["test": testName, "code": "bridge.call_missing", "method": method])
+                }
+            }
+            if let text = expected["textIncludes"] as? String,
+               !textCanAppear(html: html, dynamicText: dynamicText, text: text)
+            {
+                failures.append(["test": testName, "code": "text.not_found", "text": text])
+            }
+        }
+
+        return [
+            "ok": failures.isEmpty,
+            "appId": appId,
+            "total": tests.count,
+            "assertions": tests.reduce(0) { count, test in
+                let steps = (test["steps"] as? [[String: Any]])?.count ?? 0
+                let expected = test["expected"] as? [String: Any] ?? [:]
+                return count + steps + expected.keys.count
+            },
+            "failures": failures,
+            "runner": "static",
+        ]
+    }
+
+    private func bridgeMethodReferenced(_ appJs: String, _ method: String) -> Bool {
+        appJs.contains(method)
+    }
+
+    private func textCanAppear(html: String, dynamicText: Set<String>, text: String) -> Bool {
+        htmlText(html).contains(text) || dynamicText.contains(text)
     }
 
     private func runtimeQuery(appId: String, args: [String: Any]) -> [String: Any] {
