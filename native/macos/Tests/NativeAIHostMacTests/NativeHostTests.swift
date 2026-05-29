@@ -286,6 +286,40 @@ struct NativeHostTests {
         #expect(appResourceUsageResult["appId"] as? String == "notes-lite")
         #expect(jsonInt(appResourceUsageResult["storageBytes"]) > 0)
 
+        let accessibilityURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/accessibility")!
+        let accessibility = try await httpRequest(accessibilityURL, headers: ["X-Platform-Control-Token": token])
+        #expect(accessibility.statusCode == 200)
+        #expect(accessibility.body.contains(#""status":"pass""#))
+        #expect(accessibility.body.contains(#""document_title""#))
+
+        let accessibilitySnapshot = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.accessibility_snapshot","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(accessibilitySnapshot.statusCode == 200)
+        #expect(accessibilitySnapshot.body.contains(#""title":"Notes Lite""#))
+        #expect(accessibilitySnapshot.body.contains(#""testId":"new-note-button""#))
+
+        let accessibilityAudit = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.run_accessibility_audit","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(accessibilityAudit.statusCode == 200)
+        #expect(accessibilityAudit.body.contains(#""no_unlabeled_controls""#))
+
+        let accessibilityAssert = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.assert_accessibility","args":{"appId":"notes-lite","rule":"no_unlabeled_controls"}}"#
+        )
+        #expect(accessibilityAssert.statusCode == 200)
+        #expect(accessibilityAssert.body.contains(#""rule":"no_unlabeled_controls""#))
+
         let dbSnapshotURL = URL(string: "http://127.0.0.1:\(port)/control/db/snapshot")!
         let dbSnapshot = try await httpRequest(
             dbSnapshotURL,
@@ -381,7 +415,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 18)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 22)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")
