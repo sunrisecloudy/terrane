@@ -4,6 +4,7 @@ This directory contains benchmark harnesses for the host-level latency targets i
 
 `fake-host-latency.mjs` measures the reference fake host through the same dev control commands Codex uses:
 
+- `platform.list_webapps` launcher initial app-list load
 - `platform.open_webapp` + `runtime.wait_for` app-open/app-switch timing
 - `runtime.storage_get`
 - `runtime.storage_set`

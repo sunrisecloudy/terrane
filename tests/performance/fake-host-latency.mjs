@@ -16,6 +16,7 @@ const ONE_KIB = "x".repeat(1024);
 const MEMORY_GROWTH_LIMIT_BYTES = 50 * 1024 * 1024;
 const NETWORK_TIMEOUT_TOLERANCE = 0.1;
 const DESKTOP_TARGETS_MS = {
+  runtime_launcher_initial_load: { p50: 400, p95: 1000 },
   example_app_open_idle: { p50: 200, p95: 500 },
   app_switch_open_idle: { p50: 200, p95: 500 },
   storage_get_cached: { p50: 5, p95: 20 },
@@ -43,6 +44,13 @@ export async function runFakeHostLatencyBenchmark({
     }
 
     const metrics = [
+      await measureMetric({
+        id: "runtime_launcher_initial_load",
+        warmup,
+        samples,
+        target: DESKTOP_TARGETS_MS.runtime_launcher_initial_load,
+        run: () => listLauncherApps(host),
+      }),
       await measureMetric({
         id: "example_app_open_idle",
         warmup,
@@ -145,6 +153,15 @@ export async function runFakeHostLatencyBenchmark({
       fs.rmSync(packageDir, { recursive: true, force: true });
     }
   }
+}
+
+async function listLauncherApps(host) {
+  const result = await host.runControlCommand("platform.list_webapps", {});
+  assertControlResult("runtime_launcher_initial_load", result);
+  if (!Array.isArray(result.apps) || result.apps.length < EXAMPLE_APP_IDS.length) {
+    throw new Error("runtime launcher app list did not include bundled examples");
+  }
+  return result;
 }
 
 async function openAndWait(host, appId) {

@@ -18,7 +18,14 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   assert.equal(report.methodology.reporting.includes("p95"), true);
   assert.deepEqual(
     report.metrics.map((metric) => metric.id),
-    ["example_app_open_idle", "app_switch_open_idle", "storage_get_cached", "storage_set_1kib", "core_step_trivial"],
+    [
+      "runtime_launcher_initial_load",
+      "example_app_open_idle",
+      "app_switch_open_idle",
+      "storage_get_cached",
+      "storage_set_1kib",
+      "core_step_trivial",
+    ],
   );
   assert.deepEqual(
     report.scenarios.map((scenario) => scenario.id),

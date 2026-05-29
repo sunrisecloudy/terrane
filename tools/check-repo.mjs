@@ -285,6 +285,8 @@ function checkPerformanceHarness() {
     "runtime.storage_get",
     "runtime.storage_set",
     "runtime.core_step",
+    "runtime_launcher_initial_load",
+    "platform.list_webapps",
     "platform.open_webapp",
     "bridge_throughput",
     "open_all_examples_memory",
@@ -303,7 +305,7 @@ function checkPerformanceHarness() {
       throw new Error(`tests/performance/fake-host-latency.mjs missing ${snippet}`);
     }
   }
-  return "fake-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=open,switch,storage,core scenarios=network-timeout,bridge-throughput,open-all-memory,large-list,install-uninstall p50/p95";
+  return "fake-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=launcher,open,switch,storage,core scenarios=network-timeout,bridge-throughput,open-all-memory,large-list,install-uninstall p50/p95";
 }
 
 function checkPluginMcp() {
