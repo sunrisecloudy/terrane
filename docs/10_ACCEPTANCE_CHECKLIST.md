@@ -82,9 +82,10 @@
 - [x] Debug dev control plane compares runtime snapshots with normalized stable hashes through `runtime.compare_snapshot`.
 - [x] Debug dev control plane lists installed webapps/versions and rolls back app registry versions.
 - [x] Debug dev control plane quarantines and uninstalls webapps with confirmation-gated destructive uninstall and a pre-uninstall snapshot.
+- [x] Debug dev control plane rejects `platform.reset_webapp` and `runtime.storage_reset` without `confirm: true`.
 - [x] Debug dev control plane approval-gates permission/policy/capability-changing app updates and activates them only through `platform.approve_webapp_update`.
 - [x] Debug dev control plane approval-gates `dataVersion`-changing app updates and applies packaged migrations before activation.
-- [x] Debug dev control plane supports runtime storage get/set/reset, bridge-call inspection/assertion, and log clearing.
+- [x] Debug dev control plane supports runtime storage get/set plus confirmation-gated reset, bridge-call inspection/assertion, and log clearing.
 - [x] Debug dev control plane supports lifecycle target list/launch/reload and opening installed webapps into runtime sessions.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch.
 - [x] Debug dev control plane quarantines an active install after three resource-budget bridge violations in 60 seconds and restores the previous active install.

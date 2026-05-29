@@ -1072,6 +1072,10 @@ final class DevControlPlane: @unchecked Sendable {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "\(request.toolName) requires appId", startedAt: startedAt)
             return
         }
+        guard args["confirm"] as? Bool == true else {
+            sendRejected(connection, request, status: 400, code: "confirmation_required", message: "\(request.toolName) requires confirm: true", startedAt: startedAt)
+            return
+        }
         guard let result = resetWebapp(appId: appId) else {
             sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Webapp storage could not be reset", startedAt: startedAt)
             return

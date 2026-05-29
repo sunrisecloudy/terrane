@@ -1555,11 +1555,20 @@ struct NativeHostTests {
             #expect(coreActionAssert.body.contains(#""type":"Toast""#))
         }
 
-        let storageReset = try await httpRequest(
+        let storageResetWithoutConfirm = try await httpRequest(
             commandURL,
             method: "POST",
             headers: ["X-Platform-Control-Token": token],
             body: #"{"tool":"runtime.storage_reset","args":{"appId":"notes-lite"}}"#
+        )
+        #expect(storageResetWithoutConfirm.statusCode == 400)
+        #expect(storageResetWithoutConfirm.body.contains("confirmation_required"))
+
+        let storageReset = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.storage_reset","args":{"appId":"notes-lite","confirm":true}}"#
         )
         #expect(storageReset.statusCode == 200)
         #expect(storageReset.body.contains(#""clearedStorageKeys":"#))

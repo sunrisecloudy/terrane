@@ -1587,6 +1587,11 @@ fn handleControlCommand(
             auditControlCommand(allocator, "/control/command", tool, "rejected", "invalid_request", args_json, null);
             return writeControlError(allocator, stream, 400, "invalid_request", "reset requires appId");
         };
+        const confirm = controlBoolArg(args, "confirm") orelse false;
+        if (!confirm) {
+            auditControlCommand(allocator, "/control/command", tool, "rejected", "confirmation_required", args_json, null);
+            return writeControlError(allocator, stream, 400, "confirmation_required", "reset requires confirm: true");
+        }
         const result_json = if (std.mem.eql(u8, tool, "platform.reset_webapp"))
             try resetWebappControl(allocator, app_id)
         else

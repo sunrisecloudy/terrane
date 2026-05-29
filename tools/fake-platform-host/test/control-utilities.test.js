@@ -186,7 +186,15 @@ test("fake-host exposes common control utility tools", async () => {
     const withUninstalled = await host.runControlCommand("platform.list_webapps", { includeUninstalled: true });
     assert.equal(withUninstalled.apps.some((app) => app.appId === "task-workbench" && app.status === "uninstalled"), true);
 
-    const reset = await host.runControlCommand("platform.reset_webapp", { appId: "notes-lite" });
+    await assert.rejects(
+      () => host.runControlCommand("platform.reset_webapp", { appId: "notes-lite" }),
+      /requires confirm/,
+    );
+    await assert.rejects(
+      () => host.runControlCommand("runtime.storage_reset", { appId: "notes-lite" }),
+      /requires confirm/,
+    );
+    const reset = await host.runControlCommand("platform.reset_webapp", { appId: "notes-lite", confirm: true });
     assert.equal(reset.ok, true);
     assert.equal(reset.clearedStorageKeys, 1);
     const storage = await host.runControlCommand("db.query_app_storage", { appId: "notes-lite" });

@@ -426,6 +426,8 @@ function checkFakeHostStatic() {
     [fakeHost, "queryConsoleLogs"],
     [fakeHost, "queryNotifications"],
     [fakeHost, "console_errors_found"],
+    [fakeHost, "function resetAppIdArg"],
+    [fakeHost, "requires confirm: true"],
     [browserRunner, "class BrowserSmokeRunner"],
     [browserRunner, "Chrome DevTools"],
     [browserRunner, "chrome-cdp"],
@@ -763,6 +765,7 @@ function checkServerStatic() {
     "fn bridgeControlErrorResponse",
     "fn openWebappControl",
     "fn resetWebappControl",
+    "reset requires confirm: true",
     "fn appendJsonColumnValue",
     "fn ensureAppRecord",
     "fn logBridgeCall",
@@ -872,6 +875,7 @@ function checkNativeStatic() {
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
+  const macDevControl = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "DevControlPlane.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
@@ -958,6 +962,11 @@ function checkNativeStatic() {
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
+  }
+  for (const snippet of ['args["confirm"] as? Bool == true', "requires confirm: true"]) {
+    if (!macDevControl.includes(snippet)) {
+      throw new Error(`macOS dev control destructive reset missing ${snippet}`);
+    }
   }
   for (const snippet of [
     "import CZigCoreBridge",

@@ -665,7 +665,7 @@ export class FakePlatformHost {
         return this.assertCoreAction(args);
       case "platform.reset_webapp":
       case "runtime.storage_reset":
-        return this.database.resetWebapp(requiredArg(args, "appId"));
+        return this.database.resetWebapp(resetAppIdArg(tool, args));
       case "runtime.resource_usage":
         return this.database.resourceUsage(requiredArg(args, "appId"));
       case "runtime.console_logs":
@@ -1114,6 +1114,14 @@ function requiredArg(args, name) {
     throw new PlatformError("invalid_request", `Missing required argument: ${name}`, { name });
   }
   return args[name];
+}
+
+function resetAppIdArg(tool, args) {
+  const appId = requiredArg(args, "appId");
+  if (args.confirm !== true) {
+    throw new PlatformError("confirmation_required", `${tool} requires confirm: true`, { appId });
+  }
+  return appId;
 }
 
 function packagePathArg(args) {

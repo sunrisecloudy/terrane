@@ -151,6 +151,59 @@ test(
   },
 );
 
+test(
+  "Zig server requires confirmation before destructive reset controls",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-reset-confirm-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "reset-confirm");
+      try {
+        const install = await controlCommand(started.url, "platform.install_webapp_package", {
+          package: packageForApp("notes-lite"),
+          activate: true,
+          trustLevel: "developer",
+        });
+        assert.equal(install.ok, true);
+
+        const seeded = await controlCommand(started.url, "runtime.storage_set", {
+          appId: "notes-lite",
+          key: "notes-lite:server-reset-confirm",
+          value: { title: "Seeded by server contract" },
+        });
+        assert.equal(seeded.ok, true);
+
+        const platformResetWithoutConfirm = await controlCommand(started.url, "platform.reset_webapp", {
+          appId: "notes-lite",
+        });
+        assert.equal(platformResetWithoutConfirm.ok, false);
+        assert.equal(platformResetWithoutConfirm.error.code, "confirmation_required");
+
+        const storageResetWithoutConfirm = await controlCommand(started.url, "runtime.storage_reset", {
+          appId: "notes-lite",
+        });
+        assert.equal(storageResetWithoutConfirm.ok, false);
+        assert.equal(storageResetWithoutConfirm.error.code, "confirmation_required");
+
+        const storageReset = await controlCommand(started.url, "runtime.storage_reset", {
+          appId: "notes-lite",
+          confirm: true,
+        });
+        assert.equal(storageReset.ok, true);
+        assert.equal(storageReset.result.storageRowsDeleted, 1);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
