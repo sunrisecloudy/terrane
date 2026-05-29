@@ -758,6 +758,7 @@ AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, s
       .storagePrefix = appId + L":",
       .approvedPermissions = PermissionsForApp(appId),
       .networkPolicy = NetworkPolicyForApp(appId),
+      .resourceBudget = ResourceBudgetForApp(appId),
       .denyPrivateNetwork = DenyPrivateNetworkForApp(appId),
       .mountToken = mountToken,
   };
@@ -797,6 +798,22 @@ bool WebViewHost::DenyPrivateNetworkForApp(std::wstring const& appId) const {
   auto policy = parsed.GetNamedObject(L"networkPolicy", json::JsonObject());
   auto value = policy.GetNamedValue(L"denyPrivateNetwork", json::JsonValue::CreateBooleanValue(true));
   return value.ValueType() == json::JsonValueType::Boolean ? value.GetBoolean() : true;
+}
+
+std::map<std::wstring, uint32_t> WebViewHost::ResourceBudgetForApp(std::wstring const& appId) const {
+  auto parsed = ManifestForApp(RuntimeRoot(), appId);
+  if (!parsed.HasKey(L"resourceBudget")) {
+    return {};
+  }
+  auto budget = parsed.GetNamedObject(L"resourceBudget", json::JsonObject());
+  std::map<std::wstring, uint32_t> limits;
+  for (auto const& entry : budget) {
+    auto value = entry.Value();
+    if (value.ValueType() == json::JsonValueType::Number) {
+      limits.emplace(std::wstring(entry.Key().c_str()), static_cast<uint32_t>(value.GetNumber()));
+    }
+  }
+  return limits;
 }
 
 std::vector<NetworkPolicyRule> WebViewHost::NetworkPolicyForApp(std::wstring const& appId) const {

@@ -239,6 +239,90 @@ static gboolean approved_permissions_contains(AppSandboxContext *context, const 
   return context->approved_permissions != NULL && g_hash_table_contains(context->approved_permissions, permission);
 }
 
+static gboolean resource_budget_limit(const AppSandboxContext *context, const gchar *name, guint *out) {
+  if (context == NULL || context->resource_budget == NULL) {
+    return FALSE;
+  }
+  gpointer value = NULL;
+  if (!g_hash_table_lookup_extended(context->resource_budget, name, NULL, &value)) {
+    return FALSE;
+  }
+  *out = GPOINTER_TO_UINT(value);
+  return TRUE;
+}
+
+static gint bridge_call_count_since(WebBridge *bridge, const gchar *app_id, const gchar *method, gint seconds) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL) {
+    return 0;
+  }
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND datetime(created_at) >= datetime('now', ?)";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return 0;
+  }
+  g_autofree gchar *window = g_strdup_printf("-%d seconds", seconds);
+  bind_text(statement, 1, app_id);
+  bind_text(statement, 2, method);
+  bind_text(statement, 3, window);
+  gint count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
+}
+
+static gboolean valid_log_level(const gchar *level) {
+  return g_strcmp0(level, "debug") == 0 || g_strcmp0(level, "info") == 0 ||
+      g_strcmp0(level, "warn") == 0 || g_strcmp0(level, "error") == 0;
+}
+
+static JsonNode *app_log_response(WebBridge *bridge, const BridgeRequest *request) {
+  const gchar *level = json_object_get_string_member_with_default(request->params, "level", "");
+  if (!valid_log_level(level)) {
+    return bridge_failure(request, "invalid_request", "app.log level must be debug, info, warn, or error", NULL);
+  }
+  const gchar *message = json_object_get_string_member_with_default(request->params, "message", "");
+  if (message == NULL || message[0] == '\0') {
+    return bridge_failure(request, "invalid_request", "app.log requires message", NULL);
+  }
+  guint limit = 0;
+  if (resource_budget_limit(&request->context, "maxLogLinesPerMinute", &limit)) {
+    gint current = bridge_call_count_since(bridge, request->context.app_id, "app.log", 60);
+    if (current >= (gint)limit) {
+      JsonObject *details = json_object_new();
+      json_object_set_string_member(details, "budget", "maxLogLinesPerMinute");
+      json_object_set_int_member(details, "current", current);
+      json_object_set_int_member(details, "max", limit);
+      json_object_set_int_member(details, "limit", limit);
+      return bridge_failure(
+          request,
+          "resource_budget_exceeded",
+          "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+          details);
+    }
+  }
+  g_message("Generated app log [%s] %s", request->context.app_id != NULL ? request->context.app_id : "", message);
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_end_object(builder);
+  return bridge_success(request, json_builder_get_root(builder));
+}
+
+static void add_resource_budget_limits(JsonBuilder *builder, const AppSandboxContext *context) {
+  if (context == NULL || context->resource_budget == NULL) {
+    return;
+  }
+  GHashTableIter iter;
+  gpointer key = NULL;
+  gpointer value = NULL;
+  g_hash_table_iter_init(&iter, context->resource_budget);
+  while (g_hash_table_iter_next(&iter, &key, &value)) {
+    json_builder_set_member_name(builder, key);
+    json_builder_add_int_value(builder, GPOINTER_TO_UINT(value));
+  }
+}
+
 static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *request) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -273,6 +357,7 @@ static JsonNode *capabilities_response(WebBridge *bridge, const BridgeRequest *r
   json_builder_add_int_value(builder, 1048576);
   json_builder_set_member_name(builder, "maxFileBytes");
   json_builder_add_int_value(builder, 524288);
+  add_resource_budget_limits(builder, &request->context);
   json_builder_end_object(builder);
   json_builder_end_object(builder);
   return bridge_success(request, json_builder_get_root(builder));
@@ -310,12 +395,7 @@ static JsonNode *dispatch(WebBridge *bridge, const BridgeRequest *request) {
     return capabilities_response(bridge, request);
   }
   if (g_strcmp0(request->method, "app.log") == 0) {
-    JsonBuilder *builder = json_builder_new();
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, "ok");
-    json_builder_add_boolean_value(builder, TRUE);
-    json_builder_end_object(builder);
-    return bridge_success(request, json_builder_get_root(builder));
+    return app_log_response(bridge, request);
   }
   return bridge_failure(request, "unknown_method", "Unknown bridge method", NULL);
 }

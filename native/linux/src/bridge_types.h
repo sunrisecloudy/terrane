@@ -17,6 +17,7 @@ typedef struct {
   gchar *storage_prefix;
   GHashTable *approved_permissions;
   GPtrArray *network_policy;
+  GHashTable *resource_budget;
   gboolean deny_private_network;
   gchar *mount_token;
 } AppSandboxContext;

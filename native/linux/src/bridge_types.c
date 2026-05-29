@@ -88,4 +88,8 @@ void app_sandbox_context_clear(AppSandboxContext *context) {
     g_ptr_array_unref(context->network_policy);
     context->network_policy = NULL;
   }
+  if (context->resource_budget != NULL) {
+    g_hash_table_unref(context->resource_budget);
+    context->resource_budget = NULL;
+  }
 }

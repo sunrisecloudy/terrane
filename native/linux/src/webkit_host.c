@@ -728,6 +728,41 @@ static GHashTable *permissions_for_app(const gchar *app_id) {
   return permissions;
 }
 
+static GHashTable *resource_budget_for_app(const gchar *app_id) {
+  GHashTable *budget = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  g_autofree gchar *root = repo_root();
+  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *contents = NULL;
+  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+    return budget;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, contents, -1, NULL)) {
+    g_object_unref(parser);
+    return budget;
+  }
+  JsonObject *manifest = json_node_get_object(json_parser_get_root(parser));
+  JsonObject *raw_budget = json_object_get_object_member(manifest, "resourceBudget");
+  if (raw_budget != NULL) {
+    GList *members = json_object_get_members(raw_budget);
+    for (GList *iter = members; iter != NULL; iter = iter->next) {
+      const gchar *key = iter->data;
+      JsonNode *value = json_object_get_member(raw_budget, key);
+      if (value != NULL && JSON_NODE_HOLDS_VALUE(value)) {
+        GType value_type = json_node_get_value_type(value);
+        if (value_type == G_TYPE_INT64 || value_type == G_TYPE_INT || value_type == G_TYPE_DOUBLE) {
+          guint limit = (guint)(value_type == G_TYPE_DOUBLE ? json_node_get_double(value) : json_node_get_int(value));
+          g_hash_table_insert(budget, g_strdup(key), GUINT_TO_POINTER(limit));
+        }
+      }
+    }
+    g_list_free(members);
+  }
+  g_object_unref(parser);
+  return budget;
+}
+
 static GPtrArray *network_policy_for_app(const gchar *app_id) {
   GPtrArray *rules = g_ptr_array_new_with_free_func(network_policy_rule_free);
   g_autofree gchar *root = repo_root();
@@ -812,6 +847,7 @@ static AppSandboxContext sandbox_context_from_uri(const gchar *uri) {
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
       .network_policy = network_policy_for_app(app_id),
+      .resource_budget = resource_budget_for_app(app_id),
       .deny_private_network = deny_private_network_for_app(app_id),
       .mount_token = NULL,
   };
@@ -823,6 +859,7 @@ static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gcha
       .storage_prefix = g_strdup_printf("%s:", app_id),
       .approved_permissions = permissions_for_app(app_id),
       .network_policy = network_policy_for_app(app_id),
+      .resource_budget = resource_budget_for_app(app_id),
       .deny_private_network = deny_private_network_for_app(app_id),
       .mount_token = g_strdup(mount_token),
   };

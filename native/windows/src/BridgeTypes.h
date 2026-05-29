@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@ struct AppSandboxContext {
   std::wstring storagePrefix;
   std::set<std::wstring> approvedPermissions;
   std::vector<NetworkPolicyRule> networkPolicy;
+  std::map<std::wstring, uint32_t> resourceBudget;
   bool denyPrivateNetwork = true;
   std::wstring mountToken;
 };

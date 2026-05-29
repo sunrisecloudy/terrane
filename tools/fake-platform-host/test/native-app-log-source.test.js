@@ -6,10 +6,14 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("mobile native bridges validate and budget app.log", () => {
+test("native bridges validate and budget app.log", () => {
   const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
   const androidHost = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
   const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
+  const windowsBridge = read("native/windows/src/WebBridge.cpp");
+  const windowsHost = read("native/windows/src/WebViewHost.cpp");
+  const linuxBridge = read("native/linux/src/web_bridge.c");
+  const linuxHost = read("native/linux/src/webkit_host.c");
 
   assert.match(androidBridge, /private fun appLog\(request: BridgeRequest\): String/);
   assert.match(androidBridge, /app\.log level must be debug, info, warn, or error/);
@@ -29,6 +33,24 @@ test("mobile native bridges validate and budget app.log", () => {
   assert.match(iosBridge, /bridgeCallCount\(appId: request\.context\.appId, method: "app\.log", seconds: 60\)/);
   assert.match(iosBridge, /for \(key, value\) in request\.context\.resourceBudget/);
   assert.match(iosBridge, /let resourceBudget: \[String: Int\]/);
+
+  assert.match(windowsBridge, /json::JsonObject WebBridge::AppLog\(BridgeRequest const& request\) const/);
+  assert.match(windowsBridge, /app\.log level must be debug, info, warn, or error/);
+  assert.match(windowsBridge, /app\.log requires message/);
+  assert.match(windowsBridge, /resource_budget_exceeded/);
+  assert.match(windowsBridge, /maxLogLinesPerMinute/);
+  assert.match(windowsBridge, /BridgeCallCountSince\(request\.context\.appId, L"app\.log", 60\)/);
+  assert.match(windowsBridge, /for \(auto const& \[key, value\] : request\.context\.resourceBudget\)/);
+  assert.match(windowsHost, /\.resourceBudget = ResourceBudgetForApp\(appId\)/);
+
+  assert.match(linuxBridge, /static JsonNode \*app_log_response\(WebBridge \*bridge, const BridgeRequest \*request\)/);
+  assert.match(linuxBridge, /app\.log level must be debug, info, warn, or error/);
+  assert.match(linuxBridge, /app\.log requires message/);
+  assert.match(linuxBridge, /resource_budget_exceeded/);
+  assert.match(linuxBridge, /maxLogLinesPerMinute/);
+  assert.match(linuxBridge, /bridge_call_count_since\(bridge, request->context\.app_id, "app\.log", 60\)/);
+  assert.match(linuxBridge, /add_resource_budget_limits\(builder, &request->context\)/);
+  assert.match(linuxHost, /\.resource_budget = resource_budget_for_app\(app_id\)/);
 });
 
 function read(relativePath) {

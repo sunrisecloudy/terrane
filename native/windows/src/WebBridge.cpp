@@ -159,9 +159,7 @@ json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {
     return Capabilities(request);
   }
   if (request.method == L"app.log") {
-    json::JsonObject result;
-    result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true));
-    return BridgeResponse::Success(request.id, request.hasId, result);
+    return AppLog(request);
   }
   return BridgeResponse::Failure(request.id, request.hasId, L"unknown_method", L"Unknown bridge method: " + request.method);
 }
@@ -185,6 +183,9 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   json::JsonObject limits;
   limits.Insert(L"maxPackageBytes", json::JsonValue::CreateNumberValue(1048576));
   limits.Insert(L"maxFileBytes", json::JsonValue::CreateNumberValue(524288));
+  for (auto const& [key, value] : request.context.resourceBudget) {
+    limits.Insert(key, json::JsonValue::CreateNumberValue(value));
+  }
 
   json::JsonObject result;
   result.Insert(L"platform", json::JsonValue::CreateStringValue(L"windows"));
@@ -195,6 +196,61 @@ json::JsonObject WebBridge::Capabilities(BridgeRequest const& request) const {
   result.Insert(L"features", features);
   result.Insert(L"limits", limits);
   return BridgeResponse::Success(request.id, request.hasId, result);
+}
+
+json::JsonObject WebBridge::AppLog(BridgeRequest const& request) const {
+  auto level = std::wstring(request.params.GetNamedString(L"level", L"").c_str());
+  if (level != L"debug" && level != L"info" && level != L"warn" && level != L"error") {
+    return BridgeResponse::Failure(
+        request.id,
+        request.hasId,
+        L"invalid_request",
+        L"app.log level must be debug, info, warn, or error");
+  }
+  auto message = std::wstring(request.params.GetNamedString(L"message", L"").c_str());
+  if (message.empty()) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"app.log requires message");
+  }
+  if (auto limit = request.context.resourceBudget.find(L"maxLogLinesPerMinute");
+      limit != request.context.resourceBudget.end()) {
+    auto current = BridgeCallCountSince(request.context.appId, L"app.log", 60);
+    if (current >= static_cast<int>(limit->second)) {
+      json::JsonObject details;
+      details.Insert(L"budget", json::JsonValue::CreateStringValue(L"maxLogLinesPerMinute"));
+      details.Insert(L"current", json::JsonValue::CreateNumberValue(current));
+      details.Insert(L"max", json::JsonValue::CreateNumberValue(limit->second));
+      details.Insert(L"limit", json::JsonValue::CreateNumberValue(limit->second));
+      return BridgeResponse::Failure(
+          request.id,
+          request.hasId,
+          L"resource_budget_exceeded",
+          L"Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+          details);
+    }
+  }
+  OutputDebugStringW((L"Generated app log [" + request.context.appId + L"] " + message + L"\n").c_str());
+  json::JsonObject result;
+  result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true));
+  return BridgeResponse::Success(request.id, request.hasId, result);
+}
+
+int WebBridge::BridgeCallCountSince(std::wstring const& appId, std::wstring const& method, int seconds) const {
+  auto db = storage_.DatabaseHandle();
+  if (db == nullptr) {
+    return 0;
+  }
+  sqlite3_stmt* statement = nullptr;
+  constexpr char const* sql =
+      "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = ? AND datetime(created_at) >= datetime('now', ?)";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+    return 0;
+  }
+  BindText(statement, 1, appId);
+  BindText(statement, 2, method);
+  BindText(statement, 3, L"-" + std::to_wstring(seconds) + L" seconds");
+  int count = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  return count;
 }
 
 void WebBridge::EnsureRuntimeSession(BridgeRequest const& request) {

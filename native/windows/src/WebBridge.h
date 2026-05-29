@@ -23,6 +23,8 @@ class WebBridge {
   std::optional<std::wstring> permissionForBridgeMethod(std::wstring const& method) const;
   winrt::Windows::Data::Json::JsonObject Dispatch(BridgeRequest const& request);
   winrt::Windows::Data::Json::JsonObject Capabilities(BridgeRequest const& request) const;
+  winrt::Windows::Data::Json::JsonObject AppLog(BridgeRequest const& request) const;
+  int BridgeCallCountSince(std::wstring const& appId, std::wstring const& method, int seconds) const;
   void RecordBridgeCall(
       BridgeRequest const& request,
       winrt::Windows::Data::Json::JsonObject const& response,
