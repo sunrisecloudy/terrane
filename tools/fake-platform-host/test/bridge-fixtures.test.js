@@ -9,6 +9,8 @@ import { readPackage } from "../src/package-validator.js";
 import { PlatformDatabase } from "../src/platform-database.js";
 import { createPlatformKeypair, signPackage } from "../src/signing.js";
 
+const contractPlatforms = ["fake-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"];
+
 test("checked-in bridge fixtures match fake-host expected responses", async () => {
   const fixturesDir = path.join(repoRoot, "tests", "fixtures", "bridge");
   const required = new Set([
@@ -61,7 +63,7 @@ test("checked-in bridge fixtures match fake-host expected responses", async () =
       const dispatcher = new BridgeDispatcher({ database: db, core: new CoreEngine() });
       const sessionId = db.createRuntimeSession({ appId: fixture.context.appId });
       applyBridgeFixturePreconditions(db, fixture, sessionId);
-      const { context, preconditions: _preconditions, expected: _expected, ...request } = fixture;
+      const { context, preconditions: _preconditions, expected: _expected, platforms: _platforms, ...request } = fixture;
       const response = await dispatcher.dispatch(request, { appId: context.appId, sessionId });
       assert.equal(response.ok, fixture.expected?.ok, fileName);
       if (fixture.expected?.errorCode) {
@@ -130,4 +132,5 @@ function assertBridgeFixtureShape(fixture, fileName) {
   if ("timestamp" in fixture) {
     assert.equal(Number.isInteger(fixture.timestamp), true, fileName);
   }
+  assert.deepEqual(fixture.platforms, contractPlatforms, `${fileName} platforms`);
 }

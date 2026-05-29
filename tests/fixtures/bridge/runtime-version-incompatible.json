@@ -18,5 +18,14 @@
       "runtimeVersion": "0.1.0",
       "appRuntimeVersion": "0.2.0"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

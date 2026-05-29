@@ -107,7 +107,7 @@
 - [ ] Zig tests pass.
 - [x] Runtime unit tests pass.
 - [x] Package validator tests pass.
-- [ ] Bridge contract tests pass.
+- [x] Bridge contract tests pass.
 - [x] Example smoke tests pass.
 - [ ] Platform smoke tests pass or are documented for manual execution.
 

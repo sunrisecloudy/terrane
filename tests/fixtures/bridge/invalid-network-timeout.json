@@ -35,5 +35,14 @@
       "timeoutMs": 10,
       "delayMs": 50
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

@@ -19,5 +19,14 @@
     "errorDetailsSubset": {
       "header": "x-debug"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

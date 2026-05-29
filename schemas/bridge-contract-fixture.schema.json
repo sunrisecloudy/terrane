@@ -8,7 +8,8 @@
     "id",
     "context",
     "method",
-    "params"
+    "params",
+    "platforms"
   ],
   "properties": {
     "id": {
@@ -34,6 +35,23 @@
     },
     "params": {
       "type": "object"
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "fake-host",
+          "macos",
+          "ios-simulator",
+          "android-emulator",
+          "windows",
+          "linux",
+          "server"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
     },
     "preconditions": {
       "type": "object",

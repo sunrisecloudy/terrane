@@ -16,5 +16,14 @@
     "errorDetailsSubset": {
       "field": "appId"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

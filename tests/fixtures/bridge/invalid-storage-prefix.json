@@ -16,5 +16,14 @@
       "key": "task-workbench:tasks",
       "prefix": "notes-lite:"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

@@ -15,5 +15,14 @@
     "errorDetailsSubset": {
       "level": "warn"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

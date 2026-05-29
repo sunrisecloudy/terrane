@@ -33,5 +33,14 @@
       "origin": "https://other.example.com",
       "method": "GET"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }

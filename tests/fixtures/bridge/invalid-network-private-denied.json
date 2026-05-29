@@ -37,5 +37,14 @@
       "origin": "https://192.168.0.1",
       "host": "192.168.0.1"
     }
-  }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
 }
