@@ -977,6 +977,25 @@ struct NativeHostTests {
         #expect(smokeRun.body.contains(#""status":"passed""#))
         #expect(smokeRun.body.contains(#""runner":"static""#))
 
+        let microtests = [
+            ("tests/micro/api-dashboard-network.microtest.json", "api-dashboard-network"),
+            ("tests/micro/core-replay-lab.microtest.json", "core-replay-lab-determinism"),
+            ("tests/micro/file-transformer-dialog-core.microtest.json", "file-transformer-dialog-core"),
+            ("tests/micro/notes-lite-create-note.microtest.json", "notes-lite-create-note"),
+            ("tests/micro/task-workbench-core-storage.microtest.json", "task-workbench-core-storage"),
+        ]
+        for (path, id) in microtests {
+            let microtestRun = try await httpRequest(
+                commandURL,
+                method: "POST",
+                headers: ["X-Platform-Control-Token": token],
+                body: #"{"tool":"runtime.run_microtest","args":{"microtestPath":"\#(path)"}}"#
+            )
+            #expect(microtestRun.statusCode == 200)
+            #expect(microtestRun.body.contains(#""microTestId":"\#(id)""#))
+            #expect(microtestRun.body.contains(#""status":"passed""#))
+        }
+
         let testRunsQuery = try await httpRequest(
             URL(string: "http://127.0.0.1:\(port)/control/db/test-runs")!,
             method: "POST",
@@ -985,6 +1004,7 @@ struct NativeHostTests {
         )
         #expect(testRunsQuery.statusCode == 200)
         #expect(testRunsQuery.body.contains(#""micro_test_id":"smoke:notes-lite""#))
+        #expect(testRunsQuery.body.contains(#""micro_test_id":"notes-lite-create-note""#))
         #expect(testRunsQuery.body.contains(#""status":"passed""#))
 
         let debugBundle = try await httpRequest(
@@ -1017,7 +1037,7 @@ struct NativeHostTests {
         #expect(ended.body.contains(#""status":"ended""#))
 
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "rejected") >= 1)
-        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 77)
+        #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 82)
     }
 
     @Test("core.step returns real Zig output when a dylib is available")

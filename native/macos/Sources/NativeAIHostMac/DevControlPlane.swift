@@ -42,6 +42,23 @@ final class DevControlPlane: @unchecked Sendable {
         let details: [String: Any]
     }
 
+    private struct PackageFile {
+        let path: String
+        let content: String
+        let contentHash: String
+        let sizeBytes: Int
+        let mime: String
+    }
+
+    private struct PackageRead {
+        let directory: URL
+        let manifest: [String: Any]
+        let manifestJSON: String
+        let files: [PackageFile]
+        let errors: [[String: Any]]
+        let warnings: [[String: Any]]
+    }
+
     let token: String
     let tokenFileURL: URL
     let controlSessionId: String
@@ -384,12 +401,20 @@ final class DevControlPlane: @unchecked Sendable {
             handleRuntimeCompareSnapshot(connection, request, args: args, startedAt: startedAt)
         case "runtime.run_smoke_tests":
             handleRuntimeRunSmokeTests(connection, request, args: args, startedAt: startedAt)
+        case "runtime.run_microtest":
+            handleRuntimeRunMicrotest(connection, request, args: args, startedAt: startedAt)
         case "runtime.accessibility_snapshot":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilitySnapshot(appId: args["appId"] as? String))
         case "runtime.run_accessibility_audit":
             sendAccepted(connection, request, startedAt: startedAt, result: accessibilityAudit(appId: args["appId"] as? String))
         case "runtime.assert_accessibility":
             handleAccessibilityAssertion(connection, request, args: args, startedAt: startedAt)
+        case "platform.validate_package", "platform.run_policy_audit":
+            handleValidatePackage(connection, request, args: args, startedAt: startedAt)
+        case "platform.sign_webapp_package":
+            handleSignPackage(connection, request, args: args, startedAt: startedAt)
+        case "platform.install_webapp_package":
+            handleInstallPackage(connection, request, args: args, startedAt: startedAt)
         case "platform.list_webapps":
             sendAccepted(connection, request, startedAt: startedAt, result: listWebapps(includeUninstalled: args["includeUninstalled"] as? Bool == true))
         case "platform.open_webapp":
@@ -1222,6 +1247,69 @@ final class DevControlPlane: @unchecked Sendable {
             return
         }
         sendAccepted(connection, request, startedAt: startedAt, result: run)
+    }
+
+    private func handleRuntimeRunMicrotest(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let microtest = microtestSpec(args: args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.run_microtest requires spec or microtestPath", startedAt: startedAt)
+            return
+        }
+        guard let appId = (microtest["targetApps"] as? [String])?.first, !appId.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_microtest", message: "Micro-test must target at least one app", startedAt: startedAt)
+            return
+        }
+        let setup = executeMicrotestPhase("setup", steps: microtest["setup"] as? [[String: Any]] ?? [], appId: appId)
+        let result = evaluateMicroTest(appId: appId, microtest: microtest, commandResults: setup["commands"] as? [[String: Any]] ?? [])
+        let teardown = executeMicrotestPhase("teardown", steps: microtest["teardown"] as? [[String: Any]] ?? [], appId: appId)
+        let passed = (setup["ok"] as? Bool) == true && (result["ok"] as? Bool) == true && (teardown["ok"] as? Bool) == true
+        var runResult = result
+        runResult["setup"] = setup
+        runResult["teardown"] = teardown
+        guard let run = recordTestRun(
+            microTestId: microtest["id"] as? String ?? "microtest:\(appId)",
+            name: microtest["id"] as? String ?? "\(appId) micro-test",
+            appId: appId,
+            spec: microtest,
+            status: passed ? "passed" : "failed",
+            result: runResult,
+            diagnostics: ["runner": "native-macos-static"]
+        ) else {
+            sendRejected(connection, request, status: 400, code: "sqlite_error", message: "Micro-test run could not be recorded", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: run)
+    }
+
+    private func handleValidatePackage(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let result = validatePackageResult(args: args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.validate_package requires packagePath or path", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleSignPackage(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let result = signPackageResult(args: args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.sign_webapp_package requires packagePath or path", startedAt: startedAt)
+            return
+        }
+        guard (result["ok"] as? Bool) == true else {
+            sendRejected(connection, request, status: 400, code: "package_validation_failed", message: "Generated webapp package failed validation", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
+    }
+
+    private func handleInstallPackage(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
+        guard let result = installPackageResult(args: args) else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "platform.install_webapp_package requires packagePath or path", startedAt: startedAt)
+            return
+        }
+        guard (result["ok"] as? Bool) == true else {
+            sendRejected(connection, request, status: 400, code: "package_validation_failed", message: "Generated webapp package failed validation", startedAt: startedAt)
+            return
+        }
+        sendAccepted(connection, request, startedAt: startedAt, result: result)
     }
 
     private func handleCreateSnapshot(_ connection: NWConnection, _ request: HTTPRequest, args: [String: Any], startedAt: Date) {
@@ -2593,6 +2681,623 @@ final class DevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func microtestSpec(args: [String: Any]) -> [String: Any]? {
+        if let spec = args["spec"] as? [String: Any] {
+            return spec
+        }
+        guard let path = args["microtestPath"] as? String ?? args["path"] as? String,
+              let url = repoRelativeURL(path)
+        else {
+            return nil
+        }
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let data = text.data(using: .utf8),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return spec
+    }
+
+    private func validatePackageResult(args: [String: Any]) -> [String: Any]? {
+        guard let package = readPackage(args: args) else {
+            return nil
+        }
+        let ok = package.errors.isEmpty
+        return [
+            "ok": ok,
+            "appId": package.manifest["id"] ?? NSNull(),
+            "version": package.manifest["version"] ?? NSNull(),
+            "runtimeVersion": package.manifest["runtimeVersion"] ?? NSNull(),
+            "dataVersion": package.manifest["dataVersion"] ?? NSNull(),
+            "files": package.files.map { $0.path }.sorted(),
+            "bridgeMethods": bridgeMethods(in: package.files.first { $0.path == "app.js" }?.content ?? "").sorted(),
+            "errors": package.errors,
+            "warnings": package.warnings,
+        ]
+    }
+
+    private func signPackageResult(args: [String: Any]) -> [String: Any]? {
+        guard let package = readPackage(args: args) else {
+            return nil
+        }
+        let hashes = packageHashes(package)
+        let trustLevel = args["trustLevel"] as? String ?? package.manifest["trust"].flatMap { ($0 as? [String: Any])?["level"] as? String } ?? "developer"
+        let signature: [String: Any] = [
+            "algorithm": "none-dev",
+            "keyId": "macos-dev-control",
+            "appId": package.manifest["id"] ?? NSNull(),
+            "appVersion": package.manifest["version"] ?? NSNull(),
+            "runtimeVersion": package.manifest["runtimeVersion"] ?? NSNull(),
+            "dataVersion": package.manifest["dataVersion"] ?? NSNull(),
+            "manifestHash": hashes["manifestHash"] ?? "",
+            "contentHash": hashes["contentHash"] ?? "",
+            "trustLevel": trustLevel,
+            "signedAt": Self.now(),
+        ]
+        return [
+            "ok": package.errors.isEmpty,
+            "appId": package.manifest["id"] ?? NSNull(),
+            "version": package.manifest["version"] ?? NSNull(),
+            "keyId": "macos-dev-control",
+            "signature": signature,
+            "hashes": hashes,
+            "errors": package.errors,
+            "warnings": package.warnings,
+        ]
+    }
+
+    private func installPackageResult(args: [String: Any]) -> [String: Any]? {
+        guard let package = readPackage(args: args) else {
+            return nil
+        }
+        guard package.errors.isEmpty else {
+            return [
+                "ok": false,
+                "status": "failed",
+                "appId": package.manifest["id"] ?? NSNull(),
+                "errors": package.errors,
+                "warnings": package.warnings,
+            ]
+        }
+        let smoke = smokeResult(package: package)
+        let accessibility = accessibilityAuditForHTML(
+            appId: package.manifest["id"] as? String ?? "",
+            html: package.files.first { $0.path == "index.html" }?.content ?? ""
+        )
+        let compatibility = runtimeCompatibilityResult(package.manifest["runtimeVersion"] as? String)
+        let ok = (smoke["ok"] as? Bool) == true && (accessibility["status"] as? String) != "fail" && (compatibility["ok"] as? Bool) == true
+        let reportStatus = ok ? "accepted" : "failed"
+        guard let install = insertInstalledPackage(package: package, smoke: smoke, accessibility: accessibility, compatibility: compatibility, reportStatus: reportStatus) else {
+            return [
+                "ok": false,
+                "status": "failed",
+                "appId": package.manifest["id"] ?? NSNull(),
+                "errors": [["code": "sqlite_error", "message": "Package install transaction failed"]],
+                "warnings": package.warnings,
+            ]
+        }
+        _ = recordTestRun(
+            microTestId: "smoke:\(install["appId"] as? String ?? "")",
+            name: "\(install["appId"] as? String ?? "") bundled smoke tests",
+            appId: install["appId"] as? String,
+            spec: smoke["spec"] ?? [],
+            status: (smoke["ok"] as? Bool) == true ? "passed" : "failed",
+            result: smoke,
+            diagnostics: ["runner": "native-macos-static-install"]
+        )
+        return [
+            "ok": ok,
+            "status": ok ? "enabled" : "quarantined",
+            "installId": install["installId"] ?? NSNull(),
+            "reportId": install["reportId"] ?? NSNull(),
+            "appId": install["appId"] ?? NSNull(),
+            "version": install["version"] ?? NSNull(),
+            "contentHash": install["contentHash"] ?? NSNull(),
+            "smokeTest": smoke,
+            "accessibility": accessibility,
+            "compatibility": compatibility,
+            "warnings": package.warnings,
+        ]
+    }
+
+    private func readPackage(args: [String: Any]) -> PackageRead? {
+        guard let path = args["packagePath"] as? String ?? args["path"] as? String,
+              let directory = repoRelativeURL(path)
+        else {
+            return nil
+        }
+        return readPackage(directory: directory)
+    }
+
+    private func readPackage(directory: URL) -> PackageRead {
+        let required = ["manifest.json", "index.html", "styles.css", "app.js"]
+        let optional = Set(["smoke-tests.json", "README.md"])
+        var errors: [[String: Any]] = []
+        var warnings: [[String: Any]] = []
+        var files: [PackageFile] = []
+
+        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else {
+            return PackageRead(directory: directory, manifest: [:], manifestJSON: "{}", files: [], errors: [
+                packageIssue("package_not_found", "Package directory was not found", details: ["path": directory.path]),
+            ], warnings: [])
+        }
+
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            let relativePath = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
+            if relativePath.hasPrefix("assets/") || (!required.contains(relativePath) && !optional.contains(relativePath) && !relativePath.hasPrefix("migrations/")) {
+                errors.append(packageIssue("unexpected_package_path", "Package contains an unexpected path", details: ["path": relativePath]))
+                continue
+            }
+            let content = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+            files.append(PackageFile(
+                path: relativePath,
+                content: content,
+                contentHash: "sha256:\(sha256Hex(content))",
+                sizeBytes: content.utf8.count,
+                mime: mimeType(forPackagePath: relativePath)
+            ))
+        }
+
+        if files.count > 32 {
+            errors.append(packageIssue("resource_budget_exceeded", "Package exceeds hard file count cap", details: ["files": files.count, "maxFiles": 32]))
+        }
+        let migrationCount = files.filter { $0.path.hasPrefix("migrations/") }.count
+        if migrationCount > 16 {
+            errors.append(packageIssue("resource_budget_exceeded", "Package exceeds hard migration file count cap", details: ["migrations": migrationCount, "maxMigrations": 16]))
+        }
+        for path in required where !files.contains(where: { $0.path == path }) {
+            errors.append(packageIssue("missing_required_file", "\(path) is required", details: ["path": path]))
+        }
+
+        let manifestJSON = files.first { $0.path == "manifest.json" }?.content ?? "{}"
+        let manifest = jsonDictionary(manifestJSON) ?? [:]
+        if manifest.isEmpty {
+            errors.append(packageIssue("invalid_manifest_json", "manifest.json must parse as JSON", details: [:]))
+        } else {
+            validatePackageManifest(manifest, errors: &errors)
+            validatePackageBudgets(manifest, files: files, errors: &errors)
+            validatePackageBridgePermissions(manifest, appJs: files.first { $0.path == "app.js" }?.content ?? "", errors: &errors)
+        }
+        validateGeneratedSourcePolicy(files.first { $0.path == "app.js" }?.content ?? "", errors: &errors)
+
+        if !files.contains(where: { $0.path == "smoke-tests.json" }) {
+            warnings.append(packageIssue("smoke_tests_missing", "Package has no smoke-tests.json", details: [:]))
+        }
+
+        return PackageRead(
+            directory: directory,
+            manifest: manifest,
+            manifestJSON: manifestJSON,
+            files: files.sorted { $0.path < $1.path },
+            errors: errors,
+            warnings: warnings
+        )
+    }
+
+    private func validatePackageManifest(_ manifest: [String: Any], errors: inout [[String: Any]]) {
+        for field in ["id", "name", "version", "runtimeVersion", "entry", "description", "permissions", "storagePrefix", "dataVersion", "capabilities", "resourceBudget", "networkPolicy"] where manifest[field] == nil {
+            errors.append(packageIssue("missing_manifest_field", "manifest.\(field) is required", details: ["field": field]))
+        }
+        if manifest["networkAllowlist"] != nil {
+            errors.append(packageIssue("removed_manifest_field", "manifest.networkAllowlist was removed; use networkPolicy", details: ["field": "networkAllowlist"]))
+        }
+        if let id = manifest["id"] as? String {
+            if id.range(of: #"^[a-z][a-z0-9-]{2,63}$"#, options: .regularExpression) == nil {
+                errors.append(packageIssue("invalid_manifest_id", "manifest.id must be lowercase kebab-case", details: ["value": id]))
+            }
+            if (manifest["storagePrefix"] as? String) != "\(id):" {
+                errors.append(packageIssue("invalid_storage_prefix", "manifest.storagePrefix must equal <id>:", details: ["expected": "\(id):", "actual": manifest["storagePrefix"] ?? NSNull()]))
+            }
+        }
+        if manifest["entry"] as? String != "index.html" {
+            errors.append(packageIssue("invalid_entry", "manifest.entry must be index.html", details: ["value": manifest["entry"] ?? NSNull()]))
+        }
+        if (intValue(manifest["dataVersion"]) ?? 0) < 1 {
+            errors.append(packageIssue("invalid_data_version", "manifest.dataVersion must be a positive integer", details: ["value": manifest["dataVersion"] ?? NSNull()]))
+        }
+        if !(manifest["permissions"] is [String]) {
+            errors.append(packageIssue("invalid_permissions", "manifest.permissions must be an array", details: [:]))
+        }
+        if !(manifest["capabilities"] is [String: Any]) {
+            errors.append(packageIssue("invalid_capabilities", "manifest.capabilities is required", details: [:]))
+        }
+        if !(manifest["resourceBudget"] is [String: Any]) {
+            errors.append(packageIssue("invalid_resource_budget", "manifest.resourceBudget must be an object", details: [:]))
+        }
+        if !(manifest["networkPolicy"] is [String: Any]) {
+            errors.append(packageIssue("invalid_network_policy", "manifest.networkPolicy must be an object", details: [:]))
+        }
+    }
+
+    private func validatePackageBudgets(_ manifest: [String: Any], files: [PackageFile], errors: inout [[String: Any]]) {
+        let budget = manifest["resourceBudget"] as? [String: Any] ?? [:]
+        let maxPackageBytes = intValue(budget["maxPackageBytes"]) ?? 1_048_576
+        let maxFileBytes = intValue(budget["maxFileBytes"]) ?? 524_288
+        let totalBytes = files.reduce(0) { $0 + $1.sizeBytes }
+        if totalBytes > maxPackageBytes {
+            errors.append(packageIssue("resource_budget_exceeded", "Package exceeds manifest.resourceBudget.maxPackageBytes", details: ["bytes": totalBytes, "maxPackageBytes": maxPackageBytes]))
+        }
+        for file in files where file.sizeBytes > maxFileBytes {
+            errors.append(packageIssue("resource_budget_exceeded", "Package file exceeds manifest.resourceBudget.maxFileBytes", details: ["path": file.path, "bytes": file.sizeBytes, "maxFileBytes": maxFileBytes]))
+        }
+    }
+
+    private func validatePackageBridgePermissions(_ manifest: [String: Any], appJs: String, errors: inout [[String: Any]]) {
+        let permissions = Set(manifest["permissions"] as? [String] ?? [])
+        for method in bridgeMethods(in: appJs) {
+            guard let permission = permissionForBridgeMethod(method), !permissions.contains(permission) else {
+                continue
+            }
+            errors.append(packageIssue("missing_permission", "manifest.permissions does not cover a bridge method used by app.js", details: ["method": method, "permission": permission]))
+        }
+    }
+
+    private func validateGeneratedSourcePolicy(_ appJs: String, errors: inout [[String: Any]]) {
+        let checks: [(String, String)] = [
+            ("forbidden_eval", #"\beval\s*\("#),
+            ("forbidden_function_constructor", #"\bnew\s+Function\s*\("#),
+            ("forbidden_dynamic_import", #"\bimport\s*\("#),
+            ("forbidden_network_api", #"\bfetch\s*\("#),
+            ("forbidden_network_api", #"\bXMLHttpRequest\b"#),
+            ("forbidden_storage_api", #"\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bdocument\.cookie\b"#),
+            ("forbidden_native_bridge", #"\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bNativeAIPlatformBridge\b"#),
+        ]
+        for (code, pattern) in checks where appJs.range(of: pattern, options: .regularExpression) != nil {
+            errors.append(packageIssue(code, "app.js uses a forbidden generated-app API", details: [:]))
+        }
+    }
+
+    private func insertInstalledPackage(
+        package: PackageRead,
+        smoke: [String: Any],
+        accessibility: [String: Any],
+        compatibility: [String: Any],
+        reportStatus: String
+    ) -> [String: Any]? {
+        guard let db = database.handle,
+              let appId = package.manifest["id"] as? String,
+              let name = package.manifest["name"] as? String,
+              let version = package.manifest["version"] as? String,
+              let runtimeVersion = package.manifest["runtimeVersion"] as? String
+        else {
+            return nil
+        }
+        let dataVersion = intValue(package.manifest["dataVersion"]) ?? 1
+        let hashes = packageHashes(package)
+        let now = Self.now()
+        let installId = "install_\(appId)_\(version.replacingOccurrences(of: ".", with: "_"))_\(UUID().uuidString.lowercased())"
+        let reportId = "report_\(UUID().uuidString.lowercased())"
+        let previousInstallId = activeAppRecord(appId: appId)?.installId
+        let signature = signPackageResult(args: ["path": package.directory.path])?["signature"] ?? NSNull()
+        let status = reportStatus == "accepted" ? "enabled" : "quarantined"
+
+        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
+        var ok = true
+        ok = ok && executePrepared(
+            """
+            INSERT INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at)
+            VALUES (?, ?, 'enabled', NULL, NULL, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = 'enabled', updated_at = excluded.updated_at
+            """,
+            [appId, name, dataVersion, now, now]
+        )
+        if let previousInstallId {
+            ok = ok && executePrepared("UPDATE app_versions SET status = 'installed' WHERE install_id = ?", [previousInstallId])
+        }
+        ok = ok && executePrepared(
+            """
+            INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'developer', ?, ?, ?)
+            """,
+            [installId, appId, version, runtimeVersion, dataVersion, package.manifestJSON, hashes["manifestHash"] ?? "", hashes["contentHash"] ?? "", jsonString(signature), status, now, status == "enabled" ? now : nil]
+        )
+        for file in package.files {
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [installId, file.path, file.content, file.contentHash, file.sizeBytes, file.mime, now]
+            )
+        }
+        for permission in package.manifest["permissions"] as? [String] ?? [] {
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason)
+                VALUES (?, ?, ?, 1, ?, ?, 'dev-control install')
+                """,
+                [installId, appId, permission, status == "enabled" ? 1 : 0, status == "enabled" ? now : nil]
+            )
+        }
+        ok = ok && executePrepared(
+            """
+            INSERT INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                reportId,
+                appId,
+                installId,
+                reportStatus,
+                jsonBody(["ok": true, "errors": package.errors, "warnings": package.warnings]),
+                jsonBody(["ok": true, "signature": signature, "accessibility": accessibility]),
+                jsonBody(["approved": package.manifest["permissions"] as? [String] ?? [], "requested": package.manifest["permissions"] as? [String] ?? []] as [String: Any]),
+                jsonBody(compatibility),
+                jsonBody(smoke),
+                hashes["contentHash"] ?? "",
+                now,
+            ]
+        )
+        ok = ok && executePrepared(
+            """
+            INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
+            VALUES (?, ?, ?, 'install', ?, 'codex', ?, ?, ?)
+            """,
+            ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["source": "macos-dev-control"] as [String: Any])]
+        )
+        if status == "enabled" {
+            ok = ok && executePrepared(
+                "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, updated_at = ? WHERE id = ?",
+                [installId, version, dataVersion, now, appId]
+            )
+            ok = ok && executePrepared(
+                """
+                INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
+                VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, ?)
+                """,
+                ["event_\(UUID().uuidString.lowercased())", appId, installId, previousInstallId, reportId, now, jsonBody(["source": "macos-dev-control"] as [String: Any])]
+            )
+        }
+
+        guard ok, executeSQL("COMMIT") else {
+            _ = executeSQL("ROLLBACK")
+            _ = db
+            return nil
+        }
+        return [
+            "installId": installId,
+            "reportId": reportId,
+            "appId": appId,
+            "version": version,
+            "contentHash": hashes["contentHash"] ?? "",
+        ]
+    }
+
+    private func executeMicrotestPhase(_ phase: String, steps: [[String: Any]], appId: String) -> [String: Any] {
+        var commands: [[String: Any]] = []
+        var failures: [[String: Any]] = []
+        for (index, step) in steps.enumerated() {
+            let execution = executeMicrotestStep(phase: phase, index: index, step: step, appId: appId)
+            commands.append(execution)
+            if (execution["status"] as? String) == "failed" {
+                failures.append(execution)
+            }
+        }
+        return [
+            "ok": failures.isEmpty,
+            "commands": commands,
+            "failures": failures,
+        ]
+    }
+
+    private func executeMicrotestStep(phase: String, index: Int, step: [String: Any], appId: String) -> [String: Any] {
+        let tool = step["tool"] as? String ?? ""
+        let normalized = normalizeMicrotestStep(step, appId: appId)
+        guard (normalized["mode"] as? String) == "execute" else {
+            return [
+                "phase": phase,
+                "index": index,
+                "tool": tool,
+                "status": "skipped",
+                "reason": normalized["reason"] ?? "UI step validated statically",
+            ]
+        }
+        let args = normalized["args"] as? [String: Any] ?? [:]
+        guard let result = executeMicrotestCommand(tool: normalized["tool"] as? String ?? tool, args: args) else {
+            return [
+                "phase": phase,
+                "index": index,
+                "tool": tool,
+                "status": "failed",
+                "error": ["code": "platform.unavailable", "message": "Micro-test command is not executable by the macOS static runner"],
+            ]
+        }
+        if (result["ok"] as? Bool) == false || (result["status"] as? String) == "failed" {
+            return [
+                "phase": phase,
+                "index": index,
+                "tool": tool,
+                "status": "failed",
+                "args": summarizeMicrotestArgs(args),
+                "result": summarizeMicrotestCommandResult(result),
+            ]
+        }
+        return [
+            "phase": phase,
+            "index": index,
+            "tool": tool,
+            "status": "passed",
+            "args": summarizeMicrotestArgs(args),
+            "result": summarizeMicrotestCommandResult(result),
+        ]
+    }
+
+    private func normalizeMicrotestStep(_ step: [String: Any], appId: String) -> [String: Any] {
+        let tool = step["tool"] as? String ?? ""
+        var args = step["args"] as? [String: Any] ?? [:]
+        if let path = args["path"], args["packagePath"] == nil {
+            args["packagePath"] = path
+        }
+        if tool == "runtime.network_mock_set" {
+            let match = args["match"] as? [String: Any] ?? [:]
+            args["appId"] = args["appId"] ?? appId
+            args["urlPattern"] = args["urlPattern"] ?? match["urlPattern"] ?? match["url"]
+            args["method"] = args["method"] ?? match["method"] ?? "GET"
+        } else if tool == "runtime.dialog_mock_set" {
+            args["appId"] = args["appId"] ?? appId
+            if args["dialogType"] == nil, let method = args["method"] as? String {
+                args["dialogType"] = method.replacingOccurrences(of: "dialog.", with: "")
+            }
+        } else if tool == "platform.open_webapp" || tool == "platform.create_snapshot" {
+            args["appId"] = args["appId"] ?? appId
+        } else if [
+            "runtime.capabilities",
+            "runtime.run_smoke_tests",
+            "runtime.resource_usage",
+            "runtime.run_accessibility_audit",
+            "runtime.accessibility_snapshot",
+            "runtime.assert_accessibility",
+            "runtime.assert_no_console_errors",
+            "runtime.screenshot",
+        ].contains(tool) {
+            args["appId"] = args["appId"] ?? appId
+        }
+        if [
+            "platform.validate_package",
+            "platform.sign_webapp_package",
+            "platform.install_webapp_package",
+            "platform.open_webapp",
+            "platform.create_snapshot",
+            "runtime.capabilities",
+            "runtime.run_smoke_tests",
+            "runtime.resource_usage",
+            "runtime.run_accessibility_audit",
+            "runtime.accessibility_snapshot",
+            "runtime.assert_accessibility",
+            "runtime.assert_no_console_errors",
+            "runtime.screenshot",
+            "runtime.network_mock_set",
+            "runtime.dialog_mock_set",
+        ].contains(tool) {
+            return ["mode": "execute", "tool": tool, "args": args]
+        }
+        if tool == "runtime.wait_for" || tool == "platform.reset_webapp" {
+            return ["mode": "noop", "reason": "not needed for static validation"]
+        }
+        return ["mode": "noop", "reason": "UI step validated statically"]
+    }
+
+    private func executeMicrotestCommand(tool: String, args: [String: Any]) -> [String: Any]? {
+        switch tool {
+        case "platform.validate_package":
+            return validatePackageResult(args: args)
+        case "platform.sign_webapp_package":
+            return signPackageResult(args: args)
+        case "platform.install_webapp_package":
+            return installPackageResult(args: args)
+        case "platform.open_webapp":
+            guard let appId = args["appId"] as? String, activeAppRecord(appId: appId)?.installId != nil else {
+                return ["ok": false, "status": "failed", "error": ["code": "app_not_installed"]]
+            }
+            return ["ok": true, "sessionId": runtimeSessionId(appId: appId), "appId": appId]
+        case "platform.create_snapshot":
+            guard let appId = args["appId"] as? String else { return ["ok": false, "status": "failed"] }
+            return createSnapshot(appId: appId, type: args["type"] as? String ?? "manual", sessionId: args["sessionId"] as? String)
+        case "runtime.capabilities":
+            return runtimeCapabilities(appId: args["appId"] as? String)
+        case "runtime.run_smoke_tests":
+            guard let appId = args["appId"] as? String else { return ["ok": false, "status": "failed"] }
+            return runSmokeTests(appId: appId)
+        case "runtime.resource_usage":
+            return resourceUsage(appId: args["appId"] as? String)
+        case "runtime.run_accessibility_audit":
+            return accessibilityAudit(appId: args["appId"] as? String)
+        case "runtime.accessibility_snapshot":
+            return accessibilitySnapshot(appId: args["appId"] as? String)
+        case "runtime.assert_accessibility":
+            let report = accessibilityAudit(appId: args["appId"] as? String)
+            let failed = (report["checks"] as? [[String: Any]] ?? []).contains { ($0["status"] as? String) == "fail" }
+            return ["ok": !failed, "report": report]
+        case "runtime.assert_no_console_errors":
+            let errors = consoleLogRows(appId: args["appId"] as? String).filter { row in
+                let params = jsonDictionary(row["params_json"] as? String ?? "") ?? [:]
+                return (params["level"] as? String) == "error"
+            }
+            return ["ok": errors.isEmpty, "errors": errors.count]
+        case "runtime.screenshot":
+            guard let appId = args["appId"] as? String else { return ["ok": false, "status": "failed"] }
+            return runtimeScreenshot(appId: appId, label: args["label"] as? String)
+        case "runtime.network_mock_set":
+            let match = args["match"] as? [String: Any] ?? [:]
+            guard let urlPattern = args["urlPattern"] as? String ?? match["urlPattern"] as? String ?? match["url"] as? String else {
+                return ["ok": false, "status": "failed"]
+            }
+            return addNetworkMock(sessionId: args["sessionId"] as? String, appId: args["appId"] as? String, method: (args["method"] as? String ?? "GET").uppercased(), urlPattern: urlPattern, response: args["response"] ?? NSNull())
+        case "runtime.dialog_mock_set":
+            guard let dialogType = normalizedDialogType(args) else {
+                return ["ok": false, "status": "failed"]
+            }
+            let response = args["response"] ?? ["files": args["files"] ?? [], "selectedPath": args["selectedPath"] ?? NSNull(), "cancelled": args["cancelled"] ?? false]
+            return addDialogMock(sessionId: args["sessionId"] as? String, appId: args["appId"] as? String, dialogType: dialogType, response: response)
+        default:
+            return nil
+        }
+    }
+
+    private func evaluateMicroTest(appId: String, microtest: [String: Any], commandResults: [[String: Any]]) -> [String: Any] {
+        let html = htmlForBundledApp(appId)
+        let appJs = bundledAppText(appId: appId, path: "app.js") ?? ""
+        var failures: [[String: Any]] = []
+        var dynamicText = Set(dynamicTextFromCommands(commandResults))
+        let setup = microtest["setup"] as? [[String: Any]] ?? []
+        let steps = microtest["steps"] as? [[String: Any]] ?? []
+        let teardown = microtest["teardown"] as? [[String: Any]] ?? []
+        for step in setup + steps + teardown {
+            let tool = step["tool"] as? String ?? ""
+            let args = step["args"] as? [String: Any] ?? [:]
+            if ["runtime.click", "runtime.type", "runtime.set_value", "runtime.assert_visible"].contains(tool),
+               let testId = args["testId"] as? String,
+               queryMatches(html: html, args: ["testId": testId]).isEmpty
+            {
+                failures.append(["tool": tool, "code": "selector.not_found", "testId": testId])
+            }
+            if tool == "runtime.type", let text = args["text"] {
+                dynamicText.insert(String(describing: text))
+            }
+            if tool == "runtime.set_value", let value = args["value"] {
+                dynamicText.insert(String(describing: value))
+            }
+            if ["runtime.assert_text", "runtime.assert_visible"].contains(tool), let text = args["text"] as? String {
+                if !textCanAppear(html: html, dynamicText: dynamicText, text: text) {
+                    failures.append(["tool": tool, "code": "text.not_found", "text": text])
+                }
+            }
+            if tool == "runtime.assert_bridge_call", let method = args["method"] as? String, !bridgeMethodReferenced(appJs, method) {
+                failures.append(["tool": tool, "code": "bridge.call_missing", "method": method])
+            }
+            if tool == "runtime.replay_events", !bridgeMethodReferenced(appJs, "core.step") {
+                failures.append(["tool": tool, "code": "core.action_missing", "method": "core.step"])
+            }
+        }
+        return [
+            "ok": failures.isEmpty,
+            "id": microtest["id"] ?? NSNull(),
+            "totalSteps": setup.count + steps.count + teardown.count,
+            "failures": failures,
+        ]
+    }
+
+    private func runSmokeTests(appId: String) -> [String: Any]? {
+        guard let smokeText = bundledAppText(appId: appId, path: "smoke-tests.json"),
+              let tests = bundledSmokeTests(text: smokeText)
+        else {
+            return nil
+        }
+        let result = evaluateSmokeTests(appId: appId, tests: tests)
+        return recordTestRun(
+            microTestId: "smoke:\(appId)",
+            name: "\(appId) bundled smoke tests",
+            appId: appId,
+            spec: tests,
+            status: (result["ok"] as? Bool) == true ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "native-macos-static"]
+        )
+    }
+
     private func stateVersionBefore(_ result: [String: Any]?) -> Int? {
         guard let value = intValue(result?["stateVersion"]) else {
             return nil
@@ -2728,6 +3433,19 @@ final class DevControlPlane: @unchecked Sendable {
         let status = sqlite3_exec(db, sql, nil, nil, &error)
         sqlite3_free(error)
         return status == SQLITE_OK
+    }
+
+    private func executePrepared(_ sql: String, _ values: [Any?]) -> Bool {
+        guard let db = database.handle else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            bindAny(statement, Int32(index + 1), value)
+        }
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
     private func deleteRows(_ sql: String, values: [String] = []) -> Int {
@@ -2979,6 +3697,171 @@ final class DevControlPlane: @unchecked Sendable {
         htmlText(html).contains(text) || dynamicText.contains(text)
     }
 
+    private func smokeResult(package: PackageRead) -> [String: Any] {
+        guard let appId = package.manifest["id"] as? String else {
+            return ["ok": false, "status": "failed", "failures": [["code": "invalid_manifest_id"]], "spec": []]
+        }
+        guard let smokeText = package.files.first(where: { $0.path == "smoke-tests.json" })?.content else {
+            return ["ok": true, "status": "not-run", "appId": appId, "total": 0, "failures": [], "spec": []]
+        }
+        guard let tests = bundledSmokeTests(text: smokeText) else {
+            return ["ok": false, "status": "failed", "appId": appId, "total": 0, "failures": [["code": "package.invalid", "path": "smoke-tests.json"]], "spec": []]
+        }
+        var result = evaluateSmokeTests(appId: appId, tests: tests)
+        result["status"] = (result["ok"] as? Bool) == true ? "passed" : "failed"
+        result["spec"] = tests
+        return result
+    }
+
+    private func accessibilityAuditForHTML(appId: String, html: String) -> [String: Any] {
+        let title = firstMatch(in: html, pattern: #"<title[^>]*>([\s\S]*?)</title>"#)
+        let landmarks: [[String: Any]] = html.range(of: #"<main\b"#, options: [.regularExpression, .caseInsensitive]) == nil ? [] : [
+            ["role": "main", "selector": "main"],
+        ]
+        let headings = headingRecords(html)
+        let controls = controlRecords(html)
+        let unlabeled = controls.first { ($0["name"] as? String ?? "").isEmpty }
+        let checks: [[String: Any]] = [
+            accessibilityCheck(id: "document_title", ok: !title.isEmpty, message: "Document must include a non-empty <title>."),
+            accessibilityCheck(id: "main_landmark", ok: landmarks.contains { $0["role"] as? String == "main" }, message: "Page must include a <main> landmark."),
+            accessibilityCheck(id: "screen_title", ok: headings.contains { $0["level"] as? Int == 1 }, message: "Page must include an h1 screen title."),
+            accessibilityCheck(
+                id: "no_unlabeled_controls",
+                ok: unlabeled == nil,
+                message: "Every interactive control must have an accessible name.",
+                selector: unlabeled?["selector"] as? String
+            ),
+        ]
+        return [
+            "appId": appId,
+            "checkedAt": Self.now(),
+            "status": checks.contains { $0["status"] as? String == "fail" } ? "fail" : "pass",
+            "checks": checks,
+        ]
+    }
+
+    private func runtimeCompatibilityResult(_ appRuntimeVersion: String?) -> [String: Any] {
+        [
+            "ok": appRuntimeVersion == nil || appRuntimeVersion == "0.1.0",
+            "runtimeVersion": "0.1.0",
+            "appRuntimeVersion": appRuntimeVersion ?? NSNull(),
+            "allowRuntimeMismatch": false,
+        ]
+    }
+
+    private func packageHashes(_ package: PackageRead) -> [String: String] {
+        let manifestHash = "sha256:\(sha256Hex(package.manifestJSON))"
+        let content = package.files.map { "\($0.path):\($0.contentHash)" }.joined(separator: "\n")
+        return [
+            "manifestHash": manifestHash,
+            "contentHash": "sha256:\(sha256Hex(content))",
+        ]
+    }
+
+    private func bridgeMethods(in appJs: String) -> Set<String> {
+        let known = [
+            "core.step",
+            "storage.get",
+            "storage.list",
+            "storage.set",
+            "storage.remove",
+            "dialog.openFile",
+            "dialog.saveFile",
+            "notification.toast",
+            "network.request",
+            "app.log",
+            "runtime.capabilities",
+        ]
+        return Set(known.filter { bridgeMethodReferenced(appJs, $0) })
+    }
+
+    private func packageIssue(_ code: String, _ message: String, details: [String: Any]) -> [String: Any] {
+        [
+            "code": code,
+            "message": message,
+            "details": details,
+        ]
+    }
+
+    private func mimeType(forPackagePath path: String) -> String {
+        if path.hasSuffix(".html") { return "text/html" }
+        if path.hasSuffix(".css") { return "text/css" }
+        if path.hasSuffix(".js") { return "text/javascript" }
+        if path.hasSuffix(".json") { return "application/json" }
+        return "text/plain"
+    }
+
+    private func repoRelativeURL(_ path: String) -> URL? {
+        let root = RuntimeResourceLocator.repoRootURL().standardizedFileURL
+        let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)).standardizedFileURL
+        guard url.path == root.path || url.path.hasPrefix(root.path + "/") else {
+            return nil
+        }
+        return url
+    }
+
+    private func summarizeMicrotestCommandResult(_ result: [String: Any]) -> [String: Any] {
+        var summary: [String: Any] = ["ok": result["ok"] ?? true]
+        for key in ["appId", "installId", "sessionId", "keyId", "status", "snapshotId", "reportId"] {
+            if let value = result[key] {
+                summary[key] = value
+            }
+        }
+        return summary
+    }
+
+    private func summarizeMicrotestArgs(_ args: [String: Any]) -> [String: Any] {
+        var summary = args
+        if let path = summary["packagePath"] as? String, let url = repoRelativeURL(path) {
+            summary["packagePath"] = relativeRepoPath(url)
+        }
+        if let path = summary["path"] as? String, let url = repoRelativeURL(path) {
+            summary["path"] = relativeRepoPath(url)
+        }
+        return summary
+    }
+
+    private func relativeRepoPath(_ url: URL) -> String {
+        let root = RuntimeResourceLocator.repoRootURL().standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        if path.hasPrefix(root + "/") {
+            return String(path.dropFirst(root.count + 1))
+        }
+        return path
+    }
+
+    private func dynamicTextFromCommands(_ commands: [[String: Any]]) -> [String] {
+        var values: [String] = []
+        for command in commands {
+            collectText(command["args"], values: &values)
+            collectText(command["result"], values: &values)
+        }
+        return values
+    }
+
+    private func collectText(_ value: Any?, values: inout [String]) {
+        guard let value, !(value is NSNull) else { return }
+        if let string = value as? String {
+            values.append(string)
+            return
+        }
+        if let number = value as? NSNumber {
+            values.append(number.stringValue)
+            return
+        }
+        if let array = value as? [Any] {
+            for item in array {
+                collectText(item, values: &values)
+            }
+            return
+        }
+        if let dict = value as? [String: Any] {
+            for item in dict.values {
+                collectText(item, values: &values)
+            }
+        }
+    }
+
     private func runtimeQuery(appId: String, args: [String: Any]) -> [String: Any] {
         let html = htmlForBundledApp(appId)
         let query: String
@@ -3127,6 +4010,26 @@ final class DevControlPlane: @unchecked Sendable {
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
         sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT_CONTROL)
+    }
+
+    private func bindAny(_ statement: OpaquePointer?, _ index: Int32, _ value: Any?) {
+        guard let value, !(value is NSNull) else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        if let value = value as? String {
+            bind(statement, index, value)
+        } else if let value = value as? Int {
+            sqlite3_bind_int64(statement, index, Int64(value))
+        } else if let value = value as? Int64 {
+            sqlite3_bind_int64(statement, index, value)
+        } else if let value = value as? Bool {
+            sqlite3_bind_int64(statement, index, value ? 1 : 0)
+        } else if let value = value as? NSNumber {
+            sqlite3_bind_int64(statement, index, value.int64Value)
+        } else {
+            bind(statement, index, jsonString(value))
+        }
     }
 
     private func bindNullable(_ statement: OpaquePointer?, _ index: Int32, _ value: String?) {
