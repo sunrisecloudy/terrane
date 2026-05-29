@@ -19,6 +19,7 @@ Required mutation categories:
 - invalid storage prefix;
 - invalid network policy;
 - oversized package/file;
+- platform-generated trust artifacts;
 - post-signature tampering;
 - missing migration after dataVersion change;
 - resource budget exceeded.

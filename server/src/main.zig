@@ -11514,6 +11514,10 @@ fn validateServerPackageFileList(
             try errors.append(allocator, "invalid_files");
             continue;
         };
+        if (isPlatformGeneratedPackagePath(file_path)) {
+            try errors.append(allocator, "platform_generated_artifact");
+            continue;
+        }
         if (std.mem.startsWith(u8, file_path, "assets/") or !isAllowedServerPackagePath(file_path)) {
             try errors.append(allocator, "unexpected_package_path");
         }
@@ -11535,6 +11539,18 @@ fn isAllowedServerPackagePath(file_path: []const u8) bool {
         if (std.mem.eql(u8, file_path, allowed)) return true;
     }
     return std.mem.startsWith(u8, file_path, "migrations/");
+}
+
+fn isPlatformGeneratedPackagePath(file_path: []const u8) bool {
+    const generated_files = [_][]const u8{
+        "signature.json",
+        "install-report.json",
+        "content-hashes.json",
+    };
+    for (generated_files) |generated| {
+        if (std.mem.eql(u8, file_path, generated)) return true;
+    }
+    return false;
 }
 
 fn containsAny(source: []const u8, needles: []const []const u8) bool {

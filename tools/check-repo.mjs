@@ -828,6 +828,8 @@ function checkServerStatic() {
     "\"missing_testid\"",
     "fn validateServerPackageFileList",
     "\"unexpected_package_path\"",
+    "\"platform_generated_artifact\"",
+    "fn isPlatformGeneratedPackagePath",
     "max_package_files",
     "max_migration_files",
     "fn isKnownPackagePermission",

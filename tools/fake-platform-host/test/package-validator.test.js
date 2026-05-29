@@ -360,6 +360,17 @@ test("package validation enforces hard package and migration file caps", () => {
   assert.equal(tooManyMigrations.errors.some((error) => error.code === "resource_budget_exceeded"), true);
 });
 
+test("platform-generated package artifacts are rejected", () => {
+  for (const generatedFile of ["signature.json", "install-report.json", "content-hashes.json"]) {
+    const dir = copyExamplePackage("notes-lite");
+    fs.writeFileSync(path.join(dir, generatedFile), "{}");
+
+    const result = validatePackage(dir);
+    assert.equal(result.ok, false, generatedFile);
+    assert.equal(result.errors.some((error) => error.code === "platform_generated_artifact"), true, generatedFile);
+  }
+});
+
 function copyExamplePackage(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-host-package-"));
   fs.cpSync(path.join(examplesDir, name), dir, { recursive: true });

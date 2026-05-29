@@ -330,6 +330,36 @@ test(
   },
 );
 
+test(
+  "Zig server package validation rejects platform-generated artifacts",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-platform-artifact-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "platform-artifact-validation");
+      try {
+        for (const generatedFile of ["signature.json", "install-report.json", "content-hashes.json"]) {
+          const packageBody = packageForApp("notes-lite");
+          packageBody.files.push({ path: generatedFile, content: "{}" });
+
+          const result = await validateWebappPackage(started.url, packageBody);
+          assert.equal(result.status, 200, generatedFile);
+          assert.equal(result.body.ok, false, generatedFile);
+          assert.equal(result.body.errors.includes("platform_generated_artifact"), true, generatedFile);
+        }
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");

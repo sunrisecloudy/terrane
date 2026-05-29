@@ -1,0 +1,11 @@
+{
+  "id": "platform-generated-artifact",
+  "description": "Generated app source packages must not include platform-generated trust artifacts.",
+  "expectedError": "platform_generated_artifact",
+  "files": [
+    {
+      "path": "signature.json",
+      "content": "{}"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import { readJsonFile } from "./util.js";
 
 const REQUIRED_FILES = ["manifest.json", "index.html", "styles.css", "app.js"];
 const OPTIONAL_FILES = new Set(["smoke-tests.json", "README.md"]);
+const PLATFORM_GENERATED_FILES = new Set(["signature.json", "install-report.json", "content-hashes.json"]);
 const MAX_PACKAGE_FILES = 32;
 const MAX_MIGRATION_FILES = 16;
 const REQUIRED_BUDGET_KEYS = [
@@ -166,6 +167,12 @@ function readPackageFiles(packageDir) {
   }
 
   for (const filePath of files.keys()) {
+    if (PLATFORM_GENERATED_FILES.has(filePath)) {
+      throw new PlatformError("platform_generated_artifact", "AI packages must not include platform-generated artifacts", {
+        path: filePath,
+      });
+    }
+
     if (filePath.startsWith("assets/")) {
       throw new PlatformError("unexpected_package_path", "assets/ is not allowed before v0.5", { path: filePath });
     }
