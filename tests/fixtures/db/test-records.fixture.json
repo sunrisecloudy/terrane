@@ -46,6 +46,10 @@
       "controlSessionId": "control_1",
       "runtimeSessionId": "session_1",
       "tool": "db.query_app_storage",
+      "httpMethod": "POST",
+      "path": "/control/command",
+      "decision": "accepted",
+      "errorCode": null,
       "args": {
         "appId": "notes-lite"
       },
@@ -80,6 +84,22 @@
       "response": {
         "files": []
       },
+      "enabled": true,
+      "createdAt": "2026-05-28T00:00:00Z"
+    }
+  ],
+  "faultInjections": [
+    {
+      "faultId": "fault_1",
+      "sessionId": "session_1",
+      "appId": "notes-lite",
+      "method": "storage.set",
+      "code": "storage_error",
+      "message": "Injected storage failure",
+      "details": {
+        "once": true
+      },
+      "once": true,
       "enabled": true,
       "createdAt": "2026-05-28T00:00:00Z"
     }

@@ -125,7 +125,7 @@ Status snapshot: **2026-05-29**.
 |---|---|
 | `tests/fixtures/bridge/` | partial (28 fixtures are exercised by fake-host bridge tests and Zig server bridge contract tests: the expanded docs/08 required fixtures now cover every fixed bridge method plus network policy edge cases) |
 | `tests/fixtures/capabilities/` | partial (schema-shaped runtime capability fixtures for fake-host, server, macOS, iOS simulator, Android, Windows, and Linux are exercised by runtime capability contract tests) |
-| `tests/fixtures/db/` | partial |
+| `tests/fixtures/db/` | partial (schema-shaped app/install/runtime/test/control fixture records include control audit fields plus network, dialog, and fault-injection effect mocks) |
 | `tests/fixtures/snapshots/` | fixtures |
 | `tests/golden/` | fixtures (5 golden flows) |
 | `tests/micro/` | fixtures (5 micro-tests, one per bundled example app) |

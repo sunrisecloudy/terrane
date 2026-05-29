@@ -46,6 +46,12 @@
       "items": {
         "$ref": "#/$defs/dialogMock"
       }
+    },
+    "faultInjections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/faultInjection"
+      }
     }
   },
   "$defs": {
@@ -219,6 +225,31 @@
         "tool": {
           "type": "string"
         },
+        "httpMethod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "accepted",
+            "rejected",
+            null
+          ]
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "args": {},
         "result": {},
         "error": {},
@@ -307,6 +338,54 @@
           ]
         },
         "response": {},
+        "enabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "faultInjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "faultId",
+        "method",
+        "code",
+        "message",
+        "createdAt"
+      ],
+      "properties": {
+        "faultId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "appId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "method": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {},
+        "once": {
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean"
         },
