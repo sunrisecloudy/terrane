@@ -4,6 +4,16 @@
   "title": "ResourceBudget",
   "type": "object",
   "additionalProperties": false,
+  "required": [
+    "maxDomNodes",
+    "maxStorageBytes",
+    "maxBridgeCallsPerMinute",
+    "maxNetworkRequestsPerMinute",
+    "maxTimers",
+    "maxLogLinesPerMinute",
+    "maxPackageBytes",
+    "maxFileBytes"
+  ],
   "properties": {
     "maxStorageBytes": {
       "type": "integer",

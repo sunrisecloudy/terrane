@@ -1,0 +1,10 @@
+{
+  "id": "missing-resource-budget-field",
+  "description": "Manifest resourceBudget must declare every v0.4 budget key.",
+  "expectedError": "invalid_resource_budget",
+  "manifestPatch": {
+    "resourceBudget": {
+      "maxDomNodes": 2000
+    }
+  }
+}
