@@ -138,7 +138,7 @@
 - [x] Resource-budget violations are detected.
 - [x] Network policy blocks disallowed requests.
 - [x] Accessibility audit runs in fake-host.
-- [ ] Codex repair loop can validate, install, test, patch, and retest an example app.
+- [x] Codex repair loop can validate, install, test, patch, and retest an example app.
 
 ## v0.4 database persistence acceptance
 

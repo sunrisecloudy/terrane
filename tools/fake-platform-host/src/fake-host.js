@@ -452,14 +452,24 @@ export class FakePlatformHost {
     let appId = null;
     let finalStatus = "failed";
     let remainingWarnings = [];
+    const changedFiles = [];
 
     for (let index = 0; index < maxAttempts; index += 1) {
       const steps = [];
+      const patchAndContinue = () => {
+        const patchResult = applyRepairPatchesForAttempt(packagePath, args, index);
+        if (!patchResult) return false;
+        changedFiles.push(...patchResult.changedFiles);
+        steps.push(repairStep("platform.apply_repair_patch", "passed", patchResult));
+        return true;
+      };
       const validation = this.validatePackage(packagePath);
       remainingWarnings = validation.warnings ?? [];
       steps.push(repairStep("platform.validate_package", validation.ok ? "passed" : "failed", validation));
       if (!validation.ok) {
+        const patched = index + 1 < maxAttempts && patchAndContinue();
         attemptReports.push({ index: index + 1, status: "failed", steps });
+        if (patched) continue;
         break;
       }
 
@@ -475,7 +485,9 @@ export class FakePlatformHost {
         break;
       }
       if (install.status !== "enabled") {
+        const patched = index + 1 < maxAttempts && patchAndContinue();
         attemptReports.push({ index: index + 1, status: "failed", steps, diagnostics: this.repairDiagnostics(appId) });
+        if (patched) continue;
         break;
       }
 
@@ -510,7 +522,9 @@ export class FakePlatformHost {
       steps.push(repairStep("platform.install_report", "passed", this.database.installReport(appId)));
 
       finalStatus = smokeOk && microOk && accessibility.status !== "fail" ? "passed" : "failed";
+      const patched = finalStatus !== "passed" && index + 1 < maxAttempts && patchAndContinue();
       attemptReports.push({ index: index + 1, status: finalStatus, steps, diagnostics: this.repairDiagnostics(appId) });
+      if (patched) continue;
       if (finalStatus === "passed") break;
     }
 
@@ -520,7 +534,7 @@ export class FakePlatformHost {
       startedAt,
       attempts: attemptReports.length,
       finalStatus,
-      changedFiles: [],
+      changedFiles,
       testsRun,
       snapshots,
       remainingWarnings,
@@ -1089,6 +1103,60 @@ function packagePathArg(args) {
     throw new PlatformError("invalid_request", "Missing required argument: packagePath", { aliases: ["packagePath", "path"] });
   }
   return packagePath.startsWith("/") ? packagePath : resolveInside(repoRoot, packagePath);
+}
+
+function applyRepairPatchesForAttempt(packagePath, args, attemptIndex) {
+  const patchSpecs = repairPatchesForAttempt(args, attemptIndex);
+  if (patchSpecs.length === 0) return null;
+  const changedFiles = [];
+  const patches = [];
+  for (const patch of patchSpecs) {
+    const result = applyRepairPatch(packagePath, patch);
+    changedFiles.push(result.path);
+    patches.push(result);
+  }
+  return { ok: true, attempt: attemptIndex + 1, changedFiles, patches };
+}
+
+function repairPatchesForAttempt(args, attemptIndex) {
+  const raw = args.repairPatches ?? args.patches ?? [];
+  if (!Array.isArray(raw)) {
+    throw new PlatformError("invalid_request", "repairPatches must be an array", {});
+  }
+  const current = raw[attemptIndex];
+  if (Array.isArray(current)) return current;
+  if (current && typeof current === "object" && ("path" in current || "file" in current)) return [current];
+  return raw.filter((patch) => patch && typeof patch === "object" && patch.attempt === attemptIndex + 1);
+}
+
+function applyRepairPatch(packagePath, patch) {
+  const filePath = patch.path ?? patch.file;
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new PlatformError("invalid_request", "repair patch requires path", {});
+  }
+  const absolutePath = resolveInside(packagePath, filePath);
+  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+    throw new PlatformError("invalid_request", "repair patch target file does not exist", { path: filePath });
+  }
+
+  if ("content" in patch) {
+    if (typeof patch.content !== "string") {
+      throw new PlatformError("invalid_request", "repair patch content must be a string", { path: filePath });
+    }
+    fs.writeFileSync(absolutePath, patch.content);
+    return { path: filePath, mode: "content", bytesWritten: Buffer.byteLength(patch.content) };
+  }
+
+  if (typeof patch.search !== "string" || typeof patch.replace !== "string") {
+    throw new PlatformError("invalid_request", "repair patch requires string search and replace", { path: filePath });
+  }
+  const before = fs.readFileSync(absolutePath, "utf8");
+  if (!before.includes(patch.search)) {
+    throw new PlatformError("repair_patch_failed", "repair patch search text was not found", { path: filePath });
+  }
+  const after = before.replace(patch.search, patch.replace);
+  fs.writeFileSync(absolutePath, after);
+  return { path: filePath, mode: "replace", replacements: 1 };
 }
 
 function missingRequiredCapabilities(manifest, capabilities) {
