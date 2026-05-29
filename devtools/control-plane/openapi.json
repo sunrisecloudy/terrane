@@ -347,6 +347,66 @@
         "x-dev-only": true
       }
     },
+    "/db/export-backup": {
+      "post": {
+        "summary": "Create a portable backup export for app registry, storage, permissions, and optional debug records.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
+    "/db/import-backup": {
+      "post": {
+        "summary": "Import a portable backup into a clean or compatible dev database.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Control response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "x-dev-only": true
+      }
+    },
     "/db/export-debug-bundle": {
       "post": {
         "summary": "Create a portable debug bundle export for Codex replay.",

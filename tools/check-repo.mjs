@@ -19,6 +19,7 @@ await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
 await runCheck("plugin.mcp", checkPluginMcp);
+await runCheck("control.openapi", checkControlOpenApi);
 await runCheck("control.tools", checkControlToolContract);
 await runCheck("fake-host.static", checkFakeHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
@@ -348,6 +349,37 @@ function checkPluginMcp() {
     }
   }
   return `servers=${servers.length},skills=${requiredSkills.length}`;
+}
+
+function checkControlOpenApi() {
+  const spec = readJson(path.join(repoRoot, "devtools", "control-plane", "openapi.json"));
+  const paths = spec.paths ?? {};
+  const requiredPostPaths = [
+    "/command",
+    "/db/snapshot",
+    "/db/app-storage",
+    "/db/app-versions",
+    "/db/bridge-calls",
+    "/db/core-events",
+    "/db/test-runs",
+    "/db/export-backup",
+    "/db/import-backup",
+    "/db/export-debug-bundle",
+  ];
+  for (const route of requiredPostPaths) {
+    if (!paths[route]?.post) {
+      throw new Error(`control-plane OpenAPI missing POST ${route}`);
+    }
+  }
+  for (const route of requiredPostPaths.filter((route) => route.startsWith("/db/"))) {
+    if (paths[route].post["x-dev-only"] !== true) {
+      throw new Error(`control-plane OpenAPI ${route} must be marked x-dev-only`);
+    }
+  }
+  if (Object.keys(paths).some((route) => /\bsql\b/i.test(route))) {
+    throw new Error("control-plane OpenAPI must not expose arbitrary SQL endpoints");
+  }
+  return `dbPaths=${requiredPostPaths.filter((route) => route.startsWith("/db/")).length},raw-sql=absent`;
 }
 
 function mcpToolNames() {

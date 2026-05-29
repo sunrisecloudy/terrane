@@ -67,6 +67,8 @@ POST /db/app-versions
 POST /db/bridge-calls
 POST /db/core-events
 POST /db/test-runs
+POST /db/export-backup
+POST /db/import-backup
 POST /db/export-debug-bundle
 ```
 
