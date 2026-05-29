@@ -47,7 +47,14 @@ jobs:
         run: npm test
 
       - name: Fake host performance smoke
-        run: node --no-warnings tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --no-out
+        run: node --no-warnings tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --out performance_runs --enforce-targets
+
+      - name: Upload fake host performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fake-host-performance-runs
+          path: performance_runs/
 
       - name: Codex MCP tests
         working-directory: tools/codex-platform-mcp

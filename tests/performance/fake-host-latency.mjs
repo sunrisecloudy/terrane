@@ -32,6 +32,7 @@ export async function runFakeHostLatencyBenchmark({
   throughputCalls = DEFAULT_THROUGHPUT_CALLS,
   outputDir = null,
   enforceTargets = false,
+  enforceVariance = false,
 } = {}) {
   const host = new FakePlatformHost();
   const packageDirs = EXAMPLE_APP_IDS.map((appId) =>
@@ -142,17 +143,23 @@ export async function runFakeHostLatencyBenchmark({
       fs.writeFileSync(path.join(outputDir, "fake-host-latency.json"), `${JSON.stringify(report, null, 2)}\n`);
     }
 
-    if (enforceTargets && (report.targetStatus !== "pass" || report.varianceStatus !== "pass")) {
-      report.ok = false;
-    }
-
-    return report;
+    return applyPerformanceEnforcement(report, { enforceTargets, enforceVariance });
   } finally {
     host.close();
     for (const packageDir of packageDirs) {
       fs.rmSync(packageDir, { recursive: true, force: true });
     }
   }
+}
+
+export function applyPerformanceEnforcement(report, { enforceTargets = false, enforceVariance = false } = {}) {
+  if (enforceTargets && report.targetStatus !== "pass") {
+    report.ok = false;
+  }
+  if (enforceVariance && report.varianceStatus !== "pass") {
+    report.ok = false;
+  }
+  return report;
 }
 
 async function listLauncherApps(host) {
@@ -468,6 +475,7 @@ function parseCliArgs(argv) {
     throughputCalls: DEFAULT_THROUGHPUT_CALLS,
     outputDir: path.join(repoRoot, "performance_runs"),
     enforceTargets: false,
+    enforceVariance: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -485,6 +493,8 @@ function parseCliArgs(argv) {
       options.outputDir = null;
     } else if (arg === "--enforce-targets") {
       options.enforceTargets = true;
+    } else if (arg === "--enforce-variance") {
+      options.enforceVariance = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }

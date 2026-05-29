@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runFakeHostLatencyBenchmark } from "../../../tests/performance/fake-host-latency.mjs";
+import { applyPerformanceEnforcement, runFakeHostLatencyBenchmark } from "../../../tests/performance/fake-host-latency.mjs";
 
 test("fake-host performance benchmark reports p50 and p95 latency", async () => {
   const report = await runFakeHostLatencyBenchmark({
@@ -75,4 +75,24 @@ test("fake-host performance benchmark reports p50 and p95 latency", async () => 
   assert.equal(lifecycle.ok, true);
   assert.equal(lifecycle.loops, 3);
   assert.deepEqual(lifecycle.logicalResidueFailures, []);
+});
+
+test("performance target enforcement keeps variance-only rerun signals separate", () => {
+  const varianceOnly = applyPerformanceEnforcement(
+    { ok: true, targetStatus: "pass", varianceStatus: "needs-rerun", scenarioStatus: "pass" },
+    { enforceTargets: true },
+  );
+  assert.equal(varianceOnly.ok, true);
+
+  const targetMiss = applyPerformanceEnforcement(
+    { ok: true, targetStatus: "fail", varianceStatus: "pass", scenarioStatus: "pass" },
+    { enforceTargets: true },
+  );
+  assert.equal(targetMiss.ok, false);
+
+  const releaseVarianceGate = applyPerformanceEnforcement(
+    { ok: true, targetStatus: "pass", varianceStatus: "needs-rerun", scenarioStatus: "pass" },
+    { enforceVariance: true },
+  );
+  assert.equal(releaseVarianceGate.ok, false);
 });

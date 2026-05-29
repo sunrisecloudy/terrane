@@ -259,7 +259,9 @@ function checkCiWorkflow() {
     "zig build test",
     "tools/check-repo.mjs",
     "tools/fake-platform-host",
-    "tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --no-out",
+    "tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --out performance_runs --enforce-targets",
+    "actions/upload-artifact@v4",
+    "fake-host-performance-runs",
     "tools/codex-platform-mcp",
     "linux-native-smoke",
     "NATIVE_AI_LINUX_SMOKE_LAUNCH",
@@ -273,7 +275,7 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=smoke,native=linux/windows-smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,native=linux/windows-smoke";
 }
 
 function checkPerformanceHarness() {
@@ -299,6 +301,7 @@ function checkPerformanceHarness() {
     "p95",
     "performance_runs",
     "--enforce-targets",
+    "--enforce-variance",
   ];
   for (const snippet of required) {
     if (!source.includes(snippet)) {

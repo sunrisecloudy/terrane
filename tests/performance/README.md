@@ -15,4 +15,4 @@ This directory contains benchmark harnesses for the host-level latency targets i
 - `runtime.call_bridge` for `network.request` timeout enforcement
 - `platform.uninstall_webapp` install/uninstall loop cleanup
 
-Default runs use the spec methodology: 50 warm-up iterations, 500 measured samples, 1200 throughput calls, 50 install/uninstall lifecycle loops, and p50/p95 reporting. Use `--enforce-targets` in CI or release qualification when the host machine is quiet enough for timing assertions.
+Default runs use the spec methodology: 50 warm-up iterations, 500 measured samples, 1200 throughput calls, 50 install/uninstall lifecycle loops, and p50/p95 reporting. Use `--enforce-targets` in CI to fail p50/p95 target misses. Use `--enforce-variance` for quiet-machine release qualification when variance reruns should fail the command instead of only being reported.
