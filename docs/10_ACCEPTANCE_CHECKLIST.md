@@ -123,7 +123,7 @@
 - [x] Codex can inspect console logs, bridge calls, runtime events, storage, and core action logs.
 - [x] Codex can mock at least one network response and one file dialog result.
 - [x] Codex can run every example app smoke test from `tests/micro`.
-- [ ] Production builds do not expose the control plane.
+- [x] Production builds do not expose the control plane.
 
 ## v0.3 acceptance checklist additions
 

@@ -11162,6 +11162,61 @@ test "control token writer creates private token file" {
     }
 }
 
+test "production mode classifies dev control paths and startup flags" {
+    const dev_paths = [_][]const u8{
+        "/control/command",
+        "/control/db/snapshot",
+        "/db/snapshot",
+        "/db/app-storage",
+        "/webapps/validate",
+        "/webapps/install",
+        "/packages/validate",
+        "/control/packages/sign",
+        "/apps/notes-lite/rollback",
+    };
+    for (dev_paths) |path| {
+        try std.testing.expect(isDevControlPath(path));
+    }
+
+    const runtime_paths = [_][]const u8{
+        "/health",
+        "/core/step",
+        "/bridge",
+        "/webapps/examples",
+        "/webapps/examples.json",
+        "/webapps/examples/notes-lite/index.html",
+    };
+    for (runtime_paths) |path| {
+        try std.testing.expect(!isDevControlPath(path));
+    }
+
+    const forbidden_flags = [_][]const u8{
+        "--control-plane-port",
+        "--control-plane-port=9988",
+        "--allow-runtime-mismatch",
+        "--allow-runtime-mismatch=true",
+        "--allow-unsigned-dev",
+        "--allow-unsigned-dev=true",
+        "--token-file",
+        "--token-file=control.token",
+    };
+    for (forbidden_flags) |flag| {
+        try std.testing.expect(isForbiddenProductionFlag(flag));
+    }
+
+    const allowed_flags = [_][]const u8{
+        "--port",
+        "--port=8080",
+        "--control-plane-portish",
+        "--allow-runtime-mismatchish",
+        "--allow-unsigned-devish",
+        "--token-fileish",
+    };
+    for (allowed_flags) |flag| {
+        try std.testing.expect(!isForbiddenProductionFlag(flag));
+    }
+}
+
 test "control storage helpers enforce app storage prefix" {
     try std.testing.expect(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "notes-lite:notes"));
     try std.testing.expect(!(try storageKeyHasAppPrefix(std.testing.allocator, "notes-lite", "other:notes")));
