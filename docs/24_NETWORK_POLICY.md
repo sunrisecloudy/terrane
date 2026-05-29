@@ -28,7 +28,9 @@ Every manifest must include:
         "maxResponseBytes": 1048576,
         "timeoutMs": 10000
       }
-    ]
+    ],
+    "denyPrivateNetwork": true,
+    "allowCredentials": false
   }
 }
 ```
@@ -51,7 +53,12 @@ The network bridge must reject:
 - request bodies above budget;
 - responses above budget;
 - redirects to disallowed origins;
+- private-network targets when `denyPrivateNetwork` is omitted or `true`;
 - cookies and credentialed requests in v0.3 unless explicitly designed.
+
+`denyPrivateNetwork` defaults to `true`. When enabled, hosts reject loopback, link-local, RFC1918, carrier-grade NAT, IPv6 unique-local, and IPv6 link-local literal hosts before applying allow rules. Redirect targets are checked the same way. Apps that genuinely need a local-device endpoint must set `denyPrivateNetwork: false` and still declare exact `allow` rules.
+
+`allowCredentials` defaults to `false` in v0.4. Hosts must reject `credentials` request params and `cookie` / `set-cookie` headers until a future credential design is specified.
 
 ## 4. Response shape
 

@@ -97,6 +97,55 @@ test("runtime rejects appId params before host dispatch", async () => {
   }
 });
 
+test("runtime rejects private network requests before host dispatch", async () => {
+  const harness = createRuntimeHarness({
+    manifest: {
+      ...defaultRuntimeManifest(),
+      permissions: ["network.request"],
+      networkPolicy: {
+        allow: [
+          {
+            origin: "https://192.168.0.1",
+            methods: ["GET"],
+            allowedHeaders: [],
+          },
+        ],
+      },
+      resourceBudget: { maxBridgeCallsPerMinute: 5, maxNetworkRequestsPerMinute: 5 },
+    },
+  });
+  try {
+    const frame = await mountFirstApp(harness);
+
+    await assert.rejects(
+      vm.runInContext(
+        [
+          'window.AppRuntime.call("network.request", {',
+          '  url: "https://192.168.0.1/status",',
+          '  method: "GET",',
+          '  headers: {},',
+          '  body: null',
+          "})",
+        ].join("\n"),
+        frame.contentWindow.context,
+      ),
+      (error) => {
+        assert.equal(error.code, "network_policy_denied");
+        assert.equal(error.message, "network.request private network targets are denied");
+        assert.deepEqual(error.details, {
+          origin: "https://192.168.0.1",
+          host: "192.168.0.1",
+        });
+        return true;
+      },
+    );
+
+    assert.equal(harness.fetchState.bridgeRequests.some((request) => request.method === "network.request"), false);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime dev mock handles bridge calls without host dispatch", async () => {
   const harness = createRuntimeHarness({ devMock: true });
   try {
@@ -172,7 +221,7 @@ function createRuntimeHarness(options = {}) {
     parentWindow.dispatch("message", event);
   };
 
-  const fetchState = { bridgeRequests: [] };
+  const fetchState = { bridgeRequests: [], manifest: options.manifest ?? defaultRuntimeManifest() };
   const parentContext = vm.createContext({
     MessageChannel: HarnessMessageChannel,
     TextEncoder,
@@ -359,18 +408,7 @@ class FakeElement {
 
 async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
   if (url.endsWith("/manifest.json")) {
-    return jsonResponse({
-      id: "notes-lite",
-      name: "Notes Lite",
-      version: "0.1.0",
-      description: "Budget warning probe app.",
-      permissions: ["core.step", "storage.read", "storage.write"],
-      storagePrefix: "notes-lite:",
-      capabilities: [],
-      dataVersion: "1.0.0",
-      networkPolicy: { allow: [] },
-      resourceBudget: { maxBridgeCallsPerMinute: 5 },
-    });
+    return jsonResponse(state.manifest ?? defaultRuntimeManifest());
   }
   if (url.endsWith("/index.html")) {
     return textResponse("<!doctype html><html><head></head><body><main data-testid=\"app-root\"></main></body></html>");
@@ -385,6 +423,21 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     });
   }
   throw new Error(`Unexpected fetch URL in runtime harness: ${url}`);
+}
+
+function defaultRuntimeManifest() {
+  return {
+    id: "notes-lite",
+    name: "Notes Lite",
+    version: "0.1.0",
+    description: "Budget warning probe app.",
+    permissions: ["core.step", "storage.read", "storage.write"],
+    storagePrefix: "notes-lite:",
+    capabilities: [],
+    dataVersion: "1.0.0",
+    networkPolicy: { allow: [] },
+    resourceBudget: { maxBridgeCallsPerMinute: 5 },
+  };
 }
 
 function jsonResponse(body) {

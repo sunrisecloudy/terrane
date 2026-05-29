@@ -1,0 +1,41 @@
+{
+  "id": "req_network_private_denied",
+  "context": {
+    "appId": "api-dashboard"
+  },
+  "preconditions": {
+    "manifestPatch": {
+      "networkPolicy": {
+        "allow": [
+          {
+            "origin": "https://192.168.0.1",
+            "methods": [
+              "GET"
+            ],
+            "allowedHeaders": [],
+            "maxRequestBytes": 65536,
+            "maxResponseBytes": 1048576,
+            "timeoutMs": 10000
+          }
+        ],
+        "denyPrivateNetwork": true
+      }
+    }
+  },
+  "method": "network.request",
+  "params": {
+    "url": "https://192.168.0.1/status",
+    "method": "GET",
+    "headers": {},
+    "body": null
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "network_policy_denied",
+    "errorDetailsSubset": {
+      "origin": "https://192.168.0.1",
+      "host": "192.168.0.1"
+    }
+  }
+}

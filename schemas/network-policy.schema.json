@@ -63,10 +63,14 @@
       }
     },
     "denyPrivateNetwork": {
-      "type": "boolean"
+      "type": "boolean",
+      "default": true,
+      "description": "When omitted or true, bridge hosts reject loopback, private, and link-local literal targets before allow-rule matching."
     },
     "allowCredentials": {
-      "type": "boolean"
+      "type": "boolean",
+      "default": false,
+      "description": "Reserved for a future credential design; v0.4 hosts reject credentialed requests."
     }
   }
 }

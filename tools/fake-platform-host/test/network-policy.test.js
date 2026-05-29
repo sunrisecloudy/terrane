@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { FakePlatformHost } from "../src/fake-host.js";
@@ -46,6 +48,53 @@ test("network policy rejects unallowlisted headers and oversized request bodies"
     assert.equal(largeBody.error.details.maxRequestBytes, 65536);
   } finally {
     host.close();
+  }
+});
+
+test("network policy denies private network targets by default unless explicitly disabled", async () => {
+  const deniedHost = new FakePlatformHost();
+  try {
+    deniedHost.installPackage(privateNetworkPackage());
+    deniedHost.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://192.168.0.1/status",
+      response: { status: 200, headers: {}, bodyText: "ok" },
+    });
+
+    const denied = await networkRequest(deniedHost, { url: "https://192.168.0.1/status" });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error.code, "network_policy_denied");
+    assert.equal(denied.error.message, "network.request private network targets are denied");
+    assert.deepEqual(denied.error.details, {
+      origin: "https://192.168.0.1",
+      host: "192.168.0.1",
+    });
+
+    const mappedLoopback = await networkRequest(deniedHost, { url: "https://[::ffff:7f00:1]/status" });
+    assert.equal(mappedLoopback.ok, false);
+    assert.equal(mappedLoopback.error.code, "network_policy_denied");
+    assert.equal(mappedLoopback.error.details.host, "::ffff:7f00:1");
+  } finally {
+    deniedHost.close();
+  }
+
+  const allowedHost = new FakePlatformHost();
+  try {
+    allowedHost.installPackage(privateNetworkPackage({ denyPrivateNetwork: false }));
+    allowedHost.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://192.168.0.1/status",
+      response: { status: 200, headers: {}, bodyText: "ok" },
+    });
+
+    const allowed = await networkRequest(allowedHost, { url: "https://192.168.0.1/status" });
+    assert.equal(allowed.ok, true);
+    assert.equal(allowed.result.status, 200);
+    assert.equal(allowed.result.bodyText, "ok");
+  } finally {
+    allowedHost.close();
   }
 });
 
@@ -107,4 +156,26 @@ async function networkRequest(host, patch) {
     },
     { appId: "api-dashboard" },
   );
+}
+
+function privateNetworkPackage({ denyPrivateNetwork } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "private-network-package-"));
+  fs.cpSync(path.join(examplesDir, "api-dashboard"), dir, { recursive: true });
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.networkPolicy = {
+    allow: [
+      {
+        origin: "https://192.168.0.1",
+        methods: ["GET"],
+        allowedHeaders: [],
+        maxRequestBytes: 65536,
+        maxResponseBytes: 1048576,
+        timeoutMs: 10000,
+      },
+    ],
+    ...(denyPrivateNetwork === undefined ? {} : { denyPrivateNetwork }),
+  };
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return dir;
 }

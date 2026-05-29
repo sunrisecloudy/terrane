@@ -8757,11 +8757,13 @@ fn queryBridgeCallsRowsJson(allocator: std.mem.Allocator, app_id: ?[]const u8) !
 
 const UrlParts = struct {
     origin: []u8,
+    host: []u8,
     path: []u8,
 };
 
 fn freeUrlParts(allocator: std.mem.Allocator, parts: UrlParts) void {
     allocator.free(parts.origin);
+    allocator.free(parts.host);
     allocator.free(parts.path);
 }
 
@@ -8770,13 +8772,44 @@ fn parseNetworkUrlAlloc(allocator: std.mem.Allocator, url: []const u8) !UrlParts
     if (scheme_end == 0) return error.InvalidNetworkUrl;
     const authority_start = scheme_end + 3;
     if (authority_start >= url.len) return error.InvalidNetworkUrl;
-    const path_start = std.mem.indexOfScalarPos(u8, url, authority_start, '/') orelse url.len;
-    if (path_start == authority_start) return error.InvalidNetworkUrl;
-    const origin = try allocator.dupe(u8, url[0..path_start]);
+    const authority_end = urlAuthorityEnd(url, authority_start);
+    if (authority_end == authority_start) return error.InvalidNetworkUrl;
+    const authority = url[authority_start..authority_end];
+    const origin = try allocator.dupe(u8, url[0..authority_end]);
     errdefer allocator.free(origin);
-    const path_part = if (path_start < url.len) url[path_start..] else "/";
+    const host = try networkHostFromAuthorityAlloc(allocator, authority);
+    errdefer allocator.free(host);
+    const path_part = if (authority_end < url.len and url[authority_end] == '/') url[authority_end..] else "/";
     const path_copy = try allocator.dupe(u8, path_part);
-    return .{ .origin = origin, .path = path_copy };
+    return .{ .origin = origin, .host = host, .path = path_copy };
+}
+
+fn urlAuthorityEnd(url: []const u8, start: usize) usize {
+    var index = start;
+    while (index < url.len) : (index += 1) {
+        switch (url[index]) {
+            '/', '?', '#' => return index,
+            else => {},
+        }
+    }
+    return url.len;
+}
+
+fn networkHostFromAuthorityAlloc(allocator: std.mem.Allocator, authority: []const u8) ![]u8 {
+    var host_port = authority;
+    if (std.mem.lastIndexOfScalar(u8, host_port, '@')) |userinfo_end| {
+        if (userinfo_end + 1 >= host_port.len) return error.InvalidNetworkUrl;
+        host_port = host_port[userinfo_end + 1 ..];
+    }
+    if (host_port.len == 0) return error.InvalidNetworkUrl;
+    if (host_port[0] == '[') {
+        const bracket_end = std.mem.indexOfScalar(u8, host_port, ']') orelse return error.InvalidNetworkUrl;
+        if (bracket_end <= 1) return error.InvalidNetworkUrl;
+        return allocator.dupe(u8, host_port[1..bracket_end]);
+    }
+    const port_start = std.mem.indexOfScalar(u8, host_port, ':') orelse host_port.len;
+    if (port_start == 0) return error.InvalidNetworkUrl;
+    return allocator.dupe(u8, host_port[0..port_start]);
 }
 
 fn networkPolicyAllowsRequest(
@@ -8796,6 +8829,7 @@ fn networkPolicyAllowsRequest(
 
     const network_policy = parsed.value.object.get("networkPolicy") orelse return false;
     if (network_policy != .object) return false;
+    if (networkPolicyDeniesPrivateNetwork(network_policy) and isPrivateNetworkHost(parts.host)) return false;
     const allow = network_policy.object.get("allow") orelse return false;
     if (allow != .array) return false;
 
@@ -8803,6 +8837,118 @@ fn networkPolicyAllowsRequest(
         if (try networkPolicyEntryAllowsRequest(allocator, entry, parts, method, params)) return true;
     }
     return false;
+}
+
+fn networkPolicyDeniesPrivateNetwork(network_policy: std.json.Value) bool {
+    if (network_policy != .object) return true;
+    const value = network_policy.object.get("denyPrivateNetwork") orelse return true;
+    if (value != .bool) return true;
+    return value.bool;
+}
+
+fn isPrivateNetworkHost(host: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(host, "localhost") or endsWithIgnoreCase(host, ".localhost")) return true;
+    if (parseIpv4Host(host)) |octets| {
+        return isPrivateIpv4Octets(octets);
+    }
+    return isPrivateIpv6Host(host);
+}
+
+fn isPrivateIpv4Octets(octets: [4]u8) bool {
+    const first = octets[0];
+    const second = octets[1];
+    return first == 0 or
+        first == 10 or
+        first == 127 or
+        (first == 100 and second >= 64 and second <= 127) or
+        (first == 169 and second == 254) or
+        (first == 172 and second >= 16 and second <= 31) or
+        (first == 192 and second == 168);
+}
+
+fn parseIpv4Host(host: []const u8) ?[4]u8 {
+    var octets: [4]u8 = undefined;
+    var iterator = std.mem.splitScalar(u8, host, '.');
+    var index: usize = 0;
+    while (iterator.next()) |part| {
+        if (index >= 4 or part.len == 0 or part.len > 3) return null;
+        var value: u16 = 0;
+        for (part) |char| {
+            if (char < '0' or char > '9') return null;
+            value = value * 10 + @as(u16, char - '0');
+            if (value > 255) return null;
+        }
+        octets[index] = @as(u8, @intCast(value));
+        index += 1;
+    }
+    if (index != 4) return null;
+    return octets;
+}
+
+fn isPrivateIpv6Host(raw_host: []const u8) bool {
+    var host = stripIpv6Brackets(raw_host);
+    if (host.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, host, '%')) |zone_start| {
+        host = host[0..zone_start];
+    }
+    if (std.ascii.eqlIgnoreCase(host, "::1")) return true;
+    if (startsWithIgnoreCase(host, "fc") or startsWithIgnoreCase(host, "fd")) return true;
+    if (startsWithIgnoreCase(host, "fe8") or startsWithIgnoreCase(host, "fe9") or startsWithIgnoreCase(host, "fea") or startsWithIgnoreCase(host, "feb")) return true;
+    const mapped_prefix = "::ffff:";
+    if (startsWithIgnoreCase(host, mapped_prefix)) {
+        return isPrivateIpv4MappedHost(host[mapped_prefix.len..]);
+    }
+    return false;
+}
+
+fn isPrivateIpv4MappedHost(tail: []const u8) bool {
+    if (parseIpv4Host(tail)) |octets| return isPrivateIpv4Octets(octets);
+    var iterator = std.mem.splitScalar(u8, tail, ':');
+    const high_text = iterator.next() orelse return false;
+    const low_text = iterator.next() orelse return false;
+    if (iterator.next() != null) return false;
+    const high = parseHex16(high_text) orelse return false;
+    const low = parseHex16(low_text) orelse return false;
+    return isPrivateIpv4Octets(.{
+        @as(u8, @intCast(high >> 8)),
+        @as(u8, @intCast(high & 0x00ff)),
+        @as(u8, @intCast(low >> 8)),
+        @as(u8, @intCast(low & 0x00ff)),
+    });
+}
+
+fn parseHex16(value: []const u8) ?u16 {
+    if (value.len == 0 or value.len > 4) return null;
+    var out: u16 = 0;
+    for (value) |char| {
+        const digit = hexDigitValue(char) orelse return null;
+        out = out * 16 + digit;
+    }
+    return out;
+}
+
+fn hexDigitValue(char: u8) ?u16 {
+    if (char >= '0' and char <= '9') return @as(u16, char - '0');
+    if (char >= 'a' and char <= 'f') return @as(u16, char - 'a') + 10;
+    if (char >= 'A' and char <= 'F') return @as(u16, char - 'A') + 10;
+    return null;
+}
+
+fn stripIpv6Brackets(host: []const u8) []const u8 {
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        return host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+fn startsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
+    if (value.len < prefix.len) return false;
+    return std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
+}
+
+fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    if (value.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
 }
 
 fn networkPolicyEntryAllowsRequest(
@@ -10526,6 +10672,53 @@ test "notification toast levels follow runtime spec" {
     try std.testing.expect(isToastLevel("warning"));
     try std.testing.expect(isToastLevel("error"));
     try std.testing.expect(!isToastLevel("warn"));
+}
+
+test "network policy helper denies private network hosts by default" {
+    var default_policy = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "allow": []
+        \\}
+    ,
+        .{},
+    );
+    defer default_policy.deinit();
+    try std.testing.expect(networkPolicyDeniesPrivateNetwork(default_policy.value));
+
+    var disabled_policy = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{
+        \\  "allow": [],
+        \\  "denyPrivateNetwork": false
+        \\}
+    ,
+        .{},
+    );
+    defer disabled_policy.deinit();
+    try std.testing.expect(!networkPolicyDeniesPrivateNetwork(disabled_policy.value));
+
+    const loopback = try parseNetworkUrlAlloc(std.testing.allocator, "https://127.0.0.1/status");
+    defer freeUrlParts(std.testing.allocator, loopback);
+    try std.testing.expect(std.mem.eql(u8, loopback.origin, "https://127.0.0.1"));
+    try std.testing.expect(std.mem.eql(u8, loopback.host, "127.0.0.1"));
+    try std.testing.expect(isPrivateNetworkHost(loopback.host));
+
+    const ipv6 = try parseNetworkUrlAlloc(std.testing.allocator, "https://[fd00::1]/status");
+    defer freeUrlParts(std.testing.allocator, ipv6);
+    try std.testing.expect(std.mem.eql(u8, ipv6.host, "fd00::1"));
+    try std.testing.expect(isPrivateNetworkHost(ipv6.host));
+
+    const mapped_loopback = try parseNetworkUrlAlloc(std.testing.allocator, "https://[::ffff:7f00:1]/status");
+    defer freeUrlParts(std.testing.allocator, mapped_loopback);
+    try std.testing.expect(std.mem.eql(u8, mapped_loopback.host, "::ffff:7f00:1"));
+    try std.testing.expect(isPrivateNetworkHost(mapped_loopback.host));
+
+    const public = try parseNetworkUrlAlloc(std.testing.allocator, "https://api.example.com/status");
+    defer freeUrlParts(std.testing.allocator, public);
+    try std.testing.expect(!isPrivateNetworkHost(public.host));
 }
 
 test "network policy helper matches URL method headers and string body bytes" {

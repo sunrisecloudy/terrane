@@ -360,7 +360,9 @@ export class BridgeDispatcher {
     }
 
     const method = (params.method ?? "GET").toUpperCase();
-    const allow = context.active?.manifest?.networkPolicy?.allow ?? [];
+    const networkPolicy = context.active?.manifest?.networkPolicy ?? {};
+    assertPrivateNetworkPolicy(networkPolicy, url, "network.request private network targets are denied");
+    const allow = Array.isArray(networkPolicy.allow) ? networkPolicy.allow : [];
     const matching = findMatchingNetworkPolicy(allow, url, method);
 
     if (!matching) {
@@ -379,7 +381,7 @@ export class BridgeDispatcher {
   assertNetworkResponsePolicy(response, policyEntry, params, context) {
     assertNetworkTimeout(response, policyEntry, params);
     assertNetworkResponseSize(response, policyEntry, context);
-    assertNetworkRedirect(response, context.active?.manifest?.networkPolicy?.allow ?? [], params);
+    assertNetworkRedirect(response, context.active?.manifest?.networkPolicy ?? {}, params);
   }
 }
 
@@ -465,6 +467,90 @@ function findMatchingNetworkPolicy(allow, url, method) {
   });
 }
 
+function assertPrivateNetworkPolicy(policy, url, message) {
+  if (!networkPolicyDeniesPrivateNetwork(policy) || !isPrivateNetworkHost(url.hostname)) return;
+  throw new PlatformError("network_policy_denied", message, {
+    origin: url.origin,
+    host: normalizedNetworkHost(url.hostname),
+  });
+}
+
+function networkPolicyDeniesPrivateNetwork(policy) {
+  return !policy || policy.denyPrivateNetwork !== false;
+}
+
+function isPrivateNetworkHost(hostname) {
+  const host = normalizedNetworkHost(hostname);
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  const ipv4 = parseIpv4Host(host);
+  if (ipv4) {
+    return isPrivateIpv4Octets(ipv4);
+  }
+  if (host === "::1") return true;
+  if (host.startsWith("fc") || host.startsWith("fd")) return true;
+  if (host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true;
+  if (host.startsWith("::ffff:")) {
+    return isPrivateIpv4MappedHost(host.slice("::ffff:".length));
+  }
+  return false;
+}
+
+function normalizedNetworkHost(hostname) {
+  let host = String(hostname ?? "").trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  const zoneIndex = host.indexOf("%");
+  return zoneIndex === -1 ? host : host.slice(0, zoneIndex);
+}
+
+function parseIpv4Host(host) {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const octets = [];
+  for (const part of parts) {
+    if (!/^[0-9]{1,3}$/.test(part)) return null;
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) return null;
+    octets.push(value);
+  }
+  return octets;
+}
+
+function isPrivateIpv4MappedHost(tail) {
+  const dotted = parseIpv4Host(tail);
+  if (dotted) return isPrivateIpv4Octets(dotted);
+  const parts = tail.split(":");
+  if (parts.length !== 2) return false;
+  const high = parseHex16(parts[0]);
+  const low = parseHex16(parts[1]);
+  if (high == null || low == null) return false;
+  return isPrivateIpv4Octets([
+    (high >> 8) & 255,
+    high & 255,
+    (low >> 8) & 255,
+    low & 255,
+  ]);
+}
+
+function parseHex16(value) {
+  if (!/^[0-9a-f]{1,4}$/.test(value)) return null;
+  return Number.parseInt(value, 16);
+}
+
+function isPrivateIpv4Octets(octets) {
+  const first = octets[0];
+  const second = octets[1];
+  return first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168);
+}
+
 function assertNetworkHeaders(headers, policyEntry) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     throw new PlatformError("invalid_request", "network.request headers must be an object", {});
@@ -541,7 +627,7 @@ function assertNetworkResponseSize(response, policyEntry, context) {
   }
 }
 
-function assertNetworkRedirect(response, allow, params) {
+function assertNetworkRedirect(response, policy, params) {
   const status = Number(response?.status ?? 0);
   if (status < 300 || status >= 400) return;
   const location = headerValue(response?.headers, "location");
@@ -553,7 +639,9 @@ function assertNetworkRedirect(response, allow, params) {
   } catch {
     throw new PlatformError("network_policy_denied", "network.response redirect location is invalid", { location });
   }
+  assertPrivateNetworkPolicy(policy, redirectUrl, "network.response redirect targets private network");
   const method = (params.method ?? "GET").toUpperCase();
+  const allow = Array.isArray(policy.allow) ? policy.allow : [];
   if (!findMatchingNetworkPolicy(allow, redirectUrl, method)) {
     throw new PlatformError("network_policy_denied", "network.response redirect is outside manifest.networkPolicy", {
       origin: redirectUrl.origin,
