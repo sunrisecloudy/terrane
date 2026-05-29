@@ -134,7 +134,7 @@ Status snapshot: **2026-05-29**.
 | `tests/performance/` | partial (fake-host latency harness reports p50/p95 for storage and core bridge round-trips) |
 | `tests/security/malicious-packages/` | partial (12 fixtures exercised by fake-host security tests; static rejection plus runtime-denied storage-prefix and budget paths) |
 | `tests/db/` | partial (9 checked-in dbtest fixtures are exercised by fake-host DB contract tests, including schema, install, storage, runtime logging, rollback, migration, backup, and corruption paths) |
-| `tests/platform-smoke/` | fixtures (cross-platform suite now exercised by fake-host runner) |
+| `tests/platform-smoke/` | partial (cross-platform suite is checked in and exercised by the fake-host runner with persisted `test_runs`; native target execution remains environment-dependent) |
 | `tests/server/` | fixtures (mdok smoke verifies the Zig server starts and serves `/health` plus `/core/step`) |
 
 ## CI
