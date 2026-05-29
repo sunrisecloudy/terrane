@@ -195,6 +195,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
 - Core bridge works.
+- SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Local build and native SwiftPM tests run with `node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js` on macOS hosts.
 - When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
 - Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js`.
@@ -458,6 +459,7 @@ If a generated app fails a micro-test, Codex should:
 - Failed micro-test quarantines new version and keeps previous version active.
 - Rollback restores active pointer and smoke-tests the restored app.
 - Rollback refuses if dataVersion is incompatible and no snapshot/down-migration exists.
+- Desktop rollback is covered on macOS by `native/macos` SwiftPM tests through `tools/fake-platform-host/test/macos-native-build.test.js`.
 
 ### Migration tests
 

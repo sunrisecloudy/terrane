@@ -117,7 +117,7 @@ test(
         env,
       });
 
-      assert.match(output, /Test run with 5 tests in 1 suite passed/);
+      assert.match(output, /Test run with \d+ tests in 1 suite passed/);
       runOptionalLaunchSmoke({ scratch, env });
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });

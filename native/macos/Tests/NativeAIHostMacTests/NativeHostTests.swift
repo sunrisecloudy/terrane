@@ -76,6 +76,85 @@ struct NativeHostTests {
         #expect(denied.error?["code"] as? String == "permission_denied")
     }
 
+    @Test("SQLite app registry rolls back active version and preserves storage")
+    func sqliteAppRegistryRollsBackActiveVersion() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-rollback-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        var smokeTestedInstallIds: [String] = []
+        let registry = try PlatformAppRegistry(databaseURL: dbURL) { version in
+            smokeTestedInstallIds.append(version.installId)
+        }
+        let manifestV1 = #"{"id":"notes-lite","version":"0.1.0","dataVersion":1}"#
+        let manifestV2 = #"{"id":"notes-lite","version":"0.2.0","dataVersion":1}"#
+
+        let first = try registry.installVersion(
+            appId: "notes-lite",
+            name: "Notes Lite",
+            version: "0.1.0",
+            manifestJSON: manifestV1,
+            contentHash: "hash-v1",
+            installId: "install-v1"
+        )
+        #expect(first.status == "enabled")
+
+        let context = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["storage.read", "storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "rollback-test-mount"
+        )
+        let storage = PlatformStorage(databaseURL: dbURL)
+        let set = storage.set(BridgeRequest(
+            id: "set-storage",
+            method: "storage.set",
+            params: ["key": "notes-lite:notes", "value": [["title": "Keep me"]]],
+            context: context
+        ))
+        #expect(set.ok)
+
+        let second = try registry.installVersion(
+            appId: "notes-lite",
+            name: "Notes Lite",
+            version: "0.2.0",
+            manifestJSON: manifestV2,
+            contentHash: "hash-v2",
+            installId: "install-v2"
+        )
+        #expect(second.status == "enabled")
+        #expect(try registry.activeVersion(appId: "notes-lite")?.installId == "install-v2")
+
+        let rollback = try registry.rollback(appId: "notes-lite")
+        #expect(rollback.activeInstallId == "install-v1")
+        #expect(rollback.rolledBackInstallId == "install-v2")
+        #expect(rollback.activeVersion == "0.1.0")
+        #expect(smokeTestedInstallIds == ["install-v1"])
+        #expect(try registry.activeVersion(appId: "notes-lite")?.status == "enabled")
+
+        let reopenedStorage = PlatformStorage(databaseURL: dbURL)
+        let get = reopenedStorage.get(BridgeRequest(
+            id: "get-storage",
+            method: "storage.get",
+            params: ["key": "notes-lite:notes", "defaultValue": []],
+            context: context
+        ))
+        #expect(get.ok)
+        let result = try #require(get.result as? [String: Any])
+        let notes = try #require(result["value"] as? [[String: Any]])
+        let note = try #require(notes.first)
+        #expect(note["title"] as? String == "Keep me")
+
+        let events = try registry.installationEvents(appId: "notes-lite")
+        let rollbackEvent = try #require(events.first(where: { $0.action == "rollback" }))
+        #expect(rollbackEvent.installId == "install-v1")
+        #expect(rollbackEvent.previousInstallId == "install-v2")
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],
