@@ -14,6 +14,9 @@ val syncNativeAiAssets by tasks.registering(Sync::class) {
     from(repoRoot.resolve("webapps")) {
         into("webapps")
     }
+    from(repoRoot.resolve("db/sqlite")) {
+        into("db/sqlite")
+    }
 }
 val androidZigCoreTargets = mapOf(
     "arm64-v8a" to "aarch64-linux-android",

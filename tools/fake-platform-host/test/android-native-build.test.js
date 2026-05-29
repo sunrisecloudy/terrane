@@ -87,6 +87,11 @@ test(
       true,
       "generated example apps should be synced into Android assets",
     );
+    assert.equal(
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "db", "sqlite", "001_initial.sql")),
+      true,
+      "checked-in SQLite migrations should be synced into Android assets",
+    );
 
     for (const abi of ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]) {
       assert.equal(

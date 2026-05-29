@@ -51,12 +51,26 @@ const targetAssertions = [
     name: "Android",
     files: [
       {
+        path: "native/android/app/build.gradle.kts",
+        contains: ['from(repoRoot.resolve("db/sqlite"))', 'into("db/sqlite")'],
+      },
+      {
+        path: "native/android/app/src/main/java/com/nativeai/platform/PlatformDatabase.kt",
+        contains: [
+          "class PlatformDatabase",
+          'SQLiteOpenHelper(context, "platform.sqlite"',
+          "PRAGMA foreign_keys = ON",
+          "PRAGMA integrity_check",
+          'assets.list("db/sqlite")',
+          "CREATE TABLE IF NOT EXISTS apps",
+        ],
+      },
+      {
         path: "native/android/app/src/main/java/com/nativeai/platform/PlatformStorage.kt",
         contains: [
           "import android.database.sqlite.SQLiteDatabase",
-          "import android.database.sqlite.SQLiteOpenHelper",
-          'SQLiteOpenHelper(context, "platform.sqlite"',
-          "CREATE TABLE IF NOT EXISTS app_storage",
+          "private val database = PlatformDatabase(context)",
+          "insertWithOnConflict(\"apps\"",
           "SQLiteDatabase.CONFLICT_REPLACE",
           "arrayOf(request.context.appId, key)",
         ],

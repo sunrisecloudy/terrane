@@ -3,25 +3,18 @@ package com.nativeai.platform
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
 
-class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sqlite", null, 1) {
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key))",
-        )
-    }
-
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+class PlatformStorage(context: Context) {
+    private val database = PlatformDatabase(context)
 
     fun get(request: BridgeRequest): String {
         val key = request.params.optString("key")
         if (key.isBlank()) return BridgeResponse.failure(request.id, "invalid_request", "storage.get requires key").toString()
         if (!key.startsWith(request.context.storagePrefix)) return storagePrefixFailure(request, key).toString()
 
-        readableDatabase.rawQuery(
+        database.readableDatabase.rawQuery(
             "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?",
             arrayOf(request.context.appId, key),
         ).use { cursor ->
@@ -40,6 +33,7 @@ class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sq
         if (key.isBlank()) return BridgeResponse.failure(request.id, "invalid_request", "storage.set requires key").toString()
         if (!key.startsWith(request.context.storagePrefix)) return storagePrefixFailure(request, key).toString()
 
+        ensureAppRow(request.context.appId)
         val valueJson = encodeJson(request.params.opt("value"))
         val values = ContentValues().apply {
             put("app_id", request.context.appId)
@@ -47,7 +41,7 @@ class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sq
             put("value_json", valueJson)
             put("updated_at", java.time.Instant.now().toString())
         }
-        writableDatabase.insertWithOnConflict("app_storage", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        database.writableDatabase.insertWithOnConflict("app_storage", null, values, SQLiteDatabase.CONFLICT_REPLACE)
         return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true, "bytesWritten" to valueJson.toByteArray().size))).toString()
     }
 
@@ -55,7 +49,7 @@ class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sq
         val key = request.params.optString("key")
         if (key.isBlank()) return BridgeResponse.failure(request.id, "invalid_request", "storage.remove requires key").toString()
         if (!key.startsWith(request.context.storagePrefix)) return storagePrefixFailure(request, key).toString()
-        writableDatabase.delete("app_storage", "app_id = ? AND key = ?", arrayOf(request.context.appId, key))
+        database.writableDatabase.delete("app_storage", "app_id = ? AND key = ?", arrayOf(request.context.appId, key))
         return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString()
     }
 
@@ -64,7 +58,7 @@ class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sq
         if (prefix.isBlank()) return BridgeResponse.failure(request.id, "invalid_request", "storage.list requires prefix").toString()
         if (!prefix.startsWith(request.context.storagePrefix)) return storagePrefixFailure(request, prefix).toString()
         val keys = JSONArray()
-        readableDatabase.rawQuery(
+        database.readableDatabase.rawQuery(
             "SELECT key FROM app_storage WHERE app_id = ? AND key LIKE ? ORDER BY key",
             arrayOf(request.context.appId, "$prefix%"),
         ).use { cursor ->
@@ -79,6 +73,19 @@ class PlatformStorage(context: Context) : SQLiteOpenHelper(context, "platform.sq
         "Storage key must begin with ${request.context.storagePrefix}",
         JSONObject(mapOf("key" to key, "prefix" to request.context.storagePrefix, "appId" to request.context.appId)),
     )
+
+    private fun ensureAppRow(appId: String) {
+        val now = java.time.Instant.now().toString()
+        val values = ContentValues().apply {
+            put("id", appId)
+            put("name", appId)
+            put("status", "enabled")
+            put("data_version", 1)
+            put("created_at", now)
+            put("updated_at", now)
+        }
+        database.writableDatabase.insertWithOnConflict("apps", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+    }
 
     private fun encodeJson(value: Any?): String = when (value) {
         null -> "null"

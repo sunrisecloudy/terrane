@@ -875,6 +875,7 @@ function checkNativeStatic() {
   const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "ZigCoreBridge.kt"), "utf8");
   const androidCoreJni = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "zig_core_jni.cpp"), "utf8");
   const androidCoreCmake = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "CMakeLists.txt"), "utf8");
+  const androidDatabase = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDatabase.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
   const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDialogs.kt"), "utf8");
@@ -1203,7 +1204,10 @@ function checkNativeStatic() {
     [androidBridge, '"core.step" to core.isAvailable()'],
     [androidBridge, "networkPolicy"],
     [androidBridge, "denyPrivateNetwork"],
-    [androidStorage, "SQLiteOpenHelper"],
+    [androidDatabase, "SQLiteOpenHelper"],
+    [androidDatabase, "PRAGMA integrity_check"],
+    [androidDatabase, 'assets.list("db/sqlite")'],
+    [androidStorage, "PlatformDatabase(context)"],
     [androidStorage, "request.context.appId"],
     [androidStorage, "request.context.storagePrefix"],
   ];
@@ -1213,7 +1217,7 @@ function checkNativeStatic() {
     }
   }
   const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");
-  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")', "androidx.activity:activity-ktx"]) {
+  for (const snippet of ["syncNativeAiAssets", 'into("runtime")', 'into("webapps")', 'into("db/sqlite")', "assets.srcDir(generatedNativeAiAssets)", "externalNativeBuild", 'path = file("src/main/cpp/CMakeLists.txt")', "androidx.activity:activity-ktx"]) {
     if (!androidGradle.includes(snippet)) {
       throw new Error(`Android Gradle asset sync missing ${snippet}`);
     }
