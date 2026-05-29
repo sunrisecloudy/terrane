@@ -184,6 +184,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Open/save dialogs return results or cancel errors.
 - Storage persists.
 - Core bridge works.
+- Local build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js` on macOS hosts.
 
 ### Android
 
