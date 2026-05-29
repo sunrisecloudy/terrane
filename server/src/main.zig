@@ -11231,7 +11231,7 @@ fn validateServerJsPolicy(
     if (containsAny(js, &.{ "navigator.serviceWorker", "serviceWorker.register" })) try errors.append(allocator, "forbidden_service_worker");
     if (containsAny(js, &.{"trustedTypes.createPolicy"})) try errors.append(allocator, "forbidden_trusted_types_policy");
     if (jsHasCall(js, "fetch") or containsAny(js, &.{ "XMLHttpRequest", "WebSocket", "EventSource" })) try errors.append(allocator, "forbidden_network_api");
-    if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie" })) try errors.append(allocator, "forbidden_storage_api");
+    if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie", "cookieStore" })) try errors.append(allocator, "forbidden_storage_api");
     if (jsHasCall(js, "openDatabase") or jsHasCall(js, "executeSql") or containsAny(js, &.{ "SQLDatabase", "sqlite3" })) try errors.append(allocator, "forbidden_sql_api");
     if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
     if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
@@ -12063,6 +12063,21 @@ test "server JS policy detects bridge appId params" {
     try std.testing.expect(!hasRuntimeBridgeCallAppIdParam(
         "AppRuntime.call(\"storage.get\", { key: \"notes-lite:notes\" });",
     ));
+}
+
+test "server JS policy rejects cookie store API" {
+    var manifest_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"permissions\":[]}", .{});
+    defer manifest_json.deinit();
+
+    var errors: std.ArrayList([]const u8) = .empty;
+    defer errors.deinit(std.testing.allocator);
+    try validateServerJsPolicy(std.testing.allocator, manifest_json.value, "cookieStore.get('session');", &errors);
+
+    var found = false;
+    for (errors.items) |error_name| {
+        if (std.mem.eql(u8, error_name, "forbidden_storage_api")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "server package validation rejects bridge calls without manifest permission" {
