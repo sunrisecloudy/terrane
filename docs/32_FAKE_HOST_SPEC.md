@@ -108,7 +108,7 @@ The fake host implements the full control plane in docs/14 with one difference: 
 
 The fake host must satisfy these guarantees, every other host must match:
 
-1. **Byte-identical bridge responses for the same input.** For every contract fixture under `tests/fixtures/bridge/`, the fake host's response must equal the native host's response after stripping (`id`, `timestamp`) fields.
+1. **Byte-identical bridge responses for the same input.** For every contract fixture under `tests/fixtures/bridge/`, the fake host's response must equal the native host's response after stripping (`id`, `timestamp`) fields, except for fields explicitly covered by a fixture's `expectedByPlatform` entry for platform identity or stricter pre-mount rejection.
 2. **Same error codes for the same error conditions.** Codes are listed in docs/03 §5.
 3. **Same `app_install_reports` shape after installing the same package.** Hashes (`manifestHash`, `contentHash`) must be identical because canonicalization (docs/17 §6) is deterministic.
 4. **Same `core.step` actions for the same event stream.** Determinism is enforced by Zig core; the fake host loads the same compiled Zig.

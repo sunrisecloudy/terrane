@@ -10,6 +10,7 @@ const max_package_files = 32;
 const max_migration_files = 16;
 const runtime_version = "0.1.0";
 const signature_prefix = "native-ai-webapp/sig/v1";
+const network_credentials_denied_message = "network.request credentials are not allowed";
 const control_auth_failure_limit = 3;
 const control_auth_ban_ms: i64 = 60 * std.time.ms_per_s;
 const control_auth_max_clients = 16;
@@ -338,16 +339,20 @@ fn handleBridge(
     const method = valueString(root.object.get("method")).?;
     const params = root.object.get("params").?;
     if (params.object.get("appId") != null) {
-        return writeBridgeError(allocator, stream, id, "invalid_request", "Bridge params must not include appId; app id is channel-derived");
+        return writeBridgeErrorWithDetails(allocator, stream, id, "invalid_request", "Bridge params must not include appId; app id is channel-derived", "{\"field\":\"appId\"}");
     }
     const params_json_for_audit = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json_for_audit);
 
     if (!isAllowedRuntimeBridgeMethod(method)) {
         if (isKnownUnsupportedBridgeMethod(method)) {
-            return writeBridgeError(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server");
+            const details_json = try methodDetailsJsonAlloc(allocator, method);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "platform_unsupported", "Bridge method is not implemented on zig-server", details_json);
         }
-        return writeBridgeError(allocator, stream, id, "unknown_method", "Unknown bridge method");
+        const details_json = try methodDetailsJsonAlloc(allocator, method);
+        defer allocator.free(details_json);
+        return writeBridgeErrorWithDetails(allocator, stream, id, "unknown_method", "Unknown bridge method", details_json);
     }
 
     const compatible_runtime = bridgeRuntimeCompatible(allocator, channel_app_id) catch {
@@ -380,12 +385,14 @@ fn handleBridge(
     if (permissionForBridgeMethod(method)) |permission| {
         const permitted = bridgePermissionApproved(allocator, channel_app_id, permission) catch false;
         if (!permitted) {
-            const error_json = try bridgeErrorJsonAlloc(allocator, "permission_denied", "Bridge method requires an approved app permission");
+            const details_json = try permissionDetailsJsonAlloc(allocator, channel_app_id, method, permission);
+            defer allocator.free(details_json);
+            const error_json = try bridgeErrorJsonWithDetailsAlloc(allocator, "permission_denied", "Bridge method requires an approved app permission", details_json);
             defer allocator.free(error_json);
             logBridgeCall(allocator, channel_app_id, session_id, method, params_json_for_audit, null, error_json) catch |err| {
                 std.debug.print("bridge audit write failed: {}\n", .{err});
             };
-            return writeBridgeError(allocator, stream, id, "permission_denied", "Bridge method requires an approved app permission");
+            return writeBridgeErrorWithDetails(allocator, stream, id, "permission_denied", "Bridge method requires an approved app permission", details_json);
         }
     }
 
@@ -437,7 +444,7 @@ fn handleBridge(
     }
 
     if (std.mem.eql(u8, method, "runtime.capabilities")) {
-        const result_json = try serverCapabilitiesJson(allocator);
+        const result_json = try serverCapabilitiesForAppJson(allocator, channel_app_id);
         defer allocator.free(result_json);
         logBridgeCall(allocator, channel_app_id, session_id, method, "{}", result_json, null) catch |err| {
             std.debug.print("bridge audit write failed: {}\n", .{err});
@@ -525,6 +532,7 @@ fn bridgeValidationMessage(err: BridgeValidationError) []const u8 {
 
 const ResourceBudgetViolation = struct {
     message: []const u8,
+    app_id: []const u8,
     budget: []const u8,
     current: i64,
     max: i64,
@@ -554,6 +562,7 @@ fn enforceBridgeResourceBudget(
         if (count >= limit) {
             return .{
                 .message = "Bridge call rate exceeds manifest.resourceBudget.maxBridgeCallsPerMinute",
+                .app_id = app_id,
                 .budget = "maxBridgeCallsPerMinute",
                 .current = count + 1,
                 .max = limit,
@@ -567,6 +576,7 @@ fn enforceBridgeResourceBudget(
             if (count >= limit) {
                 return .{
                     .message = "Network request rate exceeds manifest.resourceBudget.maxNetworkRequestsPerMinute",
+                    .app_id = app_id,
                     .budget = "maxNetworkRequestsPerMinute",
                     .current = count + 1,
                     .max = limit,
@@ -581,6 +591,7 @@ fn enforceBridgeResourceBudget(
             if (count >= limit) {
                 return .{
                     .message = "Log rate exceeds manifest.resourceBudget.maxLogLinesPerMinute",
+                    .app_id = app_id,
                     .budget = "maxLogLinesPerMinute",
                     .current = count + 1,
                     .max = limit,
@@ -601,6 +612,7 @@ fn enforceBridgeResourceBudget(
             if (projected_bytes > limit) {
                 return .{
                     .message = "Storage write exceeds manifest.resourceBudget.maxStorageBytes",
+                    .app_id = app_id,
                     .budget = "maxStorageBytes",
                     .current = projected_bytes,
                     .max = limit,
@@ -735,7 +747,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "storage.get requires key");
         };
         if (!std.mem.startsWith(u8, key, prefix)) {
-            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try storagePrefixDetailsJsonAlloc(allocator, key, prefix);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const result_json = storageGetResultJson(allocator, app_id, key, params.object.get("defaultValue")) catch {
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.get failed");
@@ -752,7 +766,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "storage.set requires key");
         };
         if (!std.mem.startsWith(u8, key, prefix)) {
-            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try storagePrefixDetailsJsonAlloc(allocator, key, prefix);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const value = if (params.object.get("value")) |value_param|
             try jsonValueAlloc(allocator, value_param)
@@ -775,7 +791,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "storage.remove requires key");
         };
         if (!std.mem.startsWith(u8, key, prefix)) {
-            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try storagePrefixDetailsJsonAlloc(allocator, key, prefix);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         storageRemove(app_id, key) catch {
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.remove failed");
@@ -791,7 +809,9 @@ fn handleStorageBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "storage.list requires prefix");
         };
         if (!std.mem.startsWith(u8, prefix_param, prefix)) {
-            return writeBridgeError(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try storagePrefixDetailsJsonAlloc(allocator, prefix_param, prefix);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const result_json = storageListResultJson(allocator, app_id, prefix_param) catch {
             return writeBridgeError(allocator, stream, id, "storage_error", "storage.list failed");
@@ -848,7 +868,9 @@ fn handleNotificationToastBridge(
             return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be a string");
         };
         if (!isToastLevel(level)) {
-            return writeBridgeError(allocator, stream, id, "invalid_request", "notification.toast level must be info, success, warning, or error");
+            const details_json = try toastLevelDetailsJsonAlloc(allocator, level);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "invalid_request", "notification.toast level must be info, success, warning, or error", details_json);
         }
     }
 
@@ -877,28 +899,22 @@ fn handleNetworkRequestBridge(
     const params_json = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json);
 
-    if (networkRequestUsesCredentials(params)) {
-        const error_json = try bridgeErrorJsonAlloc(allocator, "network_policy_denied", "network.request credentials are not allowed");
-        defer allocator.free(error_json);
-        logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
-            std.debug.print("bridge audit write failed: {}\n", .{err});
-        };
-        return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request credentials are not allowed");
-    }
-
-    const policy_result = networkPolicyAllowsRequest(allocator, app_id, url, method, params) catch |err| switch (err) {
+    const deny_details = networkRequestDenyDetailsJsonAlloc(allocator, app_id, url, method, params) catch |err| switch (err) {
         error.InvalidNetworkUrl => {
-            return writeBridgeError(allocator, stream, id, "invalid_request", "network.request url must be absolute");
+            const details_json = try networkUrlDetailsJsonAlloc(allocator, url);
+            defer allocator.free(details_json);
+            return writeBridgeErrorWithDetails(allocator, stream, id, "invalid_request", "network.request url must be absolute", details_json);
         },
         else => return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request is outside manifest.networkPolicy"),
     };
-    if (!policy_result) {
-        const error_json = try bridgeErrorJsonAlloc(allocator, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+    if (deny_details) |details_json| {
+        defer allocator.free(details_json);
+        const error_json = try bridgeErrorJsonWithDetailsAlloc(allocator, "network_policy_denied", "network.request is outside manifest.networkPolicy", details_json);
         defer allocator.free(error_json);
         logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
             std.debug.print("bridge audit write failed: {}\n", .{err});
         };
-        return writeBridgeError(allocator, stream, id, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+        return writeBridgeErrorWithDetails(allocator, stream, id, "network_policy_denied", "network.request is outside manifest.networkPolicy", details_json);
     }
 
     const result_json = (try networkMockResultJsonAlloc(allocator, app_id, session_id, method, url)) orelse {
@@ -910,10 +926,21 @@ fn handleNetworkRequestBridge(
         return writeBridgeError(allocator, stream, id, "network.mock_missing", "No network mock is registered for request");
     };
     defer allocator.free(result_json);
-    logBridgeCall(allocator, app_id, session_id, "network.request", params_json, result_json, null) catch |err| {
+    if (try networkResponsePolicyErrorAlloc(allocator, app_id, url, method, params, result_json)) |policy_error| {
+        defer freeNetworkPolicyBridgeError(allocator, policy_error);
+        const error_json = try bridgeErrorJsonWithDetailsAlloc(allocator, policy_error.code, policy_error.message, policy_error.details_json);
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, "network.request", params_json, null, error_json) catch |err| {
+            std.debug.print("bridge audit write failed: {}\n", .{err});
+        };
+        return writeBridgeErrorWithDetails(allocator, stream, id, policy_error.code, policy_error.message, policy_error.details_json);
+    }
+    const response_payload_json = try networkResponsePayloadJsonAlloc(allocator, result_json);
+    defer allocator.free(response_payload_json);
+    logBridgeCall(allocator, app_id, session_id, "network.request", params_json, response_payload_json, null) catch |err| {
         std.debug.print("bridge audit write failed: {}\n", .{err});
     };
-    return writeBridgeOkRaw(allocator, stream, id, result_json);
+    return writeBridgeOkRaw(allocator, stream, id, response_payload_json);
 }
 
 fn handleDialogBridge(
@@ -3372,12 +3399,14 @@ fn automaticRollbackDetailsJsonAlloc(allocator: std.mem.Allocator, quarantined_i
 }
 
 fn resourceBudgetDetailsJsonAlloc(allocator: std.mem.Allocator, violation: ResourceBudgetViolation) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, violation.app_id);
+    defer allocator.free(escaped_app_id);
     const escaped_budget = try escapeJsonString(allocator, violation.budget);
     defer allocator.free(escaped_budget);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"budget\":\"{s}\",\"current\":{d},\"max\":{d},\"limit\":{d}}}",
-        .{ escaped_budget, violation.current, violation.max, violation.max },
+        "{{\"appId\":\"{s}\",\"budget\":\"{s}\",\"current\":{d},\"max\":{d},\"limit\":{d}}}",
+        .{ escaped_app_id, escaped_budget, violation.current, violation.max, violation.max },
     );
 }
 
@@ -5206,6 +5235,20 @@ fn storageKeyHasAppPrefix(allocator: std.mem.Allocator, app_id: []const u8, key:
     return std.mem.startsWith(u8, key, prefix);
 }
 
+fn appStoragePrefixDetailsJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, key: []const u8) ![]u8 {
+    const prefix = try std.fmt.allocPrint(allocator, "{s}:", .{app_id});
+    defer allocator.free(prefix);
+    return storagePrefixDetailsJsonAlloc(allocator, key, prefix);
+}
+
+fn storagePrefixDetailsJsonAlloc(allocator: std.mem.Allocator, key: []const u8, prefix: []const u8) ![]u8 {
+    const escaped_key = try escapeJsonString(allocator, key);
+    defer allocator.free(escaped_key);
+    const escaped_prefix = try escapeJsonString(allocator, prefix);
+    defer allocator.free(escaped_prefix);
+    return std.fmt.allocPrint(allocator, "{{\"key\":\"{s}\",\"prefix\":\"{s}\"}}", .{ escaped_key, escaped_prefix });
+}
+
 fn resetAppStorageControl(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
     const db = try openPlatformDb(allocator);
     defer _ = sqlite.sqlite3_close(db);
@@ -5291,14 +5334,18 @@ fn callBridgeControl(
     const params_json = try jsonValueAlloc(allocator, params);
     defer allocator.free(params_json);
     if (params.object.get("appId") != null) {
-        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "Bridge params must not include appId; app id is channel-derived");
+        return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "invalid_request", "Bridge params must not include appId; app id is channel-derived", "{\"field\":\"appId\"}");
     }
 
     if (!isAllowedRuntimeBridgeMethod(method)) {
         if (isKnownUnsupportedBridgeMethod(method)) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "platform_unsupported", "Bridge method is not implemented on zig-server");
+            const details_json = try methodDetailsJsonAlloc(allocator, method);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "platform_unsupported", "Bridge method is not implemented on zig-server", details_json);
         }
-        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown bridge method");
+        const details_json = try methodDetailsJsonAlloc(allocator, method);
+        defer allocator.free(details_json);
+        return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown bridge method", details_json);
     }
 
     const compatible_runtime = bridgeRuntimeCompatible(allocator, app_id) catch {
@@ -5321,7 +5368,9 @@ fn callBridgeControl(
     if (permissionForBridgeMethod(method)) |permission| {
         const permitted = bridgePermissionApproved(allocator, app_id, permission) catch false;
         if (!permitted) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Bridge method requires an approved app permission");
+            const details_json = try permissionDetailsJsonAlloc(allocator, app_id, method, permission);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Bridge method requires an approved app permission", details_json);
         }
     }
 
@@ -5359,7 +5408,7 @@ fn callBridgeControl(
     }
 
     if (std.mem.eql(u8, method, "runtime.capabilities")) {
-        const result_json = try serverCapabilitiesJson(allocator);
+        const result_json = try serverCapabilitiesForAppJson(allocator, app_id);
         defer allocator.free(result_json);
         logBridgeCall(allocator, app_id, session_id, method, "{}", result_json, null) catch |err| {
             std.debug.print("bridge audit write failed: {}\n", .{err});
@@ -5420,7 +5469,9 @@ fn storageBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.get requires key");
         };
         if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try appStoragePrefixDetailsJsonAlloc(allocator, app_id, key);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const result_json = storageGetResultJson(allocator, app_id, key, params.object.get("defaultValue")) catch {
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.get failed");
@@ -5437,7 +5488,9 @@ fn storageBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.set requires key");
         };
         if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try appStoragePrefixDetailsJsonAlloc(allocator, app_id, key);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const value = if (params.object.get("value")) |value_param|
             try jsonValueAlloc(allocator, value_param)
@@ -5460,7 +5513,9 @@ fn storageBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.remove requires key");
         };
         if (!(try storageKeyHasAppPrefix(allocator, app_id, key))) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try appStoragePrefixDetailsJsonAlloc(allocator, app_id, key);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         storageRemove(app_id, key) catch {
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.remove failed");
@@ -5476,7 +5531,9 @@ fn storageBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "storage.list requires prefix");
         };
         if (!(try storageKeyHasAppPrefix(allocator, app_id, prefix))) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix");
+            const details_json = try appStoragePrefixDetailsJsonAlloc(allocator, app_id, prefix);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "permission_denied", "Storage key must begin with app storage prefix", details_json);
         }
         const result_json = storageListResultJson(allocator, app_id, prefix) catch {
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "storage_error", "storage.list failed");
@@ -5532,7 +5589,9 @@ fn notificationToastBridgeControl(
             return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be a string");
         };
         if (!isToastLevel(level)) {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be info, success, warning, or error");
+            const details_json = try toastLevelDetailsJsonAlloc(allocator, level);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "invalid_request", "notification.toast level must be info, success, warning, or error", details_json);
         }
     }
     logBridgeCall(allocator, app_id, session_id, method, params_json, "{\"ok\":true}", null) catch |err| {
@@ -5556,26 +5615,32 @@ fn networkRequestBridgeControl(
     const request_method_raw = valueString(params.object.get("method")) orelse "GET";
     const request_method = try upperAsciiAlloc(allocator, request_method_raw);
     defer allocator.free(request_method);
-    if (networkRequestUsesCredentials(params)) {
-        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request credentials are not allowed");
-    }
-    const allowed = networkPolicyAllowsRequest(allocator, app_id, url, request_method, params) catch |err| switch (err) {
+    const deny_details = networkRequestDenyDetailsJsonAlloc(allocator, app_id, url, request_method, params) catch |err| switch (err) {
         error.InvalidNetworkUrl => {
-            return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request url must be absolute");
+            const details_json = try networkUrlDetailsJsonAlloc(allocator, url);
+            defer allocator.free(details_json);
+            return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "invalid_request", "network.request url must be absolute", details_json);
         },
-        else => false,
+        else => return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request is outside manifest.networkPolicy"),
     };
-    if (!allowed) {
-        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request is outside manifest.networkPolicy");
+    if (deny_details) |details_json| {
+        defer allocator.free(details_json);
+        return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, "network_policy_denied", "network.request is outside manifest.networkPolicy", details_json);
     }
     const result_json = (try networkMockResultJsonAlloc(allocator, app_id, session_id, request_method, url)) orelse {
         return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "network.mock_missing", "No network mock is registered for request");
     };
     defer allocator.free(result_json);
-    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+    if (try networkResponsePolicyErrorAlloc(allocator, app_id, url, request_method, params, result_json)) |policy_error| {
+        defer freeNetworkPolicyBridgeError(allocator, policy_error);
+        return bridgeControlErrorResponseWithDetails(allocator, app_id, session_id, id, method, params_json, policy_error.code, policy_error.message, policy_error.details_json);
+    }
+    const response_payload_json = try networkResponsePayloadJsonAlloc(allocator, result_json);
+    defer allocator.free(response_payload_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, response_payload_json, null) catch |err| {
         std.debug.print("bridge audit write failed: {}\n", .{err});
     };
-    return bridgeOkJsonAlloc(allocator, id, result_json);
+    return bridgeOkJsonAlloc(allocator, id, response_payload_json);
 }
 
 fn dialogBridgeControl(
@@ -9072,6 +9137,308 @@ fn requestBodyAllowed(allocator: std.mem.Allocator, body_value: ?std.json.Value,
     return body_json.len <= @as(usize, @intCast(max.integer));
 }
 
+const NetworkPolicyBridgeError = struct {
+    code: []const u8,
+    message: []const u8,
+    details_json: []u8,
+};
+
+fn freeNetworkPolicyBridgeError(allocator: std.mem.Allocator, policy_error: NetworkPolicyBridgeError) void {
+    allocator.free(policy_error.details_json);
+}
+
+fn networkRequestDenyDetailsJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    url: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+) !?[]u8 {
+    const parts = try parseNetworkUrlAlloc(allocator, url);
+    defer freeUrlParts(allocator, parts);
+
+    const manifest_json = try activeManifestJsonAlloc(allocator, app_id);
+    defer allocator.free(manifest_json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{});
+    defer parsed.deinit();
+
+    const network_policy = parsed.value.object.get("networkPolicy") orelse return try networkOriginMethodDetailsJsonAlloc(allocator, parts.origin, method);
+    if (network_policy != .object) return try networkOriginMethodDetailsJsonAlloc(allocator, parts.origin, method);
+    if (networkPolicyDeniesPrivateNetwork(network_policy) and isPrivateNetworkHost(parts.host)) {
+        return try networkOriginHostDetailsJsonAlloc(allocator, parts.origin, parts.host);
+    }
+    const allow = network_policy.object.get("allow") orelse return try networkOriginMethodDetailsJsonAlloc(allocator, parts.origin, method);
+    if (allow != .array) return try networkOriginMethodDetailsJsonAlloc(allocator, parts.origin, method);
+
+    const entry = networkPolicyMatchingEntry(allow, parts, method) orelse {
+        return try networkOriginMethodDetailsJsonAlloc(allocator, parts.origin, method);
+    };
+    if (try networkHeaderViolationDetailsJsonAlloc(allocator, params.object.get("headers"), entry.object.get("allowedHeaders"))) |details| {
+        return details;
+    }
+    if (try networkCredentialsViolationDetailsJsonAlloc(allocator, params.object.get("credentials"))) |details| {
+        return details;
+    }
+    if (try networkRequestBodyViolationDetailsJsonAlloc(allocator, params.object.get("body"), entry.object.get("maxRequestBytes"))) |details| {
+        return details;
+    }
+    return null;
+}
+
+fn networkResponsePolicyErrorAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    url: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    response_json: []const u8,
+) !?NetworkPolicyBridgeError {
+    var response = std.json.parseFromSlice(std.json.Value, allocator, response_json, .{}) catch return null;
+    defer response.deinit();
+    if (response.value != .object) return null;
+
+    const manifest_json = try activeManifestJsonAlloc(allocator, app_id);
+    defer allocator.free(manifest_json);
+    var parsed_manifest = try std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{});
+    defer parsed_manifest.deinit();
+
+    const parts = try parseNetworkUrlAlloc(allocator, url);
+    defer freeUrlParts(allocator, parts);
+    const network_policy = parsed_manifest.value.object.get("networkPolicy") orelse return null;
+    if (network_policy != .object) return null;
+    const allow = network_policy.object.get("allow") orelse return null;
+    if (allow != .array) return null;
+    const entry = networkPolicyMatchingEntry(allow, parts, method) orelse return null;
+
+    if (valueI64(response.value.object.get("delayMs"))) |delay_ms| {
+        if (networkEffectiveTimeoutMs(params.object.get("timeoutMs"), entry.object.get("timeoutMs"))) |timeout_ms| {
+            if (delay_ms > timeout_ms) {
+                return .{
+                    .code = "timeout",
+                    .message = "network.request timed out",
+                    .details_json = try networkTimeoutDetailsJsonAlloc(allocator, timeout_ms, delay_ms),
+                };
+            }
+        }
+    }
+
+    if (networkEffectiveResponseBytesLimit(parsed_manifest.value, entry)) |limit| {
+        const bytes = try jsonPayloadBytes(allocator, response.value.object.get("bodyText") orelse response.value.object.get("body"));
+        if (bytes > limit) {
+            return .{
+                .code = "network_policy_denied",
+                .message = "network.response exceeds allowed byte limit",
+                .details_json = try networkMaxBytesDetailsJsonAlloc(allocator, "maxResponseBytes", limit, bytes),
+            };
+        }
+    }
+
+    const status = valueI64(response.value.object.get("status")) orelse 0;
+    if (status >= 300 and status < 400) {
+        if (networkHeaderString(response.value.object.get("headers"), "location")) |location| {
+            const redirect_parts = parseNetworkUrlAlloc(allocator, location) catch {
+                return .{
+                    .code = "network_policy_denied",
+                    .message = "network.response redirect location is invalid",
+                    .details_json = try networkLocationDetailsJsonAlloc(allocator, location),
+                };
+            };
+            defer freeUrlParts(allocator, redirect_parts);
+            if (networkPolicyDeniesPrivateNetwork(network_policy) and isPrivateNetworkHost(redirect_parts.host)) {
+                return .{
+                    .code = "network_policy_denied",
+                    .message = "network.response redirect targets private network",
+                    .details_json = try networkOriginHostDetailsJsonAlloc(allocator, redirect_parts.origin, redirect_parts.host),
+                };
+            }
+            if (networkPolicyMatchingEntry(allow, redirect_parts, method) == null) {
+                return .{
+                    .code = "network_policy_denied",
+                    .message = "network.response redirect is outside manifest.networkPolicy",
+                    .details_json = try networkOriginMethodDetailsJsonAlloc(allocator, redirect_parts.origin, method),
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+fn networkResponsePayloadJsonAlloc(allocator: std.mem.Allocator, response_json: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, response_json, .{}) catch {
+        return allocator.dupe(u8, response_json);
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object or parsed.value.object.get("delayMs") == null) {
+        return allocator.dupe(u8, response_json);
+    }
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeByte('{');
+    var first = true;
+    var iterator = parsed.value.object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "delayMs")) continue;
+        if (!first) try out.writer.writeByte(',');
+        first = false;
+        try std.json.Stringify.value(entry.key_ptr.*, .{}, &out.writer);
+        try out.writer.writeByte(':');
+        try std.json.Stringify.value(entry.value_ptr.*, .{}, &out.writer);
+    }
+    try out.writer.writeByte('}');
+    return out.toOwnedSlice();
+}
+
+fn networkPolicyMatchingEntry(allow: std.json.Value, parts: UrlParts, method: []const u8) ?std.json.Value {
+    if (allow != .array) return null;
+    for (allow.array.items) |entry| {
+        if (networkPolicyEntryMatchesRoute(entry, parts, method)) return entry;
+    }
+    return null;
+}
+
+fn networkPolicyEntryMatchesRoute(entry: std.json.Value, parts: UrlParts, method: []const u8) bool {
+    if (entry != .object) return false;
+    const origin = valueString(entry.object.get("origin")) orelse return false;
+    if (!std.mem.eql(u8, origin, parts.origin)) return false;
+    const methods = entry.object.get("methods") orelse return false;
+    if (!stringArrayContains(methods, method)) return false;
+    if (entry.object.get("pathPrefix")) |path_prefix_value| {
+        const path_prefix = valueString(path_prefix_value) orelse return false;
+        if (!std.mem.startsWith(u8, parts.path, path_prefix)) return false;
+    }
+    return true;
+}
+
+fn networkHeaderViolationDetailsJsonAlloc(
+    allocator: std.mem.Allocator,
+    headers_value: ?std.json.Value,
+    allowed_value: ?std.json.Value,
+) !?[]u8 {
+    const headers = headers_value orelse return null;
+    if (headers == .null) return null;
+    if (headers != .object) return null;
+    const allowed = allowed_value orelse {
+        var iterator = headers.object.iterator();
+        if (iterator.next()) |entry| return try networkHeaderDetailsJsonAlloc(allocator, entry.key_ptr.*);
+        return null;
+    };
+    if (allowed != .array) return null;
+
+    var iterator = headers.object.iterator();
+    while (iterator.next()) |entry| {
+        if (isCredentialHeader(entry.key_ptr.*)) return try networkHeaderDetailsJsonAlloc(allocator, entry.key_ptr.*);
+        if (!stringArrayContains(allowed, entry.key_ptr.*)) return try networkHeaderDetailsJsonAlloc(allocator, entry.key_ptr.*);
+    }
+    return null;
+}
+
+fn networkCredentialsViolationDetailsJsonAlloc(allocator: std.mem.Allocator, credentials_value: ?std.json.Value) !?[]u8 {
+    const credentials = credentials_value orelse return null;
+    if (credentials == .null) return null;
+    const credentials_json = try jsonValueAlloc(allocator, credentials);
+    defer allocator.free(credentials_json);
+    return try std.fmt.allocPrint(allocator, "{{\"credentials\":{s}}}", .{credentials_json});
+}
+
+fn networkRequestBodyViolationDetailsJsonAlloc(
+    allocator: std.mem.Allocator,
+    body_value: ?std.json.Value,
+    max_value: ?std.json.Value,
+) !?[]u8 {
+    const max = valueI64(max_value) orelse return null;
+    if (max < 0) return null;
+    const bytes = try jsonPayloadBytes(allocator, body_value);
+    if (bytes <= max) return null;
+    return try networkMaxBytesDetailsJsonAlloc(allocator, "maxRequestBytes", max, bytes);
+}
+
+fn networkEffectiveTimeoutMs(requested_value: ?std.json.Value, policy_value: ?std.json.Value) ?i64 {
+    const requested = positiveI64(requested_value);
+    const policy = positiveI64(policy_value);
+    if (requested != null and policy != null) return @min(requested.?, policy.?);
+    return requested orelse policy;
+}
+
+fn networkEffectiveResponseBytesLimit(manifest: std.json.Value, entry: std.json.Value) ?i64 {
+    const policy_limit = positiveI64(entry.object.get("maxResponseBytes"));
+    const budget_limit = resourceBudgetLimit(manifest, "maxNetworkResponseBytes");
+    if (policy_limit != null and budget_limit != null) return @min(policy_limit.?, budget_limit.?);
+    return policy_limit orelse budget_limit;
+}
+
+fn positiveI64(value: ?std.json.Value) ?i64 {
+    const actual = valueI64(value) orelse return null;
+    if (actual <= 0) return null;
+    return actual;
+}
+
+fn jsonPayloadBytes(allocator: std.mem.Allocator, value_opt: ?std.json.Value) !i64 {
+    const value = value_opt orelse return 0;
+    if (value == .null) return 0;
+    if (value == .string) return @as(i64, @intCast(value.string.len));
+    const json = try jsonValueAlloc(allocator, value);
+    defer allocator.free(json);
+    return @as(i64, @intCast(json.len));
+}
+
+fn networkHeaderString(headers_value: ?std.json.Value, name: []const u8) ?[]const u8 {
+    const headers = headers_value orelse return null;
+    if (headers != .object) return null;
+    var iterator = headers.object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
+            return valueString(entry.value_ptr.*);
+        }
+    }
+    return null;
+}
+
+fn networkOriginMethodDetailsJsonAlloc(allocator: std.mem.Allocator, origin: []const u8, method: []const u8) ![]u8 {
+    const escaped_origin = try escapeJsonString(allocator, origin);
+    defer allocator.free(escaped_origin);
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    return std.fmt.allocPrint(allocator, "{{\"origin\":\"{s}\",\"method\":\"{s}\"}}", .{ escaped_origin, escaped_method });
+}
+
+fn networkOriginHostDetailsJsonAlloc(allocator: std.mem.Allocator, origin: []const u8, host: []const u8) ![]u8 {
+    const escaped_origin = try escapeJsonString(allocator, origin);
+    defer allocator.free(escaped_origin);
+    const escaped_host = try escapeJsonString(allocator, host);
+    defer allocator.free(escaped_host);
+    return std.fmt.allocPrint(allocator, "{{\"origin\":\"{s}\",\"host\":\"{s}\"}}", .{ escaped_origin, escaped_host });
+}
+
+fn networkHeaderDetailsJsonAlloc(allocator: std.mem.Allocator, header: []const u8) ![]u8 {
+    const escaped_header = try escapeJsonString(allocator, header);
+    defer allocator.free(escaped_header);
+    return std.fmt.allocPrint(allocator, "{{\"header\":\"{s}\"}}", .{escaped_header});
+}
+
+fn networkMaxBytesDetailsJsonAlloc(allocator: std.mem.Allocator, field: []const u8, max: i64, bytes: i64) ![]u8 {
+    const escaped_field = try escapeJsonString(allocator, field);
+    defer allocator.free(escaped_field);
+    return std.fmt.allocPrint(allocator, "{{\"{s}\":{d},\"bytes\":{d}}}", .{ escaped_field, max, bytes });
+}
+
+fn networkTimeoutDetailsJsonAlloc(allocator: std.mem.Allocator, timeout_ms: i64, delay_ms: i64) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{{\"timeoutMs\":{d},\"delayMs\":{d}}}", .{ timeout_ms, delay_ms });
+}
+
+fn networkUrlDetailsJsonAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    const escaped_url = try escapeJsonString(allocator, url);
+    defer allocator.free(escaped_url);
+    return std.fmt.allocPrint(allocator, "{{\"url\":\"{s}\"}}", .{escaped_url});
+}
+
+fn networkLocationDetailsJsonAlloc(allocator: std.mem.Allocator, location: []const u8) ![]u8 {
+    const escaped_location = try escapeJsonString(allocator, location);
+    defer allocator.free(escaped_location);
+    return std.fmt.allocPrint(allocator, "{{\"location\":\"{s}\"}}", .{escaped_location});
+}
+
 fn networkMockResultJsonAlloc(
     allocator: std.mem.Allocator,
     app_id: []const u8,
@@ -9295,6 +9662,26 @@ fn bridgePermissionApproved(allocator: std.mem.Allocator, app_id: []const u8, pe
     bindText(statement, 1, app_id);
     bindText(statement, 2, permission);
     return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
+fn permissionDetailsJsonAlloc(allocator: std.mem.Allocator, app_id: []const u8, method: []const u8, permission: []const u8) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    const escaped_permission = try escapeJsonString(allocator, permission);
+    defer allocator.free(escaped_permission);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"appId\":\"{s}\",\"method\":\"{s}\",\"requiredPermission\":\"{s}\"}}",
+        .{ escaped_app_id, escaped_method, escaped_permission },
+    );
+}
+
+fn methodDetailsJsonAlloc(allocator: std.mem.Allocator, method: []const u8) ![]u8 {
+    const escaped_method = try escapeJsonString(allocator, method);
+    defer allocator.free(escaped_method);
+    return std.fmt.allocPrint(allocator, "{{\"method\":\"{s}\"}}", .{escaped_method});
 }
 
 fn logBridgeCall(
@@ -10002,10 +10389,24 @@ fn writeControlBanError(allocator: std.mem.Allocator, stream: std.net.Stream, re
 }
 
 fn serverCapabilitiesJson(allocator: std.mem.Allocator) ![]u8 {
+    return serverCapabilitiesForAppOptionalJson(allocator, null);
+}
+
+fn serverCapabilitiesForAppJson(allocator: std.mem.Allocator, app_id: []const u8) ![]u8 {
+    return serverCapabilitiesForAppOptionalJson(allocator, app_id);
+}
+
+fn serverCapabilitiesForAppOptionalJson(allocator: std.mem.Allocator, app_id: ?[]const u8) ![]u8 {
+    const app_id_json = if (app_id) |actual_app_id| blk: {
+        const escaped_app_id = try escapeJsonString(allocator, actual_app_id);
+        defer allocator.free(escaped_app_id);
+        break :blk try std.fmt.allocPrint(allocator, ",\"appId\":\"{s}\"", .{escaped_app_id});
+    } else try allocator.dupe(u8, "");
+    defer allocator.free(app_id_json);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"runtime.snapshot\":true,\"runtime.replay\":true,\"storage.read\":true,\"storage.write\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxBodyBytes\":1048576,\"maxStorageBytes\":5242880,\"maxBridgeCallsPerMinute\":600,\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}}}",
-        .{runtime_version},
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"runtime.snapshot\":true,\"runtime.replay\":true,\"storage.read\":true,\"storage.write\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxBodyBytes\":1048576,\"maxStorageBytes\":5242880,\"maxBridgeCallsPerMinute\":600,\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}{s}}}",
+        .{ runtime_version, app_id_json },
     );
 }
 
@@ -10743,6 +11144,12 @@ fn isToastLevel(level: []const u8) bool {
         if (std.mem.eql(u8, level, candidate)) return true;
     }
     return false;
+}
+
+fn toastLevelDetailsJsonAlloc(allocator: std.mem.Allocator, level: []const u8) ![]u8 {
+    const escaped_level = try escapeJsonString(allocator, level);
+    defer allocator.free(escaped_level);
+    return std.fmt.allocPrint(allocator, "{{\"level\":\"{s}\"}}", .{escaped_level});
 }
 
 fn upperAsciiAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

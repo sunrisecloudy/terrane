@@ -125,6 +125,38 @@
       "type": "integer"
     },
     "expected": {
+      "$ref": "#/$defs/expected"
+    },
+    "expectedByPlatform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fake-host": {
+          "$ref": "#/$defs/expected"
+        },
+        "macos": {
+          "$ref": "#/$defs/expected"
+        },
+        "ios-simulator": {
+          "$ref": "#/$defs/expected"
+        },
+        "android-emulator": {
+          "$ref": "#/$defs/expected"
+        },
+        "windows": {
+          "$ref": "#/$defs/expected"
+        },
+        "linux": {
+          "$ref": "#/$defs/expected"
+        },
+        "server": {
+          "$ref": "#/$defs/expected"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "expected": {
       "type": "object",
       "additionalProperties": false,
       "properties": {

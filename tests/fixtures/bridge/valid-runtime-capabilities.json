@@ -21,6 +21,23 @@
       }
     }
   },
+  "expectedByPlatform": {
+    "server": {
+      "ok": true,
+      "resultSubset": {
+        "platform": "server",
+        "target": "zig-server",
+        "devMode": false,
+        "runtimeVersion": "0.1.0",
+        "appId": "notes-lite",
+        "features": {
+          "storage.read": true,
+          "network.request": true,
+          "dialog.openFile": true
+        }
+      }
+    }
+  },
   "platforms": [
     "fake-host",
     "macos",

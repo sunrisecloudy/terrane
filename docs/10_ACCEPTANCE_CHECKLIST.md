@@ -91,7 +91,7 @@
 - [x] Server starts.
 - [x] `/health` works.
 - [x] `/core/step` works.
-- [ ] Contract tests pass.
+- [x] Contract tests pass.
 
 ## Security
 

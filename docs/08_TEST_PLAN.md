@@ -128,9 +128,17 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
     "ok": true,
     "result": { "value": [] }
   },
+  "expectedByPlatform": {
+    "server": {
+      "ok": true,
+      "resultSubset": { "target": "zig-server" }
+    }
+  },
   "platforms": ["fake-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
 }
 ```
+
+`expectedByPlatform` is only for intentional platform-identity differences such as `runtime.capabilities.target` or for a host that rejects an invalid fixture earlier than bridge dispatch. Otherwise fixtures use `expected` and every target must match the fake host.
 
 The harness:
 
@@ -138,8 +146,8 @@ The harness:
 2. Spawns or attaches to each target platform.
 3. Applies `preconditions` via the dev control plane.
 4. Sends the request via the standard bridge dispatch path.
-5. Compares the response to `expected`, stripping non-deterministic fields (`id`, `timestamp`, durations) and any field listed under `expected.ignore`.
-6. Fails the fixture if any platform produces a different response than the fake host (which is the reference).
+5. Compares the response to `expectedByPlatform[target]` when present, otherwise `expected`, stripping non-deterministic fields (`id`, `timestamp`, durations) and any field listed under `expected.ignore`.
+6. Fails the fixture if any platform produces a different response than the fake host (which is the reference) without an explicit platform-specific expectation.
 
 ### 6.2 Required fixtures
 
@@ -225,6 +233,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - `/core/step` matches core contract.
 - Invalid request returns structured error.
 - Source compile/executable smoke runs with `node --test --no-warnings tools/fake-platform-host/test/server-zig-build.test.js`.
+- Bridge fixture contract runs against a fresh Zig server database per fixture with `node --test --no-warnings tools/fake-platform-host/test/server-bridge-contract.test.js`.
 - API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
 
 ## 8. End-to-end tests

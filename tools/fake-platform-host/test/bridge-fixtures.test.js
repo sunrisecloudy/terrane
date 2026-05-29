@@ -41,6 +41,7 @@ test("checked-in bridge fixtures match fake-host expected responses", async () =
     try {
       const fixture = JSON.parse(fs.readFileSync(path.join(fixturesDir, fileName), "utf8"));
       assertBridgeFixtureShape(fixture, fileName);
+      const expected = expectedForPlatform(fixture, "fake-host");
       const pkg = readPackage(path.join(examplesDir, fixture.context.appId));
       const manifest = {
         ...pkg.manifest,
@@ -63,29 +64,40 @@ test("checked-in bridge fixtures match fake-host expected responses", async () =
       const dispatcher = new BridgeDispatcher({ database: db, core: new CoreEngine() });
       const sessionId = db.createRuntimeSession({ appId: fixture.context.appId });
       applyBridgeFixturePreconditions(db, fixture, sessionId);
-      const { context, preconditions: _preconditions, expected: _expected, platforms: _platforms, ...request } = fixture;
+      const {
+        context,
+        preconditions: _preconditions,
+        expected: _expected,
+        expectedByPlatform: _expectedByPlatform,
+        platforms: _platforms,
+        ...request
+      } = fixture;
       const response = await dispatcher.dispatch(request, { appId: context.appId, sessionId });
-      assert.equal(response.ok, fixture.expected?.ok, fileName);
-      if (fixture.expected?.errorCode) {
-        assert.equal(response.error.code, fixture.expected.errorCode, fileName);
+      assert.equal(response.ok, expected?.ok, fileName);
+      if (expected?.errorCode) {
+        assert.equal(response.error.code, expected.errorCode, fileName);
       }
-      if ("resultOk" in (fixture.expected ?? {})) {
-        assert.equal(response.result?.ok, fixture.expected.resultOk, fileName);
+      if ("resultOk" in (expected ?? {})) {
+        assert.equal(response.result?.ok, expected.resultOk, fileName);
       }
-      if (fixture.expected?.resultErrorCode) {
-        assert.equal(response.result?.error?.code, fixture.expected.resultErrorCode, fileName);
+      if (expected?.resultErrorCode) {
+        assert.equal(response.result?.error?.code, expected.resultErrorCode, fileName);
       }
-      if (fixture.expected?.resultSubset) {
-        assertDeepSubset(response.result, fixture.expected.resultSubset, `${fileName} result`);
+      if (expected?.resultSubset) {
+        assertDeepSubset(response.result, expected.resultSubset, `${fileName} result`);
       }
-      if (fixture.expected?.errorDetailsSubset) {
-        assertDeepSubset(response.error?.details, fixture.expected.errorDetailsSubset, `${fileName} error details`);
+      if (expected?.errorDetailsSubset) {
+        assertDeepSubset(response.error?.details, expected.errorDetailsSubset, `${fileName} error details`);
       }
     } finally {
       db.close();
     }
   }
 });
+
+function expectedForPlatform(fixture, platform) {
+  return fixture.expectedByPlatform?.[platform] ?? fixture.expected;
+}
 
 function applyBridgeFixturePreconditions(db, fixture, sessionId) {
   const appId = fixture.context.appId;
