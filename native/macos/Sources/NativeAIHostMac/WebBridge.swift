@@ -229,22 +229,33 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private func recordBridgeCall(request: BridgeRequest, response: BridgeResponse, startedAt: Date) {
         guard let db = storage.databaseHandle, !request.context.appId.isEmpty else { return }
         ensureRuntimeSession(request)
+        let activeInstallId = BridgeBudgetQuarantine.activeInstallId(database: db, appId: request.context.appId)
         let sql = """
         INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at)
-        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(statement) }
-        bind(statement, 1, "bridge_macos_\(UUID().uuidString.lowercased())")
-        bind(statement, 2, runtimeSessionId(request))
-        bind(statement, 3, request.context.appId)
-        bind(statement, 4, request.method)
-        bind(statement, 5, jsonString(request.params))
-        bindNullable(statement, 6, response.result.map(jsonString))
-        bindNullable(statement, 7, response.error.map(jsonString))
-        sqlite3_bind_int64(statement, 8, Int64(Date().timeIntervalSince(startedAt) * 1000))
-        sqlite3_step(statement)
+        do {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, "bridge_macos_\(UUID().uuidString.lowercased())")
+            bind(statement, 2, runtimeSessionId(request))
+            bind(statement, 3, request.context.appId)
+            bindNullable(statement, 4, activeInstallId)
+            bind(statement, 5, request.method)
+            bind(statement, 6, jsonString(request.params))
+            bindNullable(statement, 7, response.result.map(jsonString))
+            bindNullable(statement, 8, response.error.map(jsonString))
+            sqlite3_bind_int64(statement, 9, Int64(Date().timeIntervalSince(startedAt) * 1000))
+            guard sqlite3_step(statement) == SQLITE_DONE else { return }
+        }
+        BridgeBudgetQuarantine.maybeQuarantineAfterBudgetError(
+            database: db,
+            appId: request.context.appId,
+            installId: activeInstallId,
+            error: response.error,
+            actor: "macos-runtime"
+        )
     }
 
     private func recordCoreStep(request: BridgeRequest, response: BridgeResponse) {
@@ -255,10 +266,11 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
               let result = response.result as? [String: Any]
         else { return }
         ensureRuntimeSession(request)
+        let activeInstallId = BridgeBudgetQuarantine.activeInstallId(database: db, appId: request.context.appId)
         let eventId = "core_event_macos_\(UUID().uuidString.lowercased())"
         let sql = """
         INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at)
-        VALUES (?, ?, ?, NULL, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
@@ -266,8 +278,9 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         bind(statement, 1, eventId)
         bind(statement, 2, runtimeSessionId(request))
         bind(statement, 3, request.context.appId)
-        bindNullableInt(statement, 4, stateVersionBefore(result))
-        bind(statement, 5, jsonString(event))
+        bindNullable(statement, 4, activeInstallId)
+        bindNullableInt(statement, 5, stateVersionBefore(result))
+        bind(statement, 6, jsonString(event))
         guard sqlite3_step(statement) == SQLITE_DONE else { return }
         for action in result["actions"] as? [[String: Any]] ?? [] {
             recordCoreAction(eventId: eventId, sessionId: runtimeSessionId(request), appId: request.context.appId, action: action)
@@ -293,16 +306,18 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     private func ensureRuntimeSession(_ request: BridgeRequest) {
         guard let db = storage.databaseHandle else { return }
+        let activeInstallId = BridgeBudgetQuarantine.activeInstallId(database: db, appId: request.context.appId)
         let sql = """
         INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json)
-        VALUES (?, 'macos', 'macos', '0.1.0', ?, NULL, datetime('now'), 'running', '{}', '{"source":"native-macos-bridge"}')
-        ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, status = 'running'
+        VALUES (?, 'macos', 'macos', '0.1.0', ?, ?, datetime('now'), 'running', '{}', '{"source":"native-macos-bridge"}')
+        ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, active_install_id = excluded.active_install_id, status = 'running'
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(statement) }
         bind(statement, 1, runtimeSessionId(request))
         bind(statement, 2, request.context.appId)
+        bindNullable(statement, 3, activeInstallId)
         sqlite3_step(statement)
     }
 

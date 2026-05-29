@@ -48,6 +48,23 @@ test("native bridges enforce bridge and network rate budgets", () => {
   assert.match(linuxBridge, /Network request rate exceeds manifest\.resourceBudget\.maxNetworkRequestsPerMinute/);
 });
 
+test("macOS bridge quarantines and restores after repeated resource budget errors", () => {
+  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
+  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+  const macosBudgetQuarantine = read("native/macos/Sources/NativeAIHostMac/BridgeBudgetQuarantine.swift");
+
+  assert.match(macosBridge, /BridgeBudgetQuarantine\.activeInstallId\(database: db, appId: request\.context\.appId\)/);
+  assert.match(macosBridge, /BridgeBudgetQuarantine\.maybeQuarantineAfterBudgetError\(/);
+  assert.match(macosControl, /BridgeBudgetQuarantine\.maybeQuarantineAfterBudgetError\(/);
+  assert.match(macosBudgetQuarantine, /error\?\["code"\] as\? String == "resource_budget_exceeded"/);
+  assert.match(macosBudgetQuarantine, /bridgeBudgetErrorCountSince\(database: database, appId: appId, installId: installId, seconds: 60\) >= 3/);
+  assert.match(macosBudgetQuarantine, /activeInstallId\(database: database, appId: appId\) == installId/);
+  assert.match(macosBudgetQuarantine, /quarantineWebapp\(/);
+  assert.match(macosBudgetQuarantine, /restorePrevious: true/);
+  assert.match(macosBudgetQuarantine, /"automatic rollback after quarantine"/);
+  assert.match(macosBudgetQuarantine, /actor: actor/);
+});
+
 function read(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }

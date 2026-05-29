@@ -1638,6 +1638,113 @@ struct NativeHostTests {
         #expect(networkCall.body.contains(#""budget":"maxNetworkRequestsPerMinute""#))
     }
 
+    @Test("debug control bridge quarantines and restores after repeated resource budget violations")
+    func debugControlBridgeQuarantinesAndRestoresAfterRepeatedResourceBudgetViolations() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-budget-quarantine-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let appId = "budget-quarantine-app"
+        let registry = try PlatformAppRegistry(databaseURL: dbURL)
+        try registry.installVersion(
+            appId: appId,
+            name: "Budget Quarantine App",
+            version: "0.1.0",
+            manifestJSON: try jsonObjectString([
+                "id": appId,
+                "name": "Budget Quarantine App",
+                "version": "0.1.0",
+                "runtimeVersion": "0.1.0",
+                "entry": "index.html",
+                "permissions": [],
+                "storagePrefix": "\(appId):",
+                "dataVersion": 1,
+                "capabilities": ["required": [], "optional": []],
+                "resourceBudget": ["maxBridgeCallsPerMinute": 100],
+                "networkPolicy": ["allow": []],
+            ]),
+            contentHash: "budget-quarantine-hash-v1",
+            installId: "install-budget-quarantine-v1"
+        )
+        try registry.installVersion(
+            appId: appId,
+            name: "Budget Quarantine App",
+            version: "0.2.0",
+            manifestJSON: try jsonObjectString([
+                "id": appId,
+                "name": "Budget Quarantine App",
+                "version": "0.2.0",
+                "runtimeVersion": "0.1.0",
+                "entry": "index.html",
+                "permissions": [],
+                "storagePrefix": "\(appId):",
+                "dataVersion": 1,
+                "capabilities": ["required": [], "optional": []],
+                "resourceBudget": ["maxBridgeCallsPerMinute": 0],
+                "networkPolicy": ["allow": []],
+            ]),
+            contentHash: "budget-quarantine-hash-v2",
+            installId: "install-budget-quarantine-v2"
+        )
+        #expect(try registry.activeVersion(appId: appId)?.installId == "install-budget-quarantine-v2")
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        let port = try #require(controlPlane.boundPort)
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+        let body = try jsonObjectString([
+            "tool": "runtime.call_bridge",
+            "args": [
+                "appId": appId,
+                "method": "runtime.capabilities",
+                "params": [:],
+            ],
+        ])
+
+        for _ in 0..<3 {
+            let response = try await httpRequest(
+                commandURL,
+                method: "POST",
+                headers: ["X-Platform-Control-Token": token],
+                body: body
+            )
+            #expect(response.statusCode == 200)
+            #expect(response.body.contains(#""code":"resource_budget_exceeded""#))
+            #expect(response.body.contains(#""budget":"maxBridgeCallsPerMinute""#))
+        }
+
+        #expect(try registry.activeVersion(appId: appId)?.installId == "install-budget-quarantine-v1")
+        #expect(try sqliteAppVersionStatus(dbURL: dbURL, appId: appId, installId: "install-budget-quarantine-v2") == "quarantined")
+        let events = try registry.installationEvents(appId: appId)
+        #expect(events.contains { event in
+            event.action == "quarantine"
+                && event.installId == "install-budget-quarantine-v2"
+                && event.previousInstallId == "install-budget-quarantine-v1"
+                && event.actor == "macos-control-runtime"
+        })
+        #expect(events.contains { event in
+            event.action == "rollback"
+                && event.installId == "install-budget-quarantine-v1"
+                && event.previousInstallId == "install-budget-quarantine-v2"
+                && event.actor == "macos-control-runtime"
+        })
+    }
+
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
         guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],
@@ -1884,6 +1991,26 @@ private func sqliteAppDataVersion(dbURL: URL, appId: String) throws -> Int {
         return 0
     }
     return Int(sqlite3_column_int(statement, 0))
+}
+
+private func sqliteAppVersionStatus(dbURL: URL, appId: String, installId: String) throws -> String {
+    var db: OpaquePointer?
+    guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
+        return ""
+    }
+    defer { sqlite3_close(db) }
+
+    var statement: OpaquePointer?
+    sqlite3_prepare_v2(db, "SELECT status FROM app_versions WHERE app_id = ? AND install_id = ?", -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, appId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(statement, 2, installId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW,
+          let pointer = sqlite3_column_text(statement, 0)
+    else {
+        return ""
+    }
+    return String(cString: pointer)
 }
 
 private func posixPermissions(at url: URL) throws -> Int {

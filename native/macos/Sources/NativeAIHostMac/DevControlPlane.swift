@@ -2992,24 +2992,33 @@ final class DevControlPlane: @unchecked Sendable {
         guard let db = database.handle else { return }
         let sessionId = runtimeSessionId(appId: appId)
         let active = activeAppRecord(appId: appId)
-        var statement: OpaquePointer?
         let sql = """
         INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(statement) }
-        bind(statement, 1, "bridge_\(UUID().uuidString.lowercased())")
-        bind(statement, 2, sessionId)
-        bind(statement, 3, appId)
-        bindNullable(statement, 4, active?.installId)
-        bind(statement, 5, method)
-        bind(statement, 6, jsonBody(params))
-        bindNullable(statement, 7, response.result.map(jsonString))
-        bindNullable(statement, 8, response.error.map(jsonBody))
-        sqlite3_bind_int64(statement, 9, Int64(Date().timeIntervalSince(startedAt) * 1000))
-        bind(statement, 10, Self.now())
-        sqlite3_step(statement)
+        do {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, "bridge_\(UUID().uuidString.lowercased())")
+            bind(statement, 2, sessionId)
+            bind(statement, 3, appId)
+            bindNullable(statement, 4, active?.installId)
+            bind(statement, 5, method)
+            bind(statement, 6, jsonBody(params))
+            bindNullable(statement, 7, response.result.map(jsonString))
+            bindNullable(statement, 8, response.error.map(jsonBody))
+            sqlite3_bind_int64(statement, 9, Int64(Date().timeIntervalSince(startedAt) * 1000))
+            bind(statement, 10, Self.now())
+            guard sqlite3_step(statement) == SQLITE_DONE else { return }
+        }
+        BridgeBudgetQuarantine.maybeQuarantineAfterBudgetError(
+            database: database.handle,
+            appId: appId,
+            installId: active?.installId,
+            error: response.error,
+            actor: "macos-control-runtime"
+        )
     }
 
     private func recordCoreStep(appId: String, event: Any, result: Any) {

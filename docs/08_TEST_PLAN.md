@@ -201,6 +201,7 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Storage persists.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
+- Native bridge/control dispatch quarantines an active install after three `resource_budget_exceeded` bridge responses in 60 seconds and restores the previous active install.
 - Core bridge works.
 - SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
