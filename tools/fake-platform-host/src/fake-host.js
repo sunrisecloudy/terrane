@@ -71,10 +71,11 @@ export class FakePlatformHost {
     const pkg = readPackage(packageDir);
     const signed = signPackage({ manifest: pkg.manifest, files: pkg.files, trustLevel, keypair: this.keypair });
     const smokeTest = this.evaluateBundledSmokeTests(pkg);
+    const accessibility = this.evaluateAccessibility(pkg);
     const compatibility = this.evaluateRuntimeCompatibility(pkg.manifest.runtimeVersion);
     const approval = this.evaluateUpdateApproval(pkg.manifest);
-    const canActivate = smokeTest.ok && compatibility.ok && !approval.requiresUserApproval;
-    const blockedByFailure = !smokeTest.ok || !compatibility.ok;
+    const canActivate = smokeTest.ok && accessibility.ok && compatibility.ok && !approval.requiresUserApproval;
+    const blockedByFailure = !smokeTest.ok || !accessibility.ok || !compatibility.ok;
     const install = this.database.insertInstalledPackage({
       manifest: pkg.manifest,
       files: pkg.files,
@@ -84,6 +85,7 @@ export class FakePlatformHost {
       contentHashesDocument: signed.contentHashesDocument,
       trustLevel,
       smokeTest,
+      accessibility: accessibility.report,
       compatibility,
       approval,
       activate: canActivate,
@@ -102,6 +104,7 @@ export class FakePlatformHost {
       ...install,
       status: canActivate ? "enabled" : blockedByFailure ? "quarantined" : "requires-approval",
       smokeTest,
+      accessibility: accessibility.report,
       compatibility,
       approval,
     };
@@ -175,6 +178,14 @@ export class FakePlatformHost {
         spec: [],
       };
     }
+  }
+
+  evaluateAccessibility(pkg) {
+    const report = accessibilityAuditFromHtml(pkg.manifest.id, pkg.files.get("index.html") ?? "");
+    return {
+      ok: report.status !== "fail",
+      report,
+    };
   }
 
   evaluateRuntimeCompatibility(appRuntimeVersion) {
@@ -311,25 +322,8 @@ export class FakePlatformHost {
   }
 
   runAccessibilityAudit(appId) {
-    const snapshot = this.accessibilitySnapshot(appId);
-    const checks = [
-      accessibilityCheck("document_title", snapshot.title.length > 0, "Document must include a non-empty <title>."),
-      accessibilityCheck("main_landmark", snapshot.landmarks.some((landmark) => landmark.role === "main"), "Page must include a <main> landmark."),
-      accessibilityCheck("screen_title", snapshot.headings.some((heading) => heading.level === 1), "Page must include an h1 screen title."),
-      accessibilityCheck(
-        "no_unlabeled_controls",
-        snapshot.controls.every((control) => control.name.length > 0),
-        "Every interactive control must have an accessible name.",
-        snapshot.controls.find((control) => control.name.length === 0)?.selector,
-      ),
-    ];
-    const status = checks.some((check) => check.status === "fail") ? "fail" : checks.some((check) => check.status === "warn") ? "warn" : "pass";
-    return {
-      appId,
-      checkedAt: new Date().toISOString(),
-      status,
-      checks,
-    };
+    const pkg = this.activeRuntimePackage(appId);
+    return accessibilityAuditFromHtml(appId, pkg.files.get("index.html") ?? "");
   }
 
   assertAccessibility(args) {
@@ -1328,6 +1322,28 @@ function accessibilitySnapshotFromHtml(appId, html) {
       name: htmlToText(match[2]),
     })),
     controls: extractControls(html),
+  };
+}
+
+function accessibilityAuditFromHtml(appId, html) {
+  const snapshot = accessibilitySnapshotFromHtml(appId, html);
+  const checks = [
+    accessibilityCheck("document_title", snapshot.title.length > 0, "Document must include a non-empty <title>."),
+    accessibilityCheck("main_landmark", snapshot.landmarks.some((landmark) => landmark.role === "main"), "Page must include a <main> landmark."),
+    accessibilityCheck("screen_title", snapshot.headings.some((heading) => heading.level === 1), "Page must include an h1 screen title."),
+    accessibilityCheck(
+      "no_unlabeled_controls",
+      snapshot.controls.every((control) => control.name.length > 0),
+      "Every interactive control must have an accessible name.",
+      snapshot.controls.find((control) => control.name.length === 0)?.selector,
+    ),
+  ];
+  const status = checks.some((check) => check.status === "fail") ? "fail" : checks.some((check) => check.status === "warn") ? "warn" : "pass";
+  return {
+    appId,
+    checkedAt: new Date().toISOString(),
+    status,
+    checks,
   };
 }
 

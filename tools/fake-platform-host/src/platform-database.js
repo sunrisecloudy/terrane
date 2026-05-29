@@ -60,6 +60,7 @@ export class PlatformDatabase {
     contentHashesDocument,
     trustLevel = "developer",
     smokeTest = { status: "not-run" },
+    accessibility = null,
     compatibility = { ok: true },
     approval = { requiresUserApproval: false, reasons: [] },
     activate = true,
@@ -137,7 +138,7 @@ export class PlatformDatabase {
         installId,
         reportStatus,
         prettyJson(validation),
-        prettyJson({ ok: true, signature, contentHashes: contentHashesDocument }),
+        prettyJson({ ok: accessibility?.status !== "fail", signature, contentHashes: contentHashesDocument, accessibility }),
         prettyJson({
           approved: activate ? manifest.permissions : [],
           requested: manifest.permissions,
