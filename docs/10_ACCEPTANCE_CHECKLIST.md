@@ -176,6 +176,7 @@
 - [x] Production guard rejects and audits dev-only startup flags in release builds.
 - [x] Debug dev control plane writes a 0600 per-launch token file, binds to loopback, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and audits accepted/rejected requests.
 - [x] Debug dev control plane runtime-smoke verifies `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
+- [x] Source/static checks plus Docker dev-control smoke verify Linux debug dev control routes `platform.validate_package`, `platform.run_policy_audit`, `platform.sign_webapp_package`, `platform.install_webapp_package`, and `platform.open_webapp` with repo-path guarded package reads, package policy checks, Ed25519-shaped signing metadata, transactional app registry/package/report rows, and runtime-session creation for opened installed apps.
 - [x] Debug dev control plane Docker-smoke verifies static HTML `runtime.screenshot`, `runtime.query`, target interaction, `runtime.wait_for`, `runtime.timer_advance`, and visible/text assertion commands over bundled app packages.
 - [x] Debug dev control plane Docker-smoke verifies static HTML `runtime.accessibility_snapshot`, `runtime.run_accessibility_audit`, and `runtime.assert_accessibility` controls over bundled app packages.
 - [x] Debug dev control plane Docker-smoke verifies static bundled `runtime.run_smoke_tests` through the token-gated command route and confirms `db.query_test_runs` sees the persisted run.

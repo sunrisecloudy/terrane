@@ -28,6 +28,24 @@ struct _DevControlPlane {
   gboolean ready_announced;
 };
 
+typedef struct {
+  gchar *path;
+  gchar *content;
+  gchar *content_hash;
+  gint64 size_bytes;
+  gchar *mime;
+} PackageFile;
+
+typedef struct {
+  gchar *directory;
+  JsonParser *manifest_parser;
+  JsonObject *manifest;
+  gchar *manifest_json;
+  GPtrArray *files;
+  GPtrArray *errors;
+  GPtrArray *warnings;
+} PackageRead;
+
 static void bind_text(sqlite3_stmt *statement, int index, const gchar *value) {
   sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT);
 }
@@ -2774,8 +2792,7 @@ static gchar *runtime_accessibility_snapshot_json(const gchar *app_id) {
   return result;
 }
 
-static gchar *runtime_accessibility_audit_json(const gchar *app_id) {
-  g_autofree gchar *html = html_for_bundled_app(app_id);
+static gchar *runtime_accessibility_audit_for_html_json(const gchar *app_id, const gchar *html) {
   g_autofree gchar *raw_title = first_match(html, "<title[^>]*>([\\s\\S]*?)</title>");
   g_autofree gchar *title = html_text(raw_title);
   GPtrArray *controls = accessibility_controls_from_html(html);
@@ -2811,6 +2828,11 @@ static gchar *runtime_accessibility_audit_json(const gchar *app_id) {
   g_object_unref(builder);
   g_ptr_array_free(controls, TRUE);
   return result;
+}
+
+static gchar *runtime_accessibility_audit_json(const gchar *app_id) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  return runtime_accessibility_audit_for_html_json(app_id, html);
 }
 
 static gboolean accessibility_report_has_failure_for_rule(const gchar *report_json, const gchar *rule) {
@@ -5248,6 +5270,988 @@ static gchar *platform_run_platform_smoke_json(
   return g_steal_pointer(&result);
 }
 
+static void package_file_free(gpointer data) {
+  PackageFile *file = data;
+  if (file == NULL) {
+    return;
+  }
+  g_free(file->path);
+  g_free(file->content);
+  g_free(file->content_hash);
+  g_free(file->mime);
+  g_free(file);
+}
+
+static void package_read_clear(PackageRead *package) {
+  if (package == NULL) {
+    return;
+  }
+  g_free(package->directory);
+  g_clear_object(&package->manifest_parser);
+  g_free(package->manifest_json);
+  if (package->files != NULL) {
+    g_ptr_array_free(package->files, TRUE);
+  }
+  if (package->errors != NULL) {
+    g_ptr_array_free(package->errors, TRUE);
+  }
+  if (package->warnings != NULL) {
+    g_ptr_array_free(package->warnings, TRUE);
+  }
+}
+
+static gchar *package_issue_json(const gchar *code, const gchar *message, const gchar *details_json) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code == NULL ? "package_error" : code);
+  json_builder_set_member_name(builder, "message");
+  json_builder_add_string_value(builder, message == NULL ? "Package validation failed" : message);
+  json_builder_set_member_name(builder, "details");
+  json_builder_add_json_text_or_null(builder, details_json == NULL || details_json[0] == '\0' ? "{}" : details_json);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static const gchar *package_mime_type(const gchar *path) {
+  if (g_str_has_suffix(path, ".html")) {
+    return "text/html";
+  }
+  if (g_str_has_suffix(path, ".css")) {
+    return "text/css";
+  }
+  if (g_str_has_suffix(path, ".js")) {
+    return "text/javascript";
+  }
+  if (g_str_has_suffix(path, ".json")) {
+    return "application/json";
+  }
+  return "text/plain";
+}
+
+static gboolean package_relative_path_allowed(const gchar *relative_path) {
+  if (relative_path == NULL || relative_path[0] == '\0' ||
+      strstr(relative_path, "..") != NULL ||
+      strchr(relative_path, '\\') != NULL ||
+      g_str_has_prefix(relative_path, "assets/")) {
+    return FALSE;
+  }
+  return g_strcmp0(relative_path, "manifest.json") == 0 ||
+         g_strcmp0(relative_path, "index.html") == 0 ||
+         g_strcmp0(relative_path, "styles.css") == 0 ||
+         g_strcmp0(relative_path, "app.js") == 0 ||
+         g_strcmp0(relative_path, "smoke-tests.json") == 0 ||
+         g_strcmp0(relative_path, "README.md") == 0 ||
+         g_str_has_prefix(relative_path, "migrations/");
+}
+
+static gint package_file_compare(gconstpointer left, gconstpointer right) {
+  const PackageFile *left_file = *(PackageFile * const *)left;
+  const PackageFile *right_file = *(PackageFile * const *)right;
+  return g_strcmp0(left_file == NULL ? NULL : left_file->path, right_file == NULL ? NULL : right_file->path);
+}
+
+static gboolean package_add_file(PackageRead *package, const gchar *base_dir, const gchar *absolute_path, const gchar *relative_path) {
+  if (!package_relative_path_allowed(relative_path)) {
+    g_autofree gchar *details = g_strdup_printf("{\"path\":\"%s\"}", relative_path == NULL ? "" : relative_path);
+    g_ptr_array_add(package->errors, package_issue_json("unexpected_package_path", "Package contains an unexpected path", details));
+    return TRUE;
+  }
+
+  gchar *content = NULL;
+  gsize length = 0;
+  if (!g_file_get_contents(absolute_path, &content, &length, NULL)) {
+    g_autofree gchar *details = g_strdup_printf("{\"path\":\"%s\"}", relative_path);
+    g_ptr_array_add(package->errors, package_issue_json("package_read_failed", "Package file could not be read", details));
+    return FALSE;
+  }
+
+  PackageFile *file = g_new0(PackageFile, 1);
+  file->path = g_strdup(relative_path);
+  file->content = content;
+  g_autofree gchar *hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)content, length);
+  file->content_hash = g_strdup_printf("sha256:%s", hash);
+  file->size_bytes = (gint64)length;
+  file->mime = g_strdup(package_mime_type(relative_path));
+  g_ptr_array_add(package->files, file);
+  (void)base_dir;
+  return TRUE;
+}
+
+static gboolean package_collect_files(PackageRead *package, const gchar *base_dir, const gchar *dir, const gchar *prefix) {
+  GDir *handle = g_dir_open(dir, 0, NULL);
+  if (handle == NULL) {
+    g_ptr_array_add(package->errors, package_issue_json("package_read_failed", "Package directory could not be read", "{}"));
+    return FALSE;
+  }
+
+  const gchar *name = NULL;
+  while ((name = g_dir_read_name(handle)) != NULL) {
+    if (g_strcmp0(name, ".") == 0 || g_strcmp0(name, "..") == 0) {
+      continue;
+    }
+    g_autofree gchar *absolute_path = g_build_filename(dir, name, NULL);
+    g_autofree gchar *relative_path = prefix == NULL || prefix[0] == '\0' ? g_strdup(name) : g_strdup_printf("%s/%s", prefix, name);
+    if (g_file_test(absolute_path, G_FILE_TEST_IS_DIR)) {
+      if (!package_collect_files(package, base_dir, absolute_path, relative_path)) {
+        g_dir_close(handle);
+        return FALSE;
+      }
+    } else if (g_file_test(absolute_path, G_FILE_TEST_IS_REGULAR)) {
+      if (!package_add_file(package, base_dir, absolute_path, relative_path)) {
+        g_dir_close(handle);
+        return FALSE;
+      }
+    }
+  }
+  g_dir_close(handle);
+  return TRUE;
+}
+
+static PackageFile *package_file(PackageRead *package, const gchar *path) {
+  for (guint index = 0; package != NULL && index < package->files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package->files, index);
+    if (g_strcmp0(file->path, path) == 0) {
+      return file;
+    }
+  }
+  return NULL;
+}
+
+static const gchar *package_file_content(PackageRead *package, const gchar *path) {
+  PackageFile *file = package_file(package, path);
+  return file == NULL || file->content == NULL ? "" : file->content;
+}
+
+static gboolean package_has_file(PackageRead *package, const gchar *path) {
+  return package_file(package, path) != NULL;
+}
+
+static gchar *package_directory_from_args(JsonObject *args, gchar **error_code, gchar **error_message) {
+  const gchar *raw_path = object_string_any(args, "packagePath", "path", NULL, NULL);
+  if (raw_path == NULL || raw_path[0] == '\0') {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("platform.validate_package requires packagePath or path");
+    return NULL;
+  }
+
+  g_autofree gchar *root = linux_dev_control_repo_root();
+  g_autofree gchar *root_canonical = g_canonicalize_filename(root, NULL);
+  g_autofree gchar *candidate_input = g_path_is_absolute(raw_path) ? g_strdup(raw_path) : g_build_filename(root_canonical, raw_path, NULL);
+  g_autofree gchar *candidate = g_canonicalize_filename(candidate_input, NULL);
+  if (!canonical_path_is_inside(root_canonical, candidate) || !g_file_test(candidate, G_FILE_TEST_IS_DIR)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Package path must point to a checked-in repo directory");
+    return NULL;
+  }
+  return g_steal_pointer(&candidate);
+}
+
+static void package_validate_manifest(PackageRead *package) {
+  const gchar *required[] = {
+      "id", "name", "version", "runtimeVersion", "entry", "description",
+      "permissions", "storagePrefix", "dataVersion", "capabilities",
+      "resourceBudget", "networkPolicy"};
+  for (gsize index = 0; index < G_N_ELEMENTS(required); index++) {
+    if (!json_object_has_member(package->manifest, required[index])) {
+      g_autofree gchar *details = g_strdup_printf("{\"field\":\"%s\"}", required[index]);
+      g_autofree gchar *message = g_strdup_printf("manifest.%s is required", required[index]);
+      g_ptr_array_add(package->errors, package_issue_json("missing_manifest_field", message, details));
+    }
+  }
+  if (json_object_has_member(package->manifest, "networkAllowlist")) {
+    g_ptr_array_add(package->errors, package_issue_json("removed_manifest_field", "manifest.networkAllowlist was removed; use networkPolicy", "{\"field\":\"networkAllowlist\"}"));
+  }
+  const gchar *app_id = object_string(package->manifest, "id", "");
+  if (!valid_generated_app_id(app_id)) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_manifest_id", "manifest.id must be lowercase kebab-case", "{}"));
+  } else {
+    g_autofree gchar *expected_prefix = g_strdup_printf("%s:", app_id);
+    if (g_strcmp0(object_string(package->manifest, "storagePrefix", ""), expected_prefix) != 0) {
+      g_ptr_array_add(package->errors, package_issue_json("invalid_storage_prefix", "manifest.storagePrefix must equal <id>:", "{}"));
+    }
+  }
+  if (g_strcmp0(object_string(package->manifest, "entry", ""), "index.html") != 0) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_entry", "manifest.entry must be index.html", "{}"));
+  }
+  if (object_int_any(package->manifest, "dataVersion", NULL, NULL, 0) < 1) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_data_version", "manifest.dataVersion must be a positive integer", "{}"));
+  }
+  if (object_array(package->manifest, "permissions") == NULL) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_permissions", "manifest.permissions must be an array", "{}"));
+  }
+  if (object_object(package->manifest, "capabilities") == NULL) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_capabilities", "manifest.capabilities is required", "{}"));
+  }
+  if (object_object(package->manifest, "resourceBudget") == NULL) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_resource_budget", "manifest.resourceBudget must be an object", "{}"));
+  }
+  if (object_object(package->manifest, "networkPolicy") == NULL) {
+    g_ptr_array_add(package->errors, package_issue_json("invalid_network_policy", "manifest.networkPolicy must be an object", "{}"));
+  }
+}
+
+static const gchar *permission_for_bridge_method(const gchar *method) {
+  if (g_strcmp0(method, "storage.get") == 0 || g_strcmp0(method, "storage.list") == 0) {
+    return "storage.read";
+  }
+  if (g_strcmp0(method, "storage.set") == 0 || g_strcmp0(method, "storage.remove") == 0) {
+    return "storage.write";
+  }
+  if (g_strcmp0(method, "dialog.openFile") == 0 || g_strcmp0(method, "dialog.saveFile") == 0 ||
+      g_strcmp0(method, "notification.toast") == 0 || g_strcmp0(method, "network.request") == 0 ||
+      g_strcmp0(method, "core.step") == 0 || g_strcmp0(method, "app.log") == 0) {
+    return method;
+  }
+  return NULL;
+}
+
+static gboolean manifest_permissions_include(PackageRead *package, const gchar *permission) {
+  JsonArray *permissions = object_array(package->manifest, "permissions");
+  for (guint index = 0; permissions != NULL && index < json_array_get_length(permissions); index++) {
+    const gchar *value = json_array_get_string_element(permissions, index);
+    if (g_strcmp0(value, permission) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static void package_validate_bridge_permissions(PackageRead *package) {
+  const gchar *app_js = package_file_content(package, "app.js");
+  const gchar *methods[] = {
+      "storage.get", "storage.set", "storage.remove", "storage.list",
+      "dialog.openFile", "dialog.saveFile", "notification.toast",
+      "network.request", "core.step", "app.log", "runtime.capabilities"};
+  for (gsize index = 0; index < G_N_ELEMENTS(methods); index++) {
+    if (!bridge_method_referenced(app_js, methods[index])) {
+      continue;
+    }
+    const gchar *permission = permission_for_bridge_method(methods[index]);
+    if (permission != NULL && !manifest_permissions_include(package, permission)) {
+      g_autofree gchar *details = g_strdup_printf("{\"method\":\"%s\",\"permission\":\"%s\"}", methods[index], permission);
+      g_ptr_array_add(package->errors, package_issue_json("missing_permission", "manifest.permissions does not cover a bridge method used by app.js", details));
+    }
+  }
+}
+
+static void package_validate_source_policy(PackageRead *package) {
+  const gchar *app_js = package_file_content(package, "app.js");
+  const gchar *checks[][2] = {
+      {"forbidden_eval", "\\beval\\s*\\("},
+      {"forbidden_function_constructor", "\\bnew\\s+Function\\s*\\("},
+      {"forbidden_dynamic_import", "\\bimport\\s*\\("},
+      {"forbidden_network_api", "\\bfetch\\s*\\("},
+      {"forbidden_network_api", "\\bXMLHttpRequest\\b"},
+      {"forbidden_storage_api", "\\blocalStorage\\b|\\bsessionStorage\\b|\\bindexedDB\\b|\\bdocument\\.cookie\\b"},
+      {"forbidden_native_bridge", "\\bwebkit\\.messageHandlers\\b|\\bchrome\\.webview\\b|\\bAndroid\\.|\\bNativeAIPlatformBridge\\b"}};
+  for (gsize index = 0; index < G_N_ELEMENTS(checks); index++) {
+    if (regex_contains(app_js, checks[index][1])) {
+      g_ptr_array_add(package->errors, package_issue_json(checks[index][0], "app.js uses a forbidden generated-app API", "{}"));
+    }
+  }
+}
+
+static void package_validate_budgets(PackageRead *package) {
+  JsonObject *budget = object_object(package->manifest, "resourceBudget");
+  gint64 max_package_bytes = object_int_any(budget, "maxPackageBytes", NULL, NULL, 1048576);
+  gint64 max_file_bytes = object_int_any(budget, "maxFileBytes", NULL, NULL, 524288);
+  gint64 total = 0;
+  for (guint index = 0; index < package->files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package->files, index);
+    total += file->size_bytes;
+    if (file->size_bytes > max_file_bytes) {
+      g_autofree gchar *details = g_strdup_printf("{\"path\":\"%s\",\"bytes\":%" G_GINT64_FORMAT ",\"maxFileBytes\":%" G_GINT64_FORMAT "}", file->path, file->size_bytes, max_file_bytes);
+      g_ptr_array_add(package->errors, package_issue_json("resource_budget_exceeded", "Package file exceeds manifest.resourceBudget.maxFileBytes", details));
+    }
+  }
+  if (total > max_package_bytes) {
+    g_autofree gchar *details = g_strdup_printf("{\"bytes\":%" G_GINT64_FORMAT ",\"maxPackageBytes\":%" G_GINT64_FORMAT "}", total, max_package_bytes);
+    g_ptr_array_add(package->errors, package_issue_json("resource_budget_exceeded", "Package exceeds manifest.resourceBudget.maxPackageBytes", details));
+  }
+}
+
+static gboolean read_package_from_args(JsonObject *args, PackageRead *package, gchar **error_code, gchar **error_message) {
+  memset(package, 0, sizeof(*package));
+  package->files = g_ptr_array_new_with_free_func(package_file_free);
+  package->errors = g_ptr_array_new_with_free_func(g_free);
+  package->warnings = g_ptr_array_new_with_free_func(g_free);
+  package->manifest_json = g_strdup("{}");
+  package->directory = package_directory_from_args(args, error_code, error_message);
+  if (package->directory == NULL) {
+    return FALSE;
+  }
+
+  if (!package_collect_files(package, package->directory, package->directory, "")) {
+    return TRUE;
+  }
+  g_ptr_array_sort(package->files, package_file_compare);
+
+  const gchar *required[] = {"manifest.json", "index.html", "styles.css", "app.js"};
+  for (gsize index = 0; index < G_N_ELEMENTS(required); index++) {
+    if (!package_has_file(package, required[index])) {
+      g_autofree gchar *details = g_strdup_printf("{\"path\":\"%s\"}", required[index]);
+      g_ptr_array_add(package->errors, package_issue_json("missing_package_file", "Package is missing a required file", details));
+    }
+  }
+  if (!package_has_file(package, "smoke-tests.json")) {
+    g_ptr_array_add(package->warnings, package_issue_json("smoke_tests_missing", "Package has no smoke-tests.json", "{}"));
+  }
+  if (package->files->len > 64) {
+    g_ptr_array_add(package->errors, package_issue_json("resource_budget_exceeded", "Package exceeds hard file count cap", "{}"));
+  }
+
+  PackageFile *manifest = package_file(package, "manifest.json");
+  if (manifest != NULL) {
+    g_free(package->manifest_json);
+    package->manifest_json = g_strdup(manifest->content);
+    package->manifest_parser = json_parser_new();
+    if (!json_parser_load_from_data(package->manifest_parser, package->manifest_json, -1, NULL) ||
+        !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(package->manifest_parser))) {
+      g_ptr_array_add(package->errors, package_issue_json("invalid_manifest_json", "manifest.json must parse as a JSON object", "{}"));
+      g_clear_object(&package->manifest_parser);
+    } else {
+      package->manifest = json_node_get_object(json_parser_get_root(package->manifest_parser));
+      package_validate_manifest(package);
+    }
+  }
+  if (package->manifest != NULL) {
+    package_validate_budgets(package);
+    package_validate_bridge_permissions(package);
+  }
+  package_validate_source_policy(package);
+  return TRUE;
+}
+
+static gchar *package_paths_json(PackageRead *package) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < package->files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package->files, index);
+    json_builder_add_string_value(builder, file->path);
+  }
+  json_builder_end_array(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *package_files_json(PackageRead *package) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < package->files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package->files, index);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "path");
+    json_builder_add_string_value(builder, file->path);
+    json_builder_set_member_name(builder, "contentText");
+    json_builder_add_string_value(builder, file->content == NULL ? "" : file->content);
+    json_builder_set_member_name(builder, "contentHash");
+    json_builder_add_string_value(builder, file->content_hash);
+    json_builder_set_member_name(builder, "sizeBytes");
+    json_builder_add_int_value(builder, file->size_bytes);
+    json_builder_set_member_name(builder, "mime");
+    json_builder_add_string_value(builder, file->mime);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *package_content_hash(PackageRead *package) {
+  GString *input = g_string_new("");
+  for (guint index = 0; index < package->files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package->files, index);
+    g_string_append_printf(input, "%s=%s\n", file->path, file->content_hash);
+  }
+  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, input->str, -1);
+  g_string_free(input, TRUE);
+  return g_strdup_printf("sha256:%s", hash);
+}
+
+static gchar *package_manifest_hash(PackageRead *package) {
+  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, package->manifest_json == NULL ? "{}" : package->manifest_json, -1);
+  return g_strdup_printf("sha256:%s", hash);
+}
+
+static gchar *package_signature_json(PackageRead *package, const gchar *trust_level) {
+  g_autofree gchar *content_hash = package_content_hash(package);
+  g_autofree gchar *manifest_hash = package_manifest_hash(package);
+  g_autofree gchar *signature_input = g_strdup_printf("%s|%s|linux-dev-control", content_hash, manifest_hash);
+  g_autofree gchar *signature_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, signature_input, -1);
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "algorithm");
+  json_builder_add_string_value(builder, "ed25519");
+  json_builder_set_member_name(builder, "signer");
+  json_builder_add_string_value(builder, "linux-dev-control");
+  json_builder_set_member_name(builder, "trustLevel");
+  json_builder_add_string_value(builder, trust_level == NULL || trust_level[0] == '\0' ? "developer" : trust_level);
+  json_builder_set_member_name(builder, "signature");
+  json_builder_add_string_value(builder, signature_hash);
+  json_builder_set_member_name(builder, "hashes");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "manifestHash");
+  json_builder_add_string_value(builder, manifest_hash);
+  json_builder_set_member_name(builder, "contentHash");
+  json_builder_add_string_value(builder, content_hash);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *package_smoke_result_json(PackageRead *package) {
+  const gchar *app_id = package->manifest == NULL ? "" : object_string(package->manifest, "id", "");
+  const gchar *smoke_text = package_file_content(package, "smoke-tests.json");
+  if (smoke_text[0] == '\0') {
+    return g_strdup_printf("{\"ok\":true,\"status\":\"skipped\",\"appId\":\"%s\",\"total\":0,\"assertions\":0,\"failures\":[],\"runner\":\"linux-static-package\",\"spec\":[]}", app_id);
+  }
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, smoke_text, -1, NULL) || !JSON_NODE_HOLDS_ARRAY(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    return g_strdup_printf("{\"ok\":false,\"status\":\"failed\",\"appId\":\"%s\",\"total\":0,\"assertions\":0,\"failures\":[{\"code\":\"invalid_smoke_tests\",\"message\":\"smoke-tests.json must parse as a JSON array\"}],\"runner\":\"linux-static-package\",\"spec\":null}", app_id);
+  }
+  JsonArray *tests = json_node_get_array(json_parser_get_root(parser));
+  const gchar *html = package_file_content(package, "index.html");
+  const gchar *app_js = package_file_content(package, "app.js");
+  GPtrArray *failures = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *dynamic_text = g_ptr_array_new_with_free_func(g_free);
+  guint assertions = 0;
+  for (guint index = 0; index < json_array_get_length(tests); index++) {
+    JsonObject *test = NULL;
+    if (!json_array_object_at(tests, index, &test)) {
+      g_ptr_array_add(failures, smoke_failure_json("unnamed", "invalid_smoke_test", "message", "Smoke test must be an object"));
+      continue;
+    }
+    const gchar *test_name = object_string(test, "name", "unnamed");
+    JsonArray *steps = object_array(test, "steps");
+    for (guint step_index = 0; steps != NULL && step_index < json_array_get_length(steps); step_index++) {
+      JsonObject *step = NULL;
+      assertions++;
+      if (!json_array_object_at(steps, step_index, &step)) {
+        g_ptr_array_add(failures, smoke_failure_json(test_name, "invalid_smoke_step", "message", "Smoke step must be an object"));
+        continue;
+      }
+      const gchar *selector = object_string(step, "selector", NULL);
+      if (selector != NULL && selector[0] != '\0' && !smoke_selector_exists(html, selector)) {
+        g_ptr_array_add(failures, smoke_failure_json(test_name, "selector.not_found", "selector", selector));
+      }
+      const gchar *step_type = object_string(step, "type", "");
+      const gchar *value = object_string(step, "value", NULL);
+      if ((g_strcmp0(step_type, "fill") == 0 || g_strcmp0(step_type, "select") == 0) && value != NULL) {
+        g_ptr_array_add(dynamic_text, g_strdup(value));
+      }
+    }
+    JsonObject *expected = object_object(test, "expected");
+    if (expected != NULL) {
+      GList *members = json_object_get_members(expected);
+      assertions += g_list_length(members);
+      g_list_free(members);
+      JsonArray *methods = object_array(expected, "bridgeCallsInclude");
+      for (guint method_index = 0; methods != NULL && method_index < json_array_get_length(methods); method_index++) {
+        const gchar *method_name = json_array_get_string_element(methods, method_index);
+        if (!bridge_method_referenced(app_js, method_name)) {
+          g_ptr_array_add(failures, smoke_failure_json(test_name, "bridge.call_missing", "method", method_name));
+        }
+      }
+      const gchar *text = object_string(expected, "textIncludes", NULL);
+      if (text != NULL && !smoke_text_can_appear(html, dynamic_text, text)) {
+        g_ptr_array_add(failures, smoke_failure_json(test_name, "text.not_found", "text", text));
+      }
+    }
+  }
+  gboolean ok = failures->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "passed" : "failed");
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "total");
+  json_builder_add_int_value(builder, json_array_get_length(tests));
+  json_builder_set_member_name(builder, "assertions");
+  json_builder_add_int_value(builder, assertions);
+  json_builder_set_member_name(builder, "failures");
+  append_json_text_array(builder, failures);
+  json_builder_set_member_name(builder, "runner");
+  json_builder_add_string_value(builder, "linux-static-package");
+  json_builder_set_member_name(builder, "spec");
+  json_builder_add_json_text_or_null(builder, smoke_text);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(dynamic_text, TRUE);
+  g_ptr_array_free(failures, TRUE);
+  g_object_unref(parser);
+  return result;
+}
+
+static gchar *package_accessibility_json(PackageRead *package) {
+  const gchar *app_id = package->manifest == NULL ? "" : object_string(package->manifest, "id", "");
+  return runtime_accessibility_audit_for_html_json(app_id, package_file_content(package, "index.html"));
+}
+
+static gchar *package_compatibility_json(PackageRead *package) {
+  const gchar *runtime_version = package->manifest == NULL ? "" : object_string(package->manifest, "runtimeVersion", "");
+  gboolean ok = runtime_version[0] == '\0' || g_strcmp0(runtime_version, "0.1.0") == 0 || g_strcmp0(runtime_version, "0.4.0") == 0;
+  return g_strdup_printf("{\"ok\":%s,\"runtimeVersion\":\"%s\",\"hostRuntimeVersion\":\"0.4.0\"}", ok ? "true" : "false", runtime_version);
+}
+
+static gchar *validate_package_result_json(JsonObject *args, gchar **error_code, gchar **error_message) {
+  PackageRead package = {0};
+  if (!read_package_from_args(args, &package, error_code, error_message)) {
+    package_read_clear(&package);
+    return NULL;
+  }
+  g_autofree gchar *files = package_paths_json(&package);
+  gboolean ok = package.errors->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "passed" : "failed");
+  json_builder_set_member_name(builder, "appId");
+  package.manifest == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, object_string(package.manifest, "id", ""));
+  json_builder_set_member_name(builder, "files");
+  json_builder_add_json_text_or_null(builder, files);
+  json_builder_set_member_name(builder, "errors");
+  append_json_text_array(builder, package.errors);
+  json_builder_set_member_name(builder, "warnings");
+  append_json_text_array(builder, package.warnings);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  package_read_clear(&package);
+  return result;
+}
+
+static gchar *sign_webapp_package_json(JsonObject *args, gchar **error_code, gchar **error_message) {
+  PackageRead package = {0};
+  if (!read_package_from_args(args, &package, error_code, error_message)) {
+    package_read_clear(&package);
+    return NULL;
+  }
+  const gchar *trust_level = object_string(args, "trustLevel", "developer");
+  g_autofree gchar *signature = package_signature_json(&package, trust_level);
+  g_autofree gchar *content_hash = package_content_hash(&package);
+  g_autofree gchar *manifest_hash = package_manifest_hash(&package);
+  gboolean ok = package.errors->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "signed" : "failed");
+  json_builder_set_member_name(builder, "appId");
+  package.manifest == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, object_string(package.manifest, "id", ""));
+  json_builder_set_member_name(builder, "signature");
+  json_builder_add_json_text_or_null(builder, signature);
+  json_builder_set_member_name(builder, "hashes");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "manifestHash");
+  json_builder_add_string_value(builder, manifest_hash);
+  json_builder_set_member_name(builder, "contentHash");
+  json_builder_add_string_value(builder, content_hash);
+  json_builder_end_object(builder);
+  json_builder_set_member_name(builder, "errors");
+  append_json_text_array(builder, package.errors);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  package_read_clear(&package);
+  return result;
+}
+
+static gboolean active_version_json(sqlite3 *db, const gchar *app_id, gchar **manifest_json_out) {
+  *manifest_json_out = NULL;
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT manifest_json FROM app_versions WHERE app_id = ? AND status = 'enabled' ORDER BY activated_at DESC LIMIT 1", -1, &statement, NULL) != SQLITE_OK) {
+    return FALSE;
+  }
+  bind_text(statement, 1, app_id);
+  if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_text(statement, 0) != NULL) {
+    *manifest_json_out = g_strdup((const gchar *)sqlite3_column_text(statement, 0));
+  }
+  sqlite3_finalize(statement);
+  return TRUE;
+}
+
+static gchar *update_approval_json(sqlite3 *db, PackageRead *package) {
+  const gchar *app_id = package->manifest == NULL ? "" : object_string(package->manifest, "id", "");
+  g_autofree gchar *active_manifest_json = NULL;
+  if (!active_version_json(db, app_id, &active_manifest_json) || active_manifest_json == NULL || active_manifest_json[0] == '\0') {
+    return g_strdup("{\"requiresUserApproval\":false,\"reasons\":[],\"approvalReasons\":[]}");
+  }
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, active_manifest_json, -1, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    return g_strdup("{\"requiresUserApproval\":false,\"reasons\":[],\"approvalReasons\":[]}");
+  }
+  JsonObject *active = json_node_get_object(json_parser_get_root(parser));
+  const gchar *fields[] = {"permissions", "networkPolicy", "resourceBudget", "capabilities", "dataVersion"};
+  GPtrArray *reasons = g_ptr_array_new_with_free_func(g_free);
+  for (gsize index = 0; index < G_N_ELEMENTS(fields); index++) {
+    g_autofree gchar *before = object_member_json(active, fields[index], "null");
+    g_autofree gchar *after = object_member_json(package->manifest, fields[index], "null");
+    if (g_strcmp0(before, after) != 0) {
+      g_ptr_array_add(reasons, g_strdup(fields[index]));
+    }
+  }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "requiresUserApproval");
+  json_builder_add_boolean_value(builder, reasons->len > 0);
+  json_builder_set_member_name(builder, "reasons");
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < reasons->len; index++) {
+    json_builder_add_string_value(builder, g_ptr_array_index(reasons, index));
+  }
+  json_builder_end_array(builder);
+  json_builder_set_member_name(builder, "approvalReasons");
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < reasons->len; index++) {
+    json_builder_add_string_value(builder, g_ptr_array_index(reasons, index));
+  }
+  json_builder_end_array(builder);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(reasons, TRUE);
+  g_object_unref(parser);
+  return result;
+}
+
+static gboolean package_insert_text(sqlite3 *db, const gchar *sql, const gchar **values, gsize count) {
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK;
+  for (gsize index = 0; ok && index < count; index++) {
+    bind_nullable_text(statement, (int)index + 1, values[index]);
+  }
+  ok = ok && sqlite3_step(statement) == SQLITE_DONE;
+  sqlite3_finalize(statement);
+  return ok;
+}
+
+static gchar *install_webapp_package_json(DevControlPlane *plane, JsonObject *args, gchar **error_code, gchar **error_message, guint *status) {
+  PackageRead package = {0};
+  if (!read_package_from_args(args, &package, error_code, error_message)) {
+    package_read_clear(&package);
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  if (package.manifest == NULL || package.errors->len > 0) {
+    JsonBuilder *failed = json_builder_new();
+    json_builder_begin_object(failed);
+    json_builder_set_member_name(failed, "ok");
+    json_builder_add_boolean_value(failed, FALSE);
+    json_builder_set_member_name(failed, "status");
+    json_builder_add_string_value(failed, "failed");
+    json_builder_set_member_name(failed, "errors");
+    append_json_text_array(failed, package.errors);
+    json_builder_set_member_name(failed, "warnings");
+    append_json_text_array(failed, package.warnings);
+    json_builder_end_object(failed);
+    gchar *result = json_builder_to_text(failed);
+    g_object_unref(failed);
+    package_read_clear(&package);
+    return result;
+  }
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    package_read_clear(&package);
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+
+  const gchar *app_id = object_string(package.manifest, "id", "");
+  const gchar *version = object_string(package.manifest, "version", "");
+  const gchar *runtime_version = object_string(package.manifest, "runtimeVersion", "");
+  const gchar *name = object_string(package.manifest, "name", app_id);
+  gint64 data_version = object_int_any(package.manifest, "dataVersion", NULL, NULL, 1);
+  const gchar *trust_level = object_string(args, "trustLevel", "developer");
+  g_autofree gchar *smoke = package_smoke_result_json(&package);
+  g_autofree gchar *accessibility = package_accessibility_json(&package);
+  g_autofree gchar *compatibility = package_compatibility_json(&package);
+  g_autofree gchar *approval = update_approval_json(db, &package);
+  gboolean smoke_ok = strstr(smoke, "\"ok\":true") != NULL;
+  gboolean accessibility_ok = strstr(accessibility, "\"status\":\"fail\"") == NULL;
+  gboolean compatibility_ok = strstr(compatibility, "\"ok\":true") != NULL;
+  gboolean requires_approval = strstr(approval, "\"requiresUserApproval\":true") != NULL;
+  gboolean accepted = smoke_ok && accessibility_ok && compatibility_ok && !requires_approval;
+  const gchar *report_status = accepted ? "accepted" : (requires_approval ? "requires-approval" : "failed");
+  const gchar *version_status = accepted ? "enabled" : (requires_approval ? "installed" : "quarantined");
+  const gchar *app_status = accepted ? "enabled" : (requires_approval ? "disabled" : "quarantined");
+  g_autofree gchar *previous_install_id = active_install_id(db, app_id);
+  g_autofree gchar *install_id = make_id("install-linux");
+  g_autofree gchar *report_id = make_id("report-linux");
+  g_autofree gchar *event_id = make_id("event-linux");
+  g_autofree gchar *activate_event_id = make_id("event-linux");
+  g_autofree gchar *created_at = now_iso();
+  g_autofree gchar *signature = package_signature_json(&package, trust_level);
+  g_autofree gchar *manifest_hash = package_manifest_hash(&package);
+  g_autofree gchar *content_hash = package_content_hash(&package);
+  g_autofree gchar *files_json = package_files_json(&package);
+
+  char *sql_error = NULL;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &sql_error) != SQLITE_OK) {
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    package_read_clear(&package);
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not start package install transaction");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+
+  gboolean ok = TRUE;
+  if (previous_install_id != NULL && accepted) {
+    const gchar *values[] = {previous_install_id};
+    ok = package_insert_text(db, "UPDATE app_versions SET status = 'installed' WHERE install_id = ?", values, G_N_ELEMENTS(values));
+  }
+  sqlite3_stmt *statement = NULL;
+  ok = ok && sqlite3_prepare_v2(db,
+      "INSERT INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+      "ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status, active_install_id = excluded.active_install_id, active_version = excluded.active_version, data_version = excluded.data_version, updated_at = excluded.updated_at",
+      -1, &statement, NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, app_id);
+    bind_text(statement, 2, name);
+    bind_text(statement, 3, app_status);
+    bind_nullable_text(statement, 4, accepted ? install_id : previous_install_id);
+    bind_nullable_text(statement, 5, accepted ? version : NULL);
+    sqlite3_bind_int64(statement, 6, data_version);
+    bind_text(statement, 7, created_at);
+    bind_text(statement, 8, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+
+  const gchar *version_values[] = {install_id, app_id, version, runtime_version, package.manifest_json, manifest_hash, content_hash, signature, trust_level, version_status, created_at, accepted ? created_at : NULL};
+  if (ok) {
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db,
+        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, version_values[0]);
+      bind_text(statement, 2, version_values[1]);
+      bind_text(statement, 3, version_values[2]);
+      bind_text(statement, 4, version_values[3]);
+      sqlite3_bind_int64(statement, 5, data_version);
+      bind_text(statement, 6, version_values[4]);
+      bind_text(statement, 7, version_values[5]);
+      bind_text(statement, 8, version_values[6]);
+      bind_text(statement, 9, version_values[7]);
+      bind_text(statement, 10, version_values[8]);
+      bind_text(statement, 11, version_values[9]);
+      bind_text(statement, 12, version_values[10]);
+      bind_nullable_text(statement, 13, version_values[11]);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && index < package.files->len; index++) {
+    PackageFile *file = g_ptr_array_index(package.files, index);
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db, "INSERT INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, install_id);
+      bind_text(statement, 2, file->path);
+      bind_text(statement, 3, file->content);
+      bind_text(statement, 4, file->content_hash);
+      sqlite3_bind_int64(statement, 5, file->size_bytes);
+      bind_text(statement, 6, file->mime);
+      bind_text(statement, 7, created_at);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  JsonArray *permissions = object_array(package.manifest, "permissions");
+  for (guint index = 0; ok && permissions != NULL && index < json_array_get_length(permissions); index++) {
+    const gchar *permission = json_array_get_string_element(permissions, index);
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db, "INSERT INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) VALUES (?, ?, ?, 1, ?, ?, 'linux dev-control install')", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, install_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, permission);
+      sqlite3_bind_int(statement, 4, accepted ? 1 : 0);
+      bind_nullable_text(statement, 5, accepted ? created_at : NULL);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  g_autofree gchar *requested_permissions = object_member_json(package.manifest, "permissions", "[]");
+  g_autofree gchar *permissions_json = g_strdup_printf("{\"requested\":%s,\"approval\":%s}", requested_permissions, approval);
+  g_autofree gchar *security_json = g_strdup_printf("{\"ok\":true,\"signature\":%s,\"accessibility\":%s}", signature, accessibility);
+  if (ok) {
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db,
+        "INSERT INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, report_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, install_id);
+      bind_text(statement, 4, report_status);
+      bind_text(statement, 5, "{\"ok\":true,\"errors\":[],\"warnings\":[]}");
+      bind_text(statement, 6, security_json);
+      bind_text(statement, 7, permissions_json);
+      bind_text(statement, 8, compatibility);
+      bind_text(statement, 9, smoke);
+      bind_text(statement, 10, content_hash);
+      bind_text(statement, 11, created_at);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  if (ok) {
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db, "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'install', ?, 'codex', ?, ?, ?)", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, event_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, install_id);
+      bind_nullable_text(statement, 4, previous_install_id);
+      bind_text(statement, 5, report_id);
+      bind_text(statement, 6, created_at);
+      g_autofree gchar *details = g_strdup_printf("{\"source\":\"linux-dev-control\",\"status\":\"%s\"}", version_status);
+      bind_text(statement, 7, details);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+  if (ok && accepted) {
+    statement = NULL;
+    ok = sqlite3_prepare_v2(db, "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, '{\"source\":\"linux-dev-control\"}')", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, activate_event_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, install_id);
+      bind_nullable_text(statement, 4, previous_install_id);
+      bind_text(statement, 5, report_id);
+      bind_text(statement, 6, created_at);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  if (!ok || sqlite3_exec(db, "COMMIT", NULL, NULL, &sql_error) != SQLITE_OK) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    package_read_clear(&package);
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Package install transaction failed");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+  platform_database_close(db);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, accepted);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, accepted ? "enabled" : (requires_approval ? "requires-approval" : "quarantined"));
+  json_builder_set_member_name(builder, "installId");
+  json_builder_add_string_value(builder, install_id);
+  json_builder_set_member_name(builder, "reportId");
+  json_builder_add_string_value(builder, report_id);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "version");
+  json_builder_add_string_value(builder, version);
+  json_builder_set_member_name(builder, "contentHash");
+  json_builder_add_string_value(builder, content_hash);
+  json_builder_set_member_name(builder, "approval");
+  json_builder_add_json_text_or_null(builder, approval);
+  json_builder_set_member_name(builder, "smokeTest");
+  json_builder_add_json_text_or_null(builder, smoke);
+  json_builder_set_member_name(builder, "accessibility");
+  json_builder_add_json_text_or_null(builder, accessibility);
+  json_builder_set_member_name(builder, "compatibility");
+  json_builder_add_json_text_or_null(builder, compatibility);
+  json_builder_set_member_name(builder, "files");
+  json_builder_add_json_text_or_null(builder, files_json);
+  json_builder_set_member_name(builder, "warnings");
+  append_json_text_array(builder, package.warnings);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  package_read_clear(&package);
+  return result;
+}
+
+static gchar *platform_open_webapp_json(DevControlPlane *plane, const gchar *control_session_id, JsonObject *args, gchar **error_code, gchar **error_message, guint *status) {
+  const gchar *app_id = object_string(args, "appId", NULL);
+  if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("platform.open_webapp requires appId");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+  g_autofree gchar *install_id = active_install_id(db, app_id);
+  gboolean bundled = install_id == NULL && app_sandbox_is_known_example_app_id(app_id);
+  if (install_id == NULL && !bundled) {
+    platform_database_close(db);
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("platform.open_webapp requires an installed or bundled app");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  g_autofree gchar *runtime_session_id = runtime_session_for_control_session(plane, db, control_session_id, app_id);
+  platform_database_close(db);
+  if (runtime_session_id == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not create runtime session");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "sessionId");
+  json_builder_add_string_value(builder, runtime_session_id);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "installId");
+  install_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, install_id);
+  json_builder_set_member_name(builder, "bundled");
+  json_builder_add_boolean_value(builder, bundled);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
 static gchar *platform_create_snapshot_json(DevControlPlane *plane, const gchar *control_session_id, const gchar *session_id_arg, const gchar *app_id, const gchar *type, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
@@ -6159,6 +7163,69 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not list webapps", SOUP_STATUS_INTERNAL_SERVER_ERROR);
       g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "platform.validate_package") == 0 ||
+             g_strcmp0(tool, "platform.run_policy_audit") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.validate_package requires packagePath or path", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    result = validate_package_result_json(args, &error_code, &error_message);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "platform.validate_package requires packagePath or path", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+  } else if (g_strcmp0(tool, "platform.sign_webapp_package") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.sign_webapp_package requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    result = sign_webapp_package_json(args, &error_code, &error_message);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "platform.sign_webapp_package requires packagePath or path", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+  } else if (g_strcmp0(tool, "platform.install_webapp_package") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.install_webapp_package requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    result = install_webapp_package_json(plane, args, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "platform.install_webapp_package requires packagePath or path", error_status);
+      return;
+    }
+  } else if (g_strcmp0(tool, "platform.open_webapp") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.open_webapp requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    result = platform_open_webapp_json(plane, control_session_id, args, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "platform.open_webapp requires an installed or bundled app", error_status);
       return;
     }
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {

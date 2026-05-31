@@ -159,6 +159,64 @@ test("Linux dev control exposes target and webapp listing controls", () => {
   }
 });
 
+test("Linux dev control routes package validation, signing, install, and open commands", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "platform.validate_package",
+    "platform.run_policy_audit",
+    "platform.sign_webapp_package",
+    "platform.install_webapp_package",
+    "platform.open_webapp",
+    "PackageRead",
+    "package_directory_from_args",
+    "Package path must point to a checked-in repo directory",
+    "package_collect_files",
+    "package_relative_path_allowed",
+    "unexpected_package_path",
+    "manifest.networkAllowlist was removed; use networkPolicy",
+    "manifest.storagePrefix must equal <id>:",
+    "manifest.permissions does not cover a bridge method used by app.js",
+    "Package file exceeds manifest.resourceBudget.maxFileBytes",
+    "Package exceeds manifest.resourceBudget.maxPackageBytes",
+    "validate_package_result_json",
+    "sign_webapp_package_json",
+    "install_webapp_package_json",
+    "platform_open_webapp_json",
+    "package_signature_json",
+    "algorithm",
+    "ed25519",
+    "linux-dev-control",
+    "package_smoke_result_json",
+    "linux-static-package",
+    "package_accessibility_json",
+    "package_compatibility_json",
+    "update_approval_json",
+    "requiresUserApproval",
+    "BEGIN IMMEDIATE",
+    "INSERT INTO apps",
+    "ON CONFLICT(id) DO UPDATE SET",
+    "INSERT INTO app_versions",
+    "INSERT INTO app_files",
+    "INSERT INTO app_permissions",
+    "INSERT INTO app_install_reports",
+    "INSERT INTO app_installations",
+    "active_install_id",
+    "active_version",
+    "runtime_session_for_control_session",
+    "platform.open_webapp requires an installed or bundled app",
+    "Package install transaction failed",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux package lifecycle source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf('} else if (g_strcmp0(tool, "platform.validate_package")') <
+      control.indexOf('} else if (g_strcmp0(tool, "runtime.capabilities")'),
+    "package lifecycle commands should be first-class session command routes",
+  );
+});
+
 test("Linux dev control supports static runtime UI controls over bundled app HTML", () => {
   const control = read("native/linux/src/dev_control_plane.c");
 

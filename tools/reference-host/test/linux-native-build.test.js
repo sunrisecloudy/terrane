@@ -293,6 +293,131 @@ test(
       assert.equal(listedApps.some((app) => app.appId === "notes-lite" && app.bundled === true && app.installed === false), true);
       assert.equal(listedApps.some((app) => app.appId === "task-workbench" && app.bundled === true && app.installed === false), true);
 
+      const packagePath = "webapps/examples/notes-lite";
+      const validatePackage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.validate_package", args: { packagePath } },
+      });
+      assert.equal(validatePackage.statusCode, 200, validatePackage.body);
+      const validatePackageBody = JSON.parse(validatePackage.body);
+      assert.equal(validatePackageBody.result.ok, true);
+      assert.equal(validatePackageBody.result.status, "passed");
+      assert.equal(validatePackageBody.result.appId, "notes-lite");
+      assert.equal(validatePackageBody.result.files.includes("manifest.json"), true);
+      assert.equal(validatePackageBody.result.files.includes("app.js"), true);
+
+      const policyAudit = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.run_policy_audit", args: { path: packagePath } },
+      });
+      assert.equal(policyAudit.statusCode, 200, policyAudit.body);
+      const policyAuditBody = JSON.parse(policyAudit.body);
+      assert.equal(policyAuditBody.result.ok, true);
+      assert.equal(policyAuditBody.result.errors.length, 0);
+
+      const signedPackage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.sign_webapp_package", args: { packagePath, trustLevel: "developer" } },
+      });
+      assert.equal(signedPackage.statusCode, 200, signedPackage.body);
+      const signedPackageBody = JSON.parse(signedPackage.body);
+      assert.equal(signedPackageBody.result.ok, true);
+      assert.equal(signedPackageBody.result.status, "signed");
+      assert.equal(signedPackageBody.result.signature.algorithm, "ed25519");
+      assert.equal(signedPackageBody.result.signature.signer, "linux-dev-control");
+      assert.match(signedPackageBody.result.hashes.contentHash, /^sha256:[a-f0-9]{64}$/);
+
+      const installPackage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.install_webapp_package", args: { packagePath, trustLevel: "developer" } },
+      });
+      assert.equal(installPackage.statusCode, 200, installPackage.body);
+      const installPackageBody = JSON.parse(installPackage.body);
+      assert.equal(installPackageBody.result.ok, true);
+      assert.equal(installPackageBody.result.status, "enabled");
+      assert.equal(installPackageBody.result.appId, "notes-lite");
+      assert.match(installPackageBody.result.installId, /^install-linux-/);
+      assert.match(installPackageBody.result.reportId, /^report-linux-/);
+      assert.equal(installPackageBody.result.smokeTest.status, "passed");
+      assert.equal(installPackageBody.result.accessibility.status, "pass");
+      assert.equal(installPackageBody.result.compatibility.ok, true);
+      assert.equal(installPackageBody.result.files.some((file) => file.path === "manifest.json" && file.mime === "application/json"), true);
+
+      const packageSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "notes-lite", metadata: { smoke: "linux-package-lifecycle" } },
+      });
+      assert.equal(packageSession.statusCode, 200, packageSession.body);
+      const packageSessionBody = JSON.parse(packageSession.body);
+      const packageSessionId = packageSessionBody.result.controlSessionId;
+      assert.equal(packageSessionBody.result.appId, "notes-lite");
+
+      const openInstalledPackage = await requestControl(ready.port, `/sessions/${encodeURIComponent(packageSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.open_webapp", args: { appId: "notes-lite" } },
+      });
+      assert.equal(openInstalledPackage.statusCode, 200, openInstalledPackage.body);
+      const openInstalledPackageBody = JSON.parse(openInstalledPackage.body);
+      assert.equal(openInstalledPackageBody.result.ok, true);
+      assert.equal(openInstalledPackageBody.result.appId, "notes-lite");
+      assert.equal(openInstalledPackageBody.result.installId, installPackageBody.result.installId);
+      assert.equal(openInstalledPackageBody.result.bundled, false);
+      assert.match(openInstalledPackageBody.result.sessionId, /^session-/);
+
+      const installedVersions = await requestControl(ready.port, `/sessions/${encodeURIComponent(packageSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_app_versions", args: { appId: "notes-lite" } },
+      });
+      assert.equal(installedVersions.statusCode, 200, installedVersions.body);
+      const installedVersionRows = JSON.parse(installedVersions.body).result.rows;
+      assert.equal(
+        installedVersionRows.some((row) => row.install_id === installPackageBody.result.installId && row.status === "enabled" && row.signature_json.includes("\"algorithm\":\"ed25519\"")),
+        true,
+      );
+
+      const postInstallSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.snapshot", args: {} },
+      });
+      assert.equal(postInstallSnapshot.statusCode, 200, postInstallSnapshot.body);
+      const postInstallSnapshotBody = JSON.parse(postInstallSnapshot.body);
+      assert.equal(postInstallSnapshotBody.result.apps.some((row) => row.id === "notes-lite" && row.active_install_id === installPackageBody.result.installId), true);
+      assert.equal(postInstallSnapshotBody.result.app_files.some((row) => row.install_id === installPackageBody.result.installId && row.path === "index.html"), true);
+      assert.equal(postInstallSnapshotBody.result.app_permissions.some((row) => row.install_id === installPackageBody.result.installId && row.permission === "storage.read" && Number(row.approved) === 1), true);
+      assert.equal(postInstallSnapshotBody.result.app_install_reports.some((row) => row.report_id === installPackageBody.result.reportId && row.status === "accepted"), true);
+      assert.equal(postInstallSnapshotBody.result.runtime_sessions.some((row) => row.session_id === openInstalledPackageBody.result.sessionId && row.active_install_id === installPackageBody.result.installId), true);
+
+      const packageLifecycleDbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const packageLifecycleInstallationCount = execFileSync(
+        "sqlite3",
+        [
+          packageLifecycleDbPath,
+          `SELECT COUNT(*) FROM app_installations WHERE app_id = 'notes-lite' AND install_id = '${installPackageBody.result.installId}' AND action IN ('install', 'activate');`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(Number(packageLifecycleInstallationCount), 2);
+
+      const listWebappsAfterInstall = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.list_webapps", args: {} },
+      });
+      assert.equal(listWebappsAfterInstall.statusCode, 200, listWebappsAfterInstall.body);
+      const appsAfterInstall = JSON.parse(listWebappsAfterInstall.body).result.apps;
+      assert.equal(
+        appsAfterInstall.some((app) => app.appId === "notes-lite" && app.installed === true && app.bundled === false && app.activeInstallId === installPackageBody.result.installId),
+        true,
+      );
+
       const staticScreenshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1564,6 +1689,86 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedValidatePackageCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.validate_package' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedPolicyAuditCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.run_policy_audit' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedSignPackageCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.sign_webapp_package' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedInstallPackageCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.install_webapp_package' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedOpenWebappCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.open_webapp' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const installedAppCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM apps WHERE id = 'notes-lite' AND active_install_id = '${installPackageBody.result.installId}' AND status = 'enabled';`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const installedAppFileCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM app_files WHERE install_id = '${installPackageBody.result.installId}' AND path IN ('manifest.json', 'index.html', 'styles.css', 'app.js', 'smoke-tests.json');`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const installedAppPermissionCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM app_permissions WHERE install_id = '${installPackageBody.result.installId}' AND app_id = 'notes-lite' AND approved = 1;`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const installedAppReportCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM app_install_reports WHERE report_id = '${installPackageBody.result.reportId}' AND app_id = 'notes-lite' AND install_id = '${installPackageBody.result.installId}' AND status = 'accepted';`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const openedPackageRuntimeSessionCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM runtime_sessions WHERE session_id = '${openInstalledPackageBody.result.sessionId}' AND active_app_id = 'notes-lite' AND active_install_id = '${installPackageBody.result.installId}' AND status = 'running';`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedNetworkMockCount = execFileSync(
         "sqlite3",
         [
@@ -1701,7 +1906,17 @@ test(
       assert.equal(Number(persistedMicroTestRunCount) >= 1, true);
       assert.equal(Number(persistedPlatformSmokeRunCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
-      assert.equal(Number(acceptedListWebappsCount) >= 1, true);
+      assert.equal(Number(acceptedListWebappsCount) >= 2, true);
+      assert.equal(Number(acceptedValidatePackageCount) >= 1, true);
+      assert.equal(Number(acceptedPolicyAuditCount) >= 1, true);
+      assert.equal(Number(acceptedSignPackageCount) >= 1, true);
+      assert.equal(Number(acceptedInstallPackageCount) >= 1, true);
+      assert.equal(Number(acceptedOpenWebappCount) >= 1, true);
+      assert.equal(Number(installedAppCount), 1);
+      assert.equal(Number(installedAppFileCount) >= 5, true);
+      assert.equal(Number(installedAppPermissionCount) >= 4, true);
+      assert.equal(Number(installedAppReportCount), 1);
+      assert.equal(Number(openedPackageRuntimeSessionCount), 1);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockResetCount) >= 1, true);
       assert.equal(Number(acceptedDialogMockCount) >= 1, true);
@@ -1714,6 +1929,12 @@ test(
       assert.equal(Number(coreActionCount) >= 2, true);
       assert.equal(Number(mockedNetworkBridgeCount) >= 1, true);
       assert.equal(Number(mockedDialogBridgeCount) >= 1, true);
+
+      const packageSessionEnded = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(packageSessionId)}`, {
+        method: "DELETE",
+        token,
+      });
+      assert.equal(packageSessionEnded.statusCode, 200, packageSessionEnded.body);
 
       const clearLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
