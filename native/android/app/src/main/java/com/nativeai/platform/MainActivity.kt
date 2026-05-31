@@ -14,6 +14,7 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -44,9 +45,13 @@ class MainActivity : ComponentActivity() {
         )
 
         webView = WebView(this)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         webView.settings.javaScriptEnabled = true
         webView.settings.allowFileAccess = false
+        webView.settings.allowFileAccessFromFileURLs = false
+        webView.settings.allowUniversalAccessFromFileURLs = false
         webView.settings.allowContentAccess = false
+        webView.settings.safeBrowsingEnabled = true
         smokeProbe?.install(webView, this)
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
@@ -60,6 +65,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            Log.e("NativeAIPlatform", "Android WebMessageListener support is required for the runtime bridge")
+            throw IllegalStateException("Android WebMessageListener support is required for NativeAI runtime bridge")
+        }
         WebViewCompat.addWebMessageListener(
             webView,
             "NativeAIPlatformBridge",

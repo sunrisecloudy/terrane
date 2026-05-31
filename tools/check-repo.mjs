@@ -2062,8 +2062,14 @@ function checkNativeStatic() {
   }
   const androidRequired = [
     [androidMain, "WebViewCompat.addWebMessageListener"],
+    [androidMain, "WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)"],
     [androidMain, "https://appassets.androidplatform.net"],
     [androidMain, "allowFileAccess = false"],
+    [androidMain, "allowFileAccessFromFileURLs = false"],
+    [androidMain, "allowUniversalAccessFromFileURLs = false"],
+    [androidMain, "allowContentAccess = false"],
+    [androidMain, "WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)"],
+    [androidMain, "safeBrowsingEnabled = true"],
     [androidMain, "ComponentActivity"],
     [androidMain, "AssetRootPathHandler"],
     [androidMain, "sourceOrigin.toString()"],

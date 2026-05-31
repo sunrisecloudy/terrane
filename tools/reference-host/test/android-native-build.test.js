@@ -11,6 +11,10 @@ const packageName = "com.nativeai.platform";
 const activityName = `${packageName}/.MainActivity`;
 const smokeLogTag = "NativeAIPlatformSmoke";
 
+function read(relativePath) {
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+}
+
 function commandExists(command) {
   try {
     const executable = command === "emulator" ? emulatorCommand() : command;
@@ -53,6 +57,27 @@ function findFiles(directory, predicate) {
   }
   return found;
 }
+
+test("Android WebView bridge setup is hardened before runtime load", () => {
+  const activity = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
+
+  for (const snippet of [
+    "WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)",
+    "Android WebMessageListener support is required for NativeAI runtime bridge",
+    "WebViewCompat.addWebMessageListener",
+    "setOf(\"https://appassets.androidplatform.net\")",
+    "allowFileAccess = false",
+    "allowFileAccessFromFileURLs = false",
+    "allowUniversalAccessFromFileURLs = false",
+    "allowContentAccess = false",
+    "WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)",
+    "safeBrowsingEnabled = true",
+  ]) {
+    assert.equal(activity.includes(snippet), true, `Android MainActivity should contain ${snippet}`);
+  }
+
+  assert.equal(activity.includes("addJavascriptInterface"), false);
+});
 
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",

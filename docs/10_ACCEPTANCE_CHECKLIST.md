@@ -113,6 +113,7 @@
 - [x] JNI Zig core step works.
 - [x] Storage persists.
 - [x] `notification.toast` validates message/level params against the bridge contract.
+- [x] Source/static checks verify Android WebView bridge hardening: `WEB_MESSAGE_LISTENER` feature gate, single internal origin allowlist, no `addJavascriptInterface`, file-URL access disabled, release debugging disabled, and Safe Browsing enabled.
 
 ### Windows
 
