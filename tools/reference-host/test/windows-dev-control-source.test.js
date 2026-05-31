@@ -379,6 +379,67 @@ test("Windows dev control routes package validation, signing, install, and open 
   );
 });
 
+test("Windows dev control routes app registry lifecycle commands through fixed SQLite tables", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "platform.list_webapp_versions",
+    "platform.install_report",
+    "platform.rollback_webapp",
+    "platform.quarantine_webapp",
+    "platform.uninstall_webapp",
+    "platform.approve_webapp_update",
+    "PlatformListWebappVersionsJson",
+    "PlatformInstallReportJson",
+    "PlatformRollbackWebappJson",
+    "PlatformQuarantineWebappJson",
+    "PlatformUninstallWebappJson",
+    "PlatformApproveWebappUpdateJson",
+    "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash",
+    "FROM app_versions WHERE app_id = ? ORDER BY created_at DESC",
+    "FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1",
+    "UPDATE app_versions SET status = 'rolled-back'",
+    "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?",
+    "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+    "UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?",
+    "UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?",
+    "DELETE FROM app_storage WHERE app_id = ?",
+    "UPDATE app_versions SET status = 'uninstalled' WHERE app_id = ?",
+    "UPDATE apps SET status = 'uninstalled', active_install_id = NULL, active_version = NULL, updated_at = ? WHERE id = ?",
+    "UPDATE app_permissions SET approved = 1, approved_at = ?, reason = 'approved update' WHERE install_id = ?",
+    "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
+    "INSERT INTO app_installations",
+    "'rollback'",
+    "'quarantine'",
+    "'uninstall'",
+    "'activate'",
+    "CreateRegistrySnapshotInDb",
+    "INSERT INTO runtime_snapshots",
+    "clearedStorageKeys",
+    "requiresUserApproval",
+    "approvalGranted",
+    "migrationRuns",
+    "platform.uninstall_webapp requires confirm: true",
+    "platform.approve_webapp_update requires installId",
+    "ControlSessionAllowsApp(sessionId, appId.value()",
+    "app_not_installed",
+    "install_not_found",
+    "approval_not_required",
+    "no_rollback_target",
+    "rollback_target_invalid",
+    "storage_error",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows app registry source should contain ${snippet}`);
+  }
+
+  const appRegistryRoute = control.indexOf("} else if (tool == L\"platform.list_webapp_versions\" ||");
+  assert.ok(
+    appRegistryRoute > control.indexOf("result = PlatformOpenWebappJson(sessionId") &&
+      appRegistryRoute < control.indexOf("} else if (tool == L\"runtime.capabilities\")"),
+    "app registry lifecycle commands should be token-gated session commands before runtime-only controls",
+  );
+});
+
 test("Windows dev control supports DB-backed network and dialog mocks", () => {
   const control = read("native/windows/src/DevControlPlane.cpp");
   const bridge = read("native/windows/src/WebBridge.cpp");

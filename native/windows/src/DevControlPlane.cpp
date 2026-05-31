@@ -527,6 +527,69 @@ bool ExecutePrepared(sqlite3* db, char const* sql, std::vector<SqlBinding> const
   return ok;
 }
 
+bool QuerySingleText(sqlite3* db, char const* sql, std::vector<SqlBinding> const& bindings, std::wstring* value) {
+  sqlite3_stmt* statement = nullptr;
+  bool ok = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK;
+  if (ok) {
+    for (size_t index = 0; index < bindings.size(); ++index) {
+      int sqliteIndex = static_cast<int>(index + 1);
+      auto const& binding = bindings[index];
+      switch (binding.kind) {
+        case SqlBinding::Kind::Text:
+          BindText(statement, sqliteIndex, binding.text.value_or(L""));
+          break;
+        case SqlBinding::Kind::NullableText:
+          if (binding.text.has_value() && !binding.text->empty()) {
+            BindText(statement, sqliteIndex, binding.text.value());
+          } else {
+            sqlite3_bind_null(statement, sqliteIndex);
+          }
+          break;
+        case SqlBinding::Kind::Int:
+          sqlite3_bind_int64(statement, sqliteIndex, static_cast<sqlite3_int64>(binding.integer));
+          break;
+      }
+    }
+    ok = sqlite3_step(statement) == SQLITE_ROW;
+    if (ok && value != nullptr) {
+      *value = ColumnText(statement, 0);
+    }
+  }
+  sqlite3_finalize(statement);
+  return ok;
+}
+
+int64_t QuerySingleInt(sqlite3* db, char const* sql, std::vector<SqlBinding> const& bindings) {
+  sqlite3_stmt* statement = nullptr;
+  int64_t value = 0;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+    for (size_t index = 0; index < bindings.size(); ++index) {
+      int sqliteIndex = static_cast<int>(index + 1);
+      auto const& binding = bindings[index];
+      switch (binding.kind) {
+        case SqlBinding::Kind::Text:
+          BindText(statement, sqliteIndex, binding.text.value_or(L""));
+          break;
+        case SqlBinding::Kind::NullableText:
+          if (binding.text.has_value() && !binding.text->empty()) {
+            BindText(statement, sqliteIndex, binding.text.value());
+          } else {
+            sqlite3_bind_null(statement, sqliteIndex);
+          }
+          break;
+        case SqlBinding::Kind::Int:
+          sqlite3_bind_int64(statement, sqliteIndex, static_cast<sqlite3_int64>(binding.integer));
+          break;
+      }
+    }
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      value = sqlite3_column_int64(statement, 0);
+    }
+  }
+  sqlite3_finalize(statement);
+  return value;
+}
+
 std::string ToLowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
@@ -2663,6 +2726,642 @@ struct DevControlPlane::Impl {
         L",\"appId\":" + JsonString(appId) +
         L",\"installId\":" + JsonNullableString(activeInstallId) +
         L",\"bundled\":" + std::wstring(bundled ? L"true" : L"false") + L"}";
+  }
+
+  struct InstalledVersionRecord {
+    std::wstring installId;
+    std::wstring appId;
+    std::wstring version;
+    int64_t dataVersion = 1;
+    std::wstring manifestJson;
+    std::wstring status;
+  };
+
+  struct InstallReportRecord {
+    std::wstring reportId;
+    std::wstring status;
+    std::wstring permissionsJson;
+  };
+
+  bool BeginImmediate(sqlite3* db, std::wstring* error) {
+    char* sqlError = nullptr;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      *error = L"Could not start app registry transaction";
+      sqlite3_free(sqlError);
+      return false;
+    }
+    sqlite3_free(sqlError);
+    return true;
+  }
+
+  bool CommitTransaction(sqlite3* db, std::wstring* error) {
+    char* sqlError = nullptr;
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      *error = L"App registry transaction failed";
+      sqlite3_free(sqlError);
+      return false;
+    }
+    sqlite3_free(sqlError);
+    return true;
+  }
+
+  void RollbackTransaction(sqlite3* db) {
+    sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+  }
+
+  bool LoadInstalledVersion(sqlite3* db, std::wstring const& appId, std::wstring const& installId, InstalledVersionRecord* record) {
+    sqlite3_stmt* statement = nullptr;
+    bool found = false;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT install_id, app_id, version, data_version, manifest_json, status "
+            "FROM app_versions WHERE app_id = ? AND install_id = ? LIMIT 1",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      BindText(statement, 2, installId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        record->installId = ColumnText(statement, 0);
+        record->appId = ColumnText(statement, 1);
+        record->version = ColumnText(statement, 2);
+        record->dataVersion = sqlite3_column_int64(statement, 3);
+        record->manifestJson = ColumnText(statement, 4);
+        record->status = ColumnText(statement, 5);
+        found = true;
+      }
+    }
+    sqlite3_finalize(statement);
+    return found;
+  }
+
+  bool LoadActiveInstalledVersion(sqlite3* db, std::wstring const& appId, InstalledVersionRecord* record) {
+    sqlite3_stmt* statement = nullptr;
+    bool found = false;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT v.install_id, v.app_id, v.version, v.data_version, v.manifest_json, v.status "
+            "FROM apps a JOIN app_versions v ON v.install_id = a.active_install_id "
+            "WHERE a.id = ? LIMIT 1",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        record->installId = ColumnText(statement, 0);
+        record->appId = ColumnText(statement, 1);
+        record->version = ColumnText(statement, 2);
+        record->dataVersion = sqlite3_column_int64(statement, 3);
+        record->manifestJson = ColumnText(statement, 4);
+        record->status = ColumnText(statement, 5);
+        found = true;
+      }
+    }
+    sqlite3_finalize(statement);
+    return found;
+  }
+
+  bool AppExists(sqlite3* db, std::wstring const& appId) {
+    std::wstring ignored;
+    return QuerySingleText(db, "SELECT id FROM apps WHERE id = ?", {SqlText(appId)}, &ignored);
+  }
+
+  bool LoadLatestInstallReport(sqlite3* db, std::wstring const& appId, std::wstring const& installId, InstallReportRecord* record) {
+    sqlite3_stmt* statement = nullptr;
+    bool found = false;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT report_id, status, permissions_json FROM app_install_reports "
+            "WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      BindText(statement, 2, installId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        record->reportId = ColumnText(statement, 0);
+        record->status = ColumnText(statement, 1);
+        record->permissionsJson = ColumnText(statement, 2);
+        found = true;
+      }
+    }
+    sqlite3_finalize(statement);
+    return found;
+  }
+
+  bool ReportRequiresUserApproval(std::wstring const& status, std::wstring const& permissionsJson) {
+    if (status == L"requires-approval") {
+      return true;
+    }
+    json::JsonObject permissions{nullptr};
+    if (!permissionsJson.empty() && json::JsonObject::TryParse(permissionsJson, permissions)) {
+      if (BooleanMemberTrue(permissions, L"requiresUserApproval")) {
+        return true;
+      }
+      auto approval = OptionalObjectMember(permissions, L"approval");
+      return approval.has_value() && BooleanMemberTrue(approval.value(), L"requiresUserApproval");
+    }
+    return false;
+  }
+
+  std::wstring PermissionsForInstallJson(sqlite3* db, std::wstring const& installId) {
+    sqlite3_stmt* statement = nullptr;
+    std::vector<std::wstring> permissions;
+    if (sqlite3_prepare_v2(db, "SELECT permission FROM app_permissions WHERE install_id = ? ORDER BY permission", -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, installId);
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        permissions.push_back(ColumnText(statement, 0));
+      }
+    }
+    sqlite3_finalize(statement);
+    return JsonStringArray(permissions);
+  }
+
+  std::wstring ManifestPermissionsJson(sqlite3* db, InstalledVersionRecord const& version) {
+    json::JsonObject manifest{nullptr};
+    if (!version.manifestJson.empty() && json::JsonObject::TryParse(version.manifestJson, manifest)) {
+      auto permissions = OptionalArrayMember(manifest, L"permissions");
+      if (permissions.has_value()) {
+        return std::wstring(permissions->Stringify().c_str());
+      }
+    }
+    return PermissionsForInstallJson(db, version.installId);
+  }
+
+  std::wstring ApprovedPermissionsReportJson(
+      sqlite3* db,
+      InstallReportRecord const& report,
+      InstalledVersionRecord const& version,
+      std::wstring const& approvedAt) {
+    return L"{\"previous\":" + RawJsonOrNull(report.permissionsJson) +
+        L",\"approved\":" + ManifestPermissionsJson(db, version) +
+        L",\"requiresUserApproval\":true,\"approvalGranted\":true,\"approvedAt\":" + JsonString(approvedAt) + L"}";
+  }
+
+  std::optional<std::wstring> FallbackRollbackInstallId(sqlite3* db, std::wstring const& appId, std::wstring const& activeInstallId) {
+    std::wstring installId;
+    if (QuerySingleText(
+            db,
+            "SELECT install_id FROM app_versions "
+            "WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') "
+            "ORDER BY created_at DESC LIMIT 1",
+            {SqlText(appId), SqlText(activeInstallId)},
+            &installId)) {
+      return installId;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<std::wstring> CreateRegistrySnapshotInDb(
+      sqlite3* db,
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring* error) {
+    auto runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId);
+    if (runtimeSessionId.empty()) {
+      *error = L"Could not create runtime session for app registry snapshot";
+      return std::nullopt;
+    }
+    auto snapshotId = MakeId(L"snapshot");
+    auto createdAt = NowIso();
+    auto installId = ActiveInstallId(db, appId);
+    auto snapshotJson = RuntimeSnapshotDocumentJson(db, appId, createdAt);
+    auto contentHash = L"sha256:" + Sha256Hex(snapshotJson);
+    if (!InsertRuntimeSnapshot(db, snapshotId, runtimeSessionId, appId, installId, L"manual", snapshotJson, contentHash, createdAt)) {
+      *error = L"Could not create runtime snapshot";
+      return std::nullopt;
+    }
+    return snapshotId;
+  }
+
+  std::wstring PlatformListWebappVersionsJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT install_id, app_id, version, runtime_version, data_version, manifest_hash, content_hash, "
+            "signature_json, trust_level, status, created_at, activated_at "
+            "FROM app_versions WHERE app_id = ? ORDER BY created_at DESC",
+            -1,
+            &statement,
+            nullptr) != SQLITE_OK) {
+      *error = L"Could not list Windows app versions";
+      return L"";
+    }
+    BindText(statement, 1, appId);
+
+    std::wstring versions = L"[";
+    bool first = true;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      if (!first) {
+        versions += L",";
+      }
+      first = false;
+      auto signature = ColumnText(statement, 7);
+      versions += L"{\"appId\":" + SqliteValueJson(statement, 1) +
+          L",\"appVersion\":" + SqliteValueJson(statement, 2) +
+          L",\"installId\":" + SqliteValueJson(statement, 0) +
+          L",\"status\":" + SqliteValueJson(statement, 9) +
+          L",\"installedAt\":" + SqliteValueJson(statement, 10) +
+          L",\"manifestHash\":" + SqliteValueJson(statement, 5) +
+          L",\"contentHash\":" + SqliteValueJson(statement, 6) +
+          L",\"dataVersion\":" + SqliteValueJson(statement, 4) +
+          L",\"signature\":" + RawJsonOrNull(signature) +
+          L",\"activatedAt\":" + SqliteValueJson(statement, 11) +
+          L",\"trustLevel\":" + SqliteValueJson(statement, 8) +
+          L",\"runtimeVersion\":" + SqliteValueJson(statement, 3) + L"}";
+    }
+    sqlite3_finalize(statement);
+    versions += L"]";
+    return L"{\"appId\":" + JsonString(appId) + L",\"versions\":" + versions + L"}";
+  }
+
+  std::wstring PlatformInstallReportJson(std::wstring const& appId, std::optional<std::wstring> const& installId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    sqlite3_stmt* statement = nullptr;
+    char const* sql = installId.has_value()
+        ? "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at "
+          "FROM app_install_reports WHERE app_id = ? AND install_id = ? ORDER BY created_at DESC LIMIT 1"
+        : "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at "
+          "FROM app_install_reports WHERE app_id = ? ORDER BY created_at DESC LIMIT 1";
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *error = L"Could not read Windows install report";
+      return L"";
+    }
+    BindText(statement, 1, appId);
+    if (installId.has_value()) {
+      BindText(statement, 2, installId.value());
+    }
+
+    std::wstring report = L"null";
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      auto status = ColumnText(statement, 3);
+      auto permissions = ColumnText(statement, 6);
+      report = L"{\"reportId\":" + SqliteValueJson(statement, 0) +
+          L",\"appId\":" + SqliteValueJson(statement, 1) +
+          L",\"installId\":" + SqliteValueJson(statement, 2) +
+          L",\"status\":" + JsonString(status) +
+          L",\"validation\":" + RawJsonOrNull(ColumnText(statement, 4)) +
+          L",\"security\":" + RawJsonOrNull(ColumnText(statement, 5)) +
+          L",\"permissions\":" + RawJsonOrNull(permissions) +
+          L",\"requiresUserApproval\":" + std::wstring(ReportRequiresUserApproval(status, permissions) ? L"true" : L"false") +
+          L",\"compatibility\":" + RawJsonOrNull(ColumnText(statement, 7)) +
+          L",\"smokeTest\":" + RawJsonOrNull(ColumnText(statement, 8)) +
+          L",\"contentHash\":" + SqliteValueJson(statement, 9) +
+          L",\"createdAt\":" + SqliteValueJson(statement, 10) + L"}";
+    }
+    sqlite3_finalize(statement);
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"installId\":" + (installId.has_value() ? JsonString(installId.value()) : L"null") +
+        L",\"report\":" + report + L"}";
+  }
+
+  std::wstring PlatformRollbackWebappJson(
+      std::wstring const& appId,
+      std::optional<std::wstring> const& requestedInstallId,
+      std::wstring* errorCode,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    InstalledVersionRecord active;
+    if (!LoadActiveInstalledVersion(db, appId, &active)) {
+      *errorCode = L"app_not_installed";
+      *error = L"App is not installed";
+      return L"";
+    }
+    auto targetInstallId = requestedInstallId.has_value() && !requestedInstallId->empty()
+        ? requestedInstallId
+        : FallbackRollbackInstallId(db, appId, active.installId);
+    if (!targetInstallId.has_value() || targetInstallId->empty()) {
+      *errorCode = L"no_rollback_target";
+      *error = L"No rollback target exists";
+      return L"";
+    }
+    if (targetInstallId.value() == active.installId) {
+      *errorCode = L"rollback_target_invalid";
+      *error = L"Rollback target is already active";
+      return L"";
+    }
+    InstalledVersionRecord target;
+    if (!LoadInstalledVersion(db, appId, targetInstallId.value(), &target) ||
+        target.status == L"quarantined" ||
+        target.status == L"uninstalled") {
+      *errorCode = L"rollback_target_invalid";
+      *error = L"Rollback target is invalid";
+      return L"";
+    }
+
+    if (!BeginImmediate(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    auto createdAt = NowIso();
+    bool ok = true;
+    ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'rolled-back' WHERE install_id = ?", {SqlText(active.installId)});
+    ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", {SqlText(createdAt), SqlText(target.installId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+        {SqlText(target.installId), SqlText(target.version), SqlInt(target.dataVersion), SqlText(createdAt), SqlText(appId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) "
+        "VALUES (?, ?, ?, 'rollback', ?, 'codex', ?, ?)",
+        {
+            SqlText(MakeId(L"event")),
+            SqlText(appId),
+            SqlText(target.installId),
+            SqlText(active.installId),
+            SqlText(createdAt),
+            SqlText(L"{\"targetInstallId\":" + JsonString(target.installId) + L",\"rolledBackInstallId\":" + JsonString(active.installId) + L"}"),
+        });
+    if (!ok) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      *error = L"Rollback could not be completed";
+      return L"";
+    }
+    if (!CommitTransaction(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"activeInstallId\":" + JsonString(target.installId) +
+        L",\"rolledBackInstallId\":" + JsonString(active.installId) +
+        L",\"activeVersion\":" + JsonString(target.version) +
+        L",\"dataVersion\":" + std::to_wstring(target.dataVersion) + L"}";
+  }
+
+  std::wstring PlatformQuarantineWebappJson(
+      std::wstring const& appId,
+      std::optional<std::wstring> const& installId,
+      std::wstring const& reason,
+      bool restorePrevious,
+      std::wstring* errorCode,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    InstalledVersionRecord active;
+    bool hasActive = LoadActiveInstalledVersion(db, appId, &active);
+    auto targetInstallId = installId.has_value() && !installId->empty()
+        ? installId.value()
+        : (hasActive ? active.installId : L"");
+    if (targetInstallId.empty()) {
+      *errorCode = L"app_not_installed";
+      *error = L"App is not installed";
+      return L"";
+    }
+    InstalledVersionRecord target;
+    if (!LoadInstalledVersion(db, appId, targetInstallId, &target)) {
+      *errorCode = L"install_not_found";
+      *error = L"Install was not found for app";
+      return L"";
+    }
+
+    std::optional<InstalledVersionRecord> restoreTarget;
+    if (restorePrevious && hasActive && active.installId == target.installId) {
+      auto restoreInstallId = FallbackRollbackInstallId(db, appId, target.installId);
+      if (restoreInstallId.has_value()) {
+        InstalledVersionRecord candidate;
+        if (LoadInstalledVersion(db, appId, restoreInstallId.value(), &candidate)) {
+          restoreTarget = candidate;
+        }
+      }
+    }
+
+    if (!BeginImmediate(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    auto createdAt = NowIso();
+    bool ok = true;
+    ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?", {SqlText(appId), SqlText(target.installId)});
+    if (restoreTarget.has_value()) {
+      ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", {SqlText(createdAt), SqlText(restoreTarget->installId)});
+      ok = ok && ExecutePrepared(
+          db,
+          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+          {SqlText(restoreTarget->installId), SqlText(restoreTarget->version), SqlInt(restoreTarget->dataVersion), SqlText(createdAt), SqlText(appId)});
+    } else if (hasActive && active.installId == target.installId) {
+      ok = ok && ExecutePrepared(db, "UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?", {SqlText(createdAt), SqlText(appId)});
+    }
+    auto restoredInstallId = restoreTarget.has_value() ? restoreTarget->installId : L"";
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) "
+        "VALUES (?, ?, ?, 'quarantine', ?, 'codex', ?, ?)",
+        {
+            SqlText(MakeId(L"event")),
+            SqlText(appId),
+            SqlText(target.installId),
+            SqlNullableText(restoredInstallId.empty() ? std::nullopt : std::optional<std::wstring>(restoredInstallId)),
+            SqlText(createdAt),
+            SqlText(L"{\"reason\":" + JsonString(reason) + L",\"restoredInstallId\":" + JsonNullableString(restoredInstallId) + L"}"),
+        });
+    if (restoreTarget.has_value()) {
+      ok = ok && ExecutePrepared(
+          db,
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) "
+          "VALUES (?, ?, ?, 'rollback', ?, 'codex', ?, ?)",
+          {
+              SqlText(MakeId(L"event")),
+              SqlText(appId),
+              SqlText(restoreTarget->installId),
+              SqlText(target.installId),
+              SqlText(createdAt),
+              SqlText(L"{\"reason\":\"automatic rollback after quarantine\",\"quarantinedInstallId\":" + JsonString(target.installId) + L"}"),
+          });
+    }
+    if (!ok) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      *error = L"Quarantine could not be completed";
+      return L"";
+    }
+    if (!CommitTransaction(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"installId\":" + JsonString(target.installId) +
+        L",\"status\":\"quarantined\",\"reason\":" + JsonString(reason) +
+        L",\"restoredInstallId\":" + JsonNullableString(restoredInstallId) + L"}";
+  }
+
+  std::wstring PlatformUninstallWebappJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring* errorCode,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    if (!AppExists(db, appId)) {
+      *errorCode = L"app_not_installed";
+      *error = L"App is not installed";
+      return L"";
+    }
+    auto activeInstallId = ActiveInstallId(db, appId);
+    if (!BeginImmediate(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+
+    auto snapshotId = CreateRegistrySnapshotInDb(db, childControlSessionId, appId, error);
+    if (!snapshotId.has_value()) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    auto createdAt = NowIso();
+    auto clearedStorageKeys = QuerySingleInt(db, "SELECT COUNT(*) FROM app_storage WHERE app_id = ?", {SqlText(appId)});
+    bool ok = true;
+    ok = ok && ExecutePrepared(db, "DELETE FROM app_storage WHERE app_id = ?", {SqlText(appId)});
+    ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'uninstalled' WHERE app_id = ?", {SqlText(appId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE apps SET status = 'uninstalled', active_install_id = NULL, active_version = NULL, updated_at = ? WHERE id = ?",
+        {SqlText(createdAt), SqlText(appId)});
+    if (!activeInstallId.empty()) {
+      ok = ok && ExecutePrepared(
+          db,
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) "
+          "VALUES (?, ?, ?, 'uninstall', ?, 'codex', ?, ?)",
+          {
+              SqlText(MakeId(L"event")),
+              SqlText(appId),
+              SqlText(activeInstallId),
+              SqlText(activeInstallId),
+              SqlText(createdAt),
+              SqlText(L"{\"snapshotId\":" + JsonString(snapshotId.value()) + L",\"clearedStorageKeys\":" + std::to_wstring(clearedStorageKeys) + L"}"),
+          });
+    }
+    if (!ok) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      *error = L"Uninstall could not be completed";
+      return L"";
+    }
+    if (!CommitTransaction(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"status\":\"uninstalled\",\"snapshotId\":" + JsonString(snapshotId.value()) +
+        L",\"clearedStorageKeys\":" + std::to_wstring(clearedStorageKeys) + L"}";
+  }
+
+  std::wstring PlatformApproveWebappUpdateJson(
+      std::wstring const& appId,
+      std::wstring const& installId,
+      std::wstring* errorCode,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    InstalledVersionRecord target;
+    if (!LoadInstalledVersion(db, appId, installId, &target)) {
+      *errorCode = L"install_not_found";
+      *error = L"Install was not found for app";
+      return L"";
+    }
+    if (target.status == L"quarantined" || target.status == L"uninstalled") {
+      *errorCode = L"install_status_invalid";
+      *error = L"Install cannot be approved from its current status";
+      return L"";
+    }
+    InstallReportRecord report;
+    if (!LoadLatestInstallReport(db, appId, installId, &report) || report.status != L"requires-approval") {
+      *errorCode = L"approval_not_required";
+      *error = L"Install does not require approval";
+      return L"";
+    }
+
+    InstalledVersionRecord active;
+    bool hasActive = LoadActiveInstalledVersion(db, appId, &active);
+    auto previousInstallId = hasActive ? active.installId : L"";
+    if (!BeginImmediate(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    auto createdAt = NowIso();
+    bool ok = true;
+    if (!previousInstallId.empty() && previousInstallId != installId) {
+      ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'installed' WHERE install_id = ?", {SqlText(previousInstallId)});
+    }
+    ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", {SqlText(createdAt), SqlText(installId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE app_permissions SET approved = 1, approved_at = ?, reason = 'approved update' WHERE install_id = ?",
+        {SqlText(createdAt), SqlText(installId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+        {SqlText(installId), SqlText(target.version), SqlInt(target.dataVersion), SqlText(createdAt), SqlText(appId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
+        {SqlText(ApprovedPermissionsReportJson(db, report, target, createdAt)), SqlText(report.reportId)});
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) "
+        "VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, ?)",
+        {
+            SqlText(MakeId(L"event")),
+            SqlText(appId),
+            SqlText(installId),
+            SqlNullableText(previousInstallId.empty() ? std::nullopt : std::optional<std::wstring>(previousInstallId)),
+            SqlText(report.reportId),
+            SqlText(createdAt),
+            SqlText(L"{\"approved\":true,\"previousInstallId\":" + JsonNullableString(previousInstallId) + L",\"migrationRuns\":[]}"),
+        });
+    if (!ok) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      *error = L"Update approval could not be completed";
+      return L"";
+    }
+    if (!CommitTransaction(db, error)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"installId\":" + JsonString(installId) +
+        L",\"status\":\"enabled\",\"previousInstallId\":" + JsonNullableString(previousInstallId) +
+        L",\"migrationRuns\":[]}";
   }
 
   std::wstring EvaluateSmokeTestsJson(
@@ -5748,6 +6447,78 @@ struct DevControlPlane::Impl {
       result = PlatformOpenWebappJson(sessionId, args.value(), &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", error.empty() ? L"platform.open_webapp requires an installed or bundled app" : error, 400);
+        return;
+      }
+    } else if (tool == L"platform.list_webapp_versions" ||
+        tool == L"platform.install_report" ||
+        tool == L"platform.rollback_webapp" ||
+        tool == L"platform.quarantine_webapp" ||
+        tool == L"platform.uninstall_webapp" ||
+        tool == L"platform.approve_webapp_update") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        std::wstring message = tool + L" requires appId";
+        if (tool == L"platform.list_webapp_versions") {
+          message = L"platform.list_webapp_versions requires appId";
+        } else if (tool == L"platform.install_report") {
+          message = L"platform.install_report requires appId";
+        } else if (tool == L"platform.rollback_webapp") {
+          message = L"platform.rollback_webapp requires appId";
+        } else if (tool == L"platform.quarantine_webapp") {
+          message = L"platform.quarantine_webapp requires appId";
+        } else if (tool == L"platform.uninstall_webapp") {
+          message = L"platform.uninstall_webapp requires appId";
+        } else if (tool == L"platform.approve_webapp_update") {
+          message = L"platform.approve_webapp_update requires appId";
+        }
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", message, 400);
+        return;
+      }
+      if (tool == L"platform.uninstall_webapp" && !BooleanMemberTrue(args.value(), L"confirm")) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"confirmation_required", L"platform.uninstall_webapp requires confirm: true", 400);
+        return;
+      }
+      auto installId = OptionalStringMember(args.value(), L"installId");
+      if (args->HasKey(L"installId") && !installId.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" installId must be a string", 400);
+        return;
+      }
+      auto requestedInstallId = installId.has_value() && !installId->empty() ? installId : std::optional<std::wstring>();
+      if (tool == L"platform.approve_webapp_update" && (!installId.has_value() || installId->empty())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.approve_webapp_update requires installId", 400);
+        return;
+      }
+
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      if (tool == L"platform.list_webapp_versions") {
+        result = PlatformListWebappVersionsJson(appId.value(), &error);
+      } else if (tool == L"platform.install_report") {
+        result = PlatformInstallReportJson(appId.value(), requestedInstallId, &error);
+      } else if (tool == L"platform.rollback_webapp") {
+        result = PlatformRollbackWebappJson(appId.value(), requestedInstallId, &errorCode, &errorMessage);
+      } else if (tool == L"platform.quarantine_webapp") {
+        auto reason = OptionalStringMember(args.value(), L"reason").value_or(L"manual quarantine");
+        result = PlatformQuarantineWebappJson(appId.value(), requestedInstallId, reason.empty() ? L"manual quarantine" : reason, BooleanMemberTrue(args.value(), L"restorePrevious"), &errorCode, &errorMessage);
+      } else if (tool == L"platform.uninstall_webapp") {
+        result = PlatformUninstallWebappJson(sessionId, appId.value(), &errorCode, &errorMessage);
+      } else {
+        result = PlatformApproveWebappUpdateJson(appId.value(), installId.value(), &errorCode, &errorMessage);
+      }
+      if (result.empty()) {
+        auto code = errorCode.empty() ? L"storage_error" : errorCode;
+        auto message = errorMessage.empty() ? (error.empty() ? L"Windows app registry command failed" : error) : errorMessage;
+        SendControlRouteError(client, sessionId, tool, method, path, started, code, message, code == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.capabilities") {
