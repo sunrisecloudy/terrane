@@ -249,6 +249,14 @@ bool HasMember(json::JsonObject const& object, std::wstring const& key) {
   return object.HasKey(key) && object.GetNamedValue(key).ValueType() != json::JsonValueType::Null;
 }
 
+bool BooleanMemberTrue(json::JsonObject const& object, std::wstring const& key) {
+  if (!object.HasKey(key)) {
+    return false;
+  }
+  auto value = object.GetNamedValue(key);
+  return value.ValueType() == json::JsonValueType::Boolean && value.GetBoolean();
+}
+
 std::optional<json::IJsonValue> FirstJsonValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
   for (auto const& key : keys) {
     if (!object.HasKey(key)) {
@@ -1120,6 +1128,99 @@ struct DevControlPlane::Impl {
     return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
         L",\"key\":" + JsonString(key) +
         L",\"value\":" + actualText.value() + L"}";
+  }
+
+  std::wstring ActiveVersionForApp(sqlite3* db, std::wstring const& appId) {
+    sqlite3_stmt* statement = nullptr;
+    std::wstring activeVersion;
+    if (sqlite3_prepare_v2(db, "SELECT active_version FROM apps WHERE id = ?", -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        activeVersion = ColumnText(statement, 0);
+      }
+    }
+    sqlite3_finalize(statement);
+    return activeVersion;
+  }
+
+  std::wstring DataVersionForAppJson(sqlite3* db, std::wstring const& appId) {
+    sqlite3_stmt* statement = nullptr;
+    std::wstring dataVersion = L"null";
+    if (sqlite3_prepare_v2(db, "SELECT data_version FROM apps WHERE id = ?", -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_type(statement, 0) != SQLITE_NULL) {
+        dataVersion = std::to_wstring(sqlite3_column_int64(statement, 0));
+      }
+    }
+    sqlite3_finalize(statement);
+    return dataVersion;
+  }
+
+  std::wstring RuntimeStorageResetJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    auto runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId);
+    if (runtimeSessionId.empty()) {
+      *error = L"Could not create runtime session for storage reset";
+      return L"";
+    }
+    auto snapshotId = MakeId(L"snapshot");
+    auto createdAt = NowIso();
+    auto installId = ActiveInstallId(db, appId);
+    auto activeVersion = ActiveVersionForApp(db, appId);
+    auto dataVersion = DataVersionForAppJson(db, appId);
+    auto storageRows = SafeTableRowsJson(db, "app_storage", {"app_id", "key", "value_json", "updated_at"}, "key", "app_id", appId);
+    auto snapshotJson = L"{\"appId\":" + JsonString(appId) +
+        L",\"activeInstallId\":" + JsonNullableString(installId) +
+        L",\"activeVersion\":" + JsonNullableString(activeVersion) +
+        L",\"dataVersion\":" + dataVersion +
+        L",\"storage\":" + storageRows +
+        L",\"createdAt\":" + JsonString(createdAt) + L"}";
+    auto contentHash = L"sha256:" + Sha256Hex(snapshotJson);
+    sqlite3_stmt* statement = nullptr;
+    bool ok = sqlite3_prepare_v2(
+                  db,
+                  "INSERT INTO runtime_snapshots "
+                  "(snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at) "
+                  "VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)",
+                  -1,
+                  &statement,
+                  nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(statement, 1, snapshotId);
+      BindText(statement, 2, runtimeSessionId);
+      BindText(statement, 3, appId);
+      if (installId.empty()) {
+        sqlite3_bind_null(statement, 4);
+      } else {
+        BindText(statement, 4, installId);
+      }
+      BindText(statement, 5, snapshotJson);
+      BindText(statement, 6, contentHash);
+      BindText(statement, 7, createdAt);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    if (!ok) {
+      *error = L"Could not create pre-reset runtime snapshot";
+      return L"";
+    }
+    bool deleteOk = true;
+    auto clearedStorageKeys = DeleteRows(db, "DELETE FROM app_storage WHERE app_id = ?", appId, true, &deleteOk);
+    if (!deleteOk) {
+      *error = L"Webapp storage could not be reset";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"snapshotId\":" + JsonString(snapshotId) +
+        L",\"clearedStorageKeys\":" + std::to_wstring(clearedStorageKeys) + L"}";
   }
 
   bool LoadControlSession(sqlite3* db, std::wstring const& sessionId, ControlSessionRecord* record) {
@@ -2540,6 +2641,33 @@ struct DevControlPlane::Impl {
       result = RuntimeAssertStorageJson(appId, key, args.GetNamedValue(L"value"), &errorCode, &errorMessage);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
+        return;
+      }
+    } else if (tool == L"runtime.storage_reset" || tool == L"platform.reset_webapp") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires appId", 400);
+        return;
+      }
+      if (!BooleanMemberTrue(args.value(), L"confirm")) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"confirmation_required", tool + L" requires confirm: true", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeStorageResetJson(sessionId, appId.value(), &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Webapp storage could not be reset" : error, 500);
         return;
       }
     } else if (tool == L"db.export_backup") {

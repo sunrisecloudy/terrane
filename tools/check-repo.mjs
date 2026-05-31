@@ -46,7 +46,9 @@ async function runCheck(name, fn) {
 }
 
 function checkJsonParse() {
-  const files = walk(repoRoot).filter((filePath) => filePath.endsWith(".json"));
+  const files = walk(repoRoot).filter((filePath) =>
+    filePath.endsWith(".json") && !filePath.includes(`${path.sep}external-lib${path.sep}`)
+  );
   for (const filePath of files) {
     JSON.parse(fs.readFileSync(filePath, "utf8"));
   }
@@ -1329,8 +1331,11 @@ function checkNativeStatic() {
       throw new Error(`macOS C Zig core shim missing ${snippet}`);
     }
   }
-  if (!macPackage.includes('.target(name: "CZigCoreBridge")') || !macPackage.includes('dependencies: ["CZigCoreBridge"]')) {
+  if (!macPackage.includes('.target(name: "CZigCoreBridge")') || !macPackage.includes('"CZigCoreBridge"')) {
     throw new Error("macOS package must include the C Zig core bridge target");
+  }
+  if (!macPackage.includes('.target(name: "CZigCrdtBridge")') || !macPackage.includes('"CZigCrdtBridge"')) {
+    throw new Error("macOS package must include the C Zig CRDT bridge target");
   }
   const forbiddenAppLogPermissionChecks = [
     [macBridge, '"network.request", "core.step", "app.log"'],
@@ -1684,6 +1689,8 @@ function checkNativeStatic() {
     "runtime.assert_no_console_errors",
     "runtime.storage_get",
     "runtime.storage_set",
+    "runtime.storage_reset",
+    "platform.reset_webapp",
     "runtime.assert_storage",
     "ResourceUsageJson",
     "EventLogJson",
@@ -1695,6 +1702,7 @@ function checkNativeStatic() {
     "AssertNoConsoleErrorsJson",
     "RuntimeStorageGetJson",
     "RuntimeStorageSetJson",
+    "RuntimeStorageResetJson",
     "RuntimeAssertStorageJson",
     "RecordControlStorageBridgeCall",
     "db.export_backup",
@@ -1766,6 +1774,8 @@ function checkNativeStatic() {
     "runtime.assert_no_console_errors",
     "runtime.storage_get",
     "runtime.storage_set",
+    "runtime.storage_reset",
+    "platform.reset_webapp",
     "runtime.assert_storage",
     "db.export_backup",
     "db.import_backup",

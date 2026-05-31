@@ -561,6 +561,33 @@ test(
       assert.equal(importBackupBody.result.ok, true);
       assert.equal(Number(importBackupBody.result.appStorage) >= 1, true);
 
+      const resetWithoutConfirm = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.reset_webapp", args: { appId: "task-workbench" } },
+      });
+      assert.equal(resetWithoutConfirm.statusCode, 400);
+      assert.equal(JSON.parse(resetWithoutConfirm.body).error.code, "confirmation_required");
+
+      const storageReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.storage_reset", args: { appId: "task-workbench", confirm: true } },
+      });
+      assert.equal(storageReset.statusCode, 200, storageReset.body);
+      const storageResetBody = JSON.parse(storageReset.body);
+      assert.equal(storageResetBody.result.ok, true);
+      assert.match(storageResetBody.result.snapshotId, /^snapshot-/);
+      assert.equal(Number(storageResetBody.result.clearedStorageKeys) >= 1, true);
+
+      const storageAfterReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_app_storage", args: { appId: "task-workbench" } },
+      });
+      assert.equal(storageAfterReset.statusCode, 200, storageAfterReset.body);
+      assert.deepEqual(JSON.parse(storageAfterReset.body).result.rows, []);
+
       const clearedLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -666,6 +693,14 @@ test(
           1,
         );
         assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.reset_webapp' AND decision = 'rejected' AND error_code = 'confirmation_required'").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.storage_reset' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
@@ -675,7 +710,7 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.query_app_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
-          1,
+          2,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.export_debug_bundle' AND decision = 'accepted' AND error_code IS NULL").get().count),
@@ -704,6 +739,14 @@ test(
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = 'task-workbench'").get().count),
           0,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM app_storage WHERE app_id = 'task-workbench'").get().count),
+          0,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM runtime_snapshots WHERE app_id = 'task-workbench' AND type = 'manual'").get().count) >= 1,
+          true,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM core_events WHERE app_id = 'task-workbench'").get().count),
