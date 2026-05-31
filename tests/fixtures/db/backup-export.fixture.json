@@ -43,6 +43,14 @@
   ],
   "appMigrations": [],
   "appInstallReports": [],
+  "crdtNotebooks": [],
+  "crdtDocuments": [],
+  "crdtUpdates": [],
+  "crdtHeads": [],
+  "crdtActors": [],
+  "crdtPermissions": [],
+  "crdtProposals": [],
+  "crdtSyncCursors": [],
   "runtimeCapabilities": {
     "platform": "reference-host"
   },

@@ -102,7 +102,12 @@
           "dialog.saveFile",
           "notification.toast",
           "network.request",
-          "app.log"
+          "app.log",
+          "notebook.read",
+          "notebook.write",
+          "notebook.propose",
+          "notebook.approve",
+          "notebook.sync"
         ]
       }
     },

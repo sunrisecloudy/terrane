@@ -34,7 +34,7 @@ function targetArgsForHost() {
 }
 
 function zigServerModuleArgs() {
-  return ["--dep", "zig_core", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig"];
+  return ["--dep", "zig_core", "--dep", "zig_crdt", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig", "-Mzig_crdt=../zig-crdt/src/lib.zig"];
 }
 
 test(
@@ -47,9 +47,15 @@ test(
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-server-"));
     const targetArgs = targetArgsForHost();
     const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
+    const zigEnv = {
+      ...process.env,
+      ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
+      ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
+    };
     try {
       execFileSync("zig", ["build-exe", ...zigServerModuleArgs(), ...targetArgs, "-lc", "-lsqlite3", "-fno-emit-bin"], {
         cwd: serverDir,
+        env: zigEnv,
         stdio: "ignore",
       });
 
@@ -59,14 +65,14 @@ test(
         execFileSync(
           "zig",
           ["build-obj", ...zigServerModuleArgs(), ...targetArgs, "-lc", `-femit-bin=${objectPath}`],
-          { cwd: serverDir, stdio: "ignore" },
+          { cwd: serverDir, env: zigEnv, stdio: "ignore" },
         );
         execFileSync("cc", [objectPath, "-lsqlite3", "-o", executablePath], { stdio: "ignore" });
       } else {
         execFileSync(
           "zig",
           ["build-exe", ...zigServerModuleArgs(), ...targetArgs, "-lc", "-lsqlite3", `-femit-bin=${executablePath}`],
-          { cwd: serverDir, stdio: "ignore" },
+          { cwd: serverDir, env: zigEnv, stdio: "ignore" },
         );
       }
 

@@ -1,5 +1,6 @@
 import { referenceHostCapabilities } from "./capabilities.js";
 import { bridgeError, bridgeOk, errorBody, PlatformError } from "./errors.js";
+import { NotebookCrdtService } from "./notebook-crdt.js";
 import { id as makeId } from "./util.js";
 
 const METHOD_PERMISSION = new Map([
@@ -12,6 +13,16 @@ const METHOD_PERMISSION = new Map([
   ["dialog.saveFile", "dialog.saveFile"],
   ["notification.toast", "notification.toast"],
   ["network.request", "network.request"],
+  ["notebook.open", "notebook.read"],
+  ["notebook.apply_local", "notebook.write"],
+  ["notebook.propose_ai_patch", "notebook.propose"],
+  ["notebook.accept_proposal", "notebook.approve"],
+  ["notebook.reject_proposal", "notebook.approve"],
+  ["notebook.snapshot", "notebook.read"],
+  ["notebook.checkout", "notebook.read"],
+  ["notebook.sync_pull", "notebook.sync"],
+  ["notebook.sync_push", "notebook.sync"],
+  ["notebook.subscribe", "notebook.read"],
 ]);
 
 export class BridgeDispatcher {
@@ -22,6 +33,7 @@ export class BridgeDispatcher {
     this.allowRuntimeMismatch = allowRuntimeMismatch;
     this.capabilityOverrides = capabilityOverrides;
     this.faults = [];
+    this.notebooks = new NotebookCrdtService({ database });
   }
 
   addFault({ appId = null, method, code = "fault_injected", message = "Injected bridge fault", details = {}, once = true } = {}) {
@@ -62,7 +74,7 @@ export class BridgeDispatcher {
         throw new PlatformError("bridge.unauthorized_channel", "Bridge calls require a channel-derived app id");
       }
 
-      const result = await this.call(method, params, { appId, sessionId, active });
+      const result = await this.call(method, params, { ...context, appId, sessionId, active });
       const response = bridgeOk(id, result);
       this.database.logBridgeCall({
         sessionId,
@@ -101,8 +113,17 @@ export class BridgeDispatcher {
     this.assertCapability(method, context);
     this.assertResourceBudget(method, params, context);
 
+    const enrichedContext = {
+      ...context,
+      approvedPermissions: this.database.approvedPermissions(context.appId),
+    };
+
     if (method.startsWith("storage.")) {
       return this.storage(method, params, context);
+    }
+
+    if (method.startsWith("notebook.")) {
+      return this.notebook(method, params, enrichedContext);
     }
 
     if (method === "core.step") {
@@ -348,6 +369,20 @@ export class BridgeDispatcher {
       return { keys: this.database.storageList(context.appId, params.prefix) };
     }
     throw new PlatformError("unknown_method", `Unknown storage method: ${method}`, { method });
+  }
+
+  notebook(method, params, context) {
+    if (method === "notebook.open") return this.notebooks.open(params, context);
+    if (method === "notebook.apply_local") return this.notebooks.applyLocal(params, context);
+    if (method === "notebook.propose_ai_patch") return this.notebooks.proposeAiPatch(params, context);
+    if (method === "notebook.accept_proposal") return this.notebooks.acceptProposal(params, context);
+    if (method === "notebook.reject_proposal") return this.notebooks.rejectProposal(params, context);
+    if (method === "notebook.snapshot") return this.notebooks.snapshot(params, context);
+    if (method === "notebook.checkout") return this.notebooks.checkout(params, context);
+    if (method === "notebook.sync_pull") return this.notebooks.syncPull(params, context);
+    if (method === "notebook.sync_push") return this.notebooks.syncPush(params, context);
+    if (method === "notebook.subscribe") return this.notebooks.subscribe(params, context);
+    throw new PlatformError("unknown_method", `Unknown notebook method: ${method}`, { method });
   }
 
   assertNetworkPolicy(params, context) {

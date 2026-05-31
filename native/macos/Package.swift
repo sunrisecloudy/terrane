@@ -12,9 +12,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "CZigCoreBridge"),
+        .target(name: "CZigCrdtBridge"),
         .executableTarget(
             name: "NativeAIHostMac",
-            dependencies: ["CZigCoreBridge"],
+            dependencies: ["CZigCoreBridge", "CZigCrdtBridge"],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
             ],

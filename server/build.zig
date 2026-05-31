@@ -9,6 +9,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const crdt_module = b.createModule(.{
+        .root_source_file = b.path("../zig-crdt/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const server_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -16,6 +21,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zig_core", .module = core_module },
+            .{ .name = "zig_crdt", .module = crdt_module },
         },
     });
 

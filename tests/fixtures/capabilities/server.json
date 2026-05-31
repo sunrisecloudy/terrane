@@ -19,7 +19,12 @@
     "dialog.saveFile": true,
     "notification.toast": true,
     "network.request": true,
-    "app.log": true
+    "app.log": true,
+    "notebook.read": true,
+    "notebook.write": true,
+    "notebook.propose": true,
+    "notebook.approve": true,
+    "notebook.sync": true
   },
   "limits": {
     "maxBodyBytes": 1048576,

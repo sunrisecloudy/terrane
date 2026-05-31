@@ -70,6 +70,7 @@ final class DevControlPlane: @unchecked Sendable {
     private let database: PlatformDatabase
     private let databaseURL: URL?
     private let core = ZigCoreBridge()
+    private let crdt = ZigCrdtBridge()
     private let signingKey: Curve25519.Signing.PrivateKey
     private let signingKeyAccount: String
     private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
@@ -623,6 +624,7 @@ final class DevControlPlane: @unchecked Sendable {
                 "notification.toast": true,
                 "network.request": true,
                 "core.step": core.isAvailable,
+                "notebook.crdt": crdt.smokeMaterialize(),
                 "runtime.capabilities": true,
                 "app.log": true,
             ],

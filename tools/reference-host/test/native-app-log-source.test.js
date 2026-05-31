@@ -16,6 +16,7 @@ test("native bridges validate and budget app.log", () => {
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
   const linuxHost = read("native/linux/src/webkit_host.c");
+  const linuxSandbox = read("native/linux/src/app_sandbox.c");
 
   assert.match(androidBridge, /private fun appLog\(request: BridgeRequest\): String/);
   assert.match(androidBridge, /app\.log level must be debug, info, warn, or error/);
@@ -63,7 +64,7 @@ test("native bridges validate and budget app.log", () => {
   assert.match(linuxBridge, /maxLogLinesPerMinute/);
   assert.match(linuxBridge, /bridge_call_count_since\(bridge, request->context\.app_id, "app\.log", 60\)/);
   assert.match(linuxBridge, /add_resource_budget_limits\(builder, &request->context\)/);
-  assert.match(linuxHost, /\.resource_budget = resource_budget_for_app\(app_id\)/);
+  assert.match(linuxSandbox, /\.resource_budget = resource_budget_for_app\(app_id\)/);
 });
 
 function read(relativePath) {

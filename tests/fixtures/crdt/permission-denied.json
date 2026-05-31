@@ -1,0 +1,456 @@
+{
+  "actors": [
+    {
+      "id": "actor_seed",
+      "kind": "system",
+      "loroPeerId": 700,
+      "permissions": [
+        "notebook.read",
+        "notebook.write"
+      ]
+    },
+    {
+      "id": "actor_ai_assistant",
+      "kind": "ai",
+      "loroPeerId": 701,
+      "permissions": [
+        "notebook.read",
+        "notebook.propose"
+      ]
+    }
+  ],
+  "expected": {
+    "audit": [
+      {
+        "actorId": "actor_seed",
+        "loroApplied": true,
+        "operationId": "op_denied_seed",
+        "status": "accepted"
+      },
+      {
+        "actorId": "actor_ai_assistant",
+        "errorCode": "permission_denied",
+        "loroApplied": false,
+        "operationId": "op_denied_ai_direct_write",
+        "status": "rejected"
+      }
+    ],
+    "frontier": [
+      {
+        "counter": 54,
+        "id": "54@700",
+        "peer": 700
+      }
+    ],
+    "loroDeepValue": {
+      "notebook": {
+        "aiRuns": {},
+        "approvals": {},
+        "cells": [
+          {
+            "createdBy": "actor_seed",
+            "id": "cell_guarded",
+            "metadata": {},
+            "outputs": [],
+            "source": "Canonical text must be human-approved.",
+            "type": "markdown",
+            "updatedBy": "actor_seed"
+          }
+        ],
+        "comments": {},
+        "metadata": {
+          "createdBy": "fixture-generator",
+          "schemaVersion": "notebook-crdt-v0",
+          "title": "Permission Denied Fixture"
+        },
+        "proposals": {}
+      }
+    },
+    "materializedNotebook": {
+      "aiRuns": {},
+      "approvals": {},
+      "cells": [
+        {
+          "createdBy": "actor_seed",
+          "id": "cell_guarded",
+          "metadata": {},
+          "outputs": [],
+          "source": "Canonical text must be human-approved.",
+          "type": "markdown",
+          "updatedBy": "actor_seed"
+        }
+      ],
+      "comments": {},
+      "metadata": {
+        "createdBy": "fixture-generator",
+        "schemaVersion": "notebook-crdt-v0",
+        "title": "Permission Denied Fixture"
+      },
+      "proposals": {}
+    },
+    "snapshotRoundTrip": {
+      "materializedMatches": true
+    },
+    "versionVector": [
+      {
+        "counter": 55,
+        "peer": 700
+      }
+    ]
+  },
+  "generatedBy": {
+    "command": "cargo run --manifest-path tools/crdt-fixtures/Cargo.toml",
+    "tool": "tools/crdt-fixtures"
+  },
+  "loro": {
+    "snapshots": [
+      {
+        "actorId": "actor_seed",
+        "byteLength": 1126,
+        "bytesBase64": "bG9ybwAAAAAAAAAAAAAAADkTjOwAA+MBAABMT1JPAAQiTRhgQIKoAQAAoQA3ADcBEAG8AgABACEBAQcA9NcTARQAAQ5vcF9kZW5pZWRfc2VlZBoFBAEAABwEAAAAAAQABAAIBAAAABIEAAIAHHsIbWV0YWRhdGENc2NoZW1hVmVyc2lvbgV0aXRsZQljcmVhdGVkQnkFY2VsbHMIY29tbWVudHMGYWlSdW5zCXByb3Bvc2FscwlhcHByb3ZhbHMCaWQEdHlwZQl1cGRhdGVkQnkGc291cmNlB291dHB1dHMIbm90ZWJvb2sAMgEEEgMAAgQAAQEIAAMEAggABQIBAA4BABACEQ8SAg0QAhcAGgYeCwEFBAsGHgEBJgQBAK0BCQAFEEMA8QctY3JkdC12MAUZUGVybWlzc2lvbiBE+gCyIEZpeHR1cmUFEWYJAOItZ2VuZXJhdG9yCQQJAAIA+BkHAQkABQxjZWxsX2d1YXJkZWQFCG1hcmtkb3duBQphY3Rvcl9zZWVkDADyEQkCJkNhbm9uaWNhbCB0ZXh0IG11c3QgYmUgaHVtYW4tCgHwEmVkLgkACQEAAgBmcgG8BWwAAgB2dgG8BW4AAKUBrgEDAAAAAACmrGmUAQAAAAUAAAAMAAAAAAAAAAK8AAAAAAECAHZ2XN9wi8ABAABhAgAATE9STwAEIk0YYECCHQIAAPQQAAIBAAhub3RlYm9vawEDDXNjaGVtYVZlcnNpb24EEBoA8jEtY3JkdC12MAljcmVhdGVkQnkEEWZpeHR1cmUtZ2VuZXJhdG9yBXRpdGxlBBlQZXJtaXNzaW9uIERlbmllZCBGKwBSAAG8AgABAMoDAAEAAgkEAAUAAACEAH8AAAAJBAAGGAAEHwcYAAQfCBgABPcbCQAAAAADAQG8BQgDBwdvdXRwdXRzBwG8BWwCCG1ldGFkYXRhBwG8BWoB2wDzHAphY3Rvcl9zZWVkBnNvdXJjZQcBvAUcAAR0eXBlBAhtYXJrZG93bgl1cGQNAQcyAPcCAmlkBAxjZWxsX2d1YXJkZWT2APYSDAAKADUANgAOAAsADQkEADUAAAAABAEBvAUSAQAAAAANIgFVNgAAAAEbACIBAx8AFAJBAVMOAAAAAh8A9BkmQ2Fub25pY2FsIHRleHQgbXVzdCBiZSBodW1hbi1hcHByb3ZlZC4BPACBAwQCAQACAR4GABFMdwAUBBwAWQQAAAAEFAIhAQefAAWZAMEEAwIEAAIAAgIAAgNCAOUSAgEAAgAAAgAAAAoAgE0CSQABAAZjAfEFAAEGYWlSdW5zBwG8BQwBBWNlbGwMAJIIAwhjb21tZW6aATIKAQm0ABJhHwCTEAEJcHJvcG9zEAAnDgFSAUIGAAgARgLwCgcAAH0AlQCtAMUA3QB7AY0BrAEEAk0CCwAAAAAA9MsHzQEAAAAFAAAADQAAvAIAAAAAAAAAAAAAAQoAgAhub3RlYm9va9yE3xw1AgAAAAAAAA==",
+        "encoding": "loro-fast",
+        "id": "denied-base-snapshot",
+        "jsonUpdates": null,
+        "kind": "snapshot",
+        "metadata": {
+          "changeNum": 1,
+          "endTimestamp": 10,
+          "mode": "snapshot",
+          "partialEndVersion": [
+            {
+              "counter": 55,
+              "peer": 700
+            }
+          ],
+          "partialStartVersion": [],
+          "startFrontier": [],
+          "startTimestamp": 0
+        },
+        "version": {
+          "end": [
+            {
+              "counter": 55,
+              "peer": 700
+            }
+          ],
+          "start": []
+        }
+      }
+    ],
+    "updates": [
+      {
+        "actorId": "actor_seed",
+        "byteLength": 445,
+        "bytesBase64": "bG9ybwAAAAAAAAAAAAAAAP9bRAQABKUDADcANwEQAbwCAAAAAAAAAQEAAAAAABMBFAABDm9wX2RlbmllZF9zZWVkGgUEAQAAHAQAAAAABAAEAAgEAAAAEgQAAgAcewhtZXRhZGF0YQ1zY2hlbWFWZXJzaW9uBXRpdGxlCWNyZWF0ZWRCeQVjZWxscwhjb21tZW50cwZhaVJ1bnMJcHJvcG9zYWxzCWFwcHJvdmFscwJpZAR0eXBlCXVwZGF0ZWRCeQZzb3VyY2UHb3V0cHV0cwhub3RlYm9vawAyAQQSAwACBAABAQgAAwQCCAAFAgEADgEAEAIRDxICDRACFwAaBh4LAQUECwYeAQEmBAEArQEJAAUQbm90ZWJvb2stY3JkdC12MAUZUGVybWlzc2lvbiBEZW5pZWQgRml4dHVyZQURZml4dHVyZS1nZW5lcmF0b3IJBAkACQAJAAkABwEJAAUMY2VsbF9ndWFyZGVkBQhtYXJrZG93bgUKYWN0b3Jfc2VlZAUKYWN0b3Jfc2VlZAkCJkNhbm9uaWNhbCB0ZXh0IG11c3QgYmUgaHVtYW4tYXBwcm92ZWQuCQAJAQ==",
+        "encoding": "loro-fast",
+        "id": "op_denied_seed-update",
+        "jsonUpdates": {
+          "changes": [
+            {
+              "deps": [],
+              "id": "0@700",
+              "lamport": 0,
+              "msg": "op_denied_seed",
+              "ops": [
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "metadata",
+                    "type": "insert",
+                    "value": "🦜:cid:0@700:Map"
+                  },
+                  "counter": 0
+                },
+                {
+                  "container": "cid:0@700:Map",
+                  "content": {
+                    "key": "schemaVersion",
+                    "type": "insert",
+                    "value": "notebook-crdt-v0"
+                  },
+                  "counter": 1
+                },
+                {
+                  "container": "cid:0@700:Map",
+                  "content": {
+                    "key": "title",
+                    "type": "insert",
+                    "value": "Permission Denied Fixture"
+                  },
+                  "counter": 2
+                },
+                {
+                  "container": "cid:0@700:Map",
+                  "content": {
+                    "key": "createdBy",
+                    "type": "insert",
+                    "value": "fixture-generator"
+                  },
+                  "counter": 3
+                },
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "cells",
+                    "type": "insert",
+                    "value": "🦜:cid:4@700:MovableList"
+                  },
+                  "counter": 4
+                },
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "comments",
+                    "type": "insert",
+                    "value": "🦜:cid:5@700:Map"
+                  },
+                  "counter": 5
+                },
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "aiRuns",
+                    "type": "insert",
+                    "value": "🦜:cid:6@700:Map"
+                  },
+                  "counter": 6
+                },
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "proposals",
+                    "type": "insert",
+                    "value": "🦜:cid:7@700:Map"
+                  },
+                  "counter": 7
+                },
+                {
+                  "container": "cid:root-notebook:Map",
+                  "content": {
+                    "key": "approvals",
+                    "type": "insert",
+                    "value": "🦜:cid:8@700:Map"
+                  },
+                  "counter": 8
+                },
+                {
+                  "container": "cid:4@700:MovableList",
+                  "content": {
+                    "pos": 0,
+                    "type": "insert",
+                    "value": [
+                      "🦜:cid:9@700:Map"
+                    ]
+                  },
+                  "counter": 9
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "id",
+                    "type": "insert",
+                    "value": "cell_guarded"
+                  },
+                  "counter": 10
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "type",
+                    "type": "insert",
+                    "value": "markdown"
+                  },
+                  "counter": 11
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "createdBy",
+                    "type": "insert",
+                    "value": "actor_seed"
+                  },
+                  "counter": 12
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "updatedBy",
+                    "type": "insert",
+                    "value": "actor_seed"
+                  },
+                  "counter": 13
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "source",
+                    "type": "insert",
+                    "value": "🦜:cid:14@700:Text"
+                  },
+                  "counter": 14
+                },
+                {
+                  "container": "cid:14@700:Text",
+                  "content": {
+                    "pos": 0,
+                    "text": "Canonical text must be human-approved.",
+                    "type": "insert"
+                  },
+                  "counter": 15
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "metadata",
+                    "type": "insert",
+                    "value": "🦜:cid:53@700:Map"
+                  },
+                  "counter": 53
+                },
+                {
+                  "container": "cid:9@700:Map",
+                  "content": {
+                    "key": "outputs",
+                    "type": "insert",
+                    "value": "🦜:cid:54@700:List"
+                  },
+                  "counter": 54
+                }
+              ],
+              "timestamp": 10
+            }
+          ],
+          "peers": null,
+          "schema_version": 1,
+          "start_version": {}
+        },
+        "kind": "update",
+        "metadata": {
+          "changeNum": 1,
+          "endTimestamp": 10,
+          "mode": "update",
+          "partialEndVersion": [
+            {
+              "counter": 55,
+              "peer": 700
+            }
+          ],
+          "partialStartVersion": [
+            {
+              "counter": 0,
+              "peer": 700
+            }
+          ],
+          "startFrontier": [],
+          "startTimestamp": 10
+        },
+        "version": {
+          "end": [
+            {
+              "counter": 55,
+              "peer": 700
+            }
+          ],
+          "start": []
+        }
+      }
+    ]
+  },
+  "notebook": {
+    "appId": "notebook-app",
+    "notebookId": "notebook_fixture_permission_denied",
+    "profile": "notebook-crdt-v0"
+  },
+  "operations": [
+    {
+      "context": {
+        "actorId": "actor_seed",
+        "actorKind": "system",
+        "appId": "notebook-app",
+        "baseFrontier": [],
+        "notebookId": "notebook_fixture_permission_denied",
+        "permissions": [
+          "notebook.read",
+          "notebook.write"
+        ]
+      },
+      "expect": {
+        "ok": true
+      },
+      "id": "op_denied_seed",
+      "method": "notebook.apply_local",
+      "operation": {
+        "cells": [
+          {
+            "id": "cell_guarded",
+            "metadata": {},
+            "outputs": [],
+            "source": "Canonical text must be human-approved.",
+            "type": "markdown"
+          }
+        ],
+        "metadata": {
+          "createdBy": "fixture-generator",
+          "schemaVersion": "notebook-crdt-v0",
+          "title": "Permission Denied Fixture"
+        },
+        "type": "notebook.init"
+      },
+      "seq": 1
+    },
+    {
+      "context": {
+        "actorId": "actor_ai_assistant",
+        "actorKind": "ai",
+        "appId": "notebook-app",
+        "baseFrontier": [
+          {
+            "counter": 54,
+            "id": "54@700",
+            "peer": 700
+          }
+        ],
+        "notebookId": "notebook_fixture_permission_denied",
+        "permissions": [
+          "notebook.read",
+          "notebook.propose"
+        ]
+      },
+      "expect": {
+        "error": {
+          "code": "permission_denied",
+          "message": "actor_ai_assistant has notebook.propose but not notebook.write; canonical notebook mutation rejected before merge"
+        },
+        "ok": false
+      },
+      "id": "op_denied_ai_direct_write",
+      "method": "notebook.apply_local",
+      "operation": {
+        "cellId": "cell_guarded",
+        "index": 0,
+        "path": "source",
+        "text": "AI direct write. ",
+        "type": "text.insert"
+      },
+      "seq": 2
+    }
+  ],
+  "reference": {
+    "checkout": "external-lib/loro",
+    "crate": "loro",
+    "crateVersion": "1.12.0",
+    "library": "Loro",
+    "pinnedCommit": "ab91df67e322d01f75621742ff83d0fb4a000e79"
+  },
+  "scenario": {
+    "description": "An AI proposal-only actor attempts a canonical text edit; the host rejects it before applying any Loro update.",
+    "id": "permission-denied"
+  },
+  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "sync": {
+    "rejectedBeforeMerge": true,
+    "rejectedOperationIds": [
+      "op_denied_ai_direct_write"
+    ]
+  }
+}

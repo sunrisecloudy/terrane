@@ -1,6 +1,6 @@
 # Runtime API Spec
 
-This document defines the JS surface the runtime exposes to generated apps and the bridge contract every host implements. Section tags **[v0.1]**/**[v0.3]**/**[v0.4]** mark the milestone in which a requirement first appeared.
+This document defines the JS surface the runtime exposes to generated apps and the bridge contract every host implements. Section tags **[v0.1]**/**[v0.3]**/**[v0.4]** mark the milestone in which a requirement first appeared. **[CRDT]** marks the collaborative notebook slice from docs/33.
 
 ## 1. Generated app API **[v0.1]**
 
@@ -182,6 +182,42 @@ The host must enforce `manifest.networkPolicy` (docs/24). Disallowed origins, me
 Response validates against `schemas/runtime-capabilities.schema.json`. See §9.
 `devMode` must come from the host build/runtime mode, not from generated app input.
 
+### `notebook.*` **[CRDT]**
+
+Notebook collaboration is platform-owned. Generated apps call these bridge methods only through `AppRuntime.call`; they must not import CRDT libraries, open sync sockets, use direct `fetch`, write notebook internals through `storage.*`, or send `appId`. The host derives app id from the sandbox channel (§2.1), derives or authenticates actor identity, checks the installed app permissions, checks the notebook ACL, applies AI policy, validates the operation schema before merge, and validates the materialized notebook after merge.
+
+Supported notebook methods:
+
+| Method | Request | Result |
+|---|---|---|
+| `notebook.open` | `{ "notebookId": "notebook_team", "title": "Team notes" }` | Opens an existing notebook or creates one when allowed; returns `{ ok, notebookId, frontier, notebook }`. |
+| `notebook.apply_local` | `{ "notebookId": "notebook_team", "operation": { "opId": "op_1", "seq": 1, "type": "cell.insert", "cellId": "cell_intro", "cellType": "markdown", "source": "Hello" } }` | Applies one local operation; returns accepted state, or `{ status: "duplicate" }` for an already imported `opId`. |
+| `notebook.propose_ai_patch` | `{ "notebookId": "notebook_team", "proposalId": "proposal_1", "modelId": "model", "promptContextHash": "sha256:...", "affectedCellIds": ["cell_intro"], "baseFrontier": { "version": 1, "heads": ["op_1"] }, "operations": [{ "type": "text.insert", "cellId": "cell_intro", "index": 0, "text": "Draft" }] }` | Creates a pending AI proposal in notebook state. |
+| `notebook.accept_proposal` | `{ "notebookId": "notebook_team", "proposalId": "proposal_1" }` | Records approval and applies the proposal operations to canonical notebook state. |
+| `notebook.reject_proposal` | `{ "notebookId": "notebook_team", "proposalId": "proposal_1" }` | Records rejection without applying proposal operations. |
+| `notebook.snapshot` | `{ "notebookId": "notebook_team" }` | Returns `{ ok, notebookId, frontier, notebook }` for the current materialized state. |
+| `notebook.checkout` | `{ "notebookId": "notebook_team", "frontier": { "version": 1 } }` | Returns materialized state at the requested supported frontier. |
+| `notebook.sync_pull` | `{ "notebookId": "notebook_team", "afterSeq": 1 }` | Returns accepted updates after `afterSeq`, the current frontier, and a cursor. |
+| `notebook.sync_push` | `{ "notebookId": "notebook_team", "updates": [{ "opId": "op_2", "seq": 2, "type": "text.insert", "cellId": "cell_intro", "index": 5, "text": "!" }] }` | Imports updates idempotently; returns `accepted`, `duplicates`, `rejected`, `frontier`, and `notebook`. |
+| `notebook.subscribe` | `{ "notebookId": "notebook_team" }` | Returns subscription metadata. The reference host uses `transport: "reference-host-poll"`; durable catch-up still uses `notebook.sync_pull`. |
+
+The materialized notebook profile is:
+
+```json
+{
+  "metadata": {},
+  "cells": [],
+  "comments": {},
+  "aiRuns": {},
+  "proposals": {},
+  "approvals": {}
+}
+```
+
+Supported operation types are `notebook.init`, `batch`, `cell.insert`, `cell.delete`, `cell.move`, `text.insert`, `text.delete`, `text.replace`, `metadata.set`, `metadata.delete`, `output.append`, `comment.add`, `comment.resolve`, `proposal.create`, `proposal.accept`, `proposal.reject`, and `checkpoint.create`. Collaborative text operations are valid only on `markdown`, `prompt`, and `code` cells. `output` and `artifact` cells can be inserted and receive append-only outputs but are not collaborative text surfaces.
+
+Default AI policy is proposal-only: AI actors may create proposals, but the reference host rejects canonical AI writes with `permission_denied` unless a future trusted host policy explicitly grants direct write authority and audits that grant.
+
 ## 4. Permission mapping **[v0.1]**
 
 | Method | Required permission |
@@ -197,8 +233,32 @@ Response validates against `schemas/runtime-capabilities.schema.json`. See §9.
 | `network.request` | `network.request` |
 | `app.log` | none (always allowed; subject to rate budget) |
 | `runtime.capabilities` | none (always allowed; v0.3) |
+| `notebook.open` | `notebook.read` (`notebook.write` is also required when creating a missing notebook) |
+| `notebook.apply_local` | `notebook.write` |
+| `notebook.propose_ai_patch` | `notebook.propose` |
+| `notebook.accept_proposal` | `notebook.approve` |
+| `notebook.reject_proposal` | `notebook.approve` |
+| `notebook.snapshot` | `notebook.read` |
+| `notebook.checkout` | `notebook.read` |
+| `notebook.sync_pull` | `notebook.sync` |
+| `notebook.sync_push` | `notebook.sync` |
+| `notebook.subscribe` | `notebook.read` |
 
 `app.log` is intentionally permission-less so apps can always emit diagnostic logs. It is still rate-limited by `resourceBudget.maxLogLinesPerMinute`.
+
+Notebook manifests must request notebook access explicitly:
+
+```json
+{
+  "permissions": ["notebook.read", "notebook.write", "notebook.propose", "notebook.approve", "notebook.sync"],
+  "capabilities": {
+    "required": ["notebook.read"],
+    "optional": ["notebook.write", "notebook.propose", "notebook.approve", "notebook.sync"]
+  }
+}
+```
+
+Hosts must re-check the derived app id, installed permissions, notebook ACL, actor role, and AI policy for every operation. Runtime-side preflight is never sufficient.
 
 ## 5. Bridge errors **[v0.1]**
 
@@ -226,6 +286,11 @@ Canonical error codes:
 - `capability_unavailable` (v0.3)
 - `timeout`
 - `invalid_response`
+- `schema_error` (CRDT)
+- `conflict_rejected` (CRDT)
+- `stale_frontier` (CRDT)
+- `unknown_notebook` (CRDT)
+- `sync_unavailable` (CRDT)
 
 ## 6. Runtime internal modules **[v0.1]**
 
@@ -329,3 +394,4 @@ The production runtime must not expose these to generated apps. Arbitrary SQL is
 | 1.1, 2.1 | v0.1 (added in v0.4 revision) |
 | 8, 9, 10 | v0.3 |
 | 11, 12 | v0.4 |
+| `notebook.*` methods, notebook permissions, CRDT errors | CRDT |

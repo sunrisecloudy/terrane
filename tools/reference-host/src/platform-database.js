@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { serializedCrdtUpdate } from "./notebook-crdt.js";
 import { PlatformError } from "./errors.js";
 import { sqliteMigrationsDir } from "./paths.js";
 import { canonicalJson, id, nowIso, prettyJson, sha256 } from "./util.js";
@@ -1085,6 +1086,14 @@ export class PlatformDatabase {
       app_migrations: this.all("SELECT * FROM app_migrations ORDER BY created_at"),
       migration_runs: this.all("SELECT * FROM migration_runs ORDER BY started_at"),
       test_runs: this.all("SELECT * FROM test_runs ORDER BY started_at"),
+      crdt_notebooks: this.all("SELECT * FROM crdt_notebooks ORDER BY app_id, notebook_id"),
+      crdt_documents: this.all("SELECT * FROM crdt_documents ORDER BY app_id, notebook_id, version"),
+      crdt_updates: this.all("SELECT * FROM crdt_updates ORDER BY app_id, notebook_id, seq"),
+      crdt_heads: this.all("SELECT * FROM crdt_heads ORDER BY app_id, notebook_id"),
+      crdt_actors: this.all("SELECT * FROM crdt_actors ORDER BY app_id, actor_id"),
+      crdt_permissions: this.all("SELECT * FROM crdt_permissions ORDER BY app_id, notebook_id, actor_id, permission"),
+      crdt_proposals: this.all("SELECT * FROM crdt_proposals ORDER BY app_id, notebook_id, proposal_id"),
+      crdt_sync_cursors: this.all("SELECT * FROM crdt_sync_cursors ORDER BY app_id, notebook_id, actor_id"),
     };
   }
 
@@ -1103,6 +1112,14 @@ export class PlatformDatabase {
       appStorage: this.all("SELECT * FROM app_storage ORDER BY app_id, key"),
       appMigrations: this.all("SELECT * FROM app_migrations ORDER BY app_id, from_data_version"),
       appInstallReports: this.all("SELECT * FROM app_install_reports ORDER BY app_id, created_at"),
+      crdtNotebooks: this.all("SELECT * FROM crdt_notebooks ORDER BY app_id, notebook_id"),
+      crdtDocuments: this.all("SELECT * FROM crdt_documents ORDER BY app_id, notebook_id, version"),
+      crdtUpdates: this.all("SELECT * FROM crdt_updates ORDER BY app_id, notebook_id, seq"),
+      crdtHeads: this.all("SELECT * FROM crdt_heads ORDER BY app_id, notebook_id"),
+      crdtActors: this.all("SELECT * FROM crdt_actors ORDER BY app_id, actor_id"),
+      crdtPermissions: this.all("SELECT * FROM crdt_permissions ORDER BY app_id, notebook_id, actor_id, permission"),
+      crdtProposals: this.all("SELECT * FROM crdt_proposals ORDER BY app_id, notebook_id, proposal_id"),
+      crdtSyncCursors: this.all("SELECT * FROM crdt_sync_cursors ORDER BY app_id, notebook_id, actor_id"),
       runtimeCapabilities,
       debug: includeDebug
         ? {
@@ -1235,6 +1252,8 @@ export class PlatformDatabase {
         );
       }
 
+      this.importCrdtRows(document, createdAt);
+
       this.run(
         "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at) VALUES (?, 'import', ?, ?, ?, ?, ?, ?)",
         id("import"),
@@ -1252,7 +1271,118 @@ export class PlatformDatabase {
       apps: (document.apps ?? []).length,
       appVersions: (document.appVersions ?? []).length,
       appStorage: (document.appStorage ?? []).length,
+      crdtUpdates: (document.crdtUpdates ?? []).length,
     };
+  }
+
+  importCrdtRows(document, createdAt) {
+    for (const notebook of document.crdtNotebooks ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_notebooks (notebook_id, app_id, title, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        field(notebook, "notebook_id", "notebookId"),
+        field(notebook, "app_id", "appId"),
+        field(notebook, "title", "title", "Untitled notebook"),
+        field(notebook, "status", "status", "active"),
+        field(notebook, "created_by", "createdBy", "import"),
+        field(notebook, "created_at", "createdAt", createdAt),
+        field(notebook, "updated_at", "updatedAt", createdAt),
+      );
+    }
+
+    for (const actor of document.crdtActors ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_actors (app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        field(actor, "app_id", "appId"),
+        field(actor, "actor_id", "actorId"),
+        field(actor, "actor_kind", "actorKind", "human"),
+        field(actor, "display_name", "displayName", null),
+        jsonField(actor, "policy_json", "policyJson", "policy", {}),
+        field(actor, "created_at", "createdAt", createdAt),
+        field(actor, "updated_at", "updatedAt", createdAt),
+      );
+    }
+
+    for (const documentRow of document.crdtDocuments ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_documents (document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        field(documentRow, "document_id", "documentId"),
+        field(documentRow, "app_id", "appId"),
+        field(documentRow, "notebook_id", "notebookId"),
+        field(documentRow, "version", "version", 0),
+        jsonField(documentRow, "snapshot_json", "snapshotJson", "snapshot", {}),
+        field(documentRow, "content_hash", "contentHash", `sha256:${sha256(jsonField(documentRow, "snapshot_json", "snapshotJson", "snapshot", {}))}`),
+        field(documentRow, "created_at", "createdAt", createdAt),
+      );
+    }
+
+    for (const update of document.crdtUpdates ?? []) {
+      const operationJson = jsonField(update, "operation_json", "operationJson", "operation", null);
+      this.run(
+        "INSERT OR REPLACE INTO crdt_updates (update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        field(update, "update_id", "updateId"),
+        field(update, "app_id", "appId"),
+        field(update, "notebook_id", "notebookId"),
+        field(update, "actor_id", "actorId"),
+        field(update, "actor_kind", "actorKind", "human"),
+        field(update, "seq", "seq", 0),
+        operationJson,
+        field(update, "status", "status", "accepted"),
+        field(update, "error_code", "errorCode", null),
+        field(update, "content_hash", "contentHash", `sha256:${sha256(operationJson ?? "null")}`),
+        field(update, "created_at", "createdAt", createdAt),
+      );
+    }
+
+    for (const head of document.crdtHeads ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_heads (app_id, notebook_id, version, frontier_json, content_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        field(head, "app_id", "appId"),
+        field(head, "notebook_id", "notebookId"),
+        field(head, "version", "version", 0),
+        jsonField(head, "frontier_json", "frontierJson", "frontier", { version: field(head, "version", "version", 0), heads: [] }),
+        field(head, "content_hash", "contentHash", "sha256:imported"),
+        field(head, "updated_at", "updatedAt", createdAt),
+      );
+    }
+
+    for (const permission of document.crdtPermissions ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_permissions (app_id, notebook_id, actor_id, permission, granted, granted_at) VALUES (?, ?, ?, ?, ?, ?)",
+        field(permission, "app_id", "appId"),
+        field(permission, "notebook_id", "notebookId"),
+        field(permission, "actor_id", "actorId"),
+        field(permission, "permission", "permission"),
+        permission.granted === false ? 0 : field(permission, "granted", "granted", 1),
+        field(permission, "granted_at", "grantedAt", createdAt),
+      );
+    }
+
+    for (const proposal of document.crdtProposals ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_proposals (proposal_id, app_id, notebook_id, actor_id, status, proposal_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        field(proposal, "proposal_id", "proposalId"),
+        field(proposal, "app_id", "appId"),
+        field(proposal, "notebook_id", "notebookId"),
+        field(proposal, "actor_id", "actorId"),
+        field(proposal, "status", "status", "pending"),
+        jsonField(proposal, "proposal_json", "proposalJson", "proposal", {}),
+        field(proposal, "created_at", "createdAt", createdAt),
+        field(proposal, "updated_at", "updatedAt", createdAt),
+      );
+    }
+
+    for (const cursor of document.crdtSyncCursors ?? []) {
+      this.run(
+        "INSERT OR REPLACE INTO crdt_sync_cursors (cursor_id, app_id, notebook_id, actor_id, last_seen_update_id, frontier_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        field(cursor, "cursor_id", "cursorId"),
+        field(cursor, "app_id", "appId"),
+        field(cursor, "notebook_id", "notebookId"),
+        field(cursor, "actor_id", "actorId"),
+        field(cursor, "last_seen_update_id", "lastSeenUpdateId", null),
+        jsonField(cursor, "frontier_json", "frontierJson", "frontier", { version: 0, heads: [] }),
+        field(cursor, "updated_at", "updatedAt", createdAt),
+      );
+    }
   }
 
   queryAppStorage(appId) {
@@ -1394,6 +1524,227 @@ export class PlatformDatabase {
     return this.all("SELECT * FROM test_runs ORDER BY started_at");
   }
 
+  crdtNotebook(appId, notebookId) {
+    return this.get("SELECT * FROM crdt_notebooks WHERE app_id = ? AND notebook_id = ?", appId, notebookId) ?? null;
+  }
+
+  createCrdtNotebook({ appId, notebookId, title, actor }) {
+    const createdAt = nowIso();
+    this.transaction(() => {
+      this.run(
+        "INSERT INTO crdt_notebooks (app_id, notebook_id, title, status, created_by, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)",
+        appId,
+        notebookId,
+        title,
+        actor.actorId,
+        createdAt,
+        createdAt,
+      );
+      this.ensureCrdtActor({ appId, actor, now: createdAt });
+      for (const permission of actor.actorKind === "ai"
+        ? ["notebook.read", "notebook.propose", "notebook.sync"]
+        : ["notebook.read", "notebook.write", "notebook.propose", "notebook.approve", "notebook.sync"]) {
+        this.grantCrdtPermission({ appId, notebookId, actorId: actor.actorId, permission, now: createdAt });
+      }
+      this.run(
+        "INSERT OR REPLACE INTO crdt_heads (app_id, notebook_id, version, frontier_json, content_hash, updated_at) VALUES (?, ?, 0, ?, ?, ?)",
+        appId,
+        notebookId,
+        prettyJson({ version: 0, heads: [] }),
+        `sha256:${sha256(canonicalJson({ metadata: {}, cells: [], comments: {}, aiRuns: {}, proposals: {}, approvals: {} }))}`,
+        createdAt,
+      );
+    });
+    return { appId, notebookId, title, createdBy: actor.actorId, createdAt };
+  }
+
+  ensureCrdtActor({ appId, actor, now = nowIso() }) {
+    this.run(
+      "INSERT INTO crdt_actors (app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(app_id, actor_id) DO UPDATE SET actor_kind = excluded.actor_kind, updated_at = excluded.updated_at",
+      appId,
+      actor.actorId,
+      actor.actorKind,
+      actor.actorId,
+      prettyJson({ actorKind: actor.actorKind }),
+      now,
+      now,
+    );
+  }
+
+  grantCrdtPermission({ appId, notebookId, actorId, permission, now = nowIso() }) {
+    this.run(
+      "INSERT OR REPLACE INTO crdt_permissions (app_id, notebook_id, actor_id, permission, granted, granted_at) VALUES (?, ?, ?, ?, 1, ?)",
+      appId,
+      notebookId,
+      actorId,
+      permission,
+      now,
+    );
+  }
+
+  assertCrdtNotebookPermission({ appId, notebookId, actorId, permission }) {
+    const row = this.get(
+      "SELECT granted FROM crdt_permissions WHERE app_id = ? AND notebook_id = ? AND actor_id = ? AND permission = ?",
+      appId,
+      notebookId,
+      actorId,
+      permission,
+    );
+    if (!row || row.granted !== 1) {
+      throw new PlatformError("permission_denied", `Actor ${actorId} cannot use ${permission} on notebook ${notebookId}`, {
+        appId,
+        notebookId,
+        actorId,
+        permission,
+      });
+    }
+  }
+
+  nextCrdtSeq(appId, notebookId) {
+    return (this.get(
+      "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM crdt_updates WHERE app_id = ? AND notebook_id = ?",
+      appId,
+      notebookId,
+    )?.next_seq ?? 1);
+  }
+
+  crdtAcceptedUpdates(appId, notebookId, { afterSeq = null } = {}) {
+    if (Number.isInteger(afterSeq)) {
+      return this.all(
+        "SELECT * FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND status = 'accepted' AND seq > ? ORDER BY seq, update_id",
+        appId,
+        notebookId,
+        afterSeq,
+      );
+    }
+    return this.all(
+      "SELECT * FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND status = 'accepted' ORDER BY seq, update_id",
+      appId,
+      notebookId,
+    );
+  }
+
+  crdtUpdateByOpId(appId, notebookId, opId) {
+    if (!opId) return null;
+    return this.get(
+      "SELECT * FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND json_extract(operation_json, '$.opId') = ? LIMIT 1",
+      appId,
+      notebookId,
+      opId,
+    ) ?? null;
+  }
+
+  insertCrdtAcceptedUpdate(update, materialized) {
+    const record = serializedCrdtUpdate({ ...update, status: "accepted" });
+    const createdAt = record.createdAt;
+    this.transaction(() => {
+      this.insertCrdtUpdateRecord(record);
+      this.upsertCrdtHead({ appId: update.appId, notebookId: update.notebookId, materialized, now: createdAt });
+      this.run(
+        "INSERT INTO crdt_documents (document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        id("crdt_doc"),
+        update.appId,
+        update.notebookId,
+        materialized.frontier.version,
+        prettyJson(materialized.notebook),
+        materialized.contentHash,
+        createdAt,
+      );
+      if (update.operation.type === "proposal.create") {
+        this.upsertCrdtProposal({
+          appId: update.appId,
+          notebookId: update.notebookId,
+          actorId: update.actor.actorId,
+          proposalId: update.operation.proposalId,
+          status: "pending",
+          proposal: update.operation,
+          now: createdAt,
+        });
+      } else if (update.operation.type === "proposal.accept" || update.operation.type === "proposal.reject") {
+        this.updateCrdtProposalStatus({
+          appId: update.appId,
+          notebookId: update.notebookId,
+          proposalId: update.operation.proposalId,
+          status: update.operation.type === "proposal.accept" ? "accepted" : "rejected",
+          now: createdAt,
+        });
+      }
+    });
+  }
+
+  insertCrdtRejectedUpdate(update) {
+    const record = serializedCrdtUpdate({ ...update, status: "rejected", errorCode: update.errorCode });
+    this.insertCrdtUpdateRecord(record);
+  }
+
+  insertCrdtUpdateRecord(record) {
+    this.run(
+      "INSERT INTO crdt_updates (update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      record.updateId,
+      record.appId,
+      record.notebookId,
+      record.actorId,
+      record.actorKind,
+      record.seq,
+      record.operationJson,
+      record.status,
+      record.errorCode,
+      record.contentHash,
+      record.createdAt,
+    );
+  }
+
+  crdtHead(appId, notebookId) {
+    const row = this.get("SELECT * FROM crdt_heads WHERE app_id = ? AND notebook_id = ?", appId, notebookId);
+    if (!row) return null;
+    return {
+      appId: row.app_id,
+      notebookId: row.notebook_id,
+      version: row.version,
+      frontier: row.frontier_json ? JSON.parse(row.frontier_json) : { version: row.version, heads: [] },
+      contentHash: row.content_hash,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  upsertCrdtHead({ appId, notebookId, materialized, now = nowIso() }) {
+    this.run(
+      "INSERT INTO crdt_heads (app_id, notebook_id, version, frontier_json, content_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(app_id, notebook_id) DO UPDATE SET version = excluded.version, frontier_json = excluded.frontier_json, content_hash = excluded.content_hash, updated_at = excluded.updated_at",
+      appId,
+      notebookId,
+      materialized.frontier.version,
+      prettyJson(materialized.frontier),
+      materialized.contentHash,
+      now,
+    );
+    this.run("UPDATE crdt_notebooks SET updated_at = ? WHERE app_id = ? AND notebook_id = ?", now, appId, notebookId);
+  }
+
+  upsertCrdtProposal({ appId, notebookId, actorId, proposalId, status, proposal, now = nowIso() }) {
+    this.run(
+      "INSERT INTO crdt_proposals (app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(app_id, notebook_id, proposal_id) DO UPDATE SET status = excluded.status, proposal_json = excluded.proposal_json, updated_at = excluded.updated_at",
+      appId,
+      notebookId,
+      proposalId,
+      actorId,
+      status,
+      prettyJson(proposal),
+      now,
+      now,
+    );
+  }
+
+  updateCrdtProposalStatus({ appId, notebookId, proposalId, status, now = nowIso() }) {
+    this.run(
+      "UPDATE crdt_proposals SET status = ?, updated_at = ? WHERE app_id = ? AND notebook_id = ? AND proposal_id = ?",
+      status,
+      now,
+      appId,
+      notebookId,
+      proposalId,
+    );
+  }
+
   recordTestRun({ microTestId, name, appId, spec, status, result }) {
     const startedAt = nowIso();
     const testRunId = id("testrun");
@@ -1454,6 +1805,26 @@ function emptyResourceHighWater(appId) {
     logLinesLastMinute: 0,
     updatedAt: null,
   };
+}
+
+function field(row, snakeName, camelName, fallback) {
+  if (Object.hasOwn(row, snakeName)) return row[snakeName];
+  if (Object.hasOwn(row, camelName)) return row[camelName];
+  if (arguments.length >= 4) return fallback;
+  throw new Error(`Backup CRDT row missing ${snakeName}/${camelName}`);
+}
+
+function jsonField(row, rawName, camelRawName, objectName, fallback) {
+  const value = Object.hasOwn(row, rawName)
+    ? row[rawName]
+    : Object.hasOwn(row, camelRawName)
+      ? row[camelRawName]
+      : Object.hasOwn(row, objectName)
+        ? row[objectName]
+        : fallback;
+  if (value === null) return null;
+  if (typeof value === "string") return value;
+  return prettyJson(value);
 }
 
 function mimeForPath(filePath) {

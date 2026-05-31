@@ -43,6 +43,7 @@ test("Apple native hosts route runtime and generated-app resources through app-r
 
 test("Linux native host maps app-runtime /runtime paths to runtime-web files", () => {
   const source = readRepoFile("native/linux/src/webkit_host.c");
+  const sandbox = readRepoFile("native/linux/src/app_sandbox.c");
 
   assertContains(source, 'static const gchar *k_runtime_scheme = "app-runtime"', "Linux");
   assertContains(source, "logical_path_for_runtime_uri", "Linux");
@@ -55,7 +56,7 @@ test("Linux native host maps app-runtime /runtime paths to runtime-web files", (
   assertContains(source, "g_path_get_dirname", "Linux");
   assertContains(source, '"resources", "runtime"', "Linux");
   assertContains(source, '"resources", "webapps", "examples"', "Linux");
-  assertContains(source, "manifest_path_for_app", "Linux");
+  assertContains(sandbox, "manifest_path_for_app", "Linux sandbox");
   assertContains(source, "g_file_test", "Linux");
   assertContains(source, 'strstr(path, "..") == NULL', "Linux");
   assertContains(source, "content_type_for_path", "Linux");

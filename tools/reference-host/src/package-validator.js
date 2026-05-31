@@ -28,6 +28,11 @@ const PERMISSIONS = new Set([
   "notification.toast",
   "network.request",
   "app.log",
+  "notebook.read",
+  "notebook.write",
+  "notebook.propose",
+  "notebook.approve",
+  "notebook.sync",
 ]);
 const NETWORK_POLICY_KEYS = new Set(["allow", "denyPrivateNetwork", "allowCredentials"]);
 const NETWORK_POLICY_ENTRY_KEYS = new Set([
@@ -61,6 +66,16 @@ const METHOD_PERMISSIONS = new Map([
   ["dialog.saveFile", "dialog.saveFile"],
   ["notification.toast", "notification.toast"],
   ["network.request", "network.request"],
+  ["notebook.open", "notebook.read"],
+  ["notebook.apply_local", "notebook.write"],
+  ["notebook.propose_ai_patch", "notebook.propose"],
+  ["notebook.accept_proposal", "notebook.approve"],
+  ["notebook.reject_proposal", "notebook.approve"],
+  ["notebook.snapshot", "notebook.read"],
+  ["notebook.checkout", "notebook.read"],
+  ["notebook.sync_pull", "notebook.sync"],
+  ["notebook.sync_push", "notebook.sync"],
+  ["notebook.subscribe", "notebook.read"],
 ]);
 const ALLOWED_METHODS = new Set([
   ...METHOD_PERMISSIONS.keys(),

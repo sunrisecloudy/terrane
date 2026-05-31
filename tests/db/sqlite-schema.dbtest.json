@@ -6,7 +6,8 @@
     "db/sqlite/001_initial.sql",
     "db/sqlite/002_runtime_debug.sql",
     "db/sqlite/003_codex_control.sql",
-    "db/sqlite/004_migrations_and_snapshots.sql"
+    "db/sqlite/004_migrations_and_snapshots.sql",
+    "db/sqlite/005_crdt_notebooks.sql"
   ],
   "assertTables": [
     "apps",
@@ -29,6 +30,14 @@
     "app_migrations",
     "migration_runs",
     "app_install_reports",
-    "backup_exports"
+    "backup_exports",
+    "crdt_notebooks",
+    "crdt_documents",
+    "crdt_updates",
+    "crdt_heads",
+    "crdt_actors",
+    "crdt_permissions",
+    "crdt_proposals",
+    "crdt_sync_cursors"
   ]
 }

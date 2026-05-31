@@ -6,7 +6,8 @@
     "db/postgres/001_initial.sql",
     "db/postgres/002_runtime_debug.sql",
     "db/postgres/003_codex_control.sql",
-    "db/postgres/004_migrations_and_snapshots.sql"
+    "db/postgres/004_migrations_and_snapshots.sql",
+    "db/postgres/005_crdt_notebooks.sql"
   ],
   "assertTables": [
     "apps",
@@ -15,6 +16,14 @@
     "bridge_calls",
     "core_events",
     "test_runs",
-    "app_install_reports"
+    "app_install_reports",
+    "crdt_notebooks",
+    "crdt_documents",
+    "crdt_updates",
+    "crdt_heads",
+    "crdt_actors",
+    "crdt_permissions",
+    "crdt_proposals",
+    "crdt_sync_cursors"
   ]
 }

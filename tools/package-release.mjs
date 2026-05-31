@@ -652,7 +652,7 @@ function macOSInfoPlist() {
 }
 
 function zigServerModuleArgs() {
-  return ["--dep", "zig_core", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig"];
+  return ["--dep", "zig_core", "--dep", "zig_crdt", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig", "-Mzig_crdt=../zig-crdt/src/lib.zig"];
 }
 
 function serverTargetArgsForHost() {

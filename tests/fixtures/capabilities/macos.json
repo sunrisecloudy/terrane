@@ -17,7 +17,12 @@
     "network.request": true,
     "core.step": false,
     "runtime.capabilities": true,
-    "app.log": true
+    "app.log": true,
+    "notebook.read": false,
+    "notebook.write": false,
+    "notebook.propose": false,
+    "notebook.approve": false,
+    "notebook.sync": false
   },
   "limits": {
     "maxPackageBytes": 1048576,

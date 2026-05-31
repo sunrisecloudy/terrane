@@ -29,6 +29,11 @@ const logicalJsonColumns = [
   "compatibility_json",
   "smoke_test_json",
   "export_json",
+  "snapshot_json",
+  "operation_json",
+  "frontier_json",
+  "policy_json",
+  "proposal_json",
 ];
 
 function readRepoFile(relativePath) {
@@ -101,7 +106,7 @@ test("server inline SQLite schema matches checked-in SQLite logical schema", () 
   const checkedInSqlite = parseSqlSchema(sqlText("db/sqlite"));
   const serverSqlite = parseSqlSchema(serverSchemaText());
 
-  assert.equal(checkedInSqlite.size, 22);
+  assert.equal(checkedInSqlite.size, 30);
   assertSameLogicalColumns(serverSqlite, checkedInSqlite, "server", "db/sqlite");
 });
 

@@ -35,12 +35,12 @@ test("Android native network policy enforces allow pathPrefix", () => {
 test("Linux native network policy enforces allow pathPrefix", () => {
   const header = read("native/linux/src/bridge_types.h");
   const types = read("native/linux/src/bridge_types.c");
-  const host = read("native/linux/src/webkit_host.c");
+  const sandbox = read("native/linux/src/app_sandbox.c");
   const network = read("native/linux/src/platform_network.c");
 
   assert.match(header, /gchar \*path_prefix/);
   assert.match(types, /g_clear_pointer\(&rule->path_prefix, g_free\)/);
-  assert.match(host, /json_object_get_string_member\(raw, "pathPrefix"\)/);
+  assert.match(sandbox, /json_object_get_string_member\(raw, "pathPrefix"\)/);
   assert.match(network, /path_for_uri/);
   assert.match(network, /g_uri_resolve_relative/);
   assert.match(network, /rule->path_prefix != NULL && rule->path_prefix\[0\] != '\\0'/);

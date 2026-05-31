@@ -38,7 +38,7 @@ function targetArgsForHost() {
 }
 
 function zigServerModuleArgs() {
-  return ["--dep", "zig_core", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig"];
+  return ["--dep", "zig_core", "--dep", "zig_crdt", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig", "-Mzig_crdt=../zig-crdt/src/lib.zig"];
 }
 
 test(
@@ -142,6 +142,148 @@ test(
         assert.equal(security.ok, false);
         assert.equal(security.accessibility.status, "fail");
         assert.equal(security.accessibility.checks.some((check) => check.id === "main_landmark" && check.status === "fail"), true);
+      } finally {
+        await stopServer(started);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Zig server notebook bridge persists CRDT edits, approvals, and rejected AI writes",
+  {
+    skip: !hasZig() ? "zig is not available" : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-notebook-"));
+    try {
+      const executablePath = buildServerExecutable(scratch);
+      const started = await startServer(executablePath, scratch, "notebook-crdt");
+      try {
+        const appId = "notes-lite";
+        const install = await controlCommand(started.url, "platform.install_webapp_package", {
+          package: packageForNotebookApp(appId),
+          activate: true,
+          trustLevel: "developer",
+        });
+        assert.equal(install.ok, true, JSON.stringify(install));
+
+        const openedApp = await controlCommand(started.url, "platform.open_webapp", { appId });
+        assert.equal(openedApp.ok, true, JSON.stringify(openedApp));
+        const sessionId = openedApp.result.sessionId;
+        const notebookId = "server_notebook_contract";
+
+        const open = await bridgeCall(started.url, appId, sessionId, {
+          id: "req_notebook_open",
+          method: "notebook.open",
+          params: { notebookId, title: "Server notebook" },
+        });
+        assert.equal(open.ok, true);
+        assert.equal(open.result.notebookId, notebookId);
+
+        const insert = await bridgeCall(started.url, appId, sessionId, {
+          id: "req_notebook_insert",
+          method: "notebook.apply_local",
+          params: {
+            notebookId,
+            operation: { opId: "op_server_cell", type: "cell.insert", cellId: "cell_intro", cellType: "markdown", source: "Hello" },
+          },
+        });
+        assert.equal(insert.ok, true);
+
+        const proposal = await bridgeCall(started.url, appId, sessionId, {
+          id: "req_notebook_propose",
+          method: "notebook.propose_ai_patch",
+          params: {
+            notebookId,
+            opId: "op_server_proposal",
+            proposalId: "proposal_server_1",
+            modelId: "reference-model",
+            promptContextHash: "sha256:server-context",
+            affectedCellIds: ["cell_intro"],
+            proposedSource: "Accepted server proposal",
+          },
+        });
+        assert.equal(proposal.ok, true);
+        assert.equal(proposal.result.notebook.proposals.proposal_server_1.status, "pending");
+
+        const accepted = await bridgeCall(started.url, appId, sessionId, {
+          id: "req_notebook_accept",
+          method: "notebook.accept_proposal",
+          params: { notebookId, opId: "op_server_accept", proposalId: "proposal_server_1" },
+        });
+        assert.equal(accepted.ok, true);
+        assert.equal(accepted.result.notebook.cells[0].source, "Accepted server proposal");
+
+        const denied = await bridgeCall(started.url, appId, sessionId, {
+          id: "req_notebook_denied",
+          method: "notebook.apply_local",
+          params: {
+            notebookId,
+            actorId: "actor_reference_ai",
+            actorKind: "ai",
+            operation: { opId: "op_server_ai_write", type: "text.insert", cellId: "cell_intro", index: 0, text: "Nope. " },
+          },
+        });
+        assert.equal(denied.ok, false);
+        assert.equal(denied.error.code, "permission_denied");
+
+        const snapshot = await controlCommand(started.url, "db.snapshot", {});
+        assert.equal(snapshot.ok, true);
+        for (const tableName of [
+          "crdt_notebooks",
+          "crdt_documents",
+          "crdt_updates",
+          "crdt_heads",
+          "crdt_actors",
+          "crdt_permissions",
+          "crdt_proposals",
+          "crdt_sync_cursors",
+        ]) {
+          assert.equal(Array.isArray(snapshot.result[tableName]), true, `db.snapshot includes ${tableName}`);
+        }
+        const updates = snapshot.result.crdt_updates.filter((row) => row.notebook_id === notebookId);
+        assert.equal(updates.filter((row) => row.status === "accepted").length, 3);
+        assert.equal(updates.some((row) => row.status === "rejected" && row.error_code === "permission_denied"), true);
+        assert.equal(snapshot.result.crdt_documents.some((row) => row.notebook_id === notebookId), true);
+        assert.equal(snapshot.result.crdt_actors.some((row) => row.actor_id === "actor_reference_ai"), true);
+        assert.equal(snapshot.result.crdt_permissions.some((row) => row.permission === "notebook.write"), true);
+
+        const backup = await controlCommand(started.url, "db.export_backup", {});
+        assert.equal(backup.ok, true);
+        for (const field of [
+          "crdtNotebooks",
+          "crdtDocuments",
+          "crdtUpdates",
+          "crdtHeads",
+          "crdtActors",
+          "crdtPermissions",
+          "crdtProposals",
+          "crdtSyncCursors",
+        ]) {
+          assert.equal(Array.isArray(backup.result[field]), true, `db.export_backup includes ${field}`);
+        }
+        assert.equal(backup.result.crdtUpdates.filter((row) => row.notebook_id === notebookId).length, 4);
+
+        const debugBundle = await controlCommand(started.url, "db.export_debug_bundle", {});
+        assert.equal(debugBundle.ok, true);
+        assert.equal(Array.isArray(debugBundle.result.crdtUpdates), true);
+
+        const importedServer = await startServer(executablePath, scratch, "notebook-crdt-import");
+        try {
+          const imported = await controlCommand(importedServer.url, "db.import_backup", { backup: backup.result });
+          assert.equal(imported.ok, true, JSON.stringify(imported));
+          assert.equal(imported.result.crdtUpdates, 4);
+          const importedSnapshot = await controlCommand(importedServer.url, "db.snapshot", {});
+          assert.equal(importedSnapshot.ok, true);
+          assert.equal(importedSnapshot.result.crdt_updates.filter((row) => row.notebook_id === notebookId).length, 4);
+          assert.equal(importedSnapshot.result.crdt_heads.some((row) => row.notebook_id === notebookId && row.version === 3), true);
+        } finally {
+          await stopServer(importedServer);
+        }
       } finally {
         await stopServer(started);
       }
@@ -428,9 +570,15 @@ test(
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
   const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
+  const zigEnv = {
+    ...process.env,
+    ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
+    ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
+  };
 
   execFileSync("zig", ["build-exe", ...zigServerModuleArgs(), ...targetArgs, "-lc", "-lsqlite3", "-fno-emit-bin"], {
     cwd: serverDir,
+    env: zigEnv,
     stdio: "ignore",
   });
 
@@ -440,14 +588,14 @@ function buildServerExecutable(scratch) {
     execFileSync(
       "zig",
       ["build-obj", ...zigServerModuleArgs(), ...targetArgs, "-lc", `-femit-bin=${objectPath}`],
-      { cwd: serverDir, stdio: "ignore" },
+      { cwd: serverDir, env: zigEnv, stdio: "ignore" },
     );
     execFileSync("cc", [objectPath, "-lsqlite3", "-o", executablePath], { stdio: "ignore" });
   } else {
     execFileSync(
       "zig",
       ["build-exe", ...zigServerModuleArgs(), ...targetArgs, "-lc", "-lsqlite3", `-femit-bin=${executablePath}`],
-      { cwd: serverDir, stdio: "ignore" },
+      { cwd: serverDir, env: zigEnv, stdio: "ignore" },
     );
   }
 
@@ -577,6 +725,24 @@ function packageForApp(appId, mapIndexHtml = (html) => html) {
     content: filePath === "index.html" ? mapIndexHtml(content) : content,
   }));
   return { manifest: pkg.manifest, files };
+}
+
+function packageForNotebookApp(appId) {
+  const pkg = readPackage(path.join(examplesDir, appId));
+  const notebookPermissions = ["notebook.read", "notebook.write", "notebook.propose", "notebook.approve", "notebook.sync"];
+  const manifest = {
+    ...pkg.manifest,
+    permissions: [...new Set([...pkg.manifest.permissions, ...notebookPermissions])],
+    capabilities: {
+      required: [...new Set([...pkg.manifest.capabilities.required, "notebook.read"])],
+      optional: [...new Set([...pkg.manifest.capabilities.optional, "notebook.write", "notebook.propose", "notebook.approve", "notebook.sync"])],
+    },
+  };
+  const files = [...pkg.files.entries()].map(([filePath, content]) => ({
+    path: filePath,
+    content: filePath === "manifest.json" ? `${JSON.stringify(manifest, null, 2)}\n` : content,
+  }));
+  return { manifest, files };
 }
 
 async function applyBridgeFixturePreconditions(baseUrl, fixture, sessionId) {

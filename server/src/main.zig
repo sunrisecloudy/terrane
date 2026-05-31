@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const core_api = @import("zig_core");
+const crdt_api = @import("zig_crdt");
 const sqlite = @cImport({
     @cInclude("sqlite3.h");
 });
@@ -454,6 +455,10 @@ fn handleBridge(
 
     if (std.mem.startsWith(u8, method, "storage.")) {
         return handleStorageBridge(allocator, stream, id, method, params, channel_app_id, session_id);
+    }
+
+    if (std.mem.startsWith(u8, method, "notebook.")) {
+        return handleNotebookBridge(allocator, stream, id, method, params, channel_app_id, session_id, params_json_for_audit);
     }
 
     if (std.mem.eql(u8, method, "app.log")) {
@@ -5444,6 +5449,9 @@ fn callBridgeControl(
     if (std.mem.startsWith(u8, method, "storage.")) {
         return storageBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
     }
+    if (std.mem.startsWith(u8, method, "notebook.")) {
+        return notebookBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
+    }
     if (std.mem.eql(u8, method, "app.log")) {
         return appLogBridgeControl(allocator, app_id, session_id, id, method, params, params_json);
     }
@@ -5571,6 +5579,1088 @@ fn storageBridgeControl(
     }
 
     return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, "unknown_method", "Unknown storage method");
+}
+
+fn handleNotebookBridge(
+    allocator: std.mem.Allocator,
+    stream: std.net.Stream,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    params_json: []const u8,
+) !void {
+    const result_json = notebookResultPayloadAlloc(allocator, app_id, method, params) catch |err| {
+        const code = notebookErrorCode(err);
+        const message = notebookErrorMessage(err);
+        const error_json = try bridgeErrorJsonAlloc(allocator, code, message);
+        defer allocator.free(error_json);
+        logBridgeCall(allocator, app_id, session_id, method, params_json, null, error_json) catch |audit_err| {
+            std.debug.print("bridge audit write failed: {}\n", .{audit_err});
+        };
+        return writeBridgeError(allocator, stream, id, code, message);
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return writeBridgeOkRaw(allocator, stream, id, result_json);
+}
+
+fn notebookBridgeControl(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    session_id: ?[]const u8,
+    id: []const u8,
+    method: []const u8,
+    params: std.json.Value,
+    params_json: []const u8,
+) ![]u8 {
+    const result_json = notebookResultPayloadAlloc(allocator, app_id, method, params) catch |err| {
+        return bridgeControlErrorResponse(allocator, app_id, session_id, id, method, params_json, notebookErrorCode(err), notebookErrorMessage(err));
+    };
+    defer allocator.free(result_json);
+    logBridgeCall(allocator, app_id, session_id, method, params_json, result_json, null) catch |err| {
+        std.debug.print("bridge audit write failed: {}\n", .{err});
+    };
+    return bridgeOkJsonAlloc(allocator, id, result_json);
+}
+
+const NotebookError = error{
+    InvalidRequest,
+    PermissionDenied,
+    SchemaError,
+    ConflictRejected,
+    UnknownNotebook,
+    SyncUnavailable,
+    StorageQueryFailed,
+    StorageWriteFailed,
+    CrdtFailed,
+};
+
+const NotebookActor = struct {
+    id: []u8,
+    kind: []u8,
+
+    fn deinit(self: NotebookActor, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.kind);
+    }
+};
+
+fn notebookResultPayloadAlloc(allocator: std.mem.Allocator, app_id: []const u8, method: []const u8, params: std.json.Value) ![]u8 {
+    const notebook_id = valueString(params.object.get("notebookId")) orelse return NotebookError.InvalidRequest;
+    const actor = try notebookActorForMethodAlloc(allocator, method, params);
+    defer actor.deinit(allocator);
+
+    if (std.mem.eql(u8, method, "notebook.open")) {
+        return notebookOpenResultAlloc(allocator, app_id, notebook_id, params, actor);
+    }
+    if (std.mem.eql(u8, method, "notebook.snapshot")) {
+        try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.read");
+        return notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "materialized", null);
+    }
+    if (std.mem.eql(u8, method, "notebook.checkout")) {
+        try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.read");
+        return notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "materialized", params.object.get("frontier"));
+    }
+    if (std.mem.eql(u8, method, "notebook.subscribe")) {
+        try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.read");
+        return notebookSubscribeResultAlloc(allocator, notebook_id);
+    }
+    if (std.mem.eql(u8, method, "notebook.sync_pull")) {
+        try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.sync");
+        return notebookSyncPullResultAlloc(allocator, app_id, notebook_id, params);
+    }
+    if (std.mem.eql(u8, method, "notebook.apply_local")) {
+        const operation = params.object.get("operation") orelse return NotebookError.InvalidRequest;
+        return notebookApplyOperationResultAlloc(allocator, app_id, notebook_id, actor, operation);
+    }
+    if (std.mem.eql(u8, method, "notebook.propose_ai_patch")) {
+        return notebookProposeResultAlloc(allocator, app_id, notebook_id, actor, params);
+    }
+    if (std.mem.eql(u8, method, "notebook.accept_proposal")) {
+        return notebookProposalDecisionResultAlloc(allocator, app_id, notebook_id, actor, params, "proposal.accept");
+    }
+    if (std.mem.eql(u8, method, "notebook.reject_proposal")) {
+        return notebookProposalDecisionResultAlloc(allocator, app_id, notebook_id, actor, params, "proposal.reject");
+    }
+    if (std.mem.eql(u8, method, "notebook.sync_push")) {
+        return notebookSyncPushResultAlloc(allocator, app_id, notebook_id, actor, params);
+    }
+    return NotebookError.InvalidRequest;
+}
+
+fn notebookOpenResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    params: std.json.Value,
+    actor: NotebookActor,
+) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    if (try crdtNotebookExistsDb(db, app_id, notebook_id)) {
+        try assertCrdtNotebookPermissionDb(db, app_id, notebook_id, actor.id, "notebook.read");
+        return notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "materialized", null);
+    }
+    if (!(try bridgePermissionApproved(allocator, app_id, "notebook.write"))) return NotebookError.PermissionDenied;
+    const title = valueString(params.object.get("title")) orelse "Untitled notebook";
+    try createCrdtNotebookDb(allocator, db, app_id, notebook_id, title, actor);
+    return notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "materialized", null);
+}
+
+fn notebookApplyOperationResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    operation: std.json.Value,
+) ![]u8 {
+    const op_type = valueString(operation.object.get("type")) orelse return NotebookError.InvalidRequest;
+    const permission = notebookPermissionForOperation(op_type);
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const seq = try nextCrdtSeqDb(db, app_id, notebook_id);
+    const op_id = try notebookOperationIdAlloc(allocator, db, operation);
+    defer allocator.free(op_id);
+    const operation_json = try notebookOperationWithDefaultsJsonAlloc(allocator, operation, op_id, seq);
+    defer allocator.free(operation_json);
+    assertCrdtNotebookPermissionDb(db, app_id, notebook_id, actor.id, permission) catch |err| {
+        if (err == NotebookError.PermissionDenied) {
+            try insertCrdtRejectedUpdateDb(allocator, db, app_id, notebook_id, actor, seq, operation_json, "permission_denied");
+        }
+        return err;
+    };
+    return notebookApplyOperationJsonResultAlloc(allocator, db, app_id, notebook_id, actor, operation_json, seq, permission);
+}
+
+fn notebookProposeResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    params: std.json.Value,
+) ![]u8 {
+    try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.propose");
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const seq = try nextCrdtSeqDb(db, app_id, notebook_id);
+    const op_id = try notebookOperationIdAlloc(allocator, db, params);
+    defer allocator.free(op_id);
+    const generated_proposal_id = if (params.object.get("proposalId") == null) try randomDbIdAlloc(allocator, db, "proposal_") else null;
+    defer if (generated_proposal_id) |generated| allocator.free(generated);
+    const proposal_id = valueString(params.object.get("proposalId")) orelse generated_proposal_id.?;
+    const operation_json = try proposalCreateOperationJsonAlloc(allocator, op_id, seq, proposal_id, params);
+    defer allocator.free(operation_json);
+    return notebookApplyOperationJsonResultAlloc(allocator, db, app_id, notebook_id, actor, operation_json, seq, "notebook.propose");
+}
+
+fn notebookProposalDecisionResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    params: std.json.Value,
+    op_type: []const u8,
+) ![]u8 {
+    try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.approve");
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    const seq = try nextCrdtSeqDb(db, app_id, notebook_id);
+    const op_id = try notebookOperationIdAlloc(allocator, db, params);
+    defer allocator.free(op_id);
+    const proposal_id = valueString(params.object.get("proposalId")) orelse return NotebookError.InvalidRequest;
+    const operation_json = try proposalDecisionOperationJsonAlloc(allocator, op_id, seq, op_type, proposal_id, valueString(params.object.get("approvalId")));
+    defer allocator.free(operation_json);
+    return notebookApplyOperationJsonResultAlloc(allocator, db, app_id, notebook_id, actor, operation_json, seq, "notebook.approve");
+}
+
+fn notebookSyncPushResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    params: std.json.Value,
+) ![]u8 {
+    try assertCrdtNotebookPermission(allocator, app_id, notebook_id, actor.id, "notebook.sync");
+    const updates = params.object.get("updates") orelse return NotebookError.InvalidRequest;
+    if (updates != .array) return NotebookError.InvalidRequest;
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+
+    var accepted: std.io.Writer.Allocating = .init(allocator);
+    defer accepted.deinit();
+    var duplicates: std.io.Writer.Allocating = .init(allocator);
+    defer duplicates.deinit();
+    var rejected: std.io.Writer.Allocating = .init(allocator);
+    defer rejected.deinit();
+    try accepted.writer.writeAll("[");
+    try duplicates.writer.writeAll("[");
+    try rejected.writer.writeAll("[");
+    var accepted_count: usize = 0;
+    var duplicate_count: usize = 0;
+    var rejected_count: usize = 0;
+
+    for (updates.array.items) |update_value| {
+        const operation = if (update_value == .object)
+            (update_value.object.get("operation") orelse update_value)
+        else
+            update_value;
+        if (operation != .object) return NotebookError.InvalidRequest;
+        const op_type = valueString(operation.object.get("type")) orelse return NotebookError.InvalidRequest;
+        const permission = notebookPermissionForOperation(op_type);
+        try assertCrdtNotebookPermissionDb(db, app_id, notebook_id, actor.id, permission);
+        const seq = optionalPositiveInteger(operation.object.get("seq")) orelse try nextCrdtSeqDb(db, app_id, notebook_id);
+        const op_id = try notebookOperationIdAlloc(allocator, db, operation);
+        defer allocator.free(op_id);
+        if (try crdtUpdateByOpIdExistsDb(db, app_id, notebook_id, op_id)) {
+            if (duplicate_count > 0) try duplicates.writer.writeAll(",");
+            try appendJsonString(allocator, &duplicates, op_id);
+            duplicate_count += 1;
+            continue;
+        }
+        const operation_json = try notebookOperationWithDefaultsJsonAlloc(allocator, operation, op_id, seq);
+        defer allocator.free(operation_json);
+        const one_result = notebookApplyOperationJsonResultAlloc(allocator, db, app_id, notebook_id, actor, operation_json, seq, permission) catch |err| {
+            try insertCrdtRejectedUpdateDb(allocator, db, app_id, notebook_id, actor, seq, operation_json, notebookErrorCode(err));
+            if (rejected_count > 0) try rejected.writer.writeAll(",");
+            try rejected.writer.print("{{\"opId\":", .{});
+            try appendJsonString(allocator, &rejected, op_id);
+            try rejected.writer.print(",\"error\":", .{});
+            try appendJsonString(allocator, &rejected, notebookErrorCode(err));
+            try rejected.writer.writeAll("}");
+            rejected_count += 1;
+            continue;
+        };
+        defer allocator.free(one_result);
+        if (accepted_count > 0) try accepted.writer.writeAll(",");
+        try appendJsonString(allocator, &accepted, op_id);
+        accepted_count += 1;
+    }
+    try accepted.writer.writeAll("]");
+    try duplicates.writer.writeAll("]");
+    try rejected.writer.writeAll("]");
+    const accepted_json = try accepted.toOwnedSlice();
+    defer allocator.free(accepted_json);
+    const duplicates_json = try duplicates.toOwnedSlice();
+    defer allocator.free(duplicates_json);
+    const rejected_json = try rejected.toOwnedSlice();
+    defer allocator.free(rejected_json);
+
+    const snapshot = try notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "materialized", null);
+    defer allocator.free(snapshot);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, snapshot, .{});
+    defer parsed.deinit();
+    const frontier_json = try jsonValueAlloc(allocator, parsed.value.object.get("frontier").?);
+    defer allocator.free(frontier_json);
+    const notebook_json = try jsonValueAlloc(allocator, parsed.value.object.get("notebook").?);
+    defer allocator.free(notebook_json);
+    const escaped_notebook_id = try escapeJsonString(allocator, notebook_id);
+    defer allocator.free(escaped_notebook_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"notebookId\":\"{s}\",\"accepted\":{s},\"duplicates\":{s},\"rejected\":{s},\"frontier\":{s},\"notebook\":{s}}}",
+        .{ escaped_notebook_id, accepted_json, duplicates_json, rejected_json, frontier_json, notebook_json },
+    );
+}
+
+fn notebookActorForMethodAlloc(allocator: std.mem.Allocator, method: []const u8, params: std.json.Value) !NotebookActor {
+    if (std.mem.eql(u8, method, "notebook.propose_ai_patch")) {
+        const actor_id = valueString(params.object.get("aiActorId")) orelse valueString(params.object.get("actorId")) orelse "actor_reference_ai";
+        return .{ .id = try allocator.dupe(u8, actor_id), .kind = try allocator.dupe(u8, "ai") };
+    }
+    const actor_kind = valueString(params.object.get("actorKind")) orelse "human";
+    const actor_id = valueString(params.object.get("actorId")) orelse if (std.mem.eql(u8, actor_kind, "ai")) "actor_reference_ai" else "actor_reference_human";
+    if (!std.mem.eql(u8, actor_kind, "human") and !std.mem.eql(u8, actor_kind, "ai") and !std.mem.eql(u8, actor_kind, "system")) {
+        return NotebookError.InvalidRequest;
+    }
+    return .{ .id = try allocator.dupe(u8, actor_id), .kind = try allocator.dupe(u8, actor_kind) };
+}
+
+fn notebookPermissionForOperation(op_type: []const u8) []const u8 {
+    if (std.mem.eql(u8, op_type, "proposal.create")) return "notebook.propose";
+    if (std.mem.eql(u8, op_type, "proposal.accept") or std.mem.eql(u8, op_type, "proposal.reject")) return "notebook.approve";
+    return "notebook.write";
+}
+
+fn notebookPermissionForMethod(method: []const u8) ?[]const u8 {
+    const mappings = [_]struct { method: []const u8, permission: []const u8 }{
+        .{ .method = "notebook.open", .permission = "notebook.read" },
+        .{ .method = "notebook.snapshot", .permission = "notebook.read" },
+        .{ .method = "notebook.checkout", .permission = "notebook.read" },
+        .{ .method = "notebook.subscribe", .permission = "notebook.read" },
+        .{ .method = "notebook.apply_local", .permission = "notebook.write" },
+        .{ .method = "notebook.propose_ai_patch", .permission = "notebook.propose" },
+        .{ .method = "notebook.accept_proposal", .permission = "notebook.approve" },
+        .{ .method = "notebook.reject_proposal", .permission = "notebook.approve" },
+        .{ .method = "notebook.sync_pull", .permission = "notebook.sync" },
+        .{ .method = "notebook.sync_push", .permission = "notebook.sync" },
+    };
+    for (mappings) |mapping| {
+        if (std.mem.eql(u8, method, mapping.method)) return mapping.permission;
+    }
+    return null;
+}
+
+fn notebookApplyOperationJsonResultAlloc(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    operation_json: []const u8,
+    seq: i64,
+    permission: []const u8,
+) ![]u8 {
+    const op_id = try operationJsonOpIdAlloc(allocator, operation_json);
+    defer allocator.free(op_id);
+    if (try crdtUpdateByOpIdExistsDb(db, app_id, notebook_id, op_id)) {
+        return notebookMaterializedResultAlloc(allocator, app_id, notebook_id, "duplicate", null);
+    }
+
+    const crdt = crdt_api.crdt_create() orelse return NotebookError.CrdtFailed;
+    defer crdt_api.crdt_destroy(crdt);
+    try replayCrdtAcceptedUpdates(allocator, db, crdt, app_id, notebook_id);
+    const permissions_json = try std.fmt.allocPrint(allocator, "[\"{s}\"]", .{permission});
+    defer allocator.free(permissions_json);
+    const envelope_json = try crdtEnvelopeJsonAlloc(allocator, app_id, notebook_id, actor.id, actor.kind, permissions_json, operation_json, null);
+    defer allocator.free(envelope_json);
+    const crdt_json = try crdtApplyJsonAlloc(allocator, crdt, envelope_json);
+    defer allocator.free(crdt_json);
+    if (!jsonOk(crdt_json)) {
+        const code = try crdtErrorCodeAlloc(allocator, crdt_json);
+        defer allocator.free(code);
+        try insertCrdtRejectedUpdateDb(allocator, db, app_id, notebook_id, actor, seq, operation_json, code);
+        return notebookErrorFromCode(code);
+    }
+    try insertCrdtAcceptedUpdateDb(allocator, db, app_id, notebook_id, actor, seq, operation_json, crdt_json);
+    return notebookPayloadFromCrdtResultAlloc(allocator, notebook_id, crdt_json, null);
+}
+
+fn notebookMaterializedResultAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    status: []const u8,
+    frontier_value: ?std.json.Value,
+) ![]u8 {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    if (!(try crdtNotebookExistsDb(db, app_id, notebook_id))) return NotebookError.UnknownNotebook;
+    const crdt = crdt_api.crdt_create() orelse return NotebookError.CrdtFailed;
+    defer crdt_api.crdt_destroy(crdt);
+    try replayCrdtAcceptedUpdates(allocator, db, crdt, app_id, notebook_id);
+    var request: std.io.Writer.Allocating = .init(allocator);
+    defer request.deinit();
+    try request.writer.writeAll("{");
+    if (frontier_value) |frontier| {
+        try request.writer.writeAll("\"frontier\":");
+        try std.json.Stringify.value(frontier, .{}, &request.writer);
+    }
+    try request.writer.writeAll("}");
+    const request_json = try request.toOwnedSlice();
+    defer allocator.free(request_json);
+    const crdt_json = try crdtMaterializeJsonAlloc(allocator, crdt, request_json);
+    defer allocator.free(crdt_json);
+    if (!jsonOk(crdt_json)) return NotebookError.CrdtFailed;
+    return notebookPayloadFromCrdtResultAlloc(allocator, notebook_id, crdt_json, status);
+}
+
+fn notebookPayloadFromCrdtResultAlloc(allocator: std.mem.Allocator, notebook_id: []const u8, crdt_json: []const u8, forced_status: ?[]const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, crdt_json, .{}) catch return NotebookError.CrdtFailed;
+    defer parsed.deinit();
+    if (parsed.value != .object) return NotebookError.CrdtFailed;
+    const frontier = parsed.value.object.get("frontier") orelse return NotebookError.CrdtFailed;
+    const notebook = parsed.value.object.get("notebook") orelse return NotebookError.CrdtFailed;
+    const frontier_json = try jsonValueAlloc(allocator, frontier);
+    defer allocator.free(frontier_json);
+    const notebook_json = try jsonValueAlloc(allocator, notebook);
+    defer allocator.free(notebook_json);
+    const status = forced_status orelse valueString(parsed.value.object.get("status")) orelse "accepted";
+    const op_id = valueString(parsed.value.object.get("opId"));
+    const escaped_notebook_id = try escapeJsonString(allocator, notebook_id);
+    defer allocator.free(escaped_notebook_id);
+    const escaped_status = try escapeJsonString(allocator, status);
+    defer allocator.free(escaped_status);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.print("{{\"ok\":true,\"notebookId\":\"{s}\",\"status\":\"{s}\"", .{ escaped_notebook_id, escaped_status });
+    if (op_id) |actual_op_id| {
+        try out.writer.writeAll(",\"opId\":");
+        try appendJsonString(allocator, &out, actual_op_id);
+    }
+    try out.writer.print(",\"frontier\":{s},\"notebook\":{s}}}", .{ frontier_json, notebook_json });
+    return out.toOwnedSlice();
+}
+
+fn notebookSubscribeResultAlloc(allocator: std.mem.Allocator, notebook_id: []const u8) ![]u8 {
+    const escaped_notebook_id = try escapeJsonString(allocator, notebook_id);
+    defer allocator.free(escaped_notebook_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"notebookId\":\"{s}\",\"subscriptionId\":\"notebook_sub_server\",\"eventName\":\"notebook.{s}.updates\",\"transport\":\"zig-server-poll\"}}",
+        .{ escaped_notebook_id, escaped_notebook_id },
+    );
+}
+
+fn notebookSyncPullResultAlloc(allocator: std.mem.Allocator, app_id: []const u8, notebook_id: []const u8, params: std.json.Value) ![]u8 {
+    const after_seq = optionalPositiveInteger(params.object.get("afterSeq")) orelse 0;
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    if (!(try crdtNotebookExistsDb(db, app_id, notebook_id))) return NotebookError.UnknownNotebook;
+    const updates_json = try crdtUpdatesAfterSeqJsonAlloc(allocator, db, app_id, notebook_id, after_seq);
+    defer allocator.free(updates_json);
+    const frontier_json = try crdtHeadFrontierJsonAlloc(allocator, db, app_id, notebook_id);
+    defer allocator.free(frontier_json);
+    const version = crdtFrontierVersion(allocator, frontier_json) catch 0;
+    const escaped_notebook_id = try escapeJsonString(allocator, notebook_id);
+    defer allocator.free(escaped_notebook_id);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"ok\":true,\"notebookId\":\"{s}\",\"updates\":{s},\"frontier\":{s},\"cursor\":{{\"afterSeq\":{d}}}}}",
+        .{ escaped_notebook_id, updates_json, frontier_json, version },
+    );
+}
+
+fn replayCrdtAcceptedUpdates(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    crdt: *crdt_api.ZigCrdt,
+    app_id: []const u8,
+    notebook_id: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT actor_id, actor_kind, operation_json FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND status = 'accepted' ORDER BY seq, update_id",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    const replay_permissions = "[\"notebook.write\",\"notebook.propose\",\"notebook.approve\",\"notebook.sync\",\"notebook.read\"]";
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const actor_id = sqliteColumnText(statement, 0);
+        const actor_kind = sqliteColumnText(statement, 1);
+        const operation_json = sqliteColumnText(statement, 2);
+        const envelope_json = try crdtEnvelopeJsonAlloc(allocator, app_id, notebook_id, actor_id, actor_kind, replay_permissions, operation_json, null);
+        defer allocator.free(envelope_json);
+        const result_json = try crdtApplyJsonAlloc(allocator, crdt, envelope_json);
+        defer allocator.free(result_json);
+        if (!jsonOk(result_json)) return NotebookError.CrdtFailed;
+    }
+}
+
+fn crdtEnvelopeJsonAlloc(
+    allocator: std.mem.Allocator,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor_id: []const u8,
+    actor_kind: []const u8,
+    permissions_json: []const u8,
+    operation_json: []const u8,
+    updates_json: ?[]const u8,
+) ![]u8 {
+    const escaped_app_id = try escapeJsonString(allocator, app_id);
+    defer allocator.free(escaped_app_id);
+    const escaped_notebook_id = try escapeJsonString(allocator, notebook_id);
+    defer allocator.free(escaped_notebook_id);
+    const escaped_actor_id = try escapeJsonString(allocator, actor_id);
+    defer allocator.free(escaped_actor_id);
+    const escaped_actor_kind = try escapeJsonString(allocator, actor_kind);
+    defer allocator.free(escaped_actor_kind);
+    if (updates_json) |actual_updates| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"context\":{{\"appId\":\"{s}\",\"notebookId\":\"{s}\",\"actorId\":\"{s}\",\"actorKind\":\"{s}\",\"permissions\":{s}}},\"updates\":{s}}}",
+            .{ escaped_app_id, escaped_notebook_id, escaped_actor_id, escaped_actor_kind, permissions_json, actual_updates },
+        );
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"context\":{{\"appId\":\"{s}\",\"notebookId\":\"{s}\",\"actorId\":\"{s}\",\"actorKind\":\"{s}\",\"permissions\":{s}}},\"operation\":{s}}}",
+        .{ escaped_app_id, escaped_notebook_id, escaped_actor_id, escaped_actor_kind, permissions_json, operation_json },
+    );
+}
+
+fn crdtApplyJsonAlloc(allocator: std.mem.Allocator, crdt: *crdt_api.ZigCrdt, body: []const u8) ![]u8 {
+    var output: crdt_api.ZigCrdtBuffer = undefined;
+    const code = crdt_api.crdt_apply_json(crdt, body.ptr, body.len, &output);
+    if (code != 0) return NotebookError.CrdtFailed;
+    defer crdt_api.crdt_free(output);
+    return allocator.dupe(u8, output.ptr[0..output.len]);
+}
+
+fn crdtMaterializeJsonAlloc(allocator: std.mem.Allocator, crdt: *crdt_api.ZigCrdt, body: []const u8) ![]u8 {
+    var output: crdt_api.ZigCrdtBuffer = undefined;
+    const code = crdt_api.crdt_materialize_json(crdt, body.ptr, body.len, &output);
+    if (code != 0) return NotebookError.CrdtFailed;
+    defer crdt_api.crdt_free(output);
+    return allocator.dupe(u8, output.ptr[0..output.len]);
+}
+
+fn crdtErrorCodeAlloc(allocator: std.mem.Allocator, crdt_json: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, crdt_json, .{}) catch return allocator.dupe(u8, "internal_error");
+    defer parsed.deinit();
+    if (parsed.value != .object) return allocator.dupe(u8, "internal_error");
+    const error_value = parsed.value.object.get("error") orelse return allocator.dupe(u8, "internal_error");
+    if (error_value != .object) return allocator.dupe(u8, "internal_error");
+    const code = valueString(error_value.object.get("code")) orelse "internal_error";
+    return allocator.dupe(u8, code);
+}
+
+fn notebookErrorFromCode(code: []const u8) NotebookError {
+    if (std.mem.eql(u8, code, "permission_denied")) return NotebookError.PermissionDenied;
+    if (std.mem.eql(u8, code, "schema_error")) return NotebookError.SchemaError;
+    if (std.mem.eql(u8, code, "conflict_rejected")) return NotebookError.ConflictRejected;
+    if (std.mem.eql(u8, code, "unknown_notebook")) return NotebookError.UnknownNotebook;
+    if (std.mem.eql(u8, code, "sync_unavailable")) return NotebookError.SyncUnavailable;
+    return NotebookError.InvalidRequest;
+}
+
+fn notebookErrorCode(err: anyerror) []const u8 {
+    return switch (err) {
+        NotebookError.PermissionDenied => "permission_denied",
+        NotebookError.SchemaError => "schema_error",
+        NotebookError.ConflictRejected => "conflict_rejected",
+        NotebookError.UnknownNotebook => "unknown_notebook",
+        NotebookError.SyncUnavailable => "sync_unavailable",
+        NotebookError.StorageQueryFailed, NotebookError.StorageWriteFailed => "storage_error",
+        NotebookError.CrdtFailed => "crdt_error",
+        else => "invalid_request",
+    };
+}
+
+fn notebookErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        NotebookError.PermissionDenied => "Notebook operation is not permitted",
+        NotebookError.SchemaError => "Notebook operation violates the CRDT schema",
+        NotebookError.ConflictRejected => "Notebook operation conflicts with current state",
+        NotebookError.UnknownNotebook => "Notebook was not found",
+        NotebookError.SyncUnavailable => "Notebook sync is unavailable",
+        NotebookError.StorageQueryFailed, NotebookError.StorageWriteFailed => "Notebook persistence failed",
+        NotebookError.CrdtFailed => "Notebook CRDT operation failed",
+        else => "Notebook request is invalid",
+    };
+}
+
+fn crdtNotebookExistsDb(db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8) !bool {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT 1 FROM crdt_notebooks WHERE app_id = ? AND notebook_id = ? LIMIT 1", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return NotebookError.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
+fn createCrdtNotebookDb(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    title: []const u8,
+    actor: NotebookActor,
+) !void {
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+    try ensureAppRecord(db, app_id);
+    const now = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(now);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO crdt_notebooks (app_id, notebook_id, title, status, created_by, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    bindText(statement, 3, title);
+    bindText(statement, 4, actor.id);
+    bindText(statement, 5, now);
+    bindText(statement, 6, now);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+    try ensureCrdtActorDb(allocator, db, app_id, actor.id, actor.kind, now);
+    try ensureCrdtActorDb(allocator, db, app_id, "actor_reference_ai", "ai", now);
+    const human_permissions = [_][]const u8{ "notebook.read", "notebook.write", "notebook.propose", "notebook.approve", "notebook.sync" };
+    for (human_permissions) |permission| {
+        try grantCrdtPermissionDb(db, app_id, notebook_id, actor.id, permission, now);
+    }
+    const ai_permissions = [_][]const u8{ "notebook.read", "notebook.propose", "notebook.sync" };
+    for (ai_permissions) |permission| {
+        try grantCrdtPermissionDb(db, app_id, notebook_id, "actor_reference_ai", permission, now);
+    }
+    try upsertCrdtHeadDb(allocator, db, app_id, notebook_id, "{\"version\":0,\"heads\":[]}", "{\"metadata\":{},\"cells\":[],\"comments\":{},\"aiRuns\":{},\"proposals\":{},\"approvals\":{}}", now);
+    try execDb(db, "COMMIT");
+}
+
+fn ensureCrdtActorDb(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, actor_id: []const u8, actor_kind: []const u8, now: []const u8) !void {
+    const policy_json = try std.fmt.allocPrint(allocator, "{{\"actorKind\":\"{s}\"}}", .{actor_kind});
+    defer allocator.free(policy_json);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO crdt_actors (app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " ++
+            "ON CONFLICT(app_id, actor_id) DO UPDATE SET actor_kind = excluded.actor_kind, updated_at = excluded.updated_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, actor_id);
+    bindText(statement, 3, actor_kind);
+    bindText(statement, 4, actor_id);
+    bindText(statement, 5, policy_json);
+    bindText(statement, 6, now);
+    bindText(statement, 7, now);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+}
+
+fn grantCrdtPermissionDb(db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, actor_id: []const u8, permission: []const u8, now: []const u8) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_permissions (app_id, notebook_id, actor_id, permission, granted, granted_at) VALUES (?, ?, ?, ?, 1, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    bindText(statement, 3, actor_id);
+    bindText(statement, 4, permission);
+    bindText(statement, 5, now);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+}
+
+fn assertCrdtNotebookPermission(allocator: std.mem.Allocator, app_id: []const u8, notebook_id: []const u8, actor_id: []const u8, permission: []const u8) !void {
+    const db = try openPlatformDb(allocator);
+    defer _ = sqlite.sqlite3_close(db);
+    return assertCrdtNotebookPermissionDb(db, app_id, notebook_id, actor_id, permission);
+}
+
+fn assertCrdtNotebookPermissionDb(db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, actor_id: []const u8, permission: []const u8) !void {
+    if (!(try crdtNotebookExistsDb(db, app_id, notebook_id))) return NotebookError.UnknownNotebook;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT granted FROM crdt_permissions WHERE app_id = ? AND notebook_id = ? AND actor_id = ? AND permission = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    bindText(statement, 3, actor_id);
+    bindText(statement, 4, permission);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return NotebookError.PermissionDenied;
+    if (sqlite.sqlite3_column_int64(statement, 0) != 1) return NotebookError.PermissionDenied;
+}
+
+fn nextCrdtSeqDb(db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8) !i64 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM crdt_updates WHERE app_id = ? AND notebook_id = ?",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return NotebookError.StorageQueryFailed;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+fn crdtUpdateByOpIdExistsDb(db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, op_id: []const u8) !bool {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT 1 FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND json_extract(operation_json, '$.opId') = ? LIMIT 1",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    bindText(statement, 3, op_id);
+    return sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW;
+}
+
+fn insertCrdtAcceptedUpdateDb(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    seq: i64,
+    operation_json: []const u8,
+    crdt_json: []const u8,
+) !void {
+    const update_id = try randomDbIdAlloc(allocator, db, "crdt_update_");
+    defer allocator.free(update_id);
+    const document_id = try randomDbIdAlloc(allocator, db, "crdt_doc_");
+    defer allocator.free(document_id);
+    const now = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(now);
+    const operation_hash = try sha256PrefixedAlloc(allocator, operation_json);
+    defer allocator.free(operation_hash);
+    const notebook_json = try crdtResultNotebookJsonAlloc(allocator, crdt_json);
+    defer allocator.free(notebook_json);
+    const frontier_json = try crdtResultFrontierJsonAlloc(allocator, crdt_json);
+    defer allocator.free(frontier_json);
+    const notebook_hash = try sha256PrefixedAlloc(allocator, notebook_json);
+    defer allocator.free(notebook_hash);
+    const version = crdtFrontierVersion(allocator, frontier_json) catch seq;
+
+    try execDb(db, "BEGIN IMMEDIATE");
+    errdefer execDb(db, "ROLLBACK") catch {};
+    try insertCrdtUpdateRecordDb(db, update_id, app_id, notebook_id, actor, seq, operation_json, "accepted", null, operation_hash, now);
+    try upsertCrdtHeadDb(allocator, db, app_id, notebook_id, frontier_json, notebook_json, now);
+    var doc_statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO crdt_documents (document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &doc_statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(doc_statement);
+    bindText(doc_statement, 1, document_id);
+    bindText(doc_statement, 2, app_id);
+    bindText(doc_statement, 3, notebook_id);
+    _ = sqlite.sqlite3_bind_int64(doc_statement, 4, version);
+    bindText(doc_statement, 5, notebook_json);
+    bindText(doc_statement, 6, notebook_hash);
+    bindText(doc_statement, 7, now);
+    if (sqlite.sqlite3_step(doc_statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+    try updateCrdtProposalRowsDb(allocator, db, app_id, notebook_id, actor.id, operation_json, now);
+    try execDb(db, "COMMIT");
+}
+
+fn insertCrdtRejectedUpdateDb(
+    allocator: std.mem.Allocator,
+    db: *sqlite.sqlite3,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    seq: i64,
+    operation_json: []const u8,
+    error_code: []const u8,
+) !void {
+    const update_id = try randomDbIdAlloc(allocator, db, "crdt_update_");
+    defer allocator.free(update_id);
+    const now = try sqliteNowIsoAlloc(allocator, db);
+    defer allocator.free(now);
+    const operation_hash = try sha256PrefixedAlloc(allocator, operation_json);
+    defer allocator.free(operation_hash);
+    try insertCrdtUpdateRecordDb(db, update_id, app_id, notebook_id, actor, seq, operation_json, "rejected", error_code, operation_hash, now);
+}
+
+fn insertCrdtUpdateRecordDb(
+    db: *sqlite.sqlite3,
+    update_id: []const u8,
+    app_id: []const u8,
+    notebook_id: []const u8,
+    actor: NotebookActor,
+    seq: i64,
+    operation_json: []const u8,
+    status: []const u8,
+    error_code: ?[]const u8,
+    content_hash: []const u8,
+    now: []const u8,
+) !void {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO crdt_updates (update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, update_id);
+    bindText(statement, 2, app_id);
+    bindText(statement, 3, notebook_id);
+    bindText(statement, 4, actor.id);
+    bindText(statement, 5, actor.kind);
+    _ = sqlite.sqlite3_bind_int64(statement, 6, seq);
+    bindText(statement, 7, operation_json);
+    bindText(statement, 8, status);
+    bindNullableText(statement, 9, error_code);
+    bindText(statement, 10, content_hash);
+    bindText(statement, 11, now);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+}
+
+fn upsertCrdtHeadDb(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, frontier_json: []const u8, notebook_json: []const u8, now: []const u8) !void {
+    const content_hash = try sha256PrefixedAlloc(allocator, notebook_json);
+    defer allocator.free(content_hash);
+    const version = crdtFrontierVersion(allocator, frontier_json) catch 0;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT INTO crdt_heads (app_id, notebook_id, version, frontier_json, content_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?) " ++
+            "ON CONFLICT(app_id, notebook_id) DO UPDATE SET version = excluded.version, frontier_json = excluded.frontier_json, content_hash = excluded.content_hash, updated_at = excluded.updated_at",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    _ = sqlite.sqlite3_bind_int64(statement, 3, version);
+    bindText(statement, 4, frontier_json);
+    bindText(statement, 5, content_hash);
+    bindText(statement, 6, now);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+}
+
+fn updateCrdtProposalRowsDb(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, actor_id: []const u8, operation_json: []const u8, now: []const u8) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, operation_json, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const op_type = valueString(parsed.value.object.get("type")) orelse return;
+    const proposal_id = valueString(parsed.value.object.get("proposalId")) orelse return;
+    if (std.mem.eql(u8, op_type, "proposal.create")) {
+        var statement: ?*sqlite.sqlite3_stmt = null;
+        if (sqlite.sqlite3_prepare_v2(
+            db,
+            "INSERT INTO crdt_proposals (app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?) " ++
+                "ON CONFLICT(app_id, notebook_id, proposal_id) DO UPDATE SET status = excluded.status, proposal_json = excluded.proposal_json, updated_at = excluded.updated_at",
+            -1,
+            &statement,
+            null,
+        ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        bindText(statement, 1, app_id);
+        bindText(statement, 2, notebook_id);
+        bindText(statement, 3, proposal_id);
+        bindText(statement, 4, actor_id);
+        bindText(statement, 5, operation_json);
+        bindText(statement, 6, now);
+        bindText(statement, 7, now);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+        return;
+    }
+    if (std.mem.eql(u8, op_type, "proposal.accept") or std.mem.eql(u8, op_type, "proposal.reject")) {
+        const status = if (std.mem.eql(u8, op_type, "proposal.accept")) "accepted" else "rejected";
+        var statement: ?*sqlite.sqlite3_stmt = null;
+        if (sqlite.sqlite3_prepare_v2(db, "UPDATE crdt_proposals SET status = ?, updated_at = ? WHERE app_id = ? AND notebook_id = ? AND proposal_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+            return NotebookError.StorageQueryFailed;
+        }
+        defer _ = sqlite.sqlite3_finalize(statement);
+        bindText(statement, 1, status);
+        bindText(statement, 2, now);
+        bindText(statement, 3, app_id);
+        bindText(statement, 4, notebook_id);
+        bindText(statement, 5, proposal_id);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return NotebookError.StorageWriteFailed;
+    }
+}
+
+fn crdtUpdatesAfterSeqJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8, after_seq: i64) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "SELECT update_id, seq, actor_id, actor_kind, operation_json, content_hash FROM crdt_updates WHERE app_id = ? AND notebook_id = ? AND status = 'accepted' AND seq > ? ORDER BY seq, update_id",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return NotebookError.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    _ = sqlite.sqlite3_bind_int64(statement, 3, after_seq);
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[");
+    var count: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        if (count > 0) try out.writer.writeAll(",");
+        try out.writer.writeAll("{\"updateId\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 0));
+        try out.writer.print(",\"seq\":{d},\"actorId\":", .{sqlite.sqlite3_column_int64(statement, 1)});
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 2));
+        try out.writer.writeAll(",\"actorKind\":");
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 3));
+        try out.writer.print(",\"operation\":{s},\"contentHash\":", .{sqliteColumnText(statement, 4)});
+        try appendJsonString(allocator, &out, sqliteColumnText(statement, 5));
+        try out.writer.writeAll("}");
+        count += 1;
+    }
+    try out.writer.writeAll("]");
+    return out.toOwnedSlice();
+}
+
+fn crdtHeadFrontierJsonAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, app_id: []const u8, notebook_id: []const u8) ![]u8 {
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db, "SELECT frontier_json FROM crdt_heads WHERE app_id = ? AND notebook_id = ?", -1, &statement, null) != sqlite.SQLITE_OK) {
+        return NotebookError.StorageQueryFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(statement);
+    bindText(statement, 1, app_id);
+    bindText(statement, 2, notebook_id);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return allocator.dupe(u8, "{\"version\":0,\"heads\":[]}");
+    return allocator.dupe(u8, sqliteColumnText(statement, 0));
+}
+
+fn crdtResultNotebookJsonAlloc(allocator: std.mem.Allocator, crdt_json: []const u8) ![]u8 {
+    return crdtResultFieldJsonAlloc(allocator, crdt_json, "notebook");
+}
+
+fn crdtResultFrontierJsonAlloc(allocator: std.mem.Allocator, crdt_json: []const u8) ![]u8 {
+    return crdtResultFieldJsonAlloc(allocator, crdt_json, "frontier");
+}
+
+fn crdtResultFieldJsonAlloc(allocator: std.mem.Allocator, crdt_json: []const u8, field: []const u8) ![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, crdt_json, .{}) catch return NotebookError.CrdtFailed;
+    defer parsed.deinit();
+    if (parsed.value != .object) return NotebookError.CrdtFailed;
+    const value = parsed.value.object.get(field) orelse return NotebookError.CrdtFailed;
+    return jsonValueAlloc(allocator, value);
+}
+
+fn crdtFrontierVersion(allocator: std.mem.Allocator, frontier_json: []const u8) !i64 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, frontier_json, .{}) catch return 0;
+    defer parsed.deinit();
+    if (parsed.value != .object) return 0;
+    const version = parsed.value.object.get("version") orelse return 0;
+    if (version == .integer and version.integer >= 0) return @intCast(version.integer);
+    return 0;
+}
+
+fn operationJsonOpIdAlloc(allocator: std.mem.Allocator, operation_json: []const u8) ![]u8 {
+    return jsonStringFieldAlloc(allocator, operation_json, "opId") catch null orelse NotebookError.InvalidRequest;
+}
+
+fn notebookOperationIdAlloc(allocator: std.mem.Allocator, db: *sqlite.sqlite3, operation: std.json.Value) ![]u8 {
+    if (operation == .object) {
+        if (valueString(operation.object.get("opId"))) |op_id| return allocator.dupe(u8, op_id);
+    }
+    return randomDbIdAlloc(allocator, db, "crdt_op_");
+}
+
+fn notebookOperationWithDefaultsJsonAlloc(allocator: std.mem.Allocator, operation: std.json.Value, op_id: []const u8, seq: i64) ![]u8 {
+    if (operation != .object) return NotebookError.InvalidRequest;
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"opId\":");
+    try appendJsonString(allocator, &out, op_id);
+    try out.writer.print(",\"seq\":{d}", .{seq});
+    var iterator = operation.object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "opId") or std.mem.eql(u8, entry.key_ptr.*, "seq")) continue;
+        try out.writer.writeAll(",");
+        try appendJsonString(allocator, &out, entry.key_ptr.*);
+        try out.writer.writeAll(":");
+        try std.json.Stringify.value(entry.value_ptr.*, .{}, &out.writer);
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn proposalCreateOperationJsonAlloc(
+    allocator: std.mem.Allocator,
+    op_id: []const u8,
+    seq: i64,
+    proposal_id: []const u8,
+    params: std.json.Value,
+) ![]u8 {
+    const model_id = valueString(params.object.get("modelId")) orelse return NotebookError.InvalidRequest;
+    const prompt_hash = valueString(params.object.get("promptHash")) orelse valueString(params.object.get("promptContextHash")) orelse valueString(params.object.get("contextHash")) orelse return NotebookError.SchemaError;
+    const context_hash = valueString(params.object.get("contextHash")) orelse valueString(params.object.get("promptContextHash")) orelse prompt_hash;
+    const prompt_context_hash = valueString(params.object.get("promptContextHash")) orelse context_hash;
+    const affected_json = if (params.object.get("affectedCellIds")) |affected| try jsonValueAlloc(allocator, affected) else try allocator.dupe(u8, "[]");
+    defer allocator.free(affected_json);
+    const base_frontier_json = if (params.object.get("baseFrontier")) |frontier| try jsonValueAlloc(allocator, frontier) else try allocator.dupe(u8, "{\"version\":0,\"heads\":[]}");
+    defer allocator.free(base_frontier_json);
+    const operations_json = if (params.object.get("operations")) |operations| try jsonValueAlloc(allocator, operations) else try proposalDefaultOperationsJsonAlloc(allocator, params);
+    defer allocator.free(operations_json);
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"opId\":");
+    try appendJsonString(allocator, &out, op_id);
+    try out.writer.print(",\"seq\":{d},\"type\":\"proposal.create\",\"proposalId\":", .{seq});
+    try appendJsonString(allocator, &out, proposal_id);
+    try out.writer.writeAll(",\"modelId\":");
+    try appendJsonString(allocator, &out, model_id);
+    try out.writer.writeAll(",\"promptHash\":");
+    try appendJsonString(allocator, &out, prompt_hash);
+    try out.writer.writeAll(",\"contextHash\":");
+    try appendJsonString(allocator, &out, context_hash);
+    try out.writer.writeAll(",\"promptContextHash\":");
+    try appendJsonString(allocator, &out, prompt_context_hash);
+    try out.writer.print(",\"affectedCellIds\":{s},\"baseFrontier\":{s},\"operations\":{s}", .{ affected_json, base_frontier_json, operations_json });
+    if (valueString(params.object.get("proposedSource"))) |source| {
+        try out.writer.writeAll(",\"proposedSource\":");
+        try appendJsonString(allocator, &out, source);
+    }
+    if (valueString(params.object.get("patchSummary"))) |summary| {
+        try out.writer.writeAll(",\"patchSummary\":");
+        try appendJsonString(allocator, &out, summary);
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn proposalDefaultOperationsJsonAlloc(allocator: std.mem.Allocator, params: std.json.Value) ![]u8 {
+    const proposed_source = valueString(params.object.get("proposedSource")) orelse return allocator.dupe(u8, "[]");
+    const affected = params.object.get("affectedCellIds") orelse return allocator.dupe(u8, "[]");
+    if (affected != .array or affected.array.items.len == 0) return allocator.dupe(u8, "[]");
+    const first_cell = valueString(affected.array.items[0]) orelse return allocator.dupe(u8, "[]");
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("[{\"type\":\"text.replace\",\"cellId\":");
+    try appendJsonString(allocator, &out, first_cell);
+    try out.writer.writeAll(",\"text\":");
+    try appendJsonString(allocator, &out, proposed_source);
+    try out.writer.writeAll("}]");
+    return out.toOwnedSlice();
+}
+
+fn proposalDecisionOperationJsonAlloc(
+    allocator: std.mem.Allocator,
+    op_id: []const u8,
+    seq: i64,
+    op_type: []const u8,
+    proposal_id: []const u8,
+    approval_id: ?[]const u8,
+) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"opId\":");
+    try appendJsonString(allocator, &out, op_id);
+    try out.writer.print(",\"seq\":{d},\"type\":", .{seq});
+    try appendJsonString(allocator, &out, op_type);
+    try out.writer.writeAll(",\"proposalId\":");
+    try appendJsonString(allocator, &out, proposal_id);
+    if (approval_id) |actual_approval_id| {
+        try out.writer.writeAll(",\"approvalId\":");
+        try appendJsonString(allocator, &out, actual_approval_id);
+    }
+    try out.writer.writeAll("}");
+    return out.toOwnedSlice();
+}
+
+fn optionalPositiveInteger(value: ?std.json.Value) ?i64 {
+    const actual = value orelse return null;
+    if (actual == .integer and actual.integer >= 0) return @intCast(actual.integer);
+    return null;
 }
 
 fn appLogBridgeControl(
@@ -7656,10 +8746,102 @@ fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
         \\  created_at TEXT NOT NULL,
         \\  imported_at TEXT
         \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_notebooks (
+        \\  notebook_id TEXT NOT NULL,
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  title TEXT NOT NULL,
+        \\  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','deleted')),
+        \\  created_by TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL,
+        \\  PRIMARY KEY (app_id, notebook_id)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_documents (
+        \\  document_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  version INTEGER NOT NULL,
+        \\  snapshot_json TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_updates (
+        \\  update_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  actor_id TEXT NOT NULL,
+        \\  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human','ai','system')),
+        \\  seq INTEGER NOT NULL,
+        \\  operation_json TEXT,
+        \\  status TEXT NOT NULL CHECK (status IN ('accepted','rejected')),
+        \\  error_code TEXT,
+        \\  content_hash TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_heads (
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  version INTEGER NOT NULL,
+        \\  frontier_json TEXT NOT NULL,
+        \\  content_hash TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL,
+        \\  PRIMARY KEY (app_id, notebook_id),
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_actors (
+        \\  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+        \\  actor_id TEXT NOT NULL,
+        \\  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human','ai','system')),
+        \\  display_name TEXT,
+        \\  policy_json TEXT,
+        \\  created_at TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL,
+        \\  PRIMARY KEY (app_id, actor_id)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_permissions (
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  actor_id TEXT NOT NULL,
+        \\  permission TEXT NOT NULL,
+        \\  granted INTEGER NOT NULL DEFAULT 1,
+        \\  granted_at TEXT,
+        \\  PRIMARY KEY (app_id, notebook_id, actor_id, permission),
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_proposals (
+        \\  proposal_id TEXT NOT NULL,
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  actor_id TEXT NOT NULL,
+        \\  status TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected')),
+        \\  proposal_json TEXT NOT NULL,
+        \\  created_at TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL,
+        \\  PRIMARY KEY (app_id, notebook_id, proposal_id),
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS crdt_sync_cursors (
+        \\  cursor_id TEXT PRIMARY KEY,
+        \\  app_id TEXT NOT NULL,
+        \\  notebook_id TEXT NOT NULL,
+        \\  actor_id TEXT NOT NULL,
+        \\  last_seen_update_id TEXT,
+        \\  frontier_json TEXT NOT NULL,
+        \\  updated_at TEXT NOT NULL,
+        \\  FOREIGN KEY (app_id, notebook_id) REFERENCES crdt_notebooks(app_id, notebook_id) ON DELETE CASCADE
+        \\);
         \\CREATE INDEX IF NOT EXISTS idx_app_migrations_app_versions ON app_migrations(app_id, from_data_version, to_data_version);
         \\CREATE INDEX IF NOT EXISTS idx_migration_runs_app_started ON migration_runs(app_id, started_at);
         \\CREATE INDEX IF NOT EXISTS idx_app_install_reports_app_created ON app_install_reports(app_id, created_at);
         \\CREATE INDEX IF NOT EXISTS idx_backup_exports_created ON backup_exports(created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_updates_notebook_seq ON crdt_updates(app_id, notebook_id, seq);
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_updates_opid ON crdt_updates(app_id, notebook_id, json_extract(operation_json, '$.opId'));
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_updates_status_created ON crdt_updates(status, created_at);
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_documents_notebook_version ON crdt_documents(app_id, notebook_id, version);
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_permissions_actor ON crdt_permissions(app_id, actor_id, permission);
+        \\CREATE INDEX IF NOT EXISTS idx_crdt_sync_cursors_notebook_actor ON crdt_sync_cursors(app_id, notebook_id, actor_id);
     ;
     if (sqlite.sqlite3_exec(db, schema, null, null, null) != sqlite.SQLITE_OK) {
         return error.StorageSchemaFailed;
@@ -7803,11 +8985,27 @@ fn dbSnapshotJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(test_runs);
     const fault_injections = try queryRowsJson(allocator, "SELECT fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at FROM fault_injections ORDER BY created_at", null);
     defer allocator.free(fault_injections);
+    const crdt_notebooks = try queryRowsJson(allocator, "SELECT app_id, notebook_id, title, status, created_by, created_at, updated_at FROM crdt_notebooks ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_notebooks);
+    const crdt_documents = try queryRowsJson(allocator, "SELECT document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at FROM crdt_documents ORDER BY app_id, notebook_id, version", null);
+    defer allocator.free(crdt_documents);
+    const crdt_updates = try queryRowsJson(allocator, "SELECT update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at FROM crdt_updates ORDER BY app_id, notebook_id, seq", null);
+    defer allocator.free(crdt_updates);
+    const crdt_heads = try queryRowsJson(allocator, "SELECT app_id, notebook_id, version, frontier_json, content_hash, updated_at FROM crdt_heads ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_heads);
+    const crdt_actors = try queryRowsJson(allocator, "SELECT app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at FROM crdt_actors ORDER BY app_id, actor_id", null);
+    defer allocator.free(crdt_actors);
+    const crdt_permissions = try queryRowsJson(allocator, "SELECT app_id, notebook_id, actor_id, permission, granted, granted_at FROM crdt_permissions ORDER BY app_id, notebook_id, actor_id, permission", null);
+    defer allocator.free(crdt_permissions);
+    const crdt_proposals = try queryRowsJson(allocator, "SELECT app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at FROM crdt_proposals ORDER BY app_id, notebook_id, proposal_id", null);
+    defer allocator.free(crdt_proposals);
+    const crdt_sync_cursors = try queryRowsJson(allocator, "SELECT cursor_id, app_id, notebook_id, actor_id, last_seen_update_id, frontier_json, updated_at FROM crdt_sync_cursors ORDER BY app_id, notebook_id, actor_id", null);
+    defer allocator.free(crdt_sync_cursors);
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s},\"fault_injections\":{s}}}",
-        .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs, fault_injections },
+        "{{\"apps\":{s},\"app_versions\":{s},\"app_installations\":{s},\"app_install_reports\":{s},\"app_storage\":{s},\"bridge_calls\":{s},\"control_sessions\":{s},\"control_commands\":{s},\"runtime_sessions\":{s},\"runtime_snapshots\":{s},\"app_migrations\":{s},\"migration_runs\":{s},\"core_events\":{s},\"test_runs\":{s},\"fault_injections\":{s},\"crdt_notebooks\":{s},\"crdt_documents\":{s},\"crdt_updates\":{s},\"crdt_heads\":{s},\"crdt_actors\":{s},\"crdt_permissions\":{s},\"crdt_proposals\":{s},\"crdt_sync_cursors\":{s}}}",
+        .{ apps, app_versions, app_installations, app_install_reports, storage, bridge_calls, control_sessions, control_commands, runtime_sessions, runtime_snapshots, app_migrations, migration_runs, core_events, test_runs, fault_injections, crdt_notebooks, crdt_documents, crdt_updates, crdt_heads, crdt_actors, crdt_permissions, crdt_proposals, crdt_sync_cursors },
     );
 }
 
@@ -7832,13 +9030,29 @@ fn dbBackupExportJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(app_migrations);
     const install_reports = try queryRowsJson(allocator, "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports ORDER BY app_id, created_at", null);
     defer allocator.free(install_reports);
+    const crdt_notebooks = try queryRowsJson(allocator, "SELECT app_id, notebook_id, title, status, created_by, created_at, updated_at FROM crdt_notebooks ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_notebooks);
+    const crdt_documents = try queryRowsJson(allocator, "SELECT document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at FROM crdt_documents ORDER BY app_id, notebook_id, version", null);
+    defer allocator.free(crdt_documents);
+    const crdt_updates = try queryRowsJson(allocator, "SELECT update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at FROM crdt_updates ORDER BY app_id, notebook_id, seq", null);
+    defer allocator.free(crdt_updates);
+    const crdt_heads = try queryRowsJson(allocator, "SELECT app_id, notebook_id, version, frontier_json, content_hash, updated_at FROM crdt_heads ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_heads);
+    const crdt_actors = try queryRowsJson(allocator, "SELECT app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at FROM crdt_actors ORDER BY app_id, actor_id", null);
+    defer allocator.free(crdt_actors);
+    const crdt_permissions = try queryRowsJson(allocator, "SELECT app_id, notebook_id, actor_id, permission, granted, granted_at FROM crdt_permissions ORDER BY app_id, notebook_id, actor_id, permission", null);
+    defer allocator.free(crdt_permissions);
+    const crdt_proposals = try queryRowsJson(allocator, "SELECT app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at FROM crdt_proposals ORDER BY app_id, notebook_id, proposal_id", null);
+    defer allocator.free(crdt_proposals);
+    const crdt_sync_cursors = try queryRowsJson(allocator, "SELECT cursor_id, app_id, notebook_id, actor_id, last_seen_update_id, frontier_json, updated_at FROM crdt_sync_cursors ORDER BY app_id, notebook_id, actor_id", null);
+    defer allocator.free(crdt_sync_cursors);
     const capabilities = try serverCapabilitiesJson(allocator);
     defer allocator.free(capabilities);
 
     const base_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"exportId\":\"{s}\",\"type\":\"backup\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{}}}}",
-        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities },
+        "{{\"exportId\":\"{s}\",\"type\":\"backup\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"crdtNotebooks\":{s},\"crdtDocuments\":{s},\"crdtUpdates\":{s},\"crdtHeads\":{s},\"crdtActors\":{s},\"crdtPermissions\":{s},\"crdtProposals\":{s},\"crdtSyncCursors\":{s},\"runtimeCapabilities\":{s},\"debug\":{{}}}}",
+        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, crdt_notebooks, crdt_documents, crdt_updates, crdt_heads, crdt_actors, crdt_permissions, crdt_proposals, crdt_sync_cursors, capabilities },
     );
     defer allocator.free(base_json);
     const content_hash = try sha256HexAlloc(allocator, base_json);
@@ -7870,9 +9084,17 @@ fn importBackupControl(allocator: std.mem.Allocator, backup: std.json.Value) ![]
     const storage_count = try importBackupAppStorage(allocator, backup.object.get("appStorage"), db, created_at);
     _ = try importBackupAppMigrations(allocator, backup.object.get("appMigrations"), db, created_at);
     _ = try importBackupInstallReports(allocator, backup.object.get("appInstallReports"), db, created_at);
+    _ = try importBackupCrdtNotebooks(backup.object.get("crdtNotebooks"), db, created_at);
+    _ = try importBackupCrdtActors(allocator, backup.object.get("crdtActors"), db, created_at);
+    _ = try importBackupCrdtDocuments(allocator, backup.object.get("crdtDocuments"), db, created_at);
+    const crdt_updates_count = try importBackupCrdtUpdates(allocator, backup.object.get("crdtUpdates"), db, created_at);
+    _ = try importBackupCrdtHeads(allocator, backup.object.get("crdtHeads"), db, created_at);
+    _ = try importBackupCrdtPermissions(backup.object.get("crdtPermissions"), db, created_at);
+    _ = try importBackupCrdtProposals(allocator, backup.object.get("crdtProposals"), db, created_at);
+    _ = try importBackupCrdtSyncCursors(allocator, backup.object.get("crdtSyncCursors"), db, created_at);
     try insertBackupImportRecord(db, allocator, backup, backup_json, content_hash, created_at);
 
-    const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"apps\":{d},\"appVersions\":{d},\"appStorage\":{d}}}", .{ apps_count, versions_count, storage_count });
+    const result_json = try std.fmt.allocPrint(allocator, "{{\"ok\":true,\"apps\":{d},\"appVersions\":{d},\"appStorage\":{d},\"crdtUpdates\":{d}}}", .{ apps_count, versions_count, storage_count, crdt_updates_count });
     errdefer allocator.free(result_json);
     try execDb(db, "COMMIT");
     return result_json;
@@ -8132,6 +9354,261 @@ fn importBackupInstallReports(allocator: std.mem.Allocator, value: ?std.json.Val
     return count;
 }
 
+fn importBackupCrdtNotebooks(value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const notebooks = value orelse return 0;
+    if (notebooks != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_notebooks (app_id, notebook_id, title, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (notebooks.array.items) |notebook| {
+        if (notebook != .object) return error.InvalidBackup;
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(notebook, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(notebook, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectString(notebook, "title") orelse "Untitled notebook");
+        bindText(statement, 4, objectString(notebook, "status") orelse "active");
+        bindText(statement, 5, objectStringAny(notebook, "created_by", "createdBy") orelse "import");
+        bindText(statement, 6, objectStringAny(notebook, "created_at", "createdAt") orelse created_at);
+        bindText(statement, 7, objectStringAny(notebook, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtActors(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const actors = value orelse return 0;
+    if (actors != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_actors (app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (actors.array.items) |actor| {
+        if (actor != .object) return error.InvalidBackup;
+        const policy_json = try jsonDocumentFieldAlloc(allocator, actor, "policy_json", "policyJson", "policy", "{}");
+        defer allocator.free(policy_json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(actor, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(actor, "actor_id", "actorId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(actor, "actor_kind", "actorKind") orelse "human");
+        bindNullableText(statement, 4, objectStringAny(actor, "display_name", "displayName"));
+        bindText(statement, 5, policy_json);
+        bindText(statement, 6, objectStringAny(actor, "created_at", "createdAt") orelse created_at);
+        bindText(statement, 7, objectStringAny(actor, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtDocuments(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const documents = value orelse return 0;
+    if (documents != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_documents (document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (documents.array.items) |document| {
+        if (document != .object) return error.InvalidBackup;
+        const snapshot_json = try jsonDocumentFieldAlloc(allocator, document, "snapshot_json", "snapshotJson", "snapshot", "{}");
+        defer allocator.free(snapshot_json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(document, "document_id", "documentId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(document, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(document, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 4, objectI64(document, "version") orelse 0);
+        bindText(statement, 5, snapshot_json);
+        bindText(statement, 6, objectStringAny(document, "content_hash", "contentHash") orelse "sha256:imported");
+        bindText(statement, 7, objectStringAny(document, "created_at", "createdAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtUpdates(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const updates = value orelse return 0;
+    if (updates != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_updates (update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (updates.array.items) |update| {
+        if (update != .object) return error.InvalidBackup;
+        const operation_json = try optionalJsonDocumentFieldAlloc(allocator, update, "operation_json", "operationJson", "operation");
+        defer if (operation_json) |json| allocator.free(json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(update, "update_id", "updateId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(update, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(update, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        bindText(statement, 4, objectStringAny(update, "actor_id", "actorId") orelse return error.InvalidBackup);
+        bindText(statement, 5, objectStringAny(update, "actor_kind", "actorKind") orelse "human");
+        _ = sqlite.sqlite3_bind_int64(statement, 6, objectI64(update, "seq") orelse 0);
+        bindNullableText(statement, 7, operation_json);
+        bindText(statement, 8, objectString(update, "status") orelse "accepted");
+        bindNullableText(statement, 9, objectStringAny(update, "error_code", "errorCode"));
+        bindText(statement, 10, objectStringAny(update, "content_hash", "contentHash") orelse "sha256:imported");
+        bindText(statement, 11, objectStringAny(update, "created_at", "createdAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtHeads(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const heads = value orelse return 0;
+    if (heads != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_heads (app_id, notebook_id, version, frontier_json, content_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (heads.array.items) |head| {
+        if (head != .object) return error.InvalidBackup;
+        const frontier_json = try jsonDocumentFieldAlloc(allocator, head, "frontier_json", "frontierJson", "frontier", "{\"version\":0,\"heads\":[]}");
+        defer allocator.free(frontier_json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(head, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(head, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 3, objectI64(head, "version") orelse 0);
+        bindText(statement, 4, frontier_json);
+        bindText(statement, 5, objectStringAny(head, "content_hash", "contentHash") orelse "sha256:imported");
+        bindText(statement, 6, objectStringAny(head, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtPermissions(value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const permissions = value orelse return 0;
+    if (permissions != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_permissions (app_id, notebook_id, actor_id, permission, granted, granted_at) VALUES (?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (permissions.array.items) |permission| {
+        if (permission != .object) return error.InvalidBackup;
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(permission, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(permission, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(permission, "actor_id", "actorId") orelse return error.InvalidBackup);
+        bindText(statement, 4, objectString(permission, "permission") orelse return error.InvalidBackup);
+        _ = sqlite.sqlite3_bind_int64(statement, 5, objectBoolInt(permission, "granted") orelse 1);
+        bindNullableText(statement, 6, objectStringAny(permission, "granted_at", "grantedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtProposals(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const proposals = value orelse return 0;
+    if (proposals != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_proposals (app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (proposals.array.items) |proposal| {
+        if (proposal != .object) return error.InvalidBackup;
+        const proposal_json = try jsonDocumentFieldAlloc(allocator, proposal, "proposal_json", "proposalJson", "proposal", "{}");
+        defer allocator.free(proposal_json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(proposal, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(proposal, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(proposal, "proposal_id", "proposalId") orelse return error.InvalidBackup);
+        bindText(statement, 4, objectStringAny(proposal, "actor_id", "actorId") orelse return error.InvalidBackup);
+        bindText(statement, 5, objectString(proposal, "status") orelse "pending");
+        bindText(statement, 6, proposal_json);
+        bindText(statement, 7, objectStringAny(proposal, "created_at", "createdAt") orelse created_at);
+        bindText(statement, 8, objectStringAny(proposal, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
+fn importBackupCrdtSyncCursors(allocator: std.mem.Allocator, value: ?std.json.Value, db: *sqlite.sqlite3, created_at: []const u8) !usize {
+    const cursors = value orelse return 0;
+    if (cursors != .array) return error.InvalidBackup;
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO crdt_sync_cursors (cursor_id, app_id, notebook_id, actor_id, last_seen_update_id, frontier_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        null,
+    ) != sqlite.SQLITE_OK) return error.StorageQueryFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var count: usize = 0;
+    for (cursors.array.items) |cursor| {
+        if (cursor != .object) return error.InvalidBackup;
+        const frontier_json = try jsonDocumentFieldAlloc(allocator, cursor, "frontier_json", "frontierJson", "frontier", "{\"version\":0,\"heads\":[]}");
+        defer allocator.free(frontier_json);
+        _ = sqlite.sqlite3_reset(statement);
+        _ = sqlite.sqlite3_clear_bindings(statement);
+        bindText(statement, 1, objectStringAny(cursor, "cursor_id", "cursorId") orelse return error.InvalidBackup);
+        bindText(statement, 2, objectStringAny(cursor, "app_id", "appId") orelse return error.InvalidBackup);
+        bindText(statement, 3, objectStringAny(cursor, "notebook_id", "notebookId") orelse return error.InvalidBackup);
+        bindText(statement, 4, objectStringAny(cursor, "actor_id", "actorId") orelse return error.InvalidBackup);
+        bindNullableText(statement, 5, objectStringAny(cursor, "last_seen_update_id", "lastSeenUpdateId"));
+        bindText(statement, 6, frontier_json);
+        bindText(statement, 7, objectStringAny(cursor, "updated_at", "updatedAt") orelse created_at);
+        if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_DONE) return error.StorageWriteFailed;
+        count += 1;
+    }
+    return count;
+}
+
 fn insertBackupImportRecord(
     db: *sqlite.sqlite3,
     allocator: std.mem.Allocator,
@@ -8237,6 +9714,22 @@ fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
     defer allocator.free(app_migrations);
     const install_reports = try queryRowsJson(allocator, "SELECT report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at FROM app_install_reports ORDER BY app_id, created_at", null);
     defer allocator.free(install_reports);
+    const crdt_notebooks = try queryRowsJson(allocator, "SELECT app_id, notebook_id, title, status, created_by, created_at, updated_at FROM crdt_notebooks ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_notebooks);
+    const crdt_documents = try queryRowsJson(allocator, "SELECT document_id, app_id, notebook_id, version, snapshot_json, content_hash, created_at FROM crdt_documents ORDER BY app_id, notebook_id, version", null);
+    defer allocator.free(crdt_documents);
+    const crdt_updates = try queryRowsJson(allocator, "SELECT update_id, app_id, notebook_id, actor_id, actor_kind, seq, operation_json, status, error_code, content_hash, created_at FROM crdt_updates ORDER BY app_id, notebook_id, seq", null);
+    defer allocator.free(crdt_updates);
+    const crdt_heads = try queryRowsJson(allocator, "SELECT app_id, notebook_id, version, frontier_json, content_hash, updated_at FROM crdt_heads ORDER BY app_id, notebook_id", null);
+    defer allocator.free(crdt_heads);
+    const crdt_actors = try queryRowsJson(allocator, "SELECT app_id, actor_id, actor_kind, display_name, policy_json, created_at, updated_at FROM crdt_actors ORDER BY app_id, actor_id", null);
+    defer allocator.free(crdt_actors);
+    const crdt_permissions = try queryRowsJson(allocator, "SELECT app_id, notebook_id, actor_id, permission, granted, granted_at FROM crdt_permissions ORDER BY app_id, notebook_id, actor_id, permission", null);
+    defer allocator.free(crdt_permissions);
+    const crdt_proposals = try queryRowsJson(allocator, "SELECT app_id, notebook_id, proposal_id, actor_id, status, proposal_json, created_at, updated_at FROM crdt_proposals ORDER BY app_id, notebook_id, proposal_id", null);
+    defer allocator.free(crdt_proposals);
+    const crdt_sync_cursors = try queryRowsJson(allocator, "SELECT cursor_id, app_id, notebook_id, actor_id, last_seen_update_id, frontier_json, updated_at FROM crdt_sync_cursors ORDER BY app_id, notebook_id, actor_id", null);
+    defer allocator.free(crdt_sync_cursors);
     const capabilities = try serverCapabilitiesJson(allocator);
     defer allocator.free(capabilities);
     const bridge_calls = try queryBridgeCallsRowsJson(allocator, null);
@@ -8256,8 +9749,8 @@ fn dbDebugBundleJson(allocator: std.mem.Allocator) ![]u8 {
 
     const base_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"exportId\":\"{s}\",\"type\":\"debug-bundle\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"runtimeCapabilities\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s},\"faultInjections\":{s}}}}}",
-        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, capabilities, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs, fault_injections },
+        "{{\"exportId\":\"{s}\",\"type\":\"debug-bundle\",\"createdAt\":\"{s}\",\"runtimeVersion\":\"{s}\",\"source\":{{\"platform\":\"server\",\"target\":\"zig-server\"}},\"apps\":{s},\"appVersions\":{s},\"appFiles\":{s},\"appPermissions\":{s},\"appStorage\":{s},\"appMigrations\":{s},\"appInstallReports\":{s},\"crdtNotebooks\":{s},\"crdtDocuments\":{s},\"crdtUpdates\":{s},\"crdtHeads\":{s},\"crdtActors\":{s},\"crdtPermissions\":{s},\"crdtProposals\":{s},\"crdtSyncCursors\":{s},\"runtimeCapabilities\":{s},\"debug\":{{\"runtimeSessions\":{s},\"bridgeCalls\":{s},\"coreEvents\":{s},\"coreActions\":{s},\"runtimeSnapshots\":{s},\"testRuns\":{s},\"faultInjections\":{s}}}}}",
+        .{ export_id, created_at, runtime_version, apps, app_versions, app_files, app_permissions, storage, app_migrations, install_reports, crdt_notebooks, crdt_documents, crdt_updates, crdt_heads, crdt_actors, crdt_permissions, crdt_proposals, crdt_sync_cursors, capabilities, runtime_sessions, bridge_calls, core_events, core_actions, runtime_snapshots, test_runs, fault_injections },
     );
     defer allocator.free(base_json);
     const content_hash = try sha256HexAlloc(allocator, base_json);
@@ -9102,6 +10595,11 @@ fn serverCapabilityAvailable(capability: []const u8) bool {
         "runtime.capabilities",
         "runtime.snapshot",
         "runtime.replay",
+        "notebook.read",
+        "notebook.write",
+        "notebook.propose",
+        "notebook.approve",
+        "notebook.sync",
     };
     for (capabilities) |candidate| {
         if (std.mem.eql(u8, capability, candidate)) return true;
@@ -10430,7 +11928,7 @@ fn serverCapabilitiesForAppOptionalJson(allocator: std.mem.Allocator, app_id: ?[
     defer allocator.free(app_id_json);
     return std.fmt.allocPrint(
         allocator,
-        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"runtime.snapshot\":true,\"runtime.replay\":true,\"storage.read\":true,\"storage.write\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true}},\"limits\":{{\"maxBodyBytes\":1048576,\"maxStorageBytes\":5242880,\"maxBridgeCallsPerMinute\":600,\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}{s}}}",
+        "{{\"runtimeVersion\":\"{s}\",\"platform\":\"server\",\"target\":\"zig-server\",\"devMode\":false,\"features\":{{\"core.step\":true,\"runtime.capabilities\":true,\"runtime.snapshot\":true,\"runtime.replay\":true,\"storage.read\":true,\"storage.write\":true,\"storage.get\":true,\"storage.set\":true,\"storage.remove\":true,\"storage.list\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,\"notification.toast\":true,\"network.request\":true,\"app.log\":true,\"notebook.read\":true,\"notebook.write\":true,\"notebook.propose\":true,\"notebook.approve\":true,\"notebook.sync\":true,\"notebook.open\":true,\"notebook.apply_local\":true,\"notebook.propose_ai_patch\":true,\"notebook.accept_proposal\":true,\"notebook.reject_proposal\":true,\"notebook.snapshot\":true,\"notebook.checkout\":true,\"notebook.sync_pull\":true,\"notebook.sync_push\":true,\"notebook.subscribe\":true}},\"limits\":{{\"maxBodyBytes\":1048576,\"maxStorageBytes\":5242880,\"maxBridgeCallsPerMinute\":600,\"maxPackageBytes\":1048576,\"maxFileBytes\":524288}}{s}}}",
         .{ runtime_version, app_id_json },
     );
 }
@@ -10479,6 +11977,11 @@ fn isKnownPackagePermission(permission: []const u8) bool {
         "notification.toast",
         "network.request",
         "app.log",
+        "notebook.read",
+        "notebook.write",
+        "notebook.propose",
+        "notebook.approve",
+        "notebook.sync",
     };
     for (permissions) |candidate| {
         if (std.mem.eql(u8, permission, candidate)) return true;
@@ -11898,6 +13401,16 @@ fn permissionForBridgeMethod(method: []const u8) ?[]const u8 {
         .{ .method = "dialog.saveFile", .permission = "dialog.saveFile" },
         .{ .method = "notification.toast", .permission = "notification.toast" },
         .{ .method = "network.request", .permission = "network.request" },
+        .{ .method = "notebook.open", .permission = "notebook.read" },
+        .{ .method = "notebook.snapshot", .permission = "notebook.read" },
+        .{ .method = "notebook.checkout", .permission = "notebook.read" },
+        .{ .method = "notebook.subscribe", .permission = "notebook.read" },
+        .{ .method = "notebook.apply_local", .permission = "notebook.write" },
+        .{ .method = "notebook.propose_ai_patch", .permission = "notebook.propose" },
+        .{ .method = "notebook.accept_proposal", .permission = "notebook.approve" },
+        .{ .method = "notebook.reject_proposal", .permission = "notebook.approve" },
+        .{ .method = "notebook.sync_pull", .permission = "notebook.sync" },
+        .{ .method = "notebook.sync_push", .permission = "notebook.sync" },
     };
     for (mappings) |mapping| {
         if (std.mem.eql(u8, method, mapping.method)) return mapping.permission;
@@ -12057,6 +13570,16 @@ fn isAllowedRuntimeBridgeMethod(method: []const u8) bool {
         "network.request",
         "app.log",
         "runtime.capabilities",
+        "notebook.open",
+        "notebook.apply_local",
+        "notebook.propose_ai_patch",
+        "notebook.accept_proposal",
+        "notebook.reject_proposal",
+        "notebook.snapshot",
+        "notebook.checkout",
+        "notebook.sync_pull",
+        "notebook.sync_push",
+        "notebook.subscribe",
     };
     for (methods) |candidate| {
         if (std.mem.eql(u8, method, candidate)) return true;

@@ -16,6 +16,21 @@ export const DEFAULT_REFERENCE_HOST_FEATURES = Object.freeze({
   "runtime.capabilities": true,
   "runtime.snapshot": true,
   "runtime.replay": true,
+  "notebook.read": true,
+  "notebook.write": true,
+  "notebook.propose": true,
+  "notebook.approve": true,
+  "notebook.sync": true,
+  "notebook.open": true,
+  "notebook.apply_local": true,
+  "notebook.propose_ai_patch": true,
+  "notebook.accept_proposal": true,
+  "notebook.reject_proposal": true,
+  "notebook.snapshot": true,
+  "notebook.checkout": true,
+  "notebook.sync_pull": true,
+  "notebook.sync_push": true,
+  "notebook.subscribe": true,
 });
 
 export function referenceHostCapabilities(options = null) {

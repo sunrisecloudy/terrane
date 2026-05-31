@@ -33,6 +33,11 @@ const requiredFeatureIds = [
   "network.request",
   "core.step",
   "app.log",
+  "notebook.read",
+  "notebook.write",
+  "notebook.propose",
+  "notebook.approve",
+  "notebook.sync",
 ];
 
 test("runtime capabilities schema allows channel-derived appId", () => {

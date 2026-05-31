@@ -146,7 +146,7 @@ Status snapshot: **2026-05-31**.
 
 ## Current CRDT Verification Notes
 
-- `zig-crdt/zig build test` was attempted on 2026-05-31. The sandboxed run could not read Homebrew Zig stdlib/cache files; the escalated run reached the macOS Zig build-runner link step and failed on unresolved Darwin/libSystem symbols such as `__availability_version_check`, `_abort`, and `_clock_gettime`. Treat this as an environment verification blocker until confirmed in CI or a clean local Zig environment.
+- In `zig-crdt/`, `zig build test` was attempted on 2026-05-31. The sandboxed run could not read Homebrew Zig stdlib/cache files; the escalated run reached the macOS Zig build-runner link step and failed on unresolved Darwin/libSystem symbols such as `__availability_version_check`, `_abort`, and `_clock_gettime`. Treat this as an environment verification blocker until confirmed in CI or a clean local Zig environment.
 - `node --test tools/reference-host/test/notebook-crdt.test.js tools/reference-host/test/crdt-fixtures.test.js tools/reference-host/test/runtime-capabilities-contract.test.js` was attempted on 2026-05-31. Reference-host notebook bridge tests, Loro materialization parity, and runtime capability tests passed; the fixture-regeneration check failed because `cargo run --manifest-path tools/crdt-fixtures/Cargo.toml -- --check` reported the five checked-in CRDT fixture files as stale.
 
 ## CI

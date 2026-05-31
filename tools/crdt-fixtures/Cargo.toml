@@ -1,0 +1,9 @@
+[package]
+name = "crdt-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+loro = { path = "../../external-lib/loro/crates/loro", default-features = false }
+serde_json = "1"
