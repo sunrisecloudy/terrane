@@ -6,11 +6,14 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace nativeai {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
+constexpr uint64_t kDefaultMaxFileBytes = 512 * 1024;
 
 struct CoTaskMemString {
   PWSTR value = nullptr;
@@ -33,6 +36,72 @@ std::optional<std::filesystem::path> DialogPath(IShellItem* item) {
   return std::filesystem::path(raw.value);
 }
 
+struct OwnedFilterSpec {
+  std::wstring name;
+  std::wstring pattern;
+};
+
+std::wstring PatternForAccept(std::wstring const& accept) {
+  if (accept == L"text/plain") {
+    return L"*.txt";
+  }
+  if (accept == L"application/json") {
+    return L"*.json";
+  }
+  if (accept == L"text/csv") {
+    return L"*.csv";
+  }
+  if (accept == L"text/markdown") {
+    return L"*.md;*.markdown";
+  }
+  if (accept == L"text/*") {
+    return L"*.txt;*.md;*.markdown;*.csv;*.json";
+  }
+  if (accept == L"*/*") {
+    return L"*.*";
+  }
+  if (accept.size() > 1 && accept[0] == L'.') {
+    return L"*" + accept;
+  }
+  return L"*.*";
+}
+
+std::vector<OwnedFilterSpec> AcceptFilters(BridgeRequest const& request, bool& invalid) {
+  invalid = false;
+  std::vector<OwnedFilterSpec> filters;
+  if (!request.params.HasKey(L"accept")) {
+    return filters;
+  }
+  auto acceptValue = request.params.GetNamedValue(L"accept");
+  if (acceptValue.ValueType() != json::JsonValueType::Array) {
+    invalid = true;
+    return filters;
+  }
+  auto accept = acceptValue.GetArray();
+  for (uint32_t index = 0; index < accept.Size(); ++index) {
+    auto item = accept.GetAt(index);
+    if (item.ValueType() != json::JsonValueType::String) {
+      invalid = true;
+      filters.clear();
+      return filters;
+    }
+    auto value = std::wstring(item.GetString().c_str());
+    if (!value.empty()) {
+      filters.push_back({value, PatternForAccept(value)});
+    }
+  }
+  return filters;
+}
+
+std::vector<COMDLG_FILTERSPEC> DialogFilters(std::vector<OwnedFilterSpec> const& filters) {
+  std::vector<COMDLG_FILTERSPEC> specs;
+  specs.reserve(filters.size());
+  for (auto const& filter : filters) {
+    specs.push_back(COMDLG_FILTERSPEC{filter.name.c_str(), filter.pattern.c_str()});
+  }
+  return specs;
+}
+
 std::wstring MimeForPath(BridgeRequest const& request, std::filesystem::path const& path) {
   if (request.params.HasKey(L"accept")) {
     auto acceptValue = request.params.GetNamedValue(L"accept");
@@ -52,14 +121,34 @@ std::wstring MimeForPath(BridgeRequest const& request, std::filesystem::path con
 
 uint64_t MaxBytes(BridgeRequest const& request) {
   if (!request.params.HasKey(L"maxBytes")) {
-    return 1024 * 1024;
+    return kDefaultMaxFileBytes;
   }
   auto value = request.params.GetNamedValue(L"maxBytes");
   if (value.ValueType() != json::JsonValueType::Number) {
-    return 1024 * 1024;
+    return kDefaultMaxFileBytes;
   }
   auto number = value.GetNumber();
   return number <= 0 ? 0 : static_cast<uint64_t>(number);
+}
+
+bool BooleanParamIsTrue(BridgeRequest const& request, std::wstring const& name, bool& invalid) {
+  invalid = false;
+  winrt::hstring key{name};
+  if (!request.params.HasKey(key)) {
+    return false;
+  }
+  auto value = request.params.GetNamedValue(key);
+  if (value.ValueType() != json::JsonValueType::Boolean) {
+    invalid = true;
+    return false;
+  }
+  return value.GetBoolean();
+}
+
+bool OptionalStringParamIsValid(BridgeRequest const& request, std::wstring const& name) {
+  winrt::hstring key{name};
+  return !request.params.HasKey(key) ||
+         request.params.GetNamedValue(key).ValueType() == json::JsonValueType::String;
 }
 
 std::optional<std::string> ReadTextFile(std::filesystem::path const& path, uint64_t maxBytes) {
@@ -95,6 +184,20 @@ bool WriteTextFile(std::filesystem::path const& path, std::wstring const& text) 
 PlatformDialogs::PlatformDialogs(HWND ownerWindow) : ownerWindow_(ownerWindow) {}
 
 winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest const& request) {
+  bool invalidMultiple = false;
+  if (BooleanParamIsTrue(request, L"multiple", invalidMultiple)) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"platform_unsupported", L"dialog.openFile multiple selection is not supported on Windows yet");
+  }
+  if (invalidMultiple) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.openFile multiple must be a boolean");
+  }
+  bool invalidAccept = false;
+  auto ownedFilters = AcceptFilters(request, invalidAccept);
+  if (invalidAccept) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.openFile accept must be an array of strings");
+  }
+  auto filterSpecs = DialogFilters(ownedFilters);
+
   winrt::com_ptr<IFileOpenDialog> dialog;
   HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dialog.put()));
   if (FAILED(hr)) {
@@ -104,6 +207,9 @@ winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest c
   DWORD options = 0;
   dialog->GetOptions(&options);
   dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  if (!filterSpecs.empty()) {
+    dialog->SetFileTypes(static_cast<UINT>(filterSpecs.size()), filterSpecs.data());
+  }
 
   hr = dialog->Show(ownerWindow_);
   if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
@@ -142,6 +248,16 @@ winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest c
 }
 
 winrt::Windows::Data::Json::JsonObject PlatformDialogs::SaveFile(BridgeRequest const& request) {
+  if (!OptionalStringParamIsValid(request, L"suggestedName")) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.saveFile suggestedName must be a string");
+  }
+  if (!OptionalStringParamIsValid(request, L"mime")) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.saveFile mime must be a string");
+  }
+  if (!OptionalStringParamIsValid(request, L"text")) {
+    return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.saveFile text must be a string");
+  }
+
   winrt::com_ptr<IFileSaveDialog> dialog;
   HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dialog.put()));
   if (FAILED(hr)) {

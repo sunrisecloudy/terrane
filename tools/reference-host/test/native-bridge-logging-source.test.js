@@ -48,6 +48,8 @@ test("native bridges persist bridge and core logs", () => {
   assert.match(windowsBridge, /params_json/);
   assert.match(windowsBridge, /result_json/);
   assert.match(windowsBridge, /error_json/);
+  assert.match(windowsBridge, /request\.method == L"dialog\.openFile"/);
+  assert.match(windowsBridge, /request\.method == L"dialog\.saveFile"/);
   assert.match(windowsHost, /SELECT COUNT\(\*\) FROM bridge_calls WHERE app_id = \? AND method = \?/);
   assert.match(windowsHost, /SELECT COUNT\(\*\) FROM core_events WHERE app_id = \?/);
   assert.match(windowsHost, /SELECT COUNT\(\*\) FROM core_actions WHERE app_id = \?/);

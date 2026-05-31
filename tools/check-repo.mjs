@@ -1469,6 +1469,11 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"storage.read", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"storage.write", json::JsonValue::CreateBooleanValue(true))'],
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
+    [windowsBridge, 'method == L"dialog.openFile" || method == L"dialog.saveFile"'],
+    [windowsBridge, 'if (request.method == L"dialog.openFile")'],
+    [windowsBridge, "return dialogs_.OpenFile(request);"],
+    [windowsBridge, 'if (request.method == L"dialog.saveFile")'],
+    [windowsBridge, "return dialogs_.SaveFile(request);"],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, "DenyPrivateNetworkForApp"],
     [windowsHost, "bridge_->HandleJsonAsync"],
@@ -1523,12 +1528,31 @@ function checkNativeStatic() {
   if (windowsNetwork.includes("platform_unsupported")) {
     throw new Error("Windows network.request must not remain a platform_unsupported stub");
   }
-  for (const snippet of ["IFileOpenDialog", "IFileSaveDialog", "FOS_FORCEFILESYSTEM", "dialog_cancelled", "ReadTextFile", "WriteTextFile"]) {
+  for (const snippet of [
+    "CoCreateInstance(CLSID_FileOpenDialog",
+    "CoCreateInstance(CLSID_FileSaveDialog",
+    "FOS_FORCEFILESYSTEM",
+    "FOS_FILEMUSTEXIST",
+    "SIGDN_FILESYSPATH",
+    "dialog_cancelled",
+    "kDefaultMaxFileBytes = 512 * 1024",
+    "AcceptFilters",
+    "SetFileTypes",
+    "multiple selection is not supported on Windows yet",
+    "dialog.openFile accept must be an array of strings",
+    "dialog.saveFile text must be a string",
+    "MaxBytes(request)",
+    "quota_exceeded",
+    'result.Insert(L"files", files)',
+    'result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true))',
+    "ReadTextFile",
+    "WriteTextFile",
+  ]) {
     if (!windowsDialogs.includes(snippet)) {
       throw new Error(`Windows dialogs missing ${snippet}`);
     }
   }
-  if (windowsDialogs.includes("will be wired")) {
+  if (windowsDialogs.includes("will be wired") || (windowsDialogs.includes("platform_unsupported") && !windowsDialogs.includes("CoCreateInstance"))) {
     throw new Error("Windows dialogs must not remain placeholder stubs");
   }
   if (!windowsDialogHeader.includes("explicit PlatformDialogs(HWND ownerWindow")) {

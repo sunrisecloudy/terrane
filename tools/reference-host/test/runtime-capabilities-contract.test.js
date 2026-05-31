@@ -129,6 +129,8 @@ test("native and server capability implementations expose app-scoped manifest ca
         'result.Insert(L"devMode", json::JsonValue::CreateBooleanValue(NativeDevMode()))',
         'features.Insert(L"storage.read", json::JsonValue::CreateBooleanValue(true))',
         'features.Insert(L"storage.write", json::JsonValue::CreateBooleanValue(true))',
+        'features.Insert(L"dialog.openFile", json::JsonValue::CreateBooleanValue(true))',
+        'features.Insert(L"dialog.saveFile", json::JsonValue::CreateBooleanValue(true))',
         'features.Insert(L"runtime.capabilities", json::JsonValue::CreateBooleanValue(true))',
         'features.Insert(L"core.step", json::JsonValue::CreateBooleanValue(core_.IsAvailable()))',
       ],
