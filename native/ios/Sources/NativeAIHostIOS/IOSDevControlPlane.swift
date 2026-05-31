@@ -626,6 +626,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return try assertBridgeCall(args: args, sessionId: sessionId)
         case "runtime.assert_no_console_errors":
             return try assertNoConsoleErrors(args: args, sessionId: sessionId)
+        case "runtime.core_snapshot":
+            return successBody(result: try coreSnapshot(args: args), sessionId: sessionId)
+        case "runtime.replay_events":
+            return successBody(result: try replayEvents(args: args), sessionId: sessionId)
+        case "runtime.assert_core_action":
+            return successBody(result: try assertCoreAction(args: args), sessionId: sessionId)
         case "db.snapshot",
              "db.query_app_storage",
              "db.query_app_versions",
@@ -676,6 +682,9 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.notification_capture",
                     "runtime.assert_bridge_call",
                     "runtime.assert_no_console_errors",
+                    "runtime.core_snapshot",
+                    "runtime.replay_events",
+                    "runtime.assert_core_action",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -897,6 +906,98 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return successBody(result: ["ok": true, "errors": 0], sessionId: sessionId)
     }
 
+    private func coreSnapshot(args: [String: Any]) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "runtime.core_snapshot requires appId")
+        return [
+            "appId": appId,
+            "stateVersion": scalarInt("SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?", appId: appId),
+            "coreEvents": parsedCoreRows(Self.safeDbCoreEvents, appId: appId, limit: limit(from: args), jsonColumn: "event_json", parsedKey: "event"),
+            "coreActions": parsedCoreRows(Self.safeDbCoreActions, appId: appId, limit: limit(from: args), jsonColumn: "action_json", parsedKey: "action")
+        ]
+    }
+
+    private func replayEvents(args: [String: Any]) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "runtime.replay_events requires appId")
+        guard let events = args["events"] as? [Any] else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.replay_events events must be an array")
+        }
+        let replayCore = ZigCoreBridge()
+        let replay = events.enumerated().map { index, event -> [String: Any] in
+            let request = BridgeRequest(
+                body: [
+                    "id": "control_replay_\(index)",
+                    "method": "core.step",
+                    "params": ["event": event],
+                    "timestamp": Date().timeIntervalSince1970
+                ],
+                context: AppSandboxContext(controlAppId: appId, mountToken: "ios-dev-control-replay")
+            )
+            let response = replayCore.step(request)
+            return [
+                "index": index,
+                "event": event,
+                "result": response.ok ? (response.result ?? NSNull()) : [
+                    "ok": false,
+                    "error": response.error ?? [
+                        "code": "core_error",
+                        "message": "Replay event failed",
+                        "details": [:]
+                    ],
+                    "actions": []
+                ]
+            ]
+        }
+        return [
+            "ok": true,
+            "appId": appId,
+            "replay": replay
+        ]
+    }
+
+    private func assertCoreAction(args: [String: Any]) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "runtime.assert_core_action requires appId")
+        let expectedType = try optionalString(args, key: "type", message: "runtime.assert_core_action type must be a string") ??
+            optionalString(args, key: "actionType", message: "runtime.assert_core_action type must be a string")
+        let expectedMatch = try optionalDictionary(args, key: "match", message: "runtime.assert_core_action match must be an object")
+        let expectedAction = args.keys.contains("action") ? args["action"] ?? NSNull() : nil
+        let rows = parsedCoreRows(Self.safeDbCoreActions, appId: appId, limit: limit(from: args), jsonColumn: "action_json", parsedKey: "action")
+        var matches: [[String: Any]] = []
+        var latest: [String: Any]?
+        var latestAction: Any?
+
+        for row in rows {
+            let action = row["action"] ?? jsonValue(row["action_json"] as? String)
+            if let expectedType {
+                guard let actionObject = action as? [String: Any],
+                      actionObject["type"] as? String == expectedType else {
+                    continue
+                }
+            }
+            if let expectedAction, !jsonValuesEqual(action, expectedAction) {
+                continue
+            }
+            if let expectedMatch, !jsonMatchesSubset(action, expectedMatch) {
+                continue
+            }
+            matches.append(row)
+            latest = row
+            latestAction = action
+        }
+
+        guard !matches.isEmpty else {
+            throw CommandError(status: 400, code: "core_action.not_found", message: "Expected core action was not found", details: ["appId": appId, "type": expectedType ?? NSNull()])
+        }
+        return [
+            "ok": true,
+            "appId": appId,
+            "type": expectedType ?? NSNull(),
+            "count": matches.count,
+            "actions": matches.map { $0["action"] ?? NSNull() },
+            "latest": latest ?? NSNull(),
+            "action": latestAction ?? NSNull()
+        ]
+    }
+
     private func clearRuntimeLogs(appId: String?) throws -> [String: Any] {
         let scoped = appId?.isEmpty == false
         return [
@@ -999,6 +1100,26 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return value
     }
 
+    private func optionalString(_ args: [String: Any], key: String, message: String) throws -> String? {
+        guard args.keys.contains(key), !(args[key] is NSNull) else {
+            return nil
+        }
+        guard let value = args[key] as? String else {
+            throw CommandError(status: 400, code: "invalid_request", message: message)
+        }
+        return value.isEmpty ? nil : value
+    }
+
+    private func optionalDictionary(_ args: [String: Any], key: String, message: String) throws -> [String: Any]? {
+        guard args.keys.contains(key), !(args[key] is NSNull) else {
+            return nil
+        }
+        guard let value = args[key] as? [String: Any] else {
+            throw CommandError(status: 400, code: "invalid_request", message: message)
+        }
+        return value
+    }
+
     private func jsonValue(_ text: String?) -> Any {
         guard let text,
               !text.isEmpty,
@@ -1010,8 +1131,36 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return value
     }
 
+    private func parsedCoreRows(_ spec: SafeDbTable, appId: String, limit: Int, jsonColumn: String, parsedKey: String) -> [[String: Any]] {
+        safeTableRows(spec, appId: appId, limit: limit).map { row in
+            var copy = row
+            copy[parsedKey] = jsonValue(row[jsonColumn] as? String)
+            return copy
+        }
+    }
+
     private func jsonValuesEqual(_ lhs: Any, _ rhs: Any) -> Bool {
         canonicalJsonString(lhs) == canonicalJsonString(rhs)
+    }
+
+    private func jsonMatchesSubset(_ actual: Any, _ expected: Any) -> Bool {
+        if expected is NSNull {
+            return actual is NSNull
+        }
+        if let expectedObject = expected as? [String: Any] {
+            guard let actualObject = actual as? [String: Any] else {
+                return false
+            }
+            for (key, expectedValue) in expectedObject {
+                guard let actualValue = actualObject[key],
+                      jsonMatchesSubset(actualValue, expectedValue)
+                else {
+                    return false
+                }
+            }
+            return true
+        }
+        return jsonValuesEqual(actual, expected)
     }
 
     private func canonicalJsonString(_ value: Any) -> String {

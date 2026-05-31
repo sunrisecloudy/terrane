@@ -1468,6 +1468,9 @@ function checkNativeStatic() {
     "\"runtime.notification_capture\"",
     "\"runtime.assert_bridge_call\"",
     "\"runtime.assert_no_console_errors\"",
+    "\"runtime.core_snapshot\"",
+    "\"runtime.replay_events\"",
+    "\"runtime.assert_core_action\"",
     "\"db.snapshot\"",
     "\"db.query_app_storage\"",
     "\"db.query_app_versions\"",
@@ -1531,6 +1534,22 @@ function checkNativeStatic() {
     "console_errors_found",
     "notification.toast",
     "app.log",
+    "coreSnapshot",
+    "replayEvents",
+    "assertCoreAction",
+    "runtime.core_snapshot requires appId",
+    "runtime.replay_events requires appId",
+    "runtime.replay_events events must be an array",
+    "runtime.assert_core_action requires appId",
+    "runtime.assert_core_action type must be a string",
+    "runtime.assert_core_action match must be an object",
+    "core_action.not_found",
+    "Expected core action was not found",
+    "control_replay_",
+    "ZigCoreBridge()",
+    "safeDbCoreEvents",
+    "safeDbCoreActions",
+    "parsedCoreRows",
     "Storage value did not match expected value",
   ]) {
     if (!iosDevControl.includes(snippet)) {
@@ -1554,6 +1573,9 @@ function checkNativeStatic() {
     "runtime.notification_capture",
     "runtime.assert_bridge_call",
     "runtime.assert_no_console_errors",
+    "runtime.core_snapshot",
+    "runtime.replay_events",
+    "runtime.assert_core_action",
   ]) {
     if (!iosNativeBuildTest.includes(snippet)) {
       throw new Error(`iOS native build test missing dev-control coverage: ${snippet}`);
