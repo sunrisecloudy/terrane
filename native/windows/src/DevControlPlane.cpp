@@ -23,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <winrt/base.h>
 #include <winrt/Windows.Data.Json.h>
@@ -201,6 +202,17 @@ std::optional<json::JsonObject> OptionalObjectMember(json::JsonObject const& obj
   return value.GetObject();
 }
 
+std::optional<json::JsonArray> OptionalArrayMember(json::JsonObject const& object, std::wstring const& key) {
+  if (!object.HasKey(key)) {
+    return std::nullopt;
+  }
+  auto value = object.GetNamedValue(key);
+  if (value.ValueType() != json::JsonValueType::Array) {
+    return std::nullopt;
+  }
+  return value.GetArray();
+}
+
 bool OptionalArgsAppId(json::JsonObject const& command, std::wstring const& tool, std::wstring* appId, std::wstring* error) {
   appId->clear();
   if (!command.HasKey(L"args")) {
@@ -230,6 +242,128 @@ bool OptionalArgsAppId(json::JsonObject const& command, std::wstring const& tool
 std::wstring ObjectMemberJsonOr(json::JsonObject const& object, std::wstring const& key, std::wstring const& fallback) {
   auto member = OptionalObjectMember(object, key);
   return member.has_value() ? std::wstring(member->Stringify().c_str()) : fallback;
+}
+
+std::optional<json::IJsonValue> FirstJsonValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
+  for (auto const& key : keys) {
+    if (!object.HasKey(key)) {
+      continue;
+    }
+    auto value = object.GetNamedValue(key);
+    if (value.ValueType() != json::JsonValueType::Null) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::wstring> TextValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
+  auto value = FirstJsonValue(object, keys);
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  if (value->ValueType() == json::JsonValueType::String) {
+    return std::wstring(value->GetString().c_str());
+  }
+  if (value->ValueType() == json::JsonValueType::Number) {
+    auto number = value->GetNumber();
+    auto asInt = static_cast<int64_t>(number);
+    if (static_cast<double>(asInt) == number) {
+      return std::to_wstring(asInt);
+    }
+    return std::to_wstring(number);
+  }
+  return std::nullopt;
+}
+
+int64_t IntValue(json::JsonObject const& object, std::vector<std::wstring> const& keys, int64_t fallback) {
+  auto value = FirstJsonValue(object, keys);
+  if (!value.has_value()) {
+    return fallback;
+  }
+  if (value->ValueType() == json::JsonValueType::Number) {
+    return static_cast<int64_t>(value->GetNumber());
+  }
+  if (value->ValueType() == json::JsonValueType::Boolean) {
+    return value->GetBoolean() ? 1 : 0;
+  }
+  if (value->ValueType() == json::JsonValueType::String) {
+    try {
+      return std::stoll(std::wstring(value->GetString().c_str()));
+    } catch (...) {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+std::optional<std::wstring> JsonTextValue(
+    json::JsonObject const& object,
+    std::vector<std::wstring> const& stringKeys,
+    std::vector<std::wstring> const& objectKeys,
+    std::optional<std::wstring> fallback) {
+  auto text = TextValue(object, stringKeys);
+  if (text.has_value()) {
+    return text;
+  }
+  auto value = FirstJsonValue(object, objectKeys);
+  if (value.has_value()) {
+    return std::wstring(value->Stringify().c_str());
+  }
+  return fallback;
+}
+
+struct SqlBinding {
+  enum class Kind {
+    Text,
+    NullableText,
+    Int,
+  };
+
+  Kind kind = Kind::Text;
+  std::optional<std::wstring> text;
+  int64_t integer = 0;
+};
+
+SqlBinding SqlText(std::wstring value) {
+  return SqlBinding{SqlBinding::Kind::Text, std::move(value), 0};
+}
+
+SqlBinding SqlNullableText(std::optional<std::wstring> value) {
+  return SqlBinding{SqlBinding::Kind::NullableText, std::move(value), 0};
+}
+
+SqlBinding SqlInt(int64_t value) {
+  return SqlBinding{SqlBinding::Kind::Int, std::nullopt, value};
+}
+
+bool ExecutePrepared(sqlite3* db, char const* sql, std::vector<SqlBinding> const& bindings) {
+  sqlite3_stmt* statement = nullptr;
+  bool ok = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK;
+  if (ok) {
+    for (size_t index = 0; index < bindings.size(); ++index) {
+      int sqliteIndex = static_cast<int>(index + 1);
+      auto const& binding = bindings[index];
+      switch (binding.kind) {
+        case SqlBinding::Kind::Text:
+          BindText(statement, sqliteIndex, binding.text.value_or(L""));
+          break;
+        case SqlBinding::Kind::NullableText:
+          if (binding.text.has_value() && !binding.text->empty()) {
+            BindText(statement, sqliteIndex, binding.text.value());
+          } else {
+            sqlite3_bind_null(statement, sqliteIndex);
+          }
+          break;
+        case SqlBinding::Kind::Int:
+          sqlite3_bind_int64(statement, sqliteIndex, static_cast<sqlite3_int64>(binding.integer));
+          break;
+      }
+    }
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  return ok;
 }
 
 std::string ToLowerAscii(std::string value) {
@@ -1049,7 +1183,7 @@ struct DevControlPlane::Impl {
     return L"{\"rows\":" + rows + L"}";
   }
 
-  std::wstring DbExportDebugBundleJson(std::wstring* error) {
+  std::wstring DbExportDocumentJson(std::wstring const& type, bool includeDebug, std::wstring* error) {
     PlatformDatabase database(databasePath);
     sqlite3* db = database.handle();
     if (db == nullptr) {
@@ -1060,7 +1194,7 @@ struct DevControlPlane::Impl {
     auto exportId = MakeId(L"export");
     auto createdAt = NowIso();
     auto documentWithoutHash = L"{\"exportId\":" + JsonString(exportId) +
-        L",\"type\":\"debug-bundle\"" +
+        L",\"type\":" + JsonString(type) +
         L",\"createdAt\":" + JsonString(createdAt) +
         L",\"runtimeVersion\":\"0.4.0\"" +
         L",\"source\":{\"platform\":\"windows\",\"target\":\"windows\"}" +
@@ -1072,15 +1206,17 @@ struct DevControlPlane::Impl {
         L",\"appInstallReports\":" + SafeTableRowsJson(db, "app_install_reports", {"report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"}, "created_at") +
         L",\"appMigrations\":" + SafeTableRowsJson(db, "app_migrations", {"migration_id", "app_id", "from_data_version", "to_data_version", "migration_json", "content_hash", "created_at"}, "created_at") +
         L",\"runtimeCapabilities\":" + RuntimeCapabilitiesJson(L"") +
-        L",\"debug\":{\"runtimeSessions\":" + SafeTableRowsJson(db, "runtime_sessions", {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"}, "started_at") +
-        L",\"bridgeCalls\":" + SafeTableRowsJson(db, "bridge_calls", {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"}, "created_at") +
-        L",\"controlSessions\":" + SafeTableRowsJson(db, "control_sessions", {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"}, "started_at") +
-        L",\"controlCommands\":" + SafeTableRowsJson(db, "control_commands", {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "args_json", "result_json", "error_json", "created_at", "duration_ms"}, "created_at") +
-        L",\"coreEvents\":" + SafeTableRowsJson(db, "core_events", {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"}, "created_at") +
-        L",\"coreActions\":" + SafeTableRowsJson(db, "core_actions", {"action_id", "event_id", "session_id", "app_id", "action_json", "created_at"}, "created_at") +
-        L",\"runtimeSnapshots\":" + SafeTableRowsJson(db, "runtime_snapshots", {"snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"}, "created_at") +
-        L",\"testRuns\":" + SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"}, "started_at") +
-        L"}}";
+        (includeDebug
+            ? L",\"debug\":{\"runtimeSessions\":" + SafeTableRowsJson(db, "runtime_sessions", {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"}, "started_at") +
+                L",\"bridgeCalls\":" + SafeTableRowsJson(db, "bridge_calls", {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"}, "created_at") +
+                L",\"controlSessions\":" + SafeTableRowsJson(db, "control_sessions", {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"}, "started_at") +
+                L",\"controlCommands\":" + SafeTableRowsJson(db, "control_commands", {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "args_json", "result_json", "error_json", "created_at", "duration_ms"}, "created_at") +
+                L",\"coreEvents\":" + SafeTableRowsJson(db, "core_events", {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"}, "created_at") +
+                L",\"coreActions\":" + SafeTableRowsJson(db, "core_actions", {"action_id", "event_id", "session_id", "app_id", "action_json", "created_at"}, "created_at") +
+                L",\"runtimeSnapshots\":" + SafeTableRowsJson(db, "runtime_snapshots", {"snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"}, "created_at") +
+                L",\"testRuns\":" + SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"}, "started_at") +
+                L"}}"
+            : L",\"debug\":{}}");
     auto contentHash = L"sha256:" + Sha256Hex(documentWithoutHash);
     auto document = documentWithoutHash.substr(0, documentWithoutHash.size() - 1) +
         L",\"contentHash\":" + JsonString(contentHash) + L"}";
@@ -1090,23 +1226,281 @@ struct DevControlPlane::Impl {
                   db,
                   "INSERT OR REPLACE INTO backup_exports "
                   "(export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) "
-                  "VALUES (?, 'debug-bundle', 'windows', '0.4.0', ?, ?, ?)",
+                  "VALUES (?, ?, 'windows', '0.4.0', ?, ?, ?)",
                   -1,
                   &statement,
                   nullptr) == SQLITE_OK;
     if (ok) {
       BindText(statement, 1, exportId);
-      BindText(statement, 2, document);
-      BindText(statement, 3, contentHash);
-      BindText(statement, 4, createdAt);
+      BindText(statement, 2, type);
+      BindText(statement, 3, document);
+      BindText(statement, 4, contentHash);
+      BindText(statement, 5, createdAt);
       ok = sqlite3_step(statement) == SQLITE_DONE;
     }
     sqlite3_finalize(statement);
     if (!ok) {
-      *error = L"Could not record debug bundle export";
+      *error = L"Could not record backup export";
       return L"";
     }
     return document;
+  }
+
+  std::wstring DbExportBackupJson(std::wstring* error) {
+    return DbExportDocumentJson(L"backup", false, error);
+  }
+
+  std::wstring DbExportDebugBundleJson(std::wstring* error) {
+    return DbExportDocumentJson(L"debug-bundle", true, error);
+  }
+
+  std::wstring DbImportBackupJson(json::JsonObject const& document, std::wstring* error) {
+    auto type = TextValue(document, {L"type"}).value_or(L"");
+    if (type != L"backup" && type != L"debug-bundle" && type != L"test-fixture") {
+      *error = L"Backup import requires type backup, debug-bundle, or test-fixture";
+      return L"";
+    }
+    auto apps = OptionalArrayMember(document, L"apps");
+    auto versions = OptionalArrayMember(document, L"appVersions");
+    auto files = OptionalArrayMember(document, L"appFiles");
+    auto permissions = OptionalArrayMember(document, L"appPermissions");
+    auto storageRows = OptionalArrayMember(document, L"appStorage");
+    if (!apps.has_value() || !versions.has_value() || !files.has_value() || !permissions.has_value() || !storageRows.has_value()) {
+      *error = L"Backup import document is missing required arrays";
+      return L"";
+    }
+    auto migrations = OptionalArrayMember(document, L"appMigrations");
+    auto reports = OptionalArrayMember(document, L"appInstallReports");
+
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    auto createdAt = NowIso();
+    char* sqlError = nullptr;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      *error = L"Could not start backup import transaction";
+      sqlite3_free(sqlError);
+      return L"";
+    }
+
+    bool ok = true;
+    auto objectAt = [](json::JsonArray const& array, uint32_t index, json::JsonObject* object) {
+      auto value = array.GetAt(index);
+      if (value.ValueType() != json::JsonValueType::Object) {
+        return false;
+      }
+      *object = value.GetObject();
+      return true;
+    };
+
+    for (uint32_t index = 0; ok && index < apps->Size(); ++index) {
+      json::JsonObject app{nullptr};
+      ok = objectAt(apps.value(), index, &app);
+      auto appId = ok ? TextValue(app, {L"id", L"appId"}) : std::nullopt;
+      if (!appId.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(appId.value()),
+              SqlText(TextValue(app, {L"name"}).value_or(appId.value())),
+              SqlText(TextValue(app, {L"status"}).value_or(L"enabled")),
+              SqlNullableText(TextValue(app, {L"active_install_id", L"activeInstallId"})),
+              SqlNullableText(TextValue(app, {L"active_version", L"activeVersion"})),
+              SqlInt(IntValue(app, {L"data_version", L"dataVersion"}, 1)),
+              SqlText(TextValue(app, {L"created_at", L"createdAt"}).value_or(createdAt)),
+              SqlText(TextValue(app, {L"updated_at", L"updatedAt"}).value_or(createdAt)),
+          });
+    }
+
+    for (uint32_t index = 0; ok && index < versions->Size(); ++index) {
+      json::JsonObject version{nullptr};
+      ok = objectAt(versions.value(), index, &version);
+      auto installId = ok ? TextValue(version, {L"install_id", L"installId"}) : std::nullopt;
+      auto appId = ok ? TextValue(version, {L"app_id", L"appId"}) : std::nullopt;
+      auto appVersion = ok ? TextValue(version, {L"version", L"appVersion"}) : std::nullopt;
+      if (!installId.has_value() || !appId.has_value() || !appVersion.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(installId.value()),
+              SqlText(appId.value()),
+              SqlText(appVersion.value()),
+              SqlText(TextValue(version, {L"runtime_version", L"runtimeVersion"}).value_or(L"0.1.0")),
+              SqlInt(IntValue(version, {L"data_version", L"dataVersion"}, 1)),
+              SqlText(JsonTextValue(version, {L"manifest_json", L"manifestJson"}, {L"manifest"}, L"{}").value_or(L"{}")),
+              SqlText(TextValue(version, {L"manifest_hash", L"manifestHash"}).value_or(L"")),
+              SqlText(TextValue(version, {L"content_hash", L"contentHash"}).value_or(L"")),
+              SqlNullableText(JsonTextValue(version, {L"signature_json", L"signatureJson"}, {L"signature"}, std::nullopt)),
+              SqlText(TextValue(version, {L"trust_level", L"trustLevel"}).value_or(L"developer")),
+              SqlText(TextValue(version, {L"status"}).value_or(L"installed")),
+              SqlText(TextValue(version, {L"created_at", L"installedAt", L"createdAt"}).value_or(createdAt)),
+              SqlNullableText(TextValue(version, {L"activated_at", L"activatedAt"})),
+          });
+    }
+
+    for (uint32_t index = 0; ok && index < files->Size(); ++index) {
+      json::JsonObject file{nullptr};
+      ok = objectAt(files.value(), index, &file);
+      auto installId = ok ? TextValue(file, {L"install_id", L"installId"}) : std::nullopt;
+      auto path = ok ? TextValue(file, {L"path"}) : std::nullopt;
+      if (!installId.has_value() || !path.has_value()) {
+        ok = false;
+        break;
+      }
+      auto content = TextValue(file, {L"content_text", L"contentText"}).value_or(L"");
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(installId.value()),
+              SqlText(path.value()),
+              SqlText(content),
+              SqlText(TextValue(file, {L"content_hash", L"contentHash"}).value_or(L"sha256:" + Sha256Hex(content))),
+              SqlInt(IntValue(file, {L"size_bytes", L"sizeBytes"}, static_cast<int64_t>(WideToUtf8(content).size()))),
+              SqlText(TextValue(file, {L"mime"}).value_or(L"text/plain")),
+              SqlText(TextValue(file, {L"created_at", L"createdAt"}).value_or(createdAt)),
+          });
+    }
+
+    for (uint32_t index = 0; ok && index < permissions->Size(); ++index) {
+      json::JsonObject permission{nullptr};
+      ok = objectAt(permissions.value(), index, &permission);
+      auto installId = ok ? TextValue(permission, {L"install_id", L"installId"}) : std::nullopt;
+      auto appId = ok ? TextValue(permission, {L"app_id", L"appId"}) : std::nullopt;
+      auto name = ok ? TextValue(permission, {L"permission"}) : std::nullopt;
+      if (!installId.has_value() || !appId.has_value() || !name.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(installId.value()),
+              SqlText(appId.value()),
+              SqlText(name.value()),
+              SqlInt(IntValue(permission, {L"requested"}, 1)),
+              SqlInt(IntValue(permission, {L"approved"}, 0)),
+              SqlNullableText(TextValue(permission, {L"approved_at", L"approvedAt"})),
+              SqlNullableText(TextValue(permission, {L"reason"})),
+          });
+    }
+
+    for (uint32_t index = 0; ok && index < storageRows->Size(); ++index) {
+      json::JsonObject storage{nullptr};
+      ok = objectAt(storageRows.value(), index, &storage);
+      auto appId = ok ? TextValue(storage, {L"app_id", L"appId"}) : std::nullopt;
+      auto key = ok ? TextValue(storage, {L"key"}) : std::nullopt;
+      if (!appId.has_value() || !key.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+          {
+              SqlText(appId.value()),
+              SqlText(key.value()),
+              SqlText(JsonTextValue(storage, {L"value_json", L"valueJson"}, {L"value"}, L"null").value_or(L"null")),
+              SqlText(TextValue(storage, {L"updated_at", L"updatedAt"}).value_or(createdAt)),
+          });
+    }
+
+    for (uint32_t index = 0; ok && migrations.has_value() && index < migrations->Size(); ++index) {
+      json::JsonObject migration{nullptr};
+      ok = objectAt(migrations.value(), index, &migration);
+      auto migrationId = ok ? TextValue(migration, {L"migration_id", L"migrationId"}) : std::nullopt;
+      auto appId = ok ? TextValue(migration, {L"app_id", L"appId"}) : std::nullopt;
+      if (!migrationId.has_value() || !appId.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(migrationId.value()),
+              SqlText(appId.value()),
+              SqlInt(IntValue(migration, {L"from_data_version", L"fromDataVersion"}, 1)),
+              SqlInt(IntValue(migration, {L"to_data_version", L"toDataVersion"}, 1)),
+              SqlText(JsonTextValue(migration, {L"migration_json", L"migrationJson"}, {L"migration"}, L"{}").value_or(L"{}")),
+              SqlText(TextValue(migration, {L"content_hash", L"contentHash"}).value_or(L"")),
+              SqlText(TextValue(migration, {L"created_at", L"createdAt"}).value_or(createdAt)),
+          });
+    }
+
+    for (uint32_t index = 0; ok && reports.has_value() && index < reports->Size(); ++index) {
+      json::JsonObject report{nullptr};
+      ok = objectAt(reports.value(), index, &report);
+      auto reportId = ok ? TextValue(report, {L"report_id", L"reportId"}) : std::nullopt;
+      auto appId = ok ? TextValue(report, {L"app_id", L"appId"}) : std::nullopt;
+      if (!reportId.has_value() || !appId.has_value()) {
+        ok = false;
+        break;
+      }
+      ok = ExecutePrepared(
+          db,
+          "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(reportId.value()),
+              SqlText(appId.value()),
+              SqlNullableText(TextValue(report, {L"install_id", L"installId"})),
+              SqlText(TextValue(report, {L"status"}).value_or(L"accepted")),
+              SqlNullableText(JsonTextValue(report, {L"validation_json", L"validationJson"}, {L"validation"}, std::nullopt)),
+              SqlNullableText(JsonTextValue(report, {L"security_json", L"securityJson"}, {L"security"}, std::nullopt)),
+              SqlNullableText(JsonTextValue(report, {L"permissions_json", L"permissionsJson"}, {L"permissions"}, std::nullopt)),
+              SqlNullableText(JsonTextValue(report, {L"compatibility_json", L"compatibilityJson"}, {L"compatibility"}, std::nullopt)),
+              SqlNullableText(JsonTextValue(report, {L"smoke_test_json", L"smokeTestJson"}, {L"smokeTest"}, std::nullopt)),
+              SqlNullableText(TextValue(report, {L"content_hash", L"contentHash"})),
+              SqlText(TextValue(report, {L"created_at", L"createdAt"}).value_or(createdAt)),
+          });
+    }
+
+    auto source = OptionalObjectMember(document, L"source");
+    auto sourcePlatform = source.has_value() ? TextValue(source.value(), {L"platform"}).value_or(L"unknown") : L"unknown";
+    auto documentText = std::wstring(document.Stringify().c_str());
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at) "
+        "VALUES (?, 'import', ?, ?, ?, ?, ?, ?)",
+        {
+            SqlText(MakeId(L"import")),
+            SqlText(sourcePlatform),
+            SqlText(TextValue(document, {L"runtimeVersion"}).value_or(L"0.4.0")),
+            SqlText(documentText),
+            SqlText(TextValue(document, {L"contentHash"}).value_or(L"sha256:" + Sha256Hex(documentText))),
+            SqlText(createdAt),
+            SqlText(createdAt),
+        });
+
+    if (!ok || sqlite3_exec(db, "COMMIT", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      *error = L"Backup import could not be completed";
+      sqlite3_free(sqlError);
+      return L"";
+    }
+
+    return L"{\"ok\":true,\"apps\":" + std::to_wstring(apps->Size()) +
+        L",\"appVersions\":" + std::to_wstring(versions->Size()) +
+        L",\"appStorage\":" + std::to_wstring(storageRows->Size()) + L"}";
   }
 
   std::wstring SessionSnapshotJson(std::wstring const& childControlSessionId, std::wstring* error) {
@@ -1534,6 +1928,19 @@ struct DevControlPlane::Impl {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
         return;
       }
+    } else if (tool == L"db.export_backup") {
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = DbExportBackupJson(&error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not export backup" : error, 500);
+        return;
+      }
     } else if (tool == L"db.export_debug_bundle") {
       std::wstring errorCode;
       std::wstring errorMessage;
@@ -1545,6 +1952,29 @@ struct DevControlPlane::Impl {
       result = DbExportDebugBundleJson(&error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not export debug bundle" : error, 500);
+        return;
+      }
+    } else if (tool == L"db.import_backup") {
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"db.import_backup requires args object", 400);
+        return;
+      }
+      auto backup = OptionalObjectMember(args.value(), L"backup");
+      if (!backup.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"db.import_backup requires backup", 400);
+        return;
+      }
+      result = DbImportBackupJson(backup.value(), &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_backup", error.empty() ? L"Backup import could not be completed" : error, 400);
         return;
       }
     } else if (tool == L"db.snapshot" ||

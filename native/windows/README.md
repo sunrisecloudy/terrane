@@ -55,15 +55,15 @@ Implemented now (source/static verified here; runtime smoke is Windows-only):
 - `POST /sessions/:id/command` supports `platform.health`, `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step`; bridge/core commands are app-bound, reject ended sessions, and dispatch through the native WebBridge on the host thread.
 - `POST /sessions/:id/command` supports DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs` inspection over storage, bridge-call, core-event, and `app.log` rows.
 - `POST /sessions/:id/command` supports safe DB inspection through `db.snapshot` and fixed `db.query_app_storage`, `db.query_app_versions`, `db.query_bridge_calls`, `db.query_core_events`, and `db.query_test_runs` commands. These use fixed table/column allowlists and do not expose arbitrary SQL.
-- `POST /sessions/:id/command` supports source/static-verified `db.export_debug_bundle` with fixed table reads, a `sha256:` content hash, and a persisted `backup_exports` row.
+- `POST /sessions/:id/command` supports source/static-verified `db.export_backup`, `db.import_backup`, and `db.export_debug_bundle` using fixed table reads/writes, `sha256:` content hashes, transactional import, and persisted `backup_exports` rows.
 - Release builds reject dev-control startup flags and environment enablement.
 
 Remaining protocol work:
 
-- UI control, storage mocks, network mocks, dialog mocks, replay, and backup import/export are not implemented on Windows yet.
+- UI control, storage mocks, network mocks, dialog mocks, and replay controls are not implemented on Windows yet.
 
 See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 
 ## v0.4 persistence requirement
 
-Implement the platform database layer for this target. Native/reference hosts use SQLite. The server supports SQLite in dev and the Postgres-compatible logical schema in production. The target must run migrations, persist app registry/package/storage/log/test records, and expose safe DB inspection through the dev control plane.
+The platform database layer for this target uses SQLite through `PlatformDatabase`, applies packaged or checked-in migrations, runs `PRAGMA integrity_check`, persists app registry/package/storage/log/test records for the implemented bridge/control surfaces, and exposes safe DB inspection plus backup/debug-bundle import/export through the dev control plane. The server supports SQLite in dev and the Postgres-compatible logical schema in production.

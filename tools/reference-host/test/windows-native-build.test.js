@@ -434,6 +434,35 @@ test(
       assert.equal(debugBundleBody.result.debug.coreEvents.length >= 1, true);
       assert.equal(debugBundleBody.result.debug.coreActions.length >= 1, true);
 
+      const backup = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.export_backup", args: {} },
+      });
+      assert.equal(backup.statusCode, 200, backup.body);
+      const backupBody = JSON.parse(backup.body);
+      assert.equal(backupBody.result.type, "backup");
+      assert.equal(backupBody.result.source.platform, "windows");
+      assert.match(backupBody.result.contentHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(Array.isArray(backupBody.result.apps), true);
+      assert.equal(Array.isArray(backupBody.result.appVersions), true);
+      assert.equal(Array.isArray(backupBody.result.appFiles), true);
+      assert.equal(Array.isArray(backupBody.result.appPermissions), true);
+      assert.equal(
+        backupBody.result.appStorage.some((row) => row.key === "task-workbench:windows-dev-control-key"),
+        true,
+      );
+
+      const importBackup = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.import_backup", args: { backup: backupBody.result } },
+      });
+      assert.equal(importBackup.statusCode, 200, importBackup.body);
+      const importBackupBody = JSON.parse(importBackup.body);
+      assert.equal(importBackupBody.result.ok, true);
+      assert.equal(Number(importBackupBody.result.appStorage) >= 1, true);
+
       const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -503,7 +532,23 @@ test(
           1,
         );
         assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.export_backup' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.import_backup' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM backup_exports WHERE type = 'debug-bundle' AND source_platform = 'windows' AND content_hash = ?").get(debugBundleBody.result.contentHash).count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM backup_exports WHERE type = 'backup' AND source_platform = 'windows' AND content_hash = ?").get(backupBody.result.contentHash).count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM backup_exports WHERE type = 'import' AND content_hash = ? AND imported_at IS NOT NULL").get(backupBody.result.contentHash).count),
           1,
         );
         assert.equal(

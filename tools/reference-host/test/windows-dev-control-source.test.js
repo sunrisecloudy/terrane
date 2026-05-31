@@ -84,6 +84,10 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "ResourceUsageJson",
     "EventLogJson",
     "ConsoleLogsJson",
+    "db.export_backup",
+    "DbExportBackupJson",
+    "db.import_backup",
+    "DbImportBackupJson",
     "db.export_debug_bundle",
     "DbExportDebugBundleJson",
     "db.snapshot",
@@ -143,6 +147,38 @@ test("Windows dev control database inspection uses fixed allowlisted queries onl
     "sqlite3_exec(db, WideToUtf8",
   ]) {
     assert.equal(control.includes(forbidden), false, `Windows DB control source should not contain ${forbidden}`);
+  }
+});
+
+test("Windows dev control exports and imports portable backups through fixed DB tables", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "db.export_backup",
+    "DbExportBackupJson",
+    "DbExportDocumentJson",
+    "db.import_backup",
+    "DbImportBackupJson",
+    "Backup import requires type backup, debug-bundle, or test-fixture",
+    "Backup import document is missing required arrays",
+    "BEGIN IMMEDIATE",
+    "INSERT OR REPLACE INTO apps",
+    "INSERT OR REPLACE INTO app_versions",
+    "INSERT OR REPLACE INTO app_files",
+    "INSERT OR REPLACE INTO app_permissions",
+    "INSERT OR REPLACE INTO app_storage",
+    "INSERT OR REPLACE INTO app_migrations",
+    "INSERT OR REPLACE INTO app_install_reports",
+    "INSERT INTO backup_exports",
+    "VALUES (?, 'import'",
+    "invalid_backup",
+    "appVersions",
+    "appStorage",
+    "runtimeCapabilities",
+    "contentHash",
+    "sha256:",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows backup import/export source should contain ${snippet}`);
   }
 });
 
