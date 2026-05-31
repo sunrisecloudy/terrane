@@ -315,6 +315,66 @@ test(
       assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Toast"), true);
       assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Log"), true);
 
+      const appLog = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "app.log",
+            params: {
+              level: "info",
+              message: "Linux control log probe",
+            },
+          },
+        },
+      });
+      assert.equal(appLog.statusCode, 200, appLog.body);
+      assert.equal(JSON.parse(appLog.body).result.ok, true);
+
+      const resourceUsage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.resource_usage", args: { appId: "task-workbench" } },
+      });
+      assert.equal(resourceUsage.statusCode, 200, resourceUsage.body);
+      const resourceUsageBody = JSON.parse(resourceUsage.body);
+      assert.equal(resourceUsageBody.result.appId, "task-workbench");
+      assert.equal(Number(resourceUsageBody.result.bridgeCalls) >= 3, true);
+      assert.equal(Number(resourceUsageBody.result.coreEvents) >= 1, true);
+      assert.equal(Number(resourceUsageBody.result.logLinesLastMinute) >= 1, true);
+
+      const eventLog = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.event_log", args: { appId: "task-workbench" } },
+      });
+      assert.equal(eventLog.statusCode, 200, eventLog.body);
+      const eventLogBody = JSON.parse(eventLog.body);
+      assert.equal(eventLogBody.result.bridgeCalls.some((row) => row.method === "storage.set"), true);
+      assert.equal(eventLogBody.result.bridgeCalls.some((row) => row.method === "app.log"), true);
+      assert.equal(eventLogBody.result.coreEvents.length >= 1, true);
+
+      const consoleLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.console_logs", args: { appId: "task-workbench" } },
+      });
+      assert.equal(consoleLogs.statusCode, 200, consoleLogs.body);
+      assert.equal(
+        JSON.parse(consoleLogs.body).result.logs.some((row) => row.params?.message === "Linux control log probe"),
+        true,
+      );
+
+      const missingResourceAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.resource_usage", args: {} },
+      });
+      assert.equal(missingResourceAppId.statusCode, 400);
+      assert.equal(JSON.parse(missingResourceAppId.body).error.code, "invalid_request");
+
       const dbSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -449,6 +509,30 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedResourceUsageCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.resource_usage' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedEventLogCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.event_log' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedConsoleLogsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.console_logs' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const bridgeCallCount = execFileSync(
         "sqlite3",
         [
@@ -482,10 +566,13 @@ test(
         { encoding: "utf8" },
       ).trim();
       assert.equal(Number(sessionAuditCount) >= 8, true);
-      assert.equal(Number(acceptedCallBridgeCount) >= 1, true);
+      assert.equal(Number(acceptedCallBridgeCount) >= 2, true);
       assert.equal(Number(acceptedCoreStepCount) >= 1, true);
       assert.equal(Number(acceptedDbSnapshotCount) >= 1, true);
       assert.equal(Number(acceptedDbStorageCount) >= 1, true);
+      assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
+      assert.equal(Number(acceptedEventLogCount) >= 1, true);
+      assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);
       assert.equal(Number(bridgeCallCount) >= 1, true);
       assert.equal(Number(coreBridgeCallCount) >= 1, true);
       assert.equal(Number(coreEventCount) >= 1, true);

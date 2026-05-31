@@ -136,6 +136,7 @@
 - [x] Production guard rejects and audits dev-only startup flags in release builds.
 - [x] Debug dev control plane writes a 0600 per-launch token file, binds to loopback, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and audits accepted/rejected requests.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
+- [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`.
 - [x] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Linux native release package includes runtime, example app, SQLite migration, and Zig core resources.
 - [x] Linux native release artifact launches from its packaged directory without repo-root resource assumptions.

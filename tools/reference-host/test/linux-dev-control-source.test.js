@@ -62,6 +62,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -74,6 +77,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
+    "runtime_resource_usage_json",
+    "runtime_event_log_json",
+    "runtime_console_logs_json",
     "web_bridge_handle_json",
     "app_sandbox_context_for_app",
     "core.step",
@@ -91,6 +97,33 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
   assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
+});
+
+test("Linux dev control exposes DB-backed runtime resource and log inspection commands", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "Runtime inspection command requires args object",
+    "runtime.resource_usage requires appId",
+    "runtime_resource_usage_json",
+    "runtime_event_log_json",
+    "runtime_console_logs_json",
+    "append_console_log_rows",
+    "storageBytes",
+    "bridgeCalls",
+    "coreEvents",
+    "networkRequestsLastMinute",
+    "logLinesLastMinute",
+    "WHERE method = 'app.log'",
+    "append_bridge_call_rows(builder, db, app_id)",
+    "append_core_event_rows(builder, db, app_id)",
+    "control_session_allows_app",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux runtime inspection source should contain ${snippet}`);
+  }
 });
 
 test("Linux dev control database inspection uses fixed allowlisted queries only", () => {

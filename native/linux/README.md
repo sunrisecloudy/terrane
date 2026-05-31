@@ -33,7 +33,7 @@ Implemented now:
 - Loads SQLite migrations from packaged `resources/db/sqlite` before falling back to checked-in migrations.
 - Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first, then the packaged library beside `native-ai-webapp-host`, then repo-local/install candidate paths.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
-- Starts a debug-build-only loopback dev control plane when `--native-ai-dev-control` or `NATIVE_AI_LINUX_DEV_CONTROL=1` is set, writes a per-launch `0600` control token, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, supports permission-checked `runtime.call_bridge` / `runtime.core_step` plus safe `db.snapshot` and fixed `db.query_*` inspection commands, and audits accepted/rejected requests to SQLite.
+- Starts a debug-build-only loopback dev control plane when `--native-ai-dev-control` or `NATIVE_AI_LINUX_DEV_CONTROL=1` is set, writes a per-launch `0600` control token, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, supports permission-checked `runtime.call_bridge` / `runtime.core_step`, DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`, plus safe `db.snapshot` and fixed `db.query_*` inspection commands, and audits accepted/rejected requests to SQLite.
 
 Release packaging for the Linux host runs on Linux/x64:
 
@@ -81,7 +81,7 @@ This host must support a dev/test-only control plane for Codex micro-testing.
 
 Required behavior:
 
-- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, `platform.health`, permission-checked `runtime.call_bridge` / `runtime.core_step` session commands through the native bridge, and safe `db.snapshot` plus fixed `db.query_*` inspection commands without arbitrary SQL.
+- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, `platform.health`, DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`, permission-checked `runtime.call_bridge` / `runtime.core_step` session commands through the native bridge, and safe `db.snapshot` plus fixed `db.query_*` inspection commands without arbitrary SQL.
 - Require a random control token. Linux writes it to `$XDG_RUNTIME_DIR/native-ai-webapp/control.token` unless `PLATFORM_CONTROL_TOKEN_FILE` is set.
 - Expose host/runtime/session state through the control protocol and route bridge-driving session commands through the same manifest-derived sandbox context as the WebKit runtime.
 - Route UI control, bridge inspection, storage mocks, network mocks, dialog mocks, and replay operations to the runtime.

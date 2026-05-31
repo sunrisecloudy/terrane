@@ -1939,6 +1939,9 @@ function checkNativeStatic() {
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -1951,6 +1954,9 @@ function checkNativeStatic() {
     "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
+    "runtime_resource_usage_json",
+    "runtime_event_log_json",
+    "runtime_console_logs_json",
     "web_bridge_handle_json",
     "app_sandbox_context_for_app",
     "core.step",
@@ -1980,6 +1986,23 @@ function checkNativeStatic() {
   ]) {
     if (!linuxDevControl.includes(snippet)) {
       throw new Error(`Linux dev control DB inspection missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "Runtime inspection command requires args object",
+    "runtime.resource_usage requires appId",
+    "append_console_log_rows",
+    "storageBytes",
+    "bridgeCalls",
+    "coreEvents",
+    "networkRequestsLastMinute",
+    "logLinesLastMinute",
+    "WHERE method = 'app.log'",
+    "append_bridge_call_rows(builder, db, app_id)",
+    "append_core_event_rows(builder, db, app_id)",
+  ]) {
+    if (!linuxDevControl.includes(snippet)) {
+      throw new Error(`Linux dev control runtime inspection missing ${snippet}`);
     }
   }
   for (const forbidden of ["db.query_sql", "SELECT *", 'object_string(args, "sql"']) {
