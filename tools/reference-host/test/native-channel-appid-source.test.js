@@ -62,3 +62,29 @@ test("native bridges reject appId in bridge params before dispatch", () => {
     }
   }
 });
+
+test("Windows WebView2 bridge cross-checks runtime envelopes against host-owned mounts", () => {
+  const host = fs.readFileSync(path.join(repoRoot, "native/windows/src/WebViewHost.cpp"), "utf8");
+  const header = fs.readFileSync(path.join(repoRoot, "native/windows/src/WebViewHost.h"), "utf8");
+  const runtime = fs.readFileSync(path.join(repoRoot, "runtime-web/runtime.js"), "utf8");
+
+  assert.match(header, /registeredMountsByToken_/);
+  assert.match(header, /SandboxContextForRegisteredMount/);
+  assert.match(host, /IsRuntimeMountRequest/);
+  assert.match(host, /CreateHostOwnedRuntimeMount/);
+  assert.match(host, /NewRuntimeMountToken/);
+  assert.match(host, /RegisterHostOwnedRuntimeMount/);
+  assert.match(host, /registeredMountsByToken_\.clear\(\)/);
+  assert.match(host, /registeredMountsByToken_\[mountToken\] = appId/);
+  assert.match(host, /auto context = SandboxContextForRegisteredMount\(appId, mountToken\)/);
+  assert.match(host, /bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
+  assert.match(host, /Runtime bridge envelope does not match a host-owned mount channel/);
+  assert.doesNotMatch(host, /bridge_->HandleJson\(requestJson, SandboxContextForApp\(appId, mountToken\)\)/);
+  assert.match(host, /RegisterHostOwnedRuntimeMount\(appId, L"windows-webview-smoke"\)/);
+  assert.doesNotMatch(host, /IsRuntimeMountRegistration/);
+
+  assert.match(runtime, /requestWebView2RuntimeMountToken\(app\.id\)/);
+  assert.match(runtime, /type: "runtime\.mount_request"/);
+  assert.match(runtime, /type === "runtime\.mount_response"/);
+  assert.doesNotMatch(runtime, /runtime\.mount_registered/);
+});

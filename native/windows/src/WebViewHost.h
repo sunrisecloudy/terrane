@@ -6,6 +6,10 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
 #include <wrl.h>
 
 namespace nativeai {
@@ -20,6 +24,8 @@ class WebViewHost {
   void OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args);
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
   bool EnsureSupportedWebView2Runtime(ICoreWebView2Environment* environment);
+  std::optional<std::wstring> CreateHostOwnedRuntimeMount(std::wstring const& appId);
+  void RegisterHostOwnedRuntimeMount(std::wstring const& appId, std::wstring const& mountToken);
   void RunSmoke();
   void RunRuntimeLoadSmoke();
   void RunStorageSmoke(bool setValue);
@@ -49,6 +55,9 @@ class WebViewHost {
       std::wstring const& method,
       winrt::Windows::Data::Json::JsonObject const& params);
   AppSandboxContext SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const;
+  std::optional<AppSandboxContext> SandboxContextForRegisteredMount(
+      std::wstring const& appId,
+      std::wstring const& mountToken) const;
   std::set<std::wstring> PermissionsForApp(std::wstring const& appId) const;
   std::vector<NetworkPolicyRule> NetworkPolicyForApp(std::wstring const& appId) const;
   std::map<std::wstring, uint32_t> ResourceBudgetForApp(std::wstring const& appId) const;
@@ -62,6 +71,7 @@ class WebViewHost {
   Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller_;
   Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
   std::unique_ptr<WebBridge> bridge_;
+  std::map<std::wstring, std::wstring> registeredMountsByToken_;
   bool smokeRan_ = false;
 };
 

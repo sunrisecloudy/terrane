@@ -593,6 +593,74 @@ test("runtime sends WebKit native bridge envelopes from the parent-owned port mo
   }
 });
 
+test("runtime uses WebView2 host-issued mount tokens for native bridge envelopes", async () => {
+  const nativeMessages = [];
+  const webview2Listeners = [];
+  const harness = createRuntimeHarness();
+  harness.parentWindow.chrome = {
+    webview: {
+      addEventListener(type, handler) {
+        if (type === "message") webview2Listeners.push(handler);
+      },
+      postMessage(message) {
+        const parsed = JSON.parse(message);
+        nativeMessages.push(parsed);
+        if (parsed.type === "runtime.mount_request") {
+          setImmediate(() => {
+            for (const handler of webview2Listeners) {
+              handler({
+                data: JSON.stringify({
+                  type: "runtime.mount_response",
+                  id: parsed.id,
+                  ok: true,
+                  appId: parsed.appId,
+                  mountToken: "native-issued-webview2-token",
+                }),
+              });
+            }
+          });
+          return;
+        }
+        if (parsed.request) {
+          setImmediate(() => {
+            for (const handler of webview2Listeners) {
+              handler({
+                data: JSON.stringify({
+                  id: parsed.request.id,
+                  ok: true,
+                  result: parsed.request.method === "runtime.capabilities" ? { runtimeVersion: "test", features: {} } : { value: ["webview2"] },
+                }),
+              });
+            }
+          });
+        }
+      },
+    },
+  };
+
+  try {
+    await loadRuntime(harness);
+    const frame = await mountAppAtIndex(harness, 0);
+    const result = await vm.runInContext(
+      'window.AppRuntime.call("storage.get", { key: "notes-lite:notes", defaultValue: [] })',
+      frame.contentWindow.context,
+    );
+    await flushAsync();
+
+    const mountRequest = nativeMessages.find((message) => message.type === "runtime.mount_request");
+    assert.ok(mountRequest, "runtime should request a WebView2 host-issued mount token");
+    assert.equal(mountRequest.appId, "notes-lite");
+    const storageEnvelope = nativeMessages.find((message) => message.request && message.request.method === "storage.get");
+    assert.ok(storageEnvelope, "storage.get should dispatch through the native WebView2 handler");
+    assert.equal(storageEnvelope.appId, "notes-lite");
+    assert.equal(storageEnvelope.mountToken, "native-issued-webview2-token");
+    assert.deepEqual(result, { value: ["webview2"] });
+    assert.equal(harness.fetchState.bridgeRequests.length, 0);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime emits app.error when a sandbox posts a bridge request outside its assigned channel", async () => {
   const harness = createRuntimeHarness();
   try {

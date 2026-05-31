@@ -1,5 +1,6 @@
 #include "WebViewHost.h"
 
+#include <objbase.h>
 #include <ShlObj.h>
 #include <algorithm>
 #include <cwctype>
@@ -92,6 +93,49 @@ bool HasValidRuntimeEnvelope(json::JsonObject const& body) {
     return false;
   }
   return body.GetNamedValue(L"request").ValueType() == json::JsonValueType::Object;
+}
+
+bool HasOnlyMountRequestFields(json::JsonObject const& body) {
+  for (auto const& entry : body) {
+    auto key = std::wstring(entry.Key().c_str());
+    if (key != L"type" && key != L"id" && key != L"appId") {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsRuntimeMountRequest(json::JsonObject const& body) {
+  if (!HasOnlyMountRequestFields(body)) {
+    return false;
+  }
+  if (!body.HasKey(L"type") || body.GetNamedValue(L"type").ValueType() != json::JsonValueType::String) {
+    return false;
+  }
+  if (std::wstring(body.GetNamedString(L"type", L"").c_str()) != L"runtime.mount_request") {
+    return false;
+  }
+  if (!body.HasKey(L"id") || !body.HasKey(L"appId")) {
+    return false;
+  }
+  auto id = std::wstring(body.GetNamedString(L"id", L"").c_str());
+  auto appId = std::wstring(body.GetNamedString(L"appId", L"").c_str());
+  return !id.empty() && !appId.empty();
+}
+
+std::wstring NewRuntimeMountToken() {
+  GUID guid{};
+  if (FAILED(CoCreateGuid(&guid))) {
+    return L"";
+  }
+  wchar_t buffer[39]{};
+  if (StringFromGUID2(guid, buffer, 39) == 0) {
+    return L"";
+  }
+  std::wstring token(buffer);
+  token.erase(std::remove(token.begin(), token.end(), L'{'), token.end());
+  token.erase(std::remove(token.begin(), token.end(), L'}'), token.end());
+  return L"windows-" + token;
 }
 
 std::wstring ToUpper(std::wstring value) {
@@ -415,6 +459,30 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
     return;
   }
 
+  if (parsedOk && IsRuntimeMountRequest(parsed)) {
+    auto requestId = std::wstring(parsed.GetNamedString(L"id", L"").c_str());
+    auto appId = std::wstring(parsed.GetNamedString(L"appId", L"").c_str());
+    json::JsonObject mountResponse;
+    mountResponse.Insert(L"type", json::JsonValue::CreateStringValue(L"runtime.mount_response"));
+    mountResponse.Insert(L"id", json::JsonValue::CreateStringValue(requestId));
+    mountResponse.Insert(L"appId", json::JsonValue::CreateStringValue(appId));
+    auto mountToken = CreateHostOwnedRuntimeMount(appId);
+    if (mountToken.has_value()) {
+      mountResponse.Insert(L"ok", json::JsonValue::CreateBooleanValue(true));
+      mountResponse.Insert(L"mountToken", json::JsonValue::CreateStringValue(mountToken.value()));
+    } else {
+      json::JsonObject error;
+      error.Insert(L"code", json::JsonValue::CreateStringValue(L"invalid_request"));
+      error.Insert(L"message", json::JsonValue::CreateStringValue(L"Runtime mount request references an unknown app"));
+      error.Insert(L"details", json::JsonObject());
+      mountResponse.Insert(L"ok", json::JsonValue::CreateBooleanValue(false));
+      mountResponse.Insert(L"error", error);
+    }
+    auto responseText = std::wstring(mountResponse.Stringify().c_str());
+    webview_->PostWebMessageAsString(responseText.c_str());
+    return;
+  }
+
   if (parsedOk && IsRuntimeEnvelope(parsed)) {
     auto requestId = RuntimeEnvelopeRequestId(parsed);
     smokeRequestId = requestId;
@@ -442,7 +510,16 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
         smokeAppId = appId;
         smokeMethod = std::wstring(requestObject.GetNamedString(L"method", L"").c_str());
         auto requestJson = std::wstring(requestObject.Stringify().c_str());
-        response = bridge_->HandleJson(requestJson, SandboxContextForApp(appId, mountToken));
+        auto context = SandboxContextForRegisteredMount(appId, mountToken);
+        response = context.has_value()
+            ? bridge_->HandleJson(requestJson, context.value())
+            : BridgeResponse::Failure(
+                  requestId,
+                  !requestId.empty(),
+                  L"invalid_request",
+                  L"Runtime bridge envelope does not match a host-owned mount channel")
+                  .Stringify()
+                  .c_str();
       }
     }
   } else {
@@ -458,6 +535,26 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
   HandleWebBridgeSmokeResponse(smokeRequestId, response);
   HandleRuntimeAppBridgeSmokeResponse(smokeAppId, smokeMethod, response);
   webview_->PostWebMessageAsString(response.c_str());
+}
+
+std::optional<std::wstring> WebViewHost::CreateHostOwnedRuntimeMount(std::wstring const& appId) {
+  if (!IsKnownExampleAppId(appId)) {
+    return std::nullopt;
+  }
+  auto mountToken = NewRuntimeMountToken();
+  if (mountToken.empty()) {
+    return std::nullopt;
+  }
+  RegisterHostOwnedRuntimeMount(appId, mountToken);
+  return mountToken;
+}
+
+void WebViewHost::RegisterHostOwnedRuntimeMount(std::wstring const& appId, std::wstring const& mountToken) {
+  if (!IsKnownExampleAppId(appId) || mountToken.empty()) {
+    return;
+  }
+  registeredMountsByToken_.clear();
+  registeredMountsByToken_[mountToken] = appId;
 }
 
 void WebViewHost::RunSmoke() {
@@ -825,6 +922,8 @@ void WebViewHost::StartWebBridgeSmoke(
     return;
   }
 
+  RegisterHostOwnedRuntimeMount(appId, L"windows-webview-smoke");
+
   json::JsonObject request;
   request.Insert(L"id", json::JsonValue::CreateStringValue(id));
   request.Insert(L"method", json::JsonValue::CreateStringValue(method));
@@ -982,6 +1081,16 @@ AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, s
       .denyPrivateNetwork = DenyPrivateNetworkForApp(appId),
       .mountToken = mountToken,
   };
+}
+
+std::optional<AppSandboxContext> WebViewHost::SandboxContextForRegisteredMount(
+    std::wstring const& appId,
+    std::wstring const& mountToken) const {
+  auto mount = registeredMountsByToken_.find(mountToken);
+  if (mount == registeredMountsByToken_.end() || mount->second != appId) {
+    return std::nullopt;
+  }
+  return SandboxContextForApp(mount->second, mountToken);
 }
 
 std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId) const {

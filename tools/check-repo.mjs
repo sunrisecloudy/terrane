@@ -1152,7 +1152,9 @@ function checkNativeStatic() {
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const iosNotifications = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNotifications.swift"), "utf8");
+  const runtimeWebSource = fs.readFileSync(path.join(repoRoot, "runtime-web", "runtime.js"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
+  const windowsHostHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.h"), "utf8");
   const windowsMain = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "main.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsDialogs = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.cpp"), "utf8");
@@ -1465,6 +1467,17 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, "DenyPrivateNetworkForApp"],
+    [windowsHost, "IsRuntimeMountRequest"],
+    [windowsHost, "CreateHostOwnedRuntimeMount"],
+    [windowsHost, "NewRuntimeMountToken"],
+    [windowsHost, "registeredMountsByToken_.clear()"],
+    [windowsHost, "SandboxContextForRegisteredMount"],
+    [windowsHost, "Runtime bridge envelope does not match a host-owned mount channel"],
+    [windowsHost, 'RegisterHostOwnedRuntimeMount(appId, L"windows-webview-smoke")'],
+    [windowsHostHeader, "registeredMountsByToken_"],
+    [runtimeWebSource, "requestWebView2RuntimeMountToken(app.id)"],
+    [runtimeWebSource, 'type: "runtime.mount_request"'],
+    [runtimeWebSource, 'type === "runtime.mount_response"'],
     [windowsHost, 'raw.GetNamedString(L"pathPrefix", L"")'],
     [windowsHost, ".networkPolicy"],
     [windowsHost, ".denyPrivateNetwork"],

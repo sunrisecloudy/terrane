@@ -32,7 +32,9 @@
   const androidBridgePending = new Map();
   let androidBridgeHandlerAttached = false;
   const webview2BridgePending = new Map();
+  const webview2MountPending = new Map();
   let webview2BridgeHandlerAttached = false;
+  let nextWebView2MountRequestId = 1;
   const usageByApp = new Map();
   const devMockStorageByApp = new Map();
   const devMockCoreVersions = new Map();
@@ -125,13 +127,20 @@
   }
 
   async function mountApp(app) {
+    let mountToken;
+    try {
+      mountToken = await createRuntimeMountToken(app);
+    } catch (error) {
+      setStatus(`Mount failed: ${error && error.message ? error.message : String(error)}`);
+      throw error;
+    }
     if (activeMount) {
       portsByMountToken.delete(activeMount.mountToken);
     }
     const mount = {
       app: app,
       appId: app.id,
-      mountToken: createMountToken(),
+      mountToken: mountToken,
       createdAt: Date.now(),
     };
     activeApp = app;
@@ -762,12 +771,58 @@
     handler.addEventListener("message", function (event) {
       const response = typeof event.data === "string" ? parseJsonOrNull(event.data) : event.data;
       const responseId = response && typeof response.id === "string" ? response.id : null;
+      if (response && response.type === "runtime.mount_response" && responseId && webview2MountPending.has(responseId)) {
+        const waiter = webview2MountPending.get(responseId);
+        webview2MountPending.delete(responseId);
+        clearTimeout(waiter.timeoutId);
+        if (response.ok === true && typeof response.mountToken === "string" && response.mountToken.length > 0) {
+          waiter.resolve(response.mountToken);
+        } else {
+          const error = response.error && response.error.message
+            ? response.error.message
+            : "WebView2 native mount token request failed";
+          waiter.reject(new Error(error));
+        }
+        return;
+      }
       if (!responseId || !webview2BridgePending.has(responseId)) return;
       const waiter = webview2BridgePending.get(responseId);
       webview2BridgePending.delete(responseId);
       waiter.resolve(response);
     });
     webview2BridgeHandlerAttached = true;
+  }
+
+  async function createRuntimeMountToken(app) {
+    const webview2Token = await requestWebView2RuntimeMountToken(app.id);
+    return webview2Token || createMountToken();
+  }
+
+  function requestWebView2RuntimeMountToken(appId) {
+    const handler = window.chrome && window.chrome.webview;
+    if (!handler || typeof handler.postMessage !== "function" || typeof handler.addEventListener !== "function") {
+      return Promise.resolve(null);
+    }
+    attachWebView2BridgeHandler(handler);
+    const id = `runtime_mount_${nextWebView2MountRequestId++}`;
+    return new Promise(function (resolve, reject) {
+      const timeoutId = setTimeout(function () {
+        webview2MountPending.delete(id);
+        reject(new Error("WebView2 native mount token request timed out"));
+      }, 2000);
+      webview2MountPending.set(id, { resolve: resolve, reject: reject, timeoutId: timeoutId });
+      try {
+        handler.postMessage(JSON.stringify({
+          type: "runtime.mount_request",
+          id: id,
+          appId: appId,
+        }));
+      } catch (error) {
+        clearTimeout(timeoutId);
+        webview2MountPending.delete(id);
+        reject(error);
+      }
+    });
   }
 
   function normalizeHostBridgeResponse(response, requestId) {
