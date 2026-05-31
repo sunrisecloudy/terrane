@@ -151,6 +151,8 @@
 - [ ] Debug dev control plane runtime-smoke verifies per-launch token file, loopback bind, token-gated `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and accepted/rejected audit rows.
 - [x] Source/static checks verify Windows debug dev control supports `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
 - [x] Source/static checks verify Windows debug dev control supports static HTML `runtime.screenshot`, `runtime.query`, target interaction, wait/timer, and visible/text assertion commands.
+- [x] Source/static checks verify Windows debug dev control supports static `runtime.accessibility_snapshot`, `runtime.run_accessibility_audit`, and `runtime.assert_accessibility` over bundled generated app HTML.
+- [x] Source/static checks verify Windows debug dev control supports static `runtime.run_smoke_tests`, `runtime.run_microtest`, and `platform.run_platform_smoke` with `test_runs` persistence.
 - [x] Source/static checks verify Windows debug dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Source/static checks verify Windows debug dev control supports explicit `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots.
 - [x] Source/static checks verify Windows debug dev control supports DB-backed one-shot `runtime.fault_inject` consumed before permission/budget bridge dispatch.

@@ -1142,6 +1142,10 @@ struct DevControlPlane::Impl {
     return ReadTextFile(RuntimeResourceRoot() / L"webapps" / L"examples" / appId / L"index.html");
   }
 
+  std::wstring BundledAppText(std::wstring const& appId, std::wstring const& relativePath) {
+    return ReadTextFile(RuntimeResourceRoot() / L"webapps" / L"examples" / appId / relativePath);
+  }
+
   std::vector<std::wstring> RuntimeQueryMatches(std::wstring const& html, json::JsonObject const& args) {
     std::vector<std::wstring> matches;
     auto testId = OptionalStringMember(args, L"testId");
@@ -1225,6 +1229,203 @@ struct DevControlPlane::Impl {
         L",\"format\":\"static-html-summary\",\"title\":" + JsonString(title) +
         L",\"textHash\":\"sha256:" + Sha256Hex(text) +
         L"\",\"testIds\":" + JsonStringArray(TestIds(html)) + L"}";
+  }
+
+  bool HtmlContains(std::wstring const& html, std::wstring const& pattern) {
+    try {
+      return std::regex_search(html, std::wregex(pattern, std::regex_constants::icase));
+    } catch (...) {
+      return false;
+    }
+  }
+
+  std::optional<std::wstring> HtmlAttribute(std::wstring const& attrs, std::wstring const& name) {
+    try {
+      std::wregex regex(L"\\b" + RegexEscape(name) + L"=[\"']([^\"']*)[\"']", std::regex_constants::icase);
+      std::wsmatch match;
+      if (std::regex_search(attrs, match, regex) && match.size() > 1) {
+        return match[1].str();
+      }
+    } catch (...) {
+    }
+    return std::nullopt;
+  }
+
+  struct AccessibilityControlRecord {
+    std::wstring tag;
+    std::wstring type;
+    std::wstring testId;
+    std::wstring selector;
+    std::wstring name;
+  };
+
+  std::wstring AccessibleName(std::wstring const& attrs, std::wstring const& innerHtml) {
+    for (auto const& attr : {L"aria-label", L"title", L"alt", L"value"}) {
+      auto value = HtmlAttribute(attrs, attr);
+      if (value.has_value() && !value->empty()) {
+        return value.value();
+      }
+    }
+    return HtmlText(innerHtml);
+  }
+
+  std::vector<AccessibilityControlRecord> AccessibilityControls(std::wstring const& html) {
+    std::vector<AccessibilityControlRecord> controls;
+    auto appendControl = [&](std::wstring tag, std::wstring attrs, std::wstring innerHtml) {
+      auto testId = HtmlAttribute(attrs, L"data-testid").value_or(L"");
+      AccessibilityControlRecord record;
+      record.tag = LowerAscii(tag);
+      record.type = HtmlAttribute(attrs, L"type").value_or(L"");
+      record.testId = testId;
+      record.selector = testId.empty() ? record.tag : L"[data-testid=\"" + testId + L"\"]";
+      record.name = AccessibleName(attrs, innerHtml);
+      controls.push_back(record);
+    };
+
+    try {
+      std::wregex paired(LR"(<(button|select|textarea|a)\b([^>]*)>([\s\S]*?)</\1>)", std::regex_constants::icase);
+      for (auto cursor = std::wsregex_iterator(html.begin(), html.end(), paired); cursor != std::wsregex_iterator(); ++cursor) {
+        appendControl((*cursor)[1].str(), (*cursor)[2].str(), (*cursor)[3].str());
+      }
+      std::wregex input(LR"(<input\b([^>]*)>)", std::regex_constants::icase);
+      for (auto cursor = std::wsregex_iterator(html.begin(), html.end(), input); cursor != std::wsregex_iterator(); ++cursor) {
+        appendControl(L"input", (*cursor)[1].str(), L"");
+      }
+    } catch (...) {
+    }
+    return controls;
+  }
+
+  std::wstring AccessibilityControlsJson(std::vector<AccessibilityControlRecord> const& controls) {
+    std::wstring out = L"[";
+    for (size_t index = 0; index < controls.size(); ++index) {
+      auto const& control = controls[index];
+      if (index > 0) {
+        out += L",";
+      }
+      out += L"{\"tag\":" + JsonString(control.tag) +
+          L",\"type\":" + JsonNullableString(control.type) +
+          L",\"testId\":" + JsonString(control.testId) +
+          L",\"selector\":" + JsonString(control.selector) +
+          L",\"name\":" + JsonString(control.name) + L"}";
+    }
+    out += L"]";
+    return out;
+  }
+
+  std::wstring AccessibilityHeadingsJson(std::wstring const& html) {
+    std::wstring out = L"[";
+    bool first = true;
+    try {
+      std::wregex heading(LR"(<h([1-6])\b[^>]*>([\s\S]*?)</h\1>)", std::regex_constants::icase);
+      for (auto cursor = std::wsregex_iterator(html.begin(), html.end(), heading); cursor != std::wsregex_iterator(); ++cursor) {
+        if (!first) {
+          out += L",";
+        }
+        first = false;
+        out += L"{\"level\":" + (*cursor)[1].str() +
+            L",\"name\":" + JsonString(HtmlText((*cursor)[2].str())) + L"}";
+      }
+    } catch (...) {
+    }
+    out += L"]";
+    return out;
+  }
+
+  std::optional<AccessibilityControlRecord> FirstUnlabeledControl(std::vector<AccessibilityControlRecord> const& controls) {
+    for (auto const& control : controls) {
+      if (control.name.empty()) {
+        return control;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::wstring AccessibilityCheckJson(
+      std::wstring const& id,
+      bool ok,
+      std::wstring const& message,
+      std::optional<std::wstring> const& selector = std::nullopt) {
+    std::wstring out = L"{\"id\":" + JsonString(id) +
+        L",\"status\":\"" + std::wstring(ok ? L"pass" : L"fail") +
+        L"\",\"message\":" + JsonString(message);
+    if (selector.has_value() && !selector->empty()) {
+      out += L",\"selector\":" + JsonString(selector.value());
+    }
+    out += L"}";
+    return out;
+  }
+
+  std::wstring RuntimeAccessibilitySnapshotJson(std::wstring const& appId) {
+    auto html = HtmlForBundledApp(appId);
+    auto title = HtmlText(RegexFirst(html, LR"(<title[^>]*>([\s\S]*?)</title>)"));
+    auto controls = AccessibilityControls(html);
+    std::wstring landmarks = HtmlContains(html, LR"(<main\b)")
+        ? L"[{\"role\":\"main\",\"selector\":\"main\"}]"
+        : L"[]";
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"title\":" + JsonString(title) +
+        L",\"landmarks\":" + landmarks +
+        L",\"headings\":" + AccessibilityHeadingsJson(html) +
+        L",\"controls\":" + AccessibilityControlsJson(controls) + L"}";
+  }
+
+  std::wstring RuntimeAccessibilityAuditJson(std::wstring const& appId) {
+    auto html = HtmlForBundledApp(appId);
+    auto title = HtmlText(RegexFirst(html, LR"(<title[^>]*>([\s\S]*?)</title>)"));
+    auto controls = AccessibilityControls(html);
+    auto unlabeled = FirstUnlabeledControl(controls);
+    bool hasTitle = !title.empty();
+    bool hasMain = HtmlContains(html, LR"(<main\b)");
+    bool hasH1 = HtmlContains(html, LR"(<h1\b[^>]*>[\s\S]*?</h1>)");
+    bool pass = hasTitle && hasMain && hasH1 && !unlabeled.has_value();
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"checkedAt\":" + JsonString(NowIso()) +
+        L",\"status\":\"" + std::wstring(pass ? L"pass" : L"fail") +
+        L"\",\"checks\":[" +
+        AccessibilityCheckJson(L"document_title", hasTitle, L"Document must include a non-empty <title>.") + L"," +
+        AccessibilityCheckJson(L"main_landmark", hasMain, L"Page must include a <main> landmark.") + L"," +
+        AccessibilityCheckJson(L"screen_title", hasH1, L"Page must include an h1 screen title.") + L"," +
+        AccessibilityCheckJson(
+            L"no_unlabeled_controls",
+            !unlabeled.has_value(),
+            L"Every interactive control must have an accessible name.",
+            unlabeled.has_value() ? std::optional<std::wstring>(unlabeled->selector) : std::nullopt) +
+        L"]}";
+  }
+
+  bool AccessibilityFailsRule(std::wstring const& appId, std::optional<std::wstring> const& rule) {
+    auto html = HtmlForBundledApp(appId);
+    auto title = HtmlText(RegexFirst(html, LR"(<title[^>]*>([\s\S]*?)</title>)"));
+    auto controls = AccessibilityControls(html);
+    auto unlabeled = FirstUnlabeledControl(controls);
+    std::vector<std::pair<std::wstring, bool>> checks = {
+        {L"document_title", !title.empty()},
+        {L"main_landmark", HtmlContains(html, LR"(<main\b)")},
+        {L"screen_title", HtmlContains(html, LR"(<h1\b[^>]*>[\s\S]*?</h1>)")},
+        {L"no_unlabeled_controls", !unlabeled.has_value()},
+    };
+    for (auto const& check : checks) {
+      if (!check.second && (!rule.has_value() || rule->empty() || check.first == rule.value())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::wstring RuntimeAssertAccessibilityJson(
+      std::wstring const& appId,
+      std::optional<std::wstring> const& rule,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    if (AccessibilityFailsRule(appId, rule)) {
+      *errorCode = L"accessibility_failed";
+      *errorMessage = L"Accessibility assertion failed";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"rule\":" + (rule.has_value() && !rule->empty() ? JsonString(rule.value()) : L"null") +
+        L",\"report\":" + RuntimeAccessibilityAuditJson(appId) + L"}";
   }
 
   std::wstring RuntimeTargetCommandJson(
@@ -1477,6 +1678,595 @@ struct DevControlPlane::Impl {
     }
     sqlite3_finalize(statement);
     return runtimeSessionId;
+  }
+
+  bool RecordTestRun(
+      std::wstring const& childControlSessionId,
+      std::optional<std::wstring> const& appId,
+      std::wstring const& microTestId,
+      std::wstring const& name,
+      std::wstring const& specJson,
+      std::wstring const& status,
+      std::wstring const& resultJson,
+      std::wstring const& diagnosticsJson) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      return false;
+    }
+    std::wstring runtimeSessionId;
+    if (appId.has_value() && !appId->empty()) {
+      runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId.value());
+    }
+    sqlite3_stmt* microStatement = nullptr;
+    bool ok = sqlite3_prepare_v2(
+                  db,
+                  "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) "
+                  "VALUES (?, ?, ?, ?, datetime('now'), datetime('now')) "
+                  "ON CONFLICT(micro_test_id) DO UPDATE SET "
+                  "app_id = excluded.app_id, "
+                  "name = excluded.name, "
+                  "spec_json = excluded.spec_json, "
+                  "updated_at = excluded.updated_at",
+                  -1,
+                  &microStatement,
+                  nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(microStatement, 1, microTestId);
+      if (appId.has_value() && !appId->empty()) {
+        BindText(microStatement, 2, appId.value());
+      } else {
+        sqlite3_bind_null(microStatement, 2);
+      }
+      BindText(microStatement, 3, name);
+      BindText(microStatement, 4, specJson);
+      ok = sqlite3_step(microStatement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(microStatement);
+    if (!ok) {
+      return false;
+    }
+    sqlite3_stmt* statement = nullptr;
+    ok = sqlite3_prepare_v2(
+             db,
+             "INSERT INTO test_runs "
+             "(test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json) "
+             "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?)",
+             -1,
+             &statement,
+             nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(statement, 1, MakeId(L"test-run"));
+      BindText(statement, 2, microTestId);
+      if (runtimeSessionId.empty()) {
+        sqlite3_bind_null(statement, 3);
+      } else {
+        BindText(statement, 3, runtimeSessionId);
+      }
+      BindText(statement, 4, childControlSessionId);
+      if (appId.has_value() && !appId->empty()) {
+        BindText(statement, 5, appId.value());
+      } else {
+        sqlite3_bind_null(statement, 5);
+      }
+      BindText(statement, 6, status);
+      BindText(statement, 7, resultJson);
+      BindText(statement, 8, diagnosticsJson);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    return ok;
+  }
+
+  bool TextCanAppear(std::wstring const& html, std::vector<std::wstring> const& dynamicText, std::wstring const& text) {
+    if (HtmlText(html).find(text) != std::wstring::npos) {
+      return true;
+    }
+    return std::find(dynamicText.begin(), dynamicText.end(), text) != dynamicText.end();
+  }
+
+  bool BridgeMethodReferenced(std::wstring const& appId, std::wstring const& bridgeMethod) {
+    return BundledAppText(appId, L"app.js").find(bridgeMethod) != std::wstring::npos;
+  }
+
+  std::wstring TestFailureJson(
+      std::wstring const& testName,
+      std::wstring const& code,
+      std::wstring const& field,
+      std::wstring const& value) {
+    return L"{\"test\":" + JsonString(testName) +
+        L",\"code\":" + JsonString(code) +
+        L"," + JsonString(field) + L":" + JsonString(value) + L"}";
+  }
+
+  std::wstring JsonArrayText(std::vector<std::wstring> const& items) {
+    std::wstring out = L"[";
+    for (size_t index = 0; index < items.size(); ++index) {
+      if (index > 0) {
+        out += L",";
+      }
+      out += items[index];
+    }
+    out += L"]";
+    return out;
+  }
+
+  std::wstring EvaluateSmokeTestsJson(
+      std::wstring const& appId,
+      std::wstring const& smokeText,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    json::JsonValue parsed{nullptr};
+    if (smokeText.empty() || !json::JsonValue::TryParse(smokeText, parsed) || parsed.ValueType() != json::JsonValueType::Array) {
+      *errorCode = L"invalid_smoke_tests";
+      *errorMessage = L"smoke-tests.json must parse as a JSON array";
+      return L"";
+    }
+    auto tests = parsed.GetArray();
+    auto html = HtmlForBundledApp(appId);
+    std::vector<std::wstring> failures;
+    std::vector<std::wstring> dynamicText;
+    uint32_t assertions = 0;
+
+    for (uint32_t index = 0; index < tests.Size(); ++index) {
+      auto testValue = tests.GetAt(index);
+      if (testValue.ValueType() != json::JsonValueType::Object) {
+        failures.push_back(TestFailureJson(L"unnamed", L"invalid_smoke_test", L"message", L"Smoke test must be an object"));
+        continue;
+      }
+      auto testObject = testValue.GetObject();
+      auto testName = StringMemberOr(testObject, L"name", L"unnamed");
+      auto stepsValue = testObject.HasKey(L"steps") ? testObject.GetNamedValue(L"steps") : json::JsonValue::CreateNullValue();
+      if (stepsValue.ValueType() == json::JsonValueType::Array) {
+        auto steps = stepsValue.GetArray();
+        assertions += steps.Size();
+        for (uint32_t stepIndex = 0; stepIndex < steps.Size(); ++stepIndex) {
+          auto stepValue = steps.GetAt(stepIndex);
+          if (stepValue.ValueType() != json::JsonValueType::Object) {
+            failures.push_back(TestFailureJson(testName, L"invalid_smoke_step", L"message", L"Smoke step must be an object"));
+            continue;
+          }
+          auto step = stepValue.GetObject();
+          auto selector = OptionalStringMember(step, L"selector");
+          if (selector.has_value() && !selector->empty()) {
+            json::JsonObject query;
+            query.Insert(L"selector", json::JsonValue::CreateStringValue(selector.value()));
+            if (RuntimeQueryMatches(html, query).empty()) {
+              failures.push_back(TestFailureJson(testName, L"selector.not_found", L"selector", selector.value()));
+            }
+          }
+          auto stepType = OptionalStringMember(step, L"type").value_or(L"");
+          auto value = OptionalStringMember(step, L"value");
+          if ((stepType == L"fill" || stepType == L"select") && value.has_value()) {
+            dynamicText.push_back(value.value());
+          }
+        }
+      }
+
+      auto expected = OptionalObjectMember(testObject, L"expected");
+      if (expected.has_value()) {
+        for (auto const& entry : expected.value()) {
+          assertions += 1;
+        }
+        if (expected->HasKey(L"bridgeCallsInclude") && expected->GetNamedValue(L"bridgeCallsInclude").ValueType() == json::JsonValueType::Array) {
+          auto methods = expected->GetNamedArray(L"bridgeCallsInclude");
+          for (uint32_t methodIndex = 0; methodIndex < methods.Size(); ++methodIndex) {
+            auto methodValue = methods.GetAt(methodIndex);
+            if (methodValue.ValueType() == json::JsonValueType::String) {
+              auto methodName = std::wstring(methodValue.GetString().c_str());
+              if (!BridgeMethodReferenced(appId, methodName)) {
+                failures.push_back(TestFailureJson(testName, L"bridge.call_missing", L"method", methodName));
+              }
+            }
+          }
+        }
+        auto textIncludes = OptionalStringMember(expected.value(), L"textIncludes");
+        if (textIncludes.has_value() && !TextCanAppear(html, dynamicText, textIncludes.value())) {
+          failures.push_back(TestFailureJson(testName, L"text.not_found", L"text", textIncludes.value()));
+        }
+      }
+    }
+
+    bool ok = failures.empty();
+    return L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+        L",\"status\":\"" + std::wstring(ok ? L"passed" : L"failed") +
+        L"\",\"appId\":" + JsonString(appId) +
+        L",\"total\":" + std::to_wstring(tests.Size()) +
+        L",\"assertions\":" + std::to_wstring(assertions) +
+        L",\"failures\":" + JsonArrayText(failures) +
+        L",\"runner\":\"static\",\"spec\":" + smokeText + L"}";
+  }
+
+  std::wstring RuntimeRunSmokeTestsJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    if (appId.empty() || !IsValidAppId(appId)) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"runtime.run_smoke_tests appId is not a valid generated app id";
+      return L"";
+    }
+    auto smokeText = BundledAppText(appId, L"smoke-tests.json");
+    if (smokeText.empty()) {
+      *errorCode = L"smoke_tests_missing";
+      *errorMessage = L"App has no smoke-tests.json";
+      return L"";
+    }
+    auto result = EvaluateSmokeTestsJson(appId, smokeText, errorCode, errorMessage);
+    if (result.empty()) {
+      return L"";
+    }
+    auto status = result.find(L"\"ok\":true") != std::wstring::npos ? L"passed" : L"failed";
+    if (!RecordTestRun(
+            childControlSessionId,
+            appId,
+            L"smoke:" + appId,
+            appId + L" bundled smoke tests",
+            smokeText,
+            status,
+            result,
+            L"{\"runner\":\"windows-static-smoke\"}")) {
+      *errorCode = L"sqlite_error";
+      *errorMessage = L"Smoke test run could not be recorded";
+      return L"";
+    }
+    return result;
+  }
+
+  std::optional<std::wstring> ControlSpecJson(
+      json::JsonObject const& args,
+      std::wstring const& inlineKey,
+      std::wstring const& pathKey) {
+    if (args.HasKey(inlineKey)) {
+      auto value = args.GetNamedValue(inlineKey);
+      if (value.ValueType() == json::JsonValueType::Object || value.ValueType() == json::JsonValueType::Array) {
+        return std::wstring(value.Stringify().c_str());
+      }
+      if (value.ValueType() == json::JsonValueType::String) {
+        return std::wstring(value.GetString().c_str());
+      }
+    }
+    auto path = OptionalStringMember(args, pathKey);
+    if (path.has_value() && !path->empty()) {
+      return ReadTextFile(RepoRoot() / path.value());
+    }
+    return std::nullopt;
+  }
+
+  std::optional<std::wstring> FirstTargetApp(json::JsonObject const& spec) {
+    if (!spec.HasKey(L"targetApps") || spec.GetNamedValue(L"targetApps").ValueType() != json::JsonValueType::Array) {
+      return std::nullopt;
+    }
+    auto apps = spec.GetNamedArray(L"targetApps");
+    if (apps.Size() == 0 || apps.GetAt(0).ValueType() != json::JsonValueType::String) {
+      return std::nullopt;
+    }
+    return std::wstring(apps.GetAt(0).GetString().c_str());
+  }
+
+  std::optional<std::wstring> MicrotestTargetAppIdFromArgs(
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto specJson = ControlSpecJson(args, L"spec", L"microtestPath");
+    if (!specJson.has_value() || specJson->empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"runtime.run_microtest requires spec or microtestPath";
+      return std::nullopt;
+    }
+    json::JsonObject spec{nullptr};
+    if (!json::JsonObject::TryParse(specJson.value(), spec)) {
+      *errorCode = L"invalid_microtest";
+      *errorMessage = L"Micro-test spec must be a JSON object";
+      return std::nullopt;
+    }
+    auto appId = FirstTargetApp(spec);
+    if (!appId.has_value() || !IsValidAppId(appId.value())) {
+      *errorCode = L"invalid_microtest";
+      *errorMessage = L"Micro-test must target at least one app";
+      return std::nullopt;
+    }
+    return appId.value();
+  }
+
+  std::optional<std::vector<std::wstring>> PlatformSmokeAppIdsFromArgs(
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto specJson = ControlSpecJson(args, L"spec", L"smokePath");
+    if (!specJson.has_value() || specJson->empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"platform.run_platform_smoke requires spec or smokePath";
+      return std::nullopt;
+    }
+    json::JsonObject spec{nullptr};
+    if (!json::JsonObject::TryParse(specJson.value(), spec) || !spec.HasKey(L"apps") || spec.GetNamedValue(L"apps").ValueType() != json::JsonValueType::Array) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"platform.run_platform_smoke requires an apps array";
+      return std::nullopt;
+    }
+    std::vector<std::wstring> appIds;
+    auto apps = spec.GetNamedArray(L"apps");
+    for (uint32_t index = 0; index < apps.Size(); ++index) {
+      auto appValue = apps.GetAt(index);
+      if (appValue.ValueType() != json::JsonValueType::String) {
+        *errorCode = L"invalid_request";
+        *errorMessage = L"platform.run_platform_smoke apps must be generated app ids";
+        return std::nullopt;
+      }
+      auto appId = std::wstring(appValue.GetString().c_str());
+      if (!IsValidAppId(appId)) {
+        *errorCode = L"invalid_request";
+        *errorMessage = L"platform.run_platform_smoke apps must be generated app ids";
+        return std::nullopt;
+      }
+      appIds.push_back(appId);
+    }
+    if (appIds.empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"platform.run_platform_smoke requires at least one app";
+      return std::nullopt;
+    }
+    return appIds;
+  }
+
+  json::JsonObject StepArgsWithAppId(json::JsonObject const& step, std::wstring const& appId) {
+    json::JsonObject args = json::JsonObject::Parse(L"{}");
+    if (auto parsed = OptionalObjectMember(step, L"args"); parsed.has_value()) {
+      for (auto const& entry : parsed.value()) {
+        args.Insert(entry.Key(), entry.Value());
+      }
+    }
+    if (!args.HasKey(L"appId")) {
+      args.Insert(L"appId", json::JsonValue::CreateStringValue(appId));
+    }
+    return args;
+  }
+
+  std::wstring StaticStepResultJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring const& tool,
+      json::JsonObject const& args,
+      std::vector<std::wstring>* dynamicText) {
+    std::wstring errorCode;
+    std::wstring errorMessage;
+    if (tool == L"runtime.click" || tool == L"runtime.type" || tool == L"runtime.set_value" || tool == L"runtime.press_key" || tool == L"runtime.drag") {
+      auto result = RuntimeTargetCommandJson(tool, args, &errorCode, &errorMessage);
+      if (result.empty()) {
+        return L"{\"ok\":false,\"error\":{\"code\":" + JsonString(errorCode) + L",\"message\":" + JsonString(errorMessage) + L"}}";
+      }
+      auto value = OptionalStringMember(args, L"value");
+      if (!value.has_value()) {
+        value = OptionalStringMember(args, L"text");
+      }
+      if ((tool == L"runtime.type" || tool == L"runtime.set_value") && value.has_value()) {
+        dynamicText->push_back(value.value());
+      }
+      return result;
+    }
+    if (tool == L"runtime.query") {
+      return RuntimeQueryJson(appId, args);
+    }
+    if (tool == L"runtime.screenshot") {
+      return RuntimeScreenshotJson(appId, OptionalStringMember(args, L"label"));
+    }
+    if (tool == L"runtime.wait_for" || tool == L"platform.open_webapp" || tool == L"platform.validate_package" ||
+        tool == L"platform.sign_webapp_package" || tool == L"platform.install_webapp_package" ||
+        tool == L"runtime.network_mock_set" || tool == L"runtime.dialog_mock_set") {
+      return L"{\"ok\":true,\"tool\":" + JsonString(tool) + L",\"appId\":" + JsonString(appId) + L"}";
+    }
+    if (tool == L"runtime.capabilities") {
+      return RuntimeCapabilitiesJson(appId);
+    }
+    if (tool == L"runtime.resource_usage") {
+      return ResourceUsageJson(appId);
+    }
+    if (tool == L"runtime.run_accessibility_audit") {
+      return RuntimeAccessibilityAuditJson(appId);
+    }
+    if (tool == L"runtime.accessibility_snapshot") {
+      return RuntimeAccessibilitySnapshotJson(appId);
+    }
+    if (tool == L"runtime.assert_accessibility") {
+      auto result = RuntimeAssertAccessibilityJson(appId, OptionalStringMember(args, L"rule"), &errorCode, &errorMessage);
+      return result.empty()
+          ? L"{\"ok\":false,\"error\":{\"code\":" + JsonString(errorCode) + L",\"message\":" + JsonString(errorMessage) + L"}}"
+          : result;
+    }
+    if (tool == L"runtime.assert_visible") {
+      auto result = RuntimeAssertVisibleJson(appId, args, &errorCode, &errorMessage);
+      return result.empty()
+          ? L"{\"ok\":false,\"error\":{\"code\":" + JsonString(errorCode) + L",\"message\":" + JsonString(errorMessage) + L"}}"
+          : result;
+    }
+    if (tool == L"runtime.assert_text") {
+      auto text = OptionalStringMember(args, L"text").value_or(L"");
+      if (!TextCanAppear(HtmlForBundledApp(appId), *dynamicText, text)) {
+        return L"{\"ok\":false,\"error\":{\"code\":\"text.not_found\",\"message\":\"Expected text was not found\"}}";
+      }
+      return L"{\"ok\":true,\"appId\":" + JsonString(appId) + L",\"text\":" + JsonString(text) + L"}";
+    }
+    if (tool == L"runtime.assert_bridge_call") {
+      auto methodName = OptionalStringMember(args, L"method").value_or(L"");
+      bool ok = !methodName.empty() && BridgeMethodReferenced(appId, methodName);
+      return L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+          L",\"appId\":" + JsonString(appId) +
+          L",\"method\":" + JsonString(methodName) + L"}";
+    }
+    if (tool == L"runtime.assert_no_console_errors") {
+      return L"{\"ok\":true,\"errors\":0,\"appId\":" + JsonString(appId) + L"}";
+    }
+    if (tool == L"runtime.run_smoke_tests") {
+      return RuntimeRunSmokeTestsJson(childControlSessionId, appId, &errorCode, &errorMessage);
+    }
+    if (tool == L"platform.create_snapshot") {
+      return L"{\"ok\":true,\"snapshotId\":" + JsonString(MakeId(L"snapshot-static")) +
+          L",\"appId\":" + JsonString(appId) + L"}";
+    }
+    if (tool == L"runtime.replay_events" || tool == L"runtime.core_snapshot" || tool == L"runtime.assert_core_action") {
+      return L"{\"ok\":true,\"tool\":" + JsonString(tool) + L",\"appId\":" + JsonString(appId) + L"}";
+    }
+    return L"{\"ok\":false,\"error\":{\"code\":\"platform.unavailable\",\"message\":\"Micro-test command is not executable by the Windows static runner\"}}";
+  }
+
+  std::wstring EvaluateMicrotestSpecJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      json::JsonObject const& spec) {
+    std::vector<std::wstring> failures;
+    std::vector<std::wstring> commands;
+    std::vector<std::wstring> dynamicText;
+    uint32_t totalSteps = 0;
+    for (auto const& phase : {L"setup", L"steps", L"teardown"}) {
+      if (!spec.HasKey(phase) || spec.GetNamedValue(phase).ValueType() != json::JsonValueType::Array) {
+        continue;
+      }
+      auto steps = spec.GetNamedArray(phase);
+      for (uint32_t index = 0; index < steps.Size(); ++index) {
+        auto stepValue = steps.GetAt(index);
+        if (stepValue.ValueType() != json::JsonValueType::Object) {
+          failures.push_back(TestFailureJson(phase, L"invalid_step", L"message", L"Micro-test step must be an object"));
+          continue;
+        }
+        totalSteps += 1;
+        auto step = stepValue.GetObject();
+        auto tool = OptionalStringMember(step, L"tool").value_or(L"");
+        auto args = StepArgsWithAppId(step, appId);
+        auto result = StaticStepResultJson(childControlSessionId, appId, tool, args, &dynamicText);
+        bool ok = result.find(L"\"ok\":false") == std::wstring::npos;
+        if (!ok) {
+          failures.push_back(TestFailureJson(phase, L"command_failed", L"tool", tool));
+        }
+        commands.push_back(L"{\"phase\":" + JsonString(phase) +
+            L",\"index\":" + std::to_wstring(index) +
+            L",\"tool\":" + JsonString(tool) +
+            L",\"status\":\"" + std::wstring(ok ? L"passed" : L"failed") +
+            L"\",\"result\":" + (result.empty() ? L"null" : result) + L"}");
+      }
+    }
+    bool ok = failures.empty();
+    return L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+        L",\"status\":\"" + std::wstring(ok ? L"passed" : L"failed") +
+        L"\",\"appId\":" + JsonString(appId) +
+        L",\"totalSteps\":" + std::to_wstring(totalSteps) +
+        L",\"failures\":" + JsonArrayText(failures) +
+        L",\"commands\":" + JsonArrayText(commands) +
+        L",\"runner\":\"windows-static-microtest\"}";
+  }
+
+  std::wstring RuntimeRunMicrotestJson(
+      std::wstring const& childControlSessionId,
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto specJson = ControlSpecJson(args, L"spec", L"microtestPath");
+    if (!specJson.has_value() || specJson->empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"runtime.run_microtest requires spec or microtestPath";
+      return L"";
+    }
+    json::JsonObject spec{nullptr};
+    if (!json::JsonObject::TryParse(specJson.value(), spec)) {
+      *errorCode = L"invalid_microtest";
+      *errorMessage = L"Micro-test spec must be a JSON object";
+      return L"";
+    }
+    auto appId = FirstTargetApp(spec);
+    if (!appId.has_value() || !IsValidAppId(appId.value())) {
+      *errorCode = L"invalid_microtest";
+      *errorMessage = L"Micro-test must target at least one app";
+      return L"";
+    }
+    auto result = EvaluateMicrotestSpecJson(childControlSessionId, appId.value(), spec);
+    auto status = result.find(L"\"ok\":true") != std::wstring::npos ? L"passed" : L"failed";
+    auto microTestId = OptionalStringMember(spec, L"id").value_or(L"microtest");
+    if (!RecordTestRun(
+            childControlSessionId,
+            appId,
+            microTestId,
+            microTestId,
+            specJson.value(),
+            status,
+            result,
+            L"{\"runner\":\"windows-static-microtest\",\"spec\":" + specJson.value() + L"}")) {
+      *errorCode = L"sqlite_error";
+      *errorMessage = L"Micro-test run could not be recorded";
+      return L"";
+    }
+    return result;
+  }
+
+  std::wstring PlatformRunSmokeJson(
+      std::wstring const& childControlSessionId,
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto specJson = ControlSpecJson(args, L"spec", L"smokePath");
+    if (!specJson.has_value() || specJson->empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"platform.run_platform_smoke requires spec or smokePath";
+      return L"";
+    }
+    json::JsonObject spec{nullptr};
+    if (!json::JsonObject::TryParse(specJson.value(), spec) || !spec.HasKey(L"apps") || spec.GetNamedValue(L"apps").ValueType() != json::JsonValueType::Array) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"platform.run_platform_smoke requires an apps array";
+      return L"";
+    }
+    auto smokeId = OptionalStringMember(spec, L"id").value_or(L"platform-smoke");
+    auto platform = StringMemberOr(args, L"platform", L"windows");
+    auto apps = spec.GetNamedArray(L"apps");
+    std::vector<std::wstring> appResults;
+    std::vector<std::wstring> failures;
+    for (uint32_t index = 0; index < apps.Size(); ++index) {
+      auto appValue = apps.GetAt(index);
+      if (appValue.ValueType() != json::JsonValueType::String) {
+        failures.push_back(L"{\"appId\":null,\"code\":\"invalid_request\",\"message\":\"Platform smoke apps must be generated app ids\"}");
+        continue;
+      }
+      auto appId = std::wstring(appValue.GetString().c_str());
+      if (!IsValidAppId(appId)) {
+        failures.push_back(L"{\"appId\":" + JsonString(appId) + L",\"code\":\"invalid_request\",\"message\":\"Platform smoke apps must be generated app ids\"}");
+        appResults.push_back(L"{\"appId\":" + JsonString(appId) +
+            L",\"ok\":false,\"commands\":[]}");
+        continue;
+      }
+      std::wstring smokeErrorCode;
+      std::wstring smokeErrorMessage;
+      auto smoke = RuntimeRunSmokeTestsJson(childControlSessionId, appId, &smokeErrorCode, &smokeErrorMessage);
+      bool ok = !smoke.empty() && smoke.find(L"\"ok\":true") != std::wstring::npos;
+      if (!ok) {
+        failures.push_back(L"{\"appId\":" + JsonString(appId) +
+            L",\"code\":\"smoke_failed\",\"message\":" + JsonString(smokeErrorMessage) + L"}");
+      }
+      appResults.push_back(L"{\"appId\":" + JsonString(appId) +
+          L",\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+          L",\"commands\":[{\"tool\":\"runtime.run_smoke_tests\",\"status\":\"" + std::wstring(ok ? L"passed" : L"failed") +
+          L"\",\"result\":" + (smoke.empty() ? L"null" : smoke) + L"}]}");
+    }
+    bool ok = failures.empty();
+    auto result = L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+        L",\"id\":" + JsonString(smokeId) +
+        L",\"platform\":" + JsonString(platform) +
+        L",\"totalApps\":" + std::to_wstring(appResults.size()) +
+        L",\"failures\":" + JsonArrayText(failures) +
+        L",\"apps\":" + JsonArrayText(appResults) + L"}";
+    if (!RecordTestRun(
+            childControlSessionId,
+            std::nullopt,
+            L"platform-smoke:" + smokeId + L":" + platform,
+            smokeId + L" platform smoke (" + platform + L")",
+            specJson.value(),
+            ok ? L"passed" : L"failed",
+            result,
+            L"{\"runner\":\"windows-static-platform-smoke\",\"spec\":" + specJson.value() + L"}")) {
+      *errorCode = L"sqlite_error";
+      *errorMessage = L"Platform smoke run could not be recorded";
+      return L"";
+    }
+    return result;
   }
 
   std::optional<std::wstring> JsonMemberText(json::JsonObject const& object, std::wstring const& key) {
@@ -3999,6 +4789,96 @@ struct DevControlPlane::Impl {
       result = SessionCapabilitiesJson(sessionId, &error);
       if (result.empty()) {
         SendControlRouteError(client, L"", tool, method, path, started, L"not_found", error.empty() ? L"Control session not found" : error, 400);
+        return;
+      }
+    } else if (tool == L"runtime.accessibility_snapshot" ||
+        tool == L"runtime.run_accessibility_audit" ||
+        tool == L"runtime.assert_accessibility") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+      auto appId = OptionalStringMember(args, L"appId").value_or(L"notes-lite");
+      if (appId.empty() || !IsValidAppId(appId)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"Accessibility appId is not a valid generated app id", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      if (tool == L"runtime.accessibility_snapshot") {
+        result = RuntimeAccessibilitySnapshotJson(appId);
+      } else if (tool == L"runtime.run_accessibility_audit") {
+        result = RuntimeAccessibilityAuditJson(appId);
+      } else {
+        result = RuntimeAssertAccessibilityJson(appId, OptionalStringMember(args, L"rule"), &errorCode, &errorMessage);
+        if (result.empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"accessibility_failed" : errorCode, errorMessage.empty() ? L"Accessibility assertion failed" : errorMessage, errorStatus);
+          return;
+        }
+      }
+    } else if (tool == L"runtime.run_smoke_tests" ||
+        tool == L"runtime.run_microtest" ||
+        tool == L"platform.run_platform_smoke") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (tool == L"runtime.run_smoke_tests") {
+        auto appId = OptionalStringMember(args, L"appId").value_or(L"");
+        if (appId.empty() || !IsValidAppId(appId)) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.run_smoke_tests requires appId", 400);
+          return;
+        }
+        if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+          return;
+        }
+        result = RuntimeRunSmokeTestsJson(sessionId, appId, &errorCode, &errorMessage);
+      } else if (tool == L"runtime.run_microtest") {
+        auto appId = MicrotestTargetAppIdFromArgs(args, &errorCode, &errorMessage);
+        if (!appId.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"invalid_request" : errorCode, errorMessage.empty() ? L"runtime.run_microtest requires spec or microtestPath" : errorMessage, 400);
+          return;
+        }
+        if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+          return;
+        }
+        result = RuntimeRunMicrotestJson(sessionId, args, &errorCode, &errorMessage);
+      } else {
+        auto appIds = PlatformSmokeAppIdsFromArgs(args, &errorCode, &errorMessage);
+        if (!appIds.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"invalid_request" : errorCode, errorMessage.empty() ? L"platform.run_platform_smoke requires spec or smokePath" : errorMessage, 400);
+          return;
+        }
+        for (auto const& appId : appIds.value()) {
+          if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+            SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+            return;
+          }
+        }
+        result = PlatformRunSmokeJson(sessionId, args, &errorCode, &errorMessage);
+      }
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"invalid_request" : errorCode, errorMessage.empty() ? L"Windows static test runner failed" : errorMessage, errorCode == L"sqlite_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.screenshot" ||

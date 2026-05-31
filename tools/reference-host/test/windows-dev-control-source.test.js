@@ -89,6 +89,12 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.timer_advance",
     "runtime.assert_visible",
     "runtime.assert_text",
+    "runtime.accessibility_snapshot",
+    "runtime.run_accessibility_audit",
+    "runtime.assert_accessibility",
+    "runtime.run_smoke_tests",
+    "runtime.run_microtest",
+    "platform.run_platform_smoke",
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
@@ -115,6 +121,12 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "RuntimeTimerAdvanceJson",
     "RuntimeAssertVisibleJson",
     "RuntimeAssertTextJson",
+    "RuntimeAccessibilitySnapshotJson",
+    "RuntimeAccessibilityAuditJson",
+    "RuntimeAssertAccessibilityJson",
+    "RuntimeRunSmokeTestsJson",
+    "RuntimeRunMicrotestJson",
+    "PlatformRunSmokeJson",
     "BundledWebappJson",
     "BundledManifest",
     "RuntimeResourceRoot",
@@ -157,6 +169,8 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "PlatformCreateSnapshotJson",
     "PlatformRestoreSnapshotJson",
     "RuntimeCompareSnapshotJson",
+    "EvaluateMicrotestSpecJson",
+    "RecordTestRun",
     "RecordControlStorageBridgeCall",
     "SnapshotStorageRowsJson",
     "db.export_backup",
@@ -238,6 +252,72 @@ test("Windows dev control supports static runtime UI controls over bundled app H
     "sha256:",
   ]) {
     assert.equal(control.includes(snippet), true, `Windows static UI control source should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control supports static accessibility controls over bundled app HTML", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "runtime.accessibility_snapshot",
+    "runtime.run_accessibility_audit",
+    "runtime.assert_accessibility",
+    "RuntimeAccessibilitySnapshotJson",
+    "RuntimeAccessibilityAuditJson",
+    "RuntimeAssertAccessibilityJson",
+    "AccessibilityControls",
+    "AccessibilityControlsJson",
+    "AccessibilityHeadingsJson",
+    "AccessibilityFailsRule",
+    "document_title",
+    "main_landmark",
+    "screen_title",
+    "no_unlabeled_controls",
+    "Accessibility appId is not a valid generated app id",
+    "accessibility_failed",
+    "Accessibility assertion failed",
+    "ControlSessionAllowsApp",
+    "HtmlForBundledApp(appId)",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows accessibility control source should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control supports static smoke, micro-test, and platform smoke runners", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "runtime.run_smoke_tests",
+    "runtime.run_microtest",
+    "platform.run_platform_smoke",
+    "RuntimeRunSmokeTestsJson",
+    "EvaluateSmokeTestsJson",
+    "RuntimeRunMicrotestJson",
+    "EvaluateMicrotestSpecJson",
+    "PlatformRunSmokeJson",
+    "RecordTestRun",
+    "ControlSpecJson",
+    "MicrotestTargetAppIdFromArgs",
+    "PlatformSmokeAppIdsFromArgs",
+    "INSERT INTO micro_tests",
+    "ON CONFLICT(micro_test_id) DO UPDATE",
+    "INSERT INTO test_runs",
+    "smoke-tests.json",
+    "windows-static-smoke",
+    "windows-static-microtest",
+    "windows-static-platform-smoke",
+    "bridge.call_missing",
+    "selector.not_found",
+    "text.not_found",
+    "runtime.run_smoke_tests requires appId",
+    "runtime.run_microtest requires spec or microtestPath",
+    "platform.run_platform_smoke requires spec or smokePath",
+    "platform.run_platform_smoke requires an apps array",
+    "platform.run_platform_smoke apps must be generated app ids",
+    "Micro-test must target at least one app",
+    "ControlSessionAllowsApp",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows static test-runner source should contain ${snippet}`);
   }
 });
 
