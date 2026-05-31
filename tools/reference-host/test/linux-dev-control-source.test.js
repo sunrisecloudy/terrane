@@ -62,6 +62,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.core_snapshot",
+    "runtime.replay_events",
+    "runtime.assert_core_action",
     "platform.list_targets",
     "platform.list_webapps",
     "runtime.resource_usage",
@@ -249,6 +252,39 @@ test("Linux dev control exposes DB-backed runtime resource and log inspection co
     "control_session_allows_app",
   ]) {
     assert.equal(control.includes(snippet), true, `Linux runtime inspection source should contain ${snippet}`);
+  }
+});
+
+test("Linux dev control supports core replay, snapshots, and action assertions", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.core_snapshot",
+    "runtime.replay_events",
+    "runtime.assert_core_action",
+    "runtime_core_snapshot_json",
+    "runtime_replay_events_json",
+    "runtime_assert_core_action_json",
+    "runtime.core_snapshot requires appId",
+    "runtime.replay_events requires appId",
+    "runtime.replay_events events must be an array",
+    "runtime.assert_core_action requires appId",
+    "runtime.assert_core_action type must be a string",
+    "runtime.assert_core_action match must be an object",
+    "core_action.not_found",
+    "Expected core action was not found",
+    "json_node_matches_subset",
+    "append_core_event_snapshot_rows",
+    "append_core_action_rows",
+    "core_state_version",
+    "SELECT action_json FROM core_actions WHERE app_id = ? ORDER BY created_at",
+    "ZigCoreBridge replay_core",
+    "zig_core_bridge_init(&replay_core)",
+    "zig_core_bridge_step(&replay_core",
+    "control_replay_",
+    "linux-control-replay",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux core control source should contain ${snippet}`);
   }
 });
 

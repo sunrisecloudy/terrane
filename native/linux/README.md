@@ -51,7 +51,7 @@ The Linux host can be built and smoke-tested from any Docker-capable development
 node --no-warnings tools/run-linux-native-docker.mjs
 ```
 
-The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke, token-gated target/webapp listing smoke, safe DB inspection smoke, direct storage get/set/assert/reset controls, DB-backed network/dialog mock bridge calls, arbitrary-SQL rejection check, and release-build production-guard audit check:
+The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke, token-gated target/webapp listing smoke, safe DB inspection smoke, direct storage get/set/assert/reset controls, DB-backed core replay/snapshot/action assertions, DB-backed network/dialog mock bridge calls, arbitrary-SQL rejection check, and release-build production-guard audit check:
 
 ```sh
 NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js
@@ -81,7 +81,7 @@ This host must support a dev/test-only control plane for Codex micro-testing.
 
 Required behavior:
 
-- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, `platform.health`, `platform.list_targets`, `platform.list_webapps`, direct storage get/set/assert/reset controls, DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.network_mock_set`, `runtime.network_mock_reset`, and `runtime.dialog_mock_set`, permission-checked `runtime.call_bridge` / `runtime.core_step` session commands through the native bridge, and safe `db.snapshot` plus fixed `db.query_*` inspection commands without arbitrary SQL.
+- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, `platform.health`, `platform.list_targets`, `platform.list_webapps`, direct storage get/set/assert/reset controls, DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.network_mock_set`, `runtime.network_mock_reset`, `runtime.dialog_mock_set`, `runtime.core_snapshot`, `runtime.replay_events`, and `runtime.assert_core_action`, permission-checked `runtime.call_bridge` / `runtime.core_step` session commands through the native bridge, and safe `db.snapshot` plus fixed `db.query_*` inspection commands without arbitrary SQL.
 - Require a random control token. Linux writes it to `$XDG_RUNTIME_DIR/native-ai-webapp/control.token` unless `PLATFORM_CONTROL_TOKEN_FILE` is set.
 - Expose host/runtime/session state through the control protocol and route bridge-driving session commands through the same manifest-derived sandbox context as the WebKit runtime.
 - Route UI control, bridge inspection, storage mocks, network mocks, dialog mocks, and replay operations to the runtime.

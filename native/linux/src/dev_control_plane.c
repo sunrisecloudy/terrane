@@ -87,6 +87,35 @@ static gchar *json_node_to_text(JsonNode *node) {
   return text;
 }
 
+static gboolean json_node_matches_subset(JsonNode *actual, JsonNode *expected) {
+  if (actual == NULL || expected == NULL) {
+    return actual == expected;
+  }
+  if (!JSON_NODE_HOLDS_OBJECT(expected)) {
+    g_autofree gchar *actual_text = json_node_to_text(actual);
+    g_autofree gchar *expected_text = json_node_to_text(expected);
+    return g_strcmp0(actual_text, expected_text) == 0;
+  }
+  if (!JSON_NODE_HOLDS_OBJECT(actual)) {
+    return FALSE;
+  }
+
+  JsonObject *actual_object = json_node_get_object(actual);
+  JsonObject *expected_object = json_node_get_object(expected);
+  GList *members = json_object_get_members(expected_object);
+  gboolean matches = TRUE;
+  for (GList *item = members; item != NULL; item = item->next) {
+    const gchar *member = item->data;
+    if (!json_object_has_member(actual_object, member) ||
+        !json_node_matches_subset(json_object_get_member(actual_object, member), json_object_get_member(expected_object, member))) {
+      matches = FALSE;
+      break;
+    }
+  }
+  g_list_free(members);
+  return matches;
+}
+
 static gchar *json_builder_to_text(JsonBuilder *builder) {
   JsonNode *root = json_builder_get_root(builder);
   gchar *text = json_node_to_text(root);
@@ -1369,6 +1398,292 @@ static void append_core_event_rows(JsonBuilder *builder, sqlite3 *db, const gcha
   json_builder_end_array(builder);
 }
 
+static void append_core_event_snapshot_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id) {
+  const gchar *sql =
+      "SELECT event_id, session_id, app_id, install_id, state_version_before, event_json, created_at "
+      "FROM core_events WHERE app_id = ? ORDER BY created_at";
+  sqlite3_stmt *statement = NULL;
+  json_builder_begin_array(builder);
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK) {
+    bind_text(statement, 1, app_id);
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      const gchar *event_json = (const gchar *)sqlite3_column_text(statement, 5);
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "eventId");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
+      json_builder_set_member_name(builder, "sessionId");
+      sqlite3_column_text(statement, 1) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 1));
+      json_builder_set_member_name(builder, "appId");
+      sqlite3_column_text(statement, 2) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 2));
+      json_builder_set_member_name(builder, "installId");
+      sqlite3_column_text(statement, 3) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 3));
+      json_builder_set_member_name(builder, "stateVersionBefore");
+      sqlite3_column_type(statement, 4) == SQLITE_NULL ? json_builder_add_null_value(builder) : json_builder_add_int_value(builder, sqlite3_column_int64(statement, 4));
+      json_builder_set_member_name(builder, "eventJson");
+      event_json == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, event_json);
+      json_builder_set_member_name(builder, "event");
+      json_builder_add_json_text_or_null(builder, event_json);
+      json_builder_set_member_name(builder, "createdAt");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 6));
+      json_builder_end_object(builder);
+    }
+  }
+  sqlite3_finalize(statement);
+  json_builder_end_array(builder);
+}
+
+static void append_core_action_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id) {
+  const gchar *sql =
+      "SELECT action_id, event_id, session_id, app_id, action_json, created_at "
+      "FROM core_actions WHERE app_id = ? ORDER BY created_at";
+  sqlite3_stmt *statement = NULL;
+  json_builder_begin_array(builder);
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK) {
+    bind_text(statement, 1, app_id);
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      const gchar *action_json = (const gchar *)sqlite3_column_text(statement, 4);
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "actionId");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
+      json_builder_set_member_name(builder, "eventId");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 1));
+      json_builder_set_member_name(builder, "sessionId");
+      sqlite3_column_text(statement, 2) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 2));
+      json_builder_set_member_name(builder, "appId");
+      sqlite3_column_text(statement, 3) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 3));
+      json_builder_set_member_name(builder, "actionJson");
+      action_json == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, action_json);
+      json_builder_set_member_name(builder, "action");
+      json_builder_add_json_text_or_null(builder, action_json);
+      json_builder_set_member_name(builder, "createdAt");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 5));
+      json_builder_end_object(builder);
+    }
+  }
+  sqlite3_finalize(statement);
+  json_builder_end_array(builder);
+}
+
+static gint64 core_state_version(sqlite3 *db, const gchar *app_id) {
+  sqlite3_stmt *statement = NULL;
+  gint64 state_version = 0;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?",
+          -1,
+          &statement,
+          NULL) == SQLITE_OK) {
+    bind_text(statement, 1, app_id);
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      state_version = sqlite3_column_int64(statement, 0);
+    }
+  }
+  sqlite3_finalize(statement);
+  return state_version;
+}
+
+static gchar *runtime_core_snapshot_json(DevControlPlane *plane, const gchar *app_id, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "stateVersion");
+  json_builder_add_int_value(builder, core_state_version(db, app_id));
+  json_builder_set_member_name(builder, "coreEvents");
+  append_core_event_snapshot_rows(builder, db, app_id);
+  json_builder_set_member_name(builder, "coreActions");
+  append_core_action_rows(builder, db, app_id);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  platform_database_close(db);
+  return text;
+}
+
+static gchar *runtime_assert_core_action_json(
+    DevControlPlane *plane,
+    const gchar *app_id,
+    const gchar *expected_type,
+    JsonNode *expected_match,
+    JsonNode *expected_action,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql = "SELECT action_json FROM core_actions WHERE app_id = ? ORDER BY created_at";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not read core action rows");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    platform_database_close(db);
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "count");
+  gint64 count = 0;
+  JsonBuilder *actions_builder = json_builder_new();
+  json_builder_begin_array(actions_builder);
+
+  bind_text(statement, 1, app_id);
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    const gchar *action_json = (const gchar *)sqlite3_column_text(statement, 0);
+    if (action_json == NULL) {
+      continue;
+    }
+    JsonParser *action_parser = json_parser_new();
+    if (!json_parser_load_from_data(action_parser, action_json, -1, NULL)) {
+      g_object_unref(action_parser);
+      continue;
+    }
+    JsonNode *action_node = json_parser_get_root(action_parser);
+    JsonObject *action_object = action_node != NULL && JSON_NODE_HOLDS_OBJECT(action_node) ? json_node_get_object(action_node) : NULL;
+    gboolean matches = action_object != NULL;
+    if (matches && expected_type != NULL) {
+      JsonNode *type_node = json_object_get_member(action_object, "type");
+      matches = type_node != NULL &&
+          JSON_NODE_HOLDS_VALUE(type_node) &&
+          json_node_get_value_type(type_node) == G_TYPE_STRING &&
+          g_strcmp0(json_node_get_string(type_node), expected_type) == 0;
+    }
+    if (matches && expected_action != NULL) {
+      matches = json_node_matches_subset(action_node, expected_action) && json_node_matches_subset(expected_action, action_node);
+    }
+    if (matches && expected_match != NULL) {
+      matches = json_node_matches_subset(action_node, expected_match);
+    }
+    if (matches) {
+      count++;
+      json_builder_add_value(actions_builder, json_node_copy(action_node));
+    }
+    g_object_unref(action_parser);
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+
+  json_builder_end_array(actions_builder);
+  JsonNode *actions_node = json_builder_get_root(actions_builder);
+  json_builder_add_int_value(builder, count);
+  json_builder_set_member_name(builder, "actions");
+  json_builder_add_value(builder, actions_node);
+  json_builder_end_object(builder);
+  g_object_unref(actions_builder);
+
+  if (count == 0) {
+    g_object_unref(builder);
+    *error_code = g_strdup("core_action.not_found");
+    *error_message = g_strdup("Expected core action was not found");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static JsonObject *core_replay_params_for_event(JsonNode *event_node) {
+  JsonObject *params = json_object_new();
+  json_object_set_member(params, "event", json_node_copy(event_node));
+  return params;
+}
+
+static gchar *runtime_replay_events_json(const gchar *app_id, JsonArray *events) {
+  ZigCoreBridge replay_core = {0};
+  zig_core_bridge_init(&replay_core);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "replay");
+  json_builder_begin_array(builder);
+
+  for (guint index = 0; index < json_array_get_length(events); index++) {
+    JsonNode *event_node = json_array_get_element(events, index);
+    JsonObject *params = core_replay_params_for_event(event_node);
+    BridgeRequest request = {0};
+    request.has_id = TRUE;
+    request.id = g_strdup_printf("control_replay_%u", index);
+    request.method = g_strdup("core.step");
+    request.params = params;
+    request.context.app_id = g_strdup(app_id);
+    request.context.storage_prefix = g_strdup_printf("%s:", app_id);
+    request.context.approved_permissions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    g_hash_table_add(request.context.approved_permissions, g_strdup("core.step"));
+    request.context.mount_token = g_strdup("linux-control-replay");
+
+    JsonNode *response = zig_core_bridge_step(&replay_core, &request);
+    JsonObject *response_object = response != NULL && JSON_NODE_HOLDS_OBJECT(response) ? json_node_get_object(response) : NULL;
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "index");
+    json_builder_add_int_value(builder, index);
+    json_builder_set_member_name(builder, "event");
+    json_builder_add_value(builder, json_node_copy(event_node));
+    json_builder_set_member_name(builder, "result");
+    if (response_object != NULL && json_object_has_member(response_object, "result")) {
+      json_builder_add_value(builder, json_node_copy(json_object_get_member(response_object, "result")));
+    } else {
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "ok");
+      json_builder_add_boolean_value(builder, FALSE);
+      json_builder_set_member_name(builder, "error");
+      if (response_object != NULL && json_object_has_member(response_object, "error")) {
+        json_builder_add_value(builder, json_node_copy(json_object_get_member(response_object, "error")));
+      } else {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "code");
+        json_builder_add_string_value(builder, "core_error");
+        json_builder_set_member_name(builder, "message");
+        json_builder_add_string_value(builder, "Replay event failed");
+        json_builder_set_member_name(builder, "details");
+        json_builder_begin_object(builder);
+        json_builder_end_object(builder);
+        json_builder_end_object(builder);
+      }
+      json_builder_set_member_name(builder, "actions");
+      json_builder_begin_array(builder);
+      json_builder_end_array(builder);
+      json_builder_end_object(builder);
+    }
+    json_builder_end_object(builder);
+
+    if (response != NULL) {
+      json_node_unref(response);
+    }
+    bridge_request_clear(&request);
+  }
+
+  json_builder_end_array(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  zig_core_bridge_clear(&replay_core);
+  return text;
+}
+
 static void append_console_log_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id) {
   const gchar *sql = app_id == NULL
       ? "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at LIMIT 100"
@@ -2516,6 +2831,106 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", error != NULL ? error->message : "Runtime effect mock command failed", SOUP_STATUS_BAD_REQUEST);
       g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.core_snapshot") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.core_snapshot requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.core_snapshot requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_core_snapshot_json(plane, app_id, &error);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not read core snapshot", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.replay_events") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.replay_events requires appId and events", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.replay_events requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    JsonNode *events_node = json_object_get_member(args, "events");
+    if (events_node == NULL || !JSON_NODE_HOLDS_ARRAY(events_node)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.replay_events events must be an array", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_replay_events_json(app_id, json_node_get_array(events_node));
+  } else if (g_strcmp0(tool, "runtime.assert_core_action") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_core_action requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_core_action requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *expected_type = NULL;
+    if (json_object_has_member(args, "type")) {
+      JsonNode *type_node = json_object_get_member(args, "type");
+      if (type_node == NULL || !JSON_NODE_HOLDS_VALUE(type_node) || json_node_get_value_type(type_node) != G_TYPE_STRING || json_node_get_string(type_node)[0] == '\0') {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_core_action type must be a string", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+      expected_type = json_node_get_string(type_node);
+    }
+    JsonNode *expected_match = json_object_has_member(args, "match") ? json_object_get_member(args, "match") : NULL;
+    if (expected_match != NULL && !JSON_NODE_HOLDS_OBJECT(expected_match)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_core_action match must be an object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    JsonNode *expected_action = json_object_has_member(args, "action") ? json_object_get_member(args, "action") : NULL;
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_assert_core_action_json(plane, app_id, expected_type, expected_match, expected_action, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "core_action.not_found", error_message != NULL ? error_message : "Expected core action was not found", error_status);
       return;
     }
   } else if (g_strcmp0(tool, "runtime.core_step") == 0) {

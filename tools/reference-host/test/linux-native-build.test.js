@@ -396,6 +396,51 @@ test(
       assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Toast"), true);
       assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Log"), true);
 
+      const replayEvents = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.replay_events",
+          args: {
+            appId: "task-workbench",
+            events: [{ type: "CreateTask", payload: { title: "Linux replay task" } }],
+          },
+        },
+      });
+      assert.equal(replayEvents.statusCode, 200, replayEvents.body);
+      const replayEventsBody = JSON.parse(replayEvents.body);
+      assert.equal(replayEventsBody.result.ok, true);
+      assert.equal(replayEventsBody.result.appId, "task-workbench");
+      assert.equal(replayEventsBody.result.replay[0].index, 0);
+      assert.equal(replayEventsBody.result.replay[0].event.payload.title, "Linux replay task");
+      assert.equal(replayEventsBody.result.replay[0].result.ok, true);
+      assert.equal(replayEventsBody.result.replay[0].result.actions.some((action) => action.type === "Toast"), true);
+
+      const coreSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.core_snapshot", args: { appId: "task-workbench" } },
+      });
+      assert.equal(coreSnapshot.statusCode, 200, coreSnapshot.body);
+      const coreSnapshotBody = JSON.parse(coreSnapshot.body);
+      assert.equal(coreSnapshotBody.result.appId, "task-workbench");
+      assert.equal(Array.isArray(coreSnapshotBody.result.coreEvents), true);
+      assert.equal(Array.isArray(coreSnapshotBody.result.coreActions), true);
+      assert.equal(coreSnapshotBody.result.coreActions.some((row) => row.action?.type === "Toast"), true);
+
+      const coreActionAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.assert_core_action",
+          args: { appId: "task-workbench", type: "Toast", match: { level: "success" } },
+        },
+      });
+      assert.equal(coreActionAssert.statusCode, 200, coreActionAssert.body);
+      const coreActionAssertBody = JSON.parse(coreActionAssert.body);
+      assert.equal(coreActionAssertBody.result.ok, true);
+      assert.equal(coreActionAssertBody.result.actions.some((action) => action.type === "Toast"), true);
+
       const appLog = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -675,6 +720,30 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedReplayEventsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.replay_events' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedCoreSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.core_snapshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedCoreActionAssertCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_core_action' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedDbSnapshotCount = execFileSync(
         "sqlite3",
         [
@@ -806,6 +875,9 @@ test(
       assert.equal(Number(sessionAuditCount) >= 8, true);
       assert.equal(Number(acceptedCallBridgeCount) >= 4, true);
       assert.equal(Number(acceptedCoreStepCount) >= 1, true);
+      assert.equal(Number(acceptedReplayEventsCount) >= 1, true);
+      assert.equal(Number(acceptedCoreSnapshotCount) >= 1, true);
+      assert.equal(Number(acceptedCoreActionAssertCount) >= 1, true);
       assert.equal(Number(acceptedDbSnapshotCount) >= 1, true);
       assert.equal(Number(acceptedDbStorageCount) >= 1, true);
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
