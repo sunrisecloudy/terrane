@@ -1,0 +1,46 @@
+{
+  "id": "req_network_path_prefix_denied",
+  "context": {
+    "appId": "api-dashboard"
+  },
+  "preconditions": {
+    "manifestPatch": {
+      "networkPolicy": {
+        "allow": [
+          {
+            "origin": "https://api.example.com",
+            "methods": [
+              "GET"
+            ],
+            "pathPrefix": "/v1/",
+            "allowedHeaders": [],
+            "maxRequestBytes": 65536,
+            "maxResponseBytes": 1048576,
+            "timeoutMs": 10000
+          }
+        ]
+      }
+    }
+  },
+  "method": "network.request",
+  "params": {
+    "url": "https://api.example.com/status",
+    "method": "GET",
+    "headers": {},
+    "body": null
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": false,
+    "errorCode": "network_policy_denied"
+  },
+  "platforms": [
+    "reference-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
+}

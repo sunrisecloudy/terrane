@@ -12,6 +12,7 @@ namespace nativeai {
 struct NetworkPolicyRule {
   std::wstring origin;
   std::set<std::wstring> methods;
+  std::wstring pathPrefix;
   std::set<std::wstring> allowedHeaders;
   uint32_t maxRequestBytes = 0;
   uint32_t maxResponseBytes = 0;

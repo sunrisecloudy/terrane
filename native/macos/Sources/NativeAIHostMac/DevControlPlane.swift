@@ -3004,7 +3004,7 @@ final class DevControlPlane: @unchecked Sendable {
         guard let bodyBytes = bodyByteCount(request.params["body"]) else {
             return .failure(id: request.id, code: "invalid_request", message: "network.request body must be a string or null")
         }
-        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, headers: Array(headers.keys)) }) else {
+        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, path: PlatformNetwork.path(for: url), headers: Array(headers.keys)) }) else {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
         }
         if bodyBytes > rule.maxRequestBytes {

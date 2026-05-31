@@ -51,6 +51,7 @@ void network_policy_rule_free(gpointer data) {
     return;
   }
   g_clear_pointer(&rule->origin, g_free);
+  g_clear_pointer(&rule->path_prefix, g_free);
   if (rule->methods != NULL) {
     g_hash_table_unref(rule->methods);
   }

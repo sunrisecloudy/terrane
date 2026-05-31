@@ -25,7 +25,8 @@ final class PlatformNetwork {
             return .failure(id: request.id, code: "invalid_request", message: "network.request body must be a string or null")
         }
 
-        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, headers: Array(headers.keys)) }) else {
+        let path = Self.path(for: url)
+        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, path: path, headers: Array(headers.keys)) }) else {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
         }
         if let bodyData, bodyData.count > rule.maxRequestBytes {
@@ -113,6 +114,10 @@ final class PlatformNetwork {
             return "\(scheme)://\(host):\(port)"
         }
         return "\(scheme)://\(host)"
+    }
+
+    fileprivate static func path(for url: URL) -> String {
+        url.path.isEmpty ? "/" : url.path
     }
 
     private static func headers(from value: Any?) -> [String: String]? {
@@ -268,13 +273,17 @@ final class PlatformNetwork {
 struct NetworkPolicyRule {
     let origin: String
     let methods: Set<String>
+    let pathPrefix: String?
     let allowedHeaders: Set<String>
     let maxRequestBytes: Int
     let maxResponseBytes: Int
     let timeoutMs: Int
 
-    func allows(origin: String, method: String, headers: [String]) -> Bool {
+    func allows(origin: String, method: String, path: String, headers: [String]) -> Bool {
         guard self.origin == origin, methods.contains(method) else {
+            return false
+        }
+        if let pathPrefix, !path.hasPrefix(pathPrefix) {
             return false
         }
         for header in headers {
@@ -302,6 +311,7 @@ struct NetworkPolicyRule {
             return NetworkPolicyRule(
                 origin: origin,
                 methods: methods,
+                pathPrefix: raw["pathPrefix"] as? String,
                 allowedHeaders: allowedHeaders,
                 maxRequestBytes: raw["maxRequestBytes"] as? Int ?? 0,
                 maxResponseBytes: raw["maxResponseBytes"] as? Int ?? 0,
@@ -339,7 +349,7 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
         guard let url = request.url,
               let origin = PlatformNetwork.origin(for: url),
               !(denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host)),
-              policy.contains(where: { $0.allows(origin: origin, method: method, headers: headers) })
+              policy.contains(where: { $0.allows(origin: origin, method: method, path: PlatformNetwork.path(for: url), headers: headers) })
         else {
             state.markDenied()
             completionHandler(nil)

@@ -98,6 +98,62 @@ test("network policy denies private network targets by default unless explicitly
   }
 });
 
+test("network policy enforces allow pathPrefix for requests and redirects", async () => {
+  const host = new ReferenceHost();
+  try {
+    host.installPackage(pathPrefixPackage());
+    host.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://api.example.com/v1/status",
+      response: { status: 200, headers: {}, bodyText: "ok" },
+    });
+    host.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://api.example.com/v1/redirect",
+      response: { status: 302, headers: { location: "https://api.example.com/status" }, bodyText: "" },
+    });
+    host.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://api.example.com/v1/relative-start",
+      response: { status: 302, headers: { location: "details" }, bodyText: "" },
+    });
+    host.database.addNetworkMock({
+      appId: "api-dashboard",
+      method: "GET",
+      urlPattern: "https://api.example.com/v1/protocol-relative",
+      response: { status: 302, headers: { location: "//other.example.com/v1/final" }, bodyText: "" },
+    });
+
+    const allowed = await networkRequest(host, { url: "https://api.example.com/v1/status" });
+    assert.equal(allowed.ok, true);
+    assert.equal(allowed.result.status, 200);
+    assert.equal(allowed.result.bodyText, "ok");
+
+    const denied = await networkRequest(host, { url: "https://api.example.com/status" });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error.code, "network_policy_denied");
+
+    const redirected = await networkRequest(host, { url: "https://api.example.com/v1/redirect" });
+    assert.equal(redirected.ok, false);
+    assert.equal(redirected.error.code, "network_policy_denied");
+    assert.equal(redirected.error.message, "network.response redirect is outside manifest.networkPolicy");
+
+    const relativeRedirect = await networkRequest(host, { url: "https://api.example.com/v1/relative-start" });
+    assert.equal(relativeRedirect.ok, true);
+    assert.equal(relativeRedirect.result.status, 302);
+
+    const protocolRelativeRedirect = await networkRequest(host, { url: "https://api.example.com/v1/protocol-relative" });
+    assert.equal(protocolRelativeRedirect.ok, false);
+    assert.equal(protocolRelativeRedirect.error.code, "network_policy_denied");
+    assert.equal(protocolRelativeRedirect.error.details.origin, "https://other.example.com");
+  } finally {
+    host.close();
+  }
+});
+
 test("network policy rejects oversized responses, disallowed redirects, and timeouts", async () => {
   const host = new ReferenceHost();
   try {
@@ -156,6 +212,28 @@ async function networkRequest(host, patch) {
     },
     { appId: "api-dashboard" },
   );
+}
+
+function pathPrefixPackage() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "path-prefix-package-"));
+  fs.cpSync(path.join(examplesDir, "api-dashboard"), dir, { recursive: true });
+  const manifestPath = path.join(dir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.networkPolicy = {
+    allow: [
+      {
+        origin: "https://api.example.com",
+        methods: ["GET"],
+        pathPrefix: "/v1/",
+        allowedHeaders: [],
+        maxRequestBytes: 65536,
+        maxResponseBytes: 1048576,
+        timeoutMs: 10000,
+      },
+    ],
+  };
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return dir;
 }
 
 function privateNetworkPackage({ denyPrivateNetwork } = {}) {

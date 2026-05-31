@@ -74,6 +74,14 @@ static gchar *origin_for_uri(GUri *uri) {
   return g_strdup_printf("%s://%s", scheme, lower_host);
 }
 
+static gchar *path_for_uri(GUri *uri) {
+  const gchar *path = g_uri_get_path(uri);
+  if (path == NULL || *path == '\0') {
+    return g_strdup("/");
+  }
+  return g_strdup(path);
+}
+
 static GHashTable *request_headers(JsonObject *params, gboolean *valid) {
   *valid = TRUE;
   GHashTable *headers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -112,8 +120,12 @@ static RequestBody request_body(JsonObject *params) {
   return (RequestBody){.valid = TRUE, .bytes = g_strdup(text), .len = strlen(text)};
 }
 
-static gboolean rule_allows(NetworkPolicyRule *rule, const gchar *origin, const gchar *method, GHashTable *headers) {
+static gboolean rule_allows(NetworkPolicyRule *rule, const gchar *origin, const gchar *method, const gchar *path, GHashTable *headers) {
   if (g_strcmp0(rule->origin, origin) != 0 || !g_hash_table_contains(rule->methods, method)) {
+    return FALSE;
+  }
+  if (rule->path_prefix != NULL && rule->path_prefix[0] != '\0' &&
+      !g_str_has_prefix(path == NULL || *path == '\0' ? "/" : path, rule->path_prefix)) {
     return FALSE;
   }
   GHashTableIter iter;
@@ -128,13 +140,13 @@ static gboolean rule_allows(NetworkPolicyRule *rule, const gchar *origin, const 
   return TRUE;
 }
 
-static NetworkPolicyRule *find_rule(GPtrArray *rules, const gchar *origin, const gchar *method, GHashTable *headers) {
+static NetworkPolicyRule *find_rule(GPtrArray *rules, const gchar *origin, const gchar *method, const gchar *path, GHashTable *headers) {
   if (rules == NULL) {
     return NULL;
   }
   for (guint index = 0; index < rules->len; ++index) {
     NetworkPolicyRule *rule = g_ptr_array_index(rules, index);
-    if (rule_allows(rule, origin, method, headers)) {
+    if (rule_allows(rule, origin, method, path, headers)) {
       return rule;
     }
   }
@@ -163,21 +175,13 @@ static gchar *absolute_redirect_url(const gchar *current_url, const gchar *locat
   if (location == NULL || *location == '\0') {
     return NULL;
   }
-  if (g_str_has_prefix(location, "http://") || g_str_has_prefix(location, "https://")) {
-    return g_strdup(location);
+  GError *error = NULL;
+  gchar *resolved = g_uri_resolve_relative(current_url, location, G_URI_FLAGS_NONE, &error);
+  if (resolved == NULL) {
+    g_clear_error(&error);
+    return NULL;
   }
-  if (g_str_has_prefix(location, "/")) {
-    GError *error = NULL;
-    GUri *uri = g_uri_parse(current_url, G_URI_FLAGS_NONE, &error);
-    if (uri == NULL) {
-      g_clear_error(&error);
-      return NULL;
-    }
-    g_autofree gchar *origin = origin_for_uri(uri);
-    g_uri_unref(uri);
-    return origin == NULL ? NULL : g_strconcat(origin, location, NULL);
-  }
-  return NULL;
+  return resolved;
 }
 
 static gboolean parse_ipv4_host(const gchar *host, guint8 octets[4]) {
@@ -372,6 +376,7 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     return network_failure(request, "invalid_request", "network.request requires an absolute http or https url");
   }
   g_autofree gchar *origin = origin_for_uri(uri);
+  g_autofree gchar *path = path_for_uri(uri);
   gboolean private_denied = request->context.deny_private_network && is_private_network_host(g_uri_get_host(uri));
   g_uri_unref(uri);
   if (origin == NULL) {
@@ -397,7 +402,7 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     return network_failure(request, "invalid_request", "network.request body must be a string or null");
   }
 
-  NetworkPolicyRule *rule = find_rule(request->context.network_policy, origin, method, headers);
+  NetworkPolicyRule *rule = find_rule(request->context.network_policy, origin, method, path, headers);
   if (rule == NULL) {
     g_free(body.bytes);
     g_hash_table_unref(headers);
@@ -472,11 +477,12 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
       }
       GUri *next_uri = g_uri_parse(next_url, G_URI_FLAGS_NONE, NULL);
       g_autofree gchar *next_origin = next_uri == NULL ? NULL : origin_for_uri(next_uri);
+      g_autofree gchar *next_path = next_uri == NULL ? NULL : path_for_uri(next_uri);
       gboolean next_private_denied = request->context.deny_private_network && next_uri != NULL && is_private_network_host(g_uri_get_host(next_uri));
       if (next_uri != NULL) {
         g_uri_unref(next_uri);
       }
-      NetworkPolicyRule *next_rule = next_origin == NULL ? NULL : find_rule(request->context.network_policy, next_origin, method, headers);
+      NetworkPolicyRule *next_rule = next_origin == NULL ? NULL : find_rule(request->context.network_policy, next_origin, method, next_path, headers);
       if (next_private_denied || next_rule == NULL) {
         g_free(body.bytes);
         g_hash_table_unref(headers);

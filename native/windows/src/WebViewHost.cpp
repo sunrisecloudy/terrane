@@ -1044,6 +1044,7 @@ std::vector<NetworkPolicyRule> WebViewHost::NetworkPolicyForApp(std::wstring con
     if (rule.origin.empty()) {
       continue;
     }
+    rule.pathPrefix = raw.GetNamedString(L"pathPrefix", L"").c_str();
     for (auto const& method : raw.GetNamedArray(L"methods", json::JsonArray())) {
       rule.methods.insert(ToUpper(std::wstring(method.GetString().c_str())));
     }

@@ -1260,7 +1260,7 @@ function checkNativeStatic() {
   if (macStorage.includes("appId(for:")) {
     throw new Error("macOS storage must not derive app id from storage key");
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed", "pathPrefix", "path: PlatformNetwork.path(for: url)"]) {
     if (!macNetwork.includes(snippet)) {
       throw new Error(`macOS network missing policy enforcement: ${snippet}`);
     }
@@ -1302,9 +1302,9 @@ function checkNativeStatic() {
       throw new Error(`macOS core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["mockedNetworkRequestTimeoutMs", "effectiveMockedNetworkTimeoutMs", "network.request timed out", '"delayMs": delayMs']) {
+  for (const snippet of ["mockedNetworkRequestTimeoutMs", "effectiveMockedNetworkTimeoutMs", "network.request timed out", '"delayMs": delayMs', "path: PlatformNetwork.path(for: url)"]) {
     if (!macDevControl.includes(snippet)) {
-      throw new Error(`macOS dev-control network mocks missing fake-host timeout parity: ${snippet}`);
+      throw new Error(`macOS dev-control network mocks missing reference-host timeout parity: ${snippet}`);
     }
   }
   for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
@@ -1386,7 +1386,7 @@ function checkNativeStatic() {
       throw new Error(`iOS bridge must not keep lenient request parsing: ${snippet}`);
     }
   }
-  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
+  for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed", "pathPrefix", "path: PlatformNetwork.path(for: url)"]) {
     if (!iosNetwork.includes(snippet)) {
       throw new Error(`iOS network missing policy enforcement: ${snippet}`);
     }
@@ -1465,6 +1465,7 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, "DenyPrivateNetworkForApp"],
+    [windowsHost, 'raw.GetNamedString(L"pathPrefix", L"")'],
     [windowsHost, ".networkPolicy"],
     [windowsHost, ".denyPrivateNetwork"],
     [windowsHost, "std::make_unique<WebBridge>(DatabasePath(), window)"],
@@ -1477,6 +1478,8 @@ function checkNativeStatic() {
     [windowsNetwork, "RequestedTimeoutMs"],
     [windowsNetwork, "network.request timeoutMs must be a positive integer"],
     [windowsNetwork, "EffectiveTimeoutMs"],
+    [windowsNetwork, "policyPath"],
+    [windowsNetwork, "rule.pathPrefix"],
     [windowsNetwork, "ERROR_WINHTTP_TIMEOUT"],
     [windowsNetwork, 'L"timeout"'],
   ];
@@ -1600,9 +1603,12 @@ function checkNativeStatic() {
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
+    [linuxHost, "pathPrefix"],
     [linuxNetwork, "requested_timeout_ms"],
     [linuxNetwork, "network.request timeoutMs must be a positive integer"],
     [linuxNetwork, "effective_timeout_ms"],
+    [linuxNetwork, "path_for_uri"],
+    [linuxNetwork, "rule->path_prefix"],
     [linuxNetwork, "RequestTimeout"],
     [linuxNetwork, "g_cond_wait_until"],
     [linuxNetwork, "g_cancellable_cancel"],
@@ -1732,7 +1738,7 @@ function checkNativeStatic() {
   if (androidDialogs.includes("is not implemented on Android yet") || androidBridge.includes('"dialog.openFile" to false')) {
     throw new Error("Android dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
+  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed", "pathPrefix", "path(nextUrl)"]) {
     if (!androidNetwork.includes(snippet)) {
       throw new Error(`Android network missing policy enforcement: ${snippet}`);
     }

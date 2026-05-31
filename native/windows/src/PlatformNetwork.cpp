@@ -21,6 +21,7 @@ struct ParsedUrl {
   std::wstring origin;
   std::wstring host;
   std::wstring path;
+  std::wstring policyPath;
   INTERNET_PORT port = 0;
   bool secure = false;
 };
@@ -88,10 +89,11 @@ std::optional<ParsedUrl> ParseUrl(std::wstring const& text) {
   }
 
   parsed.path.assign(components.lpszUrlPath, components.dwUrlPathLength);
-  parsed.path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
   if (parsed.path.empty()) {
     parsed.path = L"/";
   }
+  parsed.policyPath = parsed.path;
+  parsed.path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
   return parsed;
 }
 
@@ -136,8 +138,12 @@ bool RuleAllows(
     NetworkPolicyRule const& rule,
     std::wstring const& origin,
     std::wstring const& method,
+    std::wstring const& path,
     std::map<std::wstring, std::wstring> const& headers) {
   if (rule.origin != origin || !rule.methods.contains(method)) {
+    return false;
+  }
+  if (!rule.pathPrefix.empty() && path.rfind(rule.pathPrefix, 0) != 0) {
     return false;
   }
   for (auto const& [name, _] : headers) {
@@ -153,9 +159,10 @@ NetworkPolicyRule const* FindRule(
     std::vector<NetworkPolicyRule> const& rules,
     std::wstring const& origin,
     std::wstring const& method,
+    std::wstring const& path,
     std::map<std::wstring, std::wstring> const& headers) {
   for (auto const& rule : rules) {
-    if (RuleAllows(rule, origin, method, headers)) {
+    if (RuleAllows(rule, origin, method, path, headers)) {
       return &rule;
     }
   }
@@ -424,18 +431,80 @@ std::optional<std::wstring> ReadBody(HINTERNET request, uint32_t maxBytes, DWORD
   return Utf8ToWide(body);
 }
 
+std::wstring NormalizeRedirectPath(std::wstring const& path) {
+  std::vector<std::wstring> segments;
+  size_t start = 0;
+  while (start <= path.size()) {
+    size_t slash = path.find(L'/', start);
+    auto segment = path.substr(start, slash == std::wstring::npos ? std::wstring::npos : slash - start);
+    if (segment.empty() || segment == L".") {
+      // Skip empty and current-directory segments.
+    } else if (segment == L"..") {
+      if (!segments.empty()) {
+        segments.pop_back();
+      }
+    } else {
+      segments.push_back(segment);
+    }
+    if (slash == std::wstring::npos) {
+      break;
+    }
+    start = slash + 1;
+  }
+
+  std::wstring normalized = L"/";
+  for (size_t index = 0; index < segments.size(); ++index) {
+    if (index > 0) {
+      normalized += L"/";
+    }
+    normalized += segments[index];
+  }
+  if (!path.empty() && path.back() == L'/' && normalized.back() != L'/') {
+    normalized += L"/";
+  }
+  return normalized;
+}
+
+std::wstring BaseDirectoryPath(std::wstring const& path) {
+  if (path.empty() || path == L"/") {
+    return L"/";
+  }
+  if (path.back() == L'/') {
+    return path;
+  }
+  auto slash = path.find_last_of(L'/');
+  if (slash == std::wstring::npos || slash == 0) {
+    return L"/";
+  }
+  return path.substr(0, slash + 1);
+}
+
+std::wstring ResolveRedirectUrl(ParsedUrl const& current, std::wstring const& location) {
+  if (location.starts_with(L"http://") || location.starts_with(L"https://")) {
+    return location;
+  }
+  if (location.starts_with(L"//")) {
+    return std::wstring(current.secure ? L"https:" : L"http:") + location;
+  }
+  if (location.starts_with(L"/")) {
+    return current.origin + NormalizeRedirectPath(location);
+  }
+  if (location.starts_with(L"?") || location.starts_with(L"#")) {
+    return current.origin + current.policyPath + location;
+  }
+
+  auto suffixStart = location.find_first_of(L"?#");
+  auto relativePath = suffixStart == std::wstring::npos ? location : location.substr(0, suffixStart);
+  auto suffix = suffixStart == std::wstring::npos ? std::wstring() : location.substr(suffixStart);
+  return current.origin + NormalizeRedirectPath(BaseDirectoryPath(current.policyPath) + relativePath) + suffix;
+}
+
 std::optional<std::wstring> RedirectUrl(ParsedUrl const& current, HINTERNET request) {
   auto location = Header(request, WINHTTP_QUERY_LOCATION);
   if (!location.has_value() || location->empty()) {
     return std::nullopt;
   }
-  if (location->starts_with(L"http://") || location->starts_with(L"https://")) {
-    return location;
-  }
-  if (location->starts_with(L"/")) {
-    return current.origin + location.value();
-  }
-  return std::nullopt;
+  return ResolveRedirectUrl(current, location.value());
 }
 
 }  // namespace
@@ -463,7 +532,7 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
     return Failure(request, L"network_policy_denied", L"network.request private network targets are denied");
   }
 
-  auto rule = FindRule(request.context.networkPolicy, parsed->origin, method, headers.value());
+  auto rule = FindRule(request.context.networkPolicy, parsed->origin, method, parsed->policyPath, headers.value());
   if (rule == nullptr) {
     return Failure(request, L"network_policy_denied", L"network.request is not allowed by manifest.networkPolicy");
   }
@@ -517,7 +586,7 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
     if (status >= 300 && status < 400) {
       auto next = RedirectUrl(current, httpRequest.value);
       auto nextParsed = next.has_value() ? ParseUrl(next.value()) : std::nullopt;
-      auto nextRule = nextParsed.has_value() ? FindRule(request.context.networkPolicy, nextParsed->origin, method, headers.value()) : nullptr;
+      auto nextRule = nextParsed.has_value() ? FindRule(request.context.networkPolicy, nextParsed->origin, method, nextParsed->policyPath, headers.value()) : nullptr;
       if (!nextParsed.has_value() || (request.context.denyPrivateNetwork && IsPrivateNetworkHost(nextParsed->host)) || nextRule == nullptr) {
         return Failure(request, L"network_policy_denied", L"network.request redirect is not allowed by manifest.networkPolicy");
       }

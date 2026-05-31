@@ -6,6 +6,7 @@
 typedef struct {
   gchar *origin;
   GHashTable *methods;
+  gchar *path_prefix;
   GHashTable *allowed_headers;
   gsize max_request_bytes;
   gsize max_response_bytes;

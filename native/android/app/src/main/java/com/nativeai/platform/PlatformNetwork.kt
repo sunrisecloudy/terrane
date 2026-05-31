@@ -35,7 +35,8 @@ class PlatformNetwork {
         }
         val body = (bodyResult as NetworkBody.Valid).bytes
 
-        val rule = request.context.networkPolicy.firstOrNull { it.allows(origin, method, headers.keys) }
+        val path = path(url)
+        val rule = request.context.networkPolicy.firstOrNull { it.allows(origin, method, path, headers.keys) }
             ?: return BridgeResponse.failure(request.id, "network_policy_denied", "network.request is not allowed by manifest.networkPolicy").toString()
         if (body != null && body.size > rule.maxRequestBytes) {
             return BridgeResponse.failure(request.id, "network_policy_denied", "network.request body exceeds manifest.networkPolicy maxRequestBytes").toString()
@@ -120,7 +121,7 @@ class PlatformNetwork {
                 if (status in 300..399 && location != null) {
                     val nextUrl = URL(currentUrl, location)
                     val nextOrigin = origin(nextUrl)
-                    if (nextOrigin == null || (denyPrivateNetwork && isPrivateNetworkHost(nextUrl.host)) || policy.none { it.allows(nextOrigin, method, headers.keys) }) {
+                    if (nextOrigin == null || (denyPrivateNetwork && isPrivateNetworkHost(nextUrl.host)) || policy.none { it.allows(nextOrigin, method, path(nextUrl), headers.keys) }) {
                         connection.disconnect()
                         return BridgeResponse.failure(request.id, "network_policy_denied", "network.request redirect is not allowed by manifest.networkPolicy").toString()
                     }
@@ -239,6 +240,8 @@ class PlatformNetwork {
             return "$protocol://$host"
         }
 
+        fun path(url: URL): String = url.path.ifEmpty { "/" }
+
         fun isPrivateNetworkHost(rawHost: String?): Boolean {
             var host = rawHost?.trim()?.lowercase(Locale.US) ?: return false
             if (host.startsWith("[") && host.endsWith("]")) {
@@ -308,13 +311,15 @@ private sealed class NetworkTimeout {
 data class NetworkPolicyRule(
     val origin: String,
     val methods: Set<String>,
+    val pathPrefix: String?,
     val allowedHeaders: Set<String>,
     val maxRequestBytes: Int,
     val maxResponseBytes: Int,
     val timeoutMs: Int,
 ) {
-    fun allows(origin: String, method: String, headers: Set<String>): Boolean {
+    fun allows(origin: String, method: String, path: String, headers: Set<String>): Boolean {
         if (this.origin != origin || !methods.contains(method)) return false
+        if (pathPrefix != null && !path.startsWith(pathPrefix)) return false
         return headers.all { header ->
             val normalized = header.lowercase(Locale.US)
             normalized != "cookie" && normalized != "set-cookie" && allowedHeaders.contains(normalized)
@@ -331,6 +336,7 @@ data class NetworkPolicyRule(
                 NetworkPolicyRule(
                     origin = origin,
                     methods = raw.optJSONArray("methods").toStringSet { it.uppercase(Locale.US) },
+                    pathPrefix = raw.optString("pathPrefix", "").ifBlank { null },
                     allowedHeaders = raw.optJSONArray("allowedHeaders").toStringSet { it.lowercase(Locale.US) },
                     maxRequestBytes = raw.optInt("maxRequestBytes", 0),
                     maxResponseBytes = raw.optInt("maxResponseBytes", 0),

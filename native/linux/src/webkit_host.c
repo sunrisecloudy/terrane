@@ -1022,6 +1022,9 @@ static GPtrArray *network_policy_for_app(const gchar *app_id) {
       }
       NetworkPolicyRule *rule = g_new0(NetworkPolicyRule, 1);
       rule->origin = g_strdup(json_object_get_string_member(raw, "origin"));
+      if (json_object_has_member(raw, "pathPrefix")) {
+        rule->path_prefix = g_strdup(json_object_get_string_member(raw, "pathPrefix"));
+      }
       rule->methods = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
       rule->allowed_headers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
       rule->max_request_bytes = (gsize)json_object_get_int_member_with_default(raw, "maxRequestBytes", 0);
