@@ -645,6 +645,50 @@ test("Android debug dev control snapshots, replays, and asserts core actions", (
   );
 });
 
+test("Android debug dev control exposes static accessibility controls", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+
+  for (const snippet of [
+    "runtime.accessibility_snapshot",
+    "runtime.run_accessibility_audit",
+    "runtime.assert_accessibility",
+    "runtimeAccessibilitySnapshotJson",
+    "runtimeAccessibilityAuditJson",
+    "runtimeAssertAccessibilityJson",
+    "htmlForStaticApp",
+    "installedPackageFile(appId, \"index.html\")",
+    "accessibilitySnapshotFromHtml",
+    "accessibilityAuditFromHtml",
+    "landmarkRecords",
+    "headingRecords",
+    "controlRecords",
+    "accessibleName",
+    "parseHtmlAttrs",
+    "labelForId",
+    "wrappingLabelForControl",
+    "document_title",
+    "main_landmark",
+    "screen_title",
+    "no_unlabeled_controls",
+    "Every interactive control must have an accessible name.",
+    "accessibility_failed",
+    "Accessibility assertion failed",
+    "webapps/examples/$appId/index.html",
+    "Generated app HTML was not found",
+    ".put(\"checkedAt\", Instant.now().toString())",
+    ".put(\"controls\", controlRecords(html))",
+    ".put(\"testId\", testId)",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android accessibility control source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("\"runtime.accessibility_snapshot\" -> runtimeAccessibilitySnapshotJson(args)") <
+      control.indexOf("\"runtime.core_snapshot\" -> runtimeCoreSnapshotJson(args)"),
+    "accessibility controls should be first-class runtime commands",
+  );
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {
@@ -677,6 +721,11 @@ test(
       fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "webapps", "examples", "notes-lite", "manifest.json")),
       true,
       "generated example apps should be synced into Android assets",
+    );
+    assert.equal(
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "webapps", "examples", "notes-lite", "index.html")),
+      true,
+      "generated app HTML should be synced for Android static accessibility controls",
     );
     assert.equal(
       fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "db", "sqlite", "001_initial.sql")),

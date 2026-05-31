@@ -220,6 +220,9 @@ class AndroidDevControlPlane(
             )
             bridgeCommand(appId, "core.step", JSONObject(mapOf("event" to event)), "android_control_core_step")
         }
+        "runtime.accessibility_snapshot" -> runtimeAccessibilitySnapshotJson(args)
+        "runtime.run_accessibility_audit" -> runtimeAccessibilityAuditJson(args)
+        "runtime.assert_accessibility" -> runtimeAssertAccessibilityJson(args)
         "runtime.core_snapshot" -> runtimeCoreSnapshotJson(args)
         "runtime.replay_events" -> runtimeReplayEventsJson(args)
         "runtime.assert_core_action" -> runtimeAssertCoreActionJson(args)
@@ -263,6 +266,39 @@ class AndroidDevControlPlane(
 
     private fun bridgeCommand(appId: String, method: String, params: JSONObject, id: String): JSONObject =
         bridge.handleControlBridgeCall(appId = appId, method = method, params = params, id = id)
+
+    private fun runtimeAccessibilitySnapshotJson(args: JSONObject): JSONObject {
+        val appId = optionalString(args, "appId") ?: "notes-lite"
+        val html = htmlForStaticApp(appId)
+        return accessibilitySnapshotFromHtml(appId, html)
+    }
+
+    private fun runtimeAccessibilityAuditJson(args: JSONObject): JSONObject {
+        val appId = optionalString(args, "appId") ?: "notes-lite"
+        return accessibilityAuditFromHtml(appId, htmlForStaticApp(appId))
+    }
+
+    private fun runtimeAssertAccessibilityJson(args: JSONObject): JSONObject {
+        val appId = optionalString(args, "appId") ?: "notes-lite"
+        val rule = optionalString(args, "rule")
+        val report = accessibilityAuditFromHtml(appId, htmlForStaticApp(appId))
+        val checks = report.optJSONArray("checks") ?: JSONArray()
+        val failures = JSONArray()
+        for (index in 0 until checks.length()) {
+            val check = checks.optJSONObject(index) ?: continue
+            if (check.optString("status") == "fail" && (rule == null || check.optString("id") == rule)) {
+                failures.put(check)
+            }
+        }
+        if (failures.length() > 0) {
+            throw ControlCommandException(400, "accessibility_failed", "Accessibility assertion failed")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId)
+            .put("rule", rule ?: JSONObject.NULL)
+            .put("report", report)
+    }
 
     private fun storageGetParams(args: JSONObject): JSONObject {
         val params = JSONObject().put("key", requiredStorageString(args, "key", "runtime.storage_get requires appId and key"))
@@ -750,6 +786,205 @@ class AndroidDevControlPlane(
             null
         }
 
+    private fun htmlForStaticApp(appId: String): String {
+        installedPackageFile(appId, "index.html")?.let { return it }
+        return try {
+            context.assets.open("webapps/examples/$appId/index.html").bufferedReader(Charsets.UTF_8).use { reader ->
+                reader.readText()
+            }
+        } catch (_: Exception) {
+            throw ControlCommandException(404, "app_not_found", "Generated app HTML was not found")
+        }
+    }
+
+    private fun installedPackageFile(appId: String, path: String): String? {
+        database.readableDatabase.rawQuery(
+            "SELECT f.content_text FROM apps a JOIN app_files f ON f.install_id = a.active_install_id WHERE a.id = ? AND f.path = ? LIMIT 1",
+            arrayOf(appId, path),
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.nullableStringValue(0) else null
+        }
+    }
+
+    private fun accessibilitySnapshotFromHtml(appId: String, html: String): JSONObject = JSONObject()
+        .put("appId", appId)
+        .put("title", firstHtmlMatch(html, "<title[^>]*>([\\s\\S]*?)</title>"))
+        .put("landmarks", landmarkRecords(html))
+        .put("headings", headingRecords(html))
+        .put("controls", controlRecords(html))
+
+    private fun accessibilityAuditFromHtml(appId: String, html: String): JSONObject {
+        val snapshot = accessibilitySnapshotFromHtml(appId, html)
+        val title = snapshot.optString("title")
+        val landmarks = snapshot.optJSONArray("landmarks") ?: JSONArray()
+        val headings = snapshot.optJSONArray("headings") ?: JSONArray()
+        val controls = snapshot.optJSONArray("controls") ?: JSONArray()
+        val unlabeled = firstUnlabeledControl(controls)
+        val checks = JSONArray()
+            .put(accessibilityCheck("document_title", title.isNotBlank(), "Document must include a non-empty <title>."))
+            .put(accessibilityCheck("main_landmark", containsRole(landmarks, "main"), "Page must include a <main> landmark."))
+            .put(accessibilityCheck("screen_title", containsHeadingLevel(headings, 1), "Page must include an h1 screen title."))
+            .put(accessibilityCheck(
+                "no_unlabeled_controls",
+                unlabeled == null,
+                "Every interactive control must have an accessible name.",
+                unlabeled?.optString("selector")?.ifBlank { null },
+            ))
+        return JSONObject()
+            .put("appId", appId)
+            .put("checkedAt", Instant.now().toString())
+            .put("status", if (hasFailingCheck(checks)) "fail" else "pass")
+            .put("checks", checks)
+    }
+
+    private fun landmarkRecords(html: String): JSONArray {
+        val records = JSONArray()
+        if (Regex("<main\\b", RegexOption.IGNORE_CASE).containsMatchIn(html)) {
+            records.put(JSONObject().put("role", "main").put("selector", "main"))
+        }
+        return records
+    }
+
+    private fun headingRecords(html: String): JSONArray {
+        val records = JSONArray()
+        for (match in Regex("<h([1-6])\\b[^>]*>([\\s\\S]*?)</h\\1>", RegexOption.IGNORE_CASE).findAll(html)) {
+            records.put(
+                JSONObject()
+                    .put("level", match.groupValues[1].toInt())
+                    .put("name", htmlText(match.groupValues[2])),
+            )
+        }
+        return records
+    }
+
+    private fun controlRecords(html: String): JSONArray {
+        val records = mutableListOf<JSONObject>()
+        val paired = Regex("<(button|select|textarea|a)\\b([^>]*)>([\\s\\S]*?)</\\1>", RegexOption.IGNORE_CASE)
+        for (match in paired.findAll(html)) {
+            val tag = match.groupValues[1].lowercase(Locale.US)
+            val attrs = parseHtmlAttrs(match.groupValues[2])
+            records.add(controlRecord(html, tag, attrs, match.groupValues[3]))
+        }
+        val inputs = Regex("<input\\b([^>]*)>", RegexOption.IGNORE_CASE)
+        for (match in inputs.findAll(html)) {
+            val attrs = parseHtmlAttrs(match.groupValues[1])
+            if ((attrs["type"] ?: "text").lowercase(Locale.US) == "hidden") continue
+            records.add(controlRecord(html, "input", attrs, ""))
+        }
+        val sorted = records.sortedBy { it.optString("selector") }
+        val array = JSONArray()
+        sorted.forEach { array.put(it) }
+        return array
+    }
+
+    private fun controlRecord(html: String, tag: String, attrs: Map<String, String>, innerHtml: String): JSONObject {
+        val testId = attrs["data-testid"].orEmpty()
+        val id = attrs["id"].orEmpty()
+        val selector = when {
+            testId.isNotBlank() -> "[data-testid=\"$testId\"]"
+            id.isNotBlank() -> "#$id"
+            else -> tag
+        }
+        return JSONObject()
+            .put("tag", tag)
+            .put("type", attrs["type"] ?: JSONObject.NULL)
+            .put("testId", testId)
+            .put("selector", selector)
+            .put("name", accessibleName(html, tag, attrs, innerHtml))
+    }
+
+    private fun accessibleName(html: String, tag: String, attrs: Map<String, String>, innerHtml: String): String {
+        for (attr in listOf("aria-label", "title")) {
+            val value = attrs[attr]?.trim()
+            if (!value.isNullOrBlank()) return value
+        }
+        if ((tag == "button" || tag == "a") && htmlText(innerHtml).isNotBlank()) {
+            return htmlText(innerHtml)
+        }
+        val id = attrs["id"]
+        if (!id.isNullOrBlank()) {
+            labelForId(html, id)?.let { return it }
+            wrappingLabelForControl(html, tag, id)?.let { return it }
+        }
+        return ""
+    }
+
+    private fun parseHtmlAttrs(attrsText: String): Map<String, String> {
+        val attrs = mutableMapOf<String, String>()
+        val pattern = Regex("""\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""")
+        for (match in pattern.findAll(attrsText)) {
+            val name = match.groupValues[1].lowercase(Locale.US)
+            attrs[name] = match.groupValues.getOrElse(2) { "" }.ifBlank {
+                match.groupValues.getOrElse(3) { "" }.ifBlank {
+                    match.groupValues.getOrElse(4) { "" }
+                }
+            }
+        }
+        return attrs
+    }
+
+    private fun firstHtmlMatch(html: String, pattern: String): String =
+        Regex(pattern, RegexOption.IGNORE_CASE).find(html)?.groupValues?.getOrNull(1)?.let { htmlText(it) }.orEmpty()
+
+    private fun htmlText(html: String): String = html
+        .replace(Regex("<script\\b[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
+        .replace(Regex("<style\\b[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
+        .replace(Regex("<[^>]+>"), " ")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace(Regex("[\\s\\n\\r\\t]+"), " ")
+        .trim()
+
+    private fun labelForId(html: String, id: String): String? =
+        firstHtmlMatch(html, "<label\\b[^>]*\\bfor=[\"']${Regex.escape(id)}[\"'][^>]*>([\\s\\S]*?)</label>").ifBlank { null }
+
+    private fun wrappingLabelForControl(html: String, tag: String, id: String): String? {
+        val raw = firstHtmlMatch(html, "<label\\b[^>]*>([\\s\\S]*?<$tag\\b[^>]*\\bid=[\"']${Regex.escape(id)}[\"'][^>]*>[\\s\\S]*?)</label>")
+        if (raw.isBlank()) return null
+        return raw.replace(Regex("<$tag\\b[\\s\\S]*", RegexOption.IGNORE_CASE), "").let(::htmlText).ifBlank { null }
+    }
+
+    private fun accessibilityCheck(id: String, ok: Boolean, message: String, selector: String? = null): JSONObject {
+        val check = JSONObject()
+            .put("id", id)
+            .put("status", if (ok) "pass" else "fail")
+            .put("message", message)
+        if (!selector.isNullOrBlank()) check.put("selector", selector)
+        return check
+    }
+
+    private fun firstUnlabeledControl(controls: JSONArray): JSONObject? {
+        for (index in 0 until controls.length()) {
+            val control = controls.optJSONObject(index) ?: continue
+            if (control.optString("name").isBlank()) return control
+        }
+        return null
+    }
+
+    private fun containsRole(records: JSONArray, role: String): Boolean {
+        for (index in 0 until records.length()) {
+            if (records.optJSONObject(index)?.optString("role") == role) return true
+        }
+        return false
+    }
+
+    private fun containsHeadingLevel(records: JSONArray, level: Int): Boolean {
+        for (index in 0 until records.length()) {
+            if (records.optJSONObject(index)?.optInt("level") == level) return true
+        }
+        return false
+    }
+
+    private fun hasFailingCheck(checks: JSONArray): Boolean {
+        for (index in 0 until checks.length()) {
+            if (checks.optJSONObject(index)?.optString("status") == "fail") return true
+        }
+        return false
+    }
+
     private fun runtimeStorageResetJson(args: JSONObject, clearRuntimeLogs: Boolean): JSONObject {
         if (!args.optBoolean("confirm", false)) {
             throw ControlCommandException(400, "confirmation_required", "Storage reset command requires confirm: true")
@@ -1171,6 +1406,9 @@ class AndroidDevControlPlane(
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
+                    "runtime.accessibility_snapshot",
+                    "runtime.run_accessibility_audit",
+                    "runtime.assert_accessibility",
                     "runtime.core_snapshot",
                     "runtime.replay_events",
                     "runtime.assert_core_action",
