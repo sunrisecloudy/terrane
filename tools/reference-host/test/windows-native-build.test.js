@@ -309,6 +309,24 @@ test(
       assert.equal(appLog.statusCode, 200, appLog.body);
       assert.equal(JSON.parse(appLog.body).result.ok, true);
 
+      const notificationToast = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "notification.toast",
+            params: {
+              level: "success",
+              message: "Windows control saved",
+            },
+          },
+        },
+      });
+      assert.equal(notificationToast.statusCode, 200, notificationToast.body);
+      assert.equal(JSON.parse(notificationToast.body).result.ok, true);
+
       const coreStep = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -353,6 +371,42 @@ test(
       assert.equal(consoleLogs.statusCode, 200, consoleLogs.body);
       assert.equal(
         JSON.parse(consoleLogs.body).result.logs.some((row) => row.params?.message === "Windows control log probe"),
+        true,
+      );
+
+      const runtimeBridgeCalls = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.bridge_calls", args: { appId: "task-workbench" } },
+      });
+      assert.equal(runtimeBridgeCalls.statusCode, 200, runtimeBridgeCalls.body);
+      assert.equal(JSON.parse(runtimeBridgeCalls.body).result.some((row) => row.method === "storage.set"), true);
+      assert.equal(JSON.parse(runtimeBridgeCalls.body).result.some((row) => row.method === "notification.toast"), true);
+
+      const bridgeCallAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_bridge_call", args: { appId: "task-workbench", method: "notification.toast" } },
+      });
+      assert.equal(bridgeCallAssert.statusCode, 200, bridgeCallAssert.body);
+      assert.equal(JSON.parse(bridgeCallAssert.body).result.method, "notification.toast");
+
+      const noConsoleErrors = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_no_console_errors", args: { appId: "task-workbench" } },
+      });
+      assert.equal(noConsoleErrors.statusCode, 200, noConsoleErrors.body);
+      assert.equal(JSON.parse(noConsoleErrors.body).result.errors, 0);
+
+      const notificationCapture = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.notification_capture", args: { appId: "task-workbench" } },
+      });
+      assert.equal(notificationCapture.statusCode, 200, notificationCapture.body);
+      assert.equal(
+        JSON.parse(notificationCapture.body).result.notifications.some((row) => row.message === "Windows control saved"),
         true,
       );
 
@@ -507,6 +561,26 @@ test(
       assert.equal(importBackupBody.result.ok, true);
       assert.equal(Number(importBackupBody.result.appStorage) >= 1, true);
 
+      const clearedLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.clear_logs", args: { appId: "task-workbench" } },
+      });
+      assert.equal(clearedLogs.statusCode, 200, clearedLogs.body);
+      const clearedLogsBody = JSON.parse(clearedLogs.body);
+      assert.equal(clearedLogsBody.result.ok, true);
+      assert.equal(Number(clearedLogsBody.result.bridgeCallsCleared) >= 5, true);
+      assert.equal(Number(clearedLogsBody.result.coreActionsCleared) >= 1, true);
+      assert.equal(Number(clearedLogsBody.result.coreEventsCleared) >= 1, true);
+
+      const bridgeCallsAfterClear = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.bridge_calls", args: { appId: "task-workbench" } },
+      });
+      assert.equal(bridgeCallsAfterClear.statusCode, 200, bridgeCallsAfterClear.body);
+      assert.deepEqual(JSON.parse(bridgeCallsAfterClear.body).result, []);
+
       const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -541,7 +615,7 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'accepted' AND error_code IS NULL").get().count),
-          2,
+          3,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.capabilities' AND decision = 'accepted' AND error_code IS NULL").get().count),
@@ -561,6 +635,26 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.console_logs' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.bridge_calls' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          2,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_bridge_call' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_no_console_errors' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.notification_capture' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.clear_logs' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(
@@ -608,20 +702,16 @@ test(
           1,
         );
         assert.equal(
-          Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.set' AND app_id = 'task-workbench'").get().count) >= 1,
-          true,
+          Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE app_id = 'task-workbench'").get().count),
+          0,
         );
         assert.equal(
-          Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.get' AND app_id = 'task-workbench'").get().count) >= 1,
-          true,
+          Number(database.prepare("SELECT COUNT(*) AS count FROM core_events WHERE app_id = 'task-workbench'").get().count),
+          0,
         );
         assert.equal(
-          Number(database.prepare("SELECT COUNT(*) AS count FROM core_events WHERE app_id = 'task-workbench'").get().count) >= 1,
-          true,
-        );
-        assert.equal(
-          Number(database.prepare("SELECT COUNT(*) AS count FROM core_actions WHERE app_id = 'task-workbench'").get().count) >= 1,
-          true,
+          Number(database.prepare("SELECT COUNT(*) AS count FROM core_actions WHERE app_id = 'task-workbench'").get().count),
+          0,
         );
       } finally {
         database.close();

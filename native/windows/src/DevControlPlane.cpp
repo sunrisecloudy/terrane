@@ -1295,10 +1295,29 @@ struct DevControlPlane::Impl {
         L",\"status\":\"ended\",\"endedAt\":" + JsonString(endedAt) + L"}";
   }
 
+  std::wstring BridgeCallRowJson(sqlite3_stmt* statement) {
+    std::wstring row = L"{\"bridge_call_id\":" + JsonString(ColumnText(statement, 0)) +
+        L",\"session_id\":" + JsonNullableString(ColumnText(statement, 1)) +
+        L",\"app_id\":" + JsonNullableString(ColumnText(statement, 2)) +
+        L",\"install_id\":" + JsonNullableString(ColumnText(statement, 3)) +
+        L",\"method\":" + JsonString(ColumnText(statement, 4)) +
+        L",\"params_json\":" + JsonNullableString(ColumnText(statement, 5)) +
+        L",\"result_json\":" + JsonNullableString(ColumnText(statement, 6)) +
+        L",\"error_json\":" + JsonNullableString(ColumnText(statement, 7)) +
+        L",\"duration_ms\":";
+    if (sqlite3_column_type(statement, 8) == SQLITE_NULL) {
+      row += L"null";
+    } else {
+      row += std::to_wstring(sqlite3_column_int64(statement, 8));
+    }
+    row += L",\"created_at\":" + JsonString(ColumnText(statement, 9)) + L"}";
+    return row;
+  }
+
   std::wstring BridgeCallRowsJson(sqlite3* db, std::wstring const& appId) {
     char const* sql = appId.empty()
-        ? "SELECT bridge_call_id, session_id, app_id, method, created_at FROM bridge_calls ORDER BY created_at"
-        : "SELECT bridge_call_id, session_id, app_id, method, created_at FROM bridge_calls WHERE app_id = ? ORDER BY created_at";
+        ? "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls ORDER BY created_at"
+        : "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls WHERE app_id = ? ORDER BY created_at";
     sqlite3_stmt* statement = nullptr;
     std::wstring rows = L"[";
     bool first = true;
@@ -1311,16 +1330,227 @@ struct DevControlPlane::Impl {
           rows += L",";
         }
         first = false;
-        rows += L"{\"bridgeCallId\":" + JsonString(ColumnText(statement, 0)) +
-            L",\"sessionId\":" + JsonNullableString(ColumnText(statement, 1)) +
-            L",\"appId\":" + JsonNullableString(ColumnText(statement, 2)) +
-            L",\"method\":" + JsonString(ColumnText(statement, 3)) +
-            L",\"createdAt\":" + JsonString(ColumnText(statement, 4)) + L"}";
+        rows += BridgeCallRowJson(statement);
       }
     }
     sqlite3_finalize(statement);
     rows += L"]";
     return rows;
+  }
+
+  std::wstring RuntimeBridgeCallsJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    return BridgeCallRowsJson(db, appId);
+  }
+
+  int64_t DeleteRows(sqlite3* db, char const* sql, std::wstring const& appId, bool bindAppId, bool* ok) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *ok = false;
+      return 0;
+    }
+    if (bindAppId) {
+      BindText(statement, 1, appId);
+    }
+    if (sqlite3_step(statement) != SQLITE_DONE) {
+      *ok = false;
+      sqlite3_finalize(statement);
+      return 0;
+    }
+    auto changes = sqlite3_changes(db);
+    sqlite3_finalize(statement);
+    return changes;
+  }
+
+  std::wstring ClearRuntimeLogsJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    bool ok = true;
+    bool scoped = !appId.empty();
+    auto bridgeCalls = DeleteRows(
+        db,
+        scoped ? "DELETE FROM bridge_calls WHERE app_id = ?" : "DELETE FROM bridge_calls",
+        appId,
+        scoped,
+        &ok);
+    auto coreActions = DeleteRows(
+        db,
+        scoped ? "DELETE FROM core_actions WHERE app_id = ?" : "DELETE FROM core_actions",
+        appId,
+        scoped,
+        &ok);
+    auto coreEvents = DeleteRows(
+        db,
+        scoped ? "DELETE FROM core_events WHERE app_id = ?" : "DELETE FROM core_events",
+        appId,
+        scoped,
+        &ok);
+    if (!ok) {
+      *error = L"Could not clear runtime logs";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonNullableString(appId) +
+        L",\"bridgeCallsCleared\":" + std::to_wstring(bridgeCalls) +
+        L",\"coreActionsCleared\":" + std::to_wstring(coreActions) +
+        L",\"coreEventsCleared\":" + std::to_wstring(coreEvents) + L"}";
+  }
+
+  std::wstring JsonStringMemberOrNull(std::wstring const& objectJson, std::wstring const& key) {
+    json::JsonValue parsed{nullptr};
+    if (!json::JsonValue::TryParse(objectJson, parsed) || parsed.ValueType() != json::JsonValueType::Object) {
+      return L"null";
+    }
+    auto object = parsed.GetObject();
+    auto value = OptionalStringMember(object, key);
+    if (!value.has_value()) {
+      return L"null";
+    }
+    return JsonNullableString(value.value());
+  }
+
+  std::wstring NotificationRowJson(sqlite3_stmt* statement) {
+    auto paramsJson = ColumnText(statement, 2);
+    return L"{\"bridgeCallId\":" + JsonString(ColumnText(statement, 0)) +
+        L",\"appId\":" + JsonNullableString(ColumnText(statement, 1)) +
+        L",\"message\":" + JsonStringMemberOrNull(paramsJson, L"message") +
+        L",\"level\":" + JsonStringMemberOrNull(paramsJson, L"level") +
+        L",\"params\":" + RawJsonOrNull(paramsJson) +
+        L",\"result\":" + RawJsonOrNull(ColumnText(statement, 3)) +
+        L",\"error\":" + RawJsonOrNull(ColumnText(statement, 4)) +
+        L",\"createdAt\":" + JsonString(ColumnText(statement, 5)) + L"}";
+  }
+
+  std::wstring NotificationCaptureJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    char const* sql = appId.empty()
+        ? "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' ORDER BY created_at"
+        : "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' AND app_id = ? ORDER BY created_at";
+    sqlite3_stmt* statement = nullptr;
+    std::wstring notifications = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *error = L"Could not read notification capture rows";
+      return L"";
+    }
+    if (!appId.empty()) {
+      BindText(statement, 1, appId);
+    }
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      if (!first) {
+        notifications += L",";
+      }
+      first = false;
+      notifications += NotificationRowJson(statement);
+    }
+    sqlite3_finalize(statement);
+    notifications += L"]";
+    return L"{\"appId\":" + JsonNullableString(appId) + L",\"notifications\":" + notifications + L"}";
+  }
+
+  std::wstring AssertBridgeCallJson(
+      std::wstring const& appId,
+      std::wstring const& method,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    sqlite3_stmt* statement = nullptr;
+    char const* sql =
+        "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at "
+        "FROM bridge_calls WHERE app_id = ? AND method = ? ORDER BY created_at";
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not read bridge call rows";
+      return L"";
+    }
+    BindText(statement, 1, appId);
+    BindText(statement, 2, method);
+    int64_t count = 0;
+    std::wstring latest;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      ++count;
+      latest = BridgeCallRowJson(statement);
+    }
+    sqlite3_finalize(statement);
+    if (count == 0) {
+      *errorCode = L"assertion_failed";
+      *errorMessage = L"Expected bridge call was not recorded";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"method\":" + JsonString(method) +
+        L",\"count\":" + std::to_wstring(count) +
+        L",\"latest\":" + latest + L"}";
+  }
+
+  bool ConsoleLogIsError(std::wstring const& paramsJson, std::wstring const& errorJson) {
+    if (RawJsonOrNull(errorJson) != L"null") {
+      return true;
+    }
+    json::JsonValue parsed{nullptr};
+    if (!json::JsonValue::TryParse(paramsJson, parsed) || parsed.ValueType() != json::JsonValueType::Object) {
+      return false;
+    }
+    auto object = parsed.GetObject();
+    auto level = OptionalStringMember(object, L"level");
+    return level.has_value() && level.value() == L"error";
+  }
+
+  std::wstring AssertNoConsoleErrorsJson(
+      std::wstring const& appId,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    char const* sql = appId.empty()
+        ? "SELECT params_json, error_json FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at"
+        : "SELECT params_json, error_json FROM bridge_calls WHERE method = 'app.log' AND app_id = ? ORDER BY created_at";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not read console log rows";
+      return L"";
+    }
+    if (!appId.empty()) {
+      BindText(statement, 1, appId);
+    }
+    int64_t errors = 0;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      if (ConsoleLogIsError(ColumnText(statement, 0), ColumnText(statement, 1))) {
+        ++errors;
+      }
+    }
+    sqlite3_finalize(statement);
+    if (errors > 0) {
+      *errorCode = L"console_errors_found";
+      *errorMessage = L"Console error logs were found";
+      return L"";
+    }
+    return L"{\"ok\":true,\"errors\":0}";
   }
 
   std::wstring CoreEventRowsJson(sqlite3* db, std::wstring const& appId) {
@@ -2212,6 +2442,64 @@ struct DevControlPlane::Impl {
       result = tool == L"runtime.event_log" ? EventLogJson(appId, &error) : ConsoleLogsJson(appId, &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
+        return;
+      }
+    } else if (tool == L"runtime.bridge_calls" ||
+        tool == L"runtime.clear_logs" ||
+        tool == L"runtime.notification_capture" ||
+        tool == L"runtime.assert_no_console_errors") {
+      std::wstring appId;
+      std::wstring appIdError;
+      if (!OptionalArgsAppId(command, tool, &appId, &appIdError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", appIdError, 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      if (tool == L"runtime.bridge_calls") {
+        result = RuntimeBridgeCallsJson(appId, &error);
+      } else if (tool == L"runtime.clear_logs") {
+        result = ClearRuntimeLogsJson(appId, &error);
+      } else if (tool == L"runtime.notification_capture") {
+        result = NotificationCaptureJson(appId, &error);
+      } else {
+        result = AssertNoConsoleErrorsJson(appId, &errorCode, &errorMessage);
+        if (result.empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
+          return;
+        }
+      }
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
+        return;
+      }
+    } else if (tool == L"runtime.assert_bridge_call") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_bridge_call requires appId and method", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      auto bridgeMethod = OptionalStringMember(args.value(), L"method");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value()) || !bridgeMethod.has_value() || bridgeMethod->empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_bridge_call requires appId and method", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = AssertBridgeCallJson(appId.value(), bridgeMethod.value(), &errorCode, &errorMessage);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.storage_get" || tool == L"runtime.storage_set") {
