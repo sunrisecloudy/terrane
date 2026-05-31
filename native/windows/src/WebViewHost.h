@@ -19,7 +19,9 @@ class WebViewHost {
  private:
   void OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args);
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
+  bool EnsureSupportedWebView2Runtime(ICoreWebView2Environment* environment);
   void RunSmoke();
+  void RunRuntimeLoadSmoke();
   void RunStorageSmoke(bool setValue);
   void RunCoreSmoke();
   void RunFixedBridgeSurfaceSmoke();

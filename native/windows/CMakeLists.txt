@@ -37,6 +37,7 @@ if(WIN32)
 endif()
 
 set(NATIVE_AI_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(NATIVE_AI_ZIG_CORE_DLL "" CACHE FILEPATH "Optional prebuilt zig_core.dll to stage next to NativeAIWebappHost.exe")
 add_custom_command(TARGET NativeAIWebappHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NativeAIWebappHost>/resources/runtime"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${NATIVE_AI_REPO_ROOT}/runtime-web" "$<TARGET_FILE_DIR:NativeAIWebappHost>/resources/runtime"
@@ -45,3 +46,9 @@ add_custom_command(TARGET NativeAIWebappHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NativeAIWebappHost>/resources/db"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${NATIVE_AI_REPO_ROOT}/db/sqlite" "$<TARGET_FILE_DIR:NativeAIWebappHost>/resources/db/sqlite"
 )
+
+if(NATIVE_AI_ZIG_CORE_DLL)
+  add_custom_command(TARGET NativeAIWebappHost POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NATIVE_AI_ZIG_CORE_DLL}" "$<TARGET_FILE_DIR:NativeAIWebappHost>/zig_core.dll"
+  )
+endif()

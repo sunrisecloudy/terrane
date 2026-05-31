@@ -20,14 +20,15 @@ src/resources/examples/
 
 Implemented now:
 
-- Initializes WebView2 and maps the repo runtime through `SetVirtualHostNameToFolderMapping`.
+- Initializes WebView2 1.0.2592+ and maps packaged runtime resources through `SetVirtualHostNameToFolderMapping`, with checked-in repo resources as the dev fallback.
 - Receives bridge payloads through `WebMessageReceived` and checks the internal runtime origin before dispatch.
+- Rejects unknown top-level native bridge request/envelope fields with `invalid_request`.
 - Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound Win32 common file dialogs.
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
-- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `NATIVE_AI_ZIG_CORE_DLL` first and then repo-local/executable candidate paths.
+- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `NATIVE_AI_ZIG_CORE_DLL` first, the executable-adjacent packaged DLL next, and repo-local candidate paths as dev fallbacks.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig DLL load status and returns structured `platform_unsupported` when the DLL is absent.
 
 MVP acceptance:

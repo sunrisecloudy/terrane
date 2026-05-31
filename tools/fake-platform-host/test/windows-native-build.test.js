@@ -58,22 +58,33 @@ test(
       assert.equal(fs.existsSync(zigCoreDll), true);
 
       const buildDir = path.join(scratch, "build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DNATIVE_AI_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
       assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after CMake build");
+      const binaryDir = path.dirname(binaryPath);
       assert.equal(
-        fs.existsSync(path.join(path.dirname(binaryPath), "resources", "runtime", "index.html")),
+        fs.existsSync(path.join(binaryDir, "zig_core.dll")),
+        true,
+        "zig_core.dll should be staged next to NativeAIWebappHost.exe for package-style loading",
+      );
+      assert.equal(
+        fs.existsSync(path.join(binaryDir, "resources", "runtime", "index.html")),
         true,
         "runtime-web should be staged under the WebView2 /runtime resource path",
       );
       assert.equal(
-        fs.existsSync(path.join(path.dirname(binaryPath), "resources", "webapps", "examples", "notes-lite", "manifest.json")),
+        fs.existsSync(path.join(binaryDir, "resources", "webapps", "examples", "notes-lite", "manifest.json")),
         true,
         "example apps should be staged under the WebView2 /webapps/examples resource path",
       );
+      assert.equal(
+        fs.existsSync(path.join(binaryDir, "resources", "db", "sqlite", "001_initial.sql")),
+        true,
+        "SQLite migrations should be staged under packaged resources",
+      );
 
-      runOptionalSmoke({ binaryPath, scratch, zigCoreDll });
+      runOptionalSmoke({ binaryPath, scratch });
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }
@@ -91,15 +102,15 @@ function resolveWindowsHostBinary(buildDir) {
   return null;
 }
 
-function runOptionalSmoke({ binaryPath, scratch, zigCoreDll }) {
+function runOptionalSmoke({ binaryPath, scratch }) {
   if (process.env.NATIVE_AI_WINDOWS_SMOKE_LAUNCH !== "1") return;
   const storageKey = `notes-lite:windows-smoke-${process.pid}-${Date.now()}`;
   const storageValue = `windows-smoke-${process.pid}-${Date.now()}`;
   const dataHome = path.join(scratch, "data-home");
   const resultFile = path.join(scratch, "smoke-result.txt");
+  const { NATIVE_AI_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
   const baseEnv = {
-    ...process.env,
-    NATIVE_AI_ZIG_CORE_DLL: zigCoreDll,
+    ...smokeEnv,
     NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
     NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER: "1",
     NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
@@ -150,12 +161,13 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreDll }) {
   runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
     ...baseEnv,
     NATIVE_AI_WINDOWS_SMOKE: "runtime-app-storage-get",
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
 }
 
 function runSmoke(binaryPath, resultFile, marker, env) {
   fs.rmSync(resultFile, { force: true });
-  const result = spawnSync(binaryPath, [], { env, cwd: repoRoot, encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(binaryPath, [], { env, cwd: path.dirname(binaryPath), encoding: "utf8", timeout: 30_000 });
   const markerOutput = fs.existsSync(resultFile) ? fs.readFileSync(resultFile, "utf8") : "";
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${markerOutput}`;
   assert.equal(output.includes("NATIVE_AI_WINDOWS_SMOKE_FAILED"), false, output);

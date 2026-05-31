@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <fstream>
+#include <limits>
 #include <winrt/Windows.Data.Json.h>
 #include <wrl/event.h>
 
@@ -48,6 +49,16 @@ bool IsRuntimeEnvelope(json::JsonObject const& body) {
   return body.HasKey(L"appId") || body.HasKey(L"mountToken") || body.HasKey(L"request");
 }
 
+bool HasOnlyRuntimeEnvelopeFields(json::JsonObject const& body) {
+  for (auto const& entry : body) {
+    auto key = std::wstring(entry.Key().c_str());
+    if (key != L"appId" && key != L"mountToken" && key != L"request") {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool IsKnownExampleAppId(std::wstring const& appId) {
   for (auto const* candidate : {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab"}) {
     if (appId == candidate) {
@@ -69,6 +80,9 @@ std::wstring RuntimeEnvelopeRequestId(json::JsonObject const& body) {
 }
 
 bool HasValidRuntimeEnvelope(json::JsonObject const& body) {
+  if (!HasOnlyRuntimeEnvelopeFields(body)) {
+    return false;
+  }
   if (!body.HasKey(L"appId") || !body.HasKey(L"mountToken") || !body.HasKey(L"request")) {
     return false;
   }
@@ -207,6 +221,68 @@ std::wstring ScriptStringResult(PCWSTR resultObjectAsJson) {
       ? std::wstring(parsed.GetString().c_str())
       : std::wstring(resultObjectAsJson);
 }
+
+bool ReadVersionPart(std::wstring const& version, size_t& offset, uint32_t& part) {
+  if (offset >= version.size() || !std::iswdigit(version[offset])) {
+    return false;
+  }
+  uint64_t value = 0;
+  while (offset < version.size() && std::iswdigit(version[offset])) {
+    value = (value * 10) + static_cast<uint64_t>(version[offset] - L'0');
+    if (value > std::numeric_limits<uint32_t>::max()) {
+      return false;
+    }
+    ++offset;
+  }
+  part = static_cast<uint32_t>(value);
+  return true;
+}
+
+bool WebView2RuntimeMeetsMinimum(std::wstring const& version) {
+  size_t offset = 0;
+  uint32_t major = 0;
+  uint32_t minor = 0;
+  uint32_t build = 0;
+  if (!ReadVersionPart(version, offset, major) || offset >= version.size() || version[offset++] != L'.') {
+    return false;
+  }
+  if (!ReadVersionPart(version, offset, minor) || offset >= version.size() || version[offset++] != L'.') {
+    return false;
+  }
+  if (!ReadVersionPart(version, offset, build)) {
+    return false;
+  }
+  if (major != 1) {
+    return major > 1;
+  }
+  if (minor != 0) {
+    return minor > 0;
+  }
+  return build >= 2592;
+}
+
+bool StorageNotesResponseContainsSmokeValue(std::wstring const& response, std::wstring const& value) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto result = parsed.GetNamedObject(L"result", json::JsonObject());
+  auto storedValue = result.GetNamedValue(L"value", json::JsonValue::CreateNullValue());
+  if (storedValue.ValueType() != json::JsonValueType::Array) {
+    return false;
+  }
+  for (auto const& noteValue : storedValue.GetArray()) {
+    if (noteValue.ValueType() != json::JsonValueType::Object) {
+      continue;
+    }
+    auto note = noteValue.GetObject();
+    if (std::wstring(note.GetNamedString(L"title", L"").c_str()) == L"Windows smoke " + value &&
+        std::wstring(note.GetNamedString(L"body", L"").c_str()) == L"Seeded by Windows runtime-app storage smoke") {
+      return true;
+    }
+  }
+  return false;
+}
 }  // namespace
 
 WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
@@ -220,6 +296,9 @@ void WebViewHost::Initialize() {
           [this](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
             if (FAILED(result) || environment == nullptr) {
               return result;
+            }
+            if (!EnsureSupportedWebView2Runtime(environment)) {
+              return E_FAIL;
             }
             environment->CreateCoreWebView2Controller(
                 window_,
@@ -269,6 +348,22 @@ void WebViewHost::Initialize() {
           .Get());
 }
 
+bool WebViewHost::EnsureSupportedWebView2Runtime(ICoreWebView2Environment* environment) {
+  PWSTR browserVersion = nullptr;
+  HRESULT versionResult = environment->get_BrowserVersionString(&browserVersion);
+  std::wstring versionText = browserVersion == nullptr ? L"" : browserVersion;
+  CoTaskMemFree(browserVersion);
+
+  if (FAILED(versionResult) || !WebView2RuntimeMeetsMinimum(versionText)) {
+    SmokeFailure(L"WebView2 runtime version 1.0.2592 or later is required; found " + versionText);
+    return false;
+  }
+  if (!EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE").empty()) {
+    WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_WEBVIEW2_VERSION_OK " + versionText);
+  }
+  return true;
+}
+
 void WebViewHost::OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args) {
   BOOL success = FALSE;
   args->get_IsSuccess(&success);
@@ -304,7 +399,23 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
   std::wstring smokeAppId;
   std::wstring smokeMethod;
   json::JsonObject parsed{nullptr};
-  if (json::JsonObject::TryParse(body, parsed) && IsRuntimeEnvelope(parsed)) {
+  bool parsedOk = json::JsonObject::TryParse(body, parsed);
+  if (parsedOk &&
+      parsed.HasKey(L"type") &&
+      parsed.GetNamedValue(L"type").ValueType() == json::JsonValueType::String &&
+      std::wstring(parsed.GetNamedString(L"type", L"").c_str()) == L"windows_smoke_runtime_load_ready") {
+    auto okValue = parsed.GetNamedValue(L"ok", json::JsonValue::CreateBooleanValue(false));
+    auto ok = okValue.ValueType() == json::JsonValueType::Boolean && okValue.GetBoolean();
+    if (ok) {
+      WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_JS_READY");
+      SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED");
+    } else {
+      SmokeFailure(L"WebView2 runtime readiness check failed: " + std::wstring(parsed.GetNamedString(L"detail", L"").c_str()));
+    }
+    return;
+  }
+
+  if (parsedOk && IsRuntimeEnvelope(parsed)) {
     auto requestId = RuntimeEnvelopeRequestId(parsed);
     smokeRequestId = requestId;
     if (!HasValidRuntimeEnvelope(parsed)) {
@@ -354,7 +465,7 @@ void WebViewHost::RunSmoke() {
   smokeRan_ = true;
   WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_STARTED_" + action);
   if (action == L"runtime-load") {
-    SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED");
+    RunRuntimeLoadSmoke();
   } else if (action == L"storage-set") {
     RunStorageSmoke(true);
   } else if (action == L"storage-get") {
@@ -374,6 +485,64 @@ void WebViewHost::RunSmoke() {
   } else {
     SmokeFailure(L"unknown smoke action");
   }
+}
+
+void WebViewHost::RunRuntimeLoadSmoke() {
+  if (webview_ == nullptr) {
+    SmokeFailure(L"WebView2 is not initialized");
+    return;
+  }
+
+  constexpr wchar_t kScript[] = LR"JS((function () {
+  if (!window.chrome || !window.chrome.webview || typeof window.chrome.webview.postMessage !== "function") {
+    return "missing-webview2-bridge";
+  }
+  var deadline = Date.now() + 5000;
+  function send(ok, detail) {
+    window.chrome.webview.postMessage(JSON.stringify({
+      type: "windows_smoke_runtime_load_ready",
+      ok: ok,
+      detail: detail || ""
+    }));
+  }
+  function check() {
+    var status = document.querySelector('[data-testid="runtime-status"]');
+    var appList = document.querySelector('[data-testid="app-list"]');
+    var openButton = document.querySelector('[data-testid="open-notes-lite-button"]');
+    var ready = status && status.textContent.trim() === "Ready" && appList && appList.children.length > 0 && openButton;
+    if (ready) {
+      send(true, "ready");
+      return;
+    }
+    if (Date.now() < deadline) {
+      window.setTimeout(check, 50);
+      return;
+    }
+    send(false, JSON.stringify({
+      status: status ? status.textContent.trim() : "",
+      appCount: appList ? appList.children.length : 0,
+      hasOpenButton: Boolean(openButton)
+    }));
+  }
+  check();
+  return "started";
+})())JS";
+
+  webview_->ExecuteScript(
+      kScript,
+      Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+          [this](HRESULT errorCode, PCWSTR resultObjectAsJson) -> HRESULT {
+            if (FAILED(errorCode)) {
+              SmokeFailure(L"WebView2 runtime readiness script failed");
+              return S_OK;
+            }
+            auto result = ScriptStringResult(resultObjectAsJson);
+            if (result != L"started") {
+              SmokeFailure(L"WebView2 runtime readiness script did not start: " + result);
+            }
+            return S_OK;
+          })
+          .Get());
 }
 
 void WebViewHost::RunStorageSmoke(bool setValue) {
@@ -584,6 +753,28 @@ void WebViewHost::RunRuntimeAppBridgeSmoke() {
     SmokeFailure(L"WebView2 is not initialized");
     return;
   }
+  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  if (value.empty()) {
+    SmokeFailure(L"runtime app storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    return;
+  }
+
+  json::JsonObject note;
+  note.Insert(L"id", json::JsonValue::CreateStringValue(L"windows-smoke-note"));
+  note.Insert(L"title", json::JsonValue::CreateStringValue(L"Windows smoke " + value));
+  note.Insert(L"body", json::JsonValue::CreateStringValue(L"Seeded by Windows runtime-app storage smoke"));
+  note.Insert(L"updatedAt", json::JsonValue::CreateNumberValue(static_cast<double>(GetTickCount64())));
+  json::JsonArray notes;
+  notes.Append(note);
+
+  json::JsonObject setParams;
+  setParams.Insert(L"key", json::JsonValue::CreateStringValue(L"notes-lite:notes"));
+  setParams.Insert(L"value", notes);
+  auto setResponse = BridgeCall(L"notes-lite", L"windows_smoke_runtime_app_seed_storage", L"storage.set", setParams);
+  if (!JsonResponseOk(setResponse)) {
+    SmokeFailure(setResponse);
+    return;
+  }
 
   constexpr wchar_t kScript[] = LR"JS((function () {
   var deadline = Date.now() + 5000;
@@ -691,7 +882,8 @@ void WebViewHost::HandleRuntimeAppBridgeSmokeResponse(
     return;
   }
   if (appId == L"notes-lite" && method == L"storage.get") {
-    JsonResponseOk(response)
+    auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    JsonResponseOk(response) && StorageNotesResponseContainsSmokeValue(response, value)
         ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
         : SmokeFailure(response);
   }

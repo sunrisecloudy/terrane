@@ -1,6 +1,7 @@
 #include "WebBridge.h"
 
 #include <atomic>
+#include <cmath>
 #include <string>
 
 namespace nativeai {
@@ -77,6 +78,16 @@ std::optional<int64_t> StateVersionBefore(json::JsonObject const& result) {
   return number > 0 ? number - 1 : 0;
 }
 
+bool HasOnlyBridgeRequestFields(json::JsonObject const& object, json::JsonArray& extraFields) {
+  for (auto const& entry : object) {
+    auto key = std::wstring(entry.Key().c_str());
+    if (key != L"id" && key != L"method" && key != L"params" && key != L"timestamp") {
+      extraFields.Append(json::JsonValue::CreateStringValue(key));
+    }
+  }
+  return extraFields.Size() == 0;
+}
+
 }  // namespace
 
 WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
@@ -90,6 +101,42 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
   json::JsonObject parsed{nullptr};
   if (!json::JsonObject::TryParse(body, parsed)) {
     return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge message body must be JSON").Stringify().c_str();
+  }
+
+  json::JsonArray extraFields;
+  if (!HasOnlyBridgeRequestFields(parsed, extraFields)) {
+    json::JsonObject details;
+    details.Insert(L"fields", extraFields);
+    return BridgeResponse::Failure(
+               L"",
+               false,
+               L"invalid_request",
+               L"Bridge request contains unknown top-level fields",
+               details)
+        .Stringify()
+        .c_str();
+  }
+
+  if (parsed.HasKey(L"timestamp")) {
+    auto timestamp = parsed.GetNamedValue(L"timestamp");
+    if (timestamp.ValueType() != json::JsonValueType::Number || !std::isfinite(timestamp.GetNumber())) {
+      return BridgeResponse::Failure(
+                 L"",
+                 false,
+                 L"invalid_request",
+                 L"Bridge request timestamp must be a finite number")
+          .Stringify()
+          .c_str();
+    }
+  }
+  if (parsed.HasKey(L"id") && parsed.GetNamedValue(L"id").ValueType() != json::JsonValueType::String) {
+    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request id must be a string").Stringify().c_str();
+  }
+  if (parsed.HasKey(L"method") && parsed.GetNamedValue(L"method").ValueType() != json::JsonValueType::String) {
+    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request method must be a string").Stringify().c_str();
+  }
+  if (parsed.HasKey(L"params") && parsed.GetNamedValue(L"params").ValueType() != json::JsonValueType::Object) {
+    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request params must be an object").Stringify().c_str();
   }
 
   if (parsed.HasKey(L"id")) {

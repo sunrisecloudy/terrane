@@ -1,6 +1,7 @@
 #include "ZigCoreBridge.h"
 
 #include <cstdlib>
+#include <vector>
 
 namespace nativeai {
 namespace json = winrt::Windows::Data::Json;
@@ -8,13 +9,17 @@ namespace json = winrt::Windows::Data::Json;
 namespace {
 
 std::filesystem::path ExecutableDirectory() {
-  std::wstring buffer(MAX_PATH, L'\0');
-  DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-  if (length == 0) {
-    return std::filesystem::current_path();
+  std::vector<wchar_t> buffer(MAX_PATH);
+  while (true) {
+    DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+      return std::filesystem::current_path();
+    }
+    if (length < buffer.size()) {
+      return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+    }
+    buffer.resize(buffer.size() * 2);
   }
-  buffer.resize(length);
-  return std::filesystem::path(buffer).parent_path();
 }
 
 std::filesystem::path EnvironmentPath(wchar_t const* name) {
@@ -109,10 +114,10 @@ std::vector<std::filesystem::path> ZigCoreBridge::CandidateLibraryPaths() {
   auto exeDir = ExecutableDirectory();
   return {
       EnvironmentPath(L"NATIVE_AI_ZIG_CORE_DLL"),
+      exeDir / L"zig_core.dll",
       cwd / L"zig-core" / L"zig-out" / L"bin" / L"zig_core.dll",
       cwd / L"zig-core" / L"zig-out" / L"lib" / L"zig_core.dll",
       cwd / L".." / L"zig-core" / L"zig-out" / L"bin" / L"zig_core.dll",
-      exeDir / L"zig_core.dll",
   };
 }
 

@@ -1322,8 +1322,18 @@ function checkNativeStatic() {
     [windowsHost, "SandboxContextForApp"],
     [windowsHost, "IsRuntimeEnvelope"],
     [windowsHost, "HasValidRuntimeEnvelope"],
+    [windowsHost, "HasOnlyRuntimeEnvelopeFields"],
     [windowsHost, "mountToken"],
     [windowsHost, "IsKnownExampleAppId"],
+    [windowsHost, "get_BrowserVersionString"],
+    [windowsHost, "WebView2RuntimeMeetsMinimum"],
+    [windowsHost, "WebView2 runtime version 1.0.2592 or later is required"],
+    [windowsHost, "RunRuntimeLoadSmoke"],
+    [windowsHost, "StorageNotesResponseContainsSmokeValue"],
+    [windowsHost, "windows_smoke_runtime_app_seed_storage"],
+    [windowsBridge, "HasOnlyBridgeRequestFields"],
+    [windowsBridge, "Bridge request contains unknown top-level fields"],
+    [windowsBridge, "Bridge request timestamp must be a finite number"],
     [windowsBridge, "permissionForBridgeMethod"],
     [windowsBridge, "approvedPermissions.contains(permission"],
     [windowsBridge, 'result.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId))'],
@@ -1370,7 +1380,7 @@ function checkNativeStatic() {
   if (!windowsDialogHeader.includes("explicit PlatformDialogs(HWND ownerWindow")) {
     throw new Error("Windows dialogs must accept an owner HWND");
   }
-  for (const snippet of ["LoadLibraryW", "GetProcAddress", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_DLL", "core.step app field does not match the channel-derived app id"]) {
+  for (const snippet of ["LoadLibraryW", "GetProcAddress", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_DLL", 'exeDir / L"zig_core.dll"', "core.step app field does not match the channel-derived app id"]) {
     if (!windowsCore.includes(snippet)) {
       throw new Error(`Windows Zig core bridge missing ${snippet}`);
     }
@@ -1380,7 +1390,7 @@ function checkNativeStatic() {
       throw new Error(`Windows Zig core bridge header missing ${snippet}`);
     }
   }
-  for (const snippet of ["winhttp", "ole32"]) {
+  for (const snippet of ["winhttp", "ole32", "NATIVE_AI_ZIG_CORE_DLL", "copy_if_different"]) {
     if (!windowsCmake.includes(snippet)) {
       throw new Error(`Windows native bridge must link ${snippet}`);
     }
