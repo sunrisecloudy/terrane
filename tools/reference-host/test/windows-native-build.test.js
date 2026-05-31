@@ -291,6 +291,24 @@ test(
       assert.equal(callBridgeBody.result.id, "control_call_bridge");
       assert.equal(callBridgeBody.result.ok, true);
 
+      const appLog = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "app.log",
+            params: {
+              level: "info",
+              message: "Windows control log probe",
+            },
+          },
+        },
+      });
+      assert.equal(appLog.statusCode, 200, appLog.body);
+      assert.equal(JSON.parse(appLog.body).result.ok, true);
+
       const coreStep = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -306,6 +324,45 @@ test(
       const coreStepBody = JSON.parse(coreStep.body);
       assert.equal(coreStepBody.result.id, "control_core_step");
       assert.equal(coreStepBody.result.ok, true);
+
+      const resourceUsage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.resource_usage", args: { appId: "task-workbench" } },
+      });
+      assert.equal(resourceUsage.statusCode, 200, resourceUsage.body);
+      const resourceUsageBody = JSON.parse(resourceUsage.body);
+      assert.equal(resourceUsageBody.result.appId, "task-workbench");
+      assert.equal(Number(resourceUsageBody.result.bridgeCalls) >= 2, true);
+      assert.equal(Number(resourceUsageBody.result.coreEvents) >= 1, true);
+
+      const eventLog = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.event_log", args: { appId: "task-workbench" } },
+      });
+      assert.equal(eventLog.statusCode, 200, eventLog.body);
+      assert.equal(JSON.parse(eventLog.body).result.bridgeCalls.some((row) => row.method === "storage.set"), true);
+      assert.equal(JSON.parse(eventLog.body).result.coreEvents.length >= 1, true);
+
+      const consoleLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.console_logs", args: { appId: "task-workbench" } },
+      });
+      assert.equal(consoleLogs.statusCode, 200, consoleLogs.body);
+      assert.equal(
+        JSON.parse(consoleLogs.body).result.logs.some((row) => row.params?.message === "Windows control log probe"),
+        true,
+      );
+
+      const missingResourceAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.resource_usage", args: {} },
+      });
+      assert.equal(missingResourceAppId.statusCode, 400);
+      assert.equal(JSON.parse(missingResourceAppId.body).error.code, "invalid_request");
 
       const dbSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
@@ -386,7 +443,7 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'accepted' AND error_code IS NULL").get().count),
-          1,
+          2,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.capabilities' AND decision = 'accepted' AND error_code IS NULL").get().count),
@@ -394,6 +451,18 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.core_step' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.resource_usage' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.event_log' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.console_logs' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(

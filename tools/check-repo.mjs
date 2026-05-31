@@ -119,6 +119,14 @@ function checkSqliteMigrations() {
       "migration_runs",
       "app_install_reports",
       "backup_exports",
+      "crdt_notebooks",
+      "crdt_documents",
+      "crdt_updates",
+      "crdt_heads",
+      "crdt_actors",
+      "crdt_permissions",
+      "crdt_proposals",
+      "crdt_sync_cursors",
     ];
     const existing = new Set(db.all("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name));
     const missing = requiredTables.filter((table) => !existing.has(table));
@@ -1666,6 +1674,12 @@ function checkNativeStatic() {
     "control.sessions.end",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "ResourceUsageJson",
+    "EventLogJson",
+    "ConsoleLogsJson",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -1699,6 +1713,7 @@ function checkNativeStatic() {
   }
   for (const snippet of [
     "Windows dev control health route is debug-only, loopback-bound, token-gated, and audited",
+    "Windows dev control exposes DB-backed resource and log inspection commands",
     "X-Platform-Control-Token",
     "control_auth_required",
     "platform.health",
@@ -1714,6 +1729,9 @@ function checkNativeStatic() {
     "\"/sessions\"",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
     "db.snapshot",
     "db.query_app_storage",
     "control_call_bridge",

@@ -114,6 +114,17 @@ std::wstring SqliteValueJson(sqlite3_stmt* statement, int index) {
   }
 }
 
+std::wstring RawJsonOrNull(std::wstring const& text) {
+  if (text.empty()) {
+    return L"null";
+  }
+  json::JsonValue parsed{nullptr};
+  if (!json::JsonValue::TryParse(text, parsed)) {
+    return L"null";
+  }
+  return text;
+}
+
 std::wstring NowIso() {
   SYSTEMTIME time{};
   GetSystemTime(&time);
@@ -188,6 +199,32 @@ std::optional<json::JsonObject> OptionalObjectMember(json::JsonObject const& obj
     return std::nullopt;
   }
   return value.GetObject();
+}
+
+bool OptionalArgsAppId(json::JsonObject const& command, std::wstring const& tool, std::wstring* appId, std::wstring* error) {
+  appId->clear();
+  if (!command.HasKey(L"args")) {
+    return true;
+  }
+  auto args = OptionalObjectMember(command, L"args");
+  if (!args.has_value()) {
+    *error = tool + L" requires args object";
+    return false;
+  }
+  if (!args->HasKey(L"appId")) {
+    return true;
+  }
+  auto value = OptionalStringMember(args.value(), L"appId");
+  if (!value.has_value()) {
+    *error = tool + L" appId must be a string";
+    return false;
+  }
+  *appId = value.value();
+  if (!appId->empty() && !IsValidAppId(*appId)) {
+    *error = tool + L" appId is not a valid generated app id";
+    return false;
+  }
+  return true;
 }
 
 std::wstring ObjectMemberJsonOr(json::JsonObject const& object, std::wstring const& key, std::wstring const& fallback) {
@@ -606,6 +643,55 @@ struct DevControlPlane::Impl {
     return count;
   }
 
+  int64_t ScalarInt(char const* sql, std::vector<std::wstring> const& values) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      return 0;
+    }
+    sqlite3_stmt* statement = nullptr;
+    int64_t value = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+      for (size_t index = 0; index < values.size(); ++index) {
+        BindText(statement, static_cast<int>(index + 1), values[index]);
+      }
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        value = sqlite3_column_int64(statement, 0);
+      }
+    }
+    sqlite3_finalize(statement);
+    return value;
+  }
+
+  std::wstring ResourceUsageJson(std::wstring const& appId) {
+    auto since = NowIso();
+    if (appId.empty()) {
+      return L"";
+    }
+    auto storageBytes = ScalarInt(
+        "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?",
+        {appId});
+    auto bridgeCalls = ScalarInt("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?", {appId});
+    auto coreEvents = ScalarInt("SELECT COUNT(*) FROM core_events WHERE app_id = ?", {appId});
+    auto networkRequests = ScalarInt(
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'network.request' AND created_at >= datetime('now', '-60 seconds')",
+        {appId});
+    auto logLines = ScalarInt(
+        "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'app.log' AND created_at >= datetime('now', '-60 seconds')",
+        {appId});
+    auto packageBytes = ScalarInt(
+        "SELECT COALESCE(SUM(f.size_bytes), 0) FROM app_files f JOIN app_versions v ON v.install_id = f.install_id WHERE v.app_id = ?",
+        {appId});
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"storageBytes\":" + std::to_wstring(storageBytes) +
+        L",\"bridgeCalls\":" + std::to_wstring(bridgeCalls) +
+        L",\"coreEvents\":" + std::to_wstring(coreEvents) +
+        L",\"networkRequestsLastMinute\":" + std::to_wstring(networkRequests) +
+        L",\"logLinesLastMinute\":" + std::to_wstring(logLines) +
+        L",\"domNodes\":0,\"timers\":0,\"packageBytes\":" + std::to_wstring(packageBytes) +
+        L",\"measuredAt\":" + JsonString(since) + L"}";
+  }
+
   struct ControlSessionRecord {
     std::wstring controlSessionId;
     std::wstring runtimeSessionId;
@@ -1008,6 +1094,51 @@ struct DevControlPlane::Impl {
         L",\"coreEvents\":" + CoreEventRowsJson(db, record.appId) + L"}";
   }
 
+  std::wstring EventLogJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    return L"{\"appId\":" + JsonNullableString(appId) +
+        L",\"bridgeCalls\":" + BridgeCallRowsJson(db, appId) +
+        L",\"coreEvents\":" + CoreEventRowsJson(db, appId) + L"}";
+  }
+
+  std::wstring ConsoleLogsJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    char const* sql = appId.empty()
+        ? "SELECT bridge_call_id, app_id, params_json, created_at FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at LIMIT 100"
+        : "SELECT bridge_call_id, app_id, params_json, created_at FROM bridge_calls WHERE method = 'app.log' AND app_id = ? ORDER BY created_at LIMIT 100";
+    sqlite3_stmt* statement = nullptr;
+    std::wstring logs = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+      if (!appId.empty()) {
+        BindText(statement, 1, appId);
+      }
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (!first) {
+          logs += L",";
+        }
+        first = false;
+        logs += L"{\"bridgeCallId\":" + JsonString(ColumnText(statement, 0)) +
+            L",\"appId\":" + JsonNullableString(ColumnText(statement, 1)) +
+            L",\"params\":" + RawJsonOrNull(ColumnText(statement, 2)) +
+            L",\"createdAt\":" + JsonString(ColumnText(statement, 3)) + L"}";
+      }
+    }
+    sqlite3_finalize(statement);
+    logs += L"]";
+    return L"{\"appId\":" + JsonNullableString(appId) + L",\"logs\":" + logs + L"}";
+  }
+
   std::wstring SessionCapabilitiesJson(std::wstring const& childControlSessionId, std::wstring* error) {
     PlatformDatabase database(databasePath);
     sqlite3* db = database.handle();
@@ -1303,6 +1434,44 @@ struct DevControlPlane::Impl {
       result = SessionCapabilitiesJson(sessionId, &error);
       if (result.empty()) {
         SendControlRouteError(client, L"", tool, method, path, started, L"not_found", error.empty() ? L"Control session not found" : error, 400);
+        return;
+      }
+    } else if (tool == L"runtime.resource_usage") {
+      std::wstring appId;
+      std::wstring appIdError;
+      if (!OptionalArgsAppId(command, tool, &appId, &appIdError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", appIdError, 400);
+        return;
+      }
+      if (appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.resource_usage requires appId", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = ResourceUsageJson(appId);
+    } else if (tool == L"runtime.event_log" || tool == L"runtime.console_logs") {
+      std::wstring appId;
+      std::wstring appIdError;
+      if (!OptionalArgsAppId(command, tool, &appId, &appIdError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", appIdError, 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = tool == L"runtime.event_log" ? EventLogJson(appId, &error) : ConsoleLogsJson(appId, &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
         return;
       }
     } else if (tool == L"db.snapshot" ||

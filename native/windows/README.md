@@ -53,12 +53,13 @@ Implemented now (source/static verified here; runtime smoke is Windows-only):
 - `GET /health` returns Windows target health and records accepted/rejected control audit rows in SQLite.
 - Session routes create/end control sessions, create linked runtime sessions when `appId` is supplied, and expose DB-backed snapshot/events/capabilities responses.
 - `POST /sessions/:id/command` supports `platform.health`, `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step`; bridge/core commands are app-bound, reject ended sessions, and dispatch through the native WebBridge on the host thread.
+- `POST /sessions/:id/command` supports DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs` inspection over storage, bridge-call, core-event, and `app.log` rows.
 - `POST /sessions/:id/command` supports safe DB inspection through `db.snapshot` and fixed `db.query_app_storage`, `db.query_app_versions`, `db.query_bridge_calls`, `db.query_core_events`, and `db.query_test_runs` commands. These use fixed table/column allowlists and do not expose arbitrary SQL.
 - Release builds reject dev-control startup flags and environment enablement.
 
 Remaining protocol work:
 
-- UI control, bridge inspection, storage mocks, network mocks, dialog mocks, replay, and backup/debug-bundle import/export are not implemented on Windows yet.
+- UI control, storage mocks, network mocks, dialog mocks, replay, and backup/debug-bundle import/export are not implemented on Windows yet.
 
 See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 

@@ -78,6 +78,12 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "control.sessions.end",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "ResourceUsageJson",
+    "EventLogJson",
+    "ConsoleLogsJson",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -134,5 +140,27 @@ test("Windows dev control database inspection uses fixed allowlisted queries onl
     "sqlite3_exec(db, WideToUtf8",
   ]) {
     assert.equal(control.includes(forbidden), false, `Windows DB control source should not contain ${forbidden}`);
+  }
+});
+
+test("Windows dev control exposes DB-backed resource and log inspection commands", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "OptionalArgsAppId",
+    "runtime.resource_usage requires appId",
+    "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?",
+    "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?",
+    "SELECT COUNT(*) FROM core_events WHERE app_id = ?",
+    "networkRequestsLastMinute",
+    "logLinesLastMinute",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "BridgeCallRowsJson(db, appId)",
+    "CoreEventRowsJson(db, appId)",
+    "WHERE method = 'app.log'",
+    "RawJsonOrNull",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows resource/log control source should contain ${snippet}`);
   }
 });
