@@ -217,6 +217,18 @@ class AndroidDevControlPlane(
             )
             bridgeCommand(appId, "core.step", JSONObject(mapOf("event" to event)), "android_control_core_step")
         }
+        "runtime.storage_get" -> {
+            val appId = requiredString(args, "appId")
+            bridgeCommand(appId, "storage.get", storageGetParams(args), "android_control_storage_get")
+        }
+        "runtime.storage_set" -> {
+            val appId = requiredString(args, "appId")
+            bridgeCommand(appId, "storage.set", storageSetParams(args), "android_control_storage_set")
+        }
+        "runtime.assert_storage" -> runtimeAssertStorage(args)
+        "runtime.resource_usage" -> runtimeResourceUsageJson(requiredString(args, "appId"))
+        "runtime.event_log" -> runtimeEventLogJson(requiredString(args, "appId"))
+        "runtime.console_logs" -> runtimeConsoleLogsJson(requiredString(args, "appId"))
         "db.snapshot" -> dbSnapshotJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
@@ -228,6 +240,101 @@ class AndroidDevControlPlane(
 
     private fun bridgeCommand(appId: String, method: String, params: JSONObject, id: String): JSONObject =
         bridge.handleControlBridgeCall(appId = appId, method = method, params = params, id = id)
+
+    private fun storageGetParams(args: JSONObject): JSONObject {
+        val params = JSONObject().put("key", requiredStorageString(args, "key", "runtime.storage_get requires appId and key"))
+        if (args.has("defaultValue")) {
+            params.put("defaultValue", args.opt("defaultValue") ?: JSONObject.NULL)
+        }
+        return params
+    }
+
+    private fun storageSetParams(args: JSONObject): JSONObject {
+        if (!args.has("value")) {
+            throw ControlCommandException(400, "invalid_request", "runtime.storage_set requires appId, key, and value")
+        }
+        return JSONObject()
+            .put("key", requiredStorageString(args, "key", "runtime.storage_set requires appId, key, and value"))
+            .put("value", args.opt("value") ?: JSONObject.NULL)
+    }
+
+    private fun runtimeAssertStorage(args: JSONObject): JSONObject {
+        if (!args.has("value")) {
+            throw ControlCommandException(400, "invalid_request", "runtime.assert_storage requires appId, key, and value")
+        }
+        val appId = requiredString(args, "appId")
+        val key = requiredStorageString(args, "key", "runtime.assert_storage requires appId, key, and value")
+        val response = bridgeCommand(appId, "storage.get", JSONObject().put("key", key), "android_control_storage_assert_get")
+        if (!response.optBoolean("ok")) {
+            val error = response.optJSONObject("error")
+            throw ControlCommandException(
+                400,
+                error?.optString("code")?.ifBlank { "assertion_failed" } ?: "assertion_failed",
+                error?.optString("message")?.ifBlank { "Storage assertion read failed" } ?: "Storage assertion read failed",
+            )
+        }
+        val actual = response.optJSONObject("result")?.opt("value") ?: JSONObject.NULL
+        val expected = args.opt("value") ?: JSONObject.NULL
+        if (!jsonValuesEqual(actual, expected)) {
+            throw ControlCommandException(400, "assertion_failed", "Storage value did not match expected value")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId)
+            .put("key", key)
+            .put("value", actual)
+    }
+
+    private fun runtimeResourceUsageJson(appId: String): JSONObject = JSONObject()
+        .put("appId", appId)
+        .put("storageKeys", scalarLong("SELECT COUNT(*) FROM app_storage WHERE app_id = ?", arrayOf(appId)))
+        .put("storageBytes", scalarLong("SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?", arrayOf(appId)))
+        .put("bridgeCalls", scalarLong("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?", arrayOf(appId)))
+        .put("coreEvents", scalarLong("SELECT COUNT(*) FROM core_events WHERE app_id = ?", arrayOf(appId)))
+        .put("coreActions", scalarLong("SELECT COUNT(*) FROM core_actions WHERE app_id = ?", arrayOf(appId)))
+        .put("networkRequestsLastMinute", scalarLong("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'network.request' AND datetime(created_at) >= datetime('now', '-60 seconds')", arrayOf(appId)))
+        .put("logLinesLastMinute", scalarLong("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'app.log' AND datetime(created_at) >= datetime('now', '-60 seconds')", arrayOf(appId)))
+
+    private fun runtimeEventLogJson(appId: String): JSONObject = JSONObject()
+        .put("appId", appId)
+        .put("bridgeCalls", tableRows("bridge_calls", "app_id", appId))
+        .put("coreEvents", tableRows("core_events", "app_id", appId))
+        .put("coreActions", tableRows("core_actions", "app_id", appId))
+
+    private fun runtimeConsoleLogsJson(appId: String): JSONObject = JSONObject()
+        .put("appId", appId)
+        .put("logs", consoleLogRows(appId))
+
+    private fun consoleLogRows(appId: String): JSONArray {
+        val rows = JSONArray()
+        database.readableDatabase.rawQuery(
+            "SELECT bridge_call_id, app_id, params_json, error_json, created_at FROM bridge_calls WHERE app_id = ? AND method = 'app.log' ORDER BY created_at LIMIT 100",
+            arrayOf(appId),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val params = parseJsonObject(cursor.getString(2)) ?: JSONObject()
+                val level = params.optString("level")
+                val message = params.optString("message")
+                rows.put(
+                    JSONObject()
+                        .put("bridgeCallId", cursor.getString(0))
+                        .put("appId", cursor.getString(1))
+                        .put("level", if (level.isBlank()) JSONObject.NULL else level)
+                        .put("message", if (message.isBlank()) JSONObject.NULL else message)
+                        .put("params", params)
+                        .put("error", cursor.getString(3)?.let { parseJsonObject(it) ?: it } ?: JSONObject.NULL)
+                        .put("createdAt", cursor.getString(4)),
+                )
+            }
+        }
+        return rows
+    }
+
+    private fun scalarLong(sql: String, selectionArgs: Array<String>): Long {
+        database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getLong(0) else 0L
+        }
+    }
 
     private fun healthJson(): JSONObject = JSONObject(
         mapOf(
@@ -254,6 +361,12 @@ class AndroidDevControlPlane(
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
+                    "runtime.storage_get",
+                    "runtime.storage_set",
+                    "runtime.assert_storage",
+                    "runtime.resource_usage",
+                    "runtime.event_log",
+                    "runtime.console_logs",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -386,6 +499,9 @@ class AndroidDevControlPlane(
     private fun requiredString(args: JSONObject, key: String): String =
         args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", "Control command requires $key") }
 
+    private fun requiredStorageString(args: JSONObject, key: String, message: String): String =
+        args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", message) }
+
     private fun writeControlTokenFile() {
         context.openFileOutput(tokenPath.name, Context.MODE_PRIVATE).use { output ->
             output.write("$token\n".toByteArray(Charsets.UTF_8))
@@ -440,6 +556,31 @@ class AndroidDevControlPlane(
         if (body.isBlank()) null else JSONObject(body)
     } catch (_: Exception) {
         null
+    }
+
+    private fun parseJsonObject(text: String?): JSONObject? = try {
+        if (text.isNullOrBlank()) null else JSONObject(text)
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun jsonValuesEqual(left: Any?, right: Any?): Boolean {
+        val normalizedLeft = left ?: JSONObject.NULL
+        val normalizedRight = right ?: JSONObject.NULL
+        if (normalizedLeft == JSONObject.NULL && normalizedRight == JSONObject.NULL) return true
+        if (normalizedLeft is JSONObject && normalizedRight is JSONObject) {
+            val leftKeys = normalizedLeft.keys().asSequence().toSet()
+            val rightKeys = normalizedRight.keys().asSequence().toSet()
+            return leftKeys == rightKeys && leftKeys.all { key -> jsonValuesEqual(normalizedLeft.opt(key), normalizedRight.opt(key)) }
+        }
+        if (normalizedLeft is JSONArray && normalizedRight is JSONArray) {
+            if (normalizedLeft.length() != normalizedRight.length()) return false
+            return (0 until normalizedLeft.length()).all { index -> jsonValuesEqual(normalizedLeft.opt(index), normalizedRight.opt(index)) }
+        }
+        if (normalizedLeft is Number && normalizedRight is Number) {
+            return normalizedLeft.toDouble() == normalizedRight.toDouble()
+        }
+        return normalizedLeft == normalizedRight
     }
 
     private fun controlOk(result: JSONObject): JSONObject = JSONObject(mapOf("ok" to true, "result" to result))

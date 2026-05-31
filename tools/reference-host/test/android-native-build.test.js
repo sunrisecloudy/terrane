@@ -156,6 +156,49 @@ test("Android debug dev control plane is loopback-bound, token-gated, audited, a
   }
 });
 
+test("Android debug dev control exposes storage and basic observability commands", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+
+  for (const snippet of [
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.assert_storage",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "storageGetParams",
+    "storageSetParams",
+    "runtimeAssertStorage",
+    "runtimeResourceUsageJson",
+    "runtimeEventLogJson",
+    "runtimeConsoleLogsJson",
+    "android_control_storage_get",
+    "android_control_storage_set",
+    "android_control_storage_assert_get",
+    "storage.get",
+    "storage.set",
+    "runtime.storage_get requires appId and key",
+    "runtime.storage_set requires appId, key, and value",
+    "runtime.assert_storage requires appId, key, and value",
+    "Storage value did not match expected value",
+    "SELECT COUNT(*) FROM app_storage WHERE app_id = ?",
+    "SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?",
+    "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?",
+    "SELECT COUNT(*) FROM core_events WHERE app_id = ?",
+    "SELECT COUNT(*) FROM core_actions WHERE app_id = ?",
+    "WHERE app_id = ? AND method = 'app.log'",
+    "jsonValuesEqual",
+    "scalarLong",
+    "consoleLogRows",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android storage/observability control source should contain ${snippet}`);
+  }
+
+  assert.equal(bridge.includes("recordBridgeCall(request, responseText, startedAtMs)"), true);
+  assert.equal(bridge.includes("recordCoreStep(request, responseText)"), true);
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {

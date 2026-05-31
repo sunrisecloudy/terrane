@@ -117,6 +117,7 @@
 - [x] Source/static checks verify Android WebView bridge hardening: `WEB_MESSAGE_LISTENER` feature gate, single internal origin allowlist, no `addJavascriptInterface`, file-URL access disabled, release debugging disabled, and Safe Browsing enabled.
 - [x] Source/static and debug APK build checks verify Android `network.request` uses OkHttp with manifest policy enforcement and timeout clamping.
 - [x] Source/static and debug APK build checks verify Android debug dev control first slice is debug-only, loopback-bound, private-token-file gated, SQLite-audited, exposes health/session/control routes, routes `runtime.capabilities` / `runtime.call_bridge` / `runtime.core_step` through the native bridge, and restricts DB inspection to allowlisted queries.
+- [x] Source/static and debug APK build checks verify Android debug dev control routes `runtime.storage_get`, `runtime.storage_set`, `runtime.assert_storage`, `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs` through native bridge and fixed SQLite readers.
 
 ### Windows
 
