@@ -84,6 +84,8 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "ResourceUsageJson",
     "EventLogJson",
     "ConsoleLogsJson",
+    "db.export_debug_bundle",
+    "DbExportDebugBundleJson",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -93,6 +95,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "SafeTableRowsJson",
     "DbSnapshotJson",
     "DbQueryRowsJson",
+    "INSERT OR REPLACE INTO backup_exports",
     "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
@@ -140,6 +143,34 @@ test("Windows dev control database inspection uses fixed allowlisted queries onl
     "sqlite3_exec(db, WideToUtf8",
   ]) {
     assert.equal(control.includes(forbidden), false, `Windows DB control source should not contain ${forbidden}`);
+  }
+});
+
+test("Windows dev control exports debug bundles through backup_exports", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "db.export_debug_bundle",
+    "DbExportDebugBundleJson",
+    "debug-bundle",
+    "runtimeCapabilities",
+    "runtimeSessions",
+    "bridgeCalls",
+    "controlSessions",
+    "controlCommands",
+    "coreEvents",
+    "coreActions",
+    "runtimeSnapshots",
+    "testRuns",
+    "contentHash",
+    "sha256:",
+    "INSERT OR REPLACE INTO backup_exports",
+    "source_platform",
+    "runtime_version",
+    "export_json",
+    "content_hash",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows debug bundle source should contain ${snippet}`);
   }
 });
 

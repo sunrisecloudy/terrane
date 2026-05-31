@@ -1049,6 +1049,66 @@ struct DevControlPlane::Impl {
     return L"{\"rows\":" + rows + L"}";
   }
 
+  std::wstring DbExportDebugBundleJson(std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    auto exportId = MakeId(L"export");
+    auto createdAt = NowIso();
+    auto documentWithoutHash = L"{\"exportId\":" + JsonString(exportId) +
+        L",\"type\":\"debug-bundle\"" +
+        L",\"createdAt\":" + JsonString(createdAt) +
+        L",\"runtimeVersion\":\"0.4.0\"" +
+        L",\"source\":{\"platform\":\"windows\",\"target\":\"windows\"}" +
+        L",\"apps\":" + SafeTableRowsJson(db, "apps", {"id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"}, "id") +
+        L",\"appVersions\":" + SafeTableRowsJson(db, "app_versions", {"install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "manifest_hash", "content_hash", "signature_json", "trust_level", "status", "created_at", "activated_at"}, "created_at") +
+        L",\"appFiles\":" + SafeTableRowsJson(db, "app_files", {"install_id", "path", "content_text", "content_hash", "size_bytes", "mime", "created_at"}, "path") +
+        L",\"appPermissions\":" + SafeTableRowsJson(db, "app_permissions", {"install_id", "app_id", "permission", "requested", "approved", "approved_at", "reason"}, "permission") +
+        L",\"appStorage\":" + SafeTableRowsJson(db, "app_storage", {"app_id", "key", "value_json", "updated_at"}, "updated_at") +
+        L",\"appInstallReports\":" + SafeTableRowsJson(db, "app_install_reports", {"report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"}, "created_at") +
+        L",\"appMigrations\":" + SafeTableRowsJson(db, "app_migrations", {"migration_id", "app_id", "from_data_version", "to_data_version", "migration_json", "content_hash", "created_at"}, "created_at") +
+        L",\"runtimeCapabilities\":" + RuntimeCapabilitiesJson(L"") +
+        L",\"debug\":{\"runtimeSessions\":" + SafeTableRowsJson(db, "runtime_sessions", {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"}, "started_at") +
+        L",\"bridgeCalls\":" + SafeTableRowsJson(db, "bridge_calls", {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"}, "created_at") +
+        L",\"controlSessions\":" + SafeTableRowsJson(db, "control_sessions", {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"}, "started_at") +
+        L",\"controlCommands\":" + SafeTableRowsJson(db, "control_commands", {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "args_json", "result_json", "error_json", "created_at", "duration_ms"}, "created_at") +
+        L",\"coreEvents\":" + SafeTableRowsJson(db, "core_events", {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"}, "created_at") +
+        L",\"coreActions\":" + SafeTableRowsJson(db, "core_actions", {"action_id", "event_id", "session_id", "app_id", "action_json", "created_at"}, "created_at") +
+        L",\"runtimeSnapshots\":" + SafeTableRowsJson(db, "runtime_snapshots", {"snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"}, "created_at") +
+        L",\"testRuns\":" + SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"}, "started_at") +
+        L"}}";
+    auto contentHash = L"sha256:" + Sha256Hex(documentWithoutHash);
+    auto document = documentWithoutHash.substr(0, documentWithoutHash.size() - 1) +
+        L",\"contentHash\":" + JsonString(contentHash) + L"}";
+
+    sqlite3_stmt* statement = nullptr;
+    bool ok = sqlite3_prepare_v2(
+                  db,
+                  "INSERT OR REPLACE INTO backup_exports "
+                  "(export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) "
+                  "VALUES (?, 'debug-bundle', 'windows', '0.4.0', ?, ?, ?)",
+                  -1,
+                  &statement,
+                  nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(statement, 1, exportId);
+      BindText(statement, 2, document);
+      BindText(statement, 3, contentHash);
+      BindText(statement, 4, createdAt);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    if (!ok) {
+      *error = L"Could not record debug bundle export";
+      return L"";
+    }
+    return document;
+  }
+
   std::wstring SessionSnapshotJson(std::wstring const& childControlSessionId, std::wstring* error) {
     PlatformDatabase database(databasePath);
     sqlite3* db = database.handle();
@@ -1472,6 +1532,19 @@ struct DevControlPlane::Impl {
       result = tool == L"runtime.event_log" ? EventLogJson(appId, &error) : ConsoleLogsJson(appId, &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
+        return;
+      }
+    } else if (tool == L"db.export_debug_bundle") {
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = DbExportDebugBundleJson(&error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not export debug bundle" : error, 500);
         return;
       }
     } else if (tool == L"db.snapshot" ||

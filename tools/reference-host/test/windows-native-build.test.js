@@ -409,6 +409,31 @@ test(
         assert.equal(Array.isArray(JSON.parse(response.body).result.rows), true);
       }
 
+      const debugBundle = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.export_debug_bundle", args: {} },
+      });
+      assert.equal(debugBundle.statusCode, 200, debugBundle.body);
+      const debugBundleBody = JSON.parse(debugBundle.body);
+      assert.equal(debugBundleBody.result.type, "debug-bundle");
+      assert.equal(debugBundleBody.result.source.platform, "windows");
+      assert.equal(debugBundleBody.result.source.target, "windows");
+      assert.match(debugBundleBody.result.contentHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(Array.isArray(debugBundleBody.result.apps), true);
+      assert.equal(Array.isArray(debugBundleBody.result.appStorage), true);
+      assert.equal(typeof debugBundleBody.result.runtimeCapabilities, "object");
+      assert.equal(Array.isArray(debugBundleBody.result.debug.runtimeSessions), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.bridgeCalls), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.controlCommands), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.coreEvents), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.coreActions), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.runtimeSnapshots), true);
+      assert.equal(Array.isArray(debugBundleBody.result.debug.testRuns), true);
+      assert.equal(debugBundleBody.result.debug.bridgeCalls.some((row) => row.method === "storage.set"), true);
+      assert.equal(debugBundleBody.result.debug.coreEvents.length >= 1, true);
+      assert.equal(debugBundleBody.result.debug.coreActions.length >= 1, true);
+
       const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -474,11 +499,23 @@ test(
           1,
         );
         assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.export_debug_bundle' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM backup_exports WHERE type = 'debug-bundle' AND source_platform = 'windows' AND content_hash = ?").get(debugBundleBody.result.contentHash).count),
+          1,
+        );
+        assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.set' AND app_id = 'task-workbench'").get().count) >= 1,
           true,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM core_events WHERE app_id = 'task-workbench'").get().count) >= 1,
+          true,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM core_actions WHERE app_id = 'task-workbench'").get().count) >= 1,
           true,
         );
       } finally {
