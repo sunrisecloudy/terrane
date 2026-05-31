@@ -130,6 +130,7 @@
 - [ ] Storage persists.
 - [ ] Debug dev control plane runtime-smoke verifies per-launch token file, loopback bind, token-gated `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and accepted/rejected audit rows.
 - [x] Source/static checks verify Windows debug dev control supports `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
+- [x] Source/static checks verify Windows debug dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [ ] Debug dev control plane runtime-smoke verifies `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
 - [ ] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 

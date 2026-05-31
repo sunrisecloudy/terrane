@@ -12,6 +12,7 @@
 #include "PlatformDatabase.h"
 #include "PlatformStorage.h"
 #include "WebViewHost.h"
+#include "ZigCoreBridge.h"
 
 #include <algorithm>
 #include <array>
@@ -389,6 +390,26 @@ std::wstring CanonicalJsonValue(json::IJsonValue const& value) {
     }
   }
   return std::wstring(value.Stringify().c_str());
+}
+
+bool JsonMatchesSubset(json::IJsonValue const& actual, json::IJsonValue const& expected) {
+  if (expected.ValueType() != json::JsonValueType::Object) {
+    return CanonicalJsonValue(actual) == CanonicalJsonValue(expected);
+  }
+  if (actual.ValueType() != json::JsonValueType::Object) {
+    return false;
+  }
+  auto actualObject = actual.GetObject();
+  auto expectedObject = expected.GetObject();
+  for (auto const& pair : expectedObject) {
+    if (!actualObject.HasKey(pair.Key())) {
+      return false;
+    }
+    if (!JsonMatchesSubset(actualObject.GetNamedValue(pair.Key()), pair.Value())) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::optional<std::wstring> TextValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
@@ -2059,6 +2080,198 @@ struct DevControlPlane::Impl {
     return rows;
   }
 
+  std::wstring CoreEventSnapshotRowsJson(sqlite3* db, std::wstring const& appId) {
+    char const* sql =
+        "SELECT event_id, session_id, app_id, install_id, state_version_before, event_json, created_at "
+        "FROM core_events WHERE app_id = ? ORDER BY created_at";
+    sqlite3_stmt* statement = nullptr;
+    std::wstring rows = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (!first) {
+          rows += L",";
+        }
+        first = false;
+        rows += L"{\"eventId\":" + JsonString(ColumnText(statement, 0)) +
+            L",\"sessionId\":" + JsonNullableString(ColumnText(statement, 1)) +
+            L",\"appId\":" + JsonNullableString(ColumnText(statement, 2)) +
+            L",\"installId\":" + JsonNullableString(ColumnText(statement, 3)) +
+            L",\"stateVersionBefore\":";
+        if (sqlite3_column_type(statement, 4) == SQLITE_NULL) {
+          rows += L"null";
+        } else {
+          rows += std::to_wstring(sqlite3_column_int64(statement, 4));
+        }
+        rows += L",\"eventJson\":" + JsonString(ColumnText(statement, 5)) +
+            L",\"event\":" + RawJsonOrNull(ColumnText(statement, 5)) +
+            L",\"createdAt\":" + JsonString(ColumnText(statement, 6)) + L"}";
+      }
+    }
+    sqlite3_finalize(statement);
+    rows += L"]";
+    return rows;
+  }
+
+  std::wstring CoreActionRowsJson(sqlite3* db, std::wstring const& appId) {
+    char const* sql =
+        "SELECT action_id, event_id, session_id, app_id, action_json, created_at "
+        "FROM core_actions WHERE app_id = ? ORDER BY created_at";
+    sqlite3_stmt* statement = nullptr;
+    std::wstring rows = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (!first) {
+          rows += L",";
+        }
+        first = false;
+        rows += L"{\"actionId\":" + JsonString(ColumnText(statement, 0)) +
+            L",\"eventId\":" + JsonString(ColumnText(statement, 1)) +
+            L",\"sessionId\":" + JsonNullableString(ColumnText(statement, 2)) +
+            L",\"appId\":" + JsonNullableString(ColumnText(statement, 3)) +
+            L",\"actionJson\":" + JsonString(ColumnText(statement, 4)) +
+            L",\"action\":" + RawJsonOrNull(ColumnText(statement, 4)) +
+            L",\"createdAt\":" + JsonString(ColumnText(statement, 5)) + L"}";
+      }
+    }
+    sqlite3_finalize(statement);
+    rows += L"]";
+    return rows;
+  }
+
+  int64_t CoreStateVersion(sqlite3* db, std::wstring const& appId) {
+    sqlite3_stmt* statement = nullptr;
+    int64_t stateVersion = 0;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        stateVersion = sqlite3_column_int64(statement, 0);
+      }
+    }
+    sqlite3_finalize(statement);
+    return stateVersion;
+  }
+
+  std::wstring RuntimeCoreSnapshotJson(std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"stateVersion\":" + std::to_wstring(CoreStateVersion(db, appId)) +
+        L",\"coreEvents\":" + CoreEventSnapshotRowsJson(db, appId) +
+        L",\"coreActions\":" + CoreActionRowsJson(db, appId) + L"}";
+  }
+
+  std::wstring RuntimeAssertCoreActionJson(
+      std::wstring const& appId,
+      std::optional<std::wstring> const& expectedType,
+      std::optional<json::IJsonValue> const& expectedMatch,
+      std::optional<json::IJsonValue> const& expectedAction,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    sqlite3_stmt* statement = nullptr;
+    char const* sql =
+        "SELECT action_json FROM core_actions WHERE app_id = ? ORDER BY created_at";
+    int64_t count = 0;
+    std::wstring actions = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not read core action rows";
+      return L"";
+    }
+    BindText(statement, 1, appId);
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      auto actionJson = ColumnText(statement, 0);
+      json::JsonValue parsed{nullptr};
+      if (!json::JsonValue::TryParse(actionJson, parsed) || parsed.ValueType() != json::JsonValueType::Object) {
+        continue;
+      }
+      auto action = parsed.GetObject();
+      if (expectedType.has_value() &&
+          (!action.HasKey(L"type") ||
+              action.GetNamedValue(L"type").ValueType() != json::JsonValueType::String ||
+              std::wstring(action.GetNamedString(L"type").c_str()) != expectedType.value())) {
+        continue;
+      }
+      if (expectedAction.has_value() && CanonicalJsonValue(parsed) != CanonicalJsonValue(expectedAction.value())) {
+        continue;
+      }
+      if (expectedMatch.has_value() && !JsonMatchesSubset(parsed, expectedMatch.value())) {
+        continue;
+      }
+      if (!first) {
+        actions += L",";
+      }
+      first = false;
+      ++count;
+      actions += std::wstring(parsed.Stringify().c_str());
+    }
+    sqlite3_finalize(statement);
+    actions += L"]";
+    if (count == 0) {
+      *errorCode = L"core_action.not_found";
+      *errorMessage = L"Expected core action was not found";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"count\":" + std::to_wstring(count) +
+        L",\"actions\":" + actions + L"}";
+  }
+
+  std::wstring RuntimeReplayEventsJson(std::wstring const& appId, json::JsonArray const& events) {
+    ZigCoreBridge replayCore;
+    std::wstring rows = L"[";
+    for (uint32_t index = 0; index < events.Size(); ++index) {
+      if (index > 0) {
+        rows += L",";
+      }
+      json::JsonObject params;
+      params.Insert(L"event", events.GetAt(index));
+      BridgeRequest request;
+      request.hasId = true;
+      request.id = L"control_replay_" + std::to_wstring(index);
+      request.method = L"core.step";
+      request.params = params;
+      request.context.appId = appId;
+      request.context.storagePrefix = appId + L":";
+      request.context.approvedPermissions.insert(L"core.step");
+      request.context.mountToken = L"windows-control-replay";
+      auto response = replayCore.Step(request);
+      std::wstring resultJson;
+      if (response.HasKey(L"result")) {
+        resultJson = std::wstring(response.GetNamedValue(L"result").Stringify().c_str());
+      } else {
+        resultJson = L"{\"ok\":false,\"error\":" +
+            (response.HasKey(L"error") ? std::wstring(response.GetNamedValue(L"error").Stringify().c_str()) : L"{\"code\":\"core_error\",\"message\":\"Replay event failed\",\"details\":{}}") +
+            L",\"actions\":[]}";
+      }
+      rows += L"{\"index\":" + std::to_wstring(index) +
+          L",\"event\":" + std::wstring(events.GetAt(index).Stringify().c_str()) +
+          L",\"result\":" + resultJson + L"}";
+    }
+    rows += L"]";
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) + L",\"replay\":" + rows + L"}";
+  }
+
   std::wstring SafeTableRowsJson(
       sqlite3* db,
       char const* table,
@@ -3059,6 +3272,93 @@ struct DevControlPlane::Impl {
         return;
       }
       result = AssertBridgeCallJson(appId.value(), bridgeMethod.value(), &errorCode, &errorMessage);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
+        return;
+      }
+    } else if (tool == L"runtime.core_snapshot") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.core_snapshot requires appId", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.core_snapshot requires appId", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeCoreSnapshotJson(appId.value(), &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read core snapshot" : error, 500);
+        return;
+      }
+    } else if (tool == L"runtime.replay_events") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.replay_events requires appId and events", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      auto events = OptionalArrayMember(args.value(), L"events");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.replay_events requires appId", 400);
+        return;
+      }
+      if (!events.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.replay_events events must be an array", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeReplayEventsJson(appId.value(), events.value());
+    } else if (tool == L"runtime.assert_core_action") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_core_action requires appId", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_core_action requires appId", 400);
+        return;
+      }
+      std::optional<std::wstring> expectedType;
+      if (args->HasKey(L"type")) {
+        auto typeValue = OptionalStringMember(args.value(), L"type");
+        if (!typeValue.has_value() || typeValue->empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_core_action type must be a string", 400);
+          return;
+        }
+        expectedType = typeValue.value();
+      }
+      std::optional<json::IJsonValue> expectedMatch;
+      if (args->HasKey(L"match")) {
+        expectedMatch = args->GetNamedValue(L"match");
+      }
+      std::optional<json::IJsonValue> expectedAction;
+      if (args->HasKey(L"action")) {
+        expectedAction = args->GetNamedValue(L"action");
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeAssertCoreActionJson(appId.value(), expectedType, expectedMatch, expectedAction, &errorCode, &errorMessage);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
         return;

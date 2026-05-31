@@ -519,6 +519,43 @@ test(
       assert.equal(coreStepBody.result.id, "control_core_step");
       assert.equal(coreStepBody.result.ok, true);
 
+      const replayEvents = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.replay_events",
+          args: {
+            appId: "task-workbench",
+            events: [{ type: "CreateTask", payload: { title: "Windows replay task" } }],
+          },
+        },
+      });
+      assert.equal(replayEvents.statusCode, 200, replayEvents.body);
+      const replayEventsBody = JSON.parse(replayEvents.body);
+      assert.equal(replayEventsBody.result.ok, true);
+      assert.equal(replayEventsBody.result.appId, "task-workbench");
+      assert.equal(replayEventsBody.result.replay[0].index, 0);
+      assert.equal(replayEventsBody.result.replay[0].event.payload.title, "Windows replay task");
+
+      const coreSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.core_snapshot", args: { appId: "task-workbench" } },
+      });
+      assert.equal(coreSnapshot.statusCode, 200, coreSnapshot.body);
+      const coreSnapshotBody = JSON.parse(coreSnapshot.body);
+      assert.equal(coreSnapshotBody.result.appId, "task-workbench");
+      assert.equal(Array.isArray(coreSnapshotBody.result.coreEvents), true);
+      assert.equal(Array.isArray(coreSnapshotBody.result.coreActions), true);
+
+      const coreActionAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_core_action", args: { appId: "task-workbench", type: "Toast" } },
+      });
+      assert.equal(coreActionAssert.statusCode, 200, coreActionAssert.body);
+      assert.equal(JSON.parse(coreActionAssert.body).result.ok, true);
+
       const resourceUsage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -834,6 +871,18 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.core_step' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.replay_events' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.core_snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_core_action' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(

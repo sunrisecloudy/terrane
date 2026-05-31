@@ -54,6 +54,7 @@ Implemented now (source/static verified here; runtime smoke is Windows-only):
 - `GET /health` returns Windows target health and records accepted/rejected control audit rows in SQLite.
 - Session routes create/end control sessions, create linked runtime sessions when `appId` is supplied, and expose DB-backed snapshot/events/capabilities responses.
 - `POST /sessions/:id/command` supports `platform.health`, `platform.list_targets`, `platform.list_webapps`, `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step`; bridge/core commands are app-bound, reject ended sessions, and dispatch through the native WebBridge on the host thread.
+- `POST /sessions/:id/command` supports source/static-verified `runtime.replay_events` with a fresh Zig core replay plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - `POST /sessions/:id/command` supports source/static-verified `runtime.storage_get`, `runtime.storage_set`, `runtime.storage_reset` / `platform.reset_webapp`, and `runtime.assert_storage` with native storage-prefix enforcement, confirmation-gated destructive reset, pre-reset runtime snapshots, and `bridge_calls` logging for direct get/set controls.
 - `POST /sessions/:id/command` supports DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors` inspection/assertion over storage, bridge-call, notification, core-event/action, and `app.log` rows.
 - `POST /sessions/:id/command` supports DB-backed `runtime.network_mock_set`, `runtime.network_mock_reset`, and `runtime.dialog_mock_set`; `network.request`, `dialog.openFile`, and `dialog.saveFile` consume matching mock rows before falling back to native effects.
@@ -63,7 +64,7 @@ Implemented now (source/static verified here; runtime smoke is Windows-only):
 
 Remaining protocol work:
 
-- UI control, storage mocks, and replay controls are not implemented on Windows yet.
+- UI control and storage mocks are not implemented on Windows yet.
 
 See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 
