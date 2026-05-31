@@ -294,6 +294,66 @@ test(
       assert.equal(callBridgeBody.result.result.ok, true);
       assert.equal(Number(callBridgeBody.result.result.bytesWritten) > 0, true);
 
+      const controlStorageGet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_get",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-dev-control-key",
+          },
+        },
+      });
+      assert.equal(controlStorageGet.statusCode, 200, controlStorageGet.body);
+      assert.equal(JSON.parse(controlStorageGet.body).result.result.value.source, "linux-dev-control");
+
+      const controlStorageSet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-direct-storage",
+            value: { source: "runtime.storage_set" },
+          },
+        },
+      });
+      assert.equal(controlStorageSet.statusCode, 200, controlStorageSet.body);
+      assert.equal(JSON.parse(controlStorageSet.body).result.result.ok, true);
+
+      const controlStorageAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.assert_storage",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-direct-storage",
+            value: { source: "runtime.storage_set" },
+          },
+        },
+      });
+      assert.equal(controlStorageAssert.statusCode, 200, controlStorageAssert.body);
+      assert.equal(JSON.parse(controlStorageAssert.body).result.ok, true);
+
+      const deniedStoragePrefix = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "notes-lite:wrong-prefix",
+            value: { source: "bad-prefix" },
+          },
+        },
+      });
+      assert.equal(deniedStoragePrefix.statusCode, 200, deniedStoragePrefix.body);
+      assert.equal(JSON.parse(deniedStoragePrefix.body).result.ok, false);
+      assert.equal(JSON.parse(deniedStoragePrefix.body).result.error.code, "permission_denied");
+
       const coreStep = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -723,6 +783,78 @@ test(
       assert.equal(Number(coreActionCount) >= 2, true);
       assert.equal(Number(mockedNetworkBridgeCount) >= 1, true);
       assert.equal(Number(mockedDialogBridgeCount) >= 1, true);
+
+      const resetSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "task-workbench", metadata: { smoke: "linux-storage-reset" } },
+      });
+      assert.equal(resetSession.statusCode, 200, resetSession.body);
+      const resetSessionId = JSON.parse(resetSession.body).result.controlSessionId;
+
+      const storageResetWithoutConfirm = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.storage_reset", args: { appId: "task-workbench" } },
+      });
+      assert.equal(storageResetWithoutConfirm.statusCode, 400);
+      assert.equal(JSON.parse(storageResetWithoutConfirm.body).error.code, "confirmation_required");
+
+      const storageReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.storage_reset", args: { appId: "task-workbench", confirm: true } },
+      });
+      assert.equal(storageReset.statusCode, 200, storageReset.body);
+      assert.equal(JSON.parse(storageReset.body).result.ok, true);
+      assert.equal(Number(JSON.parse(storageReset.body).result.clearedStorageKeys) >= 2, true);
+      assert.equal(Number(JSON.parse(storageReset.body).result.storageRowsDeleted) >= 2, true);
+
+      const storageSetForPlatformReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-platform-reset",
+            value: { source: "platform.reset_webapp" },
+          },
+        },
+      });
+      assert.equal(storageSetForPlatformReset.statusCode, 200, storageSetForPlatformReset.body);
+
+      const platformResetWithoutConfirm = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.reset_webapp", args: { appId: "task-workbench" } },
+      });
+      assert.equal(platformResetWithoutConfirm.statusCode, 400);
+      assert.equal(JSON.parse(platformResetWithoutConfirm.body).error.code, "confirmation_required");
+
+      const platformReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.reset_webapp", args: { appId: "task-workbench", confirm: true } },
+      });
+      assert.equal(platformReset.statusCode, 200, platformReset.body);
+      assert.equal(JSON.parse(platformReset.body).result.ok, true);
+      assert.equal(Number(JSON.parse(platformReset.body).result.clearedStorageKeys) >= 1, true);
+      assert.equal(Number(JSON.parse(platformReset.body).result.clearedBridgeCalls) >= 1, true);
+
+      const storageAfterReset = await requestControl(ready.port, `/sessions/${encodeURIComponent(resetSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_app_storage", args: { appId: "task-workbench" } },
+      });
+      assert.equal(storageAfterReset.statusCode, 200, storageAfterReset.body);
+      assert.equal(JSON.parse(storageAfterReset.body).result.rows.length, 0);
+
+      const resetSessionEnded = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(resetSessionId)}`, {
+        method: "DELETE",
+        token,
+      });
+      assert.equal(resetSessionEnded.statusCode, 200, resetSessionEnded.body);
     } finally {
       if (child) await stopChild(child);
       fs.rmSync(scratch, { recursive: true, force: true });

@@ -65,6 +65,11 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.storage_reset",
+    "platform.reset_webapp",
+    "runtime.assert_storage",
     "runtime.network_mock_set",
     "runtime.network_mock_reset",
     "runtime.dialog_mock_set",
@@ -100,6 +105,46 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
   assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
+});
+
+test("Linux dev control supports direct storage get, set, reset, and assertions", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.storage_reset",
+    "platform.reset_webapp",
+    "runtime.assert_storage",
+    "storage_command_args",
+    "runtime.storage_get requires appId and key",
+    "runtime.storage_set requires appId, key, and value",
+    "runtime.assert_storage requires appId, key, and value",
+    "runtime_storage_bridge_json",
+    "control_storage_get",
+    "control_storage_set",
+    "storage.get",
+    "storage.set",
+    "stored_storage_value_json",
+    "runtime_assert_storage_json",
+    "Expected storage key was not found",
+    "Storage value did not match expected value",
+    "object_boolean_true(args, \"confirm\")",
+    "confirmation_required",
+    "Storage reset command requires confirm: true",
+    "runtime_storage_reset_json",
+    "INSERT INTO runtime_snapshots",
+    "delete_rows_for_app(db, \"app_storage\"",
+    "delete_rows_for_app(db, \"bridge_calls\"",
+    "delete_rows_for_app(db, \"core_events\"",
+    "clearedStorageKeys",
+    "storageRowsDeleted",
+    "clearedBridgeCalls",
+    "clearedCoreEvents",
+    "g_compute_checksum_for_string(G_CHECKSUM_SHA256",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux storage control source should contain ${snippet}`);
+  }
 });
 
 test("Linux dev control exposes DB-backed network and dialog effect mocks", () => {

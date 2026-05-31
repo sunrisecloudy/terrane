@@ -392,6 +392,14 @@ static const gchar *object_string(JsonObject *object, const gchar *member, const
   return fallback;
 }
 
+static gboolean object_boolean_true(JsonObject *object, const gchar *member) {
+  if (object == NULL || !json_object_has_member(object, member)) {
+    return FALSE;
+  }
+  JsonNode *node = json_object_get_member(object, member);
+  return node != NULL && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_BOOLEAN && json_node_get_boolean(node);
+}
+
 static JsonObject *object_object(JsonObject *object, const gchar *member) {
   if (object == NULL || !json_object_has_member(object, member)) {
     return NULL;
@@ -1430,6 +1438,277 @@ static gchar *db_query_rows_json(DevControlPlane *plane, const gchar *tool, cons
   return g_strdup_printf("{\"rows\":%s}", rows);
 }
 
+static gboolean storage_command_args(JsonObject *body, const gchar *tool, gboolean require_value, JsonObject **args_out, const gchar **app_id_out, const gchar **key_out, GError **error) {
+  JsonObject *args = object_object(body, "args");
+  if (args == NULL) {
+    g_set_error(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "%s requires args object", tool);
+    return FALSE;
+  }
+
+  const gchar *app_id = object_string(args, "appId", NULL);
+  const gchar *key = object_string(args, "key", NULL);
+  if (app_id == NULL || app_id[0] == '\0' || key == NULL || key[0] == '\0' || (require_value && !json_object_has_member(args, "value"))) {
+    if (g_strcmp0(tool, "runtime.storage_get") == 0) {
+      g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "runtime.storage_get requires appId and key");
+    } else if (g_strcmp0(tool, "runtime.storage_set") == 0) {
+      g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "runtime.storage_set requires appId, key, and value");
+    } else {
+      g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "runtime.assert_storage requires appId, key, and value");
+    }
+    return FALSE;
+  }
+  if (!valid_generated_app_id(app_id)) {
+    g_set_error(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "%s appId is not a valid generated app id", tool);
+    return FALSE;
+  }
+
+  *args_out = args;
+  *app_id_out = app_id;
+  *key_out = key;
+  return TRUE;
+}
+
+static gchar *runtime_storage_bridge_json(DevControlPlane *plane, const gchar *control_session_id, const gchar *app_id, const gchar *storage_method, JsonObject *args, const gchar *default_request_id) {
+  const gchar *key = object_string(args, "key", "");
+  const gchar *request_id = object_string(args, "id", default_request_id);
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "key");
+  json_builder_add_string_value(builder, key);
+  if (g_strcmp0(storage_method, "storage.get") == 0) {
+    json_builder_set_member_name(builder, "defaultValue");
+    JsonNode *default_value = json_object_get_member(args, "defaultValue");
+    default_value == NULL ? json_builder_add_null_value(builder) : json_builder_add_value(builder, json_node_copy(default_value));
+  } else {
+    json_builder_set_member_name(builder, "value");
+    JsonNode *value = json_object_get_member(args, "value");
+    value == NULL ? json_builder_add_null_value(builder) : json_builder_add_value(builder, json_node_copy(value));
+  }
+  json_builder_end_object(builder);
+  JsonNode *params = json_builder_get_root(builder);
+  g_autofree gchar *bridge_body = bridge_call_request_json(request_id, storage_method, params);
+  json_node_unref(params);
+  g_object_unref(builder);
+
+  AppSandboxContext context = app_sandbox_context_for_app(app_id, control_session_id);
+  return web_bridge_handle_json(plane->bridge, bridge_body, context);
+}
+
+static gchar *stored_storage_value_json(sqlite3 *db, const gchar *app_id, const gchar *key, gboolean *found, GError **error) {
+  *found = FALSE;
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, NULL) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not read app storage: %s", sqlite3_errmsg(db));
+    return NULL;
+  }
+  bind_text(statement, 1, app_id);
+  bind_text(statement, 2, key);
+  gchar *value_json = NULL;
+  gint step = sqlite3_step(statement);
+  if (step == SQLITE_ROW) {
+    const gchar *text = (const gchar *)sqlite3_column_text(statement, 0);
+    value_json = g_strdup(text == NULL ? "null" : text);
+    *found = TRUE;
+  } else if (step != SQLITE_DONE) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not read app storage: %s", sqlite3_errmsg(db));
+  }
+  sqlite3_finalize(statement);
+  return value_json;
+}
+
+static gchar *runtime_assert_storage_json(DevControlPlane *plane, const gchar *app_id, const gchar *key, JsonNode *expected, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  gboolean found = FALSE;
+  g_autofree gchar *actual_json = stored_storage_value_json(db, app_id, key, &found, error);
+  platform_database_close(db);
+  if (!found) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Expected storage key was not found");
+    return NULL;
+  }
+  if (actual_json == NULL) {
+    return NULL;
+  }
+
+  JsonParser *actual_parser = json_parser_new();
+  if (!json_parser_load_from_data(actual_parser, actual_json, -1, NULL)) {
+    g_object_unref(actual_parser);
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Stored value was not valid JSON");
+    return NULL;
+  }
+  g_autofree gchar *actual_canonical = json_node_to_text(json_parser_get_root(actual_parser));
+  g_autofree gchar *expected_canonical = json_node_to_text(expected);
+  if (g_strcmp0(actual_canonical, expected_canonical) != 0) {
+    g_object_unref(actual_parser);
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Storage value did not match expected value");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "key");
+  json_builder_add_string_value(builder, key);
+  json_builder_set_member_name(builder, "value");
+  json_builder_add_value(builder, json_node_copy(json_parser_get_root(actual_parser)));
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_object_unref(actual_parser);
+  return text;
+}
+
+static gint64 count_rows_for_app(sqlite3 *db, const gchar *table, const gchar *app_id) {
+  g_autofree gchar *sql = g_strdup_printf("SELECT COUNT(*) FROM %s WHERE app_id = ?", table);
+  sqlite3_stmt *statement = NULL;
+  gint64 count = 0;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK) {
+    bind_text(statement, 1, app_id);
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      count = sqlite3_column_int64(statement, 0);
+    }
+  }
+  sqlite3_finalize(statement);
+  return count;
+}
+
+static gboolean delete_rows_for_app(sqlite3 *db, const gchar *table, const gchar *app_id, GError **error) {
+  g_autofree gchar *sql = g_strdup_printf("DELETE FROM %s WHERE app_id = ?", table);
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not clear %s: %s", table, sqlite3_errmsg(db));
+    return FALSE;
+  }
+  bind_text(statement, 1, app_id);
+  gboolean ok = sqlite3_step(statement) == SQLITE_DONE;
+  if (!ok) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not clear %s: %s", table, sqlite3_errmsg(db));
+  }
+  sqlite3_finalize(statement);
+  return ok;
+}
+
+static gchar *control_session_runtime_session_id(sqlite3 *db, const gchar *control_session_id) {
+  sqlite3_stmt *statement = NULL;
+  gchar *runtime_session_id = NULL;
+  if (sqlite3_prepare_v2(db, "SELECT runtime_session_id FROM control_sessions WHERE control_session_id = ?", -1, &statement, NULL) == SQLITE_OK) {
+    bind_text(statement, 1, control_session_id);
+    if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_text(statement, 0) != NULL) {
+      runtime_session_id = g_strdup((const gchar *)sqlite3_column_text(statement, 0));
+    }
+  }
+  sqlite3_finalize(statement);
+  return runtime_session_id;
+}
+
+static gchar *runtime_storage_reset_json(DevControlPlane *plane, const gchar *control_session_id, const gchar *app_id, gboolean clear_logs, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  g_autofree gchar *runtime_session_id = control_session_runtime_session_id(db, control_session_id);
+  g_autofree gchar *snapshot_id = make_id("snapshot");
+  g_autofree gchar *created_at = now_iso();
+  g_autofree gchar *install_id = active_install_id(db, app_id);
+  g_autofree gchar *storage_rows = safe_table_rows_json(db, &safe_db_app_storage, app_id);
+
+  JsonBuilder *snapshot_builder = json_builder_new();
+  json_builder_begin_object(snapshot_builder);
+  json_builder_set_member_name(snapshot_builder, "appId");
+  json_builder_add_string_value(snapshot_builder, app_id);
+  json_builder_set_member_name(snapshot_builder, "activeInstallId");
+  install_id == NULL ? json_builder_add_null_value(snapshot_builder) : json_builder_add_string_value(snapshot_builder, install_id);
+  json_builder_set_member_name(snapshot_builder, "storage");
+  json_builder_add_json_text_or_null(snapshot_builder, storage_rows);
+  json_builder_set_member_name(snapshot_builder, "createdAt");
+  json_builder_add_string_value(snapshot_builder, created_at);
+  json_builder_end_object(snapshot_builder);
+  g_autofree gchar *snapshot_json = json_builder_to_text(snapshot_builder);
+  g_object_unref(snapshot_builder);
+  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, snapshot_json, -1);
+  g_autofree gchar *content_hash = g_strdup_printf("sha256:%s", hash);
+
+  char *sql_error = NULL;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &sql_error) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not begin storage reset transaction: %s", sql_error == NULL ? sqlite3_errmsg(db) : sql_error);
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    return NULL;
+  }
+
+  gboolean ok = TRUE;
+  sqlite3_stmt *snapshot = NULL;
+  ok = sqlite3_prepare_v2(
+           db,
+           "INSERT INTO runtime_snapshots (snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at) "
+           "VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)",
+           -1,
+           &snapshot,
+           NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(snapshot, 1, snapshot_id);
+    if (runtime_session_id == NULL) {
+      sqlite3_bind_null(snapshot, 2);
+    } else {
+      bind_text(snapshot, 2, runtime_session_id);
+    }
+    bind_text(snapshot, 3, app_id);
+    if (install_id == NULL) {
+      sqlite3_bind_null(snapshot, 4);
+    } else {
+      bind_text(snapshot, 4, install_id);
+    }
+    bind_text(snapshot, 5, snapshot_json);
+    bind_text(snapshot, 6, content_hash);
+    bind_text(snapshot, 7, created_at);
+    ok = sqlite3_step(snapshot) == SQLITE_DONE;
+  }
+  sqlite3_finalize(snapshot);
+  if (!ok) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not create pre-reset runtime snapshot: %s", sqlite3_errmsg(db));
+    platform_database_close(db);
+    return NULL;
+  }
+
+  gint64 cleared_storage_keys = count_rows_for_app(db, "app_storage", app_id);
+  gint64 cleared_bridge_calls = clear_logs ? count_rows_for_app(db, "bridge_calls", app_id) : 0;
+  gint64 cleared_core_events = clear_logs ? count_rows_for_app(db, "core_events", app_id) : 0;
+  if (!delete_rows_for_app(db, "app_storage", app_id, error) ||
+      (clear_logs && (!delete_rows_for_app(db, "bridge_calls", app_id, error) || !delete_rows_for_app(db, "core_events", app_id, error)))) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    platform_database_close(db);
+    return NULL;
+  }
+
+  if (sqlite3_exec(db, "COMMIT", NULL, NULL, &sql_error) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not commit storage reset: %s", sql_error == NULL ? sqlite3_errmsg(db) : sql_error);
+    sqlite3_free(sql_error);
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    platform_database_close(db);
+    return NULL;
+  }
+  platform_database_close(db);
+
+  return g_strdup_printf(
+      "{\"ok\":true,\"appId\":\"%s\",\"snapshotId\":\"%s\",\"clearedStorageKeys\":%" G_GINT64_FORMAT ",\"storageRowsDeleted\":%" G_GINT64_FORMAT ",\"clearedBridgeCalls\":%" G_GINT64_FORMAT ",\"clearedCoreEvents\":%" G_GINT64_FORMAT "}",
+      app_id,
+      snapshot_id,
+      cleared_storage_keys,
+      cleared_storage_keys,
+      cleared_bridge_calls,
+      cleared_core_events);
+}
+
 static gchar *session_snapshot_json(DevControlPlane *plane, const gchar *control_session_id, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
@@ -1906,6 +2185,95 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     g_autofree gchar *bridge_body = bridge_call_request_json(request_id, bridge_method, params);
     AppSandboxContext context = app_sandbox_context_for_app(app_id, control_session_id);
     result = web_bridge_handle_json(plane->bridge, bridge_body, context);
+  } else if (g_strcmp0(tool, "runtime.storage_get") == 0 ||
+             g_strcmp0(tool, "runtime.storage_set") == 0) {
+    JsonObject *args = NULL;
+    const gchar *app_id = NULL;
+    const gchar *key = NULL;
+    if (!storage_command_args(body, tool, g_strcmp0(tool, "runtime.storage_set") == 0, &args, &app_id, &key, &error)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", error != NULL ? error->message : "Storage command requires args", SOUP_STATUS_BAD_REQUEST);
+      g_clear_error(&error);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (plane->bridge == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "platform_unsupported", "Linux dev control bridge is not available", SOUP_STATUS_SERVICE_UNAVAILABLE);
+      return;
+    }
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = g_strcmp0(tool, "runtime.storage_get") == 0
+        ? runtime_storage_bridge_json(plane, control_session_id, app_id, "storage.get", args, "control_storage_get")
+        : runtime_storage_bridge_json(plane, control_session_id, app_id, "storage.set", args, "control_storage_set");
+    (void)key;
+  } else if (g_strcmp0(tool, "runtime.assert_storage") == 0) {
+    JsonObject *args = NULL;
+    const gchar *app_id = NULL;
+    const gchar *key = NULL;
+    if (!storage_command_args(body, tool, TRUE, &args, &app_id, &key, &error)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", error != NULL ? error->message : "runtime.assert_storage requires args", SOUP_STATUS_BAD_REQUEST);
+      g_clear_error(&error);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_assert_storage_json(plane, app_id, key, json_object_get_member(args, "value"), &error);
+    if (result == NULL) {
+      const gchar *code = error != NULL && error->domain == G_FILE_ERROR ? "storage_error" : "assertion_failed";
+      guint status = g_strcmp0(code, "storage_error") == 0 ? SOUP_STATUS_INTERNAL_SERVER_ERROR : SOUP_STATUS_BAD_REQUEST;
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, code, error != NULL ? error->message : "Storage assertion failed", status);
+      g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.storage_reset") == 0 ||
+             g_strcmp0(tool, "platform.reset_webapp") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Storage reset command requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Storage reset command requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (!object_boolean_true(args, "confirm")) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "confirmation_required", "Storage reset command requires confirm: true", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_storage_reset_json(plane, control_session_id, app_id, g_strcmp0(tool, "platform.reset_webapp") == 0, &error);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Webapp storage could not be reset", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
   } else if (g_strcmp0(tool, "runtime.network_mock_set") == 0 ||
              g_strcmp0(tool, "runtime.network_mock_reset") == 0 ||
              g_strcmp0(tool, "runtime.dialog_mock_set") == 0) {
