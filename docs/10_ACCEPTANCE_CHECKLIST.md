@@ -154,6 +154,7 @@
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`.
 - [x] Debug dev control plane Docker-smoke verifies DB-backed `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
+- [x] Debug dev control plane Docker-smoke verifies DB-backed one-shot `runtime.fault_inject` for bridge calls, including disabled-row evidence and bridge error audit.
 - [x] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Debug dev control plane Docker-smoke verifies `db.export_debug_bundle` returns a hashed Linux debug bundle and persists a `backup_exports` row.
 - [x] Debug dev control plane Docker-smoke verifies portable `db.export_backup` / `db.import_backup` over fixed app/package/storage tables and records export/import rows in `backup_exports`.

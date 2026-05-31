@@ -86,6 +86,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.network_mock_set",
     "runtime.network_mock_reset",
     "runtime.dialog_mock_set",
+    "runtime.fault_inject",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -286,6 +287,51 @@ test("Linux dev control exposes DB-backed network and dialog effect mocks", () =
 
   assert.equal(bridge.includes("bridge->network.db = bridge->storage == NULL ? NULL : bridge->storage->db"), true);
   assert.equal(bridge.includes("platform_dialogs_init(&bridge->dialogs, owner_window, bridge->storage == NULL ? NULL : bridge->storage->db)"), true);
+});
+
+test("Linux dev control exposes DB-backed one-shot runtime fault injection", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+  const bridge = read("native/linux/src/web_bridge.c");
+
+  for (const snippet of [
+    "runtime.fault_inject",
+    "runtime_fault_inject_json",
+    "fault_method_for_args",
+    "fault_details_json",
+    "is_known_control_bridge_method",
+    "runtime.fault_inject requires a bridge method",
+    "Unknown bridge method: %s",
+    "fault_injected",
+    "Injected bridge fault",
+    "fault_%d_%",
+    "INSERT INTO fault_injections",
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    "json_builder_set_member_name(builder, \"faultId\")",
+    "json_builder_set_member_name(builder, \"once\")",
+    "runtime.fault_inject appId is not a valid generated app id",
+    "control_session_allows_app",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux fault-injection control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "fault_injection_failure",
+    "fault_details_from_json",
+    "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections",
+    "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)",
+    "ORDER BY created_at LIMIT 1",
+    "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?",
+    "bridge_failure(request, code, message, details)",
+    "record_bridge_call(bridge, &request, fault_response",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Linux bridge fault source should contain ${snippet}`);
+  }
+
+  const appIdRejection = bridge.indexOf("Bridge params must not include appId");
+  const faultCheck = bridge.indexOf("JsonNode *fault_response = fault_injection_failure");
+  const permissionCheck = bridge.indexOf("const gchar *permission = permission_for_bridge_method");
+  assert.equal(appIdRejection >= 0 && faultCheck > appIdRejection, true);
+  assert.equal(permissionCheck > faultCheck, true);
 });
 
 test("Linux dev control exposes DB-backed runtime resource and log inspection commands", () => {

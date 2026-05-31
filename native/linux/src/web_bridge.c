@@ -409,6 +409,80 @@ static JsonNode *resource_budget_failure(WebBridge *bridge, const BridgeRequest 
   return NULL;
 }
 
+static JsonObject *fault_details_from_json(const gchar *details_json, const gchar *fault_id, const BridgeRequest *request) {
+  JsonObject *details = json_object_new();
+  if (details_json != NULL && details_json[0] != '\0') {
+    JsonParser *parser = json_parser_new();
+    if (json_parser_load_from_data(parser, details_json, -1, NULL)) {
+      JsonNode *root = json_parser_get_root(parser);
+      if (root != NULL && JSON_NODE_HOLDS_OBJECT(root)) {
+        JsonObject *source = json_node_get_object(root);
+        GList *members = json_object_get_members(source);
+        for (GList *item = members; item != NULL; item = item->next) {
+          const gchar *member = item->data;
+          json_object_set_member(details, member, json_node_copy(json_object_get_member(source, member)));
+        }
+        g_list_free(members);
+      }
+    }
+    g_object_unref(parser);
+  }
+  json_object_set_string_member(details, "faultId", fault_id);
+  json_object_set_string_member(details, "appId", request->context.app_id != NULL ? request->context.app_id : "");
+  json_object_set_string_member(details, "method", request->method);
+  return details;
+}
+
+static void disable_fault_injection(sqlite3 *db, const gchar *fault_id) {
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?", -1, &statement, NULL) != SQLITE_OK) {
+    return;
+  }
+  bind_text(statement, 1, fault_id);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
+}
+
+static JsonNode *fault_injection_failure(WebBridge *bridge, const BridgeRequest *request) {
+  if (bridge == NULL || bridge->storage == NULL || bridge->storage->db == NULL ||
+      request->context.app_id == NULL || request->context.app_id[0] == '\0') {
+    return NULL;
+  }
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections "
+      "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+      "ORDER BY created_at LIMIT 1";
+  if (sqlite3_prepare_v2(bridge->storage->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return NULL;
+  }
+
+  g_autofree gchar *session_id = runtime_session_id(request);
+  bind_text(statement, 1, request->method);
+  bind_text(statement, 2, request->context.app_id);
+  bind_text(statement, 3, session_id);
+
+  JsonNode *response = NULL;
+  if (sqlite3_step(statement) == SQLITE_ROW) {
+    g_autofree gchar *fault_id = g_strdup((const gchar *)sqlite3_column_text(statement, 0));
+    g_autofree gchar *code = g_strdup((const gchar *)sqlite3_column_text(statement, 1));
+    g_autofree gchar *message = g_strdup((const gchar *)sqlite3_column_text(statement, 2));
+    g_autofree gchar *details_json = g_strdup((const gchar *)sqlite3_column_text(statement, 3));
+    gboolean once = sqlite3_column_int64(statement, 4) != 0;
+    JsonObject *details = fault_details_from_json(details_json, fault_id, request);
+    response = bridge_failure(request, code, message, details);
+    sqlite3_finalize(statement);
+    if (once) {
+      disable_fault_injection(bridge->storage->db, fault_id);
+    }
+    return response;
+  }
+
+  sqlite3_finalize(statement);
+  return NULL;
+}
+
 static gboolean valid_log_level(const gchar *level) {
   return g_strcmp0(level, "debug") == 0 || g_strcmp0(level, "info") == 0 ||
       g_strcmp0(level, "warn") == 0 || g_strcmp0(level, "error") == 0;
@@ -610,6 +684,16 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
     gchar *text = bridge_response_to_string(response);
     record_bridge_call(bridge, &request, response, started_at_us);
     json_node_unref(response);
+    bridge_request_clear(&request);
+    g_object_unref(parser);
+    return text;
+  }
+
+  JsonNode *fault_response = fault_injection_failure(bridge, &request);
+  if (fault_response != NULL) {
+    gchar *text = bridge_response_to_string(fault_response);
+    record_bridge_call(bridge, &request, fault_response, started_at_us);
+    json_node_unref(fault_response);
     bridge_request_clear(&request);
     g_object_unref(parser);
     return text;

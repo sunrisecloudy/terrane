@@ -419,6 +419,78 @@ test(
       assert.equal(controlStorageGet.statusCode, 200, controlStorageGet.body);
       assert.equal(JSON.parse(controlStorageGet.body).result.result.value.source, "linux-dev-control");
 
+      const storageFault = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.fault_inject",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            code: "linux_injected_storage",
+            message: "Injected Linux storage fault",
+            details: { source: "linux-fault-smoke" },
+            once: true,
+          },
+        },
+      });
+      assert.equal(storageFault.statusCode, 200, storageFault.body);
+      const storageFaultBody = JSON.parse(storageFault.body);
+      assert.equal(storageFaultBody.result.ok, true);
+      assert.match(storageFaultBody.result.faultId, /^fault_/);
+      assert.equal(storageFaultBody.result.method, "storage.get");
+      assert.equal(storageFaultBody.result.code, "linux_injected_storage");
+      assert.equal(storageFaultBody.result.message, "Injected Linux storage fault");
+      assert.equal(storageFaultBody.result.details.source, "linux-fault-smoke");
+      assert.equal(storageFaultBody.result.once, true);
+      const storageFaultId = storageFaultBody.result.faultId;
+
+      const faultedStorageGet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            params: {
+              key: "task-workbench:linux-dev-control-key",
+              defaultValue: null,
+            },
+          },
+        },
+      });
+      assert.equal(faultedStorageGet.statusCode, 200, faultedStorageGet.body);
+      const faultedStorageGetBody = JSON.parse(faultedStorageGet.body);
+      assert.equal(faultedStorageGetBody.ok, true);
+      assert.equal(faultedStorageGetBody.result.ok, false);
+      assert.equal(faultedStorageGetBody.result.error.code, "linux_injected_storage");
+      assert.equal(faultedStorageGetBody.result.error.message, "Injected Linux storage fault");
+      assert.equal(faultedStorageGetBody.result.error.details.source, "linux-fault-smoke");
+      assert.equal(faultedStorageGetBody.result.error.details.faultId, storageFaultId);
+      assert.equal(faultedStorageGetBody.result.error.details.appId, "task-workbench");
+      assert.equal(faultedStorageGetBody.result.error.details.method, "storage.get");
+
+      const recoveredStorageGet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            params: {
+              key: "task-workbench:linux-dev-control-key",
+              defaultValue: null,
+            },
+          },
+        },
+      });
+      assert.equal(recoveredStorageGet.statusCode, 200, recoveredStorageGet.body);
+      const recoveredStorageGetBody = JSON.parse(recoveredStorageGet.body);
+      assert.equal(recoveredStorageGetBody.result.ok, true);
+      assert.equal(recoveredStorageGetBody.result.result.value.source, "linux-dev-control");
+
       const controlStorageSet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1311,6 +1383,30 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedFaultInjectCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.fault_inject' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const consumedFaultCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM fault_injections WHERE fault_id = '${storageFaultId}' AND method = 'storage.get' AND code = 'linux_injected_storage' AND enabled = 0;`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const faultedBridgeCallCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM bridge_calls WHERE app_id = 'task-workbench' AND method = 'storage.get' AND error_json LIKE '%linux_injected_storage%' AND error_json LIKE '%${storageFaultId}%';`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const bridgeCallCount = execFileSync(
         "sqlite3",
         [
@@ -1395,6 +1491,9 @@ test(
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockResetCount) >= 1, true);
       assert.equal(Number(acceptedDialogMockCount) >= 1, true);
+      assert.equal(Number(acceptedFaultInjectCount) >= 1, true);
+      assert.equal(Number(consumedFaultCount), 1);
+      assert.equal(Number(faultedBridgeCallCount), 1);
       assert.equal(Number(bridgeCallCount) >= 1, true);
       assert.equal(Number(coreBridgeCallCount) >= 1, true);
       assert.equal(Number(coreEventCount) >= 1, true);

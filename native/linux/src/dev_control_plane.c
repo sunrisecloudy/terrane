@@ -606,6 +606,148 @@ static gchar *dialog_mock_response_json(JsonObject *args) {
   return text;
 }
 
+static const gchar *fault_method_for_args(JsonObject *args) {
+  const gchar *method = object_nonempty_string(args, "method");
+  if (method != NULL) {
+    return method;
+  }
+
+  const gchar *kind = object_nonempty_string(args, "kind");
+  if (g_strcmp0(kind, "storage.read") == 0) {
+    return "storage.get";
+  }
+  if (g_strcmp0(kind, "storage.write") == 0) {
+    return "storage.set";
+  }
+  if (g_strcmp0(kind, "network") == 0 || g_strcmp0(kind, "network.request") == 0) {
+    return "network.request";
+  }
+  if (g_strcmp0(kind, "core") == 0 || g_strcmp0(kind, "core.step") == 0) {
+    return "core.step";
+  }
+  return kind;
+}
+
+static gboolean is_known_control_bridge_method(const gchar *method) {
+  return g_strcmp0(method, "storage.get") == 0 ||
+         g_strcmp0(method, "storage.set") == 0 ||
+         g_strcmp0(method, "storage.remove") == 0 ||
+         g_strcmp0(method, "storage.list") == 0 ||
+         g_strcmp0(method, "dialog.openFile") == 0 ||
+         g_strcmp0(method, "dialog.saveFile") == 0 ||
+         g_strcmp0(method, "notification.toast") == 0 ||
+         g_strcmp0(method, "network.request") == 0 ||
+         g_strcmp0(method, "core.step") == 0 ||
+         g_strcmp0(method, "runtime.capabilities") == 0 ||
+         g_strcmp0(method, "app.log") == 0;
+}
+
+static gchar *fault_details_json(JsonObject *args) {
+  if (json_object_has_member(args, "details") && !json_object_get_null_member(args, "details")) {
+    return json_node_to_text(json_object_get_member(args, "details"));
+  }
+  const gchar *kind = object_nonempty_string(args, "kind");
+  if (kind != NULL) {
+    g_autofree gchar *escaped_kind = json_escape(kind);
+    return g_strdup_printf("{\"kind\":\"%s\"}", escaped_kind);
+  }
+  return g_strdup("{}");
+}
+
+static gboolean fault_once_arg(JsonObject *args) {
+  if (args == NULL || !json_object_has_member(args, "once")) {
+    return TRUE;
+  }
+  JsonNode *node = json_object_get_member(args, "once");
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_BOOLEAN) {
+    return TRUE;
+  }
+  return json_node_get_boolean(node);
+}
+
+static gchar *runtime_fault_inject_json(DevControlPlane *plane, JsonObject *args, gchar **error_code, gchar **error_message) {
+  const gchar *method = fault_method_for_args(args);
+  if (method == NULL || method[0] == '\0') {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("runtime.fault_inject requires a bridge method");
+    return NULL;
+  }
+  if (!is_known_control_bridge_method(method)) {
+    *error_code = g_strdup("unknown_method");
+    *error_message = g_strdup_printf("Unknown bridge method: %s", method);
+    return NULL;
+  }
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("sqlite_error");
+    *error_message = g_strdup("Fault injection could not be registered");
+    return NULL;
+  }
+
+  const gchar *app_id = object_nonempty_string(args, "appId");
+  const gchar *session_id = object_nonempty_string(args, "sessionId");
+  const gchar *code = object_string(args, "code", "fault_injected");
+  const gchar *message = object_string(args, "message", "Injected bridge fault");
+  gboolean once = fault_once_arg(args);
+  g_autofree gchar *details_json = fault_details_json(args);
+  g_autofree gchar *fault_id = g_strdup_printf("fault_%d_%" G_GINT64_FORMAT "_%08x", getpid(), g_get_real_time(), g_random_int());
+  g_autofree gchar *created_at = now_iso();
+
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(
+                   db,
+                   "INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at) "
+                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                   -1,
+                   &statement,
+                   NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, fault_id);
+    bind_nullable_text(statement, 2, session_id);
+    bind_nullable_text(statement, 3, app_id);
+    bind_text(statement, 4, method);
+    bind_text(statement, 5, code);
+    bind_text(statement, 6, message);
+    bind_text(statement, 7, details_json);
+    sqlite3_bind_int64(statement, 8, once ? 1 : 0);
+    bind_text(statement, 9, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+  if (!ok) {
+    *error_code = g_strdup("sqlite_error");
+    *error_message = g_strdup("Fault injection could not be registered");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "faultId");
+  json_builder_add_string_value(builder, fault_id);
+  json_builder_set_member_name(builder, "sessionId");
+  session_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, session_id);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code);
+  json_builder_set_member_name(builder, "message");
+  json_builder_add_string_value(builder, message);
+  json_builder_set_member_name(builder, "details");
+  json_builder_add_json_text_or_null(builder, details_json);
+  json_builder_set_member_name(builder, "once");
+  json_builder_add_boolean_value(builder, once);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
 static gchar *runtime_network_mock_set_json(DevControlPlane *plane, JsonObject *args, GError **error) {
   const gchar *url_pattern = network_mock_url_pattern(args);
   if (url_pattern == NULL || !json_object_has_member(args, "response") || json_object_get_null_member(args, "response")) {
@@ -4970,6 +5112,33 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     if (result == NULL) {
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "assertion_failed", error_message != NULL ? error_message : "Expected bridge call was not recorded", error_status);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.fault_inject") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.fault_inject requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_nonempty_string(args, "appId");
+    if (app_id != NULL && !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.fault_inject appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_fault_inject_json(plane, args, &error_code, &error_message);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "Runtime fault injection command failed", SOUP_STATUS_BAD_REQUEST);
       return;
     }
   } else if (g_strcmp0(tool, "runtime.network_mock_set") == 0 ||
