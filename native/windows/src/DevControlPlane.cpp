@@ -1041,6 +1041,22 @@ struct DevControlPlane::Impl {
     return installId;
   }
 
+  std::wstring ActiveVersion(sqlite3* db, std::wstring const& appId) {
+    if (appId.empty()) {
+      return L"";
+    }
+    sqlite3_stmt* statement = nullptr;
+    std::wstring version;
+    if (sqlite3_prepare_v2(db, "SELECT active_version FROM apps WHERE id = ?", -1, &statement, nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        version = ColumnText(statement, 0);
+      }
+    }
+    sqlite3_finalize(statement);
+    return version;
+  }
+
   std::wstring RuntimeCapabilitiesJson(std::wstring const& appId) {
     return L"{\"runtimeVersion\":\"0.1.0\",\"platform\":\"windows\",\"target\":\"windows\",\"appId\":" +
         JsonNullableString(appId) +
@@ -1620,6 +1636,23 @@ struct DevControlPlane::Impl {
     std::wstring endedAt;
   };
 
+  struct PackageFile {
+    std::wstring path;
+    std::wstring content;
+    std::wstring contentHash;
+    int64_t sizeBytes = 0;
+    std::wstring mime;
+  };
+
+  struct PackageRead {
+    std::filesystem::path directory;
+    json::JsonObject manifest{nullptr};
+    std::wstring manifestJson;
+    std::vector<PackageFile> files;
+    std::vector<std::wstring> errors;
+    std::vector<std::wstring> warnings;
+  };
+
   BridgeRequest StorageBridgeRequest(
       std::wstring const& requestId,
       std::wstring const& appId,
@@ -1789,6 +1822,847 @@ struct DevControlPlane::Impl {
     }
     out += L"]";
     return out;
+  }
+
+  std::optional<std::filesystem::path> PackageDirectoryFromArgs(json::JsonObject const& args) {
+    auto pathValue = OptionalStringMember(args, L"packagePath");
+    if (!pathValue.has_value() || pathValue->empty()) {
+      pathValue = OptionalStringMember(args, L"path");
+    }
+    if (!pathValue.has_value() || pathValue->empty()) {
+      return std::nullopt;
+    }
+    auto root = RepoRoot().lexically_normal();
+    std::filesystem::path requested(pathValue.value());
+    auto candidate = (requested.is_absolute() ? requested : root / requested).lexically_normal();
+    auto rootText = LowerAscii(root.wstring());
+    auto candidateText = LowerAscii(candidate.wstring());
+    if (candidateText != rootText &&
+        candidateText.rfind(rootText + L"\\", 0) != 0 &&
+        candidateText.rfind(rootText + L"/", 0) != 0) {
+      return std::nullopt;
+    }
+    return candidate;
+  }
+
+  std::wstring MimeTypeForPackagePath(std::wstring const& path) {
+    auto lower = LowerAscii(path);
+    if (lower.size() >= 5 && lower.substr(lower.size() - 5) == L".html") {
+      return L"text/html";
+    }
+    if (lower.size() >= 4 && lower.substr(lower.size() - 4) == L".css") {
+      return L"text/css";
+    }
+    if (lower.size() >= 3 && lower.substr(lower.size() - 3) == L".js") {
+      return L"text/javascript";
+    }
+    if (lower.size() >= 5 && lower.substr(lower.size() - 5) == L".json") {
+      return L"application/json";
+    }
+    return L"text/plain";
+  }
+
+  std::wstring PackageIssueJson(
+      std::wstring const& code,
+      std::wstring const& message,
+      std::wstring const& detailsJson = L"{}") {
+    return L"{\"code\":" + JsonString(code) +
+        L",\"message\":" + JsonString(message) +
+        L",\"details\":" + (detailsJson.empty() ? L"{}" : detailsJson) + L"}";
+  }
+
+  bool PackageHasFile(PackageRead const& package, std::wstring const& path) {
+    return std::find_if(package.files.begin(), package.files.end(), [&](PackageFile const& file) {
+      return file.path == path;
+    }) != package.files.end();
+  }
+
+  std::wstring PackageFileContent(PackageRead const& package, std::wstring const& path) {
+    auto found = std::find_if(package.files.begin(), package.files.end(), [&](PackageFile const& file) {
+      return file.path == path;
+    });
+    return found == package.files.end() ? L"" : found->content;
+  }
+
+  std::wstring PackageFilePathsJson(PackageRead const& package) {
+    std::vector<std::wstring> paths;
+    for (auto const& file : package.files) {
+      paths.push_back(file.path);
+    }
+    std::sort(paths.begin(), paths.end());
+    return JsonStringArray(paths);
+  }
+
+  std::wstring PackageFilesJson(PackageRead const& package) {
+    std::vector<std::wstring> rows;
+    for (auto const& file : package.files) {
+      rows.push_back(
+          L"{\"path\":" + JsonString(file.path) +
+          L",\"contentText\":" + JsonString(file.content) +
+          L",\"contentHash\":" + JsonString(file.contentHash) +
+          L",\"sizeBytes\":" + std::to_wstring(file.sizeBytes) +
+          L",\"mime\":" + JsonString(file.mime) + L"}");
+    }
+    return JsonArrayText(rows);
+  }
+
+  std::optional<std::wstring> PermissionForBridgeMethod(std::wstring const& method) {
+    if (method == L"storage.get" || method == L"storage.list") {
+      return L"storage.read";
+    }
+    if (method == L"storage.set" || method == L"storage.remove") {
+      return L"storage.write";
+    }
+    if (method == L"dialog.openFile" || method == L"dialog.saveFile" ||
+        method == L"notification.toast" || method == L"network.request" ||
+        method == L"core.step") {
+      return method;
+    }
+    return std::nullopt;
+  }
+
+  std::vector<std::wstring> BridgeMethodsIn(std::wstring const& appJs) {
+    std::vector<std::wstring> methods;
+    for (auto const& method : {
+             L"storage.get",
+             L"storage.set",
+             L"storage.remove",
+             L"storage.list",
+             L"dialog.openFile",
+             L"dialog.saveFile",
+             L"notification.toast",
+             L"network.request",
+             L"core.step",
+             L"app.log",
+             L"runtime.capabilities",
+         }) {
+      if (appJs.find(method) != std::wstring::npos) {
+        methods.push_back(method);
+      }
+    }
+    return methods;
+  }
+
+  std::wstring BridgeMethodsJson(PackageRead const& package) {
+    auto methods = BridgeMethodsIn(PackageFileContent(package, L"app.js"));
+    std::sort(methods.begin(), methods.end());
+    return JsonStringArray(methods);
+  }
+
+  void ValidateGeneratedSourcePolicy(PackageRead* package) {
+    auto appJs = PackageFileContent(*package, L"app.js");
+    std::vector<std::pair<std::wstring, std::wregex>> checks;
+    try {
+      checks = {
+          {L"forbidden_eval", std::wregex(LR"(\beval\s*\()", std::regex_constants::icase)},
+          {L"forbidden_function_constructor", std::wregex(LR"(\bnew\s+Function\s*\()", std::regex_constants::icase)},
+          {L"forbidden_dynamic_import", std::wregex(LR"(\bimport\s*\()", std::regex_constants::icase)},
+          {L"forbidden_network_api", std::wregex(LR"(\bfetch\s*\()", std::regex_constants::icase)},
+          {L"forbidden_network_api", std::wregex(LR"(\bXMLHttpRequest\b)", std::regex_constants::icase)},
+          {L"forbidden_storage_api", std::wregex(LR"(\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bdocument\.cookie\b)", std::regex_constants::icase)},
+          {L"forbidden_native_bridge", std::wregex(LR"(\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bNativeAIPlatformBridge\b)", std::regex_constants::icase)},
+      };
+    } catch (...) {
+      return;
+    }
+    for (auto const& check : checks) {
+      if (std::regex_search(appJs, check.second)) {
+        package->errors.push_back(PackageIssueJson(check.first, L"app.js uses a forbidden generated-app API"));
+      }
+    }
+  }
+
+  void ValidatePackageManifest(PackageRead* package) {
+    auto const& manifest = package->manifest;
+    for (auto const& field : {
+             L"id",
+             L"name",
+             L"version",
+             L"runtimeVersion",
+             L"entry",
+             L"description",
+             L"permissions",
+             L"storagePrefix",
+             L"dataVersion",
+             L"capabilities",
+             L"resourceBudget",
+             L"networkPolicy",
+         }) {
+      if (!manifest.HasKey(field)) {
+        package->errors.push_back(PackageIssueJson(
+            L"missing_manifest_field",
+            L"manifest." + std::wstring(field) + L" is required",
+            L"{\"field\":" + JsonString(field) + L"}"));
+      }
+    }
+    if (manifest.HasKey(L"networkAllowlist")) {
+      package->errors.push_back(PackageIssueJson(
+          L"removed_manifest_field",
+          L"manifest.networkAllowlist was removed; use networkPolicy",
+          L"{\"field\":\"networkAllowlist\"}"));
+    }
+    auto appId = OptionalStringMember(manifest, L"id");
+    if (!appId.has_value() || !IsValidAppId(appId.value())) {
+      package->errors.push_back(PackageIssueJson(L"invalid_manifest_id", L"manifest.id must be lowercase kebab-case"));
+    } else {
+      auto storagePrefix = OptionalStringMember(manifest, L"storagePrefix").value_or(L"");
+      if (storagePrefix != appId.value() + L":") {
+        package->errors.push_back(PackageIssueJson(
+            L"invalid_storage_prefix",
+            L"manifest.storagePrefix must equal <id>:",
+            L"{\"expected\":" + JsonString(appId.value() + L":") +
+                L",\"actual\":" + JsonString(storagePrefix) + L"}"));
+      }
+    }
+    if (OptionalStringMember(manifest, L"entry").value_or(L"") != L"index.html") {
+      package->errors.push_back(PackageIssueJson(L"invalid_entry", L"manifest.entry must be index.html"));
+    }
+    if (IntValue(manifest, {L"dataVersion"}, 0) < 1) {
+      package->errors.push_back(PackageIssueJson(L"invalid_data_version", L"manifest.dataVersion must be a positive integer"));
+    }
+    if (!manifest.HasKey(L"permissions") || manifest.GetNamedValue(L"permissions").ValueType() != json::JsonValueType::Array) {
+      package->errors.push_back(PackageIssueJson(L"invalid_permissions", L"manifest.permissions must be an array"));
+    }
+    if (!manifest.HasKey(L"capabilities") || manifest.GetNamedValue(L"capabilities").ValueType() != json::JsonValueType::Object) {
+      package->errors.push_back(PackageIssueJson(L"invalid_capabilities", L"manifest.capabilities is required"));
+    }
+    if (!manifest.HasKey(L"resourceBudget") || manifest.GetNamedValue(L"resourceBudget").ValueType() != json::JsonValueType::Object) {
+      package->errors.push_back(PackageIssueJson(L"invalid_resource_budget", L"manifest.resourceBudget must be an object"));
+    }
+    if (!manifest.HasKey(L"networkPolicy") || manifest.GetNamedValue(L"networkPolicy").ValueType() != json::JsonValueType::Object) {
+      package->errors.push_back(PackageIssueJson(L"invalid_network_policy", L"manifest.networkPolicy must be an object"));
+    }
+  }
+
+  void ValidatePackageBudgets(PackageRead* package) {
+    int64_t maxPackageBytes = 1048576;
+    int64_t maxFileBytes = 524288;
+    auto budget = OptionalObjectMember(package->manifest, L"resourceBudget");
+    if (budget.has_value()) {
+      maxPackageBytes = IntValue(budget.value(), {L"maxPackageBytes"}, maxPackageBytes);
+      maxFileBytes = IntValue(budget.value(), {L"maxFileBytes"}, maxFileBytes);
+    }
+    int64_t totalBytes = 0;
+    for (auto const& file : package->files) {
+      totalBytes += file.sizeBytes;
+      if (file.sizeBytes > maxFileBytes) {
+        package->errors.push_back(PackageIssueJson(
+            L"resource_budget_exceeded",
+            L"Package file exceeds manifest.resourceBudget.maxFileBytes",
+            L"{\"path\":" + JsonString(file.path) +
+                L",\"bytes\":" + std::to_wstring(file.sizeBytes) +
+                L",\"maxFileBytes\":" + std::to_wstring(maxFileBytes) + L"}"));
+      }
+    }
+    if (totalBytes > maxPackageBytes) {
+      package->errors.push_back(PackageIssueJson(
+          L"resource_budget_exceeded",
+          L"Package exceeds manifest.resourceBudget.maxPackageBytes",
+          L"{\"bytes\":" + std::to_wstring(totalBytes) +
+              L",\"maxPackageBytes\":" + std::to_wstring(maxPackageBytes) + L"}"));
+    }
+  }
+
+  void ValidatePackageBridgePermissions(PackageRead* package) {
+    std::vector<std::wstring> permissions;
+    auto permissionArray = OptionalArrayMember(package->manifest, L"permissions");
+    if (permissionArray.has_value()) {
+      for (uint32_t index = 0; index < permissionArray->Size(); ++index) {
+        auto value = permissionArray->GetAt(index);
+        if (value.ValueType() == json::JsonValueType::String) {
+          permissions.push_back(std::wstring(value.GetString().c_str()));
+        }
+      }
+    }
+    for (auto const& method : BridgeMethodsIn(PackageFileContent(*package, L"app.js"))) {
+      auto permission = PermissionForBridgeMethod(method);
+      if (!permission.has_value()) {
+        continue;
+      }
+      if (std::find(permissions.begin(), permissions.end(), permission.value()) == permissions.end()) {
+        package->errors.push_back(PackageIssueJson(
+            L"missing_permission",
+            L"manifest.permissions does not cover a bridge method used by app.js",
+            L"{\"method\":" + JsonString(method) +
+                L",\"permission\":" + JsonString(permission.value()) + L"}"));
+      }
+    }
+  }
+
+  PackageRead ReadPackage(std::filesystem::path const& directory) {
+    PackageRead package;
+    package.directory = directory;
+    package.manifestJson = L"{}";
+    package.manifest = json::JsonObject::Parse(L"{}");
+    std::vector<std::wstring> required = {L"manifest.json", L"index.html", L"styles.css", L"app.js"};
+    std::vector<std::wstring> optional = {L"smoke-tests.json", L"README.md"};
+
+    if (!std::filesystem::exists(directory) || !std::filesystem::is_directory(directory)) {
+      package.errors.push_back(PackageIssueJson(
+          L"package_not_found",
+          L"Package directory was not found",
+          L"{\"path\":" + JsonString(directory.wstring()) + L"}"));
+      return package;
+    }
+
+    try {
+      for (auto const& entry : std::filesystem::recursive_directory_iterator(directory)) {
+        if (!entry.is_regular_file()) {
+          continue;
+        }
+        auto relative = std::filesystem::relative(entry.path(), directory).generic_wstring();
+        bool knownPath = std::find(required.begin(), required.end(), relative) != required.end() ||
+            std::find(optional.begin(), optional.end(), relative) != optional.end() ||
+            relative.rfind(L"migrations/", 0) == 0;
+        if (!knownPath || relative.rfind(L"assets/", 0) == 0 || relative.find(L"..") != std::wstring::npos) {
+          package.errors.push_back(PackageIssueJson(
+              L"unexpected_package_path",
+              L"Package contains an unexpected path",
+              L"{\"path\":" + JsonString(relative) + L"}"));
+          continue;
+        }
+        auto content = ReadTextFile(entry.path());
+        package.files.push_back(PackageFile{
+            relative,
+            content,
+            L"sha256:" + Sha256Hex(content),
+            static_cast<int64_t>(WideToUtf8(content).size()),
+            MimeTypeForPackagePath(relative)});
+      }
+    } catch (...) {
+      package.errors.push_back(PackageIssueJson(L"package_read_failed", L"Package directory could not be read"));
+    }
+    std::sort(package.files.begin(), package.files.end(), [](PackageFile const& left, PackageFile const& right) {
+      return left.path < right.path;
+    });
+
+    if (package.files.size() > 32) {
+      package.errors.push_back(PackageIssueJson(L"resource_budget_exceeded", L"Package exceeds hard file count cap"));
+    }
+    auto migrationCount = std::count_if(package.files.begin(), package.files.end(), [](PackageFile const& file) {
+      return file.path.rfind(L"migrations/", 0) == 0;
+    });
+    if (migrationCount > 16) {
+      package.errors.push_back(PackageIssueJson(L"resource_budget_exceeded", L"Package exceeds hard migration file count cap"));
+    }
+    for (auto const& path : required) {
+      if (!PackageHasFile(package, path)) {
+        package.errors.push_back(PackageIssueJson(
+            L"missing_required_file",
+            path + L" is required",
+            L"{\"path\":" + JsonString(path) + L"}"));
+      }
+    }
+
+    package.manifestJson = PackageFileContent(package, L"manifest.json");
+    if (package.manifestJson.empty()) {
+      package.manifestJson = L"{}";
+    }
+    json::JsonObject manifest{nullptr};
+    if (!json::JsonObject::TryParse(package.manifestJson, manifest)) {
+      package.errors.push_back(PackageIssueJson(L"invalid_manifest_json", L"manifest.json must parse as JSON"));
+      manifest = json::JsonObject::Parse(L"{}");
+    }
+    package.manifest = manifest;
+    ValidatePackageManifest(&package);
+    ValidatePackageBudgets(&package);
+    ValidatePackageBridgePermissions(&package);
+    ValidateGeneratedSourcePolicy(&package);
+    if (!PackageHasFile(package, L"smoke-tests.json")) {
+      package.warnings.push_back(PackageIssueJson(L"smoke_tests_missing", L"Package has no smoke-tests.json"));
+    }
+    return package;
+  }
+
+  std::optional<PackageRead> ReadPackageFromArgs(json::JsonObject const& args) {
+    auto directory = PackageDirectoryFromArgs(args);
+    if (!directory.has_value()) {
+      return std::nullopt;
+    }
+    return ReadPackage(directory.value());
+  }
+
+  std::wstring PackageHashMapJson(PackageRead const& package) {
+    auto manifestHash = L"sha256:" + Sha256Hex(package.manifestJson);
+    std::wstring contentSeed;
+    for (auto const& file : package.files) {
+      contentSeed += file.path + L"\n" + file.contentHash + L"\n";
+    }
+    auto contentHash = L"sha256:" + Sha256Hex(contentSeed);
+    auto permissionsJson = package.manifest.HasKey(L"permissions") ? std::wstring(package.manifest.GetNamedValue(L"permissions").Stringify().c_str()) : L"[]";
+    auto policyJson = package.manifest.HasKey(L"networkPolicy") ? std::wstring(package.manifest.GetNamedValue(L"networkPolicy").Stringify().c_str()) : L"{}";
+    return L"{\"manifestHash\":" + JsonString(manifestHash) +
+        L",\"contentHash\":" + JsonString(contentHash) +
+        L",\"permissionsHash\":" + JsonString(L"sha256:" + Sha256Hex(permissionsJson)) +
+        L",\"policyHash\":" + JsonString(L"sha256:" + Sha256Hex(policyJson)) + L"}";
+  }
+
+  std::wstring PackageHashValue(PackageRead const& package, std::wstring const& field) {
+    auto hashesJson = PackageHashMapJson(package);
+    json::JsonObject hashes{nullptr};
+    if (json::JsonObject::TryParse(hashesJson, hashes)) {
+      return OptionalStringMember(hashes, field).value_or(L"");
+    }
+    return L"";
+  }
+
+  std::wstring ValidatePackageResultJson(json::JsonObject const& args) {
+    auto package = ReadPackageFromArgs(args);
+    if (!package.has_value()) {
+      return L"";
+    }
+    auto appId = OptionalStringMember(package->manifest, L"id").value_or(L"");
+    auto version = OptionalStringMember(package->manifest, L"version").value_or(L"");
+    auto runtimeVersion = OptionalStringMember(package->manifest, L"runtimeVersion").value_or(L"");
+    auto dataVersion = IntValue(package->manifest, {L"dataVersion"}, 1);
+    return L"{\"ok\":" + std::wstring(package->errors.empty() ? L"true" : L"false") +
+        L",\"appId\":" + JsonNullableString(appId) +
+        L",\"version\":" + JsonNullableString(version) +
+        L",\"runtimeVersion\":" + JsonNullableString(runtimeVersion) +
+        L",\"dataVersion\":" + std::to_wstring(dataVersion) +
+        L",\"files\":" + PackageFilePathsJson(package.value()) +
+        L",\"bridgeMethods\":" + BridgeMethodsJson(package.value()) +
+        L",\"errors\":" + JsonArrayText(package->errors) +
+        L",\"warnings\":" + JsonArrayText(package->warnings) + L"}";
+  }
+
+  std::wstring PackageSignatureJson(PackageRead const& package, std::wstring const& trustLevel) {
+    auto appId = OptionalStringMember(package.manifest, L"id").value_or(L"");
+    auto version = OptionalStringMember(package.manifest, L"version").value_or(L"");
+    auto runtimeVersion = OptionalStringMember(package.manifest, L"runtimeVersion").value_or(L"");
+    auto dataVersion = IntValue(package.manifest, {L"dataVersion"}, 1);
+    auto signedAt = NowIso();
+    auto keyId = L"windows-dev-control-static-key";
+    auto hashes = PackageHashMapJson(package);
+    json::JsonObject hashObject{nullptr};
+    json::JsonObject::TryParse(hashes, hashObject);
+    auto payload = appId + L"\n" + version + L"\n" + runtimeVersion + L"\n" +
+        std::to_wstring(dataVersion) + L"\n" +
+        OptionalStringMember(hashObject, L"manifestHash").value_or(L"") + L"\n" +
+        OptionalStringMember(hashObject, L"contentHash").value_or(L"") + L"\n" +
+        trustLevel + L"\n" + signedAt;
+    return L"{\"algorithm\":\"ed25519\",\"keyId\":" + JsonString(keyId) +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"appVersion\":" + JsonString(version) +
+        L",\"runtimeVersion\":" + JsonString(runtimeVersion) +
+        L",\"dataVersion\":" + std::to_wstring(dataVersion) +
+        L",\"manifestHash\":" + JsonString(OptionalStringMember(hashObject, L"manifestHash").value_or(L"")) +
+        L",\"contentHash\":" + JsonString(OptionalStringMember(hashObject, L"contentHash").value_or(L"")) +
+        L",\"permissionsHash\":" + JsonString(OptionalStringMember(hashObject, L"permissionsHash").value_or(L"")) +
+        L",\"policyHash\":" + JsonString(OptionalStringMember(hashObject, L"policyHash").value_or(L"")) +
+        L",\"trustLevel\":" + JsonString(trustLevel) +
+        L",\"signedAt\":" + JsonString(signedAt) +
+        L",\"signedBy\":\"windows-dev-control\"" +
+        L",\"signature\":" + JsonString(L"sha256:" + Sha256Hex(payload)) + L"}";
+  }
+
+  std::wstring SignWebappPackageJson(json::JsonObject const& args) {
+    auto package = ReadPackageFromArgs(args);
+    if (!package.has_value()) {
+      return L"";
+    }
+    auto trustLevel = OptionalStringMember(args, L"trustLevel").value_or(L"developer");
+    auto keyId = L"windows-dev-control-static-key";
+    return L"{\"ok\":" + std::wstring(package->errors.empty() ? L"true" : L"false") +
+        L",\"appId\":" + JsonNullableString(OptionalStringMember(package->manifest, L"id").value_or(L"")) +
+        L",\"version\":" + JsonNullableString(OptionalStringMember(package->manifest, L"version").value_or(L"")) +
+        L",\"keyId\":" + JsonString(keyId) +
+        L",\"signature\":" + PackageSignatureJson(package.value(), trustLevel) +
+        L",\"hashes\":" + PackageHashMapJson(package.value()) +
+        L",\"errors\":" + JsonArrayText(package->errors) +
+        L",\"warnings\":" + JsonArrayText(package->warnings) + L"}";
+  }
+
+  std::wstring PackageSmokeResultJson(PackageRead const& package) {
+    auto appId = OptionalStringMember(package.manifest, L"id").value_or(L"");
+    auto smokeText = PackageFileContent(package, L"smoke-tests.json");
+    if (smokeText.empty()) {
+      return L"{\"ok\":true,\"status\":\"skipped\",\"appId\":" + JsonString(appId) +
+          L",\"total\":0,\"assertions\":0,\"failures\":[],\"runner\":\"windows-static-package\",\"spec\":[]}";
+    }
+    json::JsonValue parsed{nullptr};
+    if (!json::JsonValue::TryParse(smokeText, parsed) || parsed.ValueType() != json::JsonValueType::Array) {
+      return L"{\"ok\":false,\"status\":\"failed\",\"appId\":" + JsonString(appId) +
+          L",\"total\":0,\"assertions\":0,\"failures\":[{\"code\":\"invalid_smoke_tests\",\"message\":\"smoke-tests.json must parse as a JSON array\"}],\"runner\":\"windows-static-package\",\"spec\":null}";
+    }
+    auto tests = parsed.GetArray();
+    auto html = PackageFileContent(package, L"index.html");
+    auto appJs = PackageFileContent(package, L"app.js");
+    std::vector<std::wstring> failures;
+    std::vector<std::wstring> dynamicText;
+    uint32_t assertions = 0;
+    for (uint32_t index = 0; index < tests.Size(); ++index) {
+      auto testValue = tests.GetAt(index);
+      if (testValue.ValueType() != json::JsonValueType::Object) {
+        failures.push_back(TestFailureJson(L"unnamed", L"invalid_smoke_test", L"message", L"Smoke test must be an object"));
+        continue;
+      }
+      auto testObject = testValue.GetObject();
+      auto testName = StringMemberOr(testObject, L"name", L"unnamed");
+      auto steps = OptionalArrayMember(testObject, L"steps");
+      if (steps.has_value()) {
+        assertions += steps->Size();
+        for (uint32_t stepIndex = 0; stepIndex < steps->Size(); ++stepIndex) {
+          auto stepValue = steps->GetAt(stepIndex);
+          if (stepValue.ValueType() != json::JsonValueType::Object) {
+            failures.push_back(TestFailureJson(testName, L"invalid_smoke_step", L"message", L"Smoke step must be an object"));
+            continue;
+          }
+          auto step = stepValue.GetObject();
+          auto selector = OptionalStringMember(step, L"selector");
+          if (selector.has_value() && !selector->empty()) {
+            json::JsonObject query;
+            query.Insert(L"selector", json::JsonValue::CreateStringValue(selector.value()));
+            if (RuntimeQueryMatches(html, query).empty()) {
+              failures.push_back(TestFailureJson(testName, L"selector.not_found", L"selector", selector.value()));
+            }
+          }
+          auto stepType = OptionalStringMember(step, L"type").value_or(L"");
+          auto value = OptionalStringMember(step, L"value");
+          if ((stepType == L"fill" || stepType == L"select") && value.has_value()) {
+            dynamicText.push_back(value.value());
+          }
+        }
+      }
+      auto expected = OptionalObjectMember(testObject, L"expected");
+      if (expected.has_value()) {
+        for (auto const& entry : expected.value()) {
+          assertions += 1;
+        }
+        if (auto methods = OptionalArrayMember(expected.value(), L"bridgeCallsInclude"); methods.has_value()) {
+          for (uint32_t methodIndex = 0; methodIndex < methods->Size(); ++methodIndex) {
+            auto methodValue = methods->GetAt(methodIndex);
+            if (methodValue.ValueType() == json::JsonValueType::String) {
+              auto methodName = std::wstring(methodValue.GetString().c_str());
+              if (appJs.find(methodName) == std::wstring::npos) {
+                failures.push_back(TestFailureJson(testName, L"bridge.call_missing", L"method", methodName));
+              }
+            }
+          }
+        }
+        auto textIncludes = OptionalStringMember(expected.value(), L"textIncludes");
+        if (textIncludes.has_value() && !TextCanAppear(html, dynamicText, textIncludes.value())) {
+          failures.push_back(TestFailureJson(testName, L"text.not_found", L"text", textIncludes.value()));
+        }
+      }
+    }
+    auto ok = failures.empty();
+    return L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+        L",\"status\":\"" + std::wstring(ok ? L"passed" : L"failed") +
+        L"\",\"appId\":" + JsonString(appId) +
+        L",\"total\":" + std::to_wstring(tests.Size()) +
+        L",\"assertions\":" + std::to_wstring(assertions) +
+        L",\"failures\":" + JsonArrayText(failures) +
+        L",\"runner\":\"windows-static-package\",\"spec\":" + smokeText + L"}";
+  }
+
+  std::wstring AccessibilityAuditForPackageJson(PackageRead const& package) {
+    auto appId = OptionalStringMember(package.manifest, L"id").value_or(L"");
+    auto html = PackageFileContent(package, L"index.html");
+    auto title = HtmlText(RegexFirst(html, LR"(<title[^>]*>([\s\S]*?)</title>)"));
+    auto controls = AccessibilityControls(html);
+    auto unlabeled = FirstUnlabeledControl(controls);
+    bool hasTitle = !title.empty();
+    bool hasMain = HtmlContains(html, LR"(<main\b)");
+    bool hasH1 = HtmlContains(html, LR"(<h1\b[^>]*>[\s\S]*?</h1>)");
+    bool pass = hasTitle && hasMain && hasH1 && !unlabeled.has_value();
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"checkedAt\":" + JsonString(NowIso()) +
+        L",\"status\":\"" + std::wstring(pass ? L"pass" : L"fail") +
+        L"\",\"checks\":[" +
+        AccessibilityCheckJson(L"document_title", hasTitle, L"Document must include a non-empty <title>.") + L"," +
+        AccessibilityCheckJson(L"main_landmark", hasMain, L"Page must include a <main> landmark.") + L"," +
+        AccessibilityCheckJson(L"screen_title", hasH1, L"Page must include an h1 screen title.") + L"," +
+        AccessibilityCheckJson(
+            L"no_unlabeled_controls",
+            !unlabeled.has_value(),
+            L"Every interactive control must have an accessible name.",
+            unlabeled.has_value() ? std::optional<std::wstring>(unlabeled->selector) : std::nullopt) +
+        L"]}";
+  }
+
+  std::wstring RuntimeCompatibilityJson(PackageRead const& package) {
+    auto runtimeVersion = OptionalStringMember(package.manifest, L"runtimeVersion").value_or(L"");
+    auto ok = runtimeVersion.empty() || runtimeVersion == L"0.4.0" || runtimeVersion == L"0.1.0";
+    return L"{\"ok\":" + std::wstring(ok ? L"true" : L"false") +
+        L",\"runtimeVersion\":" + JsonString(runtimeVersion) +
+        L",\"hostRuntimeVersion\":\"0.4.0\"}";
+  }
+
+  std::wstring ActiveManifestJson(sqlite3* db, std::wstring const& appId) {
+    sqlite3_stmt* statement = nullptr;
+    std::wstring manifest;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT manifest_json FROM app_versions WHERE app_id = ? AND status = 'enabled' ORDER BY activated_at DESC LIMIT 1",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        manifest = ColumnText(statement, 0);
+      }
+    }
+    sqlite3_finalize(statement);
+    return manifest;
+  }
+
+  std::wstring UpdateApprovalJson(sqlite3* db, PackageRead const& package) {
+    auto appId = OptionalStringMember(package.manifest, L"id").value_or(L"");
+    auto active = ActiveManifestJson(db, appId);
+    if (active.empty()) {
+      return L"{\"requiresUserApproval\":false,\"reasons\":[]}";
+    }
+    json::JsonObject activeManifest{nullptr};
+    if (!json::JsonObject::TryParse(active, activeManifest)) {
+      return L"{\"requiresUserApproval\":false,\"reasons\":[]}";
+    }
+    std::vector<std::wstring> reasons;
+    for (auto const& field : {L"permissions", L"networkPolicy", L"resourceBudget", L"capabilities", L"dataVersion"}) {
+      auto before = activeManifest.HasKey(field) ? CanonicalJsonValue(activeManifest.GetNamedValue(field)) : L"null";
+      auto after = package.manifest.HasKey(field) ? CanonicalJsonValue(package.manifest.GetNamedValue(field)) : L"null";
+      if (before != after) {
+        reasons.push_back(field);
+      }
+    }
+    return L"{\"requiresUserApproval\":" + std::wstring(reasons.empty() ? L"false" : L"true") +
+        L",\"reasons\":" + JsonStringArray(reasons) +
+        L",\"approvalReasons\":" + JsonStringArray(reasons) + L"}";
+  }
+
+  std::wstring InstallWebappPackageJson(json::JsonObject const& args, std::wstring* error) {
+    auto package = ReadPackageFromArgs(args);
+    if (!package.has_value()) {
+      return L"";
+    }
+    auto appId = OptionalStringMember(package->manifest, L"id").value_or(L"");
+    auto version = OptionalStringMember(package->manifest, L"version").value_or(L"");
+    auto runtimeVersion = OptionalStringMember(package->manifest, L"runtimeVersion").value_or(L"");
+    auto name = OptionalStringMember(package->manifest, L"name").value_or(appId);
+    auto dataVersion = IntValue(package->manifest, {L"dataVersion"}, 1);
+    if (!package->errors.empty()) {
+      return L"{\"ok\":false,\"status\":\"failed\",\"appId\":" + JsonNullableString(appId) +
+          L",\"errors\":" + JsonArrayText(package->errors) +
+          L",\"warnings\":" + JsonArrayText(package->warnings) + L"}";
+    }
+
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    auto smoke = PackageSmokeResultJson(package.value());
+    auto accessibility = AccessibilityAuditForPackageJson(package.value());
+    auto compatibility = RuntimeCompatibilityJson(package.value());
+    bool smokeOk = smoke.find(L"\"ok\":true") != std::wstring::npos;
+    bool accessibilityOk = accessibility.find(L"\"status\":\"fail\"") == std::wstring::npos;
+    bool compatibilityOk = compatibility.find(L"\"ok\":true") != std::wstring::npos;
+    auto approval = UpdateApprovalJson(db, package.value());
+    bool requiresApproval = approval.find(L"\"requiresUserApproval\":true") != std::wstring::npos;
+    bool accepted = smokeOk && accessibilityOk && compatibilityOk && !requiresApproval;
+    auto reportStatus = accepted ? L"accepted" : (requiresApproval ? L"requires-approval" : L"failed");
+    auto versionStatus = accepted ? L"enabled" : (requiresApproval ? L"installed" : L"quarantined");
+    auto appStatus = accepted ? L"enabled" : (requiresApproval ? L"disabled" : L"quarantined");
+    auto previousInstallId = ActiveInstallId(db, appId);
+    auto previousActiveVersion = ActiveVersion(db, appId);
+    auto installId = MakeId(L"install-" + appId);
+    auto reportId = MakeId(L"report");
+    auto createdAt = NowIso();
+    auto trustLevel = OptionalStringMember(args, L"trustLevel").value_or(L"developer");
+    auto signature = PackageSignatureJson(package.value(), trustLevel);
+    auto manifestHash = PackageHashValue(package.value(), L"manifestHash");
+    auto contentHash = PackageHashValue(package.value(), L"contentHash");
+
+    char* sqlError = nullptr;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      *error = L"Could not start package install transaction";
+      sqlite3_free(sqlError);
+      return L"";
+    }
+    bool ok = true;
+    if (!previousInstallId.empty() && accepted) {
+      ok = ok && ExecutePrepared(db, "UPDATE app_versions SET status = 'installed' WHERE install_id = ?", {SqlText(previousInstallId)});
+    }
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET name = excluded.name, status = excluded.status, "
+        "active_install_id = excluded.active_install_id, active_version = excluded.active_version, "
+        "data_version = excluded.data_version, updated_at = excluded.updated_at",
+        {
+            SqlText(appId),
+            SqlText(name),
+            SqlText(appStatus),
+            SqlNullableText(accepted ? std::optional<std::wstring>(installId) : (previousInstallId.empty() ? std::nullopt : std::optional<std::wstring>(previousInstallId))),
+            SqlNullableText(accepted ? std::optional<std::wstring>(version) : (previousActiveVersion.empty() ? std::nullopt : std::optional<std::wstring>(previousActiveVersion))),
+            SqlInt(dataVersion),
+            SqlText(createdAt),
+            SqlText(createdAt),
+        });
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        {
+            SqlText(installId),
+            SqlText(appId),
+            SqlText(version),
+            SqlText(runtimeVersion),
+            SqlInt(dataVersion),
+            SqlText(package->manifestJson),
+            SqlText(manifestHash),
+            SqlText(contentHash),
+            SqlText(signature),
+            SqlText(trustLevel),
+            SqlText(versionStatus),
+            SqlText(createdAt),
+            SqlNullableText(accepted ? std::optional<std::wstring>(createdAt) : std::nullopt),
+        });
+    for (auto const& file : package->files) {
+      ok = ok && ExecutePrepared(
+          db,
+          "INSERT INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+          {
+              SqlText(installId),
+              SqlText(file.path),
+              SqlText(file.content),
+              SqlText(file.contentHash),
+              SqlInt(file.sizeBytes),
+              SqlText(file.mime),
+              SqlText(createdAt),
+          });
+    }
+    auto permissions = OptionalArrayMember(package->manifest, L"permissions");
+    if (permissions.has_value()) {
+      for (uint32_t index = 0; ok && index < permissions->Size(); ++index) {
+        auto permission = permissions->GetAt(index);
+        if (permission.ValueType() != json::JsonValueType::String) {
+          continue;
+        }
+        ok = ok && ExecutePrepared(
+            db,
+            "INSERT INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) "
+            "VALUES (?, ?, ?, 1, ?, ?, 'windows dev-control install')",
+            {
+                SqlText(installId),
+                SqlText(appId),
+                SqlText(std::wstring(permission.GetString().c_str())),
+                SqlInt(accepted ? 1 : 0),
+                SqlNullableText(accepted ? std::optional<std::wstring>(createdAt) : std::nullopt),
+            });
+      }
+    }
+    auto permissionsReport = L"{\"requested\":" +
+        (permissions.has_value() ? std::wstring(permissions->Stringify().c_str()) : L"[]") +
+        L",\"approval\":" + approval + L"}";
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        {
+            SqlText(reportId),
+            SqlText(appId),
+            SqlText(installId),
+            SqlText(reportStatus),
+            SqlText(L"{\"ok\":true,\"errors\":[],\"warnings\":" + JsonArrayText(package->warnings) + L"}"),
+            SqlText(L"{\"ok\":true,\"signature\":" + signature + L",\"accessibility\":" + accessibility + L"}"),
+            SqlText(permissionsReport),
+            SqlText(compatibility),
+            SqlText(smoke),
+            SqlText(contentHash),
+            SqlText(createdAt),
+        });
+    ok = ok && ExecutePrepared(
+        db,
+        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) "
+        "VALUES (?, ?, ?, 'install', ?, 'codex', ?, ?, ?)",
+        {
+            SqlText(MakeId(L"event")),
+            SqlText(appId),
+            SqlText(installId),
+            SqlNullableText(previousInstallId.empty() ? std::nullopt : std::optional<std::wstring>(previousInstallId)),
+            SqlText(reportId),
+            SqlText(createdAt),
+            SqlText(L"{\"source\":\"windows-dev-control\",\"status\":" + JsonString(versionStatus) + L"}"),
+        });
+    if (accepted) {
+      ok = ok && ExecutePrepared(
+          db,
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) "
+          "VALUES (?, ?, ?, 'activate', ?, 'codex', ?, ?, '{\"source\":\"windows-dev-control\"}')",
+          {
+              SqlText(MakeId(L"event")),
+              SqlText(appId),
+              SqlText(installId),
+              SqlNullableText(previousInstallId.empty() ? std::nullopt : std::optional<std::wstring>(previousInstallId)),
+              SqlText(reportId),
+              SqlText(createdAt),
+          });
+    } else if (versionStatus == L"quarantined") {
+      ok = ok && ExecutePrepared(
+          db,
+          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json) "
+          "VALUES (?, ?, ?, 'quarantine', ?, 'codex', ?, ?, '{\"reason\":\"install gate failed\"}')",
+          {
+              SqlText(MakeId(L"event")),
+              SqlText(appId),
+              SqlText(installId),
+              SqlNullableText(previousInstallId.empty() ? std::nullopt : std::optional<std::wstring>(previousInstallId)),
+              SqlText(reportId),
+              SqlText(createdAt),
+          });
+    }
+
+    if (!ok || sqlite3_exec(db, "COMMIT", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      sqlite3_free(sqlError);
+      *error = L"Package install transaction failed";
+      return L"";
+    }
+    return L"{\"ok\":" + std::wstring(accepted ? L"true" : L"false") +
+        L",\"status\":" + JsonString(accepted ? L"enabled" : (requiresApproval ? L"requires-approval" : L"quarantined")) +
+        L",\"installId\":" + JsonString(installId) +
+        L",\"reportId\":" + JsonString(reportId) +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"version\":" + JsonString(version) +
+        L",\"contentHash\":" + JsonString(contentHash) +
+        L",\"approval\":" + approval +
+        L",\"smokeTest\":" + smoke +
+        L",\"accessibility\":" + accessibility +
+        L",\"compatibility\":" + compatibility +
+        L",\"warnings\":" + JsonArrayText(package->warnings) + L"}";
+  }
+
+  std::wstring PlatformOpenWebappJson(std::wstring const& childControlSessionId, json::JsonObject const& args, std::wstring* error) {
+    auto appId = OptionalStringMember(args, L"appId").value_or(L"");
+    if (appId.empty() || !IsValidAppId(appId)) {
+      *error = L"platform.open_webapp requires appId";
+      return L"";
+    }
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    auto activeInstallId = ActiveInstallId(db, appId);
+    bool bundled = activeInstallId.empty() && BundledManifest(appId).has_value();
+    if (activeInstallId.empty() && !bundled) {
+      *error = L"platform.open_webapp requires an installed or bundled app";
+      return L"";
+    }
+    auto runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId);
+    if (runtimeSessionId.empty()) {
+      *error = L"Could not create runtime session";
+      return L"";
+    }
+    return L"{\"ok\":true,\"sessionId\":" + JsonString(runtimeSessionId) +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"installId\":" + JsonNullableString(activeInstallId) +
+        L",\"bundled\":" + std::wstring(bundled ? L"true" : L"false") + L"}";
   }
 
   std::wstring EvaluateSmokeTestsJson(
@@ -4776,6 +5650,104 @@ struct DevControlPlane::Impl {
       result = PlatformListWebappsJson(includeUninstalled, &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not list Windows webapps" : error, 500);
+        return;
+      }
+    } else if (tool == L"platform.validate_package" || tool == L"platform.run_policy_audit") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = ValidatePackageResultJson(args);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.validate_package requires packagePath or path", 400);
+        return;
+      }
+    } else if (tool == L"platform.sign_webapp_package") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.sign_webapp_package requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = SignWebappPackageJson(args);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.sign_webapp_package requires packagePath or path", 400);
+        return;
+      }
+    } else if (tool == L"platform.install_webapp_package") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.install_webapp_package requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = InstallWebappPackageJson(args, &error);
+      if (result.empty()) {
+        SendControlRouteError(
+            client,
+            sessionId,
+            tool,
+            method,
+            path,
+            started,
+            error == L"Package install transaction failed" ? L"storage_error" : L"invalid_request",
+            error.empty() ? L"platform.install_webapp_package requires packagePath or path" : error,
+            error == L"Package install transaction failed" ? 500 : 400);
+        return;
+      }
+    } else if (tool == L"platform.open_webapp") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.open_webapp requires args object", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId").value_or(L"");
+      if (appId.empty() || !IsValidAppId(appId)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.open_webapp requires appId", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformOpenWebappJson(sessionId, args.value(), &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", error.empty() ? L"platform.open_webapp requires an installed or bundled app" : error, 400);
         return;
       }
     } else if (tool == L"runtime.capabilities") {

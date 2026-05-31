@@ -13,6 +13,10 @@ Legend:
 
 Status snapshot: **2026-06-01**.
 
+Verified delta:
+
+- `native/windows/`: Source/static checks verify debug dev-control package lifecycle command routing for `platform.validate_package`, `platform.run_policy_audit`, `platform.sign_webapp_package`, `platform.install_webapp_package`, and `platform.open_webapp`, including generated-package policy checks, static signing metadata, app-version/file/permission/install-report/installation DB writes, static smoke/accessibility/compatibility gates, and runtime-session creation for installed or bundled app opens. Windows runtime execution remains unchecked.
+
 ## Documents
 
 | Path | Status | Owner |

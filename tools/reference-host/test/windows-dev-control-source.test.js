@@ -321,6 +321,64 @@ test("Windows dev control supports static smoke, micro-test, and platform smoke 
   }
 });
 
+test("Windows dev control routes package validation, signing, install, and open commands", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "platform.validate_package",
+    "platform.run_policy_audit",
+    "platform.sign_webapp_package",
+    "platform.install_webapp_package",
+    "platform.open_webapp",
+    "ValidatePackageResultJson",
+    "SignWebappPackageJson",
+    "InstallWebappPackageJson",
+    "PlatformOpenWebappJson",
+    "PackageDirectoryFromArgs",
+    "ReadPackageFromArgs",
+    "ValidatePackageManifest",
+    "ValidatePackageBudgets",
+    "ValidatePackageBridgePermissions",
+    "ValidateGeneratedSourcePolicy",
+    "PackageSignatureJson",
+    "PackageSmokeResultJson",
+    "AccessibilityAuditForPackageJson",
+    "RuntimeCompatibilityJson",
+    "UpdateApprovalJson",
+    "Package install transaction failed",
+    "platform.validate_package requires packagePath or path",
+    "platform.sign_webapp_package requires packagePath or path",
+    "platform.install_webapp_package requires packagePath or path",
+    "platform.open_webapp requires appId",
+    "Package directory was not found",
+    "manifest.networkAllowlist was removed; use networkPolicy",
+    "missing_required_file",
+    "manifest.storagePrefix must equal <id>:",
+    "app.js uses a forbidden generated-app API",
+    "manifest.permissions does not cover a bridge method used by app.js",
+    "windows-dev-control-static-key",
+    "signedBy",
+    "windows-static-package",
+    "INSERT INTO apps",
+    "INSERT INTO app_versions",
+    "INSERT INTO app_files",
+    "INSERT INTO app_permissions",
+    "INSERT INTO app_install_reports",
+    "INSERT INTO app_installations",
+    "UPDATE app_versions SET status = 'installed'",
+    "RuntimeSessionForControlSession(db, childControlSessionId, appId)",
+    "platform.open_webapp requires an installed or bundled app",
+    "ControlSessionAllowsApp",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows package lifecycle source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("tool == L\"platform.validate_package\"") < control.indexOf("tool == L\"runtime.capabilities\""),
+    "package lifecycle commands should be first-class session commands before runtime-only controls",
+  );
+});
+
 test("Windows dev control supports DB-backed network and dialog mocks", () => {
   const control = read("native/windows/src/DevControlPlane.cpp");
   const bridge = read("native/windows/src/WebBridge.cpp");
