@@ -238,6 +238,7 @@ test(
       assert.equal(sessionBody.result.status, "running");
 
       const sessionId = sessionBody.result.controlSessionId;
+      const runtimeSessionId = sessionBody.result.runtimeSessionId;
       const snapshot = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}/snapshot`, { token });
       assert.equal(snapshot.statusCode, 200, snapshot.body);
       const snapshotBody = JSON.parse(snapshot.body);
@@ -358,6 +359,145 @@ test(
       });
       assert.equal(controlStorageAssert.statusCode, 200, controlStorageAssert.body);
       assert.equal(JSON.parse(controlStorageAssert.body).result.ok, true);
+
+      const createdSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.create_snapshot",
+          args: { appId: "task-workbench", type: "manual", sessionId: runtimeSessionId },
+        },
+      });
+      assert.equal(createdSnapshot.statusCode, 200, createdSnapshot.body);
+      const createdSnapshotBody = JSON.parse(createdSnapshot.body);
+      assert.match(createdSnapshotBody.result.snapshotId, /^snapshot_/);
+      assert.match(createdSnapshotBody.result.contentHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(createdSnapshotBody.result.appId, "task-workbench");
+      assert.equal(createdSnapshotBody.result.storage.some((row) => row.key === "task-workbench:linux-direct-storage"), true);
+
+      const mutatedStorage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-direct-storage",
+            value: { source: "mutated-after-snapshot" },
+          },
+        },
+      });
+      assert.equal(mutatedStorage.statusCode, 200, mutatedStorage.body);
+      assert.equal(JSON.parse(mutatedStorage.body).result.result.ok, true);
+
+      const restoreWithoutConfirm = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.restore_snapshot",
+          args: { snapshotId: createdSnapshotBody.result.snapshotId },
+        },
+      });
+      assert.equal(restoreWithoutConfirm.statusCode, 400, restoreWithoutConfirm.body);
+      assert.equal(JSON.parse(restoreWithoutConfirm.body).error.code, "confirmation_required");
+
+      const restoredSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.restore_snapshot",
+          args: { snapshotId: createdSnapshotBody.result.snapshotId, confirm: true },
+        },
+      });
+      assert.equal(restoredSnapshot.statusCode, 200, restoredSnapshot.body);
+      assert.equal(JSON.parse(restoredSnapshot.body).result.ok, true);
+      assert.equal(JSON.parse(restoredSnapshot.body).result.restoredStorageKeys >= 2, true);
+
+      const restoredStorageAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.assert_storage",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-direct-storage",
+            value: { source: "runtime.storage_set" },
+          },
+        },
+      });
+      assert.equal(restoredStorageAssert.statusCode, 200, restoredStorageAssert.body);
+      assert.equal(JSON.parse(restoredStorageAssert.body).result.ok, true);
+
+      const restoredSnapshotBaseline = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.create_snapshot",
+          args: { appId: "task-workbench", type: "manual", sessionId: runtimeSessionId },
+        },
+      });
+      assert.equal(restoredSnapshotBaseline.statusCode, 200, restoredSnapshotBaseline.body);
+      const restoredSnapshotBaselineBody = JSON.parse(restoredSnapshotBaseline.body);
+
+      const snapshotCompare = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.compare_snapshot",
+          args: {
+            leftSnapshotId: createdSnapshotBody.result.snapshotId,
+            rightSnapshotId: restoredSnapshotBaselineBody.result.snapshotId,
+          },
+        },
+      });
+      assert.equal(snapshotCompare.statusCode, 200, snapshotCompare.body);
+      const snapshotCompareBody = JSON.parse(snapshotCompare.body);
+      assert.equal(snapshotCompareBody.result.ok, true);
+      assert.equal(snapshotCompareBody.result.equal, true);
+      assert.equal(snapshotCompareBody.result.leftHash, snapshotCompareBody.result.rightHash);
+
+      const changedAfterCompare = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:linux-direct-storage",
+            value: { source: "changed-after-compare" },
+          },
+        },
+      });
+      assert.equal(changedAfterCompare.statusCode, 200, changedAfterCompare.body);
+      assert.equal(JSON.parse(changedAfterCompare.body).result.result.ok, true);
+
+      const changedSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.create_snapshot",
+          args: { appId: "task-workbench", type: "manual", sessionId: runtimeSessionId },
+        },
+      });
+      assert.equal(changedSnapshot.statusCode, 200, changedSnapshot.body);
+      const changedSnapshotBody = JSON.parse(changedSnapshot.body);
+
+      const snapshotCompareUnequal = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.compare_snapshot",
+          args: {
+            leftSnapshotId: createdSnapshotBody.result.snapshotId,
+            rightSnapshotId: changedSnapshotBody.result.snapshotId,
+          },
+        },
+      });
+      assert.equal(snapshotCompareUnequal.statusCode, 200, snapshotCompareUnequal.body);
+      const snapshotCompareUnequalBody = JSON.parse(snapshotCompareUnequal.body);
+      assert.equal(snapshotCompareUnequalBody.result.ok, false);
+      assert.equal(snapshotCompareUnequalBody.result.equal, false);
+      assert.notEqual(snapshotCompareUnequalBody.result.leftHash, snapshotCompareUnequalBody.result.rightHash);
 
       const deniedStoragePrefix = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
@@ -842,6 +982,54 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedCreateSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.create_snapshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedRestoreSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.restore_snapshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const rejectedRestoreSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.restore_snapshot' AND decision = 'rejected' AND error_code = 'confirmation_required';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedCompareSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.compare_snapshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const manualSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM runtime_snapshots WHERE app_id = 'task-workbench' AND type = 'manual' AND content_hash LIKE 'sha256:%';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const explicitSessionSnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM runtime_snapshots WHERE snapshot_id = '${createdSnapshotBody.result.snapshotId}' AND session_id = '${runtimeSessionId}';`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedResourceUsageCount = execFileSync(
         "sqlite3",
         [
@@ -996,6 +1184,12 @@ test(
       assert.equal(Number(acceptedDbStorageCount) >= 1, true);
       assert.equal(Number(acceptedDebugBundleCount) >= 1, true);
       assert.equal(Number(debugBundleExportCount), 1);
+      assert.equal(Number(acceptedCreateSnapshotCount) >= 3, true);
+      assert.equal(Number(acceptedRestoreSnapshotCount) >= 1, true);
+      assert.equal(Number(rejectedRestoreSnapshotCount) >= 1, true);
+      assert.equal(Number(acceptedCompareSnapshotCount) >= 2, true);
+      assert.equal(Number(manualSnapshotCount) >= 3, true);
+      assert.equal(Number(explicitSessionSnapshotCount), 1);
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
       assert.equal(Number(acceptedEventLogCount) >= 1, true);
       assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);

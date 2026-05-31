@@ -75,6 +75,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.notification_capture",
     "runtime.assert_bridge_call",
     "runtime.assert_no_console_errors",
+    "platform.create_snapshot",
+    "platform.restore_snapshot",
+    "runtime.compare_snapshot",
     "runtime.storage_get",
     "runtime.storage_set",
     "runtime.storage_reset",
@@ -327,6 +330,43 @@ test("Linux dev control supports core replay, snapshots, and action assertions",
     "linux-control-replay",
   ]) {
     assert.equal(control.includes(snippet), true, `Linux core control source should contain ${snippet}`);
+  }
+});
+
+test("Linux dev control exposes explicit runtime snapshot create, restore, and compare controls", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "platform.create_snapshot",
+    "platform.restore_snapshot",
+    "runtime.compare_snapshot",
+    "platform_create_snapshot_json",
+    "platform_restore_snapshot_json",
+    "runtime_compare_snapshot_json",
+    "make_snapshot_id",
+    "snapshot_storage_rows_json",
+    "runtime_snapshot_json_by_id",
+    "runtime_snapshot_app_id",
+    "append_comparable_snapshot_value",
+    "append_sorted_storage_array",
+    "snapshot_compare_skip_member",
+    "snapshot_storage_node_compare",
+    "valid_snapshot_type",
+    "sessionId",
+    "platform.restore_snapshot requires confirm: true",
+    "snapshot_not_found",
+    "runtime.compare_snapshot requires left/right snapshots or snapshot ids",
+    "INSERT INTO runtime_snapshots",
+    "SELECT app_id, key, value_json, updated_at FROM app_storage WHERE app_id = ? ORDER BY key",
+    "SELECT snapshot_json, content_hash FROM runtime_snapshots WHERE snapshot_id = ?",
+    "delete_rows_for_app(db, \"app_storage\", snapshot_app_id",
+    "Snapshot storage row app_id does not match snapshot appId",
+    "Snapshot storage key is outside app storage prefix",
+    "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+    "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+    "sha256:%s",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux snapshot control source should contain ${snippet}`);
   }
 });
 
