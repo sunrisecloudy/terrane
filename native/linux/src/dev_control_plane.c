@@ -4013,6 +4013,14 @@ static gchar *control_session_runtime_session_id(sqlite3 *db, const gchar *contr
   return runtime_session_id;
 }
 
+static gboolean control_session_allows_app(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status);
+
 static gchar *runtime_session_for_control_session(DevControlPlane *plane, sqlite3 *db, const gchar *control_session_id, const gchar *app_id) {
   g_autofree gchar *existing = control_session_runtime_session_id(db, control_session_id);
   if (existing != NULL && existing[0] != '\0') {
@@ -4242,10 +4250,12 @@ static gboolean record_test_run(
     return FALSE;
   }
 
-  g_autofree gchar *runtime_session_id = app_id == NULL ? NULL : runtime_session_for_control_session(plane, db, control_session_id, app_id);
+  g_autofree gchar *runtime_session_id = app_id == NULL
+      ? control_session_runtime_session_id(db, control_session_id)
+      : runtime_session_for_control_session(plane, db, control_session_id, app_id);
   g_autofree gchar *created_at = now_iso();
   sqlite3_stmt *statement = NULL;
-  gboolean ok = runtime_session_id != NULL &&
+  gboolean ok = (app_id == NULL || runtime_session_id != NULL) &&
                 sqlite3_prepare_v2(
                     db,
                     "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) "
@@ -4363,6 +4373,878 @@ static gchar *runtime_run_smoke_tests_json(
     return NULL;
   }
 
+  return g_steal_pointer(&result);
+}
+
+static gchar *linux_dev_control_repo_root(void) {
+  g_autofree gchar *cwd = g_get_current_dir();
+  gchar *current = g_strdup(cwd);
+  for (int depth = 0; depth < 8; depth++) {
+    g_autofree gchar *prd = g_build_filename(current, "docs", "00_PRD.md", NULL);
+    if (g_file_test(prd, G_FILE_TEST_EXISTS)) {
+      return current;
+    }
+    gchar *parent = g_path_get_dirname(current);
+    if (g_strcmp0(parent, current) == 0) {
+      g_free(parent);
+      break;
+    }
+    g_free(current);
+    current = parent;
+  }
+  g_free(current);
+  return g_strdup(cwd);
+}
+
+static gboolean canonical_path_is_inside(const gchar *root, const gchar *candidate) {
+  if (root == NULL || candidate == NULL) {
+    return FALSE;
+  }
+  if (g_strcmp0(root, candidate) == 0) {
+    return TRUE;
+  }
+  g_autofree gchar *root_with_separator = g_strconcat(root, G_DIR_SEPARATOR_S, NULL);
+  return g_str_has_prefix(candidate, root_with_separator);
+}
+
+static gchar *repo_relative_text_file(const gchar *relative_path, gchar **error_code, gchar **error_message) {
+  if (relative_path == NULL || relative_path[0] == '\0' || g_path_is_absolute(relative_path)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Spec path must be repo-relative");
+    return NULL;
+  }
+
+  g_autofree gchar *root = linux_dev_control_repo_root();
+  g_autofree gchar *root_canonical = g_canonicalize_filename(root, NULL);
+  g_autofree gchar *candidate = g_build_filename(root_canonical, relative_path, NULL);
+  g_autofree gchar *candidate_canonical = g_canonicalize_filename(candidate, NULL);
+  if (!canonical_path_is_inside(root_canonical, candidate_canonical)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Path escapes repository root");
+    return NULL;
+  }
+  if (!g_file_test(candidate_canonical, G_FILE_TEST_IS_REGULAR)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Spec path must point to a checked-in repo file");
+    return NULL;
+  }
+
+  gchar *contents = NULL;
+  if (!g_file_get_contents(candidate_canonical, &contents, NULL, NULL)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Spec path could not be read");
+    return NULL;
+  }
+  return contents;
+}
+
+static gchar *control_spec_json(
+    JsonObject *args,
+    const gchar *inline_key,
+    const gchar *path_key,
+    const gchar *missing_message,
+    gchar **error_code,
+    gchar **error_message) {
+  if (args != NULL && json_object_has_member(args, inline_key)) {
+    JsonNode *node = json_object_get_member(args, inline_key);
+    if (node == NULL || JSON_NODE_HOLDS_NULL(node)) {
+      *error_code = g_strdup("invalid_request");
+      *error_message = g_strdup(missing_message);
+      return NULL;
+    }
+    if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING) {
+      return g_strdup(json_node_get_string(node));
+    }
+    if (JSON_NODE_HOLDS_OBJECT(node) || JSON_NODE_HOLDS_ARRAY(node)) {
+      return json_node_to_text(node);
+    }
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Inline spec must be a JSON object, array, or JSON string");
+    return NULL;
+  }
+
+  const gchar *relative_path = object_string_any(args, path_key, "path", NULL, NULL);
+  if (relative_path == NULL || relative_path[0] == '\0') {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup(missing_message);
+    return NULL;
+  }
+  return repo_relative_text_file(relative_path, error_code, error_message);
+}
+
+static gchar *first_target_app_id(JsonObject *spec) {
+  JsonArray *apps = object_array(spec, "targetApps");
+  if (apps == NULL || json_array_get_length(apps) == 0) {
+    return NULL;
+  }
+  JsonNode *first = json_array_get_element(apps, 0);
+  if (first == NULL || !JSON_NODE_HOLDS_VALUE(first) || json_node_get_value_type(first) != G_TYPE_STRING) {
+    return NULL;
+  }
+  return g_strdup(json_node_get_string(first));
+}
+
+static void append_json_text_array(JsonBuilder *builder, GPtrArray *items) {
+  json_builder_begin_array(builder);
+  for (guint index = 0; items != NULL && index < items->len; index++) {
+    json_builder_add_json_text_or_null(builder, g_ptr_array_index(items, index));
+  }
+  json_builder_end_array(builder);
+}
+
+static gchar *test_failure_json(const gchar *test, const gchar *code, const gchar *field, const gchar *value) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "test");
+  json_builder_add_string_value(builder, test == NULL || test[0] == '\0' ? "unnamed" : test);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code == NULL || code[0] == '\0' ? "command_failed" : code);
+  if (field != NULL && field[0] != '\0') {
+    json_builder_set_member_name(builder, field);
+    json_builder_add_string_value(builder, value == NULL ? "" : value);
+  }
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *static_step_error_json(const gchar *code, const gchar *message) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, FALSE);
+  json_builder_set_member_name(builder, "error");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code == NULL || code[0] == '\0' ? "platform.unavailable" : code);
+  json_builder_set_member_name(builder, "message");
+  json_builder_add_string_value(builder, message == NULL || message[0] == '\0' ? "Static test command failed" : message);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *static_step_ok_json(const gchar *tool, const gchar *app_id) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "tool");
+  json_builder_add_string_value(builder, tool == NULL ? "" : tool);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static void collect_text_from_json_node(JsonNode *node, GPtrArray *values) {
+  if (node == NULL || values == NULL || JSON_NODE_HOLDS_NULL(node)) {
+    return;
+  }
+  if (JSON_NODE_HOLDS_VALUE(node)) {
+    if (json_node_get_value_type(node) == G_TYPE_STRING) {
+      const gchar *value = json_node_get_string(node);
+      if (value != NULL && value[0] != '\0') {
+        g_ptr_array_add(values, g_strdup(value));
+      }
+      return;
+    }
+    g_autofree gchar *text = json_node_to_text(node);
+    if (text != NULL && text[0] != '\0') {
+      g_ptr_array_add(values, g_strdup(text));
+    }
+    return;
+  }
+  if (JSON_NODE_HOLDS_ARRAY(node)) {
+    JsonArray *array = json_node_get_array(node);
+    for (guint index = 0; index < json_array_get_length(array); index++) {
+      collect_text_from_json_node(json_array_get_element(array, index), values);
+    }
+    return;
+  }
+  if (JSON_NODE_HOLDS_OBJECT(node)) {
+    JsonObject *object = json_node_get_object(node);
+    GList *members = json_object_get_members(object);
+    for (GList *item = members; item != NULL; item = item->next) {
+      collect_text_from_json_node(json_object_get_member(object, item->data), values);
+    }
+    g_list_free(members);
+  }
+}
+
+static void collect_text_from_json_text(const gchar *text, GPtrArray *values) {
+  if (text == NULL || text[0] == '\0' || values == NULL) {
+    return;
+  }
+  JsonParser *parser = json_parser_new();
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    collect_text_from_json_node(json_parser_get_root(parser), values);
+  }
+  g_object_unref(parser);
+}
+
+static void json_builder_add_expanded_node(JsonBuilder *builder, JsonNode *node, const gchar *app_id, const gchar *platform) {
+  if (node == NULL || JSON_NODE_HOLDS_NULL(node)) {
+    json_builder_add_null_value(builder);
+    return;
+  }
+  if (JSON_NODE_HOLDS_VALUE(node)) {
+    if (json_node_get_value_type(node) == G_TYPE_STRING) {
+      g_autofree gchar *with_app = replace_all_literal(json_node_get_string(node), "${appId}", app_id == NULL ? "" : app_id);
+      g_autofree gchar *with_platform = replace_all_literal(with_app, "${platform}", platform == NULL ? "linux" : platform);
+      json_builder_add_string_value(builder, with_platform);
+      return;
+    }
+    json_builder_add_value(builder, json_node_copy(node));
+    return;
+  }
+  if (JSON_NODE_HOLDS_ARRAY(node)) {
+    JsonArray *array = json_node_get_array(node);
+    json_builder_begin_array(builder);
+    for (guint index = 0; index < json_array_get_length(array); index++) {
+      json_builder_add_expanded_node(builder, json_array_get_element(array, index), app_id, platform);
+    }
+    json_builder_end_array(builder);
+    return;
+  }
+
+  JsonObject *object = json_node_get_object(node);
+  GList *members = json_object_get_members(object);
+  json_builder_begin_object(builder);
+  for (GList *item = members; item != NULL; item = item->next) {
+    const gchar *member = item->data;
+    json_builder_set_member_name(builder, member);
+    json_builder_add_expanded_node(builder, json_object_get_member(object, member), app_id, platform);
+  }
+  json_builder_end_object(builder);
+  g_list_free(members);
+}
+
+static JsonNode *step_args_with_app_id_node(JsonObject *step, const gchar *app_id, const gchar *platform) {
+  JsonObject *args = object_object(step, "args");
+  gboolean has_app_id = args != NULL && json_object_has_member(args, "appId");
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  if (args != NULL) {
+    GList *members = json_object_get_members(args);
+    for (GList *item = members; item != NULL; item = item->next) {
+      const gchar *member = item->data;
+      json_builder_set_member_name(builder, member);
+      json_builder_add_expanded_node(builder, json_object_get_member(args, member), app_id, platform);
+    }
+    g_list_free(members);
+  }
+  if (!has_app_id && app_id != NULL && app_id[0] != '\0') {
+    json_builder_set_member_name(builder, "appId");
+    json_builder_add_string_value(builder, app_id);
+  }
+  json_builder_end_object(builder);
+  JsonNode *root = json_builder_get_root(builder);
+  g_object_unref(builder);
+  return root;
+}
+
+static gboolean json_result_is_failed(const gchar *result) {
+  return result == NULL || strstr(result, "\"ok\":false") != NULL;
+}
+
+static gchar *runtime_assert_text_static_json(
+    const gchar *app_id,
+    GPtrArray *dynamic_text,
+    const gchar *text,
+    gchar **error_code,
+    gchar **error_message) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  if (!smoke_text_can_appear(html, dynamic_text, text)) {
+    *error_code = g_strdup("text.not_found");
+    *error_message = g_strdup("Expected text was not found");
+    return NULL;
+  }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "text");
+  json_builder_add_string_value(builder, text == NULL ? "" : text);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
+static gchar *runtime_assert_visible_static_json(
+    const gchar *app_id,
+    JsonObject *args,
+    GPtrArray *dynamic_text,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  g_autofree gchar *result = runtime_assert_visible_json(app_id, args, error_code, error_message, status);
+  if (result != NULL) {
+    return g_steal_pointer(&result);
+  }
+  const gchar *text = object_string(args, "text", NULL);
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  if (text != NULL && smoke_text_can_appear(html, dynamic_text, text)) {
+    g_free(*error_code);
+    g_free(*error_message);
+    *error_code = NULL;
+    *error_message = NULL;
+    *status = SOUP_STATUS_OK;
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "ok");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_set_member_name(builder, "appId");
+    json_builder_add_string_value(builder, app_id);
+    json_builder_set_member_name(builder, "text");
+    json_builder_add_string_value(builder, text);
+    json_builder_end_object(builder);
+    gchar *text_result = json_builder_to_text(builder);
+    g_object_unref(builder);
+    return text_result;
+  }
+  return NULL;
+}
+
+static gchar *runtime_assert_bridge_call_static_json(const gchar *app_id, const gchar *method) {
+  g_autofree gchar *app_js = app_text_for_bundled_app(app_id, "app.js");
+  gboolean ok = bridge_method_referenced(app_js, method);
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method == NULL ? "" : method);
+  if (!ok) {
+    json_builder_set_member_name(builder, "error");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "code");
+    json_builder_add_string_value(builder, "bridge.call_missing");
+    json_builder_set_member_name(builder, "message");
+    json_builder_add_string_value(builder, "Expected bridge method was not referenced by bundled app.js");
+    json_builder_end_object(builder);
+  }
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
+static gchar *static_step_result_json(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    const gchar *tool,
+    JsonObject *args,
+    GPtrArray *dynamic_text) {
+  const gchar *safe_tool = tool == NULL ? "" : tool;
+  g_autofree gchar *error_code = NULL;
+  g_autofree gchar *error_message = NULL;
+  guint status = SOUP_STATUS_BAD_REQUEST;
+  GError *error = NULL;
+
+  if (g_strcmp0(safe_tool, "platform.validate_package") == 0 ||
+      g_strcmp0(safe_tool, "platform.sign_webapp_package") == 0 ||
+      g_strcmp0(safe_tool, "platform.install_webapp_package") == 0 ||
+      g_strcmp0(safe_tool, "platform.open_webapp") == 0 ||
+      g_strcmp0(safe_tool, "platform.reset_webapp") == 0 ||
+      g_strcmp0(safe_tool, "runtime.storage_reset") == 0) {
+    return static_step_ok_json(safe_tool, app_id);
+  }
+  if (g_strcmp0(safe_tool, "runtime.capabilities") == 0) {
+    return runtime_capabilities_json(plane, app_id);
+  }
+  if (g_strcmp0(safe_tool, "runtime.resource_usage") == 0) {
+    g_autofree gchar *result = runtime_resource_usage_json(plane, app_id, &error);
+    if (result == NULL) {
+      g_autofree gchar *failed = static_step_error_json("storage_error", error == NULL ? "Could not read resource usage" : error->message);
+      g_clear_error(&error);
+      return g_steal_pointer(&failed);
+    }
+    return g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.run_accessibility_audit") == 0) {
+    return runtime_accessibility_audit_json(app_id);
+  }
+  if (g_strcmp0(safe_tool, "runtime.accessibility_snapshot") == 0) {
+    return runtime_accessibility_snapshot_json(app_id);
+  }
+  if (g_strcmp0(safe_tool, "runtime.assert_accessibility") == 0) {
+    g_autofree gchar *result = runtime_assert_accessibility_json(app_id, object_string(args, "rule", NULL), &error_code, &error_message, &status);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.click") == 0 ||
+      g_strcmp0(safe_tool, "runtime.type") == 0 ||
+      g_strcmp0(safe_tool, "runtime.set_value") == 0 ||
+      g_strcmp0(safe_tool, "runtime.press_key") == 0 ||
+      g_strcmp0(safe_tool, "runtime.drag") == 0) {
+    g_autofree gchar *result = runtime_target_command_json(safe_tool, args, &error_code, &error_message, &status);
+    if (result != NULL && (g_strcmp0(safe_tool, "runtime.type") == 0 || g_strcmp0(safe_tool, "runtime.set_value") == 0)) {
+      const gchar *value = object_string_any(args, "value", "text", NULL, NULL);
+      if (value != NULL && value[0] != '\0') {
+        g_ptr_array_add(dynamic_text, g_strdup(value));
+      }
+    }
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.query") == 0) {
+    return runtime_query_json(app_id, args);
+  }
+  if (g_strcmp0(safe_tool, "runtime.screenshot") == 0) {
+    return runtime_screenshot_json(app_id, object_string(args, "label", NULL));
+  }
+  if (g_strcmp0(safe_tool, "runtime.wait_for") == 0) {
+    g_autofree gchar *result = runtime_wait_for_json(plane, args, &error_code, &error_message, &status);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.assert_visible") == 0) {
+    g_autofree gchar *result = runtime_assert_visible_static_json(app_id, args, dynamic_text, &error_code, &error_message, &status);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.assert_text") == 0) {
+    g_autofree gchar *result = runtime_assert_text_static_json(app_id, dynamic_text, object_string(args, "text", ""), &error_code, &error_message);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.assert_bridge_call") == 0) {
+    return runtime_assert_bridge_call_static_json(app_id, object_string(args, "method", ""));
+  }
+  if (g_strcmp0(safe_tool, "runtime.assert_no_console_errors") == 0) {
+    g_autofree gchar *result = assert_no_console_errors_json(plane, app_id, &error_code, &error_message, &status);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.run_smoke_tests") == 0) {
+    g_autofree gchar *result = runtime_run_smoke_tests_json(plane, control_session_id, app_id, &error_code, &error_message, &status);
+    return result == NULL ? static_step_error_json(error_code, error_message) : g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "platform.create_snapshot") == 0) {
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "ok");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_set_member_name(builder, "snapshotId");
+    g_autofree gchar *snapshot_id = make_snapshot_id();
+    json_builder_add_string_value(builder, snapshot_id);
+    json_builder_set_member_name(builder, "appId");
+    json_builder_add_string_value(builder, app_id);
+    json_builder_end_object(builder);
+    gchar *result = json_builder_to_text(builder);
+    g_object_unref(builder);
+    return result;
+  }
+  if (g_strcmp0(safe_tool, "runtime.network_mock_set") == 0) {
+    g_autofree gchar *result = runtime_network_mock_set_json(plane, args, &error);
+    if (result == NULL) {
+      g_autofree gchar *failed = static_step_error_json("invalid_request", error == NULL ? "Network mock could not be registered" : error->message);
+      g_clear_error(&error);
+      return g_steal_pointer(&failed);
+    }
+    return g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.dialog_mock_set") == 0) {
+    g_autofree gchar *result = runtime_dialog_mock_set_json(plane, args, &error);
+    if (result == NULL) {
+      g_autofree gchar *failed = static_step_error_json("invalid_request", error == NULL ? "Dialog mock could not be registered" : error->message);
+      g_clear_error(&error);
+      return g_steal_pointer(&failed);
+    }
+    return g_steal_pointer(&result);
+  }
+  if (g_strcmp0(safe_tool, "runtime.replay_events") == 0) {
+    JsonNode *events_node = json_object_has_member(args, "events") ? json_object_get_member(args, "events") : NULL;
+    if (events_node != NULL && JSON_NODE_HOLDS_ARRAY(events_node)) {
+      return runtime_replay_events_json(app_id, json_node_get_array(events_node));
+    }
+    return static_step_ok_json(safe_tool, app_id);
+  }
+  if (g_strcmp0(safe_tool, "runtime.core_snapshot") == 0 ||
+      g_strcmp0(safe_tool, "runtime.assert_core_action") == 0 ||
+      g_strcmp0(safe_tool, "runtime.network_mock_reset") == 0 ||
+      g_strcmp0(safe_tool, "runtime.dialog_mock_reset") == 0) {
+    return static_step_ok_json(safe_tool, app_id);
+  }
+
+  return static_step_error_json("platform.unavailable", "Micro-test command is not executable by the Linux static runner");
+}
+
+static gchar *static_command_json(const gchar *phase, guint index, const gchar *tool, gboolean ok, const gchar *result_json) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "phase");
+  phase == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, phase);
+  json_builder_set_member_name(builder, "index");
+  json_builder_add_int_value(builder, index);
+  json_builder_set_member_name(builder, "tool");
+  json_builder_add_string_value(builder, tool == NULL ? "" : tool);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "passed" : "failed");
+  json_builder_set_member_name(builder, "result");
+  json_builder_add_json_text_or_null(builder, result_json);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static void evaluate_microtest_phase(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    JsonObject *spec,
+    const gchar *phase,
+    GPtrArray *dynamic_text,
+    GPtrArray *commands,
+    GPtrArray *failures,
+    guint *total_steps) {
+  JsonArray *steps = object_array(spec, phase);
+  if (steps == NULL) {
+    return;
+  }
+  for (guint index = 0; index < json_array_get_length(steps); index++) {
+    JsonObject *step = NULL;
+    if (!json_array_object_at(steps, index, &step)) {
+      g_ptr_array_add(failures, test_failure_json(phase, "invalid_step", "message", "Micro-test step must be an object"));
+      continue;
+    }
+    *total_steps += 1;
+    const gchar *tool = object_string(step, "tool", "");
+    JsonNode *args_root = step_args_with_app_id_node(step, app_id, "linux");
+    JsonObject *args = json_node_get_object(args_root);
+    g_autofree gchar *result = static_step_result_json(plane, control_session_id, app_id, tool, args, dynamic_text);
+    gboolean ok = !json_result_is_failed(result);
+    if (!ok) {
+      g_ptr_array_add(failures, test_failure_json(phase, "command_failed", "tool", tool));
+    }
+    g_ptr_array_add(commands, static_command_json(phase, index, tool, ok, result));
+    collect_text_from_json_node(args_root, dynamic_text);
+    collect_text_from_json_text(result, dynamic_text);
+    json_node_unref(args_root);
+  }
+}
+
+static gchar *evaluate_microtest_spec_json(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    JsonObject *spec) {
+  GPtrArray *failures = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *commands = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *dynamic_text = g_ptr_array_new_with_free_func(g_free);
+  guint total_steps = 0;
+
+  evaluate_microtest_phase(plane, control_session_id, app_id, spec, "setup", dynamic_text, commands, failures, &total_steps);
+  evaluate_microtest_phase(plane, control_session_id, app_id, spec, "steps", dynamic_text, commands, failures, &total_steps);
+  evaluate_microtest_phase(plane, control_session_id, app_id, spec, "teardown", dynamic_text, commands, failures, &total_steps);
+
+  gboolean ok = failures->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "passed" : "failed");
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, object_string(spec, "id", "microtest"));
+  json_builder_set_member_name(builder, "totalSteps");
+  json_builder_add_int_value(builder, total_steps);
+  json_builder_set_member_name(builder, "failures");
+  append_json_text_array(builder, failures);
+  json_builder_set_member_name(builder, "commands");
+  append_json_text_array(builder, commands);
+  json_builder_set_member_name(builder, "runner");
+  json_builder_add_string_value(builder, "linux-static-microtest");
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(dynamic_text, TRUE);
+  g_ptr_array_free(commands, TRUE);
+  g_ptr_array_free(failures, TRUE);
+  return result;
+}
+
+static gchar *runtime_run_microtest_json(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    JsonObject *args,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  g_autofree gchar *spec_json = control_spec_json(
+      args,
+      "spec",
+      "microtestPath",
+      "runtime.run_microtest requires spec or microtestPath",
+      error_code,
+      error_message);
+  if (spec_json == NULL) {
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, spec_json, -1, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    *error_code = g_strdup("invalid_microtest");
+    *error_message = g_strdup("Micro-test spec must be a JSON object");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonObject *spec = json_node_get_object(json_parser_get_root(parser));
+  g_autofree gchar *app_id = first_target_app_id(spec);
+  if (app_id == NULL || !valid_generated_app_id(app_id) || !app_sandbox_is_known_example_app_id(app_id)) {
+    g_object_unref(parser);
+    *error_code = g_strdup("invalid_microtest");
+    *error_message = g_strdup("Micro-test must target at least one app");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  if (!control_session_allows_app(plane, control_session_id, app_id, error_code, error_message, status)) {
+    g_object_unref(parser);
+    return NULL;
+  }
+
+  g_autofree gchar *result = evaluate_microtest_spec_json(plane, control_session_id, app_id, spec);
+  gboolean passed = strstr(result, "\"ok\":true") != NULL;
+  const gchar *micro_test_id = object_string(spec, "id", "microtest");
+  g_autofree gchar *diagnostics = g_strdup_printf("{\"runner\":\"linux-static-microtest\",\"spec\":%s}", spec_json);
+  GError *record_error = NULL;
+  if (!record_test_run(
+          plane,
+          control_session_id,
+          app_id,
+          micro_test_id,
+          micro_test_id,
+          spec_json,
+          passed ? "passed" : "failed",
+          result,
+          diagnostics,
+          &record_error)) {
+    g_object_unref(parser);
+    *error_code = g_strdup("sqlite_error");
+    *error_message = g_strdup(record_error == NULL ? "Micro-test run could not be recorded" : record_error->message);
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    g_clear_error(&record_error);
+    return NULL;
+  }
+
+  g_object_unref(parser);
+  return g_steal_pointer(&result);
+}
+
+static gchar *platform_smoke_failure_json(const gchar *app_id, const gchar *code, const gchar *message) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code == NULL ? "smoke_failed" : code);
+  json_builder_set_member_name(builder, "message");
+  json_builder_add_string_value(builder, message == NULL ? "Platform smoke command failed" : message);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *platform_smoke_app_result_json(const gchar *app_id, gboolean ok, GPtrArray *commands) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "commands");
+  append_json_text_array(builder, commands);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static void append_default_platform_smoke_step(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    GPtrArray *commands,
+    GPtrArray *failures) {
+  JsonBuilder *args_builder = json_builder_new();
+  json_builder_begin_object(args_builder);
+  json_builder_set_member_name(args_builder, "appId");
+  json_builder_add_string_value(args_builder, app_id);
+  json_builder_end_object(args_builder);
+  JsonNode *args_root = json_builder_get_root(args_builder);
+  JsonObject *args = json_node_get_object(args_root);
+  GPtrArray *dynamic_text = g_ptr_array_new_with_free_func(g_free);
+  g_autofree gchar *result = static_step_result_json(plane, control_session_id, app_id, "runtime.run_smoke_tests", args, dynamic_text);
+  gboolean ok = !json_result_is_failed(result);
+  if (!ok) {
+    g_ptr_array_add(failures, platform_smoke_failure_json(app_id, "smoke_failed", "Bundled smoke tests failed"));
+  }
+  g_ptr_array_add(commands, static_command_json("steps", 0, "runtime.run_smoke_tests", ok, result));
+  g_ptr_array_free(dynamic_text, TRUE);
+  json_node_unref(args_root);
+  g_object_unref(args_builder);
+}
+
+static gchar *platform_run_platform_smoke_json(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    JsonObject *args,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  g_autofree gchar *spec_json = control_spec_json(
+      args,
+      "spec",
+      "smokePath",
+      "platform.run_platform_smoke requires spec or smokePath",
+      error_code,
+      error_message);
+  if (spec_json == NULL) {
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, spec_json, -1, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("platform.run_platform_smoke requires an apps array");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  JsonObject *spec = json_node_get_object(json_parser_get_root(parser));
+  JsonArray *apps = object_array(spec, "apps");
+  if (apps == NULL || json_array_get_length(apps) == 0) {
+    g_object_unref(parser);
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("platform.run_platform_smoke requires an apps array");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  for (guint index = 0; index < json_array_get_length(apps); index++) {
+    JsonNode *app_node = json_array_get_element(apps, index);
+    if (app_node == NULL || !JSON_NODE_HOLDS_VALUE(app_node) || json_node_get_value_type(app_node) != G_TYPE_STRING ||
+        !valid_generated_app_id(json_node_get_string(app_node)) ||
+        !app_sandbox_is_known_example_app_id(json_node_get_string(app_node))) {
+      g_object_unref(parser);
+      *error_code = g_strdup("invalid_request");
+      *error_message = g_strdup("platform.run_platform_smoke apps must be generated app ids");
+      *status = SOUP_STATUS_BAD_REQUEST;
+      return NULL;
+    }
+    if (!control_session_allows_app(plane, control_session_id, json_node_get_string(app_node), error_code, error_message, status)) {
+      g_object_unref(parser);
+      return NULL;
+    }
+  }
+
+  const gchar *smoke_id = object_string(spec, "id", "platform-smoke");
+  const gchar *platform = object_string(args, "platform", "linux");
+  JsonArray *steps = object_array(spec, "stepsPerApp");
+  GPtrArray *app_results = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *failures = g_ptr_array_new_with_free_func(g_free);
+
+  for (guint app_index = 0; app_index < json_array_get_length(apps); app_index++) {
+    const gchar *app_id = json_array_get_string_element(apps, app_index);
+    GPtrArray *commands = g_ptr_array_new_with_free_func(g_free);
+    GPtrArray *dynamic_text = g_ptr_array_new_with_free_func(g_free);
+    gboolean app_ok = TRUE;
+
+    if (steps == NULL || json_array_get_length(steps) == 0) {
+      guint failure_count_before_app = failures->len;
+      append_default_platform_smoke_step(plane, control_session_id, app_id, commands, failures);
+      app_ok = failures->len == failure_count_before_app;
+    } else {
+      for (guint step_index = 0; step_index < json_array_get_length(steps); step_index++) {
+        JsonObject *step = NULL;
+        if (!json_array_object_at(steps, step_index, &step)) {
+          app_ok = FALSE;
+          g_ptr_array_add(failures, platform_smoke_failure_json(app_id, "invalid_step", "Platform smoke step must be an object"));
+          continue;
+        }
+        const gchar *tool = object_string(step, "tool", "");
+        JsonNode *args_root = step_args_with_app_id_node(step, app_id, platform);
+        JsonObject *step_args = json_node_get_object(args_root);
+        g_autofree gchar *result = static_step_result_json(plane, control_session_id, app_id, tool, step_args, dynamic_text);
+        gboolean command_ok = !json_result_is_failed(result);
+        if (!command_ok) {
+          app_ok = FALSE;
+          g_ptr_array_add(failures, platform_smoke_failure_json(app_id, "command_failed", tool));
+        }
+        g_ptr_array_add(commands, static_command_json("steps", step_index, tool, command_ok, result));
+        collect_text_from_json_node(args_root, dynamic_text);
+        collect_text_from_json_text(result, dynamic_text);
+        json_node_unref(args_root);
+      }
+    }
+
+    g_ptr_array_add(app_results, platform_smoke_app_result_json(app_id, app_ok, commands));
+    g_ptr_array_free(dynamic_text, TRUE);
+    g_ptr_array_free(commands, TRUE);
+  }
+
+  gboolean ok = failures->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, smoke_id);
+  json_builder_set_member_name(builder, "platform");
+  json_builder_add_string_value(builder, platform);
+  json_builder_set_member_name(builder, "totalApps");
+  json_builder_add_int_value(builder, app_results->len);
+  json_builder_set_member_name(builder, "failures");
+  append_json_text_array(builder, failures);
+  json_builder_set_member_name(builder, "apps");
+  append_json_text_array(builder, app_results);
+  json_builder_end_object(builder);
+  g_autofree gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+
+  g_autofree gchar *micro_test_id = g_strdup_printf("platform-smoke:%s:%s", smoke_id, platform);
+  g_autofree gchar *name = g_strdup_printf("%s platform smoke (%s)", smoke_id, platform);
+  g_autofree gchar *diagnostics = g_strdup_printf("{\"runner\":\"linux-static-platform-smoke\",\"spec\":%s}", spec_json);
+  GError *record_error = NULL;
+  if (!record_test_run(
+          plane,
+          control_session_id,
+          NULL,
+          micro_test_id,
+          name,
+          spec_json,
+          ok ? "passed" : "failed",
+          result,
+          diagnostics,
+          &record_error)) {
+    g_object_unref(parser);
+    g_ptr_array_free(app_results, TRUE);
+    g_ptr_array_free(failures, TRUE);
+    *error_code = g_strdup("sqlite_error");
+    *error_message = g_strdup(record_error == NULL ? "Platform smoke run could not be recorded" : record_error->message);
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    g_clear_error(&record_error);
+    return NULL;
+  }
+
+  g_object_unref(parser);
+  g_ptr_array_free(app_results, TRUE);
+  g_ptr_array_free(failures, TRUE);
   return g_steal_pointer(&result);
 }
 
@@ -5311,6 +6193,38 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     if (result == NULL) {
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_smoke_tests", error_message != NULL ? error_message : "Smoke test run failed", error_status);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.run_microtest") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.run_microtest requires spec or microtestPath", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    result = runtime_run_microtest_json(plane, control_session_id, args, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "runtime.run_microtest requires spec or microtestPath", error_status);
+      return;
+    }
+  } else if (g_strcmp0(tool, "platform.run_platform_smoke") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.run_platform_smoke requires spec or smokePath", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    result = platform_run_platform_smoke_json(plane, control_session_id, args, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_request", error_message != NULL ? error_message : "platform.run_platform_smoke requires spec or smokePath", error_status);
       return;
     }
   } else if (g_strcmp0(tool, "runtime.accessibility_snapshot") == 0 ||

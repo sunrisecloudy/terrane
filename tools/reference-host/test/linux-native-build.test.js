@@ -438,6 +438,83 @@ test(
         true,
       );
 
+      const microSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "notes-lite", metadata: { smoke: "linux-microtest" } },
+      });
+      assert.equal(microSession.statusCode, 200, microSession.body);
+      const microSessionId = JSON.parse(microSession.body).result.controlSessionId;
+
+      const microRun = await requestControl(ready.port, `/sessions/${encodeURIComponent(microSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.run_microtest",
+          args: { microtestPath: "tests/micro/notes-lite-create-note.microtest.json" },
+        },
+      });
+      assert.equal(microRun.statusCode, 200, microRun.body);
+      const microRunBody = JSON.parse(microRun.body);
+      assert.equal(microRunBody.result.ok, true);
+      assert.equal(microRunBody.result.status, "passed");
+      assert.equal(microRunBody.result.runner, "linux-static-microtest");
+      assert.equal(microRunBody.result.id, "notes-lite-create-note");
+      assert.equal(microRunBody.result.failures.length, 0);
+
+      const microRuns = await requestControl(ready.port, `/sessions/${encodeURIComponent(microSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_test_runs", args: { appId: "notes-lite" } },
+      });
+      assert.equal(microRuns.statusCode, 200, microRuns.body);
+      assert.equal(
+        JSON.parse(microRuns.body).result.rows.some((row) => row.micro_test_id === "notes-lite-create-note" && row.status === "passed"),
+        true,
+      );
+
+      const platformSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { metadata: { smoke: "linux-platform-smoke" } },
+      });
+      assert.equal(platformSession.statusCode, 200, platformSession.body);
+      const platformSessionId = JSON.parse(platformSession.body).result.controlSessionId;
+
+      const platformSmoke = await requestControl(ready.port, `/sessions/${encodeURIComponent(platformSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.run_platform_smoke",
+          args: {
+            smokePath: "tests/platform-smoke/all-example-apps.platform-smoke.json",
+            platform: "linux",
+          },
+        },
+      });
+      assert.equal(platformSmoke.statusCode, 200, platformSmoke.body);
+      const platformSmokeBody = JSON.parse(platformSmoke.body);
+      assert.equal(platformSmokeBody.result.ok, true);
+      assert.equal(platformSmokeBody.result.id, "all-example-apps-cross-platform-smoke");
+      assert.equal(platformSmokeBody.result.platform, "linux");
+      assert.equal(platformSmokeBody.result.totalApps, 5);
+      assert.equal(platformSmokeBody.result.apps.every((app) => app.ok), true);
+      assert.equal(
+        platformSmokeBody.result.apps.every((app) => app.commands.some((command) => command.tool === "runtime.run_smoke_tests" && command.status === "passed")),
+        true,
+      );
+
+      const platformRuns = await requestControl(ready.port, `/sessions/${encodeURIComponent(platformSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_test_runs", args: {} },
+      });
+      assert.equal(platformRuns.statusCode, 200, platformRuns.body);
+      assert.equal(
+        JSON.parse(platformRuns.body).result.rows.some((row) => row.micro_test_id === "platform-smoke:all-example-apps-cross-platform-smoke:linux" && row.status === "passed"),
+        true,
+      );
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1431,11 +1508,43 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedMicroRunCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.run_microtest' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedPlatformSmokeCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.run_platform_smoke' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const persistedSmokeTestRunCount = execFileSync(
         "sqlite3",
         [
           dbPath,
           "SELECT COUNT(*) FROM test_runs WHERE app_id = 'task-workbench' AND micro_test_id = 'smoke:task-workbench' AND status = 'passed';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const persistedMicroTestRunCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM test_runs WHERE app_id = 'notes-lite' AND micro_test_id = 'notes-lite-create-note' AND status = 'passed';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const persistedPlatformSmokeRunCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM test_runs WHERE app_id IS NULL AND micro_test_id = 'platform-smoke:all-example-apps-cross-platform-smoke:linux' AND status = 'passed';",
         ],
         { encoding: "utf8" },
       ).trim();
@@ -1586,7 +1695,11 @@ test(
       assert.equal(Number(acceptedAccessibilityAuditCount) >= 1, true);
       assert.equal(Number(acceptedAccessibilityAssertCount) >= 1, true);
       assert.equal(Number(acceptedSmokeRunCount) >= 1, true);
+      assert.equal(Number(acceptedMicroRunCount) >= 1, true);
+      assert.equal(Number(acceptedPlatformSmokeCount) >= 1, true);
       assert.equal(Number(persistedSmokeTestRunCount) >= 1, true);
+      assert.equal(Number(persistedMicroTestRunCount) >= 1, true);
+      assert.equal(Number(persistedPlatformSmokeRunCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
       assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);

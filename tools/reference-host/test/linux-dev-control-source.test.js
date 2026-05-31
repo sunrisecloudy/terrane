@@ -237,7 +237,8 @@ test("Linux dev control supports static accessibility controls over bundled app 
   }
 
   assert.ok(
-    control.indexOf('"runtime.accessibility_snapshot"') < control.indexOf('"runtime.resource_usage"'),
+    control.indexOf('} else if (g_strcmp0(tool, "runtime.accessibility_snapshot")') <
+      control.indexOf('} else if (g_strcmp0(tool, "runtime.resource_usage")'),
     "accessibility controls should be first-class command routes",
   );
 });
@@ -275,8 +276,51 @@ test("Linux dev control supports static bundled smoke tests with test run persis
   }
 
   assert.ok(
-    control.indexOf('"runtime.run_smoke_tests"') < control.indexOf('"runtime.accessibility_snapshot"'),
+    control.indexOf('} else if (g_strcmp0(tool, "runtime.run_smoke_tests")') <
+      control.indexOf('} else if (g_strcmp0(tool, "runtime.accessibility_snapshot")'),
     "smoke tests should be routed as a first-class session command",
+  );
+});
+
+test("Linux dev control supports static micro-test and platform smoke runners", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.run_microtest",
+    "platform.run_platform_smoke",
+    "runtime_run_microtest_json",
+    "evaluate_microtest_spec_json",
+    "platform_run_platform_smoke_json",
+    "static_step_result_json",
+    "control_spec_json",
+    "repo_relative_text_file",
+    "g_canonicalize_filename",
+    "Path escapes repository root",
+    "runtime.run_microtest requires spec or microtestPath",
+    "platform.run_platform_smoke requires spec or smokePath",
+    "platform.run_platform_smoke requires an apps array",
+    "platform.run_platform_smoke apps must be generated app ids",
+    "Micro-test must target at least one app",
+    "linux-static-microtest",
+    "linux-static-platform-smoke",
+    "runtime.run_smoke_tests",
+    "record_test_run",
+    "INSERT INTO micro_tests",
+    "INSERT INTO test_runs",
+    "control_session_allows_app",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux static test-runner source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf('} else if (g_strcmp0(tool, "runtime.run_microtest")') <
+      control.indexOf('} else if (g_strcmp0(tool, "runtime.accessibility_snapshot")'),
+    "micro-tests should be routed before later runtime inspection routes",
+  );
+  assert.ok(
+    control.indexOf('} else if (g_strcmp0(tool, "platform.run_platform_smoke")') <
+      control.indexOf('} else if (g_strcmp0(tool, "runtime.accessibility_snapshot")'),
+    "platform smoke should be routed before later runtime inspection routes",
   );
 });
 
