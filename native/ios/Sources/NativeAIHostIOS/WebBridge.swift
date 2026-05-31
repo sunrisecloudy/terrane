@@ -114,6 +114,11 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             )
             return
         }
+        if let response = faultInjectionFailure(request) {
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            replyHandler(response.asDictionary(), nil)
+            return
+        }
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
             let response = BridgeResponse.failure(
@@ -176,6 +181,10 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             recordBridgeCall(request: request, response: response, startedAt: startedAt)
             return response
         }
+        if let response = faultInjectionFailure(request) {
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            return response
+        }
         if let permission = permissionForBridgeMethod(request.method),
            !request.context.approvedPermissions.contains(permission) {
             let response = BridgeResponse.failure(
@@ -214,12 +223,15 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "storage.list":
             reply(storage.list(request))
         case "dialog.openFile":
+            dialogs.databaseHandle = storage.databaseHandle
             dialogs.openFile(request, reply: reply)
         case "dialog.saveFile":
+            dialogs.databaseHandle = storage.databaseHandle
             dialogs.saveFile(request, reply: reply)
         case "notification.toast":
             reply(notifications.toast(request))
         case "network.request":
+            network.databaseHandle = storage.databaseHandle
             reply(network.request(request))
         case "core.step":
             reply(core.step(request))
@@ -327,6 +339,53 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         }
         return nil
+    }
+
+    private func faultInjectionFailure(_ request: BridgeRequest) -> BridgeResponse? {
+        guard let db = storage.databaseHandle,
+              !request.context.appId.isEmpty
+        else { return nil }
+        let sql = """
+        SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections
+        WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, request.method)
+        bind(statement, 2, request.context.appId)
+        bind(statement, 3, runtimeSessionId(request))
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+
+        let faultId = columnText(statement, 0)
+        let code = columnText(statement, 1)
+        let message = columnText(statement, 2)
+        var details = jsonDictionary(columnText(statement, 3))
+        let once = sqlite3_column_int(statement, 4) != 0
+        details["faultId"] = faultId
+        details["appId"] = request.context.appId
+        details["method"] = request.method
+        if once {
+            disableFaultInjection(faultId)
+        }
+        return .failure(id: request.id, code: code, message: message, details: details)
+    }
+
+    private func disableFaultInjection(_ faultId: String) {
+        guard let db = storage.databaseHandle else { return }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?", -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, faultId)
+        sqlite3_step(statement)
+    }
+
+    private func jsonDictionary(_ text: String) -> [String: Any] {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return object
     }
 
     private static func extraFields(in body: [String: Any], allowed: Set<String>) -> [String] {
@@ -515,6 +574,13 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             return
         }
         sqlite3_bind_int64(statement, index, Int64(value))
+    }
+
+    private func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, index)
+        else { return "" }
+        return String(cString: text)
     }
 
     private func permissionForBridgeMethod(_ method: String) -> String? {

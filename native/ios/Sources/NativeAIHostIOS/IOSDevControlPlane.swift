@@ -584,6 +584,14 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 id: (args["id"] as? String) ?? "control_core_step",
                 sessionId: sessionId
             )
+        case "runtime.fault_inject":
+            return successBody(result: try runtimeFaultInject(args: args), sessionId: sessionId)
+        case "runtime.network_mock_set":
+            return successBody(result: try runtimeNetworkMockSet(args: args), sessionId: sessionId)
+        case "runtime.network_mock_reset":
+            return successBody(result: try runtimeNetworkMockReset(args: args), sessionId: sessionId)
+        case "runtime.dialog_mock_set":
+            return successBody(result: try runtimeDialogMockSet(args: args), sessionId: sessionId)
         case "runtime.storage_get":
             let appId = try requiredString(args, key: "appId", message: "runtime.storage_get requires appId and key")
             return try await bridgeCommandBody(
@@ -683,6 +691,10 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
+                    "runtime.fault_inject",
+                    "runtime.network_mock_set",
+                    "runtime.network_mock_reset",
+                    "runtime.dialog_mock_set",
                     "runtime.storage_get",
                     "runtime.storage_set",
                     "runtime.assert_storage",
@@ -763,6 +775,267 @@ final class IOSDevControlPlane: @unchecked Sendable {
             )
         }
         return await bridgeCommandHandler(appId, method, params, id)
+    }
+
+    private func runtimeFaultInject(args: [String: Any]) throws -> [String: Any] {
+        guard let method = faultMethod(args), !method.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.fault_inject requires a bridge method")
+        }
+        guard isKnownBridgeMethod(method) else {
+            throw CommandError(status: 400, code: "unknown_method", message: "Unknown bridge method: \(method)", details: ["method": method])
+        }
+        let appId = try optionalString(args, key: "appId", message: "runtime.fault_inject appId must be a string")
+        if let appId {
+            try requireBundledApp(appId, message: "runtime.fault_inject appId is not a valid generated app id")
+        }
+        let sessionId = try optionalString(args, key: "sessionId", message: "runtime.fault_inject sessionId must be a string")
+        let code = try optionalString(args, key: "code", message: "runtime.fault_inject code must be a string") ?? "fault_injected"
+        let message = try optionalString(args, key: "message", message: "runtime.fault_inject message must be a string") ?? "Injected bridge fault"
+        let details = faultDetails(args)
+        let once = faultOnce(args)
+        let faultId = "fault_ios_\(UUID().uuidString.lowercased())"
+        let createdAt = Self.now()
+        try executePreparedStatement(
+            """
+            INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            values: [
+                .text(faultId),
+                .nullableText(sessionId),
+                .nullableText(appId),
+                .text(method),
+                .text(code),
+                .text(message),
+                .text(jsonFragmentString(details)),
+                .int(once ? 1 : 0),
+                .text(createdAt)
+            ]
+        )
+        return [
+            "ok": true,
+            "faultId": faultId,
+            "sessionId": sessionId ?? NSNull(),
+            "appId": appId ?? NSNull(),
+            "method": method,
+            "code": code,
+            "message": message,
+            "details": details,
+            "once": once
+        ]
+    }
+
+    private func runtimeNetworkMockSet(args: [String: Any]) throws -> [String: Any] {
+        guard let urlPattern = networkMockUrlPattern(args),
+              args.keys.contains("response"),
+              !(args["response"] is NSNull)
+        else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.network_mock_set requires urlPattern or match.url and response")
+        }
+        let appId = try optionalString(args, key: "appId", message: "runtime.network_mock_set appId must be a string")
+        try validateEffectMockAppId(appId)
+        let sessionId = try optionalString(args, key: "sessionId", message: "runtime.network_mock_set sessionId must be a string")
+        let method = networkMockMethod(args)
+        let response = args["response"] ?? NSNull()
+        let mockId = "netmock_ios_\(UUID().uuidString.lowercased())"
+        let createdAt = Self.now()
+        try executePreparedStatement(
+            """
+            INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            values: [
+                .text(mockId),
+                .nullableText(sessionId),
+                .nullableText(appId),
+                .text(method),
+                .text(urlPattern),
+                .text(jsonFragmentString(response)),
+                .text(createdAt)
+            ]
+        )
+        return [
+            "ok": true,
+            "mockId": mockId,
+            "sessionId": sessionId ?? NSNull(),
+            "appId": appId ?? NSNull(),
+            "method": method,
+            "urlPattern": urlPattern
+        ]
+    }
+
+    private func runtimeNetworkMockReset(args: [String: Any]) throws -> [String: Any] {
+        let appId = try optionalString(args, key: "appId", message: "runtime.network_mock_reset appId must be a string")
+        try validateEffectMockAppId(appId)
+        let sessionId = try optionalString(args, key: "sessionId", message: "runtime.network_mock_reset sessionId must be a string")
+        let cleared: Int
+        if let sessionId, let appId {
+            cleared = try deleteMockRows(sql: "DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?", first: sessionId, second: appId)
+        } else if let sessionId {
+            cleared = try deleteMockRows(sql: "DELETE FROM network_mocks WHERE session_id = ?", first: sessionId)
+        } else if let appId {
+            cleared = try deleteMockRows(sql: "DELETE FROM network_mocks WHERE app_id = ?", first: appId)
+        } else {
+            cleared = try deleteMockRows(sql: "DELETE FROM network_mocks")
+        }
+        return [
+            "ok": true,
+            "cleared": cleared
+        ]
+    }
+
+    private func runtimeDialogMockSet(args: [String: Any]) throws -> [String: Any] {
+        guard let dialogType = dialogMockType(args) else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.dialog_mock_set requires dialogType or method")
+        }
+        let appId = try optionalString(args, key: "appId", message: "runtime.dialog_mock_set appId must be a string")
+        try validateEffectMockAppId(appId)
+        let sessionId = try optionalString(args, key: "sessionId", message: "runtime.dialog_mock_set sessionId must be a string")
+        let mockId = "dialogmock_ios_\(UUID().uuidString.lowercased())"
+        let createdAt = Self.now()
+        try executePreparedStatement(
+            """
+            INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            values: [
+                .text(mockId),
+                .nullableText(sessionId),
+                .nullableText(appId),
+                .text(dialogType),
+                .text(jsonFragmentString(dialogMockResponse(args))),
+                .text(createdAt)
+            ]
+        )
+        return [
+            "ok": true,
+            "mockId": mockId,
+            "sessionId": sessionId ?? NSNull(),
+            "appId": appId ?? NSNull(),
+            "dialogType": dialogType
+        ]
+    }
+
+    private func faultMethod(_ args: [String: Any]) -> String? {
+        if let method = args["method"] as? String, !method.isEmpty {
+            return method
+        }
+        guard let kind = args["kind"] as? String, !kind.isEmpty else {
+            return nil
+        }
+        switch kind {
+        case "storage.read":
+            return "storage.get"
+        case "storage.write":
+            return "storage.set"
+        case "network", "network.request":
+            return "network.request"
+        case "core", "core.step":
+            return "core.step"
+        default:
+            return kind
+        }
+    }
+
+    private func faultDetails(_ args: [String: Any]) -> Any {
+        if let details = args["details"], !(details is NSNull) {
+            return details
+        }
+        if let kind = args["kind"] as? String, !kind.isEmpty {
+            return ["kind": kind]
+        }
+        return [:] as [String: Any]
+    }
+
+    private func faultOnce(_ args: [String: Any]) -> Bool {
+        guard let value = args["once"] else {
+            return true
+        }
+        return (value as? Bool) ?? true
+    }
+
+    private func isKnownBridgeMethod(_ method: String) -> Bool {
+        [
+            "storage.get",
+            "storage.set",
+            "storage.remove",
+            "storage.list",
+            "dialog.openFile",
+            "dialog.saveFile",
+            "notification.toast",
+            "network.request",
+            "core.step",
+            "runtime.capabilities",
+            "app.log"
+        ].contains(method)
+    }
+
+    private func networkMockUrlPattern(_ args: [String: Any]) -> String? {
+        if let urlPattern = args["urlPattern"] as? String, !urlPattern.isEmpty {
+            return urlPattern
+        }
+        guard let match = args["match"] as? [String: Any] else {
+            return nil
+        }
+        if let urlPattern = match["urlPattern"] as? String, !urlPattern.isEmpty {
+            return urlPattern
+        }
+        if let url = match["url"] as? String, !url.isEmpty {
+            return url
+        }
+        return nil
+    }
+
+    private func networkMockMethod(_ args: [String: Any]) -> String {
+        let match = args["match"] as? [String: Any]
+        let method = (args["method"] as? String) ?? (match?["method"] as? String) ?? "GET"
+        return method.uppercased()
+    }
+
+    private func dialogMockType(_ args: [String: Any]) -> String? {
+        guard let raw = (args["dialogType"] as? String) ?? (args["method"] as? String) else {
+            return nil
+        }
+        let normalized = raw.hasPrefix("dialog.") ? String(raw.dropFirst("dialog.".count)) : raw
+        return ["openFile", "saveFile"].contains(normalized) ? normalized : nil
+    }
+
+    private func dialogMockResponse(_ args: [String: Any]) -> Any {
+        if let response = args["response"], !(response is NSNull) {
+            return response
+        }
+        return [
+            "files": args["files"] ?? [],
+            "selectedPath": args["selectedPath"] ?? NSNull(),
+            "cancelled": (args["cancelled"] as? Bool) ?? false
+        ] as [String: Any]
+    }
+
+    private func validateEffectMockAppId(_ appId: String?) throws {
+        if let appId {
+            try requireBundledApp(appId, message: "Runtime effect mock appId is not a valid generated app id")
+        }
+    }
+
+    private func deleteMockRows(sql: String, first: String? = nil, second: String? = nil) throws -> Int {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Network mock reset could not be prepared")
+        }
+        defer { sqlite3_finalize(statement) }
+        if let first {
+            bind(statement, 1, first)
+        }
+        if let second {
+            bind(statement, 2, second)
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Network mocks could not be reset")
+        }
+        return Int(sqlite3_changes(db))
     }
 
     private func storageGetParams(_ args: [String: Any]) throws -> [String: Any] {

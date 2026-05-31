@@ -341,6 +341,8 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
   const control = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
   const host = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const bridge = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
+  const network = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
+  const dialogs = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
 
   for (const snippet of [
     "#if DEBUG && targetEnvironment(simulator)",
@@ -387,6 +389,10 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "\"runtime.capabilities\"",
     "\"runtime.call_bridge\"",
     "\"runtime.core_step\"",
+    "\"runtime.fault_inject\"",
+    "\"runtime.network_mock_set\"",
+    "\"runtime.network_mock_reset\"",
+    "\"runtime.dialog_mock_set\"",
     "\"runtime.storage_get\"",
     "\"runtime.storage_set\"",
     "\"runtime.assert_storage\"",
@@ -486,6 +492,27 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "BundledAppCatalog",
     "control_call_bridge",
     "control_core_step",
+    "runtimeFaultInject",
+    "runtimeNetworkMockSet",
+    "runtimeNetworkMockReset",
+    "runtimeDialogMockSet",
+    "runtime.fault_inject requires a bridge method",
+    "runtime.fault_inject appId is not a valid generated app id",
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "Runtime effect mock appId is not a valid generated app id",
+    "INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at)",
+    "INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at)",
+    "DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?",
+    "DELETE FROM network_mocks WHERE session_id = ?",
+    "DELETE FROM network_mocks WHERE app_id = ?",
+    "DELETE FROM network_mocks",
+    "INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at)",
+    "fault_ios_",
+    "netmock_ios_",
+    "dialogmock_ios_",
+    "fault_injected",
+    "Injected bridge fault",
     "control_storage_get",
     "control_storage_set",
     "control_storage_assert_get",
@@ -584,8 +611,27 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "AppSandboxContext(controlAppId: appId, mountToken: \"ios-dev-control\")",
     "init(controlAppId appId: String, mountToken: String?)",
     "struct BridgeResponse: @unchecked Sendable",
+    "faultInjectionFailure",
+    "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections",
+    "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?",
   ]) {
     assert.equal(bridge.includes(snippet), true, `iOS bridge should expose dev control bridge routing with ${snippet}`);
+  }
+
+  for (const snippet of [
+    "SELECT response_json, url_pattern FROM network_mocks",
+    "mockedNetworkResponse",
+    "urlMatches",
+    "delayMs",
+  ]) {
+    assert.equal(network.includes(snippet), true, `iOS network mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "SELECT response_json FROM dialog_mocks",
+    "storedDialogMock",
+  ]) {
+    assert.equal(dialogs.includes(snippet), true, `iOS dialog mock source should contain ${snippet}`);
   }
 
   for (const snippet of [

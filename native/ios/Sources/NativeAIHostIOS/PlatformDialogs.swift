@@ -1,10 +1,12 @@
 import Foundation
+import SQLite3
 import UIKit
 import UniformTypeIdentifiers
 
 @MainActor
 final class PlatformDialogs: NSObject, UIDocumentPickerDelegate {
     var presenterProvider: (@MainActor () -> UIViewController?)?
+    var databaseHandle: OpaquePointer?
 
     private enum Pending {
         case open(request: BridgeRequest, reply: BridgeReply)
@@ -14,6 +16,10 @@ final class PlatformDialogs: NSObject, UIDocumentPickerDelegate {
     private var pending: Pending?
 
     func openFile(_ request: BridgeRequest, reply: @escaping BridgeReply) {
+        if let mock = storedDialogMock(request: request, dialogType: "openFile") {
+            reply(.success(id: request.id, result: mock))
+            return
+        }
         guard pending == nil else {
             reply(.failure(id: request.id, code: "capability_unavailable", message: "Another file dialog is already open"))
             return
@@ -31,6 +37,10 @@ final class PlatformDialogs: NSObject, UIDocumentPickerDelegate {
     }
 
     func saveFile(_ request: BridgeRequest, reply: @escaping BridgeReply) {
+        if let mock = storedDialogMock(request: request, dialogType: "saveFile") {
+            reply(.success(id: request.id, result: mock))
+            return
+        }
         guard pending == nil else {
             reply(.failure(id: request.id, code: "capability_unavailable", message: "Another file dialog is already open"))
             return
@@ -153,4 +163,45 @@ final class PlatformDialogs: NSObject, UIDocumentPickerDelegate {
     private func removeTemporaryFile(_ url: URL) {
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
     }
+
+    private func storedDialogMock(request: BridgeRequest, dialogType: String) -> Any? {
+        guard let db = databaseHandle,
+              !request.context.appId.isEmpty
+        else { return nil }
+        let sql = """
+        SELECT response_json FROM dialog_mocks
+        WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at DESC LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, dialogType)
+        bind(statement, 2, request.context.appId)
+        bind(statement, 3, runtimeSessionId(request))
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return jsonValue(columnText(statement, 0))
+    }
+
+    private func runtimeSessionId(_ request: BridgeRequest) -> String {
+        "runtime_ios_\(request.context.appId)_\(request.context.mountToken ?? "native")"
+    }
+
+    private func jsonValue(_ text: String) -> Any? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT_DIALOGS)
+    }
+
+    private func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, index)
+        else { return "" }
+        return String(cString: text)
+    }
 }
+
+private let SQLITE_TRANSIENT_DIALOGS = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

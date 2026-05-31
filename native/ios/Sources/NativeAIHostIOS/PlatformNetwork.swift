@@ -1,6 +1,9 @@
 import Foundation
+import SQLite3
 
 final class PlatformNetwork {
+    var databaseHandle: OpaquePointer?
+
     func request(_ request: BridgeRequest) -> BridgeResponse {
         guard let urlText = request.params["url"] as? String,
               let url = URL(string: urlText),
@@ -42,6 +45,15 @@ final class PlatformNetwork {
             )
         }
         let effectiveTimeoutMs = Self.effectiveTimeoutMs(rule: rule, requested: requestedTimeout.value)
+        if let mock = mockedNetworkResponse(
+            request: request,
+            rule: rule,
+            method: method,
+            url: urlText,
+            effectiveTimeoutMs: effectiveTimeoutMs
+        ) {
+            return mock
+        }
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method
@@ -99,6 +111,144 @@ final class PlatformNetwork {
             "headers": Self.responseHeaders(from: httpResponse),
             "bodyText": String(data: data, encoding: .utf8) ?? ""
         ])
+    }
+
+    private func mockedNetworkResponse(
+        request: BridgeRequest,
+        rule: NetworkPolicyRule,
+        method: String,
+        url: String,
+        effectiveTimeoutMs: Int
+    ) -> BridgeResponse? {
+        guard var mock = findNetworkMock(request: request, method: method, url: url) else { return nil }
+        if let delayMs = Self.positiveInteger(mock["delayMs"]),
+           delayMs > effectiveTimeoutMs {
+            return .failure(
+                id: request.id,
+                code: "timeout",
+                message: "network.request timed out",
+                details: ["timeoutMs": effectiveTimeoutMs, "delayMs": delayMs]
+            )
+        }
+        if Self.mockResponseBytes(mock) > rule.maxResponseBytes {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.response exceeds manifest.networkPolicy maxResponseBytes"
+            )
+        }
+        mock.removeValue(forKey: "delayMs")
+        return .success(id: request.id, result: mock)
+    }
+
+    private func findNetworkMock(request: BridgeRequest, method: String, url: String) -> [String: Any]? {
+        guard let db = databaseHandle,
+              !request.context.appId.isEmpty
+        else { return nil }
+        let sql = """
+        SELECT response_json, url_pattern FROM network_mocks
+        WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)
+        ORDER BY created_at DESC LIMIT 100
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        Self.bind(statement, 1, method.uppercased())
+        Self.bind(statement, 2, request.context.appId)
+        Self.bind(statement, 3, Self.runtimeSessionId(request))
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let responseJson = Self.columnText(statement, 0)
+            let urlPattern = Self.columnText(statement, 1)
+            guard Self.urlMatches(pattern: urlPattern, url: url),
+                  let mock = Self.jsonObject(responseJson)
+            else { continue }
+            return mock
+        }
+        return nil
+    }
+
+    private static func runtimeSessionId(_ request: BridgeRequest) -> String {
+        "runtime_ios_\(request.context.appId)_\(request.context.mountToken ?? "native")"
+    }
+
+    private static func urlMatches(pattern: String, url: String) -> Bool {
+        if pattern == "*" || pattern == url {
+            return true
+        }
+        if pattern.hasSuffix("*") {
+            return url.hasPrefix(String(pattern.dropLast()))
+        }
+        return false
+    }
+
+    private static func jsonObject(_ text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object
+    }
+
+    private static func positiveInteger(_ value: Any?) -> Int? {
+        if value is Bool {
+            return nil
+        }
+        if let intValue = value as? Int, intValue > 0 {
+            return intValue
+        }
+        if let doubleValue = value as? Double,
+           doubleValue.isFinite,
+           doubleValue.rounded(.towardZero) == doubleValue,
+           doubleValue > 0,
+           doubleValue <= Double(Int.max) {
+            return Int(doubleValue)
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return nil
+            }
+            let doubleValue = number.doubleValue
+            if doubleValue.isFinite,
+               doubleValue.rounded(.towardZero) == doubleValue,
+               doubleValue > 0,
+               doubleValue <= Double(Int.max) {
+                return Int(doubleValue)
+            }
+        }
+        return nil
+    }
+
+    private static func mockResponseBytes(_ response: [String: Any]) -> Int {
+        if let bodyText = response["bodyText"] {
+            return jsonPayloadBytes(bodyText)
+        }
+        if let body = response["body"] {
+            return jsonPayloadBytes(body)
+        }
+        return 0
+    }
+
+    private static func jsonPayloadBytes(_ value: Any) -> Int {
+        if value is NSNull {
+            return 0
+        }
+        if let string = value as? String {
+            return string.data(using: .utf8)?.count ?? 0
+        }
+        guard JSONSerialization.isValidJSONObject(["value": value]),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [])
+        else { return 0 }
+        return data.count
+    }
+
+    private static func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT_NETWORK)
+    }
+
+    private static func columnText(_ statement: OpaquePointer?, _ index: Int32) -> String {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, index)
+        else { return "" }
+        return String(cString: text)
     }
 
     fileprivate static func origin(for url: URL) -> String? {
@@ -414,3 +564,5 @@ private final class NetworkResultBox: @unchecked Sendable {
         return (storedData, storedResponse, storedError)
     }
 }
+
+private let SQLITE_TRANSIENT_NETWORK = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

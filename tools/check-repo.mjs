@@ -1455,6 +1455,10 @@ function checkNativeStatic() {
     "\"runtime.capabilities\"",
     "\"runtime.call_bridge\"",
     "\"runtime.core_step\"",
+    "\"runtime.fault_inject\"",
+    "\"runtime.network_mock_set\"",
+    "\"runtime.network_mock_reset\"",
+    "\"runtime.dialog_mock_set\"",
     "\"runtime.storage_get\"",
     "\"runtime.storage_set\"",
     "\"runtime.assert_storage\"",
@@ -1554,6 +1558,27 @@ function checkNativeStatic() {
     "BundledAppCatalog",
     "control_call_bridge",
     "control_core_step",
+    "runtimeFaultInject",
+    "runtimeNetworkMockSet",
+    "runtimeNetworkMockReset",
+    "runtimeDialogMockSet",
+    "runtime.fault_inject requires a bridge method",
+    "runtime.fault_inject appId is not a valid generated app id",
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "Runtime effect mock appId is not a valid generated app id",
+    "INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at)",
+    "INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at)",
+    "DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?",
+    "DELETE FROM network_mocks WHERE session_id = ?",
+    "DELETE FROM network_mocks WHERE app_id = ?",
+    "DELETE FROM network_mocks",
+    "INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at)",
+    "fault_ios_",
+    "netmock_ios_",
+    "dialogmock_ios_",
+    "fault_injected",
+    "Injected bridge fault",
     "control_storage_get",
     "control_storage_set",
     "control_storage_assert_get",
@@ -1650,6 +1675,10 @@ function checkNativeStatic() {
     }
   }
   for (const snippet of [
+    "runtime.fault_inject",
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
     "runtime.storage_get",
     "runtime.storage_set",
     "runtime.assert_storage",
@@ -1682,6 +1711,9 @@ function checkNativeStatic() {
     "AppSandboxContext(controlAppId: appId, mountToken: \"ios-dev-control\")",
     "init(controlAppId appId: String, mountToken: String?)",
     "struct BridgeResponse: @unchecked Sendable",
+    "faultInjectionFailure",
+    "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections",
+    "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?",
   ]) {
     if (!iosBridge.includes(snippet)) {
       throw new Error(`iOS bridge missing dev control routing snippet: ${snippet}`);
@@ -1702,6 +1734,11 @@ function checkNativeStatic() {
       throw new Error(`iOS network missing timeoutMs parity: ${snippet}`);
     }
   }
+  for (const snippet of ["SELECT response_json, url_pattern FROM network_mocks", "mockedNetworkResponse", "urlMatches", "delayMs"]) {
+    if (!iosNetwork.includes(snippet)) {
+      throw new Error(`iOS network mock source missing ${snippet}`);
+    }
+  }
   if (iosNetwork.includes("TimeInterval(rule.timeoutMs) / 1000.0")) {
     throw new Error("iOS network.request must clamp request timeoutMs before configuring URLSession");
   }
@@ -1711,6 +1748,11 @@ function checkNativeStatic() {
   for (const snippet of ["UIDocumentPickerViewController", "forOpeningContentTypes", "forExporting", "UIDocumentPickerDelegate", "startAccessingSecurityScopedResource", "dialog_cancelled"]) {
     if (!iosDialogs.includes(snippet)) {
       throw new Error(`iOS dialogs missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["SELECT response_json FROM dialog_mocks", "storedDialogMock"]) {
+    if (!iosDialogs.includes(snippet)) {
+      throw new Error(`iOS dialog mock source missing ${snippet}`);
     }
   }
   if (iosDialogs.includes("is not available in the iOS host yet") || iosBridge.includes('"dialog.openFile": false')) {
