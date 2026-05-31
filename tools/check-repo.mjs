@@ -1856,7 +1856,8 @@ function checkNativeStatic() {
     [linuxBridge, '"storage.write"'],
     [linuxBridge, '"network.request"'],
     [linuxBridge, '"dialog.openFile"'],
-    [linuxBridge, "platform_dialogs_init(&bridge->dialogs, owner_window)"],
+    [linuxBridge, "bridge->network.db = bridge->storage == NULL ? NULL : bridge->storage->db"],
+    [linuxBridge, "platform_dialogs_init(&bridge->dialogs, owner_window, bridge->storage == NULL ? NULL : bridge->storage->db)"],
     [linuxBridge, "zig_core_bridge_init"],
     [linuxBridge, "zig_core_bridge_is_available(&bridge->core)"],
     [linuxStorage, "request->context.app_id"],
@@ -1900,12 +1901,22 @@ function checkNativeStatic() {
       throw new Error(`Linux network missing policy enforcement: ${snippet}`);
     }
   }
+  for (const snippet of ["SELECT response_json, url_pattern FROM network_mocks", "mocked_network_response", "url_matches", "mock_payload_without_delay", "delayMs"]) {
+    if (!linuxNetwork.includes(snippet)) {
+      throw new Error(`Linux network mock support missing ${snippet}`);
+    }
+  }
   if (linuxNetwork.includes("platform_unsupported")) {
     throw new Error("Linux network.request must not remain a platform_unsupported stub");
   }
   for (const snippet of ["GtkFileChooserNative", "gtk_native_dialog_show", "g_main_loop_run", "gtk_file_chooser_get_file", "g_file_get_contents", "g_file_set_contents", "dialog_cancelled"]) {
     if (!linuxDialogs.includes(snippet)) {
       throw new Error(`Linux dialogs missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["SELECT response_json FROM dialog_mocks", "stored_dialog_mock", "bridge_success(request, mock)"]) {
+    if (!linuxDialogs.includes(snippet)) {
+      throw new Error(`Linux dialog mock support missing ${snippet}`);
     }
   }
   if (linuxDialogs.includes("will be wired") || linuxBridge.includes('json_builder_add_boolean_value(builder, FALSE);')) {
@@ -1952,6 +1963,9 @@ function checkNativeStatic() {
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -2015,6 +2029,21 @@ function checkNativeStatic() {
       throw new Error(`Linux dev control runtime inspection missing ${snippet}`);
     }
   }
+  for (const snippet of [
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "runtime_network_mock_set_json",
+    "runtime_network_mock_reset_json",
+    "runtime_dialog_mock_set_json",
+    "INSERT INTO network_mocks",
+    "DELETE FROM network_mocks WHERE app_id = ?",
+    "INSERT INTO dialog_mocks",
+    "Runtime effect mock command requires args object",
+  ]) {
+    if (!linuxDevControl.includes(snippet)) {
+      throw new Error(`Linux dev control effect mocks missing ${snippet}`);
+    }
+  }
   for (const forbidden of ["db.query_sql", "SELECT *", 'object_string(args, "sql"']) {
     if (linuxDevControl.includes(forbidden)) {
       throw new Error(`Linux dev control DB inspection must not contain ${forbidden}`);
@@ -2026,7 +2055,7 @@ function checkNativeStatic() {
   if (!linuxMeson.includes("'src/app_sandbox.c'")) {
     throw new Error("Linux Meson build must include app_sandbox.c");
   }
-  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "runtime.call_bridge", "runtime.core_step", "db.snapshot", "db.query_app_storage", "db.query_sql", "storage.set", "CreateTask", "bridge_calls", "core_events", "core_actions"]) {
+  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "runtime.call_bridge", "runtime.core_step", "runtime.network_mock_set", "runtime.network_mock_reset", "runtime.dialog_mock_set", "linux-network-mock", "linux-mock.txt", "db.snapshot", "db.query_app_storage", "db.query_sql", "storage.set", "CreateTask", "bridge_calls", "core_events", "core_actions"]) {
     if (!linuxNativeBuildTest.includes(snippet)) {
       throw new Error(`Linux native build test missing dev control coverage: ${snippet}`);
     }

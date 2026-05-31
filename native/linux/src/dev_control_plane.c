@@ -32,6 +32,14 @@ static void bind_text(sqlite3_stmt *statement, int index, const gchar *value) {
   sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT);
 }
 
+static void bind_nullable_text(sqlite3_stmt *statement, int index, const gchar *value) {
+  if (value == NULL || value[0] == '\0') {
+    sqlite3_bind_null(statement, index);
+    return;
+  }
+  sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT);
+}
+
 static gchar *now_iso(void) {
   GDateTime *now = g_date_time_new_now_utc();
   gchar *text = g_date_time_format_iso8601(now);
@@ -405,6 +413,262 @@ static gchar *object_member_json(JsonObject *object, const gchar *member, const 
     return g_strdup(fallback_json);
   }
   return json_node_to_text(node);
+}
+
+static const gchar *object_nonempty_string(JsonObject *object, const gchar *member) {
+  const gchar *value = object_string(object, member, NULL);
+  return value == NULL || value[0] == '\0' ? NULL : value;
+}
+
+static gchar *upper_ascii(const gchar *text) {
+  return g_ascii_strup(text == NULL || text[0] == '\0' ? "GET" : text, -1);
+}
+
+static const gchar *network_mock_url_pattern(JsonObject *args) {
+  const gchar *direct = object_nonempty_string(args, "urlPattern");
+  if (direct != NULL) {
+    return direct;
+  }
+  JsonObject *match = object_object(args, "match");
+  const gchar *match_pattern = object_nonempty_string(match, "urlPattern");
+  if (match_pattern != NULL) {
+    return match_pattern;
+  }
+  return object_nonempty_string(match, "url");
+}
+
+static gchar *network_mock_method(JsonObject *args) {
+  const gchar *method = object_nonempty_string(args, "method");
+  if (method != NULL) {
+    return upper_ascii(method);
+  }
+  JsonObject *match = object_object(args, "match");
+  return upper_ascii(object_nonempty_string(match, "method"));
+}
+
+static const gchar *dialog_mock_type(JsonObject *args) {
+  const gchar *raw = object_nonempty_string(args, "dialogType");
+  if (raw == NULL) {
+    raw = object_nonempty_string(args, "method");
+  }
+  if (raw == NULL) {
+    return NULL;
+  }
+  if (g_str_has_prefix(raw, "dialog.")) {
+    raw += strlen("dialog.");
+  }
+  return g_strcmp0(raw, "openFile") == 0 || g_strcmp0(raw, "saveFile") == 0 ? raw : NULL;
+}
+
+static gchar *dialog_mock_response_json(JsonObject *args) {
+  if (json_object_has_member(args, "response") && !json_object_get_null_member(args, "response")) {
+    return json_node_to_text(json_object_get_member(args, "response"));
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "files");
+  if (json_object_has_member(args, "files")) {
+    json_builder_add_value(builder, json_node_copy(json_object_get_member(args, "files")));
+  } else {
+    json_builder_begin_array(builder);
+    json_builder_end_array(builder);
+  }
+  json_builder_set_member_name(builder, "selectedPath");
+  if (json_object_has_member(args, "selectedPath")) {
+    json_builder_add_value(builder, json_node_copy(json_object_get_member(args, "selectedPath")));
+  } else {
+    json_builder_add_null_value(builder);
+  }
+  json_builder_set_member_name(builder, "cancelled");
+  if (json_object_has_member(args, "cancelled")) {
+    JsonNode *cancelled = json_object_get_member(args, "cancelled");
+    if (cancelled != NULL && JSON_NODE_HOLDS_VALUE(cancelled) && json_node_get_value_type(cancelled) == G_TYPE_BOOLEAN) {
+      json_builder_add_boolean_value(builder, json_node_get_boolean(cancelled));
+    } else {
+      json_builder_add_boolean_value(builder, FALSE);
+    }
+  } else {
+    json_builder_add_boolean_value(builder, FALSE);
+  }
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *runtime_network_mock_set_json(DevControlPlane *plane, JsonObject *args, GError **error) {
+  const gchar *url_pattern = network_mock_url_pattern(args);
+  if (url_pattern == NULL || !json_object_has_member(args, "response") || json_object_get_null_member(args, "response")) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "runtime.network_mock_set requires urlPattern or match.url and response");
+    return NULL;
+  }
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  const gchar *app_id = object_nonempty_string(args, "appId");
+  const gchar *session_id = object_nonempty_string(args, "sessionId");
+  g_autofree gchar *method_name = network_mock_method(args);
+  g_autofree gchar *response_json = json_node_to_text(json_object_get_member(args, "response"));
+  g_autofree gchar *mock_id = make_id("netmock");
+  g_autofree gchar *created_at = now_iso();
+
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(
+                   db,
+                   "INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at) "
+                   "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                   -1,
+                   &statement,
+                   NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, mock_id);
+    bind_nullable_text(statement, 2, session_id);
+    bind_nullable_text(statement, 3, app_id);
+    bind_text(statement, 4, method_name);
+    bind_text(statement, 5, url_pattern);
+    bind_text(statement, 6, response_json);
+    bind_text(statement, 7, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+  if (!ok) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Network mock could not be registered");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "mockId");
+  json_builder_add_string_value(builder, mock_id);
+  json_builder_set_member_name(builder, "sessionId");
+  session_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, session_id);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method_name);
+  json_builder_set_member_name(builder, "urlPattern");
+  json_builder_add_string_value(builder, url_pattern);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gint64 delete_mock_rows(sqlite3 *db, const gchar *sql, const gchar *first, const gchar *second, gboolean *ok) {
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    *ok = FALSE;
+    return 0;
+  }
+  if (first != NULL && first[0] != '\0') {
+    bind_text(statement, 1, first);
+  }
+  if (second != NULL && second[0] != '\0') {
+    bind_text(statement, 2, second);
+  }
+  if (sqlite3_step(statement) != SQLITE_DONE) {
+    *ok = FALSE;
+    sqlite3_finalize(statement);
+    return 0;
+  }
+  gint64 changes = sqlite3_changes(db);
+  sqlite3_finalize(statement);
+  return changes;
+}
+
+static gchar *runtime_network_mock_reset_json(DevControlPlane *plane, JsonObject *args, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+  const gchar *app_id = object_nonempty_string(args, "appId");
+  const gchar *session_id = object_nonempty_string(args, "sessionId");
+  gboolean ok = TRUE;
+  gint64 cleared = 0;
+  if (session_id != NULL && app_id != NULL) {
+    cleared = delete_mock_rows(db, "DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?", session_id, app_id, &ok);
+  } else if (session_id != NULL) {
+    cleared = delete_mock_rows(db, "DELETE FROM network_mocks WHERE session_id = ?", session_id, NULL, &ok);
+  } else if (app_id != NULL) {
+    cleared = delete_mock_rows(db, "DELETE FROM network_mocks WHERE app_id = ?", app_id, NULL, &ok);
+  } else {
+    cleared = delete_mock_rows(db, "DELETE FROM network_mocks", NULL, NULL, &ok);
+  }
+  platform_database_close(db);
+  if (!ok) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Network mocks could not be reset");
+    return NULL;
+  }
+  return g_strdup_printf("{\"ok\":true,\"cleared\":%" G_GINT64_FORMAT "}", cleared);
+}
+
+static gchar *runtime_dialog_mock_set_json(DevControlPlane *plane, JsonObject *args, GError **error) {
+  const gchar *dialog_type = dialog_mock_type(args);
+  if (dialog_type == NULL) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "runtime.dialog_mock_set requires dialogType or method");
+    return NULL;
+  }
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  const gchar *app_id = object_nonempty_string(args, "appId");
+  const gchar *session_id = object_nonempty_string(args, "sessionId");
+  g_autofree gchar *response_json = dialog_mock_response_json(args);
+  g_autofree gchar *mock_id = make_id("dialogmock");
+  g_autofree gchar *created_at = now_iso();
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(
+                   db,
+                   "INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at) "
+                   "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                   -1,
+                   &statement,
+                   NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, mock_id);
+    bind_nullable_text(statement, 2, session_id);
+    bind_nullable_text(statement, 3, app_id);
+    bind_text(statement, 4, dialog_type);
+    bind_text(statement, 5, response_json);
+    bind_text(statement, 6, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+  if (!ok) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Dialog mock could not be registered");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "mockId");
+  json_builder_add_string_value(builder, mock_id);
+  json_builder_set_member_name(builder, "sessionId");
+  session_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, session_id);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "dialogType");
+  json_builder_add_string_value(builder, dialog_type);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
 }
 
 static gchar *bridge_call_request_json(const gchar *request_id, const gchar *bridge_method, JsonNode *params_node) {
@@ -1642,6 +1906,42 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     g_autofree gchar *bridge_body = bridge_call_request_json(request_id, bridge_method, params);
     AppSandboxContext context = app_sandbox_context_for_app(app_id, control_session_id);
     result = web_bridge_handle_json(plane->bridge, bridge_body, context);
+  } else if (g_strcmp0(tool, "runtime.network_mock_set") == 0 ||
+             g_strcmp0(tool, "runtime.network_mock_reset") == 0 ||
+             g_strcmp0(tool, "runtime.dialog_mock_set") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Runtime effect mock command requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_nonempty_string(args, "appId");
+    if (app_id != NULL && !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Runtime effect mock appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.network_mock_set") == 0) {
+      result = runtime_network_mock_set_json(plane, args, &error);
+    } else if (g_strcmp0(tool, "runtime.network_mock_reset") == 0) {
+      result = runtime_network_mock_reset_json(plane, args, &error);
+    } else {
+      result = runtime_dialog_mock_set_json(plane, args, &error);
+    }
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", error != NULL ? error->message : "Runtime effect mock command failed", SOUP_STATUS_BAD_REQUEST);
+      g_clear_error(&error);
+      return;
+    }
   } else if (g_strcmp0(tool, "runtime.core_step") == 0) {
     JsonObject *args = object_object(body, "args");
     if (args == NULL) {

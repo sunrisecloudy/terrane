@@ -542,7 +542,8 @@ static JsonNode *dispatch(WebBridge *bridge, const BridgeRequest *request) {
 WebBridge *web_bridge_new(const gchar *database_path, GtkWindow *owner_window) {
   WebBridge *bridge = g_new0(WebBridge, 1);
   bridge->storage = platform_storage_new(database_path);
-  platform_dialogs_init(&bridge->dialogs, owner_window);
+  bridge->network.db = bridge->storage == NULL ? NULL : bridge->storage->db;
+  platform_dialogs_init(&bridge->dialogs, owner_window, bridge->storage == NULL ? NULL : bridge->storage->db);
   zig_core_bridge_init(&bridge->core);
   return bridge;
 }

@@ -65,6 +65,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
     "db.snapshot",
     "db.query_app_storage",
     "db.query_app_versions",
@@ -97,6 +100,55 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
   assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
+});
+
+test("Linux dev control exposes DB-backed network and dialog effect mocks", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+  const network = read("native/linux/src/platform_network.c");
+  const dialogs = read("native/linux/src/platform_dialogs.c");
+  const bridge = read("native/linux/src/web_bridge.c");
+
+  for (const snippet of [
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "runtime_network_mock_set_json",
+    "runtime_network_mock_reset_json",
+    "runtime_dialog_mock_set_json",
+    "INSERT INTO network_mocks",
+    "DELETE FROM network_mocks WHERE app_id = ?",
+    "INSERT INTO dialog_mocks",
+    "Runtime effect mock command requires args object",
+    "Runtime effect mock appId is not a valid generated app id",
+    "control_session_allows_app",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux effect mock control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "SELECT response_json, url_pattern FROM network_mocks",
+    "url_matches",
+    "mocked_network_response",
+    "delayMs",
+    "mock_payload_without_delay",
+    "network.response exceeds manifest.networkPolicy maxResponseBytes",
+  ]) {
+    assert.equal(network.includes(snippet), true, `Linux network mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "SELECT response_json FROM dialog_mocks",
+    "stored_dialog_mock",
+    "runtime_session_id_for_request",
+    "bridge_success(request, mock)",
+  ]) {
+    assert.equal(dialogs.includes(snippet), true, `Linux dialog mock source should contain ${snippet}`);
+  }
+
+  assert.equal(bridge.includes("bridge->network.db = bridge->storage == NULL ? NULL : bridge->storage->db"), true);
+  assert.equal(bridge.includes("platform_dialogs_init(&bridge->dialogs, owner_window, bridge->storage == NULL ? NULL : bridge->storage->db)"), true);
 });
 
 test("Linux dev control exposes DB-backed runtime resource and log inspection commands", () => {

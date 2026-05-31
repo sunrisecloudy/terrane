@@ -2,6 +2,7 @@
 
 #include <gio/gio.h>
 #include <libsoup/soup.h>
+#include <sqlite3.h>
 #include <string.h>
 
 typedef struct {
@@ -151,6 +152,144 @@ static NetworkPolicyRule *find_rule(GPtrArray *rules, const gchar *origin, const
     }
   }
   return NULL;
+}
+
+static gchar *runtime_session_id_for_request(const BridgeRequest *request) {
+  const gchar *app_id = request->context.app_id != NULL ? request->context.app_id : "";
+  const gchar *mount_token = request->context.mount_token != NULL && request->context.mount_token[0] != '\0'
+      ? request->context.mount_token
+      : "native";
+  return g_strdup_printf("runtime_linux_%s_%s", app_id, mount_token);
+}
+
+static gboolean url_matches(const gchar *pattern, const gchar *url) {
+  if (g_strcmp0(pattern, "*") == 0 || g_strcmp0(pattern, url) == 0) {
+    return TRUE;
+  }
+  if (pattern != NULL && pattern[0] != '\0' && g_str_has_suffix(pattern, "*")) {
+    g_autofree gchar *prefix = g_strndup(pattern, strlen(pattern) - 1);
+    return g_str_has_prefix(url, prefix);
+  }
+  return FALSE;
+}
+
+static JsonNode *find_network_mock(sqlite3 *db, const BridgeRequest *request, const gchar *method, const gchar *url) {
+  if (db == NULL || request->context.app_id == NULL || request->context.app_id[0] == '\0') {
+    return NULL;
+  }
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT response_json, url_pattern FROM network_mocks "
+      "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+      "ORDER BY created_at DESC LIMIT 100";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return NULL;
+  }
+
+  g_autofree gchar *session_id = runtime_session_id_for_request(request);
+  sqlite3_bind_text(statement, 1, method, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, request->context.app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 3, session_id, -1, SQLITE_TRANSIENT);
+
+  JsonNode *mock = NULL;
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    const gchar *response_json = (const gchar *)sqlite3_column_text(statement, 0);
+    const gchar *pattern = (const gchar *)sqlite3_column_text(statement, 1);
+    if (!url_matches(pattern, url)) {
+      continue;
+    }
+    JsonParser *parser = json_parser_new();
+    if (response_json != NULL && json_parser_load_from_data(parser, response_json, -1, NULL)) {
+      JsonNode *root = json_parser_get_root(parser);
+      if (root != NULL && JSON_NODE_HOLDS_OBJECT(root)) {
+        mock = json_node_copy(root);
+        g_object_unref(parser);
+        break;
+      }
+    }
+    g_object_unref(parser);
+  }
+  sqlite3_finalize(statement);
+  return mock;
+}
+
+static gboolean positive_integer_member(JsonObject *object, const gchar *key, guint *out) {
+  if (object == NULL || !json_object_has_member(object, key)) {
+    return FALSE;
+  }
+  JsonNode *value = json_object_get_member(object, key);
+  if (value == NULL || !JSON_NODE_HOLDS_VALUE(value)) {
+    return FALSE;
+  }
+  GType value_type = json_node_get_value_type(value);
+  gint64 integer = 0;
+  if (value_type == G_TYPE_INT || value_type == G_TYPE_INT64 || value_type == G_TYPE_UINT || value_type == G_TYPE_UINT64) {
+    integer = json_node_get_int(value);
+  } else if (value_type == G_TYPE_DOUBLE || value_type == G_TYPE_FLOAT) {
+    gdouble number = json_node_get_double(value);
+    guint64 truncated = (guint64)number;
+    if (number <= 0 || number > G_MAXUINT || (gdouble)truncated != number) {
+      return FALSE;
+    }
+    integer = (gint64)truncated;
+  } else {
+    return FALSE;
+  }
+  if (integer <= 0 || integer > G_MAXUINT) {
+    return FALSE;
+  }
+  *out = (guint)integer;
+  return TRUE;
+}
+
+static gsize json_payload_bytes(JsonNode *node) {
+  if (node == NULL || JSON_NODE_HOLDS_NULL(node)) {
+    return 0;
+  }
+  if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING) {
+    const gchar *text = json_node_get_string(node);
+    return text == NULL ? 0 : strlen(text);
+  }
+  JsonGenerator *generator = json_generator_new();
+  json_generator_set_root(generator, node);
+  gchar *text = json_generator_to_data(generator, NULL);
+  gsize bytes = text == NULL ? 0 : strlen(text);
+  g_free(text);
+  g_object_unref(generator);
+  return bytes;
+}
+
+static gsize mock_response_bytes(JsonObject *mock) {
+  if (mock == NULL) {
+    return 0;
+  }
+  if (json_object_has_member(mock, "bodyText")) {
+    return json_payload_bytes(json_object_get_member(mock, "bodyText"));
+  }
+  if (json_object_has_member(mock, "body")) {
+    return json_payload_bytes(json_object_get_member(mock, "body"));
+  }
+  return 0;
+}
+
+static JsonNode *mock_payload_without_delay(JsonObject *mock) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  GList *members = json_object_get_members(mock);
+  for (GList *item = members; item != NULL; item = item->next) {
+    const gchar *member = item->data;
+    if (g_strcmp0(member, "delayMs") == 0) {
+      continue;
+    }
+    json_builder_set_member_name(builder, member);
+    json_builder_add_value(builder, json_node_copy(json_object_get_member(mock, member)));
+  }
+  g_list_free(members);
+  json_builder_end_object(builder);
+  JsonNode *payload = json_builder_get_root(builder);
+  g_object_unref(builder);
+  return payload;
 }
 
 static JsonObject *response_headers(SoupMessageHeaders *headers) {
@@ -324,6 +463,13 @@ static JsonNode *timeout_failure(const BridgeRequest *request, guint timeout_ms)
   return bridge_failure(request, "timeout", "network.request timed out", details);
 }
 
+static JsonNode *mock_timeout_failure(const BridgeRequest *request, guint timeout_ms, guint delay_ms) {
+  JsonObject *details = json_object_new();
+  json_object_set_int_member(details, "timeoutMs", timeout_ms);
+  json_object_set_int_member(details, "delayMs", delay_ms);
+  return bridge_failure(request, "timeout", "network.request timed out", details);
+}
+
 static gboolean requested_timeout_ms(JsonObject *params, guint *out, gboolean *invalid) {
   *invalid = FALSE;
   *out = 0;
@@ -364,6 +510,36 @@ static gboolean requested_timeout_ms(JsonObject *params, guint *out, gboolean *i
 
 static guint effective_timeout_ms(NetworkPolicyRule *rule, gboolean has_requested_timeout, guint requested_timeout) {
   return has_requested_timeout ? MIN(rule->timeout_ms, requested_timeout) : rule->timeout_ms;
+}
+
+static JsonNode *mocked_network_response(
+    PlatformNetwork *network,
+    const BridgeRequest *request,
+    NetworkPolicyRule *rule,
+    const gchar *method,
+    const gchar *url,
+    gboolean has_requested_timeout,
+    guint requested_timeout) {
+  JsonNode *mock_node = find_network_mock(network == NULL ? NULL : network->db, request, method, url);
+  if (mock_node == NULL) {
+    return NULL;
+  }
+  JsonObject *mock = json_node_get_object(mock_node);
+  guint delay_ms = 0;
+  if (positive_integer_member(mock, "delayMs", &delay_ms)) {
+    guint timeout_ms = effective_timeout_ms(rule, has_requested_timeout, requested_timeout);
+    if (delay_ms > timeout_ms) {
+      json_node_unref(mock_node);
+      return mock_timeout_failure(request, timeout_ms, delay_ms);
+    }
+  }
+  if (mock_response_bytes(mock) > rule->max_response_bytes) {
+    json_node_unref(mock_node);
+    return network_failure(request, "network_policy_denied", "network.response exceeds manifest.networkPolicy maxResponseBytes");
+  }
+  JsonNode *payload = mock_payload_without_delay(mock);
+  json_node_unref(mock_node);
+  return bridge_success(request, payload);
 }
 
 JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest *request) {
@@ -420,6 +596,13 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     g_free(body.bytes);
     g_hash_table_unref(headers);
     return invalid_timeout_failure(request);
+  }
+
+  JsonNode *mocked = mocked_network_response(network, request, rule, method, url, has_requested_timeout, requested_timeout);
+  if (mocked != NULL) {
+    g_free(body.bytes);
+    g_hash_table_unref(headers);
+    return mocked;
   }
 
   SoupSession *session = soup_session_new();

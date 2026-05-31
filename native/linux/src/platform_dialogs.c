@@ -1,6 +1,7 @@
 #include "platform_dialogs.h"
 
 #include <gio/gio.h>
+#include <string.h>
 
 typedef struct {
   gint response;
@@ -24,6 +25,49 @@ static gint run_native_dialog(GtkNativeDialog *dialog) {
   g_main_loop_run(run.loop);
   g_main_loop_unref(run.loop);
   return run.response;
+}
+
+static gchar *runtime_session_id_for_request(const BridgeRequest *request) {
+  const gchar *app_id = request->context.app_id != NULL ? request->context.app_id : "";
+  const gchar *mount_token = request->context.mount_token != NULL && request->context.mount_token[0] != '\0'
+      ? request->context.mount_token
+      : "native";
+  return g_strdup_printf("runtime_linux_%s_%s", app_id, mount_token);
+}
+
+static JsonNode *stored_dialog_mock(PlatformDialogs *dialogs, const BridgeRequest *request, const gchar *dialog_type) {
+  if (dialogs == NULL || dialogs->db == NULL || request->context.app_id == NULL || request->context.app_id[0] == '\0') {
+    return NULL;
+  }
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT response_json FROM dialog_mocks "
+      "WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+      "ORDER BY created_at DESC LIMIT 1";
+  if (sqlite3_prepare_v2(dialogs->db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    return NULL;
+  }
+
+  g_autofree gchar *session_id = runtime_session_id_for_request(request);
+  sqlite3_bind_text(statement, 1, dialog_type, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 2, request->context.app_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(statement, 3, session_id, -1, SQLITE_TRANSIENT);
+
+  JsonNode *mock = NULL;
+  if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_text(statement, 0) != NULL) {
+    const gchar *response_json = (const gchar *)sqlite3_column_text(statement, 0);
+    JsonParser *parser = json_parser_new();
+    if (json_parser_load_from_data(parser, response_json, -1, NULL)) {
+      JsonNode *root = json_parser_get_root(parser);
+      if (root != NULL) {
+        mock = json_node_copy(root);
+      }
+    }
+    g_object_unref(parser);
+  }
+  sqlite3_finalize(statement);
+  return mock;
 }
 
 static gboolean params_bool(JsonObject *params, const gchar *name, gboolean fallback) {
@@ -78,14 +122,20 @@ static void add_accept_filters(GtkFileChooser *chooser, const BridgeRequest *req
   gtk_file_chooser_add_filter(chooser, filter);
 }
 
-void platform_dialogs_init(PlatformDialogs *dialogs, GtkWindow *owner) {
+void platform_dialogs_init(PlatformDialogs *dialogs, GtkWindow *owner, sqlite3 *db) {
   if (dialogs == NULL) {
     return;
   }
   dialogs->owner = owner;
+  dialogs->db = db;
 }
 
 JsonNode *platform_dialogs_open_file(PlatformDialogs *dialogs, const BridgeRequest *request) {
+  JsonNode *mock = stored_dialog_mock(dialogs, request, "openFile");
+  if (mock != NULL) {
+    return bridge_success(request, mock);
+  }
+
   GtkFileChooserNative *dialog = gtk_file_chooser_native_new(
       "Open file",
       dialogs == NULL ? NULL : dialogs->owner,
@@ -150,6 +200,11 @@ JsonNode *platform_dialogs_open_file(PlatformDialogs *dialogs, const BridgeReque
 }
 
 JsonNode *platform_dialogs_save_file(PlatformDialogs *dialogs, const BridgeRequest *request) {
+  JsonNode *mock = stored_dialog_mock(dialogs, request, "saveFile");
+  if (mock != NULL) {
+    return bridge_success(request, mock);
+  }
+
   GtkFileChooserNative *dialog = gtk_file_chooser_native_new(
       "Save file",
       dialogs == NULL ? NULL : dialogs->owner,

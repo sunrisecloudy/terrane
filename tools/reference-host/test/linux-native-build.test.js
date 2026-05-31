@@ -367,6 +367,99 @@ test(
         true,
       );
 
+      const apiSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "api-dashboard", metadata: { smoke: "linux-network-mock" } },
+      });
+      assert.equal(apiSession.statusCode, 200, apiSession.body);
+      const apiSessionId = JSON.parse(apiSession.body).result.controlSessionId;
+
+      const networkMock = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.network_mock_set",
+          args: {
+            appId: "api-dashboard",
+            method: "GET",
+            urlPattern: "https://api.example.com/status",
+            response: {
+              status: 200,
+              headers: { "content-type": "application/json" },
+              bodyText: "{\"ok\":true,\"source\":\"linux-network-mock\"}",
+              delayMs: 1,
+            },
+          },
+        },
+      });
+      assert.equal(networkMock.statusCode, 200, networkMock.body);
+      assert.match(JSON.parse(networkMock.body).result.mockId, /^netmock-/);
+
+      const mockedNetwork = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "api-dashboard",
+            method: "network.request",
+            params: { url: "https://api.example.com/status", method: "GET", headers: {} },
+          },
+        },
+      });
+      assert.equal(mockedNetwork.statusCode, 200, mockedNetwork.body);
+      assert.equal(JSON.parse(mockedNetwork.body).result.result.bodyText.includes("linux-network-mock"), true);
+
+      const resetNetworkMocks = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.network_mock_reset", args: { appId: "api-dashboard" } },
+      });
+      assert.equal(resetNetworkMocks.statusCode, 200, resetNetworkMocks.body);
+      assert.equal(Number(JSON.parse(resetNetworkMocks.body).result.cleared) >= 1, true);
+
+      const fileSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "file-transformer", metadata: { smoke: "linux-dialog-mock" } },
+      });
+      assert.equal(fileSession.statusCode, 200, fileSession.body);
+      const fileSessionId = JSON.parse(fileSession.body).result.controlSessionId;
+
+      const dialogMock = await requestControl(ready.port, `/sessions/${encodeURIComponent(fileSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.dialog_mock_set",
+          args: {
+            appId: "file-transformer",
+            method: "dialog.openFile",
+            response: {
+              files: [{ name: "linux-mock.txt", mime: "text/plain", size: 5, text: "hello" }],
+              cancelled: false,
+            },
+          },
+        },
+      });
+      assert.equal(dialogMock.statusCode, 200, dialogMock.body);
+      assert.match(JSON.parse(dialogMock.body).result.mockId, /^dialogmock-/);
+
+      const mockedDialog = await requestControl(ready.port, `/sessions/${encodeURIComponent(fileSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "file-transformer",
+            method: "dialog.openFile",
+            params: { accept: ["text/plain"] },
+          },
+        },
+      });
+      assert.equal(mockedDialog.statusCode, 200, mockedDialog.body);
+      assert.equal(JSON.parse(mockedDialog.body).result.result.files[0].name, "linux-mock.txt");
+
       const missingResourceAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -438,6 +531,14 @@ test(
       });
       assert.equal(missingEvent.statusCode, 400);
       assert.equal(JSON.parse(missingEvent.body).error.code, "invalid_request");
+
+      for (const completedSessionId of [apiSessionId, fileSessionId]) {
+        const completed = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(completedSessionId)}`, {
+          method: "DELETE",
+          token,
+        });
+        assert.equal(completed.statusCode, 200, completed.body);
+      }
 
       const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
         method: "DELETE",
@@ -533,6 +634,30 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedNetworkMockCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.network_mock_set' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedNetworkMockResetCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.network_mock_reset' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedDialogMockCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.dialog_mock_set' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const bridgeCallCount = execFileSync(
         "sqlite3",
         [
@@ -565,18 +690,39 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const mockedNetworkBridgeCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = 'api-dashboard' AND method = 'network.request' AND result_json LIKE '%linux-network-mock%';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const mockedDialogBridgeCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = 'file-transformer' AND method = 'dialog.openFile' AND result_json LIKE '%linux-mock.txt%';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       assert.equal(Number(sessionAuditCount) >= 8, true);
-      assert.equal(Number(acceptedCallBridgeCount) >= 2, true);
+      assert.equal(Number(acceptedCallBridgeCount) >= 4, true);
       assert.equal(Number(acceptedCoreStepCount) >= 1, true);
       assert.equal(Number(acceptedDbSnapshotCount) >= 1, true);
       assert.equal(Number(acceptedDbStorageCount) >= 1, true);
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
       assert.equal(Number(acceptedEventLogCount) >= 1, true);
       assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);
+      assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
+      assert.equal(Number(acceptedNetworkMockResetCount) >= 1, true);
+      assert.equal(Number(acceptedDialogMockCount) >= 1, true);
       assert.equal(Number(bridgeCallCount) >= 1, true);
       assert.equal(Number(coreBridgeCallCount) >= 1, true);
       assert.equal(Number(coreEventCount) >= 1, true);
       assert.equal(Number(coreActionCount) >= 2, true);
+      assert.equal(Number(mockedNetworkBridgeCount) >= 1, true);
+      assert.equal(Number(mockedDialogBridgeCount) >= 1, true);
     } finally {
       if (child) await stopChild(child);
       fs.rmSync(scratch, { recursive: true, force: true });
