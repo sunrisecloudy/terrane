@@ -1151,6 +1151,7 @@ function checkNativeStatic() {
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
+  const macDialogs = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformDialogs.swift"), "utf8");
   const macNotifications = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNotifications.swift"), "utf8");
   const macDevControl = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "DevControlPlane.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
@@ -1296,6 +1297,23 @@ function checkNativeStatic() {
   }
   if (macNetwork.includes("platform_unsupported")) {
     throw new Error("macOS network.request must not remain a platform_unsupported stub");
+  }
+  for (const snippet of [
+    "panel.allowsMultipleSelection = multiple",
+    "panel.allowedContentTypes = acceptedTypes",
+    "selectedOpenFileURLs(multiple: multiple, acceptedTypes: acceptedTypes)",
+    "dialog.openFile multiple must be a boolean",
+    "dialog.openFile accept must be an array of strings",
+    "dialog.openFile maxBytes must be a number",
+    "maxBytes(request)",
+    "quota_exceeded",
+    "Selected file exceeds maxBytes",
+    "UTType(mimeType: value)",
+    '"files": files',
+  ]) {
+    if (!macDialogs.includes(snippet)) {
+      throw new Error(`macOS dialogs missing open-file parity: ${snippet}`);
+    }
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
@@ -2585,7 +2603,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {

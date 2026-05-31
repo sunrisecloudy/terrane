@@ -2195,6 +2195,97 @@ struct NativeHostTests {
     }
 
     @MainActor
+    @Test("open file dialogs support multiple selection, accept filters, maxBytes, and validation errors")
+    func openFileDialogsSupportDocumentedOptions() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-open-dialog-options-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let textURL = tempDir.appendingPathComponent("notes.txt")
+        try "hello".write(to: textURL, atomically: true, encoding: .utf8)
+        let jsonURL = tempDir.appendingPathComponent("payload.json")
+        try #"{"ok":true}"#.write(to: jsonURL, atomically: true, encoding: .utf8)
+        let context = AppSandboxContext(
+            appId: "file-transformer",
+            approvedPermissions: ["dialog.openFile"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "test-mount"
+        )
+
+        var observedMultiple = false
+        let dialogs = PlatformDialogs(openFileURLsProvider: { multiple in
+            observedMultiple = multiple
+            return [textURL, jsonURL]
+        })
+        let opened = dialogs.openFile(BridgeRequest(
+            id: "open-many",
+            method: "dialog.openFile",
+            params: ["accept": ["text/plain", "application/json"], "multiple": true, "maxBytes": 20],
+            context: context
+        ))
+        #expect(opened.ok)
+        #expect(observedMultiple)
+        let openedResult = try #require(opened.result as? [String: Any])
+        let files = try #require(openedResult["files"] as? [[String: Any]])
+        #expect(files.count == 2)
+        #expect(files[0]["name"] as? String == "notes.txt")
+        #expect(files[0]["mime"] as? String == "text/plain")
+        #expect(files[0]["size"] as? Int == 5)
+        #expect(files[0]["text"] as? String == "hello")
+        #expect(files[1]["name"] as? String == "payload.json")
+        #expect(files[1]["mime"] as? String == "application/json")
+
+        let oversized = dialogs.openFile(BridgeRequest(
+            id: "open-over-limit",
+            method: "dialog.openFile",
+            params: ["multiple": true, "maxBytes": 5],
+            context: context
+        ))
+        #expect(!oversized.ok)
+        #expect(oversized.error?["code"] as? String == "quota_exceeded")
+
+        var invalidProviderCalled = false
+        let validationDialogs = PlatformDialogs(openFileURLsProvider: { _ in
+            invalidProviderCalled = true
+            return [textURL]
+        })
+        let invalidMultiple = validationDialogs.openFile(BridgeRequest(
+            id: "invalid-multiple",
+            method: "dialog.openFile",
+            params: ["multiple": "yes"],
+            context: context
+        ))
+        #expect(!invalidMultiple.ok)
+        #expect(invalidMultiple.error?["code"] as? String == "invalid_request")
+        #expect(invalidMultiple.error?["message"] as? String == "dialog.openFile multiple must be a boolean")
+
+        let invalidAccept = validationDialogs.openFile(BridgeRequest(
+            id: "invalid-accept",
+            method: "dialog.openFile",
+            params: ["accept": "text/plain"],
+            context: context
+        ))
+        #expect(!invalidAccept.ok)
+        #expect(invalidAccept.error?["code"] as? String == "invalid_request")
+        #expect(invalidAccept.error?["message"] as? String == "dialog.openFile accept must be an array of strings")
+
+        let invalidMaxBytes = validationDialogs.openFile(BridgeRequest(
+            id: "invalid-max-bytes",
+            method: "dialog.openFile",
+            params: ["maxBytes": "5"],
+            context: context
+        ))
+        #expect(!invalidMaxBytes.ok)
+        #expect(invalidMaxBytes.error?["code"] as? String == "invalid_request")
+        #expect(invalidMaxBytes.error?["message"] as? String == "dialog.openFile maxBytes must be a number")
+        #expect(!invalidProviderCalled)
+    }
+
+    @MainActor
     @Test("WKWebView loads runtime resources and dispatches the native bridge")
     func webViewLoadsRuntimeAndDispatchesBridge() async throws {
         let bridge = WebBridge()
