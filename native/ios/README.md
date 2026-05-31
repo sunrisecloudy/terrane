@@ -30,6 +30,7 @@ Implemented now:
 - Loads statically linked Zig core symbols when present and falls back to `libzig_core.dylib` for simulator/dev `core.step`, using `NATIVE_AI_ZIG_CORE_DYLIB` first.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
 - Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
+- Debug simulator smoke can verify all five bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.
 
 MVP acceptance:
 

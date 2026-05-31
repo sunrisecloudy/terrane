@@ -13,7 +13,9 @@ const smokeLoadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED";
 const smokeStorageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK";
 const smokeStorageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK";
 const smokeCoreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
+const smokeAllExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
 const smokeMarkerFile = "native-ai-ios-smoke-runtime-loaded.txt";
+const exampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
 
 function commandWorks(command, args) {
   try {
@@ -293,6 +295,13 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       expectedMarker: smokeCoreStepMarker,
       launchArgs: ["--native-ai-smoke-core-step", "--native-ai-smoke-exit-on-runtime-load"],
     });
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
+      expectedMarker: smokeAllExamplesMarker,
+      launchArgs: ["--native-ai-smoke-all-examples", "--native-ai-smoke-exit-on-runtime-load"],
+    });
   } finally {
     if (!wasBooted) {
       execFileSync("xcrun", ["simctl", "shutdown", device.udid], { stdio: "ignore" });
@@ -336,8 +345,11 @@ test(
       const zigCoreDylibPath = process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" ? buildIOSZigCore(scratchRoot) : null;
       const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath, zigCoreDylibPath);
       assert.equal(fs.existsSync(path.join(appBundle, "runtime", "index.html")), true);
-      assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "notes-lite", "manifest.json")), true);
-      assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", "task-workbench", "manifest.json")), true);
+      for (const appId of exampleAppIds) {
+        for (const fileName of ["manifest.json", "index.html", "styles.css", "app.js"]) {
+          assert.equal(fs.existsSync(path.join(appBundle, "webapps", "examples", appId, fileName)), true, `${appId}/${fileName} should be bundled`);
+        }
+      }
       assert.equal(fs.existsSync(path.join(appBundle, "db", "sqlite", "001_initial.sql")), true);
       if (zigCoreDylibPath) {
         assert.equal(fs.existsSync(path.join(appBundle, "libzig_core.dylib")), true);

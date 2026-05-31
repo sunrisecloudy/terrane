@@ -65,33 +65,39 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static let storageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
     static let storageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
     static let coreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK"
+    static let allExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK"
     static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
 
     private let exitAfterLoad: Bool
     private let storageSmoke: StorageSmoke?
     private let coreStepSmoke: Bool
+    private let allExamplesSmoke: Bool
 
-    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?, coreStepSmoke: Bool) {
+    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?, coreStepSmoke: Bool, allExamplesSmoke: Bool) {
         self.exitAfterLoad = exitAfterLoad
         self.storageSmoke = storageSmoke
         self.coreStepSmoke = coreStepSmoke
+        self.allExamplesSmoke = allExamplesSmoke
     }
 
     static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
         let args = CommandLine.arguments
         let storageSmoke = StorageSmoke.fromCommandLine(args)
         let coreStepSmoke = args.contains("--native-ai-smoke-core-step")
+        let allExamplesSmoke = args.contains("--native-ai-smoke-all-examples")
         guard args.contains("--native-ai-smoke-runtime-load") ||
             args.contains("--native-ai-smoke-exit-on-runtime-load") ||
             storageSmoke != nil ||
-            coreStepSmoke
+            coreStepSmoke ||
+            allExamplesSmoke
         else {
             return nil
         }
         return IOSSmokeRuntimeProbe(
             exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"),
             storageSmoke: storageSmoke,
-            coreStepSmoke: coreStepSmoke
+            coreStepSmoke: coreStepSmoke,
+            allExamplesSmoke: allExamplesSmoke
         )
     }
 
@@ -104,6 +110,10 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         }
         if coreStepSmoke {
             runCoreStepSmoke(in: webView)
+            return
+        }
+        if allExamplesSmoke {
+            runAllExamplesSmoke(in: webView)
             return
         }
         exitIfRequested()
@@ -136,6 +146,14 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         runAsyncBridgeSmoke(
             script: smoke.javaScript(),
             successMarker: smoke.successMarker,
+            in: webView
+        )
+    }
+
+    private func runAllExamplesSmoke(in webView: WKWebView) {
+        runAsyncBridgeSmoke(
+            script: AllExampleAppsSmoke.javaScript(),
+            successMarker: Self.allExamplesMarker,
             in: webView
         )
     }
@@ -228,6 +246,34 @@ private struct CoreStepSmoke {
             throw new Error("core.step failed: " + JSON.stringify(response));
           }
           return "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
+        } catch (error) {
+          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+        }
+        """
+    }
+}
+
+private struct AllExampleAppsSmoke {
+    static func javaScript() -> String {
+        """
+        try {
+          const bridge = window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.NativeAIPlatformBridge;
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            throw new Error("NativeAIPlatformBridge is unavailable");
+          }
+          const appIds = ["notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"];
+          function request(appId, id, method, params) {
+            return { appId, mountToken: "ios-smoke-" + appId, request: { id, method, params: params || {} } };
+          }
+          for (const appId of appIds) {
+            const capabilities = await bridge.postMessage(request(appId, "ios_smoke_capabilities_" + appId, "runtime.capabilities", {}));
+            if (!capabilities || !capabilities.ok || !capabilities.result || capabilities.result.appId !== appId || capabilities.result.platform !== "ios") {
+              throw new Error("runtime.capabilities failed for " + appId + ": " + JSON.stringify(capabilities));
+            }
+          }
+          return "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
         } catch (error) {
           return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
