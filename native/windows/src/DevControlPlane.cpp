@@ -23,8 +23,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -2913,14 +2915,15 @@ struct DevControlPlane::Impl {
     return std::nullopt;
   }
 
-  std::optional<std::wstring> CreateRegistrySnapshotInDb(
+  std::optional<std::wstring> CreateRuntimeSnapshotInDb(
       sqlite3* db,
       std::wstring const& childControlSessionId,
       std::wstring const& appId,
+      std::wstring const& type,
       std::wstring* error) {
     auto runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId);
     if (runtimeSessionId.empty()) {
-      *error = L"Could not create runtime session for app registry snapshot";
+      *error = L"Could not create runtime session for snapshot";
       return std::nullopt;
     }
     auto snapshotId = MakeId(L"snapshot");
@@ -2928,11 +2931,678 @@ struct DevControlPlane::Impl {
     auto installId = ActiveInstallId(db, appId);
     auto snapshotJson = RuntimeSnapshotDocumentJson(db, appId, createdAt);
     auto contentHash = L"sha256:" + Sha256Hex(snapshotJson);
-    if (!InsertRuntimeSnapshot(db, snapshotId, runtimeSessionId, appId, installId, L"manual", snapshotJson, contentHash, createdAt)) {
+    if (!InsertRuntimeSnapshot(db, snapshotId, runtimeSessionId, appId, installId, type.empty() ? L"manual" : type, snapshotJson, contentHash, createdAt)) {
       *error = L"Could not create runtime snapshot";
       return std::nullopt;
     }
     return snapshotId;
+  }
+
+  std::optional<std::wstring> CreateRegistrySnapshotInDb(
+      sqlite3* db,
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring* error) {
+    return CreateRuntimeSnapshotInDb(db, childControlSessionId, appId, L"manual", error);
+  }
+
+  struct ActiveMigrationAppRecord {
+    std::wstring installId;
+    std::wstring activeVersion;
+    int64_t dataVersion = 1;
+  };
+
+  struct MigrationChange {
+    std::wstring key;
+    std::wstring valueJson;
+    bool deletes = false;
+  };
+
+  struct MigrationPreview {
+    std::vector<MigrationChange> changes;
+    std::vector<std::wstring> changedKeys;
+    std::map<std::wstring, int64_t> operationCounts;
+  };
+
+  struct MigrationSpec {
+    std::wstring appId;
+    int64_t fromDataVersion = 0;
+    int64_t toDataVersion = 0;
+    json::JsonArray steps{nullptr};
+  };
+
+  bool LoadActiveMigrationAppRecord(sqlite3* db, std::wstring const& appId, ActiveMigrationAppRecord* record) {
+    sqlite3_stmt* statement = nullptr;
+    bool found = false;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ? AND status = 'enabled' LIMIT 1",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      if (sqlite3_step(statement) == SQLITE_ROW) {
+        record->installId = ColumnText(statement, 0);
+        record->activeVersion = ColumnText(statement, 1);
+        record->dataVersion = sqlite3_column_int64(statement, 2);
+        found = !record->installId.empty();
+      }
+    }
+    sqlite3_finalize(statement);
+    return found;
+  }
+
+  bool IntegerMember(json::JsonObject const& object, std::wstring const& key, int64_t* value) {
+    if (!object.HasKey(key)) {
+      return false;
+    }
+    auto raw = object.GetNamedValue(key);
+    if (raw.ValueType() != json::JsonValueType::Number) {
+      return false;
+    }
+    auto number = raw.GetNumber();
+    auto integer = static_cast<int64_t>(number);
+    if (static_cast<double>(integer) != number) {
+      return false;
+    }
+    *value = integer;
+    return true;
+  }
+
+  json::IJsonValue JsonValueFromText(std::wstring const& text) {
+    json::IJsonValue value = json::JsonValue::CreateNullValue();
+    json::JsonValue::TryParse(text.empty() ? L"null" : text, value);
+    return value;
+  }
+
+  std::wstring JsonText(json::IJsonValue const& value) {
+    return std::wstring(value.Stringify().c_str());
+  }
+
+  std::wstring NormalizedJsonText(std::wstring const& text) {
+    return JsonText(JsonValueFromText(text));
+  }
+
+  std::wstring MigrationScalarKey(json::IJsonValue const& value) {
+    switch (value.ValueType()) {
+      case json::JsonValueType::Null:
+        return L"null";
+      case json::JsonValueType::Boolean:
+        return value.GetBoolean() ? L"true" : L"false";
+      case json::JsonValueType::String:
+        return std::wstring(value.GetString().c_str());
+      case json::JsonValueType::Number: {
+        auto number = value.GetNumber();
+        auto integer = static_cast<int64_t>(number);
+        if (static_cast<double>(integer) == number) {
+          return std::to_wstring(integer);
+        }
+        return std::to_wstring(number);
+      }
+      case json::JsonValueType::Array:
+      case json::JsonValueType::Object:
+        return CanonicalJsonValue(value);
+    }
+    return L"";
+  }
+
+  std::vector<std::wstring> MigrationPathComponents(std::wstring path) {
+    if (path == L"$") {
+      return {};
+    }
+    if (path.rfind(L"$.", 0) == 0) {
+      path = path.substr(2);
+    }
+    std::vector<std::wstring> components;
+    std::wstring component;
+    for (wchar_t ch : path) {
+      if (ch == L'.') {
+        if (!component.empty() && component != L"*" && component != L"[*]") {
+          components.push_back(component);
+        }
+        component.clear();
+      } else {
+        component.push_back(ch);
+      }
+    }
+    if (!component.empty() && component != L"*" && component != L"[*]") {
+      components.push_back(component);
+    }
+    return components;
+  }
+
+  json::IJsonValue SetDefaultJsonValue(
+      json::IJsonValue const& source,
+      std::vector<std::wstring> const& components,
+      size_t index,
+      json::IJsonValue const& defaultValue) {
+    if (index >= components.size()) {
+      return source.ValueType() == json::JsonValueType::Null ? defaultValue : source;
+    }
+    json::JsonObject object;
+    if (source.ValueType() == json::JsonValueType::Object) {
+      object = source.GetObject();
+    }
+    auto key = components[index];
+    if (index + 1 == components.size()) {
+      if (!object.HasKey(key) || object.GetNamedValue(key).ValueType() == json::JsonValueType::Null) {
+        object.Insert(key, defaultValue);
+      }
+      return object;
+    }
+    auto child = object.HasKey(key) ? object.GetNamedValue(key) : json::JsonValue::CreateNullValue();
+    object.Insert(key, SetDefaultJsonValue(child, components, index + 1, defaultValue));
+    return object;
+  }
+
+  std::wstring SetDefaultJsonText(std::wstring const& sourceJson, std::wstring const& path, json::IJsonValue const& defaultValue) {
+    auto source = JsonValueFromText(sourceJson);
+    auto components = MigrationPathComponents(path);
+    return JsonText(SetDefaultJsonValue(source, components, 0, defaultValue));
+  }
+
+  json::IJsonValue TransformEnumScalar(
+      json::IJsonValue const& source,
+      json::JsonObject const& mapping,
+      bool hasDefault,
+      json::IJsonValue const& defaultValue) {
+    auto key = MigrationScalarKey(source);
+    if (mapping.HasKey(key)) {
+      return mapping.GetNamedValue(key);
+    }
+    return hasDefault ? defaultValue : source;
+  }
+
+  json::IJsonValue TransformEnumJsonValue(
+      json::IJsonValue const& source,
+      std::vector<std::wstring> const& components,
+      size_t index,
+      json::JsonObject const& mapping,
+      bool hasDefault,
+      json::IJsonValue const& defaultValue) {
+    if (index >= components.size()) {
+      return TransformEnumScalar(source, mapping, hasDefault, defaultValue);
+    }
+    json::JsonObject object;
+    if (source.ValueType() == json::JsonValueType::Object) {
+      object = source.GetObject();
+    }
+    auto key = components[index];
+    if (index + 1 == components.size()) {
+      if (object.HasKey(key)) {
+        object.Insert(key, TransformEnumScalar(object.GetNamedValue(key), mapping, hasDefault, defaultValue));
+      }
+      return object;
+    }
+    auto child = object.HasKey(key) ? object.GetNamedValue(key) : json::JsonValue::CreateNullValue();
+    object.Insert(key, TransformEnumJsonValue(child, components, index + 1, mapping, hasDefault, defaultValue));
+    return object;
+  }
+
+  std::wstring TransformEnumJsonText(
+      std::wstring const& sourceJson,
+      std::wstring const& path,
+      json::JsonObject const& mapping,
+      bool hasDefault,
+      json::IJsonValue const& defaultValue) {
+    auto source = JsonValueFromText(sourceJson);
+    auto components = MigrationPathComponents(path);
+    return JsonText(TransformEnumJsonValue(source, components, 0, mapping, hasDefault, defaultValue));
+  }
+
+  bool ValidateMigrationKey(std::wstring const& appId, std::wstring const& key, std::wstring* errorCode, std::wstring* errorMessage) {
+    if (key.empty()) {
+      *errorCode = L"invalid_migration";
+      *errorMessage = L"Migration storage key must be a non-empty string";
+      return false;
+    }
+    auto prefix = appId + L":";
+    if (key.rfind(prefix, 0) != 0) {
+      *errorCode = L"migration_storage_prefix_violation";
+      *errorMessage = L"Migration storage key is outside app storage prefix";
+      return false;
+    }
+    return true;
+  }
+
+  bool LoadMigrationStorageValues(
+      sqlite3* db,
+      std::wstring const& appId,
+      std::map<std::wstring, std::wstring>* values,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT key, value_json FROM app_storage WHERE app_id = ? ORDER BY key", -1, &statement, nullptr) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not read app storage for migration";
+      return false;
+    }
+    BindText(statement, 1, appId);
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      values->insert_or_assign(ColumnText(statement, 0), NormalizedJsonText(ColumnText(statement, 1)));
+    }
+    sqlite3_finalize(statement);
+    return true;
+  }
+
+  bool KeyMatchesPattern(std::wstring const& key, std::wstring const& pattern) {
+    if (pattern.find_first_of(L"*?") == std::wstring::npos) {
+      return key == pattern;
+    }
+    try {
+      auto regexText = L"^" + RegexEscape(pattern) + L"$";
+      regexText = std::regex_replace(regexText, std::wregex(LR"(\\\*)"), L".*");
+      regexText = std::regex_replace(regexText, std::wregex(LR"(\\\?)"), L".");
+      return std::regex_match(key, std::wregex(regexText));
+    } catch (...) {
+      return false;
+    }
+  }
+
+  std::vector<std::wstring> MigrationKeys(
+      json::JsonObject const& step,
+      std::map<std::wstring, std::wstring> const& values,
+      std::wstring const& op,
+      std::wstring const& appId,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    std::vector<std::wstring> keys;
+    if (step.HasKey(L"key")) {
+      auto key = OptionalStringMember(step, L"key");
+      if (!key.has_value() || !ValidateMigrationKey(appId, key.value(), errorCode, errorMessage)) {
+        if (errorMessage->empty()) {
+          *errorCode = L"invalid_migration";
+          *errorMessage = L"Migration step " + op + L" requires key";
+        }
+        return {};
+      }
+      keys.push_back(key.value());
+      return keys;
+    }
+    if (step.HasKey(L"keyPattern")) {
+      auto pattern = OptionalStringMember(step, L"keyPattern");
+      if (!pattern.has_value() || pattern->empty()) {
+        *errorCode = L"invalid_migration";
+        *errorMessage = L"Migration step " + op + L" keyPattern must be a string";
+        return {};
+      }
+      for (auto const& [key, _] : values) {
+        if (KeyMatchesPattern(key, pattern.value()) && !ValidateMigrationKey(appId, key, errorCode, errorMessage)) {
+          return {};
+        }
+        if (KeyMatchesPattern(key, pattern.value())) {
+          keys.push_back(key);
+        }
+      }
+      return keys;
+    }
+    *errorCode = L"invalid_migration";
+    *errorMessage = L"Migration step " + op + L" requires key or keyPattern";
+    return {};
+  }
+
+  std::wstring MigrationValueForKey(std::map<std::wstring, std::wstring> const& values, std::wstring const& key) {
+    auto found = values.find(key);
+    return found == values.end() ? L"null" : found->second;
+  }
+
+  std::wstring MigrationOperationCountsJson(std::map<std::wstring, int64_t> const& counts) {
+    std::wstring jsonText = L"{";
+    bool first = true;
+    for (auto const& [op, count] : counts) {
+      if (!first) {
+        jsonText += L",";
+      }
+      first = false;
+      jsonText += JsonString(op) + L":" + std::to_wstring(count);
+    }
+    jsonText += L"}";
+    return jsonText;
+  }
+
+  std::wstring MigrationChangesJson(std::vector<MigrationChange> const& changes) {
+    std::wstring jsonText = L"[";
+    for (size_t index = 0; index < changes.size(); ++index) {
+      if (index > 0) {
+        jsonText += L",";
+      }
+      jsonText += L"{\"key\":" + JsonString(changes[index].key);
+      if (changes[index].deletes) {
+        jsonText += L",\"delete\":true";
+      } else {
+        jsonText += L",\"value\":" + RawJsonOrNull(changes[index].valueJson);
+      }
+      jsonText += L"}";
+    }
+    jsonText += L"]";
+    return jsonText;
+  }
+
+  std::wstring MigrationReportJson(MigrationPreview const& preview) {
+    return L"{\"changedKeys\":" + JsonStringArray(preview.changedKeys) +
+        L",\"operationCounts\":" + MigrationOperationCountsJson(preview.operationCounts) + L"}";
+  }
+
+  bool ValidateMigrationObject(json::JsonObject const& migration, MigrationSpec* spec, std::wstring* errorCode, std::wstring* errorMessage) {
+    auto appId = OptionalStringMember(migration, L"appId");
+    if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+      *errorCode = L"invalid_migration";
+      *errorMessage = L"Migration appId is not a valid generated app id";
+      return false;
+    }
+    int64_t fromDataVersion = 0;
+    int64_t toDataVersion = 0;
+    if (!IntegerMember(migration, L"fromDataVersion", &fromDataVersion) ||
+        !IntegerMember(migration, L"toDataVersion", &toDataVersion) ||
+        fromDataVersion < 1 ||
+        toDataVersion != fromDataVersion + 1) {
+      *errorCode = L"invalid_migration";
+      *errorMessage = L"Migration toDataVersion must equal fromDataVersion + 1";
+      return false;
+    }
+    auto steps = OptionalArrayMember(migration, L"steps");
+    if (!steps.has_value()) {
+      *errorCode = L"invalid_migration";
+      *errorMessage = L"Migration steps must be an array";
+      return false;
+    }
+    spec->appId = appId.value();
+    spec->fromDataVersion = fromDataVersion;
+    spec->toDataVersion = toDataVersion;
+    spec->steps = steps.value();
+    return true;
+  }
+
+  bool PreviewStorageMigration(
+      sqlite3* db,
+      MigrationSpec const& spec,
+      MigrationPreview* preview,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    std::map<std::wstring, std::wstring> values;
+    if (!LoadMigrationStorageValues(db, spec.appId, &values, errorCode, errorMessage)) {
+      return false;
+    }
+    std::set<std::wstring> changedKeys;
+    for (uint32_t index = 0; index < spec.steps.Size(); ++index) {
+      auto stepValue = spec.steps.GetAt(index);
+      if (stepValue.ValueType() != json::JsonValueType::Object) {
+        *errorCode = L"invalid_migration";
+        *errorMessage = L"Migration step must be an object";
+        return false;
+      }
+      auto step = stepValue.GetObject();
+      auto op = OptionalStringMember(step, L"op");
+      if (!op.has_value() || op->empty()) {
+        *errorCode = L"invalid_migration";
+        *errorMessage = L"Migration step requires op";
+        return false;
+      }
+      preview->operationCounts[op.value()] += 1;
+      if (op.value() == L"setDefault") {
+        auto keys = MigrationKeys(step, values, op.value(), spec.appId, errorCode, errorMessage);
+        if (!errorMessage->empty()) {
+          return false;
+        }
+        auto path = OptionalStringMember(step, L"to").value_or(OptionalStringMember(step, L"jsonPath").value_or(L"$"));
+        auto defaultValue = step.HasKey(L"value") ? step.GetNamedValue(L"value") : json::JsonValue::CreateNullValue();
+        for (auto const& key : keys) {
+          auto next = SetDefaultJsonText(MigrationValueForKey(values, key), path.empty() ? L"$" : path, defaultValue);
+          values.insert_or_assign(key, next);
+          preview->changes.push_back(MigrationChange{key, next, false});
+          changedKeys.insert(key);
+        }
+      } else if (op.value() == L"renameKey" || op.value() == L"moveStorageKey") {
+        auto from = OptionalStringMember(step, L"from");
+        auto to = OptionalStringMember(step, L"to");
+        if (!from.has_value() || !to.has_value() ||
+            !ValidateMigrationKey(spec.appId, from.value(), errorCode, errorMessage) ||
+            !ValidateMigrationKey(spec.appId, to.value(), errorCode, errorMessage)) {
+          if (errorMessage->empty()) {
+            *errorCode = L"invalid_migration";
+            *errorMessage = L"Migration step " + op.value() + L" requires from and to";
+          }
+          return false;
+        }
+        auto value = MigrationValueForKey(values, from.value());
+        values.erase(from.value());
+        values.insert_or_assign(to.value(), value);
+        preview->changes.push_back(MigrationChange{from.value(), L"null", true});
+        preview->changes.push_back(MigrationChange{to.value(), value, false});
+        changedKeys.insert(from.value());
+        changedKeys.insert(to.value());
+      } else if (op.value() == L"deleteKey" || op.value() == L"deleteStorageKey") {
+        auto key = OptionalStringMember(step, L"key");
+        if (!key.has_value() || !ValidateMigrationKey(spec.appId, key.value(), errorCode, errorMessage)) {
+          if (errorMessage->empty()) {
+            *errorCode = L"invalid_migration";
+            *errorMessage = L"Migration step " + op.value() + L" requires key";
+          }
+          return false;
+        }
+        values.erase(key.value());
+        preview->changes.push_back(MigrationChange{key.value(), L"null", true});
+        changedKeys.insert(key.value());
+      } else if (op.value() == L"copyKey") {
+        auto from = OptionalStringMember(step, L"from");
+        auto to = OptionalStringMember(step, L"to");
+        if (!from.has_value() || !to.has_value() ||
+            !ValidateMigrationKey(spec.appId, from.value(), errorCode, errorMessage) ||
+            !ValidateMigrationKey(spec.appId, to.value(), errorCode, errorMessage)) {
+          if (errorMessage->empty()) {
+            *errorCode = L"invalid_migration";
+            *errorMessage = L"Migration step copyKey requires from and to";
+          }
+          return false;
+        }
+        auto value = MigrationValueForKey(values, from.value());
+        values.insert_or_assign(to.value(), value);
+        preview->changes.push_back(MigrationChange{to.value(), value, false});
+        changedKeys.insert(to.value());
+      } else if (op.value() == L"transformEnum") {
+        auto keys = MigrationKeys(step, values, op.value(), spec.appId, errorCode, errorMessage);
+        if (!errorMessage->empty()) {
+          return false;
+        }
+        auto mapping = OptionalObjectMember(step, L"mapping");
+        if (!mapping.has_value()) {
+          mapping = OptionalObjectMember(step, L"map");
+        }
+        if (!mapping.has_value()) {
+          *errorCode = L"invalid_migration";
+          *errorMessage = L"Migration step transformEnum requires mapping";
+          return false;
+        }
+        auto path = OptionalStringMember(step, L"to").value_or(OptionalStringMember(step, L"jsonPath").value_or(L"$"));
+        auto defaultValue = step.HasKey(L"defaultMapping") ? step.GetNamedValue(L"defaultMapping") : json::JsonValue::CreateNullValue();
+        for (auto const& key : keys) {
+          auto next = TransformEnumJsonText(MigrationValueForKey(values, key), path.empty() ? L"$" : path, mapping.value(), step.HasKey(L"defaultMapping"), defaultValue);
+          values.insert_or_assign(key, next);
+          preview->changes.push_back(MigrationChange{key, next, false});
+          changedKeys.insert(key);
+        }
+      } else {
+        *errorCode = L"invalid_migration";
+        *errorMessage = L"Unsupported migration op: " + op.value();
+        return false;
+      }
+    }
+    preview->changedKeys.assign(changedKeys.begin(), changedKeys.end());
+    return true;
+  }
+
+  bool InsertAppMigrationRecord(
+      sqlite3* db,
+      std::wstring const& migrationId,
+      MigrationSpec const& spec,
+      std::wstring const& migrationJson,
+      std::wstring const& createdAt) {
+    return ExecutePrepared(
+        db,
+        "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        {
+            SqlText(migrationId),
+            SqlText(spec.appId),
+            SqlInt(spec.fromDataVersion),
+            SqlInt(spec.toDataVersion),
+            SqlText(migrationJson),
+            SqlText(L"sha256:" + Sha256Hex(migrationJson)),
+            SqlText(createdAt),
+        });
+  }
+
+  bool RecordMigrationRun(
+      sqlite3* db,
+      std::wstring const& runId,
+      std::wstring const& migrationId,
+      std::wstring const& appId,
+      std::wstring const& installId,
+      std::wstring const& mode,
+      std::wstring const& status,
+      std::optional<std::wstring> const& preSnapshotId,
+      std::wstring const& reportJson,
+      std::wstring const& startedAt) {
+    return ExecutePrepared(
+        db,
+        "INSERT INTO migration_runs (migration_run_id, migration_id, app_id, install_id, mode, status, pre_snapshot_id, report_json, started_at, finished_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        {
+            SqlText(runId),
+            SqlText(migrationId),
+            SqlText(appId),
+            SqlNullableText(installId.empty() ? std::nullopt : std::optional<std::wstring>(installId)),
+            SqlText(mode),
+            SqlText(status),
+            SqlNullableText(preSnapshotId),
+            SqlText(reportJson),
+            SqlText(startedAt),
+            SqlText(NowIso()),
+        });
+  }
+
+  bool ApplyMigrationChanges(
+      sqlite3* db,
+      MigrationSpec const& spec,
+      std::vector<MigrationChange> const& changes,
+      std::wstring const& updatedAt,
+      std::wstring* errorMessage) {
+    bool ok = true;
+    for (auto const& change : changes) {
+      if (change.deletes) {
+        ok = ok && ExecutePrepared(db, "DELETE FROM app_storage WHERE app_id = ? AND key = ?", {SqlText(spec.appId), SqlText(change.key)});
+      } else {
+        ok = ok &&
+            ExecutePrepared(
+                db,
+                "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+                {SqlText(spec.appId), SqlText(change.key), SqlText(change.valueJson), SqlText(updatedAt)});
+      }
+    }
+    ok = ok && ExecutePrepared(
+        db,
+        "UPDATE apps SET data_version = ?, updated_at = ? WHERE id = ?",
+        {SqlInt(spec.toDataVersion), SqlText(updatedAt), SqlText(spec.appId)});
+    if (!ok) {
+      *errorMessage = L"Could not apply migration storage changes";
+    }
+    return ok;
+  }
+
+  std::wstring MigrationRunResultJson(
+      std::wstring const& runId,
+      std::wstring const& mode,
+      std::wstring const& status,
+      std::optional<std::wstring> const& snapshotId,
+      MigrationSpec const& spec,
+      MigrationPreview const& preview) {
+    return L"{\"ok\":true,\"runId\":" + JsonString(runId) +
+        L",\"mode\":" + JsonString(mode) +
+        L",\"status\":" + JsonString(status) +
+        L",\"snapshotId\":" + (snapshotId.has_value() ? JsonString(snapshotId.value()) : L"null") +
+        L",\"appId\":" + JsonString(spec.appId) +
+        L",\"fromDataVersion\":" + std::to_wstring(spec.fromDataVersion) +
+        L",\"toDataVersion\":" + std::to_wstring(spec.toDataVersion) +
+        L",\"changedKeys\":" + JsonStringArray(preview.changedKeys) +
+        L",\"operationCounts\":" + MigrationOperationCountsJson(preview.operationCounts) +
+        L",\"changes\":" + MigrationChangesJson(preview.changes) + L"}";
+  }
+
+  std::wstring PlatformMigrationRunJson(
+      std::wstring const& childControlSessionId,
+      json::JsonObject const& migration,
+      std::wstring const& mode,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    if (mode != L"dry-run" && mode != L"apply") {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"Unsupported migration mode";
+      return L"";
+    }
+    MigrationSpec spec;
+    if (!ValidateMigrationObject(migration, &spec, errorCode, errorMessage)) {
+      return L"";
+    }
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    ActiveMigrationAppRecord active;
+    if (!LoadActiveMigrationAppRecord(db, spec.appId, &active)) {
+      *errorCode = L"app_not_installed";
+      *errorMessage = L"App is not installed";
+      return L"";
+    }
+    if (active.dataVersion != spec.fromDataVersion) {
+      *errorCode = L"migration_data_version_mismatch";
+      *errorMessage = L"Migration fromDataVersion does not match the active app dataVersion";
+      return L"";
+    }
+
+    MigrationPreview preview;
+    if (!PreviewStorageMigration(db, spec, &preview, errorCode, errorMessage)) {
+      return L"";
+    }
+    auto runId = MakeId(L"mrun");
+    auto migrationId = L"migration_" + spec.appId + L"_" + std::to_wstring(spec.fromDataVersion) + L"_to_" + std::to_wstring(spec.toDataVersion);
+    auto startedAt = NowIso();
+    auto migrationJson = std::wstring(migration.Stringify().c_str());
+    auto reportJson = MigrationReportJson(preview);
+    auto preSnapshotId = CreateRuntimeSnapshotInDb(db, childControlSessionId, spec.appId, L"pre-migration", errorMessage);
+    if (!preSnapshotId.has_value()) {
+      *errorCode = L"storage_error";
+      if (errorMessage->empty()) {
+        *errorMessage = L"Could not create pre-migration snapshot";
+      }
+      return L"";
+    }
+
+    if (!BeginImmediate(db, errorMessage)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    bool ok = InsertAppMigrationRecord(db, migrationId, spec, migrationJson, startedAt);
+    if (mode == L"apply") {
+      ok = ok && ApplyMigrationChanges(db, spec, preview.changes, NowIso(), errorMessage);
+    }
+    ok = ok && RecordMigrationRun(db, runId, migrationId, spec.appId, active.installId, mode, L"passed", preSnapshotId, reportJson, startedAt);
+    if (!ok) {
+      RollbackTransaction(db);
+      *errorCode = L"storage_error";
+      if (errorMessage->empty()) {
+        *errorMessage = L"Migration run could not be recorded";
+      }
+      return L"";
+    }
+    if (!CommitTransaction(db, errorMessage)) {
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    return MigrationRunResultJson(runId, mode, L"passed", preSnapshotId, spec, preview);
   }
 
   std::wstring PlatformListWebappVersionsJson(std::wstring const& appId, std::wstring* error) {
@@ -6519,6 +7189,40 @@ struct DevControlPlane::Impl {
         auto code = errorCode.empty() ? L"storage_error" : errorCode;
         auto message = errorMessage.empty() ? (error.empty() ? L"Windows app registry command failed" : error) : errorMessage;
         SendControlRouteError(client, sessionId, tool, method, path, started, code, message, code == L"storage_error" ? 500 : 400);
+        return;
+      }
+    } else if (tool == L"platform.migration_dry_run" || tool == L"platform.migration_apply") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+        return;
+      }
+      auto migration = OptionalObjectMember(args.value(), L"migration");
+      if (!migration.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_migration", tool + L" requires migration object", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(migration.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_migration", L"Migration appId is not a valid generated app id", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformMigrationRunJson(
+          sessionId,
+          migration.value(),
+          tool == L"platform.migration_apply" ? L"apply" : L"dry-run",
+          &errorCode,
+          &errorMessage);
+      if (result.empty()) {
+        auto code = errorCode.empty() ? L"invalid_migration" : errorCode;
+        SendControlRouteError(client, sessionId, tool, method, path, started, code, errorMessage.empty() ? L"Migration command failed" : errorMessage, code == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.capabilities") {

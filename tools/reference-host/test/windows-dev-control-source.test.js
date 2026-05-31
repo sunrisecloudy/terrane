@@ -112,6 +112,8 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.dialog_mock_set",
     "platform.list_targets",
     "platform.list_webapps",
+    "platform.migration_dry_run",
+    "platform.migration_apply",
     "PlatformListTargetsJson",
     "PlatformListWebappsJson",
     "RuntimeScreenshotJson",
@@ -169,6 +171,11 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "PlatformCreateSnapshotJson",
     "PlatformRestoreSnapshotJson",
     "RuntimeCompareSnapshotJson",
+    "PlatformMigrationRunJson",
+    "PreviewStorageMigration",
+    "ApplyMigrationChanges",
+    "RecordMigrationRun",
+    "InsertAppMigrationRecord",
     "EvaluateMicrotestSpecJson",
     "RecordTestRun",
     "RecordControlStorageBridgeCall",
@@ -437,6 +444,64 @@ test("Windows dev control routes app registry lifecycle commands through fixed S
     appRegistryRoute > control.indexOf("result = PlatformOpenWebappJson(sessionId") &&
       appRegistryRoute < control.indexOf("} else if (tool == L\"runtime.capabilities\")"),
     "app registry lifecycle commands should be token-gated session commands before runtime-only controls",
+  );
+});
+
+test("Windows dev control routes migration dry-run and apply through fixed SQLite helpers", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "platform.migration_dry_run",
+    "platform.migration_apply",
+    "PlatformMigrationRunJson",
+    "ValidateMigrationObject",
+    "LoadActiveMigrationAppRecord",
+    "PreviewStorageMigration",
+    "ApplyMigrationChanges",
+    "InsertAppMigrationRecord",
+    "RecordMigrationRun",
+    "CreateRuntimeSnapshotInDb(db, childControlSessionId, spec.appId, L\"pre-migration\"",
+    "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ? AND status = 'enabled' LIMIT 1",
+    "SELECT key, value_json FROM app_storage WHERE app_id = ? ORDER BY key",
+    "INSERT OR REPLACE INTO app_migrations",
+    "INSERT INTO migration_runs",
+    "INSERT INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+    "ON CONFLICT(app_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+    "UPDATE apps SET data_version = ?, updated_at = ? WHERE id = ?",
+    "DELETE FROM app_storage WHERE app_id = ? AND key = ?",
+    "Migration toDataVersion must equal fromDataVersion + 1",
+    "Migration fromDataVersion does not match the active app dataVersion",
+    "Migration storage key is outside app storage prefix",
+    "migration_storage_prefix_violation",
+    "migration_data_version_mismatch",
+    "app_not_installed",
+    "changedKeys",
+    "operationCounts",
+    "dry-run",
+    "apply",
+    "setDefault",
+    "renameKey",
+    "moveStorageKey",
+    "deleteKey",
+    "deleteStorageKey",
+    "copyKey",
+    "transformEnum",
+    "ControlSessionAllowsApp(sessionId, appId.value()",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows migration control source should contain ${snippet}`);
+  }
+
+  const migrationRoute = control.indexOf("} else if (tool == L\"platform.migration_dry_run\" ||");
+  const appRegistryRoute = control.indexOf("} else if (tool == L\"platform.list_webapp_versions\" ||");
+  assert.ok(
+    migrationRoute > appRegistryRoute && migrationRoute < control.indexOf("} else if (tool == L\"runtime.capabilities\")"),
+    "migration controls should be token-gated session commands before runtime-only controls",
+  );
+
+  assert.equal(
+    control.includes("OptionalStringMember(args.value(), L\"sql\")"),
+    false,
+    "migration controls must not expose arbitrary SQL arguments",
   );
 });
 
