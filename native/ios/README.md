@@ -30,6 +30,7 @@ Implemented now:
 - Loads statically linked Zig core symbols when present and falls back to `libzig_core.dylib` for simulator/dev `core.step`, using `NATIVE_AI_ZIG_CORE_DYLIB` first.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
 - Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
+- Includes a DEBUG simulator-only loopback dev-control first slice with per-launch token-file auth, a token-gated `GET /health` endpoint, and SQLite `control_sessions` / `control_commands` auditing when launched with `--native-ai-dev-control`.
 - Debug simulator smoke can verify all five bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.
 - Debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 
@@ -56,6 +57,10 @@ Required behavior:
 - Compile out or hard-disable the control plane in production/release builds.
 
 See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
+
+Implemented first slice:
+
+- DEBUG simulator-only `IOSDevControlPlane` starts from `--native-ai-dev-control` or `NATIVE_AI_IOS_DEV_CONTROL=1`, binds to `127.0.0.1`, writes a 0600 token file under Application Support by default, serves token-gated `GET /health`, and records accepted/rejected control audit rows in SQLite.
 
 ## v0.4 persistence requirement
 

@@ -1156,6 +1156,7 @@ function checkNativeStatic() {
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
+  const iosDevControl = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
   const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "ZigCoreBridge.swift"), "utf8");
   const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
@@ -1394,6 +1395,9 @@ function checkNativeStatic() {
     [iosHost, "--native-ai-smoke-all-examples"],
     [iosHost, "AllExampleAppsSmoke"],
     [iosHost, '"notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"'],
+    [iosHost, "#if targetEnvironment(simulator)"],
+    [iosHost, "IOSDevControlPlane.enabledFromProcess()"],
+    [iosHost, "devControlPlane?.start()"],
     [iosStorage, "request.context.appId"],
     [iosStorage, "request.context.storagePrefix"],
     [iosStorage, "storagePrefixFailure"],
@@ -1405,6 +1409,40 @@ function checkNativeStatic() {
   }
   if (iosStorage.includes("appId(for:")) {
     throw new Error("iOS storage must not derive app id from storage key");
+  }
+  for (const snippet of [
+    "#if DEBUG && targetEnvironment(simulator)",
+    "import CryptoKit",
+    "import Network",
+    "import Security",
+    "import SQLite3",
+    "SecRandomCopyBytes",
+    "PLATFORM_CONTROL_TOKEN_FILE",
+    "NATIVE_AI_IOS_DEV_CONTROL",
+    "--native-ai-dev-control",
+    "--control-plane-port",
+    ".applicationSupportDirectory",
+    "native-ai-webapp",
+    "control.token",
+    "x-platform-control-token",
+    "parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address(\"127.0.0.1\")!), port: listenPort)",
+    "NATIVE_AI_IOS_CONTROL_READY port=",
+    "control_auth_required",
+    "request.method == \"GET\" && request.normalizedPath == \"/health\"",
+    "\"target\": \"ios-simulator\"",
+    "\"loopback\": true",
+    ".posixPermissions: 0o600",
+    "INSERT OR REPLACE INTO control_sessions",
+    "INSERT INTO control_commands",
+    "UPDATE control_sessions SET status = 'ended'",
+    "token_hash",
+    "\"platform.health\"",
+    "\"accepted\"",
+    "\"rejected\"",
+  ]) {
+    if (!iosDevControl.includes(snippet)) {
+      throw new Error(`iOS dev control missing ${snippet}`);
+    }
   }
   for (const snippet of ['body["method"] as? String ?? ""', 'body["params"] as? [String: Any] ?? [:]']) {
     if (iosBridge.includes(snippet)) {

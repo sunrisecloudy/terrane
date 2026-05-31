@@ -42,7 +42,30 @@ struct WebHostView: UIViewRepresentable {
     final class Coordinator {
         let bridge = WebBridge()
 #if DEBUG
-        let smokeProbe = IOSSmokeRuntimeProbe.fromCommandLine()
+        let smokeProbe: IOSSmokeRuntimeProbe?
+#if targetEnvironment(simulator)
+        let devControlPlane: IOSDevControlPlane?
+#endif
+
+        init() {
+            smokeProbe = IOSSmokeRuntimeProbe.fromCommandLine()
+#if targetEnvironment(simulator)
+            do {
+                devControlPlane = try IOSDevControlPlane.enabledFromProcess()
+                devControlPlane?.start()
+            } catch {
+                devControlPlane = nil
+                print("NATIVE_AI_IOS_CONTROL_FAILED \(error)")
+                fflush(stdout)
+            }
+#endif
+        }
+
+        deinit {
+#if targetEnvironment(simulator)
+            devControlPlane?.stop()
+#endif
+        }
 #endif
     }
 

@@ -337,6 +337,55 @@ function launchInSimulator({ scratchRoot, appBundle }) {
   }
 }
 
+test("iOS debug dev control health endpoint is source-wired and token-gated", () => {
+  const control = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
+  const host = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
+
+  for (const snippet of [
+    "#if DEBUG && targetEnvironment(simulator)",
+    "import CryptoKit",
+    "import Network",
+    "import Security",
+    "import SQLite3",
+    "SecRandomCopyBytes",
+    "PLATFORM_CONTROL_TOKEN_FILE",
+    "NATIVE_AI_IOS_DEV_CONTROL",
+    "--native-ai-dev-control",
+    "--control-plane-port",
+    ".applicationSupportDirectory",
+    "native-ai-webapp",
+    "control.token",
+    "x-platform-control-token",
+    "parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address(\"127.0.0.1\")!), port: listenPort)",
+    "NATIVE_AI_IOS_CONTROL_READY port=",
+    "Control token is required",
+    "control_auth_required",
+    "request.method == \"GET\" && request.normalizedPath == \"/health\"",
+    "\"target\": \"ios-simulator\"",
+    "\"loopback\": true",
+    ".posixPermissions: 0o600",
+    "INSERT OR REPLACE INTO control_sessions",
+    "INSERT INTO control_commands",
+    "UPDATE control_sessions SET status = 'ended'",
+    "token_hash",
+    "\"platform.health\"",
+    "\"accepted\"",
+    "\"rejected\"",
+  ]) {
+    assert.equal(control.includes(snippet), true, `iOS dev control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "#if targetEnvironment(simulator)",
+    "let devControlPlane: IOSDevControlPlane?",
+    "IOSDevControlPlane.enabledFromProcess()",
+    "devControlPlane?.start()",
+    "devControlPlane?.stop()",
+  ]) {
+    assert.equal(host.includes(snippet), true, `iOS host should wire dev control with ${snippet}`);
+  }
+});
+
 test(
   "iOS native scaffold builds a simulator app bundle with runtime resources",
   {
