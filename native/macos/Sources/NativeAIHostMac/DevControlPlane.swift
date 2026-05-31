@@ -3018,6 +3018,26 @@ final class DevControlPlane: @unchecked Sendable {
         ) else {
             return nil
         }
+        let requestedTimeout = mockedNetworkRequestTimeoutMs(request.params)
+        if let invalidValue = requestedTimeout.invalidValue {
+            return .failure(
+                id: request.id,
+                code: "invalid_request",
+                message: "network.request timeoutMs must be a positive integer",
+                details: ["timeoutMs": invalidValue]
+            )
+        }
+        if let delayMs = mockedNetworkDelayMs(mock) {
+            let effectiveTimeoutMs = effectiveMockedNetworkTimeoutMs(rule: rule, requestedTimeoutMs: requestedTimeout.value)
+            if delayMs > effectiveTimeoutMs {
+                return .failure(
+                    id: request.id,
+                    code: "timeout",
+                    message: "network.request timed out",
+                    details: ["timeoutMs": effectiveTimeoutMs, "delayMs": delayMs]
+                )
+            }
+        }
         let response = networkResponsePayload(mock)
         if responseByteCount(response) > rule.maxResponseBytes {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
@@ -4973,6 +4993,53 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         return text.utf8.count
+    }
+
+    private func mockedNetworkRequestTimeoutMs(_ params: [String: Any]) -> (value: Int?, invalidValue: Any?) {
+        guard let rawValue = params["timeoutMs"] else {
+            return (nil, nil)
+        }
+        guard let timeoutMs = positiveInteger(rawValue) else {
+            return (nil, rawValue)
+        }
+        return (timeoutMs, nil)
+    }
+
+    private func mockedNetworkDelayMs(_ value: Any) -> Int? {
+        guard let object = value as? [String: Any],
+              let rawDelay = object["delayMs"]
+        else {
+            return nil
+        }
+        return positiveInteger(rawDelay)
+    }
+
+    private func effectiveMockedNetworkTimeoutMs(rule: NetworkPolicyRule, requestedTimeoutMs: Int?) -> Int {
+        requestedTimeoutMs.map { min(rule.timeoutMs, $0) } ?? rule.timeoutMs
+    }
+
+    private func positiveInteger(_ value: Any) -> Int? {
+        if value is Bool {
+            return nil
+        }
+        if let intValue = value as? Int {
+            return intValue > 0 ? intValue : nil
+        }
+        if let doubleValue = value as? Double {
+            return doubleValue.isFinite && doubleValue > 0 && doubleValue <= Double(Int.max) && doubleValue.rounded(.towardZero) == doubleValue
+                ? Int(doubleValue)
+                : nil
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return nil
+            }
+            let doubleValue = number.doubleValue
+            return doubleValue.isFinite && doubleValue > 0 && doubleValue <= Double(Int.max) && doubleValue.rounded(.towardZero) == doubleValue
+                ? Int(doubleValue)
+                : nil
+        }
+        return nil
     }
 
     private func networkResponsePayload(_ value: Any) -> Any {

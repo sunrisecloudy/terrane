@@ -1302,6 +1302,11 @@ function checkNativeStatic() {
       throw new Error(`macOS core bridge missing ${snippet}`);
     }
   }
+  for (const snippet of ["mockedNetworkRequestTimeoutMs", "effectiveMockedNetworkTimeoutMs", "network.request timed out", '"delayMs": delayMs']) {
+    if (!macDevControl.includes(snippet)) {
+      throw new Error(`macOS dev-control network mocks missing fake-host timeout parity: ${snippet}`);
+    }
+  }
   for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
     if (!macCoreShim.includes(snippet)) {
       throw new Error(`macOS C Zig core shim missing ${snippet}`);

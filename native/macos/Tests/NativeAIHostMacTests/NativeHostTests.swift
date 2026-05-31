@@ -1476,6 +1476,25 @@ struct NativeHostTests {
         #expect(networkBridge.statusCode == 200)
         #expect(networkBridge.body.contains(#""source":"macos-control""#))
 
+        let delayedNetworkMock = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.network_mock_set","args":{"appId":"api-dashboard","method":"GET","urlPattern":"https://api.example.com/slow","response":{"status":200,"headers":{"content-type":"application/json"},"bodyText":"slow","delayMs":50}}}"#
+        )
+        #expect(delayedNetworkMock.statusCode == 200)
+
+        let timedOutNetworkBridge = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: #"{"tool":"runtime.call_bridge","args":{"appId":"api-dashboard","method":"network.request","params":{"url":"https://api.example.com/slow","method":"GET","headers":{},"body":null,"timeoutMs":10}}}"#
+        )
+        #expect(timedOutNetworkBridge.statusCode == 200)
+        #expect(timedOutNetworkBridge.body.contains(#""code":"timeout""#))
+        #expect(timedOutNetworkBridge.body.contains(#""timeoutMs":10"#))
+        #expect(timedOutNetworkBridge.body.contains(#""delayMs":50"#))
+
         let resetNetworkMocks = try await httpRequest(
             commandURL,
             method: "POST",
@@ -1483,7 +1502,7 @@ struct NativeHostTests {
             body: #"{"tool":"runtime.network_mock_reset","args":{"appId":"api-dashboard"}}"#
         )
         #expect(resetNetworkMocks.statusCode == 200)
-        #expect(resetNetworkMocks.body.contains(#""cleared":1"#))
+        #expect(resetNetworkMocks.body.contains(#""cleared":2"#))
 
         let dialogMock = try await httpRequest(
             commandURL,
