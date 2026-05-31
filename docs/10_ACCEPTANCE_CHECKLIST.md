@@ -123,6 +123,7 @@
 - [x] GTK/WebKitGTK app launches.
 - [x] Runtime loads resources.
 - [x] Bridge works.
+- [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] Zig shared library loads.
 - [x] Storage persists.
 - [x] Production guard rejects and audits dev-only startup flags in release builds.

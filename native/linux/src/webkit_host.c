@@ -276,6 +276,19 @@ static gboolean json_response_error_code_matches(const gchar *text, const gchar 
   return matches;
 }
 
+static gboolean json_response_error_detail_string_matches(const gchar *text, const gchar *member, const gchar *expected) {
+  JsonParser *parser = json_parser_new();
+  gboolean matches = FALSE;
+  if (json_parser_load_from_data(parser, text, -1, NULL)) {
+    JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+    JsonObject *error = json_object_get_object_member(root, "error");
+    JsonObject *details = error == NULL ? NULL : json_object_get_object_member(error, "details");
+    matches = details != NULL && g_strcmp0(json_object_get_string_member_with_default(details, member, ""), expected) == 0;
+  }
+  g_object_unref(parser);
+  return matches;
+}
+
 static gchar *request_json(const gchar *id, const gchar *method, JsonNode *params) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -540,16 +553,38 @@ static void run_fixed_bridge_surface_smoke(WebKitHost *host) {
 
   JsonBuilder *notification_builder = json_builder_new();
   json_builder_begin_object(notification_builder);
-  json_builder_set_member_name(notification_builder, "title");
-  json_builder_add_string_value(notification_builder, "Native AI smoke");
-  json_builder_set_member_name(notification_builder, "body");
+  json_builder_set_member_name(notification_builder, "message");
   json_builder_add_string_value(notification_builder, "Fixed bridge surface smoke");
+  json_builder_set_member_name(notification_builder, "level");
+  json_builder_add_string_value(notification_builder, "success");
   json_builder_end_object(notification_builder);
   JsonNode *notification_params = json_builder_get_root(notification_builder);
   g_autofree gchar *notification_response = bridge_call(host, "notes-lite", "linux_smoke_fixed_notification", "notification.toast", notification_params);
   json_node_unref(notification_params);
   g_object_unref(notification_builder);
   if (!require_smoke_ok(host, notification_response)) {
+    return;
+  }
+
+  JsonBuilder *notification_bad_builder = json_builder_new();
+  json_builder_begin_object(notification_bad_builder);
+  json_builder_set_member_name(notification_bad_builder, "message");
+  json_builder_add_string_value(notification_bad_builder, "Saved");
+  json_builder_set_member_name(notification_bad_builder, "level");
+  json_builder_add_string_value(notification_bad_builder, "warn");
+  json_builder_end_object(notification_bad_builder);
+  JsonNode *notification_bad_params = json_builder_get_root(notification_bad_builder);
+  g_autofree gchar *notification_bad_response = bridge_call(
+      host,
+      "notes-lite",
+      "linux_smoke_fixed_notification_bad_level",
+      "notification.toast",
+      notification_bad_params);
+  json_node_unref(notification_bad_params);
+  g_object_unref(notification_bad_builder);
+  if (!json_response_error_code_matches(notification_bad_response, "invalid_request") ||
+      !json_response_error_detail_string_matches(notification_bad_response, "level", "warn")) {
+    smoke_failure(host, notification_bad_response);
     return;
   }
 

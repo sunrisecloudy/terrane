@@ -27,6 +27,7 @@ Implemented now:
 - Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
+- Validates `notification.toast` `message`/`level` params against the bridge contract.
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound GTK file chooser native dialogs.
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
 - Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first and then repo-local/install candidate paths.
