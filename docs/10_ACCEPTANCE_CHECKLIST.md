@@ -123,6 +123,7 @@
 - [x] Source/static and debug APK build checks verify Android debug dev control supports DB-backed `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Source/static and debug APK build checks verify Android debug dev control supports confirmation-gated `runtime.storage_reset` / `platform.reset_webapp` with pre-reset `runtime_snapshots`.
 - [x] Source/static and debug APK build checks verify Android debug dev control supports DB-backed one-shot `runtime.fault_inject` consumed before permission/budget bridge dispatch.
+- [x] Source/static and debug APK build checks verify Android debug dev control supports DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` consumed by Android network/dialog bridge calls.
 
 ### Windows
 

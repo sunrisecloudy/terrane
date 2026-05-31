@@ -16,6 +16,7 @@ import java.net.Socket
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -239,6 +240,9 @@ class AndroidDevControlPlane(
         "runtime.storage_reset" -> runtimeStorageResetJson(args, clearRuntimeLogs = false)
         "platform.reset_webapp" -> runtimeStorageResetJson(args, clearRuntimeLogs = true)
         "runtime.fault_inject" -> runtimeFaultInjectJson(args)
+        "runtime.network_mock_set" -> runtimeNetworkMockSetJson(args)
+        "runtime.network_mock_reset" -> runtimeNetworkMockResetJson(args)
+        "runtime.dialog_mock_set" -> runtimeDialogMockSetJson(args)
         "db.snapshot" -> dbSnapshotJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
@@ -414,6 +418,125 @@ class AndroidDevControlPlane(
             .put("message", message)
             .put("details", details)
             .put("once", once)
+    }
+
+    private fun runtimeNetworkMockSetJson(args: JSONObject): JSONObject {
+        val urlPattern = networkMockUrlPattern(args)
+            ?: throw ControlCommandException(400, "invalid_request", "runtime.network_mock_set requires urlPattern or match.url and response")
+        if (!args.has("response") || args.isNull("response")) {
+            throw ControlCommandException(400, "invalid_request", "runtime.network_mock_set requires urlPattern or match.url and response")
+        }
+        val appId = optionalString(args, "appId")
+        validateEffectMockAppId(appId)
+        val sessionId = optionalString(args, "sessionId")
+        val method = networkMockMethod(args)
+        val mockId = "netmock_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+        val values = ContentValues().apply {
+            put("mock_id", mockId)
+            if (sessionId == null) putNull("session_id") else put("session_id", sessionId)
+            if (appId == null) putNull("app_id") else put("app_id", appId)
+            put("method", method)
+            put("url_pattern", urlPattern)
+            put("response_json", jsonString(args.opt("response")))
+            put("enabled", 1)
+            put("created_at", createdAt)
+        }
+        val inserted = database.writableDatabase.insert("network_mocks", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Network mock could not be registered")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("mockId", mockId)
+            .put("sessionId", sessionId ?: JSONObject.NULL)
+            .put("appId", appId ?: JSONObject.NULL)
+            .put("method", method)
+            .put("urlPattern", urlPattern)
+    }
+
+    private fun runtimeNetworkMockResetJson(args: JSONObject): JSONObject {
+        val appId = optionalString(args, "appId")
+        validateEffectMockAppId(appId)
+        val sessionId = optionalString(args, "sessionId")
+        val cleared = when {
+            sessionId != null && appId != null -> database.writableDatabase.delete(
+                "network_mocks",
+                "session_id = ? AND app_id = ?",
+                arrayOf(sessionId, appId),
+            )
+            sessionId != null -> database.writableDatabase.delete("network_mocks", "session_id = ?", arrayOf(sessionId))
+            appId != null -> database.writableDatabase.delete("network_mocks", "app_id = ?", arrayOf(appId))
+            else -> database.writableDatabase.delete("network_mocks", null, null)
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("cleared", cleared)
+    }
+
+    private fun runtimeDialogMockSetJson(args: JSONObject): JSONObject {
+        val dialogType = dialogMockType(args)
+            ?: throw ControlCommandException(400, "invalid_request", "runtime.dialog_mock_set requires dialogType or method")
+        val appId = optionalString(args, "appId")
+        validateEffectMockAppId(appId)
+        val sessionId = optionalString(args, "sessionId")
+        val mockId = "dialogmock_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+        val values = ContentValues().apply {
+            put("mock_id", mockId)
+            if (sessionId == null) putNull("session_id") else put("session_id", sessionId)
+            if (appId == null) putNull("app_id") else put("app_id", appId)
+            put("dialog_type", dialogType)
+            put("response_json", jsonString(dialogMockResponse(args)))
+            put("enabled", 1)
+            put("created_at", createdAt)
+        }
+        val inserted = database.writableDatabase.insert("dialog_mocks", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Dialog mock could not be registered")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("mockId", mockId)
+            .put("sessionId", sessionId ?: JSONObject.NULL)
+            .put("appId", appId ?: JSONObject.NULL)
+            .put("dialogType", dialogType)
+    }
+
+    private fun validateEffectMockAppId(appId: String?) {
+        if (appId != null && !knownBundledAppIds.contains(appId)) {
+            throw ControlCommandException(400, "invalid_request", "Runtime effect mock appId is not a valid generated app id")
+        }
+    }
+
+    private fun networkMockUrlPattern(args: JSONObject): String? {
+        val direct = optionalString(args, "urlPattern")
+        if (direct != null) return direct
+        val match = args.optJSONObject("match") ?: return null
+        return optionalString(match, "urlPattern") ?: optionalString(match, "url")
+    }
+
+    private fun networkMockMethod(args: JSONObject): String {
+        val match = args.optJSONObject("match")
+        return (optionalString(args, "method") ?: match?.let { optionalString(it, "method") } ?: "GET")
+            .uppercase(Locale.US)
+    }
+
+    private fun dialogMockType(args: JSONObject): String? {
+        val raw = optionalString(args, "dialogType") ?: optionalString(args, "method") ?: return null
+        val normalized = raw.removePrefix("dialog.")
+        return if (normalized == "openFile" || normalized == "saveFile") normalized else null
+    }
+
+    private fun dialogMockResponse(args: JSONObject): Any {
+        if (args.has("response") && !args.isNull("response")) {
+            return args.opt("response") ?: JSONObject()
+        }
+        val cancelled = (args.opt("cancelled") as? Boolean) ?: false
+        return JSONObject()
+            .put("files", args.opt("files") ?: JSONArray())
+            .put("selectedPath", args.opt("selectedPath") ?: JSONObject.NULL)
+            .put("cancelled", cancelled)
     }
 
     private fun faultMethodForArgs(args: JSONObject): String? {
@@ -725,6 +848,9 @@ class AndroidDevControlPlane(
                     "runtime.storage_reset",
                     "platform.reset_webapp",
                     "runtime.fault_inject",
+                    "runtime.network_mock_set",
+                    "runtime.network_mock_reset",
+                    "runtime.dialog_mock_set",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",

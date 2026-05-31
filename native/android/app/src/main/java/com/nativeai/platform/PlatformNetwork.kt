@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
@@ -18,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 private val plainTextMediaType = "text/plain".toMediaType()
 
-class PlatformNetwork {
+class PlatformNetwork(private val database: PlatformDatabase? = null) {
     fun request(request: BridgeRequest): String {
         val urlText = request.params.optString("url", "")
         val url = try {
@@ -62,6 +63,10 @@ class PlatformNetwork {
             is NetworkTimeout.Valid -> parsedTimeout.value
         }
         val effectiveTimeoutMs = effectiveTimeoutMs(rule, requestedTimeoutMs)
+        val mocked = mockedNetworkResponse(request, rule, urlText, method, effectiveTimeoutMs)
+        if (mocked != null) {
+            return mocked
+        }
 
         return performRequestOffMainThread(request, url, method, headers, body, rule, effectiveTimeoutMs, request.context.networkPolicy, request.context.denyPrivateNetwork)
     }
@@ -189,6 +194,106 @@ class PlatformNetwork {
 
     private fun effectiveTimeoutMs(rule: NetworkPolicyRule, requestedTimeoutMs: Int?): Int =
         requestedTimeoutMs?.let { minOf(rule.timeoutMs, it) } ?: rule.timeoutMs
+
+    private fun mockedNetworkResponse(
+        request: BridgeRequest,
+        rule: NetworkPolicyRule,
+        url: String,
+        method: String,
+        effectiveTimeoutMs: Int,
+    ): String? {
+        val mock = findNetworkMock(request, method, url) ?: return null
+        val delayMs = positiveInteger(mock.opt("delayMs"))
+        if (delayMs != null && delayMs > effectiveTimeoutMs) {
+            return BridgeResponse.failure(
+                request.id,
+                "timeout",
+                "network.request timed out",
+                JSONObject(mapOf("timeoutMs" to effectiveTimeoutMs, "delayMs" to delayMs)),
+            ).toString()
+        }
+        if (mockResponseBytes(mock) > rule.maxResponseBytes) {
+            return BridgeResponse.failure(request.id, "network_policy_denied", "network.response exceeds manifest.networkPolicy maxResponseBytes").toString()
+        }
+        return BridgeResponse.success(request.id, payloadWithoutDelay(mock)).toString()
+    }
+
+    private fun findNetworkMock(request: BridgeRequest, method: String, url: String): JSONObject? {
+        val db = database?.readableDatabase ?: return null
+        val sessionId = runtimeSessionId(request)
+        db.rawQuery(
+            "SELECT response_json, url_pattern FROM network_mocks " +
+                "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) " +
+                "ORDER BY created_at DESC LIMIT 100",
+            arrayOf(method, request.context.appId, sessionId),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val pattern = cursor.getString(1)
+                if (!urlMatches(pattern, url)) continue
+                val mock = parseJsonObject(cursor.getString(0))
+                if (mock != null) return mock
+            }
+        }
+        return null
+    }
+
+    private fun runtimeSessionId(request: BridgeRequest): String =
+        "runtime_android_${request.context.appId}_${request.context.mountToken ?: "native"}"
+
+    private fun urlMatches(pattern: String?, url: String): Boolean {
+        if (pattern == null) return false
+        if (pattern == "*" || pattern == url) return true
+        if (pattern.endsWith("*")) {
+            return url.startsWith(pattern.dropLast(1))
+        }
+        return false
+    }
+
+    private fun positiveInteger(value: Any?): Int? {
+        if (value !is Number) return null
+        val doubleValue = value.toDouble()
+        val longValue = value.toLong()
+        if (!java.lang.Double.isFinite(doubleValue) || doubleValue <= 0 || doubleValue != longValue.toDouble() || longValue > Int.MAX_VALUE) {
+            return null
+        }
+        return longValue.toInt()
+    }
+
+    private fun mockResponseBytes(mock: JSONObject): Int {
+        if (mock.has("bodyText")) {
+            return jsonPayloadBytes(mock.opt("bodyText"))
+        }
+        if (mock.has("body")) {
+            return jsonPayloadBytes(mock.opt("body"))
+        }
+        return 0
+    }
+
+    private fun jsonPayloadBytes(value: Any?): Int = when (value) {
+        null, JSONObject.NULL -> 0
+        is String -> value.toByteArray(Charsets.UTF_8).size
+        is JSONObject, is JSONArray -> value.toString().toByteArray(Charsets.UTF_8).size
+        is Number, is Boolean -> value.toString().toByteArray(Charsets.UTF_8).size
+        else -> value.toString().toByteArray(Charsets.UTF_8).size
+    }
+
+    private fun payloadWithoutDelay(mock: JSONObject): JSONObject {
+        val payload = JSONObject()
+        val keys = mock.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (key != "delayMs") {
+                payload.put(key, mock.opt(key) ?: JSONObject.NULL)
+            }
+        }
+        return payload
+    }
+
+    private fun parseJsonObject(text: String?): JSONObject? = try {
+        if (text.isNullOrBlank()) null else JSONObject(text)
+    } catch (_: Exception) {
+        null
+    }
 
     private fun timeoutFailure(request: BridgeRequest, timeoutMs: Int): String =
         BridgeResponse.failure(

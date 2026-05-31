@@ -322,6 +322,103 @@ test("Android debug dev control registers and consumes DB-backed bridge fault in
   );
 });
 
+test("Android debug dev control registers and consumes DB-backed network and dialog mocks", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const network = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNetwork.kt");
+  const dialogs = read("native/android/app/src/main/java/com/nativeai/platform/PlatformDialogs.kt");
+  const migration = read("db/sqlite/003_codex_control.sql");
+
+  for (const snippet of [
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
+    "runtimeNetworkMockSetJson",
+    "runtimeNetworkMockResetJson",
+    "runtimeDialogMockSetJson",
+    "networkMockUrlPattern",
+    "networkMockMethod",
+    "dialogMockType",
+    "dialogMockResponse",
+    "Runtime effect mock appId is not a valid generated app id",
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "Network mock could not be registered",
+    "Dialog mock could not be registered",
+    "netmock_android_",
+    "dialogmock_android_",
+    "database.writableDatabase.insert(\"network_mocks\"",
+    "database.writableDatabase.insert(\"dialog_mocks\"",
+    "database.writableDatabase.delete(\"network_mocks\"",
+    "put(\"response_json\", jsonString(args.opt(\"response\")))",
+    "put(\"response_json\", jsonString(dialogMockResponse(args)))",
+    "uppercase(Locale.US)",
+    "raw.removePrefix(\"dialog.\")",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android dev control mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "PlatformNetwork(database)",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Android bridge mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "class PlatformNetwork(private val database: PlatformDatabase? = null)",
+    "val mocked = mockedNetworkResponse(request, rule, urlText, method, effectiveTimeoutMs)",
+    "mockedNetworkResponse",
+    "findNetworkMock",
+    "SELECT response_json, url_pattern FROM network_mocks",
+    "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)",
+    "ORDER BY created_at DESC LIMIT 100",
+    "urlMatches",
+    "mockResponseBytes",
+    "payloadWithoutDelay",
+    "delayMs",
+    "network.request timed out",
+    "network.response exceeds manifest.networkPolicy maxResponseBytes",
+  ]) {
+    assert.equal(network.includes(snippet), true, `Android network mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "private val database = PlatformDatabase(activity)",
+    "storedDialogMock(request, \"openFile\")",
+    "storedDialogMock(request, \"saveFile\")",
+    "SELECT response_json FROM dialog_mocks",
+    "WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)",
+    "ORDER BY created_at DESC LIMIT 1",
+    "BridgeResponse.success(request.id, mock)",
+  ]) {
+    assert.equal(dialogs.includes(snippet), true, `Android dialog mock source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    network.indexOf("val mocked = mockedNetworkResponse(request, rule, urlText, method, effectiveTimeoutMs)") >
+      network.indexOf("val effectiveTimeoutMs = effectiveTimeoutMs(rule, requestedTimeoutMs)"),
+    "network mocks should run after manifest policy and timeout validation",
+  );
+  assert.ok(
+    network.indexOf("val mocked = mockedNetworkResponse(request, rule, urlText, method, effectiveTimeoutMs)") <
+      network.indexOf("return performRequestOffMainThread"),
+    "network mocks should short-circuit before OkHttp dispatch",
+  );
+  assert.ok(
+    dialogs.indexOf("storedDialogMock(request, \"openFile\")") < dialogs.indexOf("activity.runOnUiThread"),
+    "dialog mocks should short-circuit before launching native pickers",
+  );
+
+  for (const snippet of [
+    "CREATE TABLE IF NOT EXISTS network_mocks",
+    "CREATE TABLE IF NOT EXISTS dialog_mocks",
+    "idx_network_mocks_session_app",
+    "idx_dialog_mocks_session_app",
+  ]) {
+    assert.equal(migration.includes(snippet), true, `SQLite mock migration should contain ${snippet}`);
+  }
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {

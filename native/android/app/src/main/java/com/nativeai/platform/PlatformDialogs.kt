@@ -12,6 +12,7 @@ class PlatformDialogs(private val activity: ComponentActivity) {
     private data class PendingOpen(val request: BridgeRequest, val respond: (String) -> Unit)
     private data class PendingSave(val request: BridgeRequest, val respond: (String) -> Unit)
 
+    private val database = PlatformDatabase(activity)
     private var pendingOpen: PendingOpen? = null
     private var pendingManyOpen: PendingOpen? = null
     private var pendingSave: PendingSave? = null
@@ -50,6 +51,11 @@ class PlatformDialogs(private val activity: ComponentActivity) {
     }
 
     fun openFile(request: BridgeRequest, respond: (String) -> Unit) {
+        val mock = storedDialogMock(request, "openFile")
+        if (mock != null) {
+            respond(BridgeResponse.success(request.id, mock).toString())
+            return
+        }
         activity.runOnUiThread {
             if (isBusy()) {
                 respond(BridgeResponse.failure(request.id, "capability_unavailable", "Another file dialog is already open").toString())
@@ -73,6 +79,11 @@ class PlatformDialogs(private val activity: ComponentActivity) {
     }
 
     fun saveFile(request: BridgeRequest, respond: (String) -> Unit) {
+        val mock = storedDialogMock(request, "saveFile")
+        if (mock != null) {
+            respond(BridgeResponse.success(request.id, mock).toString())
+            return
+        }
         activity.runOnUiThread {
             if (isBusy()) {
                 respond(BridgeResponse.failure(request.id, "capability_unavailable", "Another file dialog is already open").toString())
@@ -89,6 +100,30 @@ class PlatformDialogs(private val activity: ComponentActivity) {
     }
 
     private fun isBusy(): Boolean = pendingOpen != null || pendingManyOpen != null || pendingSave != null
+
+    private fun storedDialogMock(request: BridgeRequest, dialogType: String): JSONObject? {
+        val sessionId = runtimeSessionId(request)
+        database.readableDatabase.rawQuery(
+            "SELECT response_json FROM dialog_mocks " +
+                "WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) " +
+                "ORDER BY created_at DESC LIMIT 1",
+            arrayOf(dialogType, request.context.appId, sessionId),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                return parseJsonObject(cursor.getString(0))
+            }
+        }
+        return null
+    }
+
+    private fun runtimeSessionId(request: BridgeRequest): String =
+        "runtime_android_${request.context.appId}_${request.context.mountToken ?: "native"}"
+
+    private fun parseJsonObject(text: String?): JSONObject? = try {
+        if (text.isNullOrBlank()) null else JSONObject(text)
+    } catch (_: Exception) {
+        null
+    }
 
     private fun acceptedTypes(request: BridgeRequest): Array<String> {
         val accept = request.params.optJSONArray("accept") ?: return arrayOf("text/plain")
