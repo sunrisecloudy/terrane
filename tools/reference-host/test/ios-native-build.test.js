@@ -340,6 +340,7 @@ function launchInSimulator({ scratchRoot, appBundle }) {
 test("iOS debug dev control health endpoint is source-wired and token-gated", () => {
   const control = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
   const host = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
+  const bridge = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
 
   for (const snippet of [
     "#if DEBUG && targetEnvironment(simulator)",
@@ -352,6 +353,10 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "NATIVE_AI_IOS_DEV_CONTROL",
     "--native-ai-dev-control",
     "--control-plane-port",
+    "/control/sessions",
+    "/control/command",
+    "/capabilities",
+    "/command",
     ".applicationSupportDirectory",
     "native-ai-webapp",
     "control.token",
@@ -361,24 +366,52 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "Control token is required",
     "control_auth_required",
     "request.method == \"GET\" && request.normalizedPath == \"/health\"",
+    "request.method == \"POST\" && isSessionCreatePath(request.normalizedPath)",
+    "request.method == \"POST\" && isCommandPath(request.normalizedPath)",
     "\"target\": \"ios-simulator\"",
     "\"loopback\": true",
     ".posixPermissions: 0o600",
     "INSERT OR REPLACE INTO control_sessions",
     "INSERT INTO control_commands",
     "UPDATE control_sessions SET status = 'ended'",
+    "INSERT OR REPLACE INTO runtime_sessions",
+    "UPDATE runtime_sessions SET status = 'ended'",
     "token_hash",
+    "control.sessions.create",
+    "control.sessions.snapshot",
+    "control.sessions.events",
+    "control.sessions.capabilities",
+    "control.sessions.end",
+    "\"platform.list_targets\"",
+    "\"platform.list_webapps\"",
+    "\"runtime.capabilities\"",
+    "\"runtime.call_bridge\"",
+    "\"runtime.core_step\"",
     "\"platform.health\"",
     "\"accepted\"",
     "\"rejected\"",
+    "BundledAppCatalog",
+    "control_call_bridge",
+    "control_core_step",
   ]) {
     assert.equal(control.includes(snippet), true, `iOS dev control source should contain ${snippet}`);
+  }
+  assert.equal(control.includes("db.query_sql"), false);
+  assert.equal(control.includes("unsafe_eval"), false);
+
+  for (const snippet of [
+    "handleControlBridgeCall",
+    "AppSandboxContext(controlAppId: appId, mountToken: \"ios-dev-control\")",
+    "init(controlAppId appId: String, mountToken: String?)",
+    "struct BridgeResponse: @unchecked Sendable",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `iOS bridge should expose dev control bridge routing with ${snippet}`);
   }
 
   for (const snippet of [
     "#if targetEnvironment(simulator)",
     "let devControlPlane: IOSDevControlPlane?",
-    "IOSDevControlPlane.enabledFromProcess()",
+    "IOSDevControlPlane.enabledFromProcess(bridge: bridge)",
     "devControlPlane?.start()",
     "devControlPlane?.stop()",
   ]) {

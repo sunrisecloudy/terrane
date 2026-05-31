@@ -142,6 +142,67 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
     }
 
+#if DEBUG
+    func handleControlBridgeCall(appId: String, method: String, params: [String: Any], id: String?) async -> BridgeResponse {
+        let body: [String: Any] = [
+            "id": id ?? "ios-dev-control-\(UUID().uuidString.lowercased())",
+            "method": method,
+            "params": params,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        if let validationFailure = Self.bridgeRequestValidationFailure(body) {
+            return validationFailure
+        }
+
+        let request = BridgeRequest(body: body, context: AppSandboxContext(controlAppId: appId, mountToken: "ios-dev-control"))
+        let startedAt = Date()
+        if request.params["appId"] != nil {
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "invalid_request",
+                message: "Bridge params must not include appId; app id is channel-derived",
+                details: ["field": "appId"]
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            return response
+        }
+        if let denialReason = BundledAppCatalog.denialReason(appId: request.context.appId) {
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "permission_denied",
+                message: "App \(request.context.appId) is not available to iOS dev control",
+                details: ["appId": request.context.appId, "reason": denialReason]
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            return response
+        }
+        if let permission = permissionForBridgeMethod(request.method),
+           !request.context.approvedPermissions.contains(permission) {
+            let response = BridgeResponse.failure(
+                id: request.id,
+                code: "permission_denied",
+                message: "App \(request.context.appId) cannot call \(request.method)",
+                details: ["appId": request.context.appId, "method": request.method, "requiredPermission": permission]
+            )
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            return response
+        }
+        if let response = bridgeRateBudgetFailure(request) {
+            recordBridgeCall(request: request, response: response, startedAt: startedAt)
+            return response
+        }
+
+        let response = await withCheckedContinuation { continuation in
+            dispatch(request) { response in
+                continuation.resume(returning: response)
+            }
+        }
+        recordBridgeCall(request: request, response: response, startedAt: startedAt)
+        recordCoreStep(request: request, response: response)
+        return response
+    }
+#endif
+
     private func dispatch(_ request: BridgeRequest, reply: @escaping BridgeReply) {
         switch request.method {
         case "storage.get":
@@ -532,6 +593,19 @@ struct AppSandboxContext {
         self.mountToken = envelope.mountToken
     }
 
+#if DEBUG
+    init(controlAppId appId: String, mountToken: String?) {
+        let manifest = AppSandboxContext.manifest(for: appId)
+        self.appId = appId
+        self.storagePrefix = "\(appId):"
+        self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
+        self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
+        self.denyPrivateNetwork = AppSandboxContext.denyPrivateNetwork(from: manifest)
+        self.resourceBudget = AppSandboxContext.resourceBudget(from: manifest)
+        self.mountToken = mountToken
+    }
+#endif
+
     private static func appId(from url: URL?) -> String? {
         guard let path = url?.path else { return nil }
         for marker in ["/webapps/examples/", "/examples/"] {
@@ -577,7 +651,7 @@ struct AppSandboxContext {
     }
 }
 
-struct BridgeResponse {
+struct BridgeResponse: @unchecked Sendable {
     let id: String?
     let ok: Bool
     let result: Any?

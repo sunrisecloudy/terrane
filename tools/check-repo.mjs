@@ -1396,7 +1396,7 @@ function checkNativeStatic() {
     [iosHost, "AllExampleAppsSmoke"],
     [iosHost, '"notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"'],
     [iosHost, "#if targetEnvironment(simulator)"],
-    [iosHost, "IOSDevControlPlane.enabledFromProcess()"],
+    [iosHost, "IOSDevControlPlane.enabledFromProcess(bridge: bridge)"],
     [iosHost, "devControlPlane?.start()"],
     [iosStorage, "request.context.appId"],
     [iosStorage, "request.context.storagePrefix"],
@@ -1421,6 +1421,10 @@ function checkNativeStatic() {
     "NATIVE_AI_IOS_DEV_CONTROL",
     "--native-ai-dev-control",
     "--control-plane-port",
+    "/control/sessions",
+    "/control/command",
+    "/capabilities",
+    "/command",
     ".applicationSupportDirectory",
     "native-ai-webapp",
     "control.token",
@@ -1429,19 +1433,51 @@ function checkNativeStatic() {
     "NATIVE_AI_IOS_CONTROL_READY port=",
     "control_auth_required",
     "request.method == \"GET\" && request.normalizedPath == \"/health\"",
+    "request.method == \"POST\" && isSessionCreatePath(request.normalizedPath)",
+    "request.method == \"POST\" && isCommandPath(request.normalizedPath)",
     "\"target\": \"ios-simulator\"",
     "\"loopback\": true",
     ".posixPermissions: 0o600",
     "INSERT OR REPLACE INTO control_sessions",
     "INSERT INTO control_commands",
     "UPDATE control_sessions SET status = 'ended'",
+    "INSERT OR REPLACE INTO runtime_sessions",
+    "UPDATE runtime_sessions SET status = 'ended'",
     "token_hash",
+    "control.sessions.create",
+    "control.sessions.snapshot",
+    "control.sessions.events",
+    "control.sessions.capabilities",
+    "control.sessions.end",
+    "\"platform.list_targets\"",
+    "\"platform.list_webapps\"",
+    "\"runtime.capabilities\"",
+    "\"runtime.call_bridge\"",
+    "\"runtime.core_step\"",
     "\"platform.health\"",
     "\"accepted\"",
     "\"rejected\"",
+    "BundledAppCatalog",
+    "control_call_bridge",
+    "control_core_step",
   ]) {
     if (!iosDevControl.includes(snippet)) {
       throw new Error(`iOS dev control missing ${snippet}`);
+    }
+  }
+  for (const forbidden of ["db.query_sql", "unsafe_eval"]) {
+    if (iosDevControl.includes(forbidden)) {
+      throw new Error(`iOS dev control must not expose ${forbidden}`);
+    }
+  }
+  for (const snippet of [
+    "handleControlBridgeCall",
+    "AppSandboxContext(controlAppId: appId, mountToken: \"ios-dev-control\")",
+    "init(controlAppId appId: String, mountToken: String?)",
+    "struct BridgeResponse: @unchecked Sendable",
+  ]) {
+    if (!iosBridge.includes(snippet)) {
+      throw new Error(`iOS bridge missing dev control routing snippet: ${snippet}`);
     }
   }
   for (const snippet of ['body["method"] as? String ?? ""', 'body["params"] as? [String: Any] ?? [:]']) {

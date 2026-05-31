@@ -51,7 +51,7 @@ struct WebHostView: UIViewRepresentable {
             smokeProbe = IOSSmokeRuntimeProbe.fromCommandLine()
 #if targetEnvironment(simulator)
             do {
-                devControlPlane = try IOSDevControlPlane.enabledFromProcess()
+                devControlPlane = try IOSDevControlPlane.enabledFromProcess(bridge: bridge)
                 devControlPlane?.start()
             } catch {
                 devControlPlane = nil

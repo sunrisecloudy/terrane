@@ -60,6 +60,7 @@
 - [x] iOS simulator app bundle build verifies all five bundled example apps include manifest, HTML, CSS, and JS resources; debug simulator smoke includes an all-example bridge capability probe when launch smoke is enabled.
 - [x] iOS debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 - [x] Source/static checks verify iOS DEBUG simulator dev control first slice starts only in dev mode, binds a loopback token-gated `GET /health` endpoint, writes a 0600 per-launch control token file, and persists accepted/rejected SQLite audit rows.
+- [x] Source/static checks verify iOS DEBUG simulator dev control exposes lightweight session/control routes for `platform.list_targets`, `platform.list_webapps`, bridge-routed `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` with runtime session persistence.
 
 ### macOS
 
