@@ -238,6 +238,7 @@ class AndroidDevControlPlane(
         "runtime.assert_no_console_errors" -> runtimeAssertNoConsoleErrorsJson(optionalString(args, "appId"))
         "runtime.storage_reset" -> runtimeStorageResetJson(args, clearRuntimeLogs = false)
         "platform.reset_webapp" -> runtimeStorageResetJson(args, clearRuntimeLogs = true)
+        "runtime.fault_inject" -> runtimeFaultInjectJson(args)
         "db.snapshot" -> dbSnapshotJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
@@ -365,6 +366,74 @@ class AndroidDevControlPlane(
             throw ControlCommandException(400, "console_errors_found", "Console error logs were found")
         }
         return JSONObject().put("ok", true).put("errors", 0)
+    }
+
+    private fun runtimeFaultInjectJson(args: JSONObject): JSONObject {
+        val method = faultMethodForArgs(args)
+            ?: throw ControlCommandException(400, "invalid_request", "runtime.fault_inject requires a bridge method")
+        if (!knownBridgeMethods.contains(method)) {
+            throw ControlCommandException(400, "unknown_method", "Unknown bridge method: $method")
+        }
+
+        val sessionId = optionalString(args, "sessionId")
+        val appId = optionalString(args, "appId")
+        if (appId != null && !knownBundledAppIds.contains(appId)) {
+            throw ControlCommandException(400, "invalid_request", "runtime.fault_inject appId is not a valid generated app id")
+        }
+        val code = optionalString(args, "code") ?: "fault_injected"
+        val message = optionalString(args, "message") ?: "Injected bridge fault"
+        val details = faultDetailsForArgs(args)
+        val once = (args.opt("once") as? Boolean) ?: true
+        val faultId = "fault_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+
+        val values = ContentValues().apply {
+            put("fault_id", faultId)
+            if (sessionId == null) putNull("session_id") else put("session_id", sessionId)
+            if (appId == null) putNull("app_id") else put("app_id", appId)
+            put("method", method)
+            put("code", code)
+            put("message", message)
+            put("details_json", jsonString(details))
+            put("once", if (once) 1 else 0)
+            put("enabled", 1)
+            put("created_at", createdAt)
+        }
+        val inserted = database.writableDatabase.insert("fault_injections", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Fault injection could not be registered")
+        }
+
+        return JSONObject()
+            .put("ok", true)
+            .put("faultId", faultId)
+            .put("sessionId", sessionId ?: JSONObject.NULL)
+            .put("appId", appId ?: JSONObject.NULL)
+            .put("method", method)
+            .put("code", code)
+            .put("message", message)
+            .put("details", details)
+            .put("once", once)
+    }
+
+    private fun faultMethodForArgs(args: JSONObject): String? {
+        val method = optionalString(args, "method")
+        if (method != null) return method
+        return when (val kind = optionalString(args, "kind")) {
+            "storage.read" -> "storage.get"
+            "storage.write" -> "storage.set"
+            "network", "network.request" -> "network.request"
+            "core", "core.step" -> "core.step"
+            else -> kind
+        }
+    }
+
+    private fun faultDetailsForArgs(args: JSONObject): Any {
+        if (args.has("details") && !args.isNull("details")) {
+            return args.opt("details") ?: JSONObject()
+        }
+        val kind = optionalString(args, "kind")
+        return if (kind == null) JSONObject() else JSONObject().put("kind", kind)
     }
 
     private fun platformListTargetsJson(): JSONObject =
@@ -655,6 +724,7 @@ class AndroidDevControlPlane(
                     "runtime.assert_no_console_errors",
                     "runtime.storage_reset",
                     "platform.reset_webapp",
+                    "runtime.fault_inject",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -877,6 +947,17 @@ class AndroidDevControlPlane(
         }
     }
 
+    private fun jsonString(value: Any?): String = when (value) {
+        null -> "null"
+        JSONObject.NULL -> "null"
+        is JSONObject -> value.toString()
+        is JSONArray -> value.toString()
+        is String -> JSONObject.quote(value)
+        is Number -> value.toString()
+        is Boolean -> value.toString()
+        else -> JSONObject.quote(value.toString())
+    }
+
     private fun Cursor.nullableStringValue(index: Int): String? =
         if (isNull(index)) null else getString(index)
 
@@ -912,6 +993,19 @@ class AndroidDevControlPlane(
     companion object {
         private const val tag = "NativeAIAndroidDevControl"
         private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
+        private val knownBridgeMethods = setOf(
+            "storage.get",
+            "storage.set",
+            "storage.remove",
+            "storage.list",
+            "dialog.openFile",
+            "dialog.saveFile",
+            "notification.toast",
+            "network.request",
+            "core.step",
+            "runtime.capabilities",
+            "app.log",
+        )
         private val safeTables = setOf(
             "apps",
             "app_versions",

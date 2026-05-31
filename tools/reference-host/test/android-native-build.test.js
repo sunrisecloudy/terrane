@@ -268,6 +268,60 @@ test("Android debug dev control exposes storage and basic observability commands
   assert.equal(bridge.includes("recordCoreStep(request, responseText)"), true);
 });
 
+test("Android debug dev control registers and consumes DB-backed bridge fault injections", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+
+  for (const snippet of [
+    "runtime.fault_inject",
+    "runtimeFaultInjectJson",
+    "faultMethodForArgs",
+    "faultDetailsForArgs",
+    "fault_android_",
+    "fault_injections",
+    "runtime.fault_inject requires a bridge method",
+    "runtime.fault_inject appId is not a valid generated app id",
+    "Unknown bridge method:",
+    "fault_injected",
+    "Injected bridge fault",
+    "put(\"once\", if (once) 1 else 0)",
+    "put(\"enabled\", 1)",
+    "\"storage.read\" -> \"storage.get\"",
+    "\"storage.write\" -> \"storage.set\"",
+    "\"network\", \"network.request\" -> \"network.request\"",
+    "\"core\", \"core.step\" -> \"core.step\"",
+    "knownBridgeMethods",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android dev control fault source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "val faultResponse = faultInjectionFailure(request)",
+    "faultInjectionFailure",
+    "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections",
+    "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)",
+    "ORDER BY created_at LIMIT 1",
+    "details.put(\"faultId\", faultId)",
+    "details.put(\"appId\", request.context.appId)",
+    "details.put(\"method\", request.method)",
+    "disableFaultInjection",
+    "ContentValues().apply { put(\"enabled\", 0) }",
+    "BridgeResponse.failure(request.id, fault.code, fault.message, fault.details)",
+    "private data class InjectedFault",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Android bridge fault source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    bridge.indexOf("val faultResponse = faultInjectionFailure(request)") > bridge.indexOf("request.params.has(\"appId\")"),
+    "fault injection should not mask appId-in-params security validation",
+  );
+  assert.ok(
+    bridge.indexOf("val faultResponse = faultInjectionFailure(request)") < bridge.indexOf("val permission = permissionForBridgeMethod(request.method)"),
+    "fault injection should run before permission and budget dispatch",
+  );
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {

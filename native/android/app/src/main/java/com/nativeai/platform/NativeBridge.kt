@@ -134,6 +134,12 @@ class NativeBridge(
             return
         }
 
+        val faultResponse = faultInjectionFailure(request)
+        if (faultResponse != null) {
+            respondWithLog(faultResponse)
+            return
+        }
+
         val permission = permissionForBridgeMethod(request.method)
         if (permission != null && !request.context.approvedPermissions.contains(permission)) {
             respondWithLog(BridgeResponse.failure(
@@ -300,6 +306,45 @@ class NativeBridge(
         return null
     }
 
+    private fun faultInjectionFailure(request: BridgeRequest): String? {
+        val sessionId = runtimeSessionId(request)
+        var injectedFault: InjectedFault? = null
+        database.readableDatabase.rawQuery(
+            "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections " +
+                "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) " +
+                "ORDER BY created_at LIMIT 1",
+            arrayOf(request.method, request.context.appId, sessionId),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use
+            val faultId = cursor.getString(0)
+            val details = parseJsonObject(cursor.getString(3)) ?: JSONObject()
+            details.put("faultId", faultId)
+            details.put("appId", request.context.appId)
+            details.put("method", request.method)
+            injectedFault = InjectedFault(
+                faultId = faultId,
+                code = cursor.getString(1),
+                message = cursor.getString(2),
+                details = details,
+                once = cursor.getInt(4) != 0,
+            )
+        }
+        val fault = injectedFault ?: return null
+        if (fault.once) {
+            disableFaultInjection(fault.faultId)
+        }
+        return BridgeResponse.failure(request.id, fault.code, fault.message, fault.details).toString()
+    }
+
+    private fun disableFaultInjection(faultId: String) {
+        database.writableDatabase.update(
+            "fault_injections",
+            ContentValues().apply { put("enabled", 0) },
+            "fault_id = ?",
+            arrayOf(faultId),
+        )
+    }
+
     private fun bridgeCallCount(appId: String, seconds: Int): Int {
         database.readableDatabase.rawQuery(
             "SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND datetime(created_at) >= datetime('now', ?)",
@@ -404,6 +449,14 @@ class NativeBridge(
 
     private fun runtimeSessionId(request: BridgeRequest): String =
         "runtime_android_${request.context.appId}_${request.context.mountToken ?: "native"}"
+
+    private data class InjectedFault(
+        val faultId: String,
+        val code: String,
+        val message: String,
+        val details: JSONObject,
+        val once: Boolean,
+    )
 
     private fun parseJsonObject(text: String): JSONObject? = try {
         JSONObject(text)
