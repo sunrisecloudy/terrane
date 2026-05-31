@@ -1454,6 +1454,34 @@ function checkNativeStatic() {
     "\"runtime.capabilities\"",
     "\"runtime.call_bridge\"",
     "\"runtime.core_step\"",
+    "\"db.snapshot\"",
+    "\"db.query_app_storage\"",
+    "\"db.query_app_versions\"",
+    "\"db.query_bridge_calls\"",
+    "\"db.query_core_events\"",
+    "\"db.query_test_runs\"",
+    "\"db.export_debug_bundle\"",
+    "dbToolName(forPath",
+    "dispatchDbTool",
+    "SafeDbTable",
+    "safeDbTableByTool",
+    "dbSnapshotTables",
+    "safeTableRows",
+    "/db/snapshot",
+    "/db/app-storage",
+    "/db/app-versions",
+    "/db/bridge-calls",
+    "/db/core-events",
+    "/db/test-runs",
+    "/db/export-debug-bundle",
+    "/control/db/",
+    "INSERT OR REPLACE INTO backup_exports",
+    "\"debug-bundle\"",
+    "\"sha256:\"",
+    "source_platform",
+    "LIMIT ?",
+    "appFilterColumn",
+    "requiresAppId",
     "\"platform.health\"",
     "\"accepted\"",
     "\"rejected\"",
@@ -1465,7 +1493,7 @@ function checkNativeStatic() {
       throw new Error(`iOS dev control missing ${snippet}`);
     }
   }
-  for (const forbidden of ["db.query_sql", "unsafe_eval"]) {
+  for (const forbidden of ["db.query_sql", "unsafe_eval", "sqlite3_exec", "SELECT *"]) {
     if (iosDevControl.includes(forbidden)) {
       throw new Error(`iOS dev control must not expose ${forbidden}`);
     }

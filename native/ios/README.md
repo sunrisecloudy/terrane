@@ -60,7 +60,7 @@ See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 
 Implemented first slice:
 
-- DEBUG simulator-only `IOSDevControlPlane` starts from `--native-ai-dev-control` or `NATIVE_AI_IOS_DEV_CONTROL=1`, binds to `127.0.0.1`, writes a 0600 token file under Application Support by default, serves token-gated `GET /health`, records accepted/rejected control audit rows in SQLite, and exposes lightweight `/control/sessions` plus `/control/command` handlers for `platform.list_targets`, `platform.list_webapps`, bridge-routed `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step`.
+- DEBUG simulator-only `IOSDevControlPlane` starts from `--native-ai-dev-control` or `NATIVE_AI_IOS_DEV_CONTROL=1`, binds to `127.0.0.1`, writes a 0600 token file under Application Support by default, serves token-gated `GET /health`, records accepted/rejected control audit rows in SQLite, and exposes lightweight `/control/sessions` plus `/control/command` handlers for `platform.list_targets`, `platform.list_webapps`, bridge-routed `runtime.capabilities`, `runtime.call_bridge`, `runtime.core_step`, safe `db.snapshot`, fixed `db.query_*`, and `db.export_debug_bundle`; the safe DB tools are also available through token-gated `/db/*` and `/control/db/*` routes.
 
 ## v0.4 persistence requirement
 

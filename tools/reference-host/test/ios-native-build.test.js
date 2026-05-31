@@ -387,6 +387,34 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "\"runtime.capabilities\"",
     "\"runtime.call_bridge\"",
     "\"runtime.core_step\"",
+    "\"db.snapshot\"",
+    "\"db.query_app_storage\"",
+    "\"db.query_app_versions\"",
+    "\"db.query_bridge_calls\"",
+    "\"db.query_core_events\"",
+    "\"db.query_test_runs\"",
+    "\"db.export_debug_bundle\"",
+    "dbToolName(forPath",
+    "dispatchDbTool",
+    "SafeDbTable",
+    "safeDbTableByTool",
+    "dbSnapshotTables",
+    "safeTableRows",
+    "/db/snapshot",
+    "/db/app-storage",
+    "/db/app-versions",
+    "/db/bridge-calls",
+    "/db/core-events",
+    "/db/test-runs",
+    "/db/export-debug-bundle",
+    "/control/db/",
+    "INSERT OR REPLACE INTO backup_exports",
+    "\"debug-bundle\"",
+    "\"sha256:\"",
+    "source_platform",
+    "LIMIT ?",
+    "appFilterColumn",
+    "requiresAppId",
     "\"platform.health\"",
     "\"accepted\"",
     "\"rejected\"",
@@ -398,6 +426,8 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
   }
   assert.equal(control.includes("db.query_sql"), false);
   assert.equal(control.includes("unsafe_eval"), false);
+  assert.equal(control.includes("sqlite3_exec"), false);
+  assert.equal(control.includes("SELECT *"), false);
 
   for (const snippet of [
     "handleControlBridgeCall",

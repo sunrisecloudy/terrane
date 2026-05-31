@@ -284,6 +284,52 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return
         }
 
+        if request.method == "POST",
+           let dbTool = dbToolName(forPath: request.normalizedPath) {
+            do {
+                let args = (request.jsonObject()?["args"] as? [String: Any]) ?? request.jsonObject() ?? [:]
+                let body = try dispatchDbTool(dbTool, args: args, sessionId: controlSessionId)
+                audit(
+                    tool: dbTool,
+                    method: request.method,
+                    path: request.normalizedPath,
+                    decision: "accepted",
+                    errorCode: nil,
+                    startedAt: startedAt,
+                    result: body,
+                    error: nil
+                )
+                send(connection, status: 200, body: body)
+            } catch let commandError as CommandError {
+                let body = errorBody(commandError.code, commandError.message, details: commandError.details)
+                audit(
+                    tool: dbTool,
+                    method: request.method,
+                    path: request.normalizedPath,
+                    decision: "rejected",
+                    errorCode: commandError.code,
+                    startedAt: startedAt,
+                    result: nil,
+                    error: body
+                )
+                send(connection, status: commandError.status, body: body)
+            } catch {
+                let body = errorBody("storage_error", "iOS DB control request failed")
+                audit(
+                    tool: dbTool,
+                    method: request.method,
+                    path: request.normalizedPath,
+                    decision: "rejected",
+                    errorCode: "storage_error",
+                    startedAt: startedAt,
+                    result: nil,
+                    error: body
+                )
+                send(connection, status: 500, body: body)
+            }
+            return
+        }
+
         if request.method == "POST" && isCommandPath(request.normalizedPath) {
             Task { [weak self] in
                 guard let self else {
@@ -354,7 +400,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
 
     private func send(_ connection: NWConnection, status: Int, body: [String: Any]) {
         let payload = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data(#"{"ok":false}"#.utf8)
-        let reason = status == 200 ? "OK" : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : status == 503 ? "Service Unavailable" : "Bad Request"
+        let reason = status == 200 ? "OK" : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : status == 500 ? "Internal Server Error" : status == 503 ? "Service Unavailable" : "Bad Request"
         var response = "HTTP/1.1 \(status) \(reason)\r\n"
         response += "Content-Type: application/json\r\n"
         response += "Content-Length: \(payload.count)\r\n"
@@ -538,6 +584,14 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 id: (args["id"] as? String) ?? "control_core_step",
                 sessionId: sessionId
             )
+        case "db.snapshot",
+             "db.query_app_storage",
+             "db.query_app_versions",
+             "db.query_bridge_calls",
+             "db.query_core_events",
+             "db.query_test_runs",
+             "db.export_debug_bundle":
+            return try dispatchDbTool(tool, args: args, sessionId: sessionId)
         default:
             throw CommandError(
                 status: 404,
@@ -564,7 +618,16 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "platform.health",
                     "platform.list_targets",
                     "platform.list_webapps",
-                    "runtime.capabilities"
+                    "runtime.capabilities",
+                    "runtime.call_bridge",
+                    "runtime.core_step",
+                    "db.snapshot",
+                    "db.query_app_storage",
+                    "db.query_app_versions",
+                    "db.query_bridge_calls",
+                    "db.query_core_events",
+                    "db.query_test_runs",
+                    "db.export_debug_bundle"
                 ]
             ]]
         ]
@@ -605,6 +668,160 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 "bridgeError": error
             ]
         )
+    }
+
+    private func dbToolName(forPath path: String) -> String? {
+        let normalizedPath = path.hasPrefix("/control/db/") ? String(path.dropFirst("/control".count)) : path
+        switch normalizedPath {
+        case "/db/snapshot":
+            return "db.snapshot"
+        case "/db/app-storage":
+            return "db.query_app_storage"
+        case "/db/app-versions":
+            return "db.query_app_versions"
+        case "/db/bridge-calls":
+            return "db.query_bridge_calls"
+        case "/db/core-events":
+            return "db.query_core_events"
+        case "/db/test-runs":
+            return "db.query_test_runs"
+        case "/db/export-debug-bundle":
+            return "db.export_debug_bundle"
+        default:
+            return nil
+        }
+    }
+
+    private func dispatchDbTool(_ tool: String, args: [String: Any], sessionId: String) throws -> [String: Any] {
+        switch tool {
+        case "db.snapshot":
+            return successBody(result: dbSnapshot(), sessionId: sessionId)
+        case "db.query_app_storage",
+             "db.query_app_versions",
+             "db.query_bridge_calls",
+             "db.query_core_events",
+             "db.query_test_runs":
+            return successBody(result: try dbQueryRows(tool: tool, args: args), sessionId: sessionId)
+        case "db.export_debug_bundle":
+            return successBody(result: try dbExportDebugBundle(), sessionId: sessionId)
+        default:
+            throw CommandError(
+                status: 404,
+                code: "platform_unsupported",
+                message: "iOS dev control DB tool is not implemented",
+                details: ["tool": tool]
+            )
+        }
+    }
+
+    private func dbSnapshot() -> [String: Any] {
+        var tables: [String: Any] = [:]
+        for spec in Self.dbSnapshotTables {
+            tables[spec.table] = safeTableRows(spec, appId: nil, limit: 200)
+        }
+        return [
+            "target": "ios-simulator",
+            "platform": "ios",
+            "tables": tables
+        ]
+    }
+
+    private func dbQueryRows(tool: String, args: [String: Any]) throws -> [String: Any] {
+        guard let spec = Self.safeDbTableByTool[tool] else {
+            throw CommandError(status: 404, code: "platform_unsupported", message: "Unknown safe DB query", details: ["tool": tool])
+        }
+        let appId = args["appId"] as? String
+        if spec.requiresAppId && (appId?.isEmpty ?? true) {
+            throw CommandError(status: 400, code: "invalid_request", message: "\(tool) requires appId")
+        }
+        let rows = safeTableRows(spec, appId: appId, limit: limit(from: args))
+        return [
+            "table": spec.table,
+            "columns": spec.columns,
+            "appId": appId ?? NSNull(),
+            "rows": rows
+        ]
+    }
+
+    private func dbExportDebugBundle() throws -> [String: Any] {
+        let exportId = "export_ios_\(UUID().uuidString.lowercased())"
+        let createdAt = Self.now()
+        let documentWithoutHash: [String: Any] = [
+            "exportId": exportId,
+            "type": "debug-bundle",
+            "createdAt": createdAt,
+            "runtimeVersion": "0.4.0",
+            "source": [
+                "platform": "ios",
+                "target": "ios-simulator"
+            ],
+            "snapshot": dbSnapshot()
+        ]
+        let contentHashPrefix = "sha256:"
+        let contentHash = "\(contentHashPrefix)\(Self.sha256Hex(jsonString(documentWithoutHash)))"
+        var document = documentWithoutHash
+        document["contentHash"] = contentHash
+        let exportJson = jsonString(document)
+
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        let sql = """
+        INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at)
+        VALUES (?, 'debug-bundle', 'ios', '0.4.0', ?, ?, ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare debug bundle export")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, exportId)
+        bind(statement, 2, exportJson)
+        bind(statement, 3, contentHash)
+        bind(statement, 4, createdAt)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not persist debug bundle export")
+        }
+        return document
+    }
+
+    private func safeTableRows(_ spec: SafeDbTable, appId: String?, limit: Int) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        let selectedColumns = spec.columns.joined(separator: ", ")
+        let boundedLimit = max(1, min(limit, 500))
+        let shouldFilter = appId?.isEmpty == false && spec.appFilterColumn != nil
+        let whereClause = shouldFilter ? " WHERE \(spec.appFilterColumn!) = ?" : ""
+        let orderClause = spec.orderBy.map { " ORDER BY \($0) DESC" } ?? ""
+        let sql = "SELECT \(selectedColumns) FROM \(spec.table)\(whereClause)\(orderClause) LIMIT ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        if shouldFilter, let appId {
+            bind(statement, 1, appId)
+            sqlite3_bind_int64(statement, 2, Int64(boundedLimit))
+        } else {
+            sqlite3_bind_int64(statement, 1, Int64(boundedLimit))
+        }
+
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            var row: [String: Any] = [:]
+            for (index, column) in spec.columns.enumerated() {
+                row[column] = columnValue(statement, Int32(index))
+            }
+            rows.append(row)
+        }
+        return rows
+    }
+
+    private func limit(from args: [String: Any]) -> Int {
+        if let limit = args["limit"] as? Int {
+            return limit
+        }
+        if let number = args["limit"] as? NSNumber {
+            return number.intValue
+        }
+        return 100
     }
 
     private func bundledWebapps() -> [[String: Any]] {
@@ -971,6 +1188,21 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return String(cString: text)
     }
 
+    private func columnValue(_ statement: OpaquePointer?, _ index: Int32) -> Any {
+        switch sqlite3_column_type(statement, index) {
+        case SQLITE_INTEGER:
+            return Int(sqlite3_column_int64(statement, index))
+        case SQLITE_FLOAT:
+            return sqlite3_column_double(statement, index)
+        case SQLITE_TEXT:
+            return columnText(statement, index)
+        case SQLITE_NULL:
+            return NSNull()
+        default:
+            return columnText(statement, index)
+        }
+    }
+
     private func jsonString(_ value: Any) -> String {
         guard JSONSerialization.isValidJSONObject(value),
               let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
@@ -1015,6 +1247,122 @@ final class IOSDevControlPlane: @unchecked Sendable {
             self.details = details
         }
     }
+
+    private struct SafeDbTable {
+        let table: String
+        let columns: [String]
+        let orderBy: String?
+        let appFilterColumn: String?
+        let requiresAppId: Bool
+    }
+
+    private static let safeDbApps = SafeDbTable(
+        table: "apps",
+        columns: ["id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"],
+        orderBy: "updated_at",
+        appFilterColumn: "id",
+        requiresAppId: false
+    )
+    private static let safeDbAppVersions = SafeDbTable(
+        table: "app_versions",
+        columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "manifest_hash", "content_hash", "trust_level", "status", "created_at", "activated_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: true
+    )
+    private static let safeDbAppStorage = SafeDbTable(
+        table: "app_storage",
+        columns: ["app_id", "key", "value_json", "updated_at"],
+        orderBy: "updated_at",
+        appFilterColumn: "app_id",
+        requiresAppId: true
+    )
+    private static let safeDbRuntimeSessions = SafeDbTable(
+        table: "runtime_sessions",
+        columns: ["session_id", "target", "platform", "runtime_version", "active_app_id", "status", "started_at", "ended_at", "capabilities_json", "resource_high_water_json", "metadata_json"],
+        orderBy: "started_at",
+        appFilterColumn: "active_app_id",
+        requiresAppId: false
+    )
+    private static let safeDbBridgeCalls = SafeDbTable(
+        table: "bridge_calls",
+        columns: ["bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let safeDbCoreEvents = SafeDbTable(
+        table: "core_events",
+        columns: ["event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let safeDbCoreActions = SafeDbTable(
+        table: "core_actions",
+        columns: ["action_id", "event_id", "session_id", "app_id", "action_json", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let safeDbRuntimeSnapshots = SafeDbTable(
+        table: "runtime_snapshots",
+        columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let safeDbControlSessions = SafeDbTable(
+        table: "control_sessions",
+        columns: ["control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"],
+        orderBy: "started_at",
+        appFilterColumn: nil,
+        requiresAppId: false
+    )
+    private static let safeDbControlCommands = SafeDbTable(
+        table: "control_commands",
+        columns: ["command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "args_json", "result_json", "error_json", "created_at", "duration_ms"],
+        orderBy: "created_at",
+        appFilterColumn: nil,
+        requiresAppId: false
+    )
+    private static let safeDbTestRuns = SafeDbTable(
+        table: "test_runs",
+        columns: ["test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"],
+        orderBy: "started_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let safeDbBackupExports = SafeDbTable(
+        table: "backup_exports",
+        columns: ["export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"],
+        orderBy: "created_at",
+        appFilterColumn: nil,
+        requiresAppId: false
+    )
+
+    private static let dbSnapshotTables = [
+        safeDbApps,
+        safeDbAppVersions,
+        safeDbAppStorage,
+        safeDbRuntimeSessions,
+        safeDbBridgeCalls,
+        safeDbCoreEvents,
+        safeDbCoreActions,
+        safeDbRuntimeSnapshots,
+        safeDbControlSessions,
+        safeDbControlCommands,
+        safeDbTestRuns,
+        safeDbBackupExports
+    ]
+
+    private static let safeDbTableByTool = [
+        "db.query_app_storage": safeDbAppStorage,
+        "db.query_app_versions": safeDbAppVersions,
+        "db.query_bridge_calls": safeDbBridgeCalls,
+        "db.query_core_events": safeDbCoreEvents,
+        "db.query_test_runs": safeDbTestRuns
+    ]
 
     private struct HTTPRequest {
         let method: String
