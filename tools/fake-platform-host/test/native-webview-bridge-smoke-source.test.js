@@ -10,6 +10,7 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const linuxHost = read("native/linux/src/webkit_host.c");
+  const linuxBridge = read("native/linux/src/web_bridge.c");
   const windowsSmoke = read("tools/fake-platform-host/test/windows-native-build.test.js");
   const linuxSmoke = read("tools/fake-platform-host/test/linux-native-build.test.js");
 
@@ -58,6 +59,11 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(linuxHost, /has_only_runtime_envelope_fields/);
   assert.match(linuxHost, /Runtime bridge envelope is required/);
   assert.doesNotMatch(linuxHost, /response = web_bridge_handle_json\(host->bridge, payload/);
+  assert.match(linuxBridge, /has_only_bridge_request_fields/);
+  assert.match(linuxBridge, /Bridge request contains unknown top-level fields/);
+  assert.match(linuxBridge, /Bridge request timestamp must be a finite number/);
+  assert.match(linuxBridge, /Bridge request id must be a string/);
+  assert.match(linuxBridge, /Bridge request params must be an object/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_set/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_get/);
   assert.match(linuxHost, /linux_smoke_bridge_core_step/);

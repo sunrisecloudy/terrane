@@ -1,5 +1,7 @@
 #include "web_bridge.h"
 
+#include <math.h>
+
 static gchar *runtime_session_id(const BridgeRequest *request) {
   const gchar *app_id = request->context.app_id != NULL ? request->context.app_id : "";
   const gchar *mount_token = request->context.mount_token != NULL && request->context.mount_token[0] != '\0'
@@ -102,6 +104,79 @@ static gboolean state_version_before(JsonObject *result, gint64 *out) {
   gint64 value = value_type == G_TYPE_DOUBLE ? (gint64)json_node_get_double(node) : json_node_get_int(node);
   *out = value > 0 ? value - 1 : 0;
   return TRUE;
+}
+
+static gboolean is_bridge_request_field(const gchar *field) {
+  return g_strcmp0(field, "id") == 0 ||
+         g_strcmp0(field, "method") == 0 ||
+         g_strcmp0(field, "params") == 0 ||
+         g_strcmp0(field, "timestamp") == 0;
+}
+
+static gboolean has_only_bridge_request_fields(JsonObject *object, JsonObject **details_out) {
+  JsonArray *extra_fields = json_array_new();
+  GList *members = json_object_get_members(object);
+  for (GList *item = members; item != NULL; item = item->next) {
+    const gchar *field = item->data;
+    if (!is_bridge_request_field(field)) {
+      json_array_add_string_element(extra_fields, field);
+    }
+  }
+  g_list_free(members);
+
+  if (json_array_get_length(extra_fields) == 0) {
+    json_array_unref(extra_fields);
+    return TRUE;
+  }
+
+  JsonObject *details = json_object_new();
+  json_object_set_array_member(details, "fields", extra_fields);
+  if (details_out != NULL) {
+    *details_out = details;
+  }
+  return FALSE;
+}
+
+static gboolean json_node_is_string(JsonNode *node) {
+  return node != NULL &&
+         JSON_NODE_HOLDS_VALUE(node) &&
+         json_node_get_value_type(node) == G_TYPE_STRING;
+}
+
+static gboolean json_node_is_object(JsonNode *node) {
+  return node != NULL && JSON_NODE_HOLDS_OBJECT(node);
+}
+
+static gboolean json_node_is_finite_number(JsonNode *node) {
+  if (node == NULL || !JSON_NODE_HOLDS_VALUE(node)) {
+    return FALSE;
+  }
+  GType value_type = json_node_get_value_type(node);
+  if (value_type == G_TYPE_INT ||
+      value_type == G_TYPE_INT64 ||
+      value_type == G_TYPE_UINT ||
+      value_type == G_TYPE_UINT64 ||
+      value_type == G_TYPE_LONG ||
+      value_type == G_TYPE_ULONG) {
+    return TRUE;
+  }
+  if (value_type == G_TYPE_FLOAT || value_type == G_TYPE_DOUBLE) {
+    return isfinite(json_node_get_double(node));
+  }
+  return FALSE;
+}
+
+static gchar *invalid_bridge_request_response(
+    BridgeRequest *request,
+    JsonParser *parser,
+    const gchar *message,
+    JsonObject *details) {
+  JsonNode *response = bridge_failure(NULL, "invalid_request", message, details);
+  gchar *text = bridge_response_to_string(response);
+  json_node_unref(response);
+  bridge_request_clear(request);
+  g_object_unref(parser);
+  return text;
 }
 
 static void ensure_runtime_session(WebBridge *bridge, const BridgeRequest *request) {
@@ -494,13 +569,39 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
     return text;
   }
 
-  JsonObject *root = json_node_get_object(json_parser_get_root(parser));
+  JsonNode *root_node = json_parser_get_root(parser);
+  if (!json_node_is_object(root_node)) {
+    return invalid_bridge_request_response(&request, parser, "Bridge message body must be a JSON object", NULL);
+  }
+
+  JsonObject *root = json_node_get_object(root_node);
+  JsonObject *extra_field_details = NULL;
+  if (!has_only_bridge_request_fields(root, &extra_field_details)) {
+    return invalid_bridge_request_response(&request, parser, "Bridge request contains unknown top-level fields", extra_field_details);
+  }
+  if (json_object_has_member(root, "timestamp") &&
+      !json_node_is_finite_number(json_object_get_member(root, "timestamp"))) {
+    return invalid_bridge_request_response(&request, parser, "Bridge request timestamp must be a finite number", NULL);
+  }
+  if (json_object_has_member(root, "id") &&
+      !json_node_is_string(json_object_get_member(root, "id"))) {
+    return invalid_bridge_request_response(&request, parser, "Bridge request id must be a string", NULL);
+  }
+  if (json_object_has_member(root, "method") &&
+      !json_node_is_string(json_object_get_member(root, "method"))) {
+    return invalid_bridge_request_response(&request, parser, "Bridge request method must be a string", NULL);
+  }
+  if (json_object_has_member(root, "params") &&
+      !json_node_is_object(json_object_get_member(root, "params"))) {
+    return invalid_bridge_request_response(&request, parser, "Bridge request params must be an object", NULL);
+  }
+
   if (json_object_has_member(root, "id")) {
     request.has_id = TRUE;
     request.id = g_strdup(json_object_get_string_member(root, "id"));
   }
   request.method = g_strdup(json_object_get_string_member_with_default(root, "method", ""));
-  JsonObject *params = json_object_get_object_member(root, "params");
+  JsonObject *params = json_object_has_member(root, "params") ? json_object_get_object_member(root, "params") : NULL;
   request.params = params == NULL ? json_object_new() : json_object_ref(params);
 
   if (json_object_has_member(request.params, "appId")) {
