@@ -68,6 +68,11 @@ std::wstring JsonMemberString(json::JsonObject const& object, std::wstring const
   return std::wstring(object.GetNamedValue(member).Stringify().c_str());
 }
 
+std::wstring ColumnText(sqlite3_stmt* statement, int index) {
+  auto text = reinterpret_cast<char const*>(sqlite3_column_text(statement, index));
+  return text == nullptr ? L"" : Utf8ToWide(text);
+}
+
 std::optional<int64_t> StateVersionBefore(json::JsonObject const& result) {
   if (!result.HasKey(L"stateVersion")) {
     return std::nullopt;
@@ -247,16 +252,22 @@ json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {
     return storage_.List(request);
   }
   if (request.method == L"dialog.openFile") {
+    if (auto mock = MockedDialogResponse(request, L"openFile")) {
+      return mock.value();
+    }
     return dialogs_.OpenFile(request);
   }
   if (request.method == L"dialog.saveFile") {
+    if (auto mock = MockedDialogResponse(request, L"saveFile")) {
+      return mock.value();
+    }
     return dialogs_.SaveFile(request);
   }
   if (request.method == L"notification.toast") {
     return notifications_.Toast(request);
   }
   if (request.method == L"network.request") {
-    return network_.Request(request);
+    return network_.Request(request, DatabaseHandle());
   }
   if (request.method == L"core.step") {
     return core_.Step(request);
@@ -268,6 +279,38 @@ json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {
     return AppLog(request);
   }
   return BridgeResponse::Failure(request.id, request.hasId, L"unknown_method", L"Unknown bridge method: " + request.method);
+}
+
+std::optional<json::JsonObject> WebBridge::MockedDialogResponse(
+    BridgeRequest const& request,
+    std::wstring const& dialogType) const {
+  sqlite3* db = DatabaseHandle();
+  if (db == nullptr || request.context.appId.empty()) {
+    return std::nullopt;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT response_json FROM dialog_mocks "
+          "WHERE enabled = 1 AND dialog_type = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+          "ORDER BY created_at DESC LIMIT 1",
+          -1,
+          &statement,
+          nullptr) != SQLITE_OK) {
+    return std::nullopt;
+  }
+  BindText(statement, 1, dialogType);
+  BindText(statement, 2, request.context.appId);
+  BindText(statement, 3, RuntimeSessionId(request));
+  std::optional<json::JsonObject> response;
+  if (sqlite3_step(statement) == SQLITE_ROW) {
+    json::JsonValue parsed{nullptr};
+    if (json::JsonValue::TryParse(ColumnText(statement, 0), parsed) && parsed.ValueType() == json::JsonValueType::Object) {
+      response = BridgeResponse::Success(request.id, request.hasId, parsed.GetObject());
+    }
+  }
+  sqlite3_finalize(statement);
+  return response;
 }
 
 std::optional<json::JsonObject> WebBridge::ResourceBudgetFailure(BridgeRequest const& request) const {

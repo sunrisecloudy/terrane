@@ -524,6 +524,15 @@ std::wstring MakeId(std::wstring const& prefix) {
       std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(sequence.fetch_add(1));
 }
 
+std::wstring UpperAscii(std::wstring value) {
+  for (auto& ch : value) {
+    if (ch >= L'a' && ch <= L'z') {
+      ch = static_cast<wchar_t>(ch - L'a' + L'A');
+    }
+  }
+  return value;
+}
+
 std::wstring Base64Url(std::array<unsigned char, 32> const& bytes) {
   static constexpr wchar_t alphabet[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
   std::wstring out;
@@ -1125,9 +1134,210 @@ struct DevControlPlane::Impl {
       *errorMessage = L"Storage value did not match expected value";
       return L"";
     }
-    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
-        L",\"key\":" + JsonString(key) +
-        L",\"value\":" + actualText.value() + L"}";
+	    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+	        L",\"key\":" + JsonString(key) +
+	        L",\"value\":" + actualText.value() + L"}";
+	  }
+
+  std::optional<std::wstring> NetworkMockUrlPattern(json::JsonObject const& args) {
+    auto direct = OptionalStringMember(args, L"urlPattern");
+    if (direct.has_value() && !direct->empty()) {
+      return direct.value();
+    }
+    auto match = OptionalObjectMember(args, L"match");
+    if (!match.has_value()) {
+      return std::nullopt;
+    }
+    auto pattern = OptionalStringMember(match.value(), L"urlPattern");
+    if (pattern.has_value() && !pattern->empty()) {
+      return pattern.value();
+    }
+    auto url = OptionalStringMember(match.value(), L"url");
+    if (url.has_value() && !url->empty()) {
+      return url.value();
+    }
+    return std::nullopt;
+  }
+
+  std::wstring NetworkMockMethod(json::JsonObject const& args) {
+    auto method = OptionalStringMember(args, L"method");
+    if (method.has_value() && !method->empty()) {
+      return UpperAscii(method.value());
+    }
+    auto match = OptionalObjectMember(args, L"match");
+    if (match.has_value()) {
+      auto matchMethod = OptionalStringMember(match.value(), L"method");
+      if (matchMethod.has_value() && !matchMethod->empty()) {
+        return UpperAscii(matchMethod.value());
+      }
+    }
+    return L"GET";
+  }
+
+  std::optional<std::wstring> DialogMockType(json::JsonObject const& args) {
+    auto raw = OptionalStringMember(args, L"dialogType");
+    if ((!raw.has_value() || raw->empty()) && args.HasKey(L"method")) {
+      raw = OptionalStringMember(args, L"method");
+    }
+    if (!raw.has_value() || raw->empty()) {
+      return std::nullopt;
+    }
+    auto value = raw.value();
+    if (value.rfind(L"dialog.", 0) == 0) {
+      value = value.substr(7);
+    }
+    if (value == L"openFile" || value == L"saveFile") {
+      return value;
+    }
+    return std::nullopt;
+  }
+
+  json::IJsonValue DialogMockResponseValue(json::JsonObject const& args) {
+    if (args.HasKey(L"response") && args.GetNamedValue(L"response").ValueType() != json::JsonValueType::Null) {
+      return args.GetNamedValue(L"response");
+    }
+    json::JsonObject response;
+    if (args.HasKey(L"files")) {
+      response.Insert(L"files", args.GetNamedValue(L"files"));
+    } else {
+      json::JsonArray files;
+      response.Insert(L"files", files);
+    }
+    response.Insert(
+        L"selectedPath",
+        args.HasKey(L"selectedPath") ? args.GetNamedValue(L"selectedPath") : json::JsonValue::CreateNullValue());
+    response.Insert(
+        L"cancelled",
+        args.HasKey(L"cancelled") && args.GetNamedValue(L"cancelled").ValueType() == json::JsonValueType::Boolean
+            ? args.GetNamedValue(L"cancelled")
+            : json::JsonValue::CreateBooleanValue(false));
+    return response;
+  }
+
+  std::wstring RuntimeNetworkMockSetJson(json::JsonObject const& args, std::wstring* error) {
+    auto urlPattern = NetworkMockUrlPattern(args);
+    if (!urlPattern.has_value() || !args.HasKey(L"response") || args.GetNamedValue(L"response").ValueType() == json::JsonValueType::Null) {
+      *error = L"runtime.network_mock_set requires urlPattern or match.url and response";
+      return L"";
+    }
+    auto appId = OptionalStringMember(args, L"appId");
+    auto sessionId = OptionalStringMember(args, L"sessionId");
+    auto method = NetworkMockMethod(args);
+    auto responseJson = std::wstring(args.GetNamedValue(L"response").Stringify().c_str());
+    auto mockId = MakeId(L"netmock");
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    if (!ExecutePrepared(
+            db,
+            "INSERT INTO network_mocks (mock_id, session_id, app_id, method, url_pattern, response_json, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            {
+                SqlText(mockId),
+                SqlNullableText(sessionId),
+                SqlNullableText(appId),
+                SqlText(method),
+                SqlText(urlPattern.value()),
+                SqlText(responseJson),
+                SqlText(NowIso()),
+            })) {
+      *error = L"Network mock could not be registered";
+      return L"";
+    }
+    return L"{\"ok\":true,\"mockId\":" + JsonString(mockId) +
+        L",\"sessionId\":" + JsonNullableString(sessionId.value_or(L"")) +
+        L",\"appId\":" + JsonNullableString(appId.value_or(L"")) +
+        L",\"method\":" + JsonString(method) +
+        L",\"urlPattern\":" + JsonString(urlPattern.value()) + L"}";
+  }
+
+  int64_t DeleteMockRows(sqlite3* db, char const* sql, std::optional<std::wstring> const& first, std::optional<std::wstring> const& second, bool* ok) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *ok = false;
+      return 0;
+    }
+    if (first.has_value() && !first->empty()) {
+      BindText(statement, 1, first.value());
+    }
+    if (second.has_value() && !second->empty()) {
+      BindText(statement, 2, second.value());
+    }
+    if (sqlite3_step(statement) != SQLITE_DONE) {
+      *ok = false;
+      sqlite3_finalize(statement);
+      return 0;
+    }
+    auto changes = sqlite3_changes(db);
+    sqlite3_finalize(statement);
+    return changes;
+  }
+
+  std::wstring RuntimeNetworkMockResetJson(json::JsonObject const& args, std::wstring* error) {
+    auto appId = OptionalStringMember(args, L"appId");
+    auto sessionId = OptionalStringMember(args, L"sessionId");
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    bool ok = true;
+    int64_t cleared = 0;
+    if (sessionId.has_value() && !sessionId->empty() && appId.has_value() && !appId->empty()) {
+      cleared = DeleteMockRows(db, "DELETE FROM network_mocks WHERE session_id = ? AND app_id = ?", sessionId, appId, &ok);
+    } else if (sessionId.has_value() && !sessionId->empty()) {
+      cleared = DeleteMockRows(db, "DELETE FROM network_mocks WHERE session_id = ?", sessionId, std::nullopt, &ok);
+    } else if (appId.has_value() && !appId->empty()) {
+      cleared = DeleteMockRows(db, "DELETE FROM network_mocks WHERE app_id = ?", appId, std::nullopt, &ok);
+    } else {
+      cleared = DeleteMockRows(db, "DELETE FROM network_mocks", std::nullopt, std::nullopt, &ok);
+    }
+    if (!ok) {
+      *error = L"Network mocks could not be reset";
+      return L"";
+    }
+    return L"{\"ok\":true,\"cleared\":" + std::to_wstring(cleared) + L"}";
+  }
+
+  std::wstring RuntimeDialogMockSetJson(json::JsonObject const& args, std::wstring* error) {
+    auto dialogType = DialogMockType(args);
+    if (!dialogType.has_value()) {
+      *error = L"runtime.dialog_mock_set requires dialogType or method";
+      return L"";
+    }
+    auto appId = OptionalStringMember(args, L"appId");
+    auto sessionId = OptionalStringMember(args, L"sessionId");
+    auto response = DialogMockResponseValue(args);
+    auto mockId = MakeId(L"dialogmock");
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    if (!ExecutePrepared(
+            db,
+            "INSERT INTO dialog_mocks (mock_id, session_id, app_id, dialog_type, response_json, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, ?)",
+            {
+                SqlText(mockId),
+                SqlNullableText(sessionId),
+                SqlNullableText(appId),
+                SqlText(dialogType.value()),
+                SqlText(std::wstring(response.Stringify().c_str())),
+                SqlText(NowIso()),
+            })) {
+      *error = L"Dialog mock could not be registered";
+      return L"";
+    }
+    return L"{\"ok\":true,\"mockId\":" + JsonString(mockId) +
+        L",\"sessionId\":" + JsonNullableString(sessionId.value_or(L"")) +
+        L",\"appId\":" + JsonNullableString(appId.value_or(L"")) +
+        L",\"dialogType\":" + JsonString(dialogType.value()) + L"}";
   }
 
   std::wstring ActiveVersionForApp(sqlite3* db, std::wstring const& appId) {
@@ -2577,6 +2787,61 @@ struct DevControlPlane::Impl {
       }
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
+        return;
+      }
+    } else if (tool == L"runtime.network_mock_set" ||
+        tool == L"runtime.network_mock_reset" ||
+        tool == L"runtime.dialog_mock_set") {
+      json::JsonObject args;
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      } else if (tool != L"runtime.network_mock_reset") {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+        return;
+      }
+      std::wstring appId;
+      std::wstring appIdError;
+      if (!OptionalArgsAppId(command, tool, &appId, &appIdError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", appIdError, 400);
+        return;
+      }
+      if (args.HasKey(L"sessionId")) {
+        auto mockSessionId = OptionalStringMember(args, L"sessionId");
+        if (!mockSessionId.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" sessionId must be a string", 400);
+          return;
+        }
+      }
+      if (tool == L"runtime.network_mock_set" &&
+          (!NetworkMockUrlPattern(args).has_value() || !args.HasKey(L"response") || args.GetNamedValue(L"response").ValueType() == json::JsonValueType::Null)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.network_mock_set requires urlPattern or match.url and response", 400);
+        return;
+      }
+      if (tool == L"runtime.dialog_mock_set" && !DialogMockType(args).has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.dialog_mock_set requires dialogType or method", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      if (tool == L"runtime.network_mock_set") {
+        result = RuntimeNetworkMockSetJson(args, &error);
+      } else if (tool == L"runtime.network_mock_reset") {
+        result = RuntimeNetworkMockResetJson(args, &error);
+      } else {
+        result = RuntimeDialogMockSetJson(args, &error);
+      }
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Mock control operation failed" : error, 500);
         return;
       }
     } else if (tool == L"runtime.assert_bridge_call") {

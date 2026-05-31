@@ -271,6 +271,99 @@ test(
       assert.equal(commandCapabilities.statusCode, 200, commandCapabilities.body);
       assert.equal(JSON.parse(commandCapabilities.body).result.features["runtime.capabilities"], true);
 
+      const apiSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "api-dashboard", metadata: { smoke: "windows-network-mock" } },
+      });
+      assert.equal(apiSession.statusCode, 200, apiSession.body);
+      const apiSessionId = JSON.parse(apiSession.body).result.controlSessionId;
+
+      const networkMock = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.network_mock_set",
+          args: {
+            appId: "api-dashboard",
+            method: "GET",
+            urlPattern: "https://api.example.com/status",
+            response: {
+              status: 200,
+              headers: { "content-type": "application/json" },
+              bodyText: "{\"ok\":true,\"source\":\"windows-network-mock\"}",
+              delayMs: 1,
+            },
+          },
+        },
+      });
+      assert.equal(networkMock.statusCode, 200, networkMock.body);
+      assert.match(JSON.parse(networkMock.body).result.mockId, /^netmock-/);
+
+      const mockedNetwork = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "api-dashboard",
+            method: "network.request",
+            params: { url: "https://api.example.com/status", method: "GET", headers: {} },
+          },
+        },
+      });
+      assert.equal(mockedNetwork.statusCode, 200, mockedNetwork.body);
+      assert.equal(JSON.parse(mockedNetwork.body).result.result.bodyText.includes("windows-network-mock"), true);
+
+      const resetNetworkMocks = await requestControl(ready.port, `/sessions/${encodeURIComponent(apiSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.network_mock_reset", args: { appId: "api-dashboard" } },
+      });
+      assert.equal(resetNetworkMocks.statusCode, 200, resetNetworkMocks.body);
+      assert.equal(Number(JSON.parse(resetNetworkMocks.body).result.cleared) >= 1, true);
+
+      const fileSession = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "file-transformer", metadata: { smoke: "windows-dialog-mock" } },
+      });
+      assert.equal(fileSession.statusCode, 200, fileSession.body);
+      const fileSessionId = JSON.parse(fileSession.body).result.controlSessionId;
+
+      const dialogMock = await requestControl(ready.port, `/sessions/${encodeURIComponent(fileSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.dialog_mock_set",
+          args: {
+            appId: "file-transformer",
+            method: "dialog.openFile",
+            response: {
+              files: [{ name: "windows-mock.txt", mime: "text/plain", size: 5, text: "hello" }],
+              cancelled: false,
+            },
+          },
+        },
+      });
+      assert.equal(dialogMock.statusCode, 200, dialogMock.body);
+      assert.match(JSON.parse(dialogMock.body).result.mockId, /^dialogmock-/);
+
+      const mockedDialog = await requestControl(ready.port, `/sessions/${encodeURIComponent(fileSessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "file-transformer",
+            method: "dialog.openFile",
+            params: { accept: ["text/plain"] },
+          },
+        },
+      });
+      assert.equal(mockedDialog.statusCode, 200, mockedDialog.body);
+      assert.equal(JSON.parse(mockedDialog.body).result.result.files[0].text, "hello");
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -642,7 +735,7 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'accepted' AND error_code IS NULL").get().count),
-          3,
+          5,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.capabilities' AND decision = 'accepted' AND error_code IS NULL").get().count),
@@ -702,6 +795,18 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.network_mock_set' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.network_mock_reset' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.dialog_mock_set' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(

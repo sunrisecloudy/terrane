@@ -86,6 +86,9 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.notification_capture",
     "runtime.assert_bridge_call",
     "runtime.assert_no_console_errors",
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
     "runtime.storage_get",
     "runtime.storage_set",
     "runtime.storage_reset",
@@ -99,6 +102,9 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "NotificationCaptureJson",
     "AssertBridgeCallJson",
     "AssertNoConsoleErrorsJson",
+    "RuntimeNetworkMockSetJson",
+    "RuntimeNetworkMockResetJson",
+    "RuntimeDialogMockSetJson",
     "RuntimeStorageGetJson",
     "RuntimeStorageSetJson",
     "RuntimeStorageResetJson",
@@ -138,6 +144,54 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
 
   for (const snippet of ["src/DevControlPlane.cpp", "ws2_32", "bcrypt"]) {
     assert.equal(cmake.includes(snippet), true, `Windows CMake should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control supports DB-backed network and dialog mocks", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+  const bridge = read("native/windows/src/WebBridge.cpp");
+  const network = read("native/windows/src/PlatformNetwork.cpp");
+
+  for (const snippet of [
+    "runtime.network_mock_set",
+    "runtime.network_mock_reset",
+    "runtime.dialog_mock_set",
+    "runtime.network_mock_set requires urlPattern or match.url and response",
+    "runtime.dialog_mock_set requires dialogType or method",
+    "NetworkMockUrlPattern",
+    "DialogMockType",
+    "RuntimeNetworkMockSetJson",
+    "RuntimeNetworkMockResetJson",
+    "RuntimeDialogMockSetJson",
+    "INSERT INTO network_mocks",
+    "DELETE FROM network_mocks WHERE app_id = ?",
+    "INSERT INTO dialog_mocks",
+    "control_session_allows_app",
+  ]) {
+    const expected = snippet === "control_session_allows_app" ? "ControlSessionAllowsApp" : snippet;
+    assert.equal(control.includes(expected), true, `Windows mock control source should contain ${expected}`);
+  }
+
+  for (const snippet of [
+    "MockedDialogResponse",
+    "SELECT response_json FROM dialog_mocks",
+    "dialog.openFile",
+    "dialog.saveFile",
+    "network_.Request(request, DatabaseHandle())",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Windows bridge mock source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "FindNetworkMock",
+    "SELECT response_json, url_pattern FROM network_mocks",
+    "UrlMatches",
+    "MockedNetworkResponse",
+    "delayMs",
+    "MockPayloadWithoutDelay",
+    "network.response exceeds manifest.networkPolicy maxResponseBytes",
+  ]) {
+    assert.equal(network.includes(snippet), true, `Windows network mock source should contain ${snippet}`);
   }
 });
 

@@ -305,6 +305,13 @@ json::JsonObject TimeoutFailure(BridgeRequest const& request, uint32_t timeoutMs
   return BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"network.request timed out", details);
 }
 
+json::JsonObject TimeoutFailure(BridgeRequest const& request, uint32_t timeoutMs, uint32_t delayMs) {
+  json::JsonObject details;
+  details.Insert(L"timeoutMs", json::JsonValue::CreateNumberValue(timeoutMs));
+  details.Insert(L"delayMs", json::JsonValue::CreateNumberValue(delayMs));
+  return BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"network.request timed out", details);
+}
+
 std::optional<uint32_t> RequestedTimeoutMs(json::JsonObject const& params, bool& invalid) {
   invalid = false;
   if (!params.HasKey(L"timeoutMs")) {
@@ -335,6 +342,141 @@ json::JsonObject NetworkTransportFailure(BridgeRequest const& request, DWORD err
     return TimeoutFailure(request, timeoutMs);
   }
   return Failure(request, L"network_error", L"network.request failed");
+}
+
+void BindText(sqlite3_stmt* statement, int index, std::wstring const& value) {
+  auto text = WideToUtf8(value);
+  sqlite3_bind_text(statement, index, text.c_str(), -1, SQLITE_TRANSIENT);
+}
+
+std::wstring ColumnText(sqlite3_stmt* statement, int index) {
+  auto text = reinterpret_cast<char const*>(sqlite3_column_text(statement, index));
+  return text == nullptr ? L"" : Utf8ToWide(text);
+}
+
+std::wstring RuntimeSessionId(BridgeRequest const& request) {
+  auto token = request.context.mountToken.empty() ? L"native" : request.context.mountToken;
+  return L"runtime_windows_" + request.context.appId + L"_" + token;
+}
+
+bool UrlMatches(std::wstring const& pattern, std::wstring const& url) {
+  if (pattern == L"*" || pattern == url) {
+    return true;
+  }
+  if (!pattern.empty() && pattern.back() == L'*') {
+    return url.rfind(pattern.substr(0, pattern.size() - 1), 0) == 0;
+  }
+  return false;
+}
+
+std::optional<json::JsonObject> FindNetworkMock(
+    sqlite3* db,
+    BridgeRequest const& request,
+    std::wstring const& method,
+    std::wstring const& url) {
+  if (db == nullptr || request.context.appId.empty()) {
+    return std::nullopt;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT response_json, url_pattern FROM network_mocks "
+          "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+          "ORDER BY created_at DESC LIMIT 100",
+          -1,
+          &statement,
+          nullptr) != SQLITE_OK) {
+    return std::nullopt;
+  }
+  BindText(statement, 1, method);
+  BindText(statement, 2, request.context.appId);
+  BindText(statement, 3, RuntimeSessionId(request));
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    auto responseJson = ColumnText(statement, 0);
+    auto pattern = ColumnText(statement, 1);
+    if (!UrlMatches(pattern, url)) {
+      continue;
+    }
+    json::JsonValue parsed{nullptr};
+    if (json::JsonValue::TryParse(responseJson, parsed) && parsed.ValueType() == json::JsonValueType::Object) {
+      auto object = parsed.GetObject();
+      sqlite3_finalize(statement);
+      return object;
+    }
+  }
+  sqlite3_finalize(statement);
+  return std::nullopt;
+}
+
+std::optional<uint32_t> PositiveIntegerMember(json::JsonObject const& object, std::wstring const& key) {
+  if (!object.HasKey(key)) {
+    return std::nullopt;
+  }
+  auto value = object.GetNamedValue(key);
+  if (value.ValueType() != json::JsonValueType::Number) {
+    return std::nullopt;
+  }
+  auto number = value.GetNumber();
+  if (!std::isfinite(number) || std::floor(number) != number || number <= 0 || number > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<uint32_t>(number);
+}
+
+uint64_t JsonPayloadBytes(json::IJsonValue const& value) {
+  if (value.ValueType() == json::JsonValueType::Null) {
+    return 0;
+  }
+  if (value.ValueType() == json::JsonValueType::String) {
+    return WideToUtf8(std::wstring(value.GetString().c_str())).size();
+  }
+  return WideToUtf8(std::wstring(value.Stringify().c_str())).size();
+}
+
+uint64_t MockResponseBytes(json::JsonObject const& response) {
+  if (response.HasKey(L"bodyText")) {
+    return JsonPayloadBytes(response.GetNamedValue(L"bodyText"));
+  }
+  if (response.HasKey(L"body")) {
+    return JsonPayloadBytes(response.GetNamedValue(L"body"));
+  }
+  return 0;
+}
+
+json::JsonObject MockPayloadWithoutDelay(json::JsonObject const& response) {
+  json::JsonObject payload;
+  for (auto const& entry : response) {
+    auto key = std::wstring(entry.Key().c_str());
+    if (key == L"delayMs") {
+      continue;
+    }
+    payload.Insert(entry.Key(), entry.Value());
+  }
+  return payload;
+}
+
+std::optional<json::JsonObject> MockedNetworkResponse(
+    BridgeRequest const& request,
+    sqlite3* db,
+    NetworkPolicyRule const& rule,
+    std::wstring const& method,
+    std::wstring const& url,
+    std::optional<uint32_t> requestedTimeout) {
+  auto mock = FindNetworkMock(db, request, method, url);
+  if (!mock.has_value()) {
+    return std::nullopt;
+  }
+  auto delayMs = PositiveIntegerMember(mock.value(), L"delayMs");
+  if (delayMs.has_value()) {
+    auto effectiveTimeout = EffectiveTimeoutMs(rule, requestedTimeout);
+    if (delayMs.value() > effectiveTimeout) {
+      return TimeoutFailure(request, effectiveTimeout, delayMs.value());
+    }
+  }
+  if (MockResponseBytes(mock.value()) > rule.maxResponseBytes) {
+    return Failure(request, L"network_policy_denied", L"network.response exceeds manifest.networkPolicy maxResponseBytes");
+  }
+  return BridgeResponse::Success(request.id, request.hasId, MockPayloadWithoutDelay(mock.value()));
 }
 
 std::optional<std::wstring> Header(HINTERNET request, DWORD header) {
@@ -509,7 +651,7 @@ std::optional<std::wstring> RedirectUrl(ParsedUrl const& current, HINTERNET requ
 
 }  // namespace
 
-json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
+json::JsonObject PlatformNetwork::Request(BridgeRequest const& request, sqlite3* db) {
   auto urlText = std::wstring(request.params.GetNamedString(L"url", L"").c_str());
   auto parsed = ParseUrl(urlText);
   if (!parsed.has_value()) {
@@ -543,6 +685,9 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
   auto requestedTimeout = RequestedTimeoutMs(request.params, invalidTimeout);
   if (invalidTimeout) {
     return InvalidTimeoutFailure(request);
+  }
+  if (auto mockResponse = MockedNetworkResponse(request, db, *rule, method, urlText, requestedTimeout)) {
+    return mockResponse.value();
   }
 
   HttpHandle session{WinHttpOpen(L"NativeAIWebappPlatform/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0)};

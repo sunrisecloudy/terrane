@@ -25,6 +25,9 @@ class WebBridge {
  private:
   std::optional<std::wstring> permissionForBridgeMethod(std::wstring const& method) const;
   winrt::Windows::Data::Json::JsonObject Dispatch(BridgeRequest const& request);
+  std::optional<winrt::Windows::Data::Json::JsonObject> MockedDialogResponse(
+      BridgeRequest const& request,
+      std::wstring const& dialogType) const;
   std::optional<winrt::Windows::Data::Json::JsonObject> ResourceBudgetFailure(BridgeRequest const& request) const;
   winrt::Windows::Data::Json::JsonObject Capabilities(BridgeRequest const& request) const;
   winrt::Windows::Data::Json::JsonObject AppLog(BridgeRequest const& request) const;
