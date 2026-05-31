@@ -229,6 +229,8 @@ class AndroidDevControlPlane(
         "runtime.resource_usage" -> runtimeResourceUsageJson(requiredString(args, "appId"))
         "runtime.event_log" -> runtimeEventLogJson(requiredString(args, "appId"))
         "runtime.console_logs" -> runtimeConsoleLogsJson(requiredString(args, "appId"))
+        "runtime.storage_reset" -> runtimeStorageResetJson(args, clearRuntimeLogs = false)
+        "platform.reset_webapp" -> runtimeStorageResetJson(args, clearRuntimeLogs = true)
         "db.snapshot" -> dbSnapshotJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
@@ -305,6 +307,62 @@ class AndroidDevControlPlane(
         .put("appId", appId)
         .put("logs", consoleLogRows(appId))
 
+    private fun runtimeStorageResetJson(args: JSONObject, clearRuntimeLogs: Boolean): JSONObject {
+        if (!args.optBoolean("confirm", false)) {
+            throw ControlCommandException(400, "confirmation_required", "Storage reset command requires confirm: true")
+        }
+        val appId = requiredString(args, "appId")
+        val storageRows = tableRows("app_storage", "app_id", appId)
+        val snapshotId = "snapshot_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+        val activeInstallId = activeInstallId(appId)
+        val snapshot = JSONObject()
+            .put("appId", appId)
+            .put("activeInstallId", activeInstallId ?: JSONObject.NULL)
+            .put("createdAt", createdAt)
+            .put("appStorage", storageRows)
+        val snapshotText = snapshot.toString()
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put("snapshot_id", snapshotId)
+                putNull("session_id")
+                put("app_id", appId)
+                if (activeInstallId == null) putNull("install_id") else put("install_id", activeInstallId)
+                put("type", "manual")
+                put("snapshot_json", snapshotText)
+                put("content_hash", "sha256:${sha256Hex(snapshotText)}")
+                put("created_at", createdAt)
+            }
+            db.insertOrThrow("runtime_snapshots", null, values)
+            val storageDeleted = db.delete("app_storage", "app_id = ?", arrayOf(appId))
+            var bridgeCallsDeleted = 0
+            var coreEventsDeleted = 0
+            val coreActionsDeleted = if (clearRuntimeLogs) {
+                scalarLong("SELECT COUNT(*) FROM core_actions WHERE app_id = ?", arrayOf(appId))
+            } else {
+                0L
+            }
+            if (clearRuntimeLogs) {
+                bridgeCallsDeleted = db.delete("bridge_calls", "app_id = ?", arrayOf(appId))
+                coreEventsDeleted = db.delete("core_events", "app_id = ?", arrayOf(appId))
+            }
+            db.setTransactionSuccessful()
+            return JSONObject()
+                .put("ok", true)
+                .put("appId", appId)
+                .put("snapshotId", snapshotId)
+                .put("clearedStorageKeys", storageRows.length())
+                .put("storageRowsDeleted", storageDeleted)
+                .put("clearedBridgeCalls", bridgeCallsDeleted)
+                .put("clearedCoreEvents", coreEventsDeleted)
+                .put("clearedCoreActions", coreActionsDeleted)
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun consoleLogRows(appId: String): JSONArray {
         val rows = JSONArray()
         database.readableDatabase.rawQuery(
@@ -333,6 +391,12 @@ class AndroidDevControlPlane(
     private fun scalarLong(sql: String, selectionArgs: Array<String>): Long {
         database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
             return if (cursor.moveToFirst()) cursor.getLong(0) else 0L
+        }
+    }
+
+    private fun activeInstallId(appId: String): String? {
+        database.readableDatabase.rawQuery("SELECT active_install_id FROM apps WHERE id = ?", arrayOf(appId)).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getString(0) else null
         }
     }
 
@@ -367,6 +431,8 @@ class AndroidDevControlPlane(
                     "runtime.resource_usage",
                     "runtime.event_log",
                     "runtime.console_logs",
+                    "runtime.storage_reset",
+                    "platform.reset_webapp",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
