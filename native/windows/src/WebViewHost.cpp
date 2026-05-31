@@ -182,6 +182,19 @@ bool JsonResponseErrorCodeMatches(std::wstring const& response, std::wstring con
   return std::wstring(error.GetNamedString(L"code", L"").c_str()) == code;
 }
 
+bool JsonResponseErrorDetailStringMatches(
+    std::wstring const& response,
+    std::wstring const& member,
+    std::wstring const& expected) {
+  json::JsonObject parsed{nullptr};
+  if (!json::JsonObject::TryParse(response, parsed)) {
+    return false;
+  }
+  auto error = parsed.GetNamedObject(L"error", json::JsonObject());
+  auto details = error.GetNamedObject(L"details", json::JsonObject());
+  return std::wstring(details.GetNamedString(member, L"").c_str()) == expected;
+}
+
 std::wstring ScriptStringResult(PCWSTR resultObjectAsJson) {
   if (resultObjectAsJson == nullptr) {
     return L"";
@@ -480,9 +493,23 @@ void WebViewHost::RunFixedBridgeSurfaceSmoke() {
   }
 
   json::JsonObject notificationParams;
-  notificationParams.Insert(L"title", json::JsonValue::CreateStringValue(L"Native AI smoke"));
-  notificationParams.Insert(L"body", json::JsonValue::CreateStringValue(L"Fixed bridge surface smoke"));
+  notificationParams.Insert(L"message", json::JsonValue::CreateStringValue(L"Fixed bridge surface smoke"));
+  notificationParams.Insert(L"level", json::JsonValue::CreateStringValue(L"success"));
   if (!requireOk(BridgeCall(L"notes-lite", L"windows_smoke_fixed_notification", L"notification.toast", notificationParams))) {
+    return;
+  }
+
+  json::JsonObject notificationBadParams;
+  notificationBadParams.Insert(L"message", json::JsonValue::CreateStringValue(L"Saved"));
+  notificationBadParams.Insert(L"level", json::JsonValue::CreateStringValue(L"warn"));
+  auto notificationBadResponse = BridgeCall(
+      L"notes-lite",
+      L"windows_smoke_fixed_notification_bad_level",
+      L"notification.toast",
+      notificationBadParams);
+  if (!JsonResponseErrorCodeMatches(notificationBadResponse, L"invalid_request") ||
+      !JsonResponseErrorDetailStringMatches(notificationBadResponse, L"level", L"warn")) {
+    SmokeFailure(notificationBadResponse);
     return;
   }
 

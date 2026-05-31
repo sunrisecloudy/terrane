@@ -20,6 +20,7 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsHost, /windows_smoke_fixed_storage_list/);
   assert.match(windowsHost, /windows_smoke_fixed_storage_remove/);
   assert.match(windowsHost, /windows_smoke_fixed_notification/);
+  assert.match(windowsHost, /windows_smoke_fixed_notification_bad_level/);
   assert.match(windowsHost, /windows_smoke_fixed_app_log/);
   assert.match(windowsHost, /windows_smoke_fixed_capabilities/);
   assert.match(windowsHost, /windows_smoke_fixed_network_denied/);
@@ -39,6 +40,7 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(linuxHost, /linux_smoke_fixed_storage_list/);
   assert.match(linuxHost, /linux_smoke_fixed_storage_remove/);
   assert.match(linuxHost, /linux_smoke_fixed_notification/);
+  assert.match(linuxHost, /linux_smoke_fixed_notification_bad_level/);
   assert.match(linuxHost, /linux_smoke_fixed_app_log/);
   assert.match(linuxHost, /linux_smoke_fixed_capabilities/);
   assert.match(linuxHost, /linux_smoke_fixed_network_denied/);
