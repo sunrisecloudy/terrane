@@ -1113,6 +1113,7 @@ function checkServerStatic() {
 
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
+  const macHost = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebHostView.swift"), "utf8");
   const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "ZigCoreBridge.swift"), "utf8");
   const macCoreShim = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
@@ -1175,6 +1176,14 @@ function checkNativeStatic() {
     '"core.step": core.isAvailable',
     "struct AppSandboxContext",
     "struct BridgeEnvelope",
+    "hasOnlyRuntimeEnvelopeFields",
+    "Runtime bridge envelope contains unknown top-level fields",
+    "hasOnlyBridgeRequestFields",
+    "Bridge request contains unknown top-level fields",
+    "Bridge request id must be a non-empty string",
+    "Bridge request timestamp must be a finite number",
+    "Bridge request method must be a string",
+    "Bridge request params must be an object",
     "message.frameInfo.isMainFrame",
     "mountToken",
     "networkPolicy",
@@ -1186,6 +1195,14 @@ function checkNativeStatic() {
     if (!macBridge.includes(snippet)) {
       throw new Error(`macOS runtime.capabilities missing ${snippet}`);
     }
+  }
+  for (const snippet of ["appRuntimeUserScript", "runtime.ready_for_port", "isGeneratedAppIndexURL", "htmlWithAppRuntimeBootstrap", "htmlWithAppRuntimeCSP", "script-src 'self' app-runtime:"]) {
+    if (!macHost.includes(snippet)) {
+      throw new Error(`macOS runtime scheme handler missing app-frame bootstrap: ${snippet}`);
+    }
+  }
+  if (!macHost.includes('webapps/examples/\\(host)/')) {
+    throw new Error("macOS runtime scheme handler must map app-runtime://{appId}/ paths to generated app packages");
   }
   for (const snippet of ["request.context.appId", "request.context.storagePrefix", "storagePrefixFailure"]) {
     if (!macStorage.includes(snippet)) {
@@ -1205,6 +1222,11 @@ function checkNativeStatic() {
   }
   if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
+  }
+  for (const snippet of ['body["method"] as? String ?? ""', 'body["params"] as? [String: Any] ?? [:]']) {
+    if (macBridge.includes(snippet)) {
+      throw new Error(`macOS bridge must not keep lenient request parsing: ${snippet}`);
+    }
   }
   for (const snippet of ['args["confirm"] as? Bool == true', "requires confirm: true"]) {
     if (!macDevControl.includes(snippet)) {
@@ -1248,6 +1270,13 @@ function checkNativeStatic() {
     [iosBridge, "WKScriptMessageHandlerWithReply"],
     [iosHost, "contentController.addScriptMessageHandler"],
     [iosHost, "websiteDataStore = .nonPersistent()"],
+    [iosHost, "appRuntimeUserScript"],
+    [iosHost, "runtime.ready_for_port"],
+    [iosHost, "isGeneratedAppIndexURL"],
+    [iosHost, "htmlWithAppRuntimeBootstrap"],
+    [iosHost, "htmlWithAppRuntimeCSP"],
+    [iosHost, "script-src 'self' app-runtime:"],
+    [iosHost, 'webapps/examples/\\(host)/'],
     [iosHost, "setDialogPresenterProvider"],
     [iosHost, "presentingViewController(from:"],
     [iosBridge, '"target": "ios-simulator"'],
@@ -1264,6 +1293,14 @@ function checkNativeStatic() {
     [iosBridge, "dispatch(request) { [weak self] response in"],
     [iosBridge, "dialogs.openFile(request, reply: reply)"],
     [iosBridge, "struct BridgeEnvelope"],
+    [iosBridge, "hasOnlyRuntimeEnvelopeFields"],
+    [iosBridge, "Runtime bridge envelope contains unknown top-level fields"],
+    [iosBridge, "hasOnlyBridgeRequestFields"],
+    [iosBridge, "Bridge request contains unknown top-level fields"],
+    [iosBridge, "Bridge request id must be a non-empty string"],
+    [iosBridge, "Bridge request timestamp must be a finite number"],
+    [iosBridge, "Bridge request method must be a string"],
+    [iosBridge, "Bridge request params must be an object"],
     [iosBridge, "message.frameInfo.isMainFrame"],
     [iosBridge, "mountToken"],
     [iosBridge, "struct AppSandboxContext"],
@@ -1282,6 +1319,11 @@ function checkNativeStatic() {
   }
   if (iosStorage.includes("appId(for:")) {
     throw new Error("iOS storage must not derive app id from storage key");
+  }
+  for (const snippet of ['body["method"] as? String ?? ""', 'body["params"] as? [String: Any] ?? [:]']) {
+    if (iosBridge.includes(snippet)) {
+      throw new Error(`iOS bridge must not keep lenient request parsing: ${snippet}`);
+    }
   }
   for (const snippet of ["URLSessionConfiguration.ephemeral", "network_policy_denied", "NetworkPolicyRule", "willPerformHTTPRedirection", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!iosNetwork.includes(snippet)) {
@@ -1511,6 +1553,14 @@ function checkNativeStatic() {
     [androidBridge, "fun handleEnvelope"],
     [androidBridge, "isMainFrame"],
     [androidBridge, "trustedRuntimeOrigin"],
+    [androidBridge, "hasOnlyRuntimeEnvelopeFields"],
+    [androidBridge, "Runtime bridge envelope contains unknown top-level fields"],
+    [androidBridge, "hasOnlyBridgeRequestFields"],
+    [androidBridge, "Bridge request contains unknown top-level fields"],
+    [androidBridge, "Bridge request id must be a non-empty string"],
+    [androidBridge, "Bridge request timestamp must be a finite number"],
+    [androidBridge, "Bridge request method must be a string"],
+    [androidBridge, "Bridge request params must be an object"],
     [androidBridge, "mountToken"],
     [androidBridge, "permissionForBridgeMethod"],
     [androidBridge, "approvedPermissions.contains(permission)"],
@@ -1540,6 +1590,11 @@ function checkNativeStatic() {
   for (const [source, snippet] of androidRequired) {
     if (!source.includes(snippet)) {
       throw new Error(`Android host missing ${snippet}`);
+    }
+  }
+  for (const snippet of ['body.optString("method")', 'body.optJSONObject("params") ?: JSONObject()']) {
+    if (androidBridge.includes(snippet)) {
+      throw new Error(`Android bridge must not keep lenient request parsing: ${snippet}`);
     }
   }
   const androidGradle = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "build.gradle.kts"), "utf8");

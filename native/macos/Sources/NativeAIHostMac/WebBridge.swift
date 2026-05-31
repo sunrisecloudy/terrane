@@ -16,6 +16,8 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
         false
 #endif
     }
+    private static let runtimeEnvelopeFields: Set<String> = ["appId", "mountToken", "request"]
+    private static let bridgeRequestFields: Set<String> = ["id", "method", "params", "timestamp"]
 
     func userContentController(
         _ userContentController: WKUserContentController,
@@ -39,6 +41,18 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             )
             return
         }
+        if envelope.isRuntimeEnvelope && !Self.hasOnlyRuntimeEnvelopeFields(body) {
+            replyHandler(
+                BridgeResponse.failure(
+                    id: envelope.requestId,
+                    code: "invalid_request",
+                    message: "Runtime bridge envelope contains unknown top-level fields",
+                    details: ["fields": Self.extraFields(in: body, allowed: Self.runtimeEnvelopeFields)]
+                ).asDictionary(),
+                nil
+            )
+            return
+        }
         if envelope.isRuntimeEnvelope && !envelope.hasValidContext {
             replyHandler(
                 BridgeResponse.failure(
@@ -48,6 +62,10 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                 ).asDictionary(),
                 nil
             )
+            return
+        }
+        if let validationFailure = Self.bridgeRequestValidationFailure(envelope.requestBody) {
+            replyHandler(validationFailure.asDictionary(), nil)
             return
         }
 
@@ -229,6 +247,58 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         }
         return nil
+    }
+
+    private static func extraFields(in body: [String: Any], allowed: Set<String>) -> [String] {
+        body.keys.filter { !allowed.contains($0) }.sorted()
+    }
+
+    private static func hasOnlyRuntimeEnvelopeFields(_ body: [String: Any]) -> Bool {
+        extraFields(in: body, allowed: runtimeEnvelopeFields).isEmpty
+    }
+
+    private static func hasOnlyBridgeRequestFields(_ body: [String: Any]) -> Bool {
+        extraFields(in: body, allowed: bridgeRequestFields).isEmpty
+    }
+
+    private static func bridgeRequestValidationFailure(_ body: [String: Any]) -> BridgeResponse? {
+        if !hasOnlyBridgeRequestFields(body) {
+            return .failure(
+                id: nil,
+                code: "invalid_request",
+                message: "Bridge request contains unknown top-level fields",
+                details: ["fields": extraFields(in: body, allowed: bridgeRequestFields)]
+            )
+        }
+        guard let id = body["id"] as? String, !id.isEmpty else {
+            return .failure(id: nil, code: "invalid_request", message: "Bridge request id must be a non-empty string")
+        }
+        if let timestamp = body["timestamp"], !isFiniteJSONNumber(timestamp) {
+            return .failure(id: nil, code: "invalid_request", message: "Bridge request timestamp must be a finite number")
+        }
+        if body["method"] as? String == nil {
+            return .failure(id: nil, code: "invalid_request", message: "Bridge request method must be a string")
+        }
+        if body["params"] as? [String: Any] == nil {
+            return .failure(id: nil, code: "invalid_request", message: "Bridge request params must be an object")
+        }
+        return nil
+    }
+
+    private static func isFiniteJSONNumber(_ value: Any) -> Bool {
+        if value is Bool {
+            return false
+        }
+        if let number = value as? NSNumber {
+            return number.doubleValue.isFinite
+        }
+        if let double = value as? Double {
+            return double.isFinite
+        }
+        if let float = value as? Float {
+            return float.isFinite
+        }
+        return false
     }
 
     private func bridgeCallCount(appId: String, seconds: Int) -> Int {
@@ -436,8 +506,8 @@ struct BridgeRequest {
 
     init(body: [String: Any], context: AppSandboxContext) {
         self.id = body["id"] as? String
-        self.method = body["method"] as? String ?? ""
-        self.params = body["params"] as? [String: Any] ?? [:]
+        self.method = body["method"] as! String
+        self.params = body["params"] as! [String: Any]
         self.context = context
     }
 }

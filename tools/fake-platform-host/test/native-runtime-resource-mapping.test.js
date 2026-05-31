@@ -28,6 +28,13 @@ test("Apple native hosts route runtime and generated-app resources through app-r
     assertContains(source, 'appendingPathComponent("runtime-web")', label);
     assertContains(source, 'logicalPath.hasPrefix("runtime/")', label);
     assertContains(source, 'logicalPath.hasPrefix("webapps/examples/")', label);
+    assertContains(source, 'webapps/examples/\\(host)/', label);
+    assertContains(source, "isGeneratedAppIndexURL", label);
+    assertContains(source, "appRuntimeUserScript", label);
+    assertContains(source, "runtime.ready_for_port", label);
+    assertContains(source, "htmlWithAppRuntimeBootstrap", label);
+    assertContains(source, "htmlWithAppRuntimeCSP", label);
+    assertContains(source, "script-src 'self' app-runtime:", label);
     assertContains(source, "!path.contains(\"..\")", label);
     assertContains(source, "mimeType(for:", label);
     assert.equal(source.includes("loadFileURL("), false, `${label} must not load runtime as file:// with absolute /runtime paths`);

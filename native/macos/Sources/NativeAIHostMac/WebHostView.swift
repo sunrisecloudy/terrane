@@ -110,6 +110,63 @@ final class WebHostView: NSView, WKNavigationDelegate {
     }
 }
 
+private let appRuntimeUserScript = """
+(function(){
+if(window.AppRuntime)return;
+if(window.location.protocol!=="app-runtime:"||window.location.hostname==="runtime")return;
+var runtimeAppId=window.location.hostname;
+var knownEvents=new Set(["runtime.ready","runtime.suspend","runtime.resume","app.error","app.budget_warning","app.permission_revoked"]);
+var eventHandlers=new Map();
+var nextId=1;
+var port=null;
+var pending=new Map();
+var queued=[];
+function emit(eventName,payload){
+var handlers=eventHandlers.get(eventName);
+if(!handlers||!handlers.size)return;
+Array.from(handlers).forEach(function(handler){try{handler(payload||{});}catch(error){console.error("AppRuntime event handler failed",error);}});
+}
+function emitAppError(error,source){
+emit("app.error",{code:error&&error.code?error.code:"runtime_error",message:error&&error.message?error.message:String(error||"Unknown runtime error"),source:source});
+}
+function send(message){port.postMessage(message);}
+function call(method,params){
+return new Promise(function(resolve,reject){
+if(typeof method!=="string"||!method){reject({code:"invalid_request",message:"Bridge method must be a non-empty string",details:{}});return;}
+var bodyParams=params==null?{}:params;
+if(typeof bodyParams!=="object"||Array.isArray(bodyParams)){reject({code:"invalid_request",message:"Bridge params must be an object",details:{}});return;}
+var id="app_req_"+nextId++;
+var message={id:id,method:method,params:bodyParams,timestamp:Date.now()};
+pending.set(id,{resolve:resolve,reject:reject});
+if(port)send(message);else queued.push(message);
+});
+}
+function on(eventName,handler){
+if(!knownEvents.has(eventName)||typeof handler!=="function")return function(){};
+if(!eventHandlers.has(eventName))eventHandlers.set(eventName,new Set());
+var handlers=eventHandlers.get(eventName);handlers.add(handler);
+return function(){handlers.delete(handler);};
+}
+window.AppRuntime={call:call,capabilities:function(){return call("runtime.capabilities",{});},on:on};
+window.addEventListener("message",function(event){
+if(!event.data||event.data.type!=="runtime.port"||!event.ports||!event.ports[0])return;
+port=event.ports[0];
+port.onmessage=function(portEvent){
+var response=portEvent.data;
+if(response&&response.type==="runtime.event"){emit(response.eventName,response.payload||{});return;}
+var waiter=pending.get(response.id);
+if(!waiter)return;
+pending.delete(response.id);
+if(response.ok)waiter.resolve(response.result);
+else{emitAppError(response.error,"bridge");waiter.reject(response.error);}
+};
+while(queued.length)send(queued.shift());
+call("runtime.capabilities",{}).then(function(capabilities){emit("runtime.ready",{runtimeVersion:capabilities.runtimeVersion||"0.1.0",appId:runtimeAppId,capabilities:capabilities});}).catch(function(error){emitAppError(error,"runtime.ready");});
+});
+window.parent.postMessage({type:"runtime.ready_for_port"},"*");
+})();
+"""
+
 final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let requestURL = urlSchemeTask.request.url,
@@ -120,7 +177,7 @@ final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         do {
-            let data = try Data(contentsOf: fileURL)
+            let data = try Self.data(for: fileURL, requestURL: requestURL)
             let response = HTTPURLResponse(
                 url: requestURL,
                 statusCode: 200,
@@ -139,6 +196,49 @@ final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    private static func data(for fileURL: URL, requestURL: URL) throws -> Data {
+        let data = try Data(contentsOf: fileURL)
+        guard RuntimeResourceLocator.isGeneratedAppIndexURL(requestURL),
+              let html = String(data: data, encoding: .utf8),
+              let transformed = htmlWithAppRuntimeBootstrap(html).data(using: .utf8)
+        else {
+            return data
+        }
+        return transformed
+    }
+
+    private static func htmlWithAppRuntimeBootstrap(_ html: String) -> String {
+        let cspAdjusted = htmlWithAppRuntimeCSP(html)
+        let bootstrap = "<script>\(appRuntimeUserScript)</script>"
+        guard let head = cspAdjusted.range(of: "<head>") else {
+            return bootstrap + cspAdjusted
+        }
+        return String(cspAdjusted[..<head.upperBound]) + bootstrap + String(cspAdjusted[head.upperBound...])
+    }
+
+    private static func htmlWithAppRuntimeCSP(_ html: String) -> String {
+        replaceFirst(
+            replaceFirst(
+                replaceFirst(
+                    replaceFirst(html, "script-src 'self';", "script-src 'self' app-runtime:;"),
+                    "style-src 'self';",
+                    "style-src 'self' app-runtime:;"
+                ),
+                "img-src 'self' data: blob:;",
+                "img-src 'self' app-runtime: data: blob:;"
+            ),
+            "font-src 'self';",
+            "font-src 'self' app-runtime:;"
+        )
+    }
+
+    private static func replaceFirst(_ text: String, _ needle: String, _ replacement: String) -> String {
+        guard let range = text.range(of: needle) else {
+            return text
+        }
+        return text.replacingCharacters(in: range, with: replacement)
+    }
 }
 
 enum RuntimeResourceLocator {
@@ -157,6 +257,11 @@ enum RuntimeResourceLocator {
 
     static func runtimeIndexURL() -> URL {
         URL(string: "\(scheme)://runtime/index.html")!
+    }
+
+    static func isGeneratedAppIndexURL(_ url: URL) -> Bool {
+        let logicalPath = logicalResourcePath(for: url)
+        return logicalPath.hasPrefix("webapps/examples/") && logicalPath.hasSuffix("/index.html")
     }
 
     static func fileURL(forRuntimeURL url: URL) -> URL? {
@@ -201,6 +306,9 @@ enum RuntimeResourceLocator {
         let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if url.host == "runtime", path == "index.html" {
             return "runtime/index.html"
+        }
+        if let host = url.host, host != "runtime" {
+            return "webapps/examples/\(host)/\(path.isEmpty ? "index.html" : path)"
         }
         return path
     }

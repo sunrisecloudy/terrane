@@ -21,6 +21,8 @@ class NativeBridge(
     private val network = PlatformNetwork()
     private val core = ZigCoreBridge()
     private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
+    private val runtimeEnvelopeFields = setOf("appId", "mountToken", "request")
+    private val bridgeRequestFields = setOf("id", "method", "params", "timestamp")
 
     fun handleEnvelope(body: String, isMainFrame: Boolean, sourceOrigin: String, respond: (String) -> Unit) {
         val envelope = try {
@@ -30,7 +32,7 @@ class NativeBridge(
             return
         }
         val requestBody = envelope.optJSONObject("request")
-        val requestId = requestBody?.optString("id")?.ifBlank { null }
+        val requestId = (requestBody?.opt("id") as? String)?.ifBlank { null }
 
         if (!isMainFrame || sourceOrigin != trustedRuntimeOrigin) {
             respond(BridgeResponse.failure(
@@ -49,6 +51,22 @@ class NativeBridge(
                 "invalid_request",
                 "Runtime bridge envelope requires appId, mountToken, and request",
             ).toString())
+            return
+        }
+
+        if (!hasOnlyRuntimeEnvelopeFields(envelope)) {
+            respond(BridgeResponse.failure(
+                requestId,
+                "invalid_request",
+                "Runtime bridge envelope contains unknown top-level fields",
+                JSONObject(mapOf("fields" to unknownFields(envelope, runtimeEnvelopeFields))),
+            ).toString())
+            return
+        }
+
+        val requestValidationFailure = validateBridgeRequest(requestBody)
+        if (requestValidationFailure != null) {
+            respond(requestValidationFailure)
             return
         }
 
@@ -117,6 +135,54 @@ class NativeBridge(
             else -> respondWithLog(BridgeResponse.failure(request.id, "unknown_method", "Unknown bridge method: ${request.method}").toString())
         }
     }
+
+    private fun unknownFields(body: JSONObject, allowed: Set<String>): JSONArray {
+        val fields = JSONArray()
+        val keys = body.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (!allowed.contains(key)) {
+                fields.put(key)
+            }
+        }
+        return fields
+    }
+
+    private fun hasOnlyRuntimeEnvelopeFields(body: JSONObject): Boolean =
+        unknownFields(body, runtimeEnvelopeFields).length() == 0
+
+    private fun hasOnlyBridgeRequestFields(body: JSONObject): Boolean =
+        unknownFields(body, bridgeRequestFields).length() == 0
+
+    private fun validateBridgeRequest(body: JSONObject?): String? {
+        if (body == null) {
+            return null
+        }
+        if (!hasOnlyBridgeRequestFields(body)) {
+            return BridgeResponse.failure(
+                null,
+                "invalid_request",
+                "Bridge request contains unknown top-level fields",
+                JSONObject(mapOf("fields" to unknownFields(body, bridgeRequestFields))),
+            ).toString()
+        }
+        if (body.opt("id") !is String || body.optString("id").isBlank()) {
+            return BridgeResponse.failure(null, "invalid_request", "Bridge request id must be a non-empty string").toString()
+        }
+        if (body.has("timestamp") && !isFiniteJsonNumber(body.opt("timestamp"))) {
+            return BridgeResponse.failure(null, "invalid_request", "Bridge request timestamp must be a finite number").toString()
+        }
+        if (body.opt("method") !is String) {
+            return BridgeResponse.failure(null, "invalid_request", "Bridge request method must be a string").toString()
+        }
+        if (body.opt("params") !is JSONObject) {
+            return BridgeResponse.failure(null, "invalid_request", "Bridge request params must be an object").toString()
+        }
+        return null
+    }
+
+    private fun isFiniteJsonNumber(value: Any?): Boolean =
+        value is Number && java.lang.Double.isFinite(value.toDouble())
 
     private fun appLog(request: BridgeRequest): String {
         val level = request.params.opt("level")
@@ -382,9 +448,9 @@ private fun JSONObject.toMap(): Map<String, Any> =
     keys().asSequence().associateWith { key -> opt(key) }
 
 class BridgeRequest(body: JSONObject, val context: AppSandboxContext) {
-    val id: String? = body.optString("id").ifBlank { null }
-    val method: String = body.optString("method")
-    val params: JSONObject = body.optJSONObject("params") ?: JSONObject()
+    val id: String? = body.getString("id")
+    val method: String = body.getString("method")
+    val params: JSONObject = body.getJSONObject("params")
 }
 
 object BridgeResponse {
