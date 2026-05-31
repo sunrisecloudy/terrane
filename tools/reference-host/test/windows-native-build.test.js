@@ -99,7 +99,9 @@ test(
       ? "Windows native smoke only runs on Windows hosts"
       : !commandWorks("cmake")
         ? "cmake is not available"
-        : false,
+        : !commandWorks("zig", ["version"])
+          ? "zig is not available"
+          : false,
     timeout: 180_000,
   },
   () => {
@@ -161,8 +163,30 @@ test(
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-dev-control-"));
     let child = null;
     try {
+      const zigCoreDll = path.join(scratch, "zig_core.dll");
+      execFileSync(
+        "zig",
+        [
+          "build-lib",
+          "src/lib.zig",
+          "--name",
+          "zig_core",
+          "-dynamic",
+          "-lc",
+          `-femit-bin=${zigCoreDll}`,
+        ],
+        {
+          cwd: path.join(repoRoot, "zig-core"),
+          env: {
+            ...process.env,
+            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
+            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
+          },
+          stdio: "ignore",
+        },
+      );
       const buildDir = path.join(scratch, "debug-build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DNATIVE_AI_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
       assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after Debug CMake build");
@@ -199,6 +223,105 @@ test(
       assert.equal(body.target, "windows");
       assert.equal(body.controlPlane.port, ready.port);
 
+      const unauthorizedSession = await requestControl(ready.port, "/sessions", {
+        method: "POST",
+        body: { appId: "notes-lite" },
+      });
+      assert.equal(unauthorizedSession.statusCode, 401);
+      assert.equal(JSON.parse(unauthorizedSession.body).error.code, "control_auth_required");
+
+      const session = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "task-workbench", metadata: { smoke: "windows-dev-control" } },
+      });
+      assert.equal(session.statusCode, 200, session.body);
+      const sessionBody = JSON.parse(session.body);
+      assert.equal(sessionBody.ok, true);
+      assert.match(sessionBody.result.controlSessionId, /^control-/);
+      assert.match(sessionBody.result.runtimeSessionId, /^session-/);
+      assert.equal(sessionBody.result.appId, "task-workbench");
+      const sessionId = sessionBody.result.controlSessionId;
+
+      const snapshot = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}/snapshot`, { token });
+      assert.equal(snapshot.statusCode, 200, snapshot.body);
+      assert.equal(JSON.parse(snapshot.body).result.snapshot.target, "windows");
+
+      const events = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/events`, { token });
+      assert.equal(events.statusCode, 200, events.body);
+      assert.equal(Array.isArray(JSON.parse(events.body).result.bridgeCalls), true);
+
+      const capabilities = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/capabilities`, { token });
+      assert.equal(capabilities.statusCode, 200, capabilities.body);
+      assert.equal(JSON.parse(capabilities.body).result.platform, "windows");
+
+      const command = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.health", args: {} },
+      });
+      assert.equal(command.statusCode, 200, command.body);
+      assert.equal(JSON.parse(command.body).result.target, "windows");
+
+      const commandCapabilities = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.capabilities", args: {} },
+      });
+      assert.equal(commandCapabilities.statusCode, 200, commandCapabilities.body);
+      assert.equal(JSON.parse(commandCapabilities.body).result.features["runtime.capabilities"], true);
+
+      const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.set",
+            params: {
+              key: "task-workbench:windows-dev-control-key",
+              value: { source: "windows-dev-control" },
+            },
+          },
+        },
+      });
+      assert.equal(callBridge.statusCode, 200, callBridge.body);
+      const callBridgeBody = JSON.parse(callBridge.body);
+      assert.equal(callBridgeBody.result.id, "control_call_bridge");
+      assert.equal(callBridgeBody.result.ok, true);
+
+      const coreStep = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.core_step",
+          args: {
+            appId: "task-workbench",
+            event: { type: "CreateTask", payload: { title: "Windows control task" } },
+          },
+        },
+      });
+      assert.equal(coreStep.statusCode, 200, coreStep.body);
+      const coreStepBody = JSON.parse(coreStep.body);
+      assert.equal(coreStepBody.result.id, "control_core_step");
+      assert.equal(coreStepBody.result.ok, true);
+
+      const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.call_bridge", args: { method: "storage.set", params: {} } },
+      });
+      assert.equal(missingAppId.statusCode, 400);
+      assert.equal(JSON.parse(missingAppId.body).error.code, "invalid_request");
+
+      const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        token,
+      });
+      assert.equal(ended.statusCode, 200, ended.body);
+      assert.equal(JSON.parse(ended.body).result.status, "ended");
+
       const dbPath = path.join(dataHome, "NativeAIWebappPlatform", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
       const { DatabaseSync } = await import("node:sqlite");
@@ -215,6 +338,26 @@ test(
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.capabilities' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.core_step' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.set' AND app_id = 'task-workbench'").get().count) >= 1,
+          true,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM core_events WHERE app_id = 'task-workbench'").get().count) >= 1,
+          true,
         );
       } finally {
         database.close();
@@ -364,9 +507,15 @@ function requestControlHealth(port, token = null) {
   return requestControl(port, "/health", { token });
 }
 
-function requestControl(port, pathName, { method = "GET", token = null } = {}) {
+function requestControl(port, pathName, { method = "GET", token = null, body = null } = {}) {
   return new Promise((resolve, reject) => {
     const headers = token ? { "X-Platform-Control-Token": token } : {};
+    let bodyText = null;
+    if (body !== null) {
+      bodyText = JSON.stringify(body);
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(bodyText);
+    }
     const req = http.request(
       {
         hostname: "127.0.0.1",
@@ -389,7 +538,7 @@ function requestControl(port, pathName, { method = "GET", token = null } = {}) {
     req.on("timeout", () => {
       req.destroy(new Error(`Timed out waiting for Windows dev control ${method} ${pathName}`));
     });
-    req.end();
+    req.end(bodyText);
   });
 }
 

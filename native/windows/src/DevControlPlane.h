@@ -7,6 +7,8 @@
 
 namespace nativeai {
 
+class WebViewHost;
+
 struct DevControlPlaneConfig {
   uint16_t requestedPort = 0;
   std::filesystem::path databasePath;
@@ -21,6 +23,7 @@ class DevControlPlane {
   DevControlPlane& operator=(DevControlPlane const&) = delete;
 
   bool Start(DevControlPlaneConfig const& config, std::wstring* error);
+  void SetHost(WebViewHost* host);
   void Stop();
 
   uint16_t Port() const;

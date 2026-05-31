@@ -20,10 +20,16 @@ class WebViewHost {
 
   void Initialize();
   bool TryHandleWindowMessage(UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result);
+  std::wstring DevControlBridgeCall(
+      std::wstring const& appId,
+      std::wstring const& controlSessionId,
+      std::wstring const& bridgeRequestJson);
   static constexpr UINT kAsyncBridgeResponseMessage = WM_APP + 0x4E1;
+  static constexpr UINT kDevControlBridgeCallMessage = WM_APP + 0x4E2;
 
  private:
   struct AsyncBridgeResponse;
+  struct DevControlBridgeCallRequest;
   void OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args);
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
   void PostAsyncBridgeResponse(

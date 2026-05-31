@@ -280,17 +280,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
   std::unique_ptr<nativeai::DevControlPlane> devControl;
   if (devControlOptions.enabled) {
-#ifdef _DEBUG
-    nativeai::DevControlPlaneConfig config;
-    config.requestedPort = devControlOptions.port;
-    config.databasePath = ProductionGuardDatabasePath();
-    std::wstring devControlError;
-    devControl = std::make_unique<nativeai::DevControlPlane>();
-    if (!devControl->Start(config, &devControlError)) {
-      OutputDebugStringW((L"fatal: " + devControlError + L"\n").c_str());
-      return 1;
-    }
-#else
+#ifndef _DEBUG
     RecordProductionGuardAudit(L"NATIVE_AI_WINDOWS_DEV_CONTROL");
     OutputDebugStringW(L"fatal: Windows dev control plane is disabled in release builds\n");
     return 1;
@@ -319,6 +309,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
   ShowWindow(window, showCommand);
   g_host = std::make_unique<nativeai::WebViewHost>(window);
+#ifdef _DEBUG
+  if (devControlOptions.enabled) {
+    nativeai::DevControlPlaneConfig config;
+    config.requestedPort = devControlOptions.port;
+    config.databasePath = ProductionGuardDatabasePath();
+    std::wstring devControlError;
+    devControl = std::make_unique<nativeai::DevControlPlane>();
+    if (!devControl->Start(config, &devControlError)) {
+      OutputDebugStringW((L"fatal: " + devControlError + L"\n").c_str());
+      g_host.reset();
+      return 1;
+    }
+    devControl->SetHost(g_host.get());
+  }
+#endif
   g_host->Initialize();
 
   MSG message{};
@@ -327,9 +332,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     DispatchMessage(&message);
   }
 
-  g_host.reset();
   if (devControl) {
+    devControl->SetHost(nullptr);
     devControl->Stop();
   }
+  g_host.reset();
   return 0;
 }

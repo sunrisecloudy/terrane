@@ -3,8 +3,10 @@
 #include <objbase.h>
 #include <ShlObj.h>
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <winrt/Windows.Data.Json.h>
 #include <wrl/event.h>
@@ -331,6 +333,35 @@ bool StorageNotesResponseContainsSmokeValue(std::wstring const& response, std::w
 
 WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
 
+struct WebViewHost::DevControlBridgeCallRequest {
+  std::wstring appId;
+  std::wstring controlSessionId;
+  std::wstring requestJson;
+  std::promise<std::wstring> result;
+};
+
+std::wstring WebViewHost::DevControlBridgeCall(
+    std::wstring const& appId,
+    std::wstring const& controlSessionId,
+    std::wstring const& bridgeRequestJson) {
+  auto payload = std::make_unique<DevControlBridgeCallRequest>();
+  payload->appId = appId;
+  payload->controlSessionId = controlSessionId;
+  payload->requestJson = bridgeRequestJson;
+  auto future = payload->result.get_future();
+  if (!PostMessageW(window_, kDevControlBridgeCallMessage, 0, reinterpret_cast<LPARAM>(payload.release()))) {
+    return BridgeResponse::Failure(L"", false, L"platform_unsupported", L"Windows dev control bridge could not post to the host thread")
+        .Stringify()
+        .c_str();
+  }
+  if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+    return BridgeResponse::Failure(L"", false, L"timeout", L"Windows dev control bridge call timed out waiting for the host thread")
+        .Stringify()
+        .c_str();
+  }
+  return future.get();
+}
+
 struct WebViewHost::AsyncBridgeResponse {
   std::wstring response;
   std::wstring smokeRequestId;
@@ -339,6 +370,41 @@ struct WebViewHost::AsyncBridgeResponse {
 };
 
 bool WebViewHost::TryHandleWindowMessage(UINT message, WPARAM, LPARAM lparam, LRESULT* result) {
+  if (message == kDevControlBridgeCallMessage) {
+    std::shared_ptr<DevControlBridgeCallRequest> payload(reinterpret_cast<DevControlBridgeCallRequest*>(lparam));
+    if (!payload || payload->appId.empty() || bridge_ == nullptr) {
+      if (payload) {
+        payload->result.set_value(
+            BridgeResponse::Failure(L"", false, L"invalid_request", L"Windows dev control bridge call requires appId")
+                .Stringify()
+                .c_str());
+      }
+    } else {
+      try {
+        bridge_->HandleJsonAsync(
+            payload->requestJson,
+            SandboxContextForApp(payload->appId, payload->controlSessionId),
+            [payload](std::wstring response) {
+              try {
+                payload->result.set_value(std::move(response));
+              } catch (...) {
+              }
+            });
+      } catch (...) {
+        try {
+          payload->result.set_value(
+              BridgeResponse::Failure(L"", false, L"platform_error", L"Windows dev control bridge dispatch failed")
+                  .Stringify()
+                  .c_str());
+        } catch (...) {
+        }
+      }
+    }
+    if (result != nullptr) {
+      *result = 0;
+    }
+    return true;
+  }
   if (message != kAsyncBridgeResponseMessage) {
     return false;
   }
