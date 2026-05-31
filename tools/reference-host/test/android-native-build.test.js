@@ -474,6 +474,69 @@ test("Android debug dev control exports DB-backed debug bundles safely", () => {
   }
 });
 
+test("Android debug dev control exports and imports portable backups safely", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const migrationBackup = read("db/sqlite/004_migrations_and_snapshots.sql");
+
+  for (const snippet of [
+    "db.export_backup",
+    "db.import_backup",
+    "dbExportBackupJson",
+    "dbImportBackupJson",
+    "\"type\", \"backup\"",
+    "\"type\", \"import\"",
+    "\"source_platform\", \"android\"",
+    "\"apps\", tableRows(\"apps\")",
+    "\"appVersions\", tableRows(\"app_versions\")",
+    "\"appFiles\", tableRows(\"app_files\")",
+    "\"appPermissions\", tableRows(\"app_permissions\")",
+    "\"appStorage\", tableRows(\"app_storage\")",
+    "\"appMigrations\", tableRows(\"app_migrations\")",
+    "\"appInstallReports\", tableRows(\"app_install_reports\")",
+    "runtimeCapabilities",
+    "contentHash",
+    "db.beginTransaction()",
+    "db.insertWithOnConflict(\"apps\"",
+    "db.insertWithOnConflict(\"app_versions\"",
+    "db.insertWithOnConflict(\"app_files\"",
+    "db.insertWithOnConflict(\"app_permissions\"",
+    "db.insertWithOnConflict(\"app_storage\"",
+    "db.insertWithOnConflict(\"app_migrations\"",
+    "db.insertWithOnConflict(\"app_install_reports\"",
+    "db.insert(\"backup_exports\"",
+    "db.setTransactionSuccessful()",
+    "db.endTransaction()",
+    "Backup import requires type backup, debug-bundle, or test-fixture",
+    "Backup import document is missing required arrays",
+    "Backup import document is missing required fields",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android backup source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "CREATE TABLE IF NOT EXISTS backup_exports",
+    "type TEXT NOT NULL CHECK (type IN ('backup','debug-bundle','test-fixture','import'))",
+    "imported_at TEXT",
+  ]) {
+    assert.equal(migrationBackup.includes(snippet), true, `Backup migration should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("db.beginTransaction()") < control.indexOf("db.setTransactionSuccessful()"),
+    "backup import should commit only after the fixed-table inserts succeed",
+  );
+
+  for (const forbidden of [
+    "\"db.query_sql\"",
+    "args.optString(\"sql\")",
+    "requiredString(args, \"sql\")",
+    "rawQuery(args",
+    "execSQL(args",
+  ]) {
+    assert.equal(control.includes(forbidden), false, `Android backup source must not expose ${forbidden}`);
+  }
+});
+
 test("Android debug dev control creates, restores, and compares runtime snapshots", () => {
   const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
   const migrationRuntime = read("db/sqlite/002_runtime_debug.sql");

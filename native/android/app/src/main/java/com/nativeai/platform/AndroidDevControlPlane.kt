@@ -250,6 +250,8 @@ class AndroidDevControlPlane(
         "platform.restore_snapshot" -> platformRestoreSnapshotJson(args)
         "runtime.compare_snapshot" -> runtimeCompareSnapshotJson(args)
         "db.snapshot" -> dbSnapshotJson()
+        "db.export_backup" -> dbExportBackupJson()
+        "db.import_backup" -> dbImportBackupJson(args)
         "db.export_debug_bundle" -> dbExportDebugBundleJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
@@ -1193,6 +1195,8 @@ class AndroidDevControlPlane(
                     "platform.restore_snapshot",
                     "runtime.compare_snapshot",
                     "db.snapshot",
+                    "db.export_backup",
+                    "db.import_backup",
                     "db.export_debug_bundle",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -1275,10 +1279,295 @@ class AndroidDevControlPlane(
         return document
     }
 
+    private fun dbExportBackupJson(): JSONObject {
+        val exportId = "backup_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+        val document = JSONObject()
+            .put("exportId", exportId)
+            .put("type", "backup")
+            .put("source", JSONObject()
+                .put("platform", "android")
+                .put("target", "android-emulator"),
+            )
+            .put("runtimeVersion", androidRuntimeVersion)
+            .put("createdAt", createdAt)
+            .put("apps", tableRows("apps"))
+            .put("appVersions", tableRows("app_versions"))
+            .put("appFiles", tableRows("app_files"))
+            .put("appPermissions", tableRows("app_permissions"))
+            .put("appStorage", tableRows("app_storage"))
+            .put("appMigrations", tableRows("app_migrations"))
+            .put("appInstallReports", tableRows("app_install_reports"))
+            .put("runtimeCapabilities", controlCapabilitiesJson())
+            .put("debug", JSONObject())
+        val contentHash = "sha256:${sha256Hex(document.toString())}"
+        document.put("contentHash", contentHash)
+        val values = ContentValues().apply {
+            put("export_id", exportId)
+            put("type", "backup")
+            put("source_platform", "android")
+            put("runtime_version", androidRuntimeVersion)
+            put("export_json", document.toString())
+            put("content_hash", contentHash)
+            put("created_at", createdAt)
+            putNull("imported_at")
+        }
+        val inserted = database.writableDatabase.insert("backup_exports", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Could not export backup")
+        }
+        return document
+    }
+
+    private fun dbImportBackupJson(args: JSONObject): JSONObject {
+        val document = args.opt("backup") as? JSONObject
+            ?: throw ControlCommandException(400, "invalid_request", "db.import_backup requires backup")
+        val type = backupString(document, "type")
+        if (!setOf("backup", "debug-bundle", "test-fixture").contains(type)) {
+            throw ControlCommandException(400, "invalid_request", "Backup import requires type backup, debug-bundle, or test-fixture")
+        }
+        val apps = requiredBackupArray(document, "apps")
+        val appVersions = requiredBackupArray(document, "appVersions")
+        val appFiles = requiredBackupArray(document, "appFiles")
+        val appPermissions = requiredBackupArray(document, "appPermissions")
+        val appStorage = requiredBackupArray(document, "appStorage")
+        val appMigrations = document.optJSONArray("appMigrations") ?: JSONArray()
+        val appInstallReports = document.optJSONArray("appInstallReports") ?: JSONArray()
+        val createdAt = Instant.now().toString()
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            importApps(db, apps, createdAt)
+            importAppVersions(db, appVersions, createdAt)
+            importAppFiles(db, appFiles, createdAt)
+            importAppPermissions(db, appPermissions)
+            importAppStorage(db, appStorage, createdAt)
+            importAppMigrations(db, appMigrations, createdAt)
+            importAppInstallReports(db, appInstallReports, createdAt)
+            val source = document.optJSONObject("source")
+            val documentText = document.toString()
+            val importId = "import_android_${UUID.randomUUID().toString().lowercase()}"
+            val inserted = db.insert("backup_exports", null, ContentValues().apply {
+                put("export_id", importId)
+                put("type", "import")
+                put("source_platform", source?.let { backupString(it, "platform") } ?: "unknown")
+                put("runtime_version", backupString(document, "runtimeVersion") ?: androidRuntimeVersion)
+                put("export_json", documentText)
+                put("content_hash", backupString(document, "contentHash") ?: "sha256:${sha256Hex(documentText)}")
+                put("created_at", createdAt)
+                put("imported_at", createdAt)
+            })
+            if (inserted < 0) {
+                throw ControlCommandException(400, "sqlite_error", "Backup import could not be completed")
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("apps", apps.length())
+            .put("appVersions", appVersions.length())
+            .put("appStorage", appStorage.length())
+    }
+
+    private fun importApps(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val app = backupObjectAt(rows, index, "apps")
+            val appId = requiredBackupString(app, "id", "appId")
+            val inserted = db.insertWithOnConflict("apps", null, ContentValues().apply {
+                put("id", appId)
+                put("name", backupString(app, "name") ?: appId)
+                put("status", backupString(app, "status") ?: "enabled")
+                putNullable("active_install_id", backupString(app, "active_install_id", "activeInstallId"))
+                putNullable("active_version", backupString(app, "active_version", "activeVersion"))
+                put("data_version", backupLong(app, "data_version", "dataVersion", default = 1L))
+                put("created_at", backupString(app, "created_at", "createdAt") ?: createdAt)
+                put("updated_at", backupString(app, "updated_at", "updatedAt") ?: createdAt)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppVersions(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val version = backupObjectAt(rows, index, "appVersions")
+            val installId = requiredBackupString(version, "install_id", "installId")
+            val appId = requiredBackupString(version, "app_id", "appId")
+            val appVersion = requiredBackupString(version, "version", "appVersion")
+            val inserted = db.insertWithOnConflict("app_versions", null, ContentValues().apply {
+                put("install_id", installId)
+                put("app_id", appId)
+                put("version", appVersion)
+                put("runtime_version", backupString(version, "runtime_version", "runtimeVersion") ?: androidRuntimeVersion)
+                put("data_version", backupLong(version, "data_version", "dataVersion", default = 1L))
+                put("manifest_json", backupJsonText(version, stringKeys = listOf("manifest_json", "manifestJson"), valueKeys = listOf("manifest"), fallback = "{}"))
+                put("manifest_hash", backupString(version, "manifest_hash", "manifestHash") ?: "")
+                put("content_hash", backupString(version, "content_hash", "contentHash") ?: "")
+                putNullable("signature_json", backupJsonText(version, stringKeys = listOf("signature_json", "signatureJson"), valueKeys = listOf("signature"), fallback = null))
+                put("trust_level", backupString(version, "trust_level", "trustLevel") ?: "developer")
+                put("status", backupString(version, "status") ?: "installed")
+                put("created_at", backupString(version, "created_at", "installedAt", "createdAt") ?: createdAt)
+                putNullable("activated_at", backupString(version, "activated_at", "activatedAt"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppFiles(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val file = backupObjectAt(rows, index, "appFiles")
+            val installId = requiredBackupString(file, "install_id", "installId")
+            val path = requiredBackupString(file, "path")
+            val contentText = backupString(file, "content_text", "contentText") ?: ""
+            val inserted = db.insertWithOnConflict("app_files", null, ContentValues().apply {
+                put("install_id", installId)
+                put("path", path)
+                put("content_text", contentText)
+                put("content_hash", backupString(file, "content_hash", "contentHash") ?: "sha256:${sha256Hex(contentText)}")
+                put("size_bytes", backupLong(file, "size_bytes", "sizeBytes", default = contentText.toByteArray(Charsets.UTF_8).size.toLong()))
+                put("mime", backupString(file, "mime") ?: "text/plain")
+                put("created_at", backupString(file, "created_at", "createdAt") ?: createdAt)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppPermissions(db: SQLiteDatabase, rows: JSONArray) {
+        for (index in 0 until rows.length()) {
+            val permission = backupObjectAt(rows, index, "appPermissions")
+            val installId = requiredBackupString(permission, "install_id", "installId")
+            val appId = requiredBackupString(permission, "app_id", "appId")
+            val permissionName = requiredBackupString(permission, "permission")
+            val inserted = db.insertWithOnConflict("app_permissions", null, ContentValues().apply {
+                put("install_id", installId)
+                put("app_id", appId)
+                put("permission", permissionName)
+                put("requested", backupLong(permission, "requested", default = 1L))
+                put("approved", backupLong(permission, "approved", default = 0L))
+                putNullable("approved_at", backupString(permission, "approved_at", "approvedAt"))
+                putNullable("reason", backupString(permission, "reason"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppStorage(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val storage = backupObjectAt(rows, index, "appStorage")
+            val appId = requiredBackupString(storage, "app_id", "appId")
+            val key = requiredBackupString(storage, "key")
+            val inserted = db.insertWithOnConflict("app_storage", null, ContentValues().apply {
+                put("app_id", appId)
+                put("key", key)
+                put("value_json", backupJsonText(storage, stringKeys = listOf("value_json", "valueJson"), valueKeys = listOf("value"), fallback = "null"))
+                put("updated_at", backupString(storage, "updated_at", "updatedAt") ?: createdAt)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppMigrations(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val migration = backupObjectAt(rows, index, "appMigrations")
+            val migrationId = requiredBackupString(migration, "migration_id", "migrationId")
+            val appId = requiredBackupString(migration, "app_id", "appId")
+            val inserted = db.insertWithOnConflict("app_migrations", null, ContentValues().apply {
+                put("migration_id", migrationId)
+                put("app_id", appId)
+                put("from_data_version", backupLong(migration, "from_data_version", "fromDataVersion", default = 1L))
+                put("to_data_version", backupLong(migration, "to_data_version", "toDataVersion", default = 1L))
+                put("migration_json", backupJsonText(migration, stringKeys = listOf("migration_json", "migrationJson"), valueKeys = listOf("migration"), fallback = "{}"))
+                put("content_hash", backupString(migration, "content_hash", "contentHash") ?: "")
+                put("created_at", backupString(migration, "created_at", "createdAt") ?: createdAt)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
+    private fun importAppInstallReports(db: SQLiteDatabase, rows: JSONArray, createdAt: String) {
+        for (index in 0 until rows.length()) {
+            val report = backupObjectAt(rows, index, "appInstallReports")
+            val reportId = requiredBackupString(report, "report_id", "reportId")
+            val appId = requiredBackupString(report, "app_id", "appId")
+            val inserted = db.insertWithOnConflict("app_install_reports", null, ContentValues().apply {
+                put("report_id", reportId)
+                put("app_id", appId)
+                putNullable("install_id", backupString(report, "install_id", "installId"))
+                put("status", backupString(report, "status") ?: "accepted")
+                putNullable("validation_json", backupJsonText(report, stringKeys = listOf("validation_json", "validationJson"), valueKeys = listOf("validation"), fallback = null))
+                putNullable("security_json", backupJsonText(report, stringKeys = listOf("security_json", "securityJson"), valueKeys = listOf("security"), fallback = null))
+                putNullable("permissions_json", backupJsonText(report, stringKeys = listOf("permissions_json", "permissionsJson"), valueKeys = listOf("permissions"), fallback = null))
+                putNullable("compatibility_json", backupJsonText(report, stringKeys = listOf("compatibility_json", "compatibilityJson"), valueKeys = listOf("compatibility"), fallback = null))
+                putNullable("smoke_test_json", backupJsonText(report, stringKeys = listOf("smoke_test_json", "smokeTestJson"), valueKeys = listOf("smokeTest"), fallback = null))
+                putNullable("content_hash", backupString(report, "content_hash", "contentHash"))
+                put("created_at", backupString(report, "created_at", "createdAt") ?: createdAt)
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (inserted < 0) throwBackupImportFailed()
+        }
+    }
+
     private fun queryRowsJson(table: String, args: JSONObject, filterColumn: String): JSONObject {
         val appId = args.optString("appId").ifBlank { null }
         return JSONObject(mapOf("rows" to tableRows(table, if (appId == null) null else filterColumn, appId)))
     }
+
+    private fun requiredBackupArray(document: JSONObject, key: String): JSONArray =
+        document.optJSONArray(key)
+            ?: throw ControlCommandException(400, "invalid_request", "Backup import document is missing required arrays")
+
+    private fun backupObjectAt(rows: JSONArray, index: Int, name: String): JSONObject =
+        rows.optJSONObject(index)
+            ?: throw ControlCommandException(400, "invalid_request", "Backup import $name row must be an object")
+
+    private fun requiredBackupString(row: JSONObject, vararg keys: String): String =
+        backupString(row, *keys)
+            ?: throw ControlCommandException(400, "invalid_request", "Backup import document is missing required fields")
+
+    private fun backupString(row: JSONObject?, vararg keys: String): String? {
+        if (row == null) return null
+        for (key in keys) {
+            if (!row.has(key) || row.isNull(key)) continue
+            val value = row.opt(key)
+            if (value is String) return value.ifBlank { null }
+            if (value is JSONObject || value is JSONArray || value == JSONObject.NULL) continue
+            return value.toString().ifBlank { null }
+        }
+        return null
+    }
+
+    private fun backupLong(row: JSONObject, vararg keys: String, default: Long): Long {
+        for (key in keys) {
+            if (!row.has(key) || row.isNull(key)) continue
+            return when (val value = row.opt(key)) {
+                is Number -> value.toLong()
+                is Boolean -> if (value) 1L else 0L
+                is String -> value.toLongOrNull() ?: default
+                else -> default
+            }
+        }
+        return default
+    }
+
+    private fun backupJsonText(row: JSONObject, stringKeys: List<String>, valueKeys: List<String>, fallback: String?): String? {
+        for (key in stringKeys) {
+            if (!row.has(key) || row.isNull(key)) continue
+            val value = row.opt(key)
+            return if (value is String) value else jsonString(value)
+        }
+        for (key in valueKeys) {
+            if (!row.has(key) || row.isNull(key)) continue
+            return jsonString(row.opt(key))
+        }
+        return fallback
+    }
+
+    private fun ContentValues.putNullable(key: String, value: String?) {
+        if (value == null) putNull(key) else put(key, value)
+    }
+
+    private fun throwBackupImportFailed(): Nothing =
+        throw ControlCommandException(400, "sqlite_error", "Backup import could not be completed")
 
     private fun coreEventRowsJson(appId: String): JSONArray =
         rowsWithParsedJsonField(tableRows("core_events", "app_id", appId), "event_json", "event")
