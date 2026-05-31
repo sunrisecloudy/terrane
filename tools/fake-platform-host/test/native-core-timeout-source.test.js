@@ -21,6 +21,17 @@ test("macOS core.step enforces timeout without blocking the WebView reply path",
   assert.match(macosTests, /coreStepReturnsTimeoutWhenZigCoreExceedsHostTimeout/);
 });
 
+test("Linux core.step loader prefers packaged libzig_core beside the executable", () => {
+  const linuxCore = read("native/linux/src/zig_core_bridge.c");
+
+  assert.match(linuxCore, /g_getenv\("NATIVE_AI_ZIG_CORE_SO"\)/);
+  assert.match(linuxCore, /g_file_read_link\("\/proc\/self\/exe"/);
+  assert.match(linuxCore, /g_path_get_dirname/);
+  assert.match(linuxCore, /g_build_filename\(dir,\s*"libzig_core\.so",\s*NULL\)/);
+  assert.match(linuxCore, /dlopen\(path, RTLD_NOW \| RTLD_LOCAL\)/);
+  assert.match(linuxCore, /dlsym\(handle, "core_step_json"\)/);
+});
+
 function read(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }

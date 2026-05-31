@@ -15,6 +15,25 @@ static gchar *repo_root(void) {
   return g_strdup(cwd);
 }
 
+static gchar *executable_dir(void) {
+  g_autofree gchar *target = g_file_read_link("/proc/self/exe", NULL);
+  if (target != NULL) {
+    return g_path_get_dirname(target);
+  }
+  return g_get_current_dir();
+}
+
+static gchar *migrations_dir(void) {
+  g_autofree gchar *dir = executable_dir();
+  g_autofree gchar *packaged = g_build_filename(dir, "resources", "db", "sqlite", NULL);
+  if (g_file_test(packaged, G_FILE_TEST_IS_DIR)) {
+    return g_steal_pointer(&packaged);
+  }
+
+  g_autofree gchar *root = repo_root();
+  return g_build_filename(root, "db", "sqlite", NULL);
+}
+
 static void exec_sql(sqlite3 *db, const gchar *sql, const gchar *label) {
   gchar *error = NULL;
   if (sqlite3_exec(db, sql, NULL, NULL, &error) != SQLITE_OK) {
@@ -33,9 +52,8 @@ static void apply_migration_file(sqlite3 *db, const gchar *path) {
 }
 
 static void apply_checked_in_migrations(sqlite3 *db) {
-  g_autofree gchar *root = repo_root();
-  g_autofree gchar *migrations_dir = g_build_filename(root, "db", "sqlite", NULL);
-  GDir *dir = g_dir_open(migrations_dir, 0, NULL);
+  g_autofree gchar *migration_dir = migrations_dir();
+  GDir *dir = g_dir_open(migration_dir, 0, NULL);
   if (dir == NULL) {
     exec_sql(
         db,
@@ -59,7 +77,7 @@ static void apply_checked_in_migrations(sqlite3 *db) {
   names = g_list_sort(names, (GCompareFunc)g_strcmp0);
 
   for (GList *node = names; node != NULL; node = node->next) {
-    g_autofree gchar *path = g_build_filename(migrations_dir, (const gchar *)node->data, NULL);
+    g_autofree gchar *path = g_build_filename(migration_dir, (const gchar *)node->data, NULL);
     apply_migration_file(db, path);
   }
   g_list_free_full(names, g_free);

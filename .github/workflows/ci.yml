@@ -166,6 +166,50 @@ jobs:
           name: macos-native-release-artifacts
           path: artifacts/
 
+  linux-native-release-artifacts:
+    name: Linux Native Release Artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install Linux native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            libc6-dev \
+            libgtk-4-dev \
+            libjson-glib-dev \
+            libsoup-3.0-dev \
+            libsqlite3-dev \
+            libwebkitgtk-6.0-dev \
+            meson \
+            ninja-build \
+            pkg-config
+
+      - name: Package Linux native release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-native-linux
+
+      - name: Upload Linux native release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-native-release-artifacts
+          path: artifacts/
+
   windows-native-release-artifacts:
     name: Windows Native Release Artifacts
     runs-on: windows-2022

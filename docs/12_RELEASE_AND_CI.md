@@ -57,6 +57,7 @@ ubuntu-24.04:
   server tests
   runtime tests
   package validator
+  Linux native release artifact package on ubuntu-24.04
   Docker-backed Linux shell build, release production-guard audit, and WebKitGTK smoke on ubuntu-24.04
 
 macos-latest:
@@ -83,7 +84,7 @@ The release artifact packager is:
 node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Windows host app directory with runtime/example resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -104,6 +105,12 @@ artifacts/
   release-manifest.json
   native-apps/
     macos/macos-arm64/NativeAIHostMac.app/
+    linux/linux-x86_64/NativeAIWebappHost/
+      native-ai-webapp-host
+      libzig_core.so
+      resources/runtime/
+      resources/webapps/examples/
+      resources/db/sqlite/
     windows/windows-x86_64/NativeAIWebappHost/
       NativeAIWebappHost.exe
       zig_core.dll
@@ -113,6 +120,8 @@ artifacts/
 ```
 
 The macOS native app artifact path is `native-apps/macos/macos-arm64/NativeAIHostMac.app` on Apple Silicon CI runners.
+
+The Linux native app artifact path is `native-apps/linux/linux-x86_64/NativeAIWebappHost` on the `ubuntu-24.04` release runner.
 
 The Windows native app artifact path is `native-apps/windows/windows-x86_64/NativeAIWebappHost` on the `windows-2022` release runner.
 
@@ -126,6 +135,12 @@ The dedicated macOS native artifact job runs on `macos-latest`:
 
 ```text
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
+```
+
+The dedicated Linux native artifact job runs on `ubuntu-24.04` after installing GTK4, WebKitGTK, JSON-GLib, SQLite, libsoup, Meson, Ninja, pkg-config, and Zig:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts --build-native-linux
 ```
 
 The dedicated Windows native artifact job runs on `windows-2022` after installing the pinned WebView2 SDK package:

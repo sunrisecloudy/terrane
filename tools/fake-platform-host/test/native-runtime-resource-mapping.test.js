@@ -44,6 +44,12 @@ test("Linux native host maps app-runtime /runtime paths to runtime-web files", (
   assertContains(source, '"runtime-web"', "Linux");
   assertContains(source, 'g_str_has_prefix(logical_path, "runtime/")', "Linux");
   assertContains(source, 'g_str_has_prefix(path, "webapps/examples/")', "Linux");
+  assertContains(source, 'g_file_read_link("/proc/self/exe"', "Linux");
+  assertContains(source, "g_path_get_dirname", "Linux");
+  assertContains(source, '"resources", "runtime"', "Linux");
+  assertContains(source, '"resources", "webapps", "examples"', "Linux");
+  assertContains(source, "manifest_path_for_app", "Linux");
+  assertContains(source, "g_file_test", "Linux");
   assertContains(source, 'strstr(path, "..") == NULL', "Linux");
   assertContains(source, "content_type_for_path", "Linux");
   assertContains(source, 'webkit_web_view_load_uri(host->web_view, "app-runtime://runtime/index.html")', "Linux");

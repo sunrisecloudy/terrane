@@ -149,7 +149,11 @@ const targetAssertions = [
         contains: [
           "PRAGMA foreign_keys = ON",
           "PRAGMA integrity_check",
+          'g_file_read_link("/proc/self/exe"',
+          "g_path_get_dirname",
+          '"resources", "db", "sqlite"',
           '"db", "sqlite"',
+          "g_dir_open",
           "CREATE TABLE IF NOT EXISTS apps",
         ],
       },

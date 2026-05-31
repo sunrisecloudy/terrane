@@ -21,7 +21,7 @@ resources/examples/
 Implemented now:
 
 - Creates a GTK application window with a WebKitGTK runtime view.
-- Registers `app-runtime` as a secure/CORS-enabled custom scheme and loads the runtime plus app-scoped generated app resources through it.
+- Registers `app-runtime` as a secure/CORS-enabled custom scheme and loads the runtime plus app-scoped generated app resources through it, preferring packaged `resources/runtime` and `resources/webapps/examples` beside the executable before falling back to the repo layout.
 - Injects the native `AppRuntime` bootstrap into app-scoped WebKit frames so generated app scripts run from their package URL instead of `srcdoc`.
 - Receives runtime bridge payloads through reply-capable `WebKitUserContentManager` script-message handling.
 - Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
@@ -30,8 +30,17 @@ Implemented now:
 - Validates `notification.toast` `message`/`level` params against the bridge contract.
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound GTK file chooser native dialogs.
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
-- Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first and then repo-local/install candidate paths.
+- Loads SQLite migrations from packaged `resources/db/sqlite` before falling back to checked-in migrations.
+- Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first, then the packaged library beside `native-ai-webapp-host`, then repo-local/install candidate paths.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
+
+Release packaging for the Linux host runs on Linux/x64:
+
+```sh
+node --no-warnings tools/package-release.mjs --out artifacts --build-native-linux
+```
+
+The artifact is staged at `artifacts/native-apps/linux/linux-x86_64/NativeAIWebappHost/` with `native-ai-webapp-host`, `libzig_core.so`, runtime resources, example app packages, SQLite migrations, and hashed entries in `release-manifest.json`.
 
 ## Docker smoke
 

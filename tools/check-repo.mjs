@@ -272,6 +272,16 @@ function checkCiWorkflow() {
     "tools/package-release.mjs --out artifacts --build-server",
     "macos-native-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-native-macos",
+    "linux-native-release-artifacts",
+    "Linux Native Release Artifacts",
+    "libgtk-4-dev",
+    "libwebkitgtk-6.0-dev",
+    "libjson-glib-dev",
+    "libsoup-3.0-dev",
+    "meson",
+    "ninja-build",
+    "pkg-config",
+    "tools/package-release.mjs --out artifacts --build-native-linux",
     "windows-native-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-native-windows",
     "linux-native-smoke",
@@ -297,7 +307,7 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
@@ -314,11 +324,14 @@ function checkReleasePackaging() {
     "buildZigCoreArtifacts",
     "buildServerArtifacts",
     "buildMacOSNativeArtifacts",
+    "buildLinuxNativeArtifacts",
+    "buildLinuxZigCoreSo",
     "buildWindowsNativeArtifacts",
     "windowsWebView2SdkStatus",
     "--build-zig-core",
     "--build-server",
     "--build-native-macos",
+    "--build-native-linux",
     "--build-native-windows",
     "sha256",
     "server-executable",
@@ -329,6 +342,14 @@ function checkReleasePackaging() {
     "zig_core.lib",
     "native-ai-server",
     "NativeAIHostMac.app",
+    "LINUX_HOST_EXECUTABLE_NAME",
+    "LINUX_HOST_APP_DIR_NAME",
+    "native-ai-webapp-host",
+    "libzig_core.so",
+    '"resources", "runtime"',
+    '"resources", "webapps", "examples"',
+    '"resources", "db", "sqlite"',
+    "webkitgtk-6.0",
     "NativeAIWebappHost.exe",
     "NativeAIWebappHost",
     "resources/db/sqlite/001_initial.sql",
@@ -343,6 +364,13 @@ function checkReleasePackaging() {
     "linux-x86_64/native-ai-server",
     "native-apps/macos/macos-arm64/NativeAIHostMac.app",
     "tools/package-release.mjs --out artifacts --build-native-macos",
+    "native-apps/linux/linux-x86_64/NativeAIWebappHost",
+    "native-ai-webapp-host",
+    "libzig_core.so",
+    "resources/runtime/",
+    "resources/webapps/examples/",
+    "resources/db/sqlite/",
+    "tools/package-release.mjs --out artifacts --build-native-linux",
     "native-apps/windows/windows-x86_64/NativeAIWebappHost",
     "resources/db/sqlite/",
     "tools/package-release.mjs --out artifacts --build-native-windows",
@@ -356,7 +384,7 @@ function checkReleasePackaging() {
   if (!ignore.includes("artifacts/")) {
     throw new Error(".gitignore must ignore generated release artifacts");
   }
-  for (const snippet of ["run-linux-native-docker", "--build-native-windows", "tools/run-linux-native-docker.mjs"]) {
+  for (const snippet of ["run-linux-native-docker", "--build-native-linux", "--build-native-windows", "tools/run-linux-native-docker.mjs"]) {
     if (!toolsReadme.includes(snippet)) {
       throw new Error(`tools/README missing ${snippet}`);
     }
@@ -366,9 +394,14 @@ function checkReleasePackaging() {
     "buildZigCore: true",
     "buildServer: true",
     "buildNativeMacOS: true",
+    "linuxReleaseSkipReason",
+    "buildNativeLinux: true",
     "buildNativeWindows: true",
     "server-executable",
     "native-host-app",
+    "native-ai-webapp-host",
+    "libzig_core.so",
+    "native-apps/linux/linux-x86_64/NativeAIWebappHost",
     "NativeAIWebappHost.exe",
     "zig_core.dll",
     "resources/db/sqlite/001_initial.sql",
@@ -379,7 +412,7 @@ function checkReleasePackaging() {
       throw new Error(`release packaging test missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,windows-native-host,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,linux-native-host,windows-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

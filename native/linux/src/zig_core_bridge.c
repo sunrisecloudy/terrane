@@ -17,6 +17,7 @@ typedef int32_t (*CoreStepJsonFn)(ZigCore *core, const uint8_t *input_ptr, size_
 typedef void (*CoreFreeFn)(ZigCoreBuffer buffer);
 
 static gchar **candidate_library_paths(void);
+static gchar *executable_dir(void);
 static gboolean load_library(ZigCoreBridge *core, const gchar *path);
 static JsonNode *core_input_for_request(const BridgeRequest *request);
 static gchar *json_node_to_string(JsonNode *node);
@@ -115,6 +116,9 @@ static gchar **candidate_library_paths(void) {
     g_ptr_array_add(paths, g_strdup(override_path));
   }
 
+  g_autofree gchar *dir = executable_dir();
+  g_ptr_array_add(paths, g_build_filename(dir, "libzig_core.so", NULL));
+
   gchar *cwd = g_get_current_dir();
   g_ptr_array_add(paths, g_build_filename(cwd, "zig-core", "zig-out", "lib", "libzig_core.so", NULL));
   g_ptr_array_add(paths, g_build_filename(cwd, "..", "zig-core", "zig-out", "lib", "libzig_core.so", NULL));
@@ -123,6 +127,14 @@ static gchar **candidate_library_paths(void) {
 
   g_ptr_array_add(paths, NULL);
   return (gchar **)g_ptr_array_free(paths, FALSE);
+}
+
+static gchar *executable_dir(void) {
+  g_autofree gchar *target = g_file_read_link("/proc/self/exe", NULL);
+  if (target != NULL) {
+    return g_path_get_dirname(target);
+  }
+  return g_get_current_dir();
 }
 
 static gboolean load_library(ZigCoreBridge *core, const gchar *path) {

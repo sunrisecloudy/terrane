@@ -6,6 +6,7 @@ static const gchar *k_runtime_scheme = "app-runtime";
 
 static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gchar *mount_token);
 static gboolean is_known_example_app_id(const gchar *app_id);
+static gchar *repo_root(void);
 
 static const gchar *k_app_runtime_user_script =
     "(function(){"
@@ -59,9 +60,55 @@ static gboolean logical_path_is_allowed(const gchar *path) {
          (g_str_has_prefix(path, "runtime/") || g_str_has_prefix(path, "webapps/examples/"));
 }
 
+static gchar *executable_dir(void) {
+  g_autofree gchar *target = g_file_read_link("/proc/self/exe", NULL);
+  if (target != NULL) {
+    return g_path_get_dirname(target);
+  }
+  return g_get_current_dir();
+}
+
+static gchar *packaged_resource_path_for_logical_path(const gchar *logical_path) {
+  g_autofree gchar *dir = executable_dir();
+  if (g_str_has_prefix(logical_path, "runtime/")) {
+    return g_build_filename(dir, "resources", "runtime", logical_path + strlen("runtime/"), NULL);
+  }
+  if (g_str_has_prefix(logical_path, "webapps/examples/")) {
+    return g_build_filename(dir, "resources", "webapps", "examples", logical_path + strlen("webapps/examples/"), NULL);
+  }
+  return NULL;
+}
+
+static gboolean app_id_is_safe_path_segment(const gchar *app_id) {
+  return app_id != NULL &&
+         app_id[0] != '\0' &&
+         strstr(app_id, "..") == NULL &&
+         strchr(app_id, '/') == NULL &&
+         strchr(app_id, '\\') == NULL;
+}
+
+static gchar *manifest_path_for_app(const gchar *app_id) {
+  if (!app_id_is_safe_path_segment(app_id)) {
+    return NULL;
+  }
+
+  g_autofree gchar *logical_path = g_strdup_printf("webapps/examples/%s/manifest.json", app_id);
+  g_autofree gchar *packaged = packaged_resource_path_for_logical_path(logical_path);
+  if (packaged != NULL && g_file_test(packaged, G_FILE_TEST_EXISTS)) {
+    return g_steal_pointer(&packaged);
+  }
+
+  g_autofree gchar *root = repo_root();
+  return g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+}
+
 static gchar *resource_path_for_logical_path(const gchar *root, const gchar *logical_path) {
   if (!logical_path_is_allowed(logical_path)) {
     return NULL;
+  }
+  g_autofree gchar *packaged = packaged_resource_path_for_logical_path(logical_path);
+  if (packaged != NULL && g_file_test(packaged, G_FILE_TEST_EXISTS)) {
+    return g_steal_pointer(&packaged);
   }
   if (g_str_has_prefix(logical_path, "runtime/")) {
     return g_build_filename(root, "runtime-web", logical_path + strlen("runtime/"), NULL);
@@ -790,10 +837,9 @@ static void run_smoke(WebKitHost *host) {
 
 static GHashTable *permissions_for_app(const gchar *app_id) {
   GHashTable *permissions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-  g_autofree gchar *root = repo_root();
-  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *manifest_path = manifest_path_for_app(app_id);
   g_autofree gchar *contents = NULL;
-  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
     return permissions;
   }
 
@@ -816,10 +862,9 @@ static GHashTable *permissions_for_app(const gchar *app_id) {
 
 static GHashTable *resource_budget_for_app(const gchar *app_id) {
   GHashTable *budget = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-  g_autofree gchar *root = repo_root();
-  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *manifest_path = manifest_path_for_app(app_id);
   g_autofree gchar *contents = NULL;
-  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
     return budget;
   }
 
@@ -851,10 +896,9 @@ static GHashTable *resource_budget_for_app(const gchar *app_id) {
 
 static GPtrArray *network_policy_for_app(const gchar *app_id) {
   GPtrArray *rules = g_ptr_array_new_with_free_func(network_policy_rule_free);
-  g_autofree gchar *root = repo_root();
-  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *manifest_path = manifest_path_for_app(app_id);
   g_autofree gchar *contents = NULL;
-  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
     return rules;
   }
 
@@ -901,10 +945,9 @@ static GPtrArray *network_policy_for_app(const gchar *app_id) {
 }
 
 static gboolean deny_private_network_for_app(const gchar *app_id) {
-  g_autofree gchar *root = repo_root();
-  g_autofree gchar *manifest_path = g_build_filename(root, "webapps", "examples", app_id, "manifest.json", NULL);
+  g_autofree gchar *manifest_path = manifest_path_for_app(app_id);
   g_autofree gchar *contents = NULL;
-  if (!g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
     return TRUE;
   }
 

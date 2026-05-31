@@ -15,6 +15,8 @@ const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
 const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server";
 const MACOS_HOST_EXECUTABLE_NAME = "NativeAIHostMac";
 const MACOS_HOST_BUNDLE_NAME = "NativeAIHostMac.app";
+const LINUX_HOST_EXECUTABLE_NAME = "native-ai-webapp-host";
+const LINUX_HOST_APP_DIR_NAME = "NativeAIWebappHost";
 const WINDOWS_HOST_EXECUTABLE_NAME = "NativeAIWebappHost.exe";
 const WINDOWS_HOST_APP_DIR_NAME = "NativeAIWebappHost";
 const WINDOWS_WEBVIEW2_ARCH = "x64";
@@ -85,6 +87,7 @@ export function packageReleaseArtifacts({
   buildZigCore = false,
   buildServer = false,
   buildNativeMacOS = false,
+  buildNativeLinux = false,
   buildNativeWindows = false,
 } = {}) {
   const resolvedOutDir = path.resolve(outDir);
@@ -102,6 +105,7 @@ export function packageReleaseArtifacts({
   const serverArtifacts = buildServer ? buildServerArtifacts({ outDir: resolvedOutDir }) : [];
   const nativeArtifacts = [
     ...(buildNativeMacOS ? buildMacOSNativeArtifacts({ outDir: resolvedOutDir }) : []),
+    ...(buildNativeLinux ? buildLinuxNativeArtifacts({ outDir: resolvedOutDir }) : []),
     ...(buildNativeWindows ? buildWindowsNativeArtifacts({ outDir: resolvedOutDir }) : []),
   ];
   const directoryArtifacts = [
@@ -424,6 +428,74 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
   }
 }
 
+export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+  if (process.platform !== "linux") {
+    throw new Error("--build-native-linux requires a Linux host");
+  }
+  if (process.arch !== "x64") {
+    throw new Error("--build-native-linux currently produces linux-x86_64 artifacts and requires an x64 host");
+  }
+  requireCommand("meson", ["--version"], "--build-native-linux requires Meson on PATH");
+  requireCommand("ninja", ["--version"], "--build-native-linux requires Ninja on PATH");
+  requireCommand("pkg-config", ["--exists", "gtk4", "webkitgtk-6.0", "json-glib-1.0", "sqlite3", "libsoup-3.0"], "--build-native-linux requires GTK4, WebKitGTK 6.0, JSON-GLib, SQLite, and libsoup development packages");
+  requireCommand("zig", ["version"], "--build-native-linux requires Zig on PATH");
+
+  const resolvedOutDir = path.resolve(outDir);
+  const targetId = "linux-x86_64";
+  const linuxDir = path.join(repoRoot, "native", "linux");
+  const artifactDir = path.join(resolvedOutDir, "native-apps", "linux", targetId, LINUX_HOST_APP_DIR_NAME);
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-release-cache-"));
+  const buildDir = path.join(cacheRoot, "meson-build");
+  const zigCoreSo = path.join(cacheRoot, "libzig_core.so");
+  const env = {
+    ...process.env,
+    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
+    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
+  };
+
+  try {
+    buildLinuxZigCoreSo({ outputPath: zigCoreSo, env });
+    execFileSync("meson", ["setup", "--buildtype=release", buildDir, linuxDir], {
+      env,
+      stdio: "ignore",
+    });
+    execFileSync("meson", ["compile", "-C", buildDir], {
+      env,
+      stdio: "ignore",
+    });
+
+    const builtExecutable = path.join(buildDir, LINUX_HOST_EXECUTABLE_NAME);
+    if (!fs.existsSync(builtExecutable)) {
+      throw new Error(`Linux host Release build did not produce ${LINUX_HOST_EXECUTABLE_NAME}`);
+    }
+
+    fs.rmSync(artifactDir, { recursive: true, force: true });
+    fs.mkdirSync(artifactDir, { recursive: true });
+    fs.copyFileSync(builtExecutable, path.join(artifactDir, LINUX_HOST_EXECUTABLE_NAME));
+    fs.chmodSync(path.join(artifactDir, LINUX_HOST_EXECUTABLE_NAME), 0o755);
+    fs.copyFileSync(zigCoreSo, path.join(artifactDir, "libzig_core.so"));
+    fs.chmodSync(path.join(artifactDir, "libzig_core.so"), 0o755);
+    fs.mkdirSync(path.join(artifactDir, "resources"), { recursive: true });
+    fs.cpSync(path.join(repoRoot, "runtime-web"), path.join(artifactDir, "resources", "runtime"), { recursive: true });
+    fs.mkdirSync(path.join(artifactDir, "resources", "webapps"), { recursive: true });
+    fs.cpSync(path.join(repoRoot, "webapps", "examples"), path.join(artifactDir, "resources", "webapps", "examples"), { recursive: true });
+    fs.mkdirSync(path.join(artifactDir, "resources", "db"), { recursive: true });
+    fs.cpSync(path.join(repoRoot, "db", "sqlite"), path.join(artifactDir, "resources", "db", "sqlite"), { recursive: true });
+
+    return [
+      {
+        id: `native-linux-${targetId}`,
+        path: path.join("native-apps", "linux", targetId, LINUX_HOST_APP_DIR_NAME),
+        kind: "native-host-app",
+        target: targetId,
+        files: describeDirectoryFiles(artifactDir, path.join("native-apps", "linux", targetId, LINUX_HOST_APP_DIR_NAME)),
+      },
+    ];
+  } finally {
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+}
+
 export function windowsWebView2SdkStatus(env = process.env) {
   const sdkDir = env.NATIVE_AI_WEBVIEW2_NUGET_DIR;
   if (!sdkDir) {
@@ -505,6 +577,31 @@ function buildWindowsZigCoreDll({ outputPath, env }) {
       stdio: "ignore",
     },
   );
+}
+
+function buildLinuxZigCoreSo({ outputPath, env }) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  execFileSync(
+    "zig",
+    [
+      "build-lib",
+      "src/lib.zig",
+      "--name",
+      "zig_core",
+      "-dynamic",
+      "-target",
+      "x86_64-linux-gnu",
+      "-lc",
+      "-fsoname=libzig_core.so",
+      `-femit-bin=${outputPath}`,
+    ],
+    {
+      cwd: path.join(repoRoot, "zig-core"),
+      env,
+      stdio: "ignore",
+    },
+  );
+  fs.chmodSync(outputPath, 0o755);
 }
 
 function resolveWindowsHostExecutable(buildDir, configuration) {
@@ -761,6 +858,8 @@ function parseCliArgs(argv) {
       options.buildServer = true;
     } else if (arg === "--build-native-macos") {
       options.buildNativeMacOS = true;
+    } else if (arg === "--build-native-linux") {
+      options.buildNativeLinux = true;
     } else if (arg === "--build-native-windows") {
       options.buildNativeWindows = true;
     } else {

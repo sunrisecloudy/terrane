@@ -128,6 +128,9 @@
 - [x] Zig shared library loads.
 - [x] Storage persists.
 - [x] Production guard rejects and audits dev-only startup flags in release builds.
+- [x] Linux native release package includes runtime, example app, SQLite migration, and Zig core resources.
+- [x] Linux native release artifact launches from its packaged directory without repo-root resource assumptions.
+- [x] Linux packaged host resolves runtime resources, app resources, migrations, and `libzig_core.so` relative to the executable.
 
 ### Server
 
