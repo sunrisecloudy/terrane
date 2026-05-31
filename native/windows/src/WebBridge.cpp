@@ -129,20 +129,22 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
           .c_str();
     }
   }
-  if (parsed.HasKey(L"id") && parsed.GetNamedValue(L"id").ValueType() != json::JsonValueType::String) {
-    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request id must be a string").Stringify().c_str();
+  if (!parsed.HasKey(L"id") ||
+      parsed.GetNamedValue(L"id").ValueType() != json::JsonValueType::String ||
+      std::wstring(parsed.GetNamedString(L"id", L"").c_str()).empty()) {
+    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request id must be a non-empty string")
+        .Stringify()
+        .c_str();
   }
-  if (parsed.HasKey(L"method") && parsed.GetNamedValue(L"method").ValueType() != json::JsonValueType::String) {
+  if (!parsed.HasKey(L"method") || parsed.GetNamedValue(L"method").ValueType() != json::JsonValueType::String) {
     return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request method must be a string").Stringify().c_str();
   }
-  if (parsed.HasKey(L"params") && parsed.GetNamedValue(L"params").ValueType() != json::JsonValueType::Object) {
+  if (!parsed.HasKey(L"params") || parsed.GetNamedValue(L"params").ValueType() != json::JsonValueType::Object) {
     return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request params must be an object").Stringify().c_str();
   }
 
-  if (parsed.HasKey(L"id")) {
-    request.hasId = true;
-    request.id = parsed.GetNamedString(L"id", L"").c_str();
-  }
+  request.hasId = true;
+  request.id = parsed.GetNamedString(L"id", L"").c_str();
   request.method = parsed.GetNamedString(L"method", L"").c_str();
   request.params = parsed.GetNamedObject(L"params", json::JsonObject());
 

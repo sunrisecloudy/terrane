@@ -583,26 +583,24 @@ gchar *web_bridge_handle_json(WebBridge *bridge, const gchar *body, AppSandboxCo
       !json_node_is_finite_number(json_object_get_member(root, "timestamp"))) {
     return invalid_bridge_request_response(&request, parser, "Bridge request timestamp must be a finite number", NULL);
   }
-  if (json_object_has_member(root, "id") &&
-      !json_node_is_string(json_object_get_member(root, "id"))) {
-    return invalid_bridge_request_response(&request, parser, "Bridge request id must be a string", NULL);
+  if (!json_object_has_member(root, "id") ||
+      !json_node_is_string(json_object_get_member(root, "id")) ||
+      json_object_get_string_member(root, "id")[0] == '\0') {
+    return invalid_bridge_request_response(&request, parser, "Bridge request id must be a non-empty string", NULL);
   }
-  if (json_object_has_member(root, "method") &&
+  if (!json_object_has_member(root, "method") ||
       !json_node_is_string(json_object_get_member(root, "method"))) {
     return invalid_bridge_request_response(&request, parser, "Bridge request method must be a string", NULL);
   }
-  if (json_object_has_member(root, "params") &&
+  if (!json_object_has_member(root, "params") ||
       !json_node_is_object(json_object_get_member(root, "params"))) {
     return invalid_bridge_request_response(&request, parser, "Bridge request params must be an object", NULL);
   }
 
-  if (json_object_has_member(root, "id")) {
-    request.has_id = TRUE;
-    request.id = g_strdup(json_object_get_string_member(root, "id"));
-  }
-  request.method = g_strdup(json_object_get_string_member_with_default(root, "method", ""));
-  JsonObject *params = json_object_has_member(root, "params") ? json_object_get_object_member(root, "params") : NULL;
-  request.params = params == NULL ? json_object_new() : json_object_ref(params);
+  request.has_id = TRUE;
+  request.id = g_strdup(json_object_get_string_member(root, "id"));
+  request.method = g_strdup(json_object_get_string_member(root, "method"));
+  request.params = json_object_ref(json_object_get_object_member(root, "params"));
 
   if (json_object_has_member(request.params, "appId")) {
     JsonObject *details = json_object_new();

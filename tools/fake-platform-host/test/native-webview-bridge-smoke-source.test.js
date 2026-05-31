@@ -65,7 +65,7 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(linuxBridge, /has_only_bridge_request_fields/);
   assert.match(linuxBridge, /Bridge request contains unknown top-level fields/);
   assert.match(linuxBridge, /Bridge request timestamp must be a finite number/);
-  assert.match(linuxBridge, /Bridge request id must be a string/);
+  assert.match(linuxBridge, /Bridge request id must be a non-empty string/);
   assert.match(linuxBridge, /Bridge request params must be an object/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_set/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_get/);
