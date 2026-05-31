@@ -58,6 +58,7 @@
 - [x] iOS bridge rejects app ids outside the bundled app index.
 - [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] iOS simulator app bundle build verifies all five bundled example apps include manifest, HTML, CSS, and JS resources; debug simulator smoke includes an all-example bridge capability probe when launch smoke is enabled.
+- [x] iOS debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 
 ### macOS
 

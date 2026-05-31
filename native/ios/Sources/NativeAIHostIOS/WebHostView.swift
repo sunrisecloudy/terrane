@@ -64,18 +64,21 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static let loadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED"
     static let storageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
     static let storageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
+    static let storageResetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_OK"
     static let coreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK"
     static let allExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK"
     static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
 
     private let exitAfterLoad: Bool
     private let storageSmoke: StorageSmoke?
+    private let storageResetSmoke: Bool
     private let coreStepSmoke: Bool
     private let allExamplesSmoke: Bool
 
-    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?, coreStepSmoke: Bool, allExamplesSmoke: Bool) {
+    private init(exitAfterLoad: Bool, storageSmoke: StorageSmoke?, storageResetSmoke: Bool, coreStepSmoke: Bool, allExamplesSmoke: Bool) {
         self.exitAfterLoad = exitAfterLoad
         self.storageSmoke = storageSmoke
+        self.storageResetSmoke = storageResetSmoke
         self.coreStepSmoke = coreStepSmoke
         self.allExamplesSmoke = allExamplesSmoke
     }
@@ -83,11 +86,13 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
         let args = CommandLine.arguments
         let storageSmoke = StorageSmoke.fromCommandLine(args)
+        let storageResetSmoke = args.contains("--native-ai-smoke-storage-reset")
         let coreStepSmoke = args.contains("--native-ai-smoke-core-step")
         let allExamplesSmoke = args.contains("--native-ai-smoke-all-examples")
         guard args.contains("--native-ai-smoke-runtime-load") ||
             args.contains("--native-ai-smoke-exit-on-runtime-load") ||
             storageSmoke != nil ||
+            storageResetSmoke ||
             coreStepSmoke ||
             allExamplesSmoke
         else {
@@ -96,6 +101,7 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         return IOSSmokeRuntimeProbe(
             exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"),
             storageSmoke: storageSmoke,
+            storageResetSmoke: storageResetSmoke,
             coreStepSmoke: coreStepSmoke,
             allExamplesSmoke: allExamplesSmoke
         )
@@ -106,6 +112,10 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
         emitSmokeMarker(Self.loadedMarker)
         if let storageSmoke {
             runStorageSmoke(storageSmoke, in: webView)
+            return
+        }
+        if storageResetSmoke {
+            runStorageResetSmoke(in: webView)
             return
         }
         if coreStepSmoke {
@@ -148,6 +158,46 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
             successMarker: smoke.successMarker,
             in: webView
         )
+    }
+
+    private func runStorageResetSmoke(in webView: WKWebView) {
+        Task { @MainActor [weak self, weak webView] in
+            guard let webView else {
+                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: web view released")
+                self?.exitIfRequested()
+                return
+            }
+            do {
+                let seedValue = try await webView.callAsyncJavaScript(StorageResetSmoke.seedJavaScript(), arguments: [:], in: nil, contentWorld: .page)
+                guard let seedMarker = seedValue as? String, seedMarker == StorageResetSmoke.seedMarker else {
+                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset seed failed \(String(describing: seedValue))")
+                    self?.exitIfRequested()
+                    return
+                }
+                let storage = PlatformStorage()
+                guard let reset = storage.resetAppStorage(appId: StorageResetSmoke.appId, sessionId: StorageResetSmoke.sessionId),
+                      reset.clearedStorageKeys >= 1,
+                      reset.storageRowsDeleted >= 1,
+                      reset.contentHash.hasPrefix("sha256:"),
+                      storage.runtimeSnapshotExists(snapshotId: reset.snapshotId, appId: StorageResetSmoke.appId)
+                else {
+                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset did not create a manual runtime snapshot")
+                    self?.exitIfRequested()
+                    return
+                }
+                let verifyValue = try await webView.callAsyncJavaScript(StorageResetSmoke.verifyJavaScript(), arguments: [:], in: nil, contentWorld: .page)
+                guard let marker = verifyValue as? String, marker == Self.storageResetMarker else {
+                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset verification failed \(String(describing: verifyValue))")
+                    self?.exitIfRequested()
+                    return
+                }
+                self?.emitSmokeMarker(marker)
+                self?.exitIfRequested()
+            } catch {
+                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
+                self?.exitIfRequested()
+            }
+        }
     }
 
     private func runAllExamplesSmoke(in webView: WKWebView) {
@@ -274,6 +324,78 @@ private struct AllExampleAppsSmoke {
             }
           }
           return "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
+        } catch (error) {
+          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+        }
+        """
+    }
+}
+
+private struct StorageResetSmoke {
+    static let appId = "notes-lite"
+    static let mountToken = "ios-smoke"
+    static let key = "notes-lite:ios-smoke-reset"
+    static let value = "ios-smoke-reset-seed"
+    static let sessionId = "runtime_ios_notes-lite_ios-smoke"
+    static let seedMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_SEEDED"
+
+    static func seedJavaScript() -> String {
+        """
+        try {
+          const bridge = window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.NativeAIPlatformBridge;
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            throw new Error("NativeAIPlatformBridge is unavailable");
+          }
+          const appId = "\(appId)";
+          const mountToken = "\(mountToken)";
+          const key = "\(key)";
+          const value = "\(value)";
+          function request(id, method, params) {
+            return { appId, mountToken, request: { id, method, params: params || {} } };
+          }
+          const capabilities = await bridge.postMessage(request("ios_smoke_reset_capabilities", "runtime.capabilities", {}));
+          if (!capabilities || !capabilities.ok || !capabilities.result || capabilities.result.platform !== "ios") {
+            throw new Error("runtime.capabilities failed: " + JSON.stringify(capabilities));
+          }
+          const setResponse = await bridge.postMessage(request("ios_smoke_storage_reset_seed", "storage.set", { key, value: { smokeValue: value } }));
+          if (!setResponse || !setResponse.ok) {
+            throw new Error("storage.set failed before reset: " + JSON.stringify(setResponse));
+          }
+          const getResponse = await bridge.postMessage(request("ios_smoke_storage_reset_seed_get", "storage.get", { key }));
+          const actual = getResponse && getResponse.result && getResponse.result.value && getResponse.result.value.smokeValue;
+          if (!getResponse || !getResponse.ok || actual !== value) {
+            throw new Error("storage.get seed mismatch before reset: " + JSON.stringify(getResponse));
+          }
+          return "\(seedMarker)";
+        } catch (error) {
+          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+        }
+        """
+    }
+
+    static func verifyJavaScript() -> String {
+        """
+        try {
+          const bridge = window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.NativeAIPlatformBridge;
+          if (!bridge || typeof bridge.postMessage !== "function") {
+            throw new Error("NativeAIPlatformBridge is unavailable");
+          }
+          const appId = "\(appId)";
+          const mountToken = "\(mountToken)";
+          const key = "\(key)";
+          function request(id, method, params) {
+            return { appId, mountToken, request: { id, method, params: params || {} } };
+          }
+          const getResponse = await bridge.postMessage(request("ios_smoke_storage_reset_verify", "storage.get", { key, defaultValue: { resetDefault: true } }));
+          const value = getResponse && getResponse.result && getResponse.result.value;
+          if (!getResponse || !getResponse.ok || !value || value.resetDefault !== true) {
+            throw new Error("storage.get did not return reset default: " + JSON.stringify(getResponse));
+          }
+          return "\(IOSSmokeRuntimeProbe.storageResetMarker)";
         } catch (error) {
           return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }

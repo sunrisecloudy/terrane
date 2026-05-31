@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,7 @@ const bundleId = "dev.nativeai.host.ios";
 const smokeLoadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED";
 const smokeStorageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK";
 const smokeStorageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK";
+const smokeStorageResetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_OK";
 const smokeCoreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
 const smokeAllExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
 const smokeMarkerFile = "native-ai-ios-smoke-runtime-loaded.txt";
@@ -178,12 +179,18 @@ function availableIOSDevices() {
 
 function selectIOSDevice() {
   if (process.env.NATIVE_AI_IOS_SMOKE_DEVICE) {
-    return { udid: process.env.NATIVE_AI_IOS_SMOKE_DEVICE, state: "Unknown" };
+    const devices = availableIOSDevices();
+    return devices.find((device) => device.udid === process.env.NATIVE_AI_IOS_SMOKE_DEVICE) ??
+      { udid: process.env.NATIVE_AI_IOS_SMOKE_DEVICE, state: "Unknown" };
   }
   const devices = availableIOSDevices();
   return devices.find((device) => device.state === "Booted") ??
     devices.find((device) => device.name === "iPhone 17") ??
     devices[0];
+}
+
+function currentDeviceState(udid) {
+  return availableIOSDevices().find((device) => device.udid === udid)?.state ?? "Unknown";
 }
 
 function waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, expectedMarker, timeoutMs }) {
@@ -212,7 +219,7 @@ function launchAndWaitForMarker({ device, scratchRoot, markerPath, expectedMarke
   fs.rmSync(stdoutPath, { force: true });
   fs.rmSync(stderrPath, { force: true });
 
-  execFileSync(
+  const launcher = spawn(
     "xcrun",
     [
       "simctl",
@@ -224,10 +231,18 @@ function launchAndWaitForMarker({ device, scratchRoot, markerPath, expectedMarke
       bundleId,
       ...launchArgs,
     ],
-    { encoding: "utf8" },
+    { detached: true, stdio: "ignore" },
   );
+  launcher.unref();
 
   const logs = waitForSmokeMarker({ markerPath, stdoutPath, stderrPath, expectedMarker, timeoutMs: 30_000 });
+  if (launcher.pid) {
+    try {
+      process.kill(-launcher.pid, "SIGTERM");
+    } catch {
+      // The simctl launch process usually exits on its own after the app exits.
+    }
+  }
   if (!`${logs.markerFile}\n${logs.stdout}\n${logs.stderr}`.includes(expectedMarker)) {
     const screenshotPath = path.join(scratchRoot, `${logStem}.png`);
     execFileSync("xcrun", ["simctl", "io", device.udid, "screenshot", screenshotPath], { stdio: "ignore" });
@@ -241,13 +256,19 @@ function launchInSimulator({ scratchRoot, appBundle }) {
 
   const wasBooted = device.state === "Booted";
   if (!wasBooted) {
-    execFileSync("xcrun", ["simctl", "boot", device.udid], { stdio: "ignore" });
-    execFileSync("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { stdio: "ignore" });
+    execFileSync("xcrun", ["simctl", "boot", device.udid], { stdio: "ignore", timeout: 30_000 });
+    try {
+      execFileSync("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { stdio: "ignore", timeout: 60_000 });
+    } catch (error) {
+      if (currentDeviceState(device.udid) !== "Booted") {
+        throw error;
+      }
+    }
   }
 
   try {
-    execFileSync("xcrun", ["simctl", "install", device.udid, appBundle], { stdio: "ignore" });
-    const dataContainer = execFileSync("xcrun", ["simctl", "get_app_container", device.udid, bundleId, "data"], { encoding: "utf8" }).trim();
+    execFileSync("xcrun", ["simctl", "install", device.udid, appBundle], { stdio: "ignore", timeout: 60_000 });
+    const dataContainer = execFileSync("xcrun", ["simctl", "get_app_container", device.udid, bundleId, "data"], { encoding: "utf8", timeout: 30_000 }).trim();
     const markerPath = path.join(dataContainer, "tmp", smokeMarkerFile);
 
     launchAndWaitForMarker({
@@ -292,6 +313,13 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       device,
       scratchRoot,
       markerPath,
+      expectedMarker: smokeStorageResetMarker,
+      launchArgs: ["--native-ai-smoke-storage-reset", "--native-ai-smoke-exit-on-runtime-load"],
+    });
+    launchAndWaitForMarker({
+      device,
+      scratchRoot,
+      markerPath,
       expectedMarker: smokeCoreStepMarker,
       launchArgs: ["--native-ai-smoke-core-step", "--native-ai-smoke-exit-on-runtime-load"],
     });
@@ -304,7 +332,7 @@ function launchInSimulator({ scratchRoot, appBundle }) {
     });
   } finally {
     if (!wasBooted) {
-      execFileSync("xcrun", ["simctl", "shutdown", device.udid], { stdio: "ignore" });
+      execFileSync("xcrun", ["simctl", "shutdown", device.udid], { stdio: "ignore", timeout: 30_000 });
     }
   }
 }

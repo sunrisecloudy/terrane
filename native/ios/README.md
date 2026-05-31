@@ -31,6 +31,7 @@ Implemented now:
 - Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
 - Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
 - Debug simulator smoke can verify all five bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.
+- Debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 
 MVP acceptance:
 
