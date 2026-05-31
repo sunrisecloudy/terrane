@@ -606,6 +606,26 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return try await runtimeAssertStorage(args: args, sessionId: sessionId)
         case "runtime.storage_reset", "platform.reset_webapp":
             return try runtimeStorageReset(tool: tool, args: args, sessionId: sessionId)
+        case "runtime.resource_usage":
+            let appId = try requiredString(args, key: "appId", message: "runtime.resource_usage requires appId")
+            return successBody(result: resourceUsage(appId: appId), sessionId: sessionId)
+        case "runtime.event_log":
+            return successBody(result: eventLog(appId: args["appId"] as? String, limit: limit(from: args)), sessionId: sessionId)
+        case "runtime.console_logs":
+            return successBody(result: consoleLogs(appId: args["appId"] as? String, limit: limit(from: args)), sessionId: sessionId)
+        case "runtime.bridge_calls":
+            return successBody(result: [
+                "appId": (args["appId"] as? String) ?? NSNull(),
+                "bridgeCalls": detailedBridgeCallRows(appId: args["appId"] as? String, method: nil, limit: limit(from: args))
+            ], sessionId: sessionId)
+        case "runtime.clear_logs":
+            return successBody(result: try clearRuntimeLogs(appId: args["appId"] as? String), sessionId: sessionId)
+        case "runtime.notification_capture":
+            return successBody(result: notificationCapture(appId: args["appId"] as? String, limit: limit(from: args)), sessionId: sessionId)
+        case "runtime.assert_bridge_call":
+            return try assertBridgeCall(args: args, sessionId: sessionId)
+        case "runtime.assert_no_console_errors":
+            return try assertNoConsoleErrors(args: args, sessionId: sessionId)
         case "db.snapshot",
              "db.query_app_storage",
              "db.query_app_versions",
@@ -648,6 +668,14 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.assert_storage",
                     "runtime.storage_reset",
                     "platform.reset_webapp",
+                    "runtime.resource_usage",
+                    "runtime.event_log",
+                    "runtime.console_logs",
+                    "runtime.bridge_calls",
+                    "runtime.clear_logs",
+                    "runtime.notification_capture",
+                    "runtime.assert_bridge_call",
+                    "runtime.assert_no_console_errors",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -794,15 +822,93 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return successBody(result: result, sessionId: sessionId)
     }
 
-    private func clearRuntimeLogs(appId: String) throws -> [String: Any] {
+    private func resourceUsage(appId: String) -> [String: Any] {
         [
-            "coreActions": try deleteRows(sql: "DELETE FROM core_actions WHERE app_id = ?", appId: appId),
-            "coreEvents": try deleteRows(sql: "DELETE FROM core_events WHERE app_id = ?", appId: appId),
-            "bridgeCalls": try deleteRows(sql: "DELETE FROM bridge_calls WHERE app_id = ?", appId: appId)
+            "appId": appId,
+            "storageKeys": scalarInt("SELECT COUNT(*) FROM app_storage WHERE app_id = ?", appId: appId),
+            "storageBytes": scalarInt("SELECT COALESCE(SUM(LENGTH(CAST(value_json AS BLOB))), 0) FROM app_storage WHERE app_id = ?", appId: appId),
+            "bridgeCalls": scalarInt("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ?", appId: appId),
+            "coreEvents": scalarInt("SELECT COUNT(*) FROM core_events WHERE app_id = ?", appId: appId),
+            "coreActions": scalarInt("SELECT COUNT(*) FROM core_actions WHERE app_id = ?", appId: appId),
+            "networkRequestsLastMinute": scalarInt("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'network.request' AND datetime(created_at) >= datetime('now', '-60 seconds')", appId: appId),
+            "logLinesLastMinute": scalarInt("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'app.log' AND datetime(created_at) >= datetime('now', '-60 seconds')", appId: appId)
         ]
     }
 
-    private func deleteRows(sql: String, appId: String) throws -> Int {
+    private func eventLog(appId: String?, limit: Int) -> [String: Any] {
+        [
+            "appId": appId ?? NSNull(),
+            "bridgeCalls": detailedBridgeCallRows(appId: appId, method: nil, limit: limit),
+            "coreEvents": safeTableRows(Self.safeDbCoreEvents, appId: appId, limit: limit),
+            "coreActions": safeTableRows(Self.safeDbCoreActions, appId: appId, limit: limit)
+        ]
+    }
+
+    private func consoleLogs(appId: String?, limit: Int) -> [String: Any] {
+        [
+            "appId": appId ?? NSNull(),
+            "logs": effectRows(method: "app.log", appId: appId, limit: limit).map { row in
+                let params = row["params"] as? [String: Any] ?? [:]
+                var normalized = row
+                normalized["level"] = params["level"] ?? NSNull()
+                normalized["message"] = params["message"] ?? NSNull()
+                return normalized
+            }
+        ]
+    }
+
+    private func notificationCapture(appId: String?, limit: Int) -> [String: Any] {
+        [
+            "appId": appId ?? NSNull(),
+            "notifications": effectRows(method: "notification.toast", appId: appId, limit: limit).map { row in
+                let params = row["params"] as? [String: Any] ?? [:]
+                var normalized = row
+                normalized["message"] = params["message"] ?? NSNull()
+                normalized["level"] = params["level"] ?? NSNull()
+                return normalized
+            }
+        ]
+    }
+
+    private func assertBridgeCall(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "runtime.assert_bridge_call requires appId and method")
+        let method = try requiredString(args, key: "method", message: "runtime.assert_bridge_call requires appId and method")
+        let rows = detailedBridgeCallRows(appId: appId, method: method, limit: limit(from: args))
+        guard let latest = rows.last else {
+            throw CommandError(status: 400, code: "assertion_failed", message: "Expected bridge call was not recorded", details: ["appId": appId, "method": method])
+        }
+        return successBody(result: [
+            "ok": true,
+            "appId": appId,
+            "method": method,
+            "count": rows.count,
+            "latest": latest
+        ], sessionId: sessionId)
+    }
+
+    private func assertNoConsoleErrors(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let logs = consoleLogs(appId: args["appId"] as? String, limit: limit(from: args))["logs"] as? [[String: Any]] ?? []
+        let errors = logs.filter { row in
+            (row["level"] as? String) == "error" || !(row["error"] is NSNull)
+        }
+        guard errors.isEmpty else {
+            throw CommandError(status: 400, code: "console_errors_found", message: "Console error logs were found", details: ["errors": errors])
+        }
+        return successBody(result: ["ok": true, "errors": 0], sessionId: sessionId)
+    }
+
+    private func clearRuntimeLogs(appId: String?) throws -> [String: Any] {
+        let scoped = appId?.isEmpty == false
+        return [
+            "ok": true,
+            "appId": appId ?? NSNull(),
+            "coreActionsCleared": try deleteRows(sql: scoped ? "DELETE FROM core_actions WHERE app_id = ?" : "DELETE FROM core_actions", appId: appId),
+            "coreEventsCleared": try deleteRows(sql: scoped ? "DELETE FROM core_events WHERE app_id = ?" : "DELETE FROM core_events", appId: appId),
+            "bridgeCallsCleared": try deleteRows(sql: scoped ? "DELETE FROM bridge_calls WHERE app_id = ?" : "DELETE FROM bridge_calls", appId: appId)
+        ]
+    }
+
+    private func deleteRows(sql: String, appId: String?) throws -> Int {
         guard let db = database.handle else {
             throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
         }
@@ -811,16 +917,95 @@ final class IOSDevControlPlane: @unchecked Sendable {
             throw CommandError(status: 500, code: "storage_error", message: "Could not prepare runtime log cleanup")
         }
         defer { sqlite3_finalize(statement) }
-        bind(statement, 1, appId)
+        if let appId, !appId.isEmpty {
+            bind(statement, 1, appId)
+        }
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw CommandError(status: 500, code: "storage_error", message: "Could not clear runtime logs")
         }
         return Int(sqlite3_changes(db))
     }
 
+    private func scalarInt(_ sql: String, appId: String) -> Int {
+        guard let db = database.handle else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return 0
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
+    }
+
+    private func effectRows(method: String, appId: String?, limit: Int) -> [[String: Any]] {
+        detailedBridgeCallRows(appId: appId, method: method, limit: limit)
+    }
+
+    private func detailedBridgeCallRows(appId: String?, method: String?, limit: Int) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        let base = """
+        SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at
+        FROM bridge_calls
+        """
+        let boundedLimit = max(1, min(limit, 500))
+        let sql: String
+        let values: [String]
+        switch (appId?.isEmpty == false ? appId : nil, method?.isEmpty == false ? method : nil) {
+        case let (.some(appId), .some(method)):
+            sql = "\(base) WHERE app_id = ? AND method = ? ORDER BY created_at LIMIT ?"
+            values = [appId, method]
+        case let (.some(appId), .none):
+            sql = "\(base) WHERE app_id = ? ORDER BY created_at LIMIT ?"
+            values = [appId]
+        case let (.none, .some(method)):
+            sql = "\(base) WHERE method = ? ORDER BY created_at LIMIT ?"
+            values = [method]
+        case (.none, .none):
+            sql = "\(base) ORDER BY created_at LIMIT ?"
+            values = []
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            bind(statement, Int32(index + 1), value)
+        }
+        sqlite3_bind_int64(statement, Int32(values.count + 1), Int64(boundedLimit))
+
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append([
+                "bridgeCallId": columnText(statement, 0),
+                "sessionId": nullableColumnText(statement, 1) ?? NSNull(),
+                "appId": nullableColumnText(statement, 2) ?? NSNull(),
+                "installId": nullableColumnText(statement, 3) ?? NSNull(),
+                "method": columnText(statement, 4),
+                "params": jsonValue(nullableColumnText(statement, 5)),
+                "result": jsonValue(nullableColumnText(statement, 6)),
+                "error": jsonValue(nullableColumnText(statement, 7)),
+                "durationMs": sqlite3_column_type(statement, 8) == SQLITE_NULL ? NSNull() : NSNumber(value: sqlite3_column_int64(statement, 8)),
+                "createdAt": columnText(statement, 9)
+            ])
+        }
+        return rows
+    }
+
     private func requiredString(_ args: [String: Any], key: String, message: String) throws -> String {
         guard let value = args[key] as? String, !value.isEmpty else {
             throw CommandError(status: 400, code: "invalid_request", message: message)
+        }
+        return value
+    }
+
+    private func jsonValue(_ text: String?) -> Any {
+        guard let text,
+              !text.isEmpty,
+              let data = text.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data)
+        else {
+            return NSNull()
         }
         return value
     }

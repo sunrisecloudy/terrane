@@ -63,6 +63,7 @@
 - [x] Source/static checks verify iOS DEBUG simulator dev control exposes lightweight session/control routes for `platform.list_targets`, `platform.list_webapps`, bridge-routed `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` with runtime session persistence.
 - [x] Source/static checks verify iOS DEBUG simulator dev control exposes safe `db.snapshot`, fixed `db.query_*`, and `db.export_debug_bundle` controls through command and `/db/*` routes without arbitrary SQL.
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control routes `runtime.storage_get`, `runtime.storage_set`, and `runtime.assert_storage` through the native bridge with storage-prefix enforcement and bridge-call logging, exposes confirmation-gated `runtime.storage_reset` / `platform.reset_webapp` with pre-reset `runtime_snapshots`, and clears runtime logs for `platform.reset_webapp`.
+- [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 
 ### macOS
 

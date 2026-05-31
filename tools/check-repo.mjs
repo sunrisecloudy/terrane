@@ -1157,6 +1157,7 @@ function checkNativeStatic() {
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
   const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
   const iosDevControl = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
+  const iosNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "ios-native-build.test.js"), "utf8");
   const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "ZigCoreBridge.swift"), "utf8");
   const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
@@ -1459,6 +1460,14 @@ function checkNativeStatic() {
     "\"runtime.assert_storage\"",
     "\"runtime.storage_reset\"",
     "\"platform.reset_webapp\"",
+    "\"runtime.resource_usage\"",
+    "\"runtime.event_log\"",
+    "\"runtime.console_logs\"",
+    "\"runtime.bridge_calls\"",
+    "\"runtime.clear_logs\"",
+    "\"runtime.notification_capture\"",
+    "\"runtime.assert_bridge_call\"",
+    "\"runtime.assert_no_console_errors\"",
     "\"db.snapshot\"",
     "\"db.query_app_storage\"",
     "\"db.query_app_versions\"",
@@ -1506,9 +1515,22 @@ function checkNativeStatic() {
     "snapshotId",
     "clearedStorageKeys",
     "clearedLogs",
+    "bridgeCallsCleared",
+    "coreActionsCleared",
+    "coreEventsCleared",
     "DELETE FROM bridge_calls WHERE app_id = ?",
     "DELETE FROM core_events WHERE app_id = ?",
     "DELETE FROM core_actions WHERE app_id = ?",
+    "SELECT COUNT(*) FROM app_storage WHERE app_id = ?",
+    "networkRequestsLastMinute",
+    "logLinesLastMinute",
+    "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at",
+    "runtime.assert_bridge_call requires appId and method",
+    "Expected bridge call was not recorded",
+    "Console error logs were found",
+    "console_errors_found",
+    "notification.toast",
+    "app.log",
     "Storage value did not match expected value",
   ]) {
     if (!iosDevControl.includes(snippet)) {
@@ -1518,6 +1540,23 @@ function checkNativeStatic() {
   for (const forbidden of ["db.query_sql", "unsafe_eval", "sqlite3_exec", "SELECT *"]) {
     if (iosDevControl.includes(forbidden)) {
       throw new Error(`iOS dev control must not expose ${forbidden}`);
+    }
+  }
+  for (const snippet of [
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.assert_storage",
+    "runtime.resource_usage",
+    "runtime.event_log",
+    "runtime.console_logs",
+    "runtime.bridge_calls",
+    "runtime.clear_logs",
+    "runtime.notification_capture",
+    "runtime.assert_bridge_call",
+    "runtime.assert_no_console_errors",
+  ]) {
+    if (!iosNativeBuildTest.includes(snippet)) {
+      throw new Error(`iOS native build test missing dev-control coverage: ${snippet}`);
     }
   }
   for (const snippet of [
