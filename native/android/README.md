@@ -41,7 +41,7 @@ Current implementation status:
 - SQLite-backed `storage.*` uses host-derived app context and storage-prefix checks.
 - The default sandbox context derives permissions, storage prefix, and network policy from the bundled app manifest instead of hardcoded bridge permissions.
 - Native bridge applies manifest-style permission checks before dispatch.
-- `network.request` uses `HttpURLConnection` with manifest `networkPolicy` checks.
+- `network.request` uses OkHttp with manifest `networkPolicy` checks, explicit redirect validation, and request/policy timeout clamping.
 - `dialog.openFile` and `dialog.saveFile` use `ActivityResultContracts.OpenDocument`, `OpenMultipleDocuments`, and `CreateDocument` with asynchronous bridge replies.
 - `core.step` uses a JNI wrapper that loads packaged `libzig_core.so` and calls the shared Zig C ABI.
 - `runtime.capabilities` reports `core.step` from actual JNI/Zig core availability and returns structured `platform_unsupported` when unavailable.

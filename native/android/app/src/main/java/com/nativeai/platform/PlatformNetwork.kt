@@ -1,14 +1,22 @@
 package com.nativeai.platform
 
+import okhttp3.Headers
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+
+private val plainTextMediaType = "text/plain".toMediaType()
 
 class PlatformNetwork {
     fun request(request: BridgeRequest): String {
@@ -100,59 +108,47 @@ class PlatformNetwork {
         denyPrivateNetwork: Boolean,
     ): String {
         var currentUrl = initialUrl
+        val client = OkHttpClient.Builder()
+            .followRedirects(false)
+            .callTimeout(effectiveTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .connectTimeout(effectiveTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(effectiveTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .writeTimeout(effectiveTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .build()
         repeat(6) { redirectCount ->
-            val connection = (currentUrl.openConnection() as HttpURLConnection).apply {
-                requestMethod = method
-                instanceFollowRedirects = false
-                connectTimeout = effectiveTimeoutMs
-                readTimeout = effectiveTimeoutMs
-                useCaches = false
-                doInput = true
-                headers.forEach { (name, value) -> setRequestProperty(name, value) }
-                if (body != null) {
-                    doOutput = true
-                    outputStream.use { it.write(body) }
-                }
-            }
-
             try {
-                val status = connection.responseCode
-                val location = connection.getHeaderField("Location")
-                if (status in 300..399 && location != null) {
-                    val nextUrl = URL(currentUrl, location)
-                    val nextOrigin = origin(nextUrl)
-                    if (nextOrigin == null || (denyPrivateNetwork && isPrivateNetworkHost(nextUrl.host)) || policy.none { it.allows(nextOrigin, method, path(nextUrl), headers.keys) }) {
-                        connection.disconnect()
-                        return BridgeResponse.failure(request.id, "network_policy_denied", "network.request redirect is not allowed by manifest.networkPolicy").toString()
+                client.newCall(okHttpRequest(currentUrl, method, headers, body)).execute().use { response ->
+                    val status = response.code
+                    val location = response.header("Location")
+                    if (status in 300..399 && location != null) {
+                        val nextUrl = URL(currentUrl, location)
+                        val nextOrigin = origin(nextUrl)
+                        if (nextOrigin == null || (denyPrivateNetwork && isPrivateNetworkHost(nextUrl.host)) || policy.none { it.allows(nextOrigin, method, path(nextUrl), headers.keys) }) {
+                            return BridgeResponse.failure(request.id, "network_policy_denied", "network.request redirect is not allowed by manifest.networkPolicy").toString()
+                        }
+                        if (redirectCount == 5) {
+                            return BridgeResponse.failure(request.id, "network_error", "network.request exceeded redirect limit").toString()
+                        }
+                        currentUrl = nextUrl
+                        return@repeat
                     }
-                    if (redirectCount == 5) {
-                        connection.disconnect()
-                        return BridgeResponse.failure(request.id, "network_error", "network.request exceeded redirect limit").toString()
-                    }
-                    connection.disconnect()
-                    currentUrl = nextUrl
-                    return@repeat
-                }
 
-                val data = readResponseBytes(connection, rule.maxResponseBytes)
-                if (data == null) {
-                    connection.disconnect()
-                    return BridgeResponse.failure(request.id, "network_policy_denied", "network.response exceeds manifest.networkPolicy maxResponseBytes").toString()
+                    val data = readResponseBytes(response, rule.maxResponseBytes)
+                    if (data == null) {
+                        return BridgeResponse.failure(request.id, "network_policy_denied", "network.response exceeds manifest.networkPolicy maxResponseBytes").toString()
+                    }
+                    val result = JSONObject(
+                        mapOf(
+                            "status" to status,
+                            "headers" to responseHeaders(response.headers),
+                            "bodyText" to data.toString(Charsets.UTF_8),
+                        ),
+                    )
+                    return BridgeResponse.success(request.id, result).toString()
                 }
-                val result = JSONObject(
-                    mapOf(
-                        "status" to status,
-                        "headers" to responseHeaders(connection),
-                        "bodyText" to data.toString(Charsets.UTF_8),
-                    ),
-                )
-                connection.disconnect()
-                return BridgeResponse.success(request.id, result).toString()
             } catch (_: SocketTimeoutException) {
-                connection.disconnect()
                 return timeoutFailure(request, effectiveTimeoutMs)
             } catch (error: Exception) {
-                connection.disconnect()
                 return BridgeResponse.failure(request.id, "network_error", error.localizedMessage ?: "network.request failed").toString()
             }
 
@@ -202,8 +198,24 @@ class PlatformNetwork {
             JSONObject(mapOf("timeoutMs" to timeoutMs)),
         ).toString()
 
-    private fun readResponseBytes(connection: HttpURLConnection, maxBytes: Int): ByteArray? {
-        val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
+    private fun okHttpRequest(url: URL, method: String, headers: Map<String, String>, body: ByteArray?): Request {
+        val builder = Request.Builder().url(url)
+        headers.forEach { (name, value) -> builder.header(name, value) }
+        builder.method(method, requestBodyFor(method, body))
+        return builder.build()
+    }
+
+    private fun requestBodyFor(method: String, body: ByteArray?): RequestBody? {
+        if (body != null) return body.toRequestBody(plainTextMediaType)
+        return if (method in setOf("POST", "PUT", "PATCH")) {
+            ByteArray(0).toRequestBody(plainTextMediaType)
+        } else {
+            null
+        }
+    }
+
+    private fun readResponseBytes(response: Response, maxBytes: Int): ByteArray? {
+        val stream = response.body?.byteStream()
         if (stream == null) return ByteArray(0)
         stream.use { input ->
             val out = ByteArrayOutputStream()
@@ -218,12 +230,10 @@ class PlatformNetwork {
         }
     }
 
-    private fun responseHeaders(connection: HttpURLConnection): JSONObject {
+    private fun responseHeaders(responseHeaders: Headers): JSONObject {
         val headers = JSONObject()
-        connection.headerFields.forEach { (name, values) ->
-            if (name != null && values != null && values.isNotEmpty()) {
-                headers.put(name.lowercase(Locale.US), values.joinToString(", "))
-            }
+        responseHeaders.names().forEach { name ->
+            headers.put(name.lowercase(Locale.US), responseHeaders.values(name).joinToString(", "))
         }
         return headers
     }

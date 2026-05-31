@@ -2142,10 +2142,13 @@ function checkNativeStatic() {
   if (androidDialogs.includes("is not implemented on Android yet") || androidBridge.includes('"dialog.openFile" to false')) {
     throw new Error("Android dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed", "pathPrefix", "path(nextUrl)"]) {
+  for (const snippet of ["OkHttpClient.Builder", "followRedirects(false)", "network_policy_denied", "NetworkPolicyRule", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed", "pathPrefix", "path(nextUrl)"]) {
     if (!androidNetwork.includes(snippet)) {
       throw new Error(`Android network missing policy enforcement: ${snippet}`);
     }
+  }
+  if (androidNetwork.includes("HttpURLConnection")) {
+    throw new Error("Android network.request must use OkHttp, not HttpURLConnection");
   }
   for (const snippet of ["requestedTimeoutMs", "network.request timeoutMs must be a positive integer", "effectiveTimeoutMs", "timeoutFailure(request, effectiveTimeoutMs)", "JSONObject(mapOf(\"timeoutMs\" to timeoutMs))"]) {
     if (!androidNetwork.includes(snippet)) {

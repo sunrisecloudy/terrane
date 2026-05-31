@@ -70,12 +70,16 @@ test("Android network.request honors request timeoutMs and maps socket timeouts"
   const source = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNetwork.kt");
 
   assert.match(source, /requestedTimeoutMs/);
+  assert.match(source, /OkHttpClient\.Builder/);
+  assert.match(source, /followRedirects\(false\)/);
   assert.match(source, /network\.request timeoutMs must be a positive integer/);
   assert.match(source, /effectiveTimeoutMs/);
   assert.match(source, /minOf\(rule\.timeoutMs, it\)/);
+  assert.match(source, /callTimeout\(effectiveTimeoutMs\.toLong\(\), TimeUnit\.MILLISECONDS\)/);
   assert.match(source, /SocketTimeoutException/);
   assert.match(source, /timeoutFailure\(request, effectiveTimeoutMs\)/);
   assert.match(source, /JSONObject\(mapOf\("timeoutMs" to timeoutMs\)\)/);
+  assert.doesNotMatch(source, /HttpURLConnection/);
   assert.doesNotMatch(source, /rule\.timeoutMs \+ 1_000/);
   assert.doesNotMatch(source, /connectTimeout = rule\.timeoutMs/);
   assert.doesNotMatch(source, /readTimeout = rule\.timeoutMs/);
