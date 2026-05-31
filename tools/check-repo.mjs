@@ -1453,6 +1453,11 @@ function checkNativeStatic() {
     [windowsStorage, "request.context.appId"],
     [windowsStorage, "request.context.storagePrefix"],
     [windowsStorage, "storagePrefixFailure"],
+    [windowsNetwork, "RequestedTimeoutMs"],
+    [windowsNetwork, "network.request timeoutMs must be a positive integer"],
+    [windowsNetwork, "EffectiveTimeoutMs"],
+    [windowsNetwork, "ERROR_WINHTTP_TIMEOUT"],
+    [windowsNetwork, 'L"timeout"'],
   ];
   for (const [source, snippet] of windowsRequired) {
     if (!source.includes(snippet)) {

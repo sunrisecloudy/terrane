@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cwctype>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -279,6 +281,55 @@ json::JsonObject Failure(BridgeRequest const& request, std::wstring const& code,
   return BridgeResponse::Failure(request.id, request.hasId, code, message);
 }
 
+json::JsonObject InvalidTimeoutFailure(BridgeRequest const& request) {
+  json::JsonObject details;
+  details.Insert(L"timeoutMs", request.params.GetNamedValue(L"timeoutMs"));
+  return BridgeResponse::Failure(
+      request.id,
+      request.hasId,
+      L"invalid_request",
+      L"network.request timeoutMs must be a positive integer",
+      details);
+}
+
+json::JsonObject TimeoutFailure(BridgeRequest const& request, uint32_t timeoutMs) {
+  json::JsonObject details;
+  details.Insert(L"timeoutMs", json::JsonValue::CreateNumberValue(timeoutMs));
+  return BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"network.request timed out", details);
+}
+
+std::optional<uint32_t> RequestedTimeoutMs(json::JsonObject const& params, bool& invalid) {
+  invalid = false;
+  if (!params.HasKey(L"timeoutMs")) {
+    return std::nullopt;
+  }
+  auto value = params.GetNamedValue(L"timeoutMs");
+  if (value.ValueType() != json::JsonValueType::Number) {
+    invalid = true;
+    return std::nullopt;
+  }
+  auto timeout = value.GetNumber();
+  if (!std::isfinite(timeout) ||
+      std::floor(timeout) != timeout ||
+      timeout <= 0 ||
+      timeout > static_cast<double>(std::numeric_limits<int>::max())) {
+    invalid = true;
+    return std::nullopt;
+  }
+  return static_cast<uint32_t>(timeout);
+}
+
+uint32_t EffectiveTimeoutMs(NetworkPolicyRule const& rule, std::optional<uint32_t> requestedTimeout) {
+  return requestedTimeout.has_value() ? std::min(rule.timeoutMs, requestedTimeout.value()) : rule.timeoutMs;
+}
+
+json::JsonObject NetworkTransportFailure(BridgeRequest const& request, DWORD error, uint32_t timeoutMs) {
+  if (error == ERROR_WINHTTP_TIMEOUT) {
+    return TimeoutFailure(request, timeoutMs);
+  }
+  return Failure(request, L"network_error", L"network.request failed");
+}
+
 std::optional<std::wstring> Header(HINTERNET request, DWORD header) {
   DWORD bytes = 0;
   WinHttpQueryHeaders(request, header, WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &bytes, WINHTTP_NO_HEADER_INDEX);
@@ -340,11 +391,17 @@ json::JsonObject ResponseHeaders(HINTERNET request) {
   return headers;
 }
 
-std::optional<std::wstring> ReadBody(HINTERNET request, uint32_t maxBytes) {
+std::optional<std::wstring> ReadBody(HINTERNET request, uint32_t maxBytes, DWORD* lastError) {
+  if (lastError != nullptr) {
+    *lastError = ERROR_SUCCESS;
+  }
   std::string body;
   while (true) {
     DWORD available = 0;
     if (!WinHttpQueryDataAvailable(request, &available)) {
+      if (lastError != nullptr) {
+        *lastError = GetLastError();
+      }
       return std::nullopt;
     }
     if (available == 0) {
@@ -356,6 +413,9 @@ std::optional<std::wstring> ReadBody(HINTERNET request, uint32_t maxBytes) {
     std::string chunk(available, '\0');
     DWORD read = 0;
     if (!WinHttpReadData(request, chunk.data(), available, &read)) {
+      if (lastError != nullptr) {
+        *lastError = GetLastError();
+      }
       return std::nullopt;
     }
     chunk.resize(read);
@@ -410,6 +470,11 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
   if (body.hasBody && body.bytes.size() > rule->maxRequestBytes) {
     return Failure(request, L"network_policy_denied", L"network.request body exceeds manifest.networkPolicy maxRequestBytes");
   }
+  bool invalidTimeout = false;
+  auto requestedTimeout = RequestedTimeoutMs(request.params, invalidTimeout);
+  if (invalidTimeout) {
+    return InvalidTimeoutFailure(request);
+  }
 
   HttpHandle session{WinHttpOpen(L"NativeAIWebappPlatform/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0)};
   if (session.value == nullptr) {
@@ -429,7 +494,8 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
       return Failure(request, L"network_error", L"WinHTTP request creation failed");
     }
 
-    auto timeout = static_cast<int>(rule->timeoutMs);
+    auto effectiveTimeoutMs = EffectiveTimeoutMs(*rule, requestedTimeout);
+    auto timeout = static_cast<int>(effectiveTimeoutMs);
     WinHttpSetTimeouts(httpRequest.value, timeout, timeout, timeout, timeout);
     DWORD disabled = WINHTTP_DISABLE_REDIRECTS;
     WinHttpSetOption(httpRequest.value, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled));
@@ -440,9 +506,11 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
 
     void* sendBody = body.hasBody ? static_cast<void*>(body.bytes.data()) : nullptr;
     auto sendBodySize = body.hasBody ? static_cast<DWORD>(body.bytes.size()) : 0;
-    if (!WinHttpSendRequest(httpRequest.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0, sendBody, sendBodySize, sendBodySize, 0) ||
-        !WinHttpReceiveResponse(httpRequest.value, nullptr)) {
-      return Failure(request, L"network_error", L"network.request failed");
+    if (!WinHttpSendRequest(httpRequest.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0, sendBody, sendBodySize, sendBodySize, 0)) {
+      return NetworkTransportFailure(request, GetLastError(), effectiveTimeoutMs);
+    }
+    if (!WinHttpReceiveResponse(httpRequest.value, nullptr)) {
+      return NetworkTransportFailure(request, GetLastError(), effectiveTimeoutMs);
     }
 
     auto status = StatusCode(httpRequest.value);
@@ -458,8 +526,12 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request) {
       continue;
     }
 
-    auto bodyText = ReadBody(httpRequest.value, rule->maxResponseBytes);
+    DWORD readError = ERROR_SUCCESS;
+    auto bodyText = ReadBody(httpRequest.value, rule->maxResponseBytes, &readError);
     if (!bodyText.has_value()) {
+      if (readError == ERROR_WINHTTP_TIMEOUT) {
+        return TimeoutFailure(request, effectiveTimeoutMs);
+      }
       return Failure(request, L"network_policy_denied", L"network.response exceeds manifest.networkPolicy maxResponseBytes");
     }
 
