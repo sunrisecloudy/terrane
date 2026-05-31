@@ -1,5 +1,6 @@
 #include "platform_network.h"
 
+#include <gio/gio.h>
 #include <libsoup/soup.h>
 #include <string.h>
 
@@ -254,6 +255,63 @@ static JsonNode *network_failure(const BridgeRequest *request, const gchar *code
   return bridge_failure(request, code, message, NULL);
 }
 
+static JsonNode *invalid_timeout_failure(const BridgeRequest *request) {
+  JsonObject *details = json_object_new();
+  JsonNode *value = json_object_get_member(request->params, "timeoutMs");
+  if (value != NULL) {
+    json_object_set_member(details, "timeoutMs", json_node_copy(value));
+  }
+  return bridge_failure(request, "invalid_request", "network.request timeoutMs must be a positive integer", details);
+}
+
+static JsonNode *timeout_failure(const BridgeRequest *request, guint timeout_ms) {
+  JsonObject *details = json_object_new();
+  json_object_set_int_member(details, "timeoutMs", timeout_ms);
+  return bridge_failure(request, "timeout", "network.request timed out", details);
+}
+
+static gboolean requested_timeout_ms(JsonObject *params, guint *out, gboolean *invalid) {
+  *invalid = FALSE;
+  *out = 0;
+  if (!json_object_has_member(params, "timeoutMs")) {
+    return FALSE;
+  }
+
+  JsonNode *value = json_object_get_member(params, "timeoutMs");
+  GType value_type = json_node_get_value_type(value);
+  if (value_type == G_TYPE_INT64 || value_type == G_TYPE_INT || value_type == G_TYPE_UINT64 || value_type == G_TYPE_UINT) {
+    gint64 timeout = json_node_get_int(value);
+    if (timeout <= 0 || timeout > G_MAXUINT) {
+      *invalid = TRUE;
+      return FALSE;
+    }
+    *out = (guint)timeout;
+    return TRUE;
+  }
+
+  if (value_type == G_TYPE_DOUBLE || value_type == G_TYPE_FLOAT) {
+    gdouble timeout = json_node_get_double(value);
+    if (timeout <= 0 || timeout > G_MAXUINT) {
+      *invalid = TRUE;
+      return FALSE;
+    }
+    guint64 integer_timeout = (guint64)timeout;
+    if ((gdouble)integer_timeout != timeout) {
+      *invalid = TRUE;
+      return FALSE;
+    }
+    *out = (guint)timeout;
+    return TRUE;
+  }
+
+  *invalid = TRUE;
+  return FALSE;
+}
+
+static guint effective_timeout_ms(NetworkPolicyRule *rule, gboolean has_requested_timeout, guint requested_timeout) {
+  return has_requested_timeout ? MIN(rule->timeout_ms, requested_timeout) : rule->timeout_ms;
+}
+
 JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest *request) {
   (void)network;
   const gchar *url = json_object_get_string_member_with_default(request->params, "url", "");
@@ -300,9 +358,16 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     g_hash_table_unref(headers);
     return network_failure(request, "network_policy_denied", "network.request body exceeds manifest.networkPolicy maxRequestBytes");
   }
+  gboolean invalid_timeout = FALSE;
+  guint requested_timeout = 0;
+  gboolean has_requested_timeout = requested_timeout_ms(request->params, &requested_timeout, &invalid_timeout);
+  if (invalid_timeout) {
+    g_free(body.bytes);
+    g_hash_table_unref(headers);
+    return invalid_timeout_failure(request);
+  }
 
   SoupSession *session = soup_session_new();
-  g_object_set(session, "timeout", MAX(1, (guint)(rule->timeout_ms / 1000)), NULL);
   g_autofree gchar *current_url = g_strdup(url);
   for (guint redirects = 0; redirects < 6; ++redirects) {
     SoupMessage *message = soup_message_new(method, current_url);
@@ -314,8 +379,19 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
       g_bytes_unref(bytes);
     }
 
+    guint timeout_ms = effective_timeout_ms(rule, has_requested_timeout, requested_timeout);
+    g_object_set(session, "timeout", MAX(1, (timeout_ms + 999) / 1000), NULL);
     GBytes *response = soup_session_send_and_read(session, message, NULL, &error);
     if (error != NULL) {
+      if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)) {
+        JsonNode *failure = timeout_failure(request, timeout_ms);
+        g_clear_error(&error);
+        g_clear_object(&message);
+        g_free(body.bytes);
+        g_hash_table_unref(headers);
+        g_object_unref(session);
+        return failure;
+      }
       const gchar *message_text = error->message == NULL ? "network.request failed" : error->message;
       JsonNode *failure = network_failure(request, "network_error", message_text);
       g_clear_error(&error);

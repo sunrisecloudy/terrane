@@ -1579,6 +1579,11 @@ function checkNativeStatic() {
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
+    [linuxNetwork, "requested_timeout_ms"],
+    [linuxNetwork, "network.request timeoutMs must be a positive integer"],
+    [linuxNetwork, "effective_timeout_ms"],
+    [linuxNetwork, "G_IO_ERROR_TIMED_OUT"],
+    [linuxNetwork, '"timeout"'],
   ];
   for (const [source, snippet] of linuxRequired) {
     if (!source.includes(snippet)) {
