@@ -584,6 +584,28 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 id: (args["id"] as? String) ?? "control_core_step",
                 sessionId: sessionId
             )
+        case "runtime.storage_get":
+            let appId = try requiredString(args, key: "appId", message: "runtime.storage_get requires appId and key")
+            return try await bridgeCommandBody(
+                appId: appId,
+                method: "storage.get",
+                params: try storageGetParams(args),
+                id: (args["id"] as? String) ?? "control_storage_get",
+                sessionId: sessionId
+            )
+        case "runtime.storage_set":
+            let appId = try requiredString(args, key: "appId", message: "runtime.storage_set requires appId, key, and value")
+            return try await bridgeCommandBody(
+                appId: appId,
+                method: "storage.set",
+                params: try storageSetParams(args),
+                id: (args["id"] as? String) ?? "control_storage_set",
+                sessionId: sessionId
+            )
+        case "runtime.assert_storage":
+            return try await runtimeAssertStorage(args: args, sessionId: sessionId)
+        case "runtime.storage_reset", "platform.reset_webapp":
+            return try runtimeStorageReset(tool: tool, args: args, sessionId: sessionId)
         case "db.snapshot",
              "db.query_app_storage",
              "db.query_app_versions",
@@ -621,6 +643,11 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
+                    "runtime.storage_get",
+                    "runtime.storage_set",
+                    "runtime.assert_storage",
+                    "runtime.storage_reset",
+                    "platform.reset_webapp",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -640,14 +667,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
         id: String?,
         sessionId: String
     ) async throws -> [String: Any] {
-        guard let bridgeCommandHandler else {
-            throw CommandError(
-                status: 503,
-                code: "platform_unsupported",
-                message: "iOS dev control bridge routing is not available"
-            )
-        }
-        let response = await bridgeCommandHandler(appId, method, params, id)
+        let response = try await bridgeCommandResponse(appId: appId, method: method, params: params, id: id)
         if response.ok {
             return successBody(result: [
                 "bridgeResponse": response.asDictionary()
@@ -668,6 +688,156 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 "bridgeError": error
             ]
         )
+    }
+
+    private func bridgeCommandResponse(
+        appId: String,
+        method: String,
+        params: [String: Any],
+        id: String?
+    ) async throws -> BridgeResponse {
+        guard let bridgeCommandHandler else {
+            throw CommandError(
+                status: 503,
+                code: "platform_unsupported",
+                message: "iOS dev control bridge routing is not available"
+            )
+        }
+        return await bridgeCommandHandler(appId, method, params, id)
+    }
+
+    private func storageGetParams(_ args: [String: Any]) throws -> [String: Any] {
+        var params: [String: Any] = [
+            "key": try requiredString(args, key: "key", message: "runtime.storage_get requires appId and key")
+        ]
+        if args.keys.contains("defaultValue") {
+            params["defaultValue"] = args["defaultValue"] ?? NSNull()
+        }
+        return params
+    }
+
+    private func storageSetParams(_ args: [String: Any]) throws -> [String: Any] {
+        guard args.keys.contains("value") else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.storage_set requires appId, key, and value")
+        }
+        return [
+            "key": try requiredString(args, key: "key", message: "runtime.storage_set requires appId, key, and value"),
+            "value": args["value"] ?? NSNull()
+        ]
+    }
+
+    private func runtimeAssertStorage(args: [String: Any], sessionId: String) async throws -> [String: Any] {
+        guard args.keys.contains("value") else {
+            throw CommandError(status: 400, code: "invalid_request", message: "runtime.assert_storage requires appId, key, and value")
+        }
+        let appId = try requiredString(args, key: "appId", message: "runtime.assert_storage requires appId, key, and value")
+        let key = try requiredString(args, key: "key", message: "runtime.assert_storage requires appId, key, and value")
+        let response = try await bridgeCommandResponse(
+            appId: appId,
+            method: "storage.get",
+            params: ["key": key],
+            id: (args["id"] as? String) ?? "control_storage_assert_get"
+        )
+        if !response.ok {
+            let error = response.error ?? [
+                "code": "assertion_failed",
+                "message": "Storage assertion read failed",
+                "details": [:]
+            ]
+            throw CommandError(
+                status: 400,
+                code: (error["code"] as? String) ?? "assertion_failed",
+                message: (error["message"] as? String) ?? "Storage assertion read failed",
+                details: ["appId": appId, "key": key, "bridgeError": error]
+            )
+        }
+        guard let result = response.result as? [String: Any] else {
+            throw CommandError(status: 400, code: "assertion_failed", message: "Storage assertion read returned an invalid result", details: ["appId": appId, "key": key])
+        }
+        let actual = result["value"] ?? NSNull()
+        let expected = args["value"] ?? NSNull()
+        guard jsonValuesEqual(actual, expected) else {
+            throw CommandError(
+                status: 400,
+                code: "assertion_failed",
+                message: "Storage value did not match expected value",
+                details: ["appId": appId, "key": key, "actual": actual, "expected": expected]
+            )
+        }
+        return successBody(result: [
+            "ok": true,
+            "appId": appId,
+            "key": key,
+            "value": actual
+        ], sessionId: sessionId)
+    }
+
+    private func runtimeStorageReset(tool: String, args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "\(tool) requires appId")
+        guard args["confirm"] as? Bool == true else {
+            throw CommandError(status: 400, code: "confirmation_required", message: "\(tool) requires confirm: true")
+        }
+        guard let reset = PlatformStorage().resetAppStorage(appId: appId, sessionId: sessionId) else {
+            throw CommandError(status: 500, code: "storage_error", message: "Webapp storage could not be reset", details: ["appId": appId])
+        }
+        var result: [String: Any] = [
+            "ok": true,
+            "appId": appId,
+            "snapshotId": reset.snapshotId,
+            "clearedStorageKeys": reset.clearedStorageKeys,
+            "storageRowsDeleted": reset.storageRowsDeleted,
+            "contentHash": reset.contentHash
+        ]
+        if tool == "platform.reset_webapp" {
+            result["clearedLogs"] = try clearRuntimeLogs(appId: appId)
+        }
+        return successBody(result: result, sessionId: sessionId)
+    }
+
+    private func clearRuntimeLogs(appId: String) throws -> [String: Any] {
+        [
+            "coreActions": try deleteRows(sql: "DELETE FROM core_actions WHERE app_id = ?", appId: appId),
+            "coreEvents": try deleteRows(sql: "DELETE FROM core_events WHERE app_id = ?", appId: appId),
+            "bridgeCalls": try deleteRows(sql: "DELETE FROM bridge_calls WHERE app_id = ?", appId: appId)
+        ]
+    }
+
+    private func deleteRows(sql: String, appId: String) throws -> Int {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare runtime log cleanup")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not clear runtime logs")
+        }
+        return Int(sqlite3_changes(db))
+    }
+
+    private func requiredString(_ args: [String: Any], key: String, message: String) throws -> String {
+        guard let value = args[key] as? String, !value.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_request", message: message)
+        }
+        return value
+    }
+
+    private func jsonValuesEqual(_ lhs: Any, _ rhs: Any) -> Bool {
+        canonicalJsonString(lhs) == canonicalJsonString(rhs)
+    }
+
+    private func canonicalJsonString(_ value: Any) -> String {
+        let wrapped: [String: Any] = ["value": value]
+        guard JSONSerialization.isValidJSONObject(wrapped),
+              let data = try? JSONSerialization.data(withJSONObject: wrapped, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: value)
+        }
+        return text
     }
 
     private func dbToolName(forPath path: String) -> String? {
