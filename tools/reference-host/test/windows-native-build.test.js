@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -112,6 +113,7 @@ test(
 
       const dataHome = path.join(scratch, "data-home");
       const forbiddenFlags = [
+        "--native-ai-dev-control",
         "--allow-unsigned-dev",
         "--allow-runtime-mismatch=1",
         "--control-plane-port=5123",
@@ -140,6 +142,87 @@ test(
         assert.equal(databaseBytes.includes(flag), true, `audit database should include rejected flag ${flag}`);
       }
     } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Windows debug dev control health is token-gated and audited",
+  {
+    skip: process.platform !== "win32"
+      ? "Windows native smoke only runs on Windows hosts"
+      : !commandWorks("cmake")
+        ? "cmake is not available"
+        : false,
+    timeout: 180_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-dev-control-"));
+    let child = null;
+    try {
+      const buildDir = path.join(scratch, "debug-build");
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir], { stdio: "ignore" });
+      execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
+      const binaryPath = resolveWindowsHostBinary(buildDir);
+      assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after Debug CMake build");
+
+      const dataHome = path.join(scratch, "data-home");
+      const resultFile = path.join(scratch, "dev-control-result.txt");
+      const tokenPath = path.join(scratch, "control.token");
+      child = spawn(binaryPath, ["--native-ai-dev-control", "--control-plane-port=0"], {
+        env: {
+          ...process.env,
+          NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
+          NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
+          PLATFORM_CONTROL_TOKEN_FILE: tokenPath,
+        },
+        cwd: path.dirname(binaryPath),
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const ready = await waitForWindowsControlReady(child, resultFile);
+      assert.equal(ready.tokenPath, tokenPath);
+      const token = fs.readFileSync(tokenPath, "utf8").trim();
+      assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+
+      const unauthorized = await requestControlHealth(ready.port);
+      assert.equal(unauthorized.statusCode, 401);
+      assert.equal(JSON.parse(unauthorized.body).error.code, "control_auth_required");
+
+      const authorized = await requestControlHealth(ready.port, token);
+      assert.equal(authorized.statusCode, 200, authorized.body);
+      const body = JSON.parse(authorized.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.target, "windows");
+      assert.equal(body.controlPlane.port, ready.port);
+
+      const dbPath = path.join(dataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new DatabaseSync(dbPath);
+      try {
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_sessions WHERE target = 'windows' AND token_hash IS NOT NULL").get().count) >= 1,
+          true,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE http_method = 'GET' AND path = '/health' AND decision = 'rejected' AND error_code = 'control_auth_required'").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+      } finally {
+        database.close();
+      }
+    } finally {
+      if (child !== null) {
+        await stopChild(child);
+      }
       fs.rmSync(scratch, { recursive: true, force: true });
     }
   },
@@ -228,4 +311,101 @@ function runSmoke(binaryPath, resultFile, marker, env) {
   assert.equal(result.error, undefined, output);
   assert.equal(result.status, 0, output);
   assert.equal(output.includes(marker), true, `Timed out waiting for ${marker}\n${output}`);
+}
+
+function waitForWindowsControlReady(child, resultFile) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let output = "";
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Timed out waiting for Windows dev control readiness\n${output}`));
+      }
+    }, 30_000);
+
+    function completeFromText(text) {
+      output += text;
+      const match = output.match(/NATIVE_AI_WINDOWS_CONTROL_READY port=(\d+) token_path=([^\r\n]+)/);
+      if (!match || settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      resolve({ port: Number(match[1]), tokenPath: match[2], output });
+    }
+
+    const poll = setInterval(() => {
+      if (fs.existsSync(resultFile)) {
+        completeFromText(fs.readFileSync(resultFile, "utf8"));
+      }
+    }, 100);
+    child.stdout.on("data", (chunk) => completeFromText(chunk.toString("utf8")));
+    child.stderr.on("data", (chunk) => completeFromText(chunk.toString("utf8")));
+    child.once("error", (error) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(poll);
+        reject(error);
+      }
+    });
+    child.once("exit", (code, signal) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(poll);
+        reject(new Error(`Windows host exited before dev control was ready code=${code} signal=${signal}\n${output}`));
+      }
+    });
+  });
+}
+
+function requestControlHealth(port, token = null) {
+  return requestControl(port, "/health", { token });
+}
+
+function requestControl(port, pathName, { method = "GET", token = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const headers = token ? { "X-Platform-Control-Token": token } : {};
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: pathName,
+        method,
+        headers,
+        timeout: 10_000,
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => resolve({ statusCode: res.statusCode, body }));
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error(`Timed out waiting for Windows dev control ${method} ${pathName}`));
+    });
+    req.end();
+  });
+}
+
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill();
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      }
+      resolve();
+    }, 5_000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }

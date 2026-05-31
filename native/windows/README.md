@@ -44,13 +44,18 @@ MVP acceptance:
 
 This host must support a dev/test-only control plane for Codex micro-testing.
 
-Required behavior:
+Implemented now (source/static verified here; runtime smoke is Windows-only):
 
-- Enable only in debug/dev builds.
-- Require a random control token.
-- Expose host/runtime/session state through the control protocol.
-- Route UI control, bridge inspection, storage mocks, network mocks, dialog mocks, and replay operations to the runtime.
-- Compile out or hard-disable the control plane in production/release builds.
+- Debug builds can enable a loopback-only control listener with `--native-ai-dev-control` or `NATIVE_AI_WINDOWS_DEV_CONTROL=1`.
+- `--control-plane-port` / `--control-plane-port=...` selects the listener port; `0` lets Windows assign a free port.
+- Each launch writes a fresh random token to `%LOCALAPPDATA%\NativeAIWebappPlatform\control.token`, or `PLATFORM_CONTROL_TOKEN_FILE` when set for tests.
+- Requests must send `X-Platform-Control-Token`; missing or invalid tokens return `control_auth_required`.
+- `GET /health` returns Windows target health and records accepted/rejected control audit rows in SQLite.
+- Release builds reject dev-control startup flags and environment enablement.
+
+Remaining protocol work:
+
+- Session lifecycle, runtime command routing, UI control, bridge inspection, storage mocks, network mocks, dialog mocks, replay, and safe DB inspection are not implemented on Windows yet.
 
 See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 

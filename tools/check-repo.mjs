@@ -1164,8 +1164,11 @@ function checkNativeStatic() {
   const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.h"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
+  const windowsDevControl = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "DevControlPlane.cpp"), "utf8");
+  const windowsDevControlHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "DevControlPlane.h"), "utf8");
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
   const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "windows-native-build.test.js"), "utf8");
+  const windowsDevControlSourceTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "windows-dev-control-source.test.js"), "utf8");
   const linuxMain = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "main.c"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxAppSandbox = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "app_sandbox.c"), "utf8");
@@ -1591,6 +1594,7 @@ function checkNativeStatic() {
   for (const snippet of [
     "RecordProductionGuardAudit",
     "IsForbiddenDevFlag",
+    "--native-ai-dev-control",
     "--allow-unsigned-dev",
     "--allow-runtime-mismatch",
     "--control-plane-port",
@@ -1602,8 +1606,89 @@ function checkNativeStatic() {
     }
   }
   for (const snippet of [
+    "DevControlPlaneConfig",
+    "Start(DevControlPlaneConfig const& config",
+    "void Stop()",
+    "uint16_t Port() const",
+    "std::filesystem::path TokenPath() const",
+  ]) {
+    if (!windowsDevControlHeader.includes(snippet)) {
+      throw new Error(`Windows dev control header missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "NATIVE_AI_WINDOWS_DEV_CONTROL",
+    "--native-ai-dev-control",
+    "--control-plane-port",
+    "DevControlPlaneConfig config",
+    "devControl->Start(config",
+    "Windows dev control plane is disabled in release builds",
+  ]) {
+    if (!windowsMain.includes(snippet)) {
+      throw new Error(`Windows dev control startup missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "AF_INET",
+    "INADDR_LOOPBACK",
+    "bind(listenSocket",
+    "listen(listenSocket",
+    "accept(listenSocket",
+    "SO_RCVTIMEO",
+    "PLATFORM_CONTROL_TOKEN_FILE",
+    "FOLDERID_LocalAppData",
+    "NativeAIWebappPlatform",
+    "control.token",
+    "BCryptGenRandom",
+    "Base64Url",
+    "Sha256Hex",
+    "CreateFileW",
+    "X-Platform-Control-Token",
+    "HeaderValue(request, \"X-Platform-Control-Token\") != WideToUtf8(token)",
+    "control_auth_required",
+    "SendJson(client, 401, body)",
+    "Unauthorized",
+    "method != \"GET\" || path != \"/health\"",
+    "\"/health\"",
+    "platform.health",
+    "Audit(L\"platform.health\"",
+    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "control_sessions",
+    "control_commands",
+    "UPDATE control_sessions SET status = 'ended'",
+    "'windows'",
+  ]) {
+    if (!windowsDevControl.includes(snippet)) {
+      throw new Error(`Windows dev control plane missing ${snippet}`);
+    }
+  }
+  for (const snippet of ["src/DevControlPlane.cpp", "ws2_32", "bcrypt"]) {
+    if (!windowsCmake.includes(snippet)) {
+      throw new Error(`Windows dev control CMake missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "Windows dev control health route is debug-only, loopback-bound, token-gated, and audited",
+    "X-Platform-Control-Token",
+    "control_auth_required",
+    "platform.health",
+    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+  ]) {
+    if (!windowsDevControlSourceTest.includes(snippet)) {
+      throw new Error(`Windows dev control source test missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
     "Windows release host rejects dev-only startup flags and audits the rejection",
+    "Windows debug dev control health is token-gated and audited",
+    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "requestControlHealth",
+    "control_auth_required",
+    'body.target, "windows"',
+    "control_sessions WHERE target = 'windows' AND token_hash IS NOT NULL",
+    "tool = 'platform.health'",
     "--config\", \"Release",
+    "--native-ai-dev-control",
     "--allow-runtime-mismatch=1",
     "--control-plane-port=5123",
     "native\\.production_guard",

@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(NativeAIWebappHost WIN32
   src/main.cpp
   src/BridgeTypes.cpp
+  src/DevControlPlane.cpp
   src/PlatformDatabase.cpp
   src/WebViewHost.cpp
   src/WebBridge.cpp
@@ -19,7 +20,7 @@ add_executable(NativeAIWebappHost WIN32
 )
 
 target_compile_definitions(NativeAIWebappHost PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(NativeAIWebappHost PRIVATE windowsapp winsqlite3 shell32 winhttp ole32)
+target_link_libraries(NativeAIWebappHost PRIVATE windowsapp winsqlite3 shell32 winhttp ole32 ws2_32 bcrypt)
 
 if(WIN32)
   set(NATIVE_AI_WEBVIEW2_NUGET_DIR "$ENV{NATIVE_AI_WEBVIEW2_NUGET_DIR}" CACHE PATH "Expanded Microsoft.Web.WebView2 NuGet package")

@@ -1,3 +1,4 @@
+#include "DevControlPlane.h"
 #include "BridgeTypes.h"
 #include "PlatformDatabase.h"
 #include "WebViewHost.h"
@@ -5,6 +6,7 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string_view>
@@ -23,6 +25,7 @@ bool DebugBuildAllowsDevFlags() {
 
 bool IsForbiddenDevFlag(std::wstring_view argument) {
   constexpr std::wstring_view flags[] = {
+      L"--native-ai-dev-control",
       L"--control-plane-port",
       L"--allow-runtime-mismatch",
       L"--allow-unsigned-dev",
@@ -37,6 +40,24 @@ bool IsForbiddenDevFlag(std::wstring_view argument) {
     }
   }
   return false;
+}
+
+bool ParseUInt16(std::wstring_view text, uint16_t* value) {
+  if (text.empty()) {
+    return false;
+  }
+  uint32_t parsed = 0;
+  for (wchar_t ch : text) {
+    if (ch < L'0' || ch > L'9') {
+      return false;
+    }
+    parsed = (parsed * 10) + static_cast<uint32_t>(ch - L'0');
+    if (parsed > 65535) {
+      return false;
+    }
+  }
+  *value = static_cast<uint16_t>(parsed);
+  return true;
 }
 
 std::wstring EnvironmentValue(wchar_t const* name) {
@@ -168,7 +189,62 @@ bool RejectDevOnlyFlagsIfNeeded() {
     }
   }
   LocalFree(argv);
+  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_DEV_CONTROL") == L"1") {
+    RecordProductionGuardAudit(L"NATIVE_AI_WINDOWS_DEV_CONTROL");
+    OutputDebugStringW(L"fatal: production build rejects Windows dev control environment enablement\n");
+    return true;
+  }
   return false;
+}
+
+struct DevControlOptions {
+  bool enabled = false;
+  uint16_t port = 0;
+  bool ok = true;
+  std::wstring error;
+};
+
+DevControlOptions ParseDevControlOptions() {
+  DevControlOptions options;
+  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_DEV_CONTROL") == L"1") {
+    options.enabled = true;
+  }
+
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv) {
+    options.ok = false;
+    options.error = L"Could not parse Windows dev control arguments";
+    return options;
+  }
+
+  for (int index = 1; index < argc; ++index) {
+    std::wstring_view argument(argv[index]);
+    if (argument == L"--native-ai-dev-control" || argument == L"--native-ai-dev-control=1") {
+      options.enabled = true;
+      continue;
+    }
+    if (argument == L"--control-plane-port") {
+      if (index + 1 >= argc || !ParseUInt16(argv[index + 1], &options.port)) {
+        options.ok = false;
+        options.error = L"--control-plane-port requires a value from 0 to 65535";
+        break;
+      }
+      ++index;
+      continue;
+    }
+    constexpr std::wstring_view portPrefix = L"--control-plane-port=";
+    if (argument.size() >= portPrefix.size() && argument.substr(0, portPrefix.size()) == portPrefix) {
+      if (!ParseUInt16(argument.substr(portPrefix.size()), &options.port)) {
+        options.ok = false;
+        options.error = L"--control-plane-port requires a value from 0 to 65535";
+        break;
+      }
+    }
+  }
+
+  LocalFree(argv);
+  return options;
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -194,8 +270,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
   if (RejectDevOnlyFlagsIfNeeded()) {
     return 1;
   }
+  auto devControlOptions = ParseDevControlOptions();
+  if (!devControlOptions.ok) {
+    OutputDebugStringW((L"fatal: " + devControlOptions.error + L"\n").c_str());
+    return 1;
+  }
 
   winrt::init_apartment(winrt::apartment_type::single_threaded);
+
+  std::unique_ptr<nativeai::DevControlPlane> devControl;
+  if (devControlOptions.enabled) {
+#ifdef _DEBUG
+    nativeai::DevControlPlaneConfig config;
+    config.requestedPort = devControlOptions.port;
+    config.databasePath = ProductionGuardDatabasePath();
+    std::wstring devControlError;
+    devControl = std::make_unique<nativeai::DevControlPlane>();
+    if (!devControl->Start(config, &devControlError)) {
+      OutputDebugStringW((L"fatal: " + devControlError + L"\n").c_str());
+      return 1;
+    }
+#else
+    RecordProductionGuardAudit(L"NATIVE_AI_WINDOWS_DEV_CONTROL");
+    OutputDebugStringW(L"fatal: Windows dev control plane is disabled in release builds\n");
+    return 1;
+#endif
+  }
 
   WNDCLASS windowClass{};
   windowClass.lpfnWndProc = WindowProc;
@@ -228,5 +328,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
   }
 
   g_host.reset();
+  if (devControl) {
+    devControl->Stop();
+  }
   return 0;
 }
