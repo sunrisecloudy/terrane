@@ -650,6 +650,8 @@ final class IOSDevControlPlane: @unchecked Sendable {
              "db.query_bridge_calls",
              "db.query_core_events",
              "db.query_test_runs",
+             "db.export_backup",
+             "db.import_backup",
              "db.export_debug_bundle":
             return try dispatchDbTool(tool, args: args, sessionId: sessionId)
         default:
@@ -709,6 +711,8 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "db.query_bridge_calls",
                     "db.query_core_events",
                     "db.query_test_runs",
+                    "db.export_backup",
+                    "db.import_backup",
                     "db.export_debug_bundle"
                 ]
             ]]
@@ -1824,6 +1828,10 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return "db.query_core_events"
         case "/db/test-runs":
             return "db.query_test_runs"
+        case "/db/export-backup":
+            return "db.export_backup"
+        case "/db/import-backup":
+            return "db.import_backup"
         case "/db/export-debug-bundle":
             return "db.export_debug_bundle"
         default:
@@ -1841,6 +1849,10 @@ final class IOSDevControlPlane: @unchecked Sendable {
              "db.query_core_events",
              "db.query_test_runs":
             return successBody(result: try dbQueryRows(tool: tool, args: args), sessionId: sessionId)
+        case "db.export_backup":
+            return successBody(result: try dbExportBackup(), sessionId: sessionId)
+        case "db.import_backup":
+            return successBody(result: try dbImportBackup(args: args), sessionId: sessionId)
         case "db.export_debug_bundle":
             return successBody(result: try dbExportDebugBundle(), sessionId: sessionId)
         default:
@@ -1883,18 +1895,47 @@ final class IOSDevControlPlane: @unchecked Sendable {
     }
 
     private func dbExportDebugBundle() throws -> [String: Any] {
+        try dbExportDocument(type: "debug-bundle", includeDebug: true)
+    }
+
+    private func dbExportBackup() throws -> [String: Any] {
+        try dbExportDocument(type: "backup", includeDebug: false)
+    }
+
+    private func dbExportDocument(type: String, includeDebug: Bool) throws -> [String: Any] {
         let exportId = "export_ios_\(UUID().uuidString.lowercased())"
         let createdAt = Self.now()
+        var debug: [String: Any] = [:]
+        if includeDebug {
+            debug = [
+                "runtimeSessions": safeTableRows(Self.safeDbRuntimeSessions, appId: nil, limit: 500),
+                "bridgeCalls": safeTableRows(Self.safeDbBridgeCalls, appId: nil, limit: 500),
+                "controlSessions": safeTableRows(Self.safeDbControlSessions, appId: nil, limit: 500),
+                "controlCommands": safeTableRows(Self.safeDbControlCommands, appId: nil, limit: 500),
+                "coreEvents": safeTableRows(Self.safeDbCoreEvents, appId: nil, limit: 500),
+                "coreActions": safeTableRows(Self.safeDbCoreActions, appId: nil, limit: 500),
+                "runtimeSnapshots": safeTableRows(Self.backupDbRuntimeSnapshots, appId: nil, limit: 500),
+                "testRuns": safeTableRows(Self.safeDbTestRuns, appId: nil, limit: 500)
+            ]
+        }
         let documentWithoutHash: [String: Any] = [
             "exportId": exportId,
-            "type": "debug-bundle",
+            "type": type,
             "createdAt": createdAt,
             "runtimeVersion": "0.4.0",
             "source": [
                 "platform": "ios",
                 "target": "ios-simulator"
             ],
-            "snapshot": dbSnapshot()
+            "apps": safeTableRows(Self.safeDbApps, appId: nil, limit: 500),
+            "appVersions": safeTableRows(Self.backupDbAppVersions, appId: nil, limit: 500),
+            "appFiles": safeTableRows(Self.backupDbAppFiles, appId: nil, limit: 500),
+            "appPermissions": safeTableRows(Self.backupDbAppPermissions, appId: nil, limit: 500),
+            "appStorage": safeTableRows(Self.safeDbAppStorage, appId: nil, limit: 500),
+            "appMigrations": safeTableRows(Self.backupDbAppMigrations, appId: nil, limit: 500),
+            "appInstallReports": safeTableRows(Self.backupDbAppInstallReports, appId: nil, limit: 500),
+            "runtimeCapabilities": runtimeCapabilities(appId: nil),
+            "debug": debug
         ]
         let contentHashPrefix = "sha256:"
         let contentHash = "\(contentHashPrefix)\(Self.sha256Hex(jsonString(documentWithoutHash)))"
@@ -1902,26 +1943,385 @@ final class IOSDevControlPlane: @unchecked Sendable {
         document["contentHash"] = contentHash
         let exportJson = jsonString(document)
 
+        try insertBackupExportRecord(
+            exportId: exportId,
+            type: type,
+            sourcePlatform: "ios",
+            runtimeVersion: "0.4.0",
+            exportJson: exportJson,
+            contentHash: contentHash,
+            createdAt: createdAt,
+            importedAt: nil
+        )
+        return document
+    }
+
+    private func dbImportBackup(args: [String: Any]) throws -> [String: Any] {
+        guard let document = args["backup"] as? [String: Any] else {
+            throw CommandError(status: 400, code: "invalid_request", message: "db.import_backup requires backup")
+        }
+        let type = backupString(document, "type") ?? ""
+        guard ["backup", "debug-bundle", "test-fixture"].contains(type) else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Backup import requires type backup, debug-bundle, or test-fixture")
+        }
+        let apps = try requiredBackupArray(document, key: "apps")
+        let appVersions = try requiredBackupArray(document, key: "appVersions")
+        let appFiles = try requiredBackupArray(document, key: "appFiles")
+        let appPermissions = try requiredBackupArray(document, key: "appPermissions")
+        let appStorage = try requiredBackupArray(document, key: "appStorage")
+        let appInstallations = backupArray(document, key: "appInstallations")
+        let appMigrations = backupArray(document, key: "appMigrations")
+        let appInstallReports = backupArray(document, key: "appInstallReports")
+        let createdAt = Self.now()
+        let source = document["source"] as? [String: Any] ?? [:]
+        let documentText = jsonString(document)
+        let contentHash = backupString(document, "contentHash") ?? "sha256:\(Self.sha256Hex(documentText))"
+
+        try beginTransaction()
+        do {
+            for row in apps {
+                try importApp(row, createdAt: createdAt)
+            }
+            for row in appVersions {
+                try importAppVersion(row, createdAt: createdAt)
+            }
+            for row in appFiles {
+                try importAppFile(row, createdAt: createdAt)
+            }
+            for row in appPermissions {
+                try importAppPermission(row)
+            }
+            for row in appInstallations {
+                try importAppInstallation(row, createdAt: createdAt)
+            }
+            for row in appStorage {
+                try importBackupStorageRow(row, createdAt: createdAt)
+            }
+            for row in appMigrations {
+                try importAppMigration(row, createdAt: createdAt)
+            }
+            for row in appInstallReports {
+                try importAppInstallReport(row, createdAt: createdAt)
+            }
+            try insertBackupExportRecord(
+                exportId: "import_ios_\(UUID().uuidString.lowercased())",
+                type: "import",
+                sourcePlatform: backupString(source, "platform") ?? "unknown",
+                runtimeVersion: backupString(document, "runtimeVersion") ?? "0.4.0",
+                exportJson: documentText,
+                contentHash: contentHash,
+                createdAt: createdAt,
+                importedAt: createdAt
+            )
+            try commitTransaction()
+            return [
+                "ok": true,
+                "apps": apps.count,
+                "appVersions": appVersions.count,
+                "appStorage": appStorage.count
+            ]
+        } catch {
+            rollbackTransaction()
+            throw error
+        }
+    }
+
+    private func insertBackupExportRecord(
+        exportId: String,
+        type: String,
+        sourcePlatform: String,
+        runtimeVersion: String,
+        exportJson: String,
+        contentHash: String,
+        createdAt: String,
+        importedAt: String?
+    ) throws {
         guard let db = database.handle else {
             throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
         }
         let sql = """
-        INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at)
-        VALUES (?, 'debug-bundle', 'ios', '0.4.0', ?, ?, ?)
+        INSERT OR REPLACE INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare debug bundle export")
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare backup export")
         }
         defer { sqlite3_finalize(statement) }
         bind(statement, 1, exportId)
-        bind(statement, 2, exportJson)
-        bind(statement, 3, contentHash)
-        bind(statement, 4, createdAt)
+        bind(statement, 2, type)
+        bind(statement, 3, sourcePlatform)
+        bind(statement, 4, runtimeVersion)
+        bind(statement, 5, exportJson)
+        bind(statement, 6, contentHash)
+        bind(statement, 7, createdAt)
+        bindNullable(statement, 8, importedAt)
         guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw CommandError(status: 500, code: "storage_error", message: "Could not persist debug bundle export")
+            throw CommandError(status: 500, code: "storage_error", message: "Could not persist backup export")
         }
-        return document
+    }
+
+    private func importApp(_ row: [String: Any], createdAt: String) throws {
+        let appId = try requiredBackupString(row, "id", "appId")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(appId),
+                .text(backupString(row, "name") ?? appId),
+                .text(backupString(row, "status") ?? "enabled"),
+                .nullableText(backupString(row, "active_install_id", "activeInstallId")),
+                .nullableText(backupString(row, "active_version", "activeVersion")),
+                .int(backupInt(row, "data_version", "dataVersion", default: 1)),
+                .text(backupString(row, "created_at", "createdAt") ?? createdAt),
+                .text(backupString(row, "updated_at", "updatedAt") ?? createdAt)
+            ]
+        )
+    }
+
+    private func importAppVersion(_ row: [String: Any], createdAt: String) throws {
+        let installId = try requiredBackupString(row, "install_id", "installId")
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        let version = try requiredBackupString(row, "version", "appVersion")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(installId),
+                .text(appId),
+                .text(version),
+                .text(backupString(row, "runtime_version", "runtimeVersion") ?? "0.4.0"),
+                .int(backupInt(row, "data_version", "dataVersion", default: 1)),
+                .text(backupJsonText(row, stringKeys: ["manifest_json", "manifestJson"], valueKeys: ["manifest"], fallback: "{}") ?? "{}"),
+                .text(backupString(row, "manifest_hash", "manifestHash") ?? ""),
+                .text(backupString(row, "content_hash", "contentHash") ?? ""),
+                .nullableText(backupJsonText(row, stringKeys: ["signature_json", "signatureJson"], valueKeys: ["signature"], fallback: nil)),
+                .text(backupString(row, "trust_level", "trustLevel") ?? "developer"),
+                .text(backupString(row, "status") ?? "installed"),
+                .text(backupString(row, "created_at", "installedAt", "createdAt") ?? createdAt),
+                .nullableText(backupString(row, "activated_at", "activatedAt"))
+            ]
+        )
+    }
+
+    private func importAppFile(_ row: [String: Any], createdAt: String) throws {
+        let installId = try requiredBackupString(row, "install_id", "installId")
+        let path = try requiredBackupString(row, "path")
+        let contentText = backupString(row, "content_text", "contentText") ?? ""
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(installId),
+                .text(path),
+                .text(contentText),
+                .text(backupString(row, "content_hash", "contentHash") ?? "sha256:\(Self.sha256Hex(contentText))"),
+                .int(backupInt(row, "size_bytes", "sizeBytes", default: contentText.data(using: .utf8)?.count ?? 0)),
+                .text(backupString(row, "mime") ?? "text/plain"),
+                .text(backupString(row, "created_at", "createdAt") ?? createdAt)
+            ]
+        )
+    }
+
+    private func importAppPermission(_ row: [String: Any]) throws {
+        let installId = try requiredBackupString(row, "install_id", "installId")
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        let permission = try requiredBackupString(row, "permission")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(installId),
+                .text(appId),
+                .text(permission),
+                .int(backupInt(row, "requested", default: 1)),
+                .int(backupInt(row, "approved", default: 0)),
+                .nullableText(backupString(row, "approved_at", "approvedAt")),
+                .nullableText(backupString(row, "reason"))
+            ]
+        )
+    }
+
+    private func importAppInstallation(_ row: [String: Any], createdAt: String) throws {
+        let eventId = try requiredBackupString(row, "installation_event_id", "installationEventId")
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        let installId = try requiredBackupString(row, "install_id", "installId")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, report_id, created_at, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(eventId),
+                .text(appId),
+                .text(installId),
+                .text(backupString(row, "action") ?? "import"),
+                .nullableText(backupString(row, "previous_install_id", "previousInstallId")),
+                .text(backupString(row, "actor") ?? "system"),
+                .nullableText(backupString(row, "report_id", "reportId")),
+                .text(backupString(row, "created_at", "createdAt") ?? createdAt),
+                .nullableText(backupJsonText(row, stringKeys: ["details_json", "detailsJson"], valueKeys: ["details"], fallback: nil))
+            ]
+        )
+    }
+
+    private func importBackupStorageRow(_ row: [String: Any], createdAt: String) throws {
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        let key = try requiredBackupString(row, "key")
+        try executePreparedStatement(
+            "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+            values: [
+                .text(appId),
+                .text(key),
+                .text(backupJsonText(row, stringKeys: ["value_json", "valueJson"], valueKeys: ["value"], fallback: "null") ?? "null"),
+                .text(backupString(row, "updated_at", "updatedAt") ?? createdAt)
+            ]
+        )
+    }
+
+    private func importAppMigration(_ row: [String: Any], createdAt: String) throws {
+        let migrationId = try requiredBackupString(row, "migration_id", "migrationId")
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(migrationId),
+                .text(appId),
+                .int(backupInt(row, "from_data_version", "fromDataVersion", default: 1)),
+                .int(backupInt(row, "to_data_version", "toDataVersion", default: 1)),
+                .text(backupJsonText(row, stringKeys: ["migration_json", "migrationJson"], valueKeys: ["migration"], fallback: "{}") ?? "{}"),
+                .text(backupString(row, "content_hash", "contentHash") ?? ""),
+                .text(backupString(row, "created_at", "createdAt") ?? createdAt)
+            ]
+        )
+    }
+
+    private func importAppInstallReport(_ row: [String: Any], createdAt: String) throws {
+        let reportId = try requiredBackupString(row, "report_id", "reportId")
+        let appId = try requiredBackupString(row, "app_id", "appId")
+        try executePreparedStatement(
+            """
+            INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values: [
+                .text(reportId),
+                .text(appId),
+                .nullableText(backupString(row, "install_id", "installId")),
+                .text(backupString(row, "status") ?? "accepted"),
+                .nullableText(backupJsonText(row, stringKeys: ["validation_json", "validationJson"], valueKeys: ["validation"], fallback: nil)),
+                .nullableText(backupJsonText(row, stringKeys: ["security_json", "securityJson"], valueKeys: ["security"], fallback: nil)),
+                .nullableText(backupJsonText(row, stringKeys: ["permissions_json", "permissionsJson"], valueKeys: ["permissions"], fallback: nil)),
+                .nullableText(backupJsonText(row, stringKeys: ["compatibility_json", "compatibilityJson"], valueKeys: ["compatibility"], fallback: nil)),
+                .nullableText(backupJsonText(row, stringKeys: ["smoke_test_json", "smokeTestJson"], valueKeys: ["smokeTest"], fallback: nil)),
+                .nullableText(backupString(row, "content_hash", "contentHash")),
+                .text(backupString(row, "created_at", "createdAt") ?? createdAt)
+            ]
+        )
+    }
+
+    private func executePreparedStatement(_ sql: String, values: [SqlValue]) throws {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Backup import could not be prepared")
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            let bindIndex = Int32(index + 1)
+            switch value {
+            case let .text(text):
+                bind(statement, bindIndex, text)
+            case let .nullableText(text):
+                bindNullable(statement, bindIndex, text)
+            case let .int(value):
+                sqlite3_bind_int64(statement, bindIndex, Int64(value))
+            }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Backup import could not be completed")
+        }
+    }
+
+    private func requiredBackupArray(_ document: [String: Any], key: String) throws -> [[String: Any]] {
+        guard let rows = document[key] as? [[String: Any]] else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Backup import document is missing required arrays")
+        }
+        return rows
+    }
+
+    private func backupArray(_ document: [String: Any], key: String) -> [[String: Any]] {
+        document[key] as? [[String: Any]] ?? []
+    }
+
+    private func requiredBackupString(_ row: [String: Any], _ keys: String...) throws -> String {
+        guard let value = backupString(row, keys), !value.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Backup import document has an invalid row")
+        }
+        return value
+    }
+
+    private func backupString(_ row: [String: Any], _ keys: String...) -> String? {
+        backupString(row, keys)
+    }
+
+    private func backupString(_ row: [String: Any], _ keys: [String]) -> String? {
+        for key in keys {
+            guard let value = row[key], !(value is NSNull) else {
+                continue
+            }
+            if let string = value as? String {
+                return string
+            }
+            if let number = value as? NSNumber {
+                return number.stringValue
+            }
+        }
+        return nil
+    }
+
+    private func backupInt(_ row: [String: Any], _ keys: String..., default defaultValue: Int) -> Int {
+        for key in keys {
+            guard let value = row[key], !(value is NSNull) else {
+                continue
+            }
+            if let int = value as? Int {
+                return int
+            }
+            if let number = value as? NSNumber {
+                return number.intValue
+            }
+            if let string = value as? String, let int = Int(string) {
+                return int
+            }
+        }
+        return defaultValue
+    }
+
+    private func backupJsonText(_ row: [String: Any], stringKeys: [String], valueKeys: [String], fallback: String?) -> String? {
+        if let text = backupString(row, stringKeys) {
+            return text
+        }
+        for key in valueKeys {
+            guard let value = row[key], !(value is NSNull) else {
+                continue
+            }
+            return jsonFragmentString(value)
+        }
+        return fallback
     }
 
     private func safeTableRows(_ spec: SafeDbTable, appId: String?, limit: Int) -> [[String: Any]] {
@@ -2410,6 +2810,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
         let dataVersion: Int
     }
 
+    private enum SqlValue {
+        case text(String)
+        case nullableText(String?)
+        case int(Int)
+    }
+
     private static let snapshotTypes: Set<String> = [
         "bug-report",
         "pre-install",
@@ -2433,6 +2839,34 @@ final class IOSDevControlPlane: @unchecked Sendable {
         orderBy: "created_at",
         appFilterColumn: "app_id",
         requiresAppId: true
+    )
+    private static let backupDbAppVersions = SafeDbTable(
+        table: "app_versions",
+        columns: ["install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "manifest_hash", "content_hash", "signature_json", "trust_level", "status", "created_at", "activated_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let backupDbAppFiles = SafeDbTable(
+        table: "app_files",
+        columns: ["install_id", "path", "content_text", "content_hash", "size_bytes", "mime", "created_at"],
+        orderBy: "path",
+        appFilterColumn: nil,
+        requiresAppId: false
+    )
+    private static let backupDbAppPermissions = SafeDbTable(
+        table: "app_permissions",
+        columns: ["install_id", "app_id", "permission", "requested", "approved", "approved_at", "reason"],
+        orderBy: "permission",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let backupDbAppInstallations = SafeDbTable(
+        table: "app_installations",
+        columns: ["installation_event_id", "app_id", "install_id", "action", "previous_install_id", "actor", "report_id", "created_at", "details_json"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
     )
     private static let safeDbAppStorage = SafeDbTable(
         table: "app_storage",
@@ -2476,6 +2910,13 @@ final class IOSDevControlPlane: @unchecked Sendable {
         appFilterColumn: "app_id",
         requiresAppId: false
     )
+    private static let backupDbRuntimeSnapshots = SafeDbTable(
+        table: "runtime_snapshots",
+        columns: ["snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
     private static let safeDbControlSessions = SafeDbTable(
         table: "control_sessions",
         columns: ["control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"],
@@ -2502,6 +2943,20 @@ final class IOSDevControlPlane: @unchecked Sendable {
         columns: ["export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"],
         orderBy: "created_at",
         appFilterColumn: nil,
+        requiresAppId: false
+    )
+    private static let backupDbAppMigrations = SafeDbTable(
+        table: "app_migrations",
+        columns: ["migration_id", "app_id", "from_data_version", "to_data_version", "migration_json", "content_hash", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
+        requiresAppId: false
+    )
+    private static let backupDbAppInstallReports = SafeDbTable(
+        table: "app_install_reports",
+        columns: ["report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"],
+        orderBy: "created_at",
+        appFilterColumn: "app_id",
         requiresAppId: false
     )
 
