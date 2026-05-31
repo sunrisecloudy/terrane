@@ -1,6 +1,6 @@
 {
   "id": "all-example-apps-cross-platform-smoke",
-  "platforms": ["fake-host", "macos", "linux", "windows", "android-emulator", "ios-simulator"],
+  "platforms": ["reference-host", "macos", "linux", "windows", "android-emulator", "ios-simulator"],
   "apps": ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"],
   "stepsPerApp": [
     { "tool": "platform.open_webapp", "args": { "appId": "${appId}" } },

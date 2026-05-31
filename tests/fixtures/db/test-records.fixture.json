@@ -30,7 +30,7 @@
   "controlSessions": [
     {
       "controlSessionId": "control_1",
-      "target": "fake-host",
+      "target": "reference-host",
       "runtimeSessionId": "session_1",
       "actor": "codex",
       "tokenHash": "sha256:token",

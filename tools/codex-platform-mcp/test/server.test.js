@@ -41,7 +41,7 @@ test("MCP server lists tools and forwards tool calls", async () => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "platform.health", arguments: { target: "fake-host" } },
+      params: { name: "platform.health", arguments: { target: "reference-host" } },
     }),
   );
   const callResponse = parseFrame(Buffer.concat(writes.splice(0)));

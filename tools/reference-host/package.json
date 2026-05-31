@@ -1,0 +1,13 @@
+{
+  "name": "reference-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --no-warnings src/server.js",
+    "start": "node --no-warnings src/server.js",
+    "test": "node --test --no-warnings test/*.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

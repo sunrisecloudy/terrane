@@ -53,7 +53,7 @@ export function linuxDockerCommands({
     "node",
     "--test",
     "--no-warnings",
-    "tools/fake-platform-host/test/linux-native-build.test.js",
+    "tools/reference-host/test/linux-native-build.test.js",
   );
 
   return { buildArgs, runArgs };

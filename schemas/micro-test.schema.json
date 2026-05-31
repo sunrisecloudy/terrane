@@ -15,7 +15,7 @@
     "platforms": {
       "type": "array",
       "items": {
-        "enum": ["fake-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
+        "enum": ["reference-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
       }
     },
     "setup": {

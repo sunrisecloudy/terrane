@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PlatformDatabase } from "./fake-platform-host/src/platform-database.js";
-import { examplesDir, repoRoot } from "./fake-platform-host/src/paths.js";
-import { validatePackage } from "./fake-platform-host/src/package-validator.js";
+import { PlatformDatabase } from "./reference-host/src/platform-database.js";
+import { examplesDir, repoRoot } from "./reference-host/src/paths.js";
+import { validatePackage } from "./reference-host/src/package-validator.js";
 
 const checks = [];
 
@@ -22,7 +22,7 @@ await runCheck("release.packaging", checkReleasePackaging);
 await runCheck("plugin.mcp", checkPluginMcp);
 await runCheck("control.openapi", checkControlOpenApi);
 await runCheck("control.tools", checkControlToolContract);
-await runCheck("fake-host.static", checkFakeHostStatic);
+await runCheck("reference-host.static", checkReferenceHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
 await runCheck("server.static", checkServerStatic);
 await runCheck("native.static", checkNativeStatic);
@@ -259,10 +259,10 @@ function checkCiWorkflow() {
     "working-directory: server",
     "zig build test",
     "tools/check-repo.mjs",
-    "tools/fake-platform-host",
-    "tests/performance/fake-host-latency.mjs --warmup 5 --samples 20 --out performance_runs --enforce-targets",
+    "tools/reference-host",
+    "tests/performance/reference-host-latency.mjs --warmup 5 --samples 20 --out performance_runs --enforce-targets",
     "actions/upload-artifact@v4",
-    "fake-host-performance-runs",
+    "reference-host-performance-runs",
     "tools/codex-platform-mcp",
     "tools/package-release.mjs --out artifacts",
     "static-release-artifacts",
@@ -315,8 +315,8 @@ function checkReleasePackaging() {
   const docs = fs.readFileSync(path.join(repoRoot, "docs", "12_RELEASE_AND_CI.md"), "utf8");
   const toolsReadme = fs.readFileSync(path.join(repoRoot, "tools", "README.md"), "utf8");
   const ignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
-  const test = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "release-packaging.test.js"), "utf8");
-  const linuxNativeTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "linux-native-build.test.js"), "utf8");
+  const test = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "release-packaging.test.js"), "utf8");
+  const linuxNativeTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "linux-native-build.test.js"), "utf8");
   const requiredScriptSnippets = [
     "runtime-web.zip",
     "example-webapps.zip",
@@ -438,7 +438,7 @@ function checkReleasePackaging() {
 }
 
 function checkPerformanceHarness() {
-  const harnessPath = path.join(repoRoot, "tests", "performance", "fake-host-latency.mjs");
+  const harnessPath = path.join(repoRoot, "tests", "performance", "reference-host-latency.mjs");
   const source = fs.readFileSync(harnessPath, "utf8");
   const required = [
     "DEFAULT_WARMUP = 50",
@@ -464,10 +464,10 @@ function checkPerformanceHarness() {
   ];
   for (const snippet of required) {
     if (!source.includes(snippet)) {
-      throw new Error(`tests/performance/fake-host-latency.mjs missing ${snippet}`);
+      throw new Error(`tests/performance/reference-host-latency.mjs missing ${snippet}`);
     }
   }
-  return "fake-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=launcher,open,switch,storage,core scenarios=network-timeout,bridge-throughput,open-all-memory,large-list,install-uninstall p50/p95";
+  return "reference-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=launcher,open,switch,storage,core scenarios=network-timeout,bridge-throughput,open-all-memory,large-list,install-uninstall p50/p95";
 }
 
 function checkPluginMcp() {
@@ -595,18 +595,18 @@ function checkControlToolContract() {
   const schemaTools = commandSchema.properties?.tool?.enum ?? [];
   assertSameList("dev-control-command.schema.json tool enum", schemaTools, toolNames);
 
-  const fakeHostSource = [
-    "tools/fake-platform-host/src/fake-host.js",
-    "tools/fake-platform-host/src/test-runner.js",
-    "tools/fake-platform-host/src/platform-database.js",
+  const referenceHostSource = [
+    "tools/reference-host/src/reference-host.js",
+    "tools/reference-host/src/test-runner.js",
+    "tools/reference-host/src/platform-database.js",
   ]
     .map((relativePath) => fs.readFileSync(path.join(repoRoot, relativePath), "utf8"))
     .join("\n");
   const serverSource = fs.readFileSync(path.join(repoRoot, "server", "src", "main.zig"), "utf8");
-  const fakeMissing = toolNames.filter((name) => !fakeHostSource.includes(`"${name}"`));
+  const referenceMissing = toolNames.filter((name) => !referenceHostSource.includes(`"${name}"`));
   const serverMissing = toolNames.filter((name) => !serverSource.includes(`"${name}"`));
-  if (fakeMissing.length > 0) {
-    throw new Error(`fake host missing MCP tools: ${fakeMissing.join(", ")}`);
+  if (referenceMissing.length > 0) {
+    throw new Error(`reference host missing MCP tools: ${referenceMissing.join(", ")}`);
   }
   if (serverMissing.length > 0) {
     throw new Error(`server missing MCP tools: ${serverMissing.join(", ")}`);
@@ -616,22 +616,22 @@ function checkControlToolContract() {
       throw new Error(`MCP tool contract missing typed argument support: ${snippet}`);
     }
   }
-  return `tools=${toolNames.length},schema=fixed,args=validated,fake-host=covered,server=covered`;
+  return `tools=${toolNames.length},schema=fixed,args=validated,reference-host=covered,server=covered`;
 }
 
-function checkFakeHostStatic() {
-  const fakeHost = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "fake-host.js"), "utf8");
-  const fakeServer = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "server.js"), "utf8");
-  const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "bridge-dispatcher.js"), "utf8");
-  const core = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "core.js"), "utf8");
-  const capabilities = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "capabilities.js"), "utf8");
-  const packageValidator = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "package-validator.js"), "utf8");
-  const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "test-runner.js"), "utf8");
-  const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "src", "browser-smoke-runner.js"), "utf8");
-  const bridgeFixturesTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "bridge-fixtures.test.js"), "utf8");
+function checkReferenceHostStatic() {
+  const referenceHost = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "reference-host.js"), "utf8");
+  const referenceServer = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "server.js"), "utf8");
+  const bridgeDispatcher = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "bridge-dispatcher.js"), "utf8");
+  const core = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "core.js"), "utf8");
+  const capabilities = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "capabilities.js"), "utf8");
+  const packageValidator = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "package-validator.js"), "utf8");
+  const testRunner = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "test-runner.js"), "utf8");
+  const browserRunner = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "src", "browser-smoke-runner.js"), "utf8");
+  const bridgeFixturesTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "bridge-fixtures.test.js"), "utf8");
   const required = [
-    [fakeHost, "new BrowserSmokeRunner"],
-    [fakeHost, 'runner: args.runner ?? args.mode'],
+    [referenceHost, "new BrowserSmokeRunner"],
+    [referenceHost, 'runner: args.runner ?? args.mode'],
     [bridgeDispatcher, "assertRuntimeCompatibility"],
     [bridgeDispatcher, "runtime_version_incompatible"],
     [bridgeDispatcher, "network.request private network targets are denied"],
@@ -646,27 +646,27 @@ function checkFakeHostStatic() {
     [testRunner, 'from: "browser"'],
     [bridgeDispatcher, "assertAppLogParams"],
     [bridgeDispatcher, "app.log requires message"],
-    [fakeHost, "queryConsoleLogs"],
-    [fakeHost, "queryNotifications"],
-    [fakeHost, "console_errors_found"],
-    [fakeHost, "function resetAppIdArg"],
-    [fakeHost, "requires confirm: true"],
+    [referenceHost, "queryConsoleLogs"],
+    [referenceHost, "queryNotifications"],
+    [referenceHost, "console_errors_found"],
+    [referenceHost, "function resetAppIdArg"],
+    [referenceHost, "requires confirm: true"],
     [browserRunner, "class BrowserSmokeRunner"],
     [browserRunner, "Chrome DevTools"],
     [browserRunner, "chrome-cdp"],
     [browserRunner, "window.AppRuntime"],
     [browserRunner, "window.__smokeRuntime.calls"],
     [browserRunner, "dispatchBridge(request"],
-    [fakeServer, "generateControlToken"],
-    [fakeServer, "writeControlTokenFile"],
-    [fakeServer, "controlTokenPath"],
-    [fakeHost, "controlAuthFailures"],
-    [fakeHost, "control_connection_banned"],
-    [fakeHost, "retryAfterSeconds"],
-    [fakeHost, "serveRuntimeIndex"],
-    [fakeHost, "__APP_RUNTIME_DEVTOOLS_ENABLED__"],
-    [capabilities, 'platform: "fake"'],
-    [capabilities, 'target: "fake-host"'],
+    [referenceServer, "generateControlToken"],
+    [referenceServer, "writeControlTokenFile"],
+    [referenceServer, "controlTokenPath"],
+    [referenceHost, "controlAuthFailures"],
+    [referenceHost, "control_connection_banned"],
+    [referenceHost, "retryAfterSeconds"],
+    [referenceHost, "serveRuntimeIndex"],
+    [referenceHost, "__APP_RUNTIME_DEVTOOLS_ENABLED__"],
+    [capabilities, 'platform: "reference"'],
+    [capabilities, 'target: "reference-host"'],
     [capabilities, "devMode: true"],
     [capabilities, '"storage.read": true'],
     [capabilities, '"runtime.snapshot": true'],
@@ -681,7 +681,7 @@ function checkFakeHostStatic() {
   ];
   for (const [source, snippet] of required) {
     if (!source.includes(snippet)) {
-      throw new Error(`fake-host browser smoke support missing ${snippet}`);
+      throw new Error(`reference-host browser smoke support missing ${snippet}`);
     }
   }
   return "smoke=static,browser-cdp bridge=runtime-compatible core=validated-events control-token=file auth-ban=audited";
@@ -1163,7 +1163,7 @@ function checkNativeStatic() {
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
-  const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "windows-native-build.test.js"), "utf8");
+  const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "windows-native-build.test.js"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");

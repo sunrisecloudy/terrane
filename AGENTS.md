@@ -47,9 +47,9 @@ This repository implements a native WebView platform for AI-generated build-free
 
 After editing generated apps, run package validation and smoke tests.
 After editing runtime bridge behavior, update schemas and bridge contract tests under `tests/fixtures/bridge/`.
-After editing `tools/codex-platform-mcp`, run MCP contract tests against the fake host (`tools/fake-platform-host`).
+After editing `tools/codex-platform-mcp`, run MCP contract tests against the reference host (`tools/reference-host`).
 After editing Zig core behavior, run Zig unit tests and replay tests.
-After editing native bridge code, re-run the contract suite to confirm the platform still matches the fake-host reference (docs/32 §8).
+After editing native bridge code, re-run the contract suite to confirm the platform still matches the reference-host contract (docs/32 §8).
 
 ## Architecture preference
 
@@ -63,5 +63,5 @@ Keep business/domain logic deterministic and replayable. Async/native/platform e
 - Platform-specific requirements: `docs/05_NATIVE_PLATFORM_REQUIREMENTS.md`.
 - Security boundary: `docs/07_SECURITY_MODEL.md`.
 - Database schema: `docs/27_DATABASE_SCHEMA.md`.
-- Fake host (reference contract): `docs/32_FAKE_HOST_SPEC.md`.
+- Reference host (contract): `docs/32_REFERENCE_HOST_SPEC.md`.
 - Implementation status: `IMPLEMENTATION_STATUS.md` at the repo root.

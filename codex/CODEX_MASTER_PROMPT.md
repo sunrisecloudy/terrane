@@ -30,4 +30,4 @@ After every change:
 
 ## v0.4 persistence directive
 
-Implement the database layer before relying on in-memory package/storage state. Generated apps must never access SQL. Use SQLite for native/fake/dev and maintain Postgres-compatible schema for server production. Add DB tests for migrations, install transaction, storage CRUD, rollback, logs, snapshots, test runs, and backup/export/import.
+Implement the database layer before relying on in-memory package/storage state. Generated apps must never access SQL. Use SQLite for native/reference/dev and maintain Postgres-compatible schema for server production. Add DB tests for migrations, install transaction, storage CRUD, rollback, logs, snapshots, test runs, and backup/export/import.

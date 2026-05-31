@@ -2,7 +2,7 @@
 
 ## 1. Required v0.3 targets
 
-| Capability | fake-host | macOS WKWebView | iOS WKWebView | Android WebView | Windows WebView2 | Linux WebKitGTK | Zig server |
+| Capability | reference-host | macOS WKWebView | iOS WKWebView | Android WebView | Windows WebView2 | Linux WebKitGTK | Zig server |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | load runtime | required | required | required | required | required | required | n/a |
 | load sandboxed generated app | required | required | required | required | required | required | n/a |
@@ -23,9 +23,9 @@
 | rollback | required | required | required | required | required | required | required |
 | migrations | required | required | required | required | required | required | required |
 
-## 2. Fake host is first-class
+## 2. Reference host is first-class
 
-The fake host is not a throwaway mock. It is the canonical CI/control-plane target for:
+The reference host is not a throwaway mock. It is the canonical CI/control-plane target for:
 
 - package validation;
 - bridge contract tests;
@@ -34,7 +34,7 @@ The fake host is not a throwaway mock. It is the canonical CI/control-plane targ
 - snapshot/replay;
 - Codex repair loop.
 
-Real native hosts must match fake-host contract behavior unless a documented platform limitation exists.
+Real native hosts must match reference-host contract behavior unless a documented platform limitation exists.
 
 ## 3. Per-platform notes
 

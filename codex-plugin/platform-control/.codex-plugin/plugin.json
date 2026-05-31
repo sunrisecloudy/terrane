@@ -17,7 +17,7 @@
     "category": "Developer Tools",
     "capabilities": ["Read", "Write", "Test", "Control Dev Host"],
     "defaultPrompt": [
-      "Use @platform-micro-test to run the example webapp suite on the fake host.",
+      "Use @platform-micro-test to run the example webapp suite on the reference host.",
       "Use @generated-webapp-repair to install a generated package, run micro-tests, and repair failures.",
       "Use @core-replay-debug to replay the latest core event log and find the mismatch."
     ]

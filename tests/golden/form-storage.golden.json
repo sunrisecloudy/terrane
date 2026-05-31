@@ -5,7 +5,7 @@
     "notes-lite"
   ],
   "platforms": [
-    "fake-host"
+    "reference-host"
   ],
   "setup": [
     {

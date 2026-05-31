@@ -2,7 +2,7 @@
   "id": "basic-a11y",
   "description": "Run accessibility audit against an opened app.",
   "platforms": [
-    "fake-host",
+    "reference-host",
     "macos",
     "linux",
     "windows",

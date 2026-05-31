@@ -1,6 +1,6 @@
 # Accessibility Tests
 
-Accessibility tests run in fake-host and native dev hosts through the control plane.
+Accessibility tests run in reference-host and native dev hosts through the control plane.
 
 Required checks:
 

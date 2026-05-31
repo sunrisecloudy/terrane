@@ -29,7 +29,7 @@
     }
   },
   "platforms": [
-    "fake-host",
+    "reference-host",
     "macos",
     "ios-simulator",
     "android-emulator",

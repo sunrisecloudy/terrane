@@ -1,8 +1,8 @@
 {
   "ok": true,
   "result": {
-    "name": "fake-platform-host",
+    "name": "reference-host",
     "version": "0.1.0",
-    "targets": ["fake-host"]
+    "targets": ["reference-host"]
   }
 }

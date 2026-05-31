@@ -9,7 +9,7 @@
     "core-replay-lab"
   ],
   "platforms": [
-    "fake-host"
+    "reference-host"
   ],
   "steps": [
     {

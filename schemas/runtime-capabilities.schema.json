@@ -19,7 +19,7 @@
     "platform": {
       "type": "string",
       "enum": [
-        "fake",
+        "reference",
         "ios",
         "macos",
         "android",

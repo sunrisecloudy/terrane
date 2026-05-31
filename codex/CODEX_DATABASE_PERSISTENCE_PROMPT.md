@@ -23,7 +23,7 @@ Rules:
 
 Implementation order:
 
-1. Apply SQLite migrations in fake-host.
+1. Apply SQLite migrations in reference-host.
 2. Add repository layer.
 3. Implement storage CRUD.
 4. Implement app install/activate/rollback.

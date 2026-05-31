@@ -5,7 +5,7 @@
     "api-dashboard"
   ],
   "platforms": [
-    "fake-host"
+    "reference-host"
   ],
   "setup": [
     {

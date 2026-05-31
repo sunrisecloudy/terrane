@@ -5,7 +5,7 @@
   "runtimeVersion": "0.1.0",
   "trustLevel": "developer",
   "algorithm": "none-dev",
-  "keyId": "platform-host:fake-host:dev",
+  "keyId": "platform-host:reference-host:dev",
   "manifestHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "permissionsHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

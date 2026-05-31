@@ -121,7 +121,7 @@ The native shell owns:
 The web runtime owns:
 
 - App registry UI.
-- App package validation (delegated to fake-host validator module).
+- App package validation (delegated to reference-host validator module).
 - Sandbox creation and `mount_token` issuance.
 - App lifecycle inside the WebView.
 - Permission check before calling native.
@@ -218,7 +218,7 @@ All hosts use SQLite for the platform database (docs/27, docs/28). JSON-file sto
 | Android | SQLite in app-private storage |
 | Windows | SQLite under LocalAppData |
 | Linux | SQLite under XDG data home |
-| Fake host | SQLite (in-memory by default, file-backed on request) |
+| Reference host | SQLite (in-memory by default, file-backed on request) |
 | Server | SQLite for dev, Postgres-compatible logical schema for production |
 
 ## 9. Network model **[v0.1, hardened v0.3]**

@@ -1,0 +1,92 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+test("Windows and Linux native smoke suites include WebView bridge-message coverage", () => {
+  const windowsHost = read("native/windows/src/WebViewHost.cpp");
+  const windowsBridge = read("native/windows/src/WebBridge.cpp");
+  const linuxHost = read("native/linux/src/webkit_host.c");
+  const linuxBridge = read("native/linux/src/web_bridge.c");
+  const windowsSmoke = read("tools/reference-host/test/windows-native-build.test.js");
+  const linuxSmoke = read("tools/reference-host/test/linux-native-build.test.js");
+
+  assert.match(windowsHost, /window\.chrome\.webview\.postMessage\(JSON\.stringify/);
+  assert.match(windowsHost, /windows_smoke_bridge_storage_set/);
+  assert.match(windowsHost, /windows_smoke_bridge_storage_get/);
+  assert.match(windowsHost, /windows_smoke_bridge_core_step/);
+  assert.match(windowsHost, /RunFixedBridgeSurfaceSmoke/);
+  assert.match(windowsHost, /windows_smoke_fixed_storage_list/);
+  assert.match(windowsHost, /windows_smoke_fixed_storage_remove/);
+  assert.match(windowsHost, /windows_smoke_fixed_notification/);
+  assert.match(windowsHost, /windows_smoke_fixed_notification_bad_level/);
+  assert.match(windowsHost, /windows_smoke_fixed_app_log/);
+  assert.match(windowsHost, /windows_smoke_fixed_capabilities/);
+  assert.match(windowsHost, /windows_smoke_fixed_network_denied/);
+  assert.match(windowsHost, /runtime-app-storage-get/);
+  assert.match(windowsHost, /open-notes-lite-button/);
+  assert.match(windowsHost, /RunRuntimeLoadSmoke/);
+  assert.match(windowsHost, /windows_smoke_runtime_load_ready/);
+  assert.match(windowsHost, /NATIVE_AI_WINDOWS_SMOKE_RUNTIME_JS_READY/);
+  assert.match(windowsHost, /get_BrowserVersionString/);
+  assert.match(windowsHost, /WebView2RuntimeMeetsMinimum/);
+  assert.match(windowsHost, /WebView2 runtime version 1\.0\.2592 or later is required/);
+  assert.match(windowsHost, /HasOnlyRuntimeEnvelopeFields/);
+  assert.match(windowsHost, /Runtime bridge envelope is required/);
+  assert.doesNotMatch(windowsHost, /SandboxContextFromSource/);
+  assert.doesNotMatch(windowsHost, /response = bridge_->HandleJson\(body, SandboxContextFromSource\(sourceText\)\)/);
+  assert.match(windowsHost, /windows_smoke_runtime_app_seed_storage/);
+  assert.match(windowsHost, /StorageNotesResponseContainsSmokeValue/);
+  assert.match(windowsBridge, /HasOnlyBridgeRequestFields/);
+  assert.match(windowsBridge, /Bridge request contains unknown top-level fields/);
+  assert.match(windowsBridge, /Bridge request timestamp must be a finite number/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
+  assert.match(windowsSmoke, /path\.dirname\(binaryPath\)/);
+
+  assert.match(linuxHost, /messageHandlers && window\.webkit\.messageHandlers\.NativeAIPlatformBridge/);
+  assert.match(linuxHost, /window\.AppRuntime=\{call:call/);
+  assert.match(linuxHost, /html_with_app_runtime_bootstrap/);
+  assert.match(linuxHost, /html_with_app_runtime_csp/);
+  assert.match(linuxHost, /script-src 'self' app-runtime:/);
+  assert.match(linuxHost, /logical_path_is_generated_app_index/);
+  assert.match(linuxHost, /g_memory_input_stream_new_from_data/);
+  assert.doesNotMatch(linuxHost, /var handler=window\.webkit/);
+  assert.doesNotMatch(linuxHost, /envelope=\{appId:appId/);
+  assert.match(linuxHost, /has_only_runtime_envelope_fields/);
+  assert.match(linuxHost, /Runtime bridge envelope is required/);
+  assert.doesNotMatch(linuxHost, /response = web_bridge_handle_json\(host->bridge, payload/);
+  assert.match(linuxBridge, /has_only_bridge_request_fields/);
+  assert.match(linuxBridge, /Bridge request contains unknown top-level fields/);
+  assert.match(linuxBridge, /Bridge request timestamp must be a finite number/);
+  assert.match(linuxBridge, /Bridge request id must be a non-empty string/);
+  assert.match(linuxBridge, /Bridge request params must be an object/);
+  assert.match(linuxHost, /linux_smoke_bridge_storage_set/);
+  assert.match(linuxHost, /linux_smoke_bridge_storage_get/);
+  assert.match(linuxHost, /linux_smoke_bridge_core_step/);
+  assert.match(linuxHost, /run_fixed_bridge_surface_smoke/);
+  assert.match(linuxHost, /linux_smoke_fixed_storage_list/);
+  assert.match(linuxHost, /linux_smoke_fixed_storage_remove/);
+  assert.match(linuxHost, /linux_smoke_fixed_notification/);
+  assert.match(linuxHost, /linux_smoke_fixed_notification_bad_level/);
+  assert.match(linuxHost, /linux_smoke_fixed_app_log/);
+  assert.match(linuxHost, /linux_smoke_fixed_capabilities/);
+  assert.match(linuxHost, /linux_smoke_fixed_network_denied/);
+  assert.match(linuxHost, /runtime-app-storage-get/);
+  assert.match(linuxHost, /open-notes-lite-button/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
+});
+
+function read(relativePath) {
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+}

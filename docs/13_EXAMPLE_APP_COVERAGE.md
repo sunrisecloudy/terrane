@@ -46,18 +46,18 @@ This document is the normative coverage map for the five bundled generated apps 
 | Storage API ban | Apps must not use `localStorage`, `sessionStorage`, IndexedDB, cookies, or SQL | Package validator and mutation/security fixtures |
 | Network policy | Only API Dashboard has an allowlist entry, and only through `networkPolicy` | Manifest schema, package validator, network-policy tests |
 | App identity | Apps never set `appId` in bridge params; runtime derives it from the mount context | Runtime tests reject app-supplied `appId` params |
-| Content rating | All bundled manifests include App Store `4+` ratings | Manifest schema, fake-host validator, iOS bundled-index tests |
-| Accessibility | Interactive controls use stable selectors and accessible names/labels | Accessibility microtests and fake-host accessibility audit |
+| Content rating | All bundled manifests include App Store `4+` ratings | Manifest schema, reference-host validator, iOS bundled-index tests |
+| Accessibility | Interactive controls use stable selectors and accessible names/labels | Accessibility microtests and reference-host accessibility audit |
 
 ## Test Evidence
 
 The reference coverage is exercised by:
 
 - `node --no-warnings tools/check-repo.mjs` for package shape, canonical examples, static policy, and manifest sanity.
-- `node --test --no-warnings tools/fake-platform-host/test/example-load-acceptance.test.js` for validate/install/open/snapshot/smoke coverage across all examples.
-- `node --test --no-warnings tools/fake-platform-host/test/test-runner.test.js` for checked-in `smoke-tests.json` and `tests/micro` execution.
-- `node --test --no-warnings tools/fake-platform-host/test/package-validator.test.js` for manifest and generated-source policy failures.
-- `node --test --no-warnings tools/fake-platform-host/test/security-fixtures.test.js` for runtime-denied malicious packages.
-- `node --test --no-warnings tools/fake-platform-host/test/server-bridge-contract.test.js` for server parity with the bridge fixtures.
+- `node --test --no-warnings tools/reference-host/test/example-load-acceptance.test.js` for validate/install/open/snapshot/smoke coverage across all examples.
+- `node --test --no-warnings tools/reference-host/test/test-runner.test.js` for checked-in `smoke-tests.json` and `tests/micro` execution.
+- `node --test --no-warnings tools/reference-host/test/package-validator.test.js` for manifest and generated-source policy failures.
+- `node --test --no-warnings tools/reference-host/test/security-fixtures.test.js` for runtime-denied malicious packages.
+- `node --test --no-warnings tools/reference-host/test/server-bridge-contract.test.js` for server parity with the bridge fixtures.
 
 Adding or removing an example app, permission, bridge method, smoke-test expectation, or manifest policy field must update this document and the relevant tests before the change is considered verified.

@@ -546,8 +546,8 @@ final class DevControlPlane: @unchecked Sendable {
                     "status": "not-attached",
                 ],
                 [
-                    "id": "fake-host",
-                    "platform": "fake-host",
+                    "id": "reference-host",
+                    "platform": "reference-host",
                     "status": "not-attached",
                 ],
             ],

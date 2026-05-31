@@ -30,7 +30,7 @@ The current PRD is v0.4. All sections below that mention earlier milestones are 
 | Sandboxed iframe execution | v0.1 | §5 G5 |
 | 5 reference example apps | v0.1 | §5 G6 |
 | Server (Zig HTTP) parity for `core.step` | v0.1 | §5 G1 |
-| Fake host as reference contract | v0.1 | docs/32_FAKE_HOST_SPEC.md |
+| Reference host as reference contract | v0.1 | docs/32_REFERENCE_HOST_SPEC.md |
 | Codex MCP plugin and dev control plane | v0.2 | §5 G7 |
 | Micro-test protocol | v0.2 | docs/15_MICRO_TESTING_PROTOCOL.md |
 | `data-testid` selectors in examples | v0.2 | docs/15 |
@@ -65,7 +65,7 @@ The platform must support **[v0.1]**:
 - Shared Zig core logic.
 - Multiple generated webapps loaded dynamically without a build step.
 
-A **fake host** (Node + jsdom-equivalent or browser-only) is the reference implementation of the bridge contract. Native hosts must match it byte-for-byte on bridge responses.
+A **reference host** (Node + jsdom-equivalent or browser-only) is the reference implementation of the bridge contract. Native hosts must match it byte-for-byte on bridge responses.
 
 The first version is not a full app builder. It is a minimal but real runtime that proves the full architecture works on every platform.
 
@@ -253,7 +253,7 @@ The Codex-facing plugin is part of the implementation workflow, not part of the 
 
 ### G8. Database, persistence, and migration layer **[v0.4]**
 
-The platform must include a formal persistence layer. Native hosts and the fake host use SQLite. The server supports SQLite for development and a Postgres-compatible schema for production. Generated apps never create SQL tables or access the database directly. All generated app data goes through the storage bridge and is persisted as namespaced key/value JSON in `app_storage`.
+The platform must include a formal persistence layer. Native hosts and the reference host use SQLite. The server supports SQLite for development and a Postgres-compatible schema for production. Generated apps never create SQL tables or access the database directly. All generated app data goes through the storage bridge and is persisted as namespaced key/value JSON in `app_storage`.
 
 The platform database also stores:
 
@@ -289,8 +289,8 @@ A coherent release is acceptable when:
 - The server can run the same core step contract.
 - **[v0.3]** Apps install only through the canonicalize → sign → install → smoke-test pipeline. Tampered packages fail mount.
 - **[v0.3]** A failing micro-test quarantines the new version and keeps the previous version active.
-- **[v0.4]** All persistent state (`apps`, `app_versions`, `app_files`, `app_permissions`, `app_installations`, `app_storage`, `app_install_reports`, `bridge_calls`, `core_events`, `core_actions`, `runtime_snapshots`, `test_runs`, `control_sessions`, `control_commands`, `network_mocks`, `dialog_mocks`, `app_migrations`, `migration_runs`, `backup_exports`) lives in the platform DB across native + server + fake host.
-- **[v0.4]** Backup export/import round-trips one example app on the fake host without data loss.
+- **[v0.4]** All persistent state (`apps`, `app_versions`, `app_files`, `app_permissions`, `app_installations`, `app_storage`, `app_install_reports`, `bridge_calls`, `core_events`, `core_actions`, `runtime_snapshots`, `test_runs`, `control_sessions`, `control_commands`, `network_mocks`, `dialog_mocks`, `app_migrations`, `migration_runs`, `backup_exports`) lives in the platform DB across native + server + reference host.
+- **[v0.4]** Backup export/import round-trips one example app on the reference host without data loss.
 
 ## 7. Product principles
 
@@ -300,7 +300,7 @@ A coherent release is acceptable when:
 4. **AI output must be validated before install.** Never trust generated HTML/JS.
 5. **Core logic stays deterministic.** Platform effects happen outside the Zig core.
 6. **Every platform proves the same contract.** Platform shells may differ internally, but the web runtime and core API stay identical.
-7. **Reference contract first, native hosts second.** Build the fake host so each native shell can be diffed against a known-good baseline.
+7. **Reference contract first, native hosts second.** Build the reference host so each native shell can be diffed against a known-good baseline.
 8. **Persistence is platform-owned, not app-owned.** Generated apps see only `storage.*`; SQL never leaks across the boundary.
 
 ## 8. Decisions and open questions
@@ -310,7 +310,7 @@ A coherent release is acceptable when:
 - **D1. iOS App Store distribution model.** Per Apple App Store Review Guideline 4.7 (clarified Nov 2025), HTML5/JavaScript mini-apps and mini-games are in scope for App Store review. v0.1 App Store builds of the iOS host ship only the 5 first-party reviewed bundled apps. AI-generated and user-installed packages are gated to TestFlight and Developer-ID/sideloaded builds only. v0.1 native hosts must not extend or expose native platform APIs to non-bundled apps beyond the methods listed in G4 (per Guideline 4.7.2). Any change to this model requires explicit Apple permission and a PRD update.
 - **D2. Mini-app indexing and age gating.** When iOS bundled-app distribution is enabled, the host must implement an index of installed mini-apps (id, title, description, version, content rating) per Guideline 4.7.4 and an age-restriction gate per Guideline 4.7.5.
 - **D3. Android bridge mechanism.** Production Android builds must use `WebViewCompat.addWebMessageListener` with an origin allowlist. `addJavascriptInterface` is forbidden because it cannot verify the calling frame origin and has historical RCE vectors (see docs/05).
-- **D4. Storage backend.** SQLite is canonical for all hosts (iOS, macOS, Android, Windows, Linux, fake host, server dev). The server uses a Postgres-compatible logical schema in production. JSON-file storage is not supported.
+- **D4. Storage backend.** SQLite is canonical for all hosts (iOS, macOS, Android, Windows, Linux, reference host, server dev). The server uses a Postgres-compatible logical schema in production. JSON-file storage is not supported.
 - **D5. Capabilities API form.** Generated apps and Codex call `AppRuntime.call("runtime.capabilities", {})`. `AppRuntime.capabilities()` is a thin convenience wrapper that delegates to the same bridge method. There is one source of truth.
 - **D6. Network policy field.** `manifest.networkPolicy` is the only normative network-allow surface. `manifest.networkAllowlist` is removed; it is no longer accepted as input (see docs/04 and docs/24).
 
@@ -329,7 +329,7 @@ A coherent release is acceptable when:
 | Risk | Impact | Mitigation |
 |---|---|---|
 | iOS App Store rejection under Guideline 4.7 | Blocks consumer distribution | D1 limits initial release to bundled-only mini-apps |
-| Bridge contract drift between hosts | Generated apps work on one platform but not another | Fake host as reference + per-method contract fixtures (docs/08 §6) |
+| Bridge contract drift between hosts | Generated apps work on one platform but not another | Reference host as reference + per-method contract fixtures (docs/08 §6) |
 | Generated app abuses storage/network/timers | DoS, exfiltration | Manifest permissions + budgets + audit log + quarantine |
 | SQLite corruption on mobile | Data loss | `PlatformDatabase.open()` runs integrity check + supports re-init from backup_export |
 | Zig core determinism drift across compilers | Replay test failures | Pin Zig toolchain in CI; fixtures committed |

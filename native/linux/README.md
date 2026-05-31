@@ -2,7 +2,7 @@
 
 Current implementation status: partial.
 
-The scaffold is a C GTK4/WebKitGTK host using JSON-GLib and SQLite. It follows the same bridge boundary as the fake host and native scaffolds:
+The scaffold is a C GTK4/WebKitGTK host using JSON-GLib and SQLite. It follows the same bridge boundary as the reference host and native scaffolds:
 
 ```text
 meson.build
@@ -53,7 +53,7 @@ node --no-warnings tools/run-linux-native-docker.mjs
 The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke plus release-build production-guard audit check:
 
 ```sh
-NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js
+NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js
 ```
 
 Useful options:
@@ -90,4 +90,4 @@ See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
 
 ## v0.4 persistence requirement
 
-Implement the platform database layer for this target. Native/fake hosts use SQLite. The server supports SQLite in dev and the Postgres-compatible logical schema in production. The target must run migrations, persist app registry/package/storage/log/test records, and expose safe DB inspection through the dev control plane.
+Implement the platform database layer for this target. Native/reference hosts use SQLite. The server supports SQLite in dev and the Postgres-compatible logical schema in production. The target must run migrations, persist app registry/package/storage/log/test records, and expose safe DB inspection through the dev control plane.

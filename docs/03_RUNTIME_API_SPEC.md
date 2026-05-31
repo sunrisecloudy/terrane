@@ -254,7 +254,7 @@ The runtime supports a browser-only mock host for development:
 window.__APP_RUNTIME_DEV_MOCK__ = true;
 ```
 
-The mock may emulate storage, `core.step`, and network responses. It must never be used as a production security boundary. The fake host (docs/32) is the durable reference; this in-page mock exists only for fast loops while editing runtime code.
+The mock may emulate storage, `core.step`, and network responses. It must never be used as a production security boundary. The reference host (docs/32) is the durable reference; this in-page mock exists only for fast loops while editing runtime code.
 
 ## 8. Capabilities API canonical form **[v0.3]**
 
@@ -319,7 +319,7 @@ db.query_test_runs
 db.export_debug_bundle
 ```
 
-The production runtime must not expose these to generated apps. Arbitrary SQL is disabled by default and only permitted under an explicit unsafe dev-mode flag (`runtime.unsafe_sql`) on the fake host.
+The production runtime must not expose these to generated apps. Arbitrary SQL is disabled by default and only permitted under an explicit unsafe dev-mode flag (`runtime.unsafe_sql`) on the reference host.
 
 ## 13. Numbering and history
 

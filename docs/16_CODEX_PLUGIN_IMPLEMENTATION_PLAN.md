@@ -16,20 +16,20 @@ Add `AGENTS.md` at the repository root with these rules:
 - Run package validation after editing `webapps/`.
 - Run MCP contract tests after editing `tools/codex-platform-mcp/`.
 
-## Milestone 2: Fake host first
+## Milestone 2: Reference host first
 
-Before native hosts expose the real control plane, implement a fake host:
+Before native hosts expose the real control plane, implement a reference host:
 
 ```text
-tools/fake-platform-host/
+tools/reference-host/
   src/server.ts
   src/runtime-simulator.ts
   src/fixtures.ts
 ```
 
-The fake host lets Codex and CI test the MCP server without macOS/iOS/Android/Windows/Linux toolchains.
+The reference host lets Codex and CI test the MCP server without macOS/iOS/Android/Windows/Linux toolchains.
 
-Minimum fake host support:
+Minimum reference host support:
 
 - Install package from path.
 - Load `index.html` in a headless DOM environment or browser fixture.
@@ -47,7 +47,7 @@ Recommended stack:
 - Model Context Protocol SDK.
 - JSON Schema validation for tool inputs.
 - HTTP client to the platform control plane.
-- Contract tests against the fake host.
+- Contract tests against the reference host.
 
 The MCP server should not contain business logic. It translates MCP tool calls into control-plane commands and normalizes responses.
 
@@ -167,17 +167,17 @@ Add MCP tool handlers for:
 
 Implementation order:
 
-1. Fake-host only.
+1. Reference-host only.
 2. Browser/runtime mock.
 3. macOS/Linux desktop dev hosts.
 4. Android/iOS simulator targets.
 5. Windows host.
 
-The fake-host implementation is the reference behavior for contract tests.
+The reference-host implementation is the reference behavior for contract tests.
 
 ## Database tool implementation
 
-Add database tools after fake-host persistence exists:
+Add database tools after reference-host persistence exists:
 
 1. Implement safe control-plane handlers for DB queries.
 2. Add MCP tool names to `tools/codex-platform-mcp/src/tool-contract.ts`.

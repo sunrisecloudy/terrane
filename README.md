@@ -11,8 +11,8 @@ Native host apps
   Server: Zig executable
 
 Reference contract
-  Fake host (Node + SQLite) under tools/fake-platform-host
-  Every native host is diffed against the fake host byte-for-byte
+  Reference host (Node + SQLite) under tools/reference-host
+  Every native host is diffed against the reference host byte-for-byte
 
 Web runtime
   Build-free HTML/CSS/vanilla JS, loaded inside each host WebView
@@ -25,7 +25,7 @@ Core logic
   Deterministic event -> action state machine
 
 Persistence
-  SQLite on every native host and the fake host
+  SQLite on every native host and the reference host
   Postgres-compatible logical schema on the server in production
   Generated apps see only storage.* — SQL never crosses the boundary
 ```
@@ -35,7 +35,7 @@ Persistence
 | Reader | Start here |
 |---|---|
 | New to the project | `docs/00_PRD.md` |
-| Implementing a host | `docs/01_ARCHITECTURE.md` → `docs/05_NATIVE_PLATFORM_REQUIREMENTS.md` → `docs/32_FAKE_HOST_SPEC.md` |
+| Implementing a host | `docs/01_ARCHITECTURE.md` → `docs/05_NATIVE_PLATFORM_REQUIREMENTS.md` → `docs/32_REFERENCE_HOST_SPEC.md` |
 | Writing or repairing a webapp | `docs/03_RUNTIME_API_SPEC.md` → `docs/04_WEBAPP_PACKAGE_SPEC.md` → `docs/15_MICRO_TESTING_PROTOCOL.md` |
 | Working on Codex MCP plugin | `docs/14_CODEX_CONTROL_PLUGIN.md` → `docs/16_CODEX_PLUGIN_IMPLEMENTATION_PLAN.md` |
 | Reviewing what's built | `IMPLEMENTATION_STATUS.md` |
@@ -51,7 +51,7 @@ Persistence
 - `docs/06_ZIG_CORE_SPEC.md` — Zig core library contract and FFI surface.
 - `docs/07_SECURITY_MODEL.md` — sandbox, permissions, CSP + Trusted Types, app-id derivation, audit logging.
 - `docs/08_TEST_PLAN.md` — all-level test plan with the bridge contract fixture format.
-- `docs/09_CODEX_IMPLEMENTATION_PLAN.md` — milestones and Codex-ready implementation order (the fake host is Milestone 2).
+- `docs/09_CODEX_IMPLEMENTATION_PLAN.md` — milestones and Codex-ready implementation order (the reference host is Milestone 2).
 - `docs/10_ACCEPTANCE_CHECKLIST.md` — first-version acceptance criteria.
 - `docs/11_AI_GENERATION_PROMPTS.md` — prompts for generating webapps on the fly.
 - `docs/12_RELEASE_AND_CI.md` — build, packaging, CI plan, and runtime self-update.
@@ -74,12 +74,12 @@ Persistence
 - `docs/29_BACKUP_EXPORT_IMPORT.md` — portable backup/debug bundle export and import.
 - `docs/30_DATABASE_TEST_PLAN.md` — schema, storage, rollback, migration, logging, export/import tests.
 - `docs/31_V0_4_INTEGRATION_MAP.md` — integrated runtime/database/Codex/native/Zig lifecycle.
-- `docs/32_FAKE_HOST_SPEC.md` — fake host as the reference contract.
+- `docs/32_REFERENCE_HOST_SPEC.md` — reference host as the reference contract.
 - `IMPLEMENTATION_STATUS.md` — single source of truth for what's built vs planned.
 - `AGENTS.md` — Codex working agreements (hard rules).
 - `codex-plugin/platform-control/` — local Codex plugin skeleton with skills and MCP config.
 - `tools/codex-platform-mcp/` — MCP server contract/starter files.
-- `tools/fake-platform-host/` — reference host (Milestone 2 deliverable).
+- `tools/reference-host/` — reference host (Milestone 2 deliverable).
 - `devtools/control-plane/` — developer-only host control-plane contract (OpenAPI).
 - `schemas/` — JSON Schemas for manifests, bridge calls, packages, core messages, signatures, migrations, capabilities, snapshots, budgets, network policy, install reports, accessibility reports, and DB records.
 - `db/sqlite/` and `db/postgres/` — platform database migrations.
@@ -90,13 +90,13 @@ Persistence
 
 The platform proves the contract end-to-end when:
 
-1. The fake host runs every example app, every micro-test, and every contract fixture green.
+1. The reference host runs every example app, every micro-test, and every contract fixture green.
 2. Each native host loads the same runtime and examples.
-3. Each native host produces byte-identical bridge responses to the fake host (after stripping non-deterministic fields).
+3. Each native host produces byte-identical bridge responses to the reference host (after stripping non-deterministic fields).
 4. `runtime.capabilities` works on each target.
 5. `core.step`, storage, dialogs, network, notifications, logs, snapshots, rollback, and resource audits work through the bridge/control plane.
 6. Codex can run one micro-test, find a failure, patch a generated app, reinstall it, and pass the test without bypassing policy.
-7. All persistent state lives in the platform DB; backup export/import round-trips one example app on the fake host without data loss.
+7. All persistent state lives in the platform DB; backup export/import round-trips one example app on the reference host without data loss.
 
 ## Design goal
 

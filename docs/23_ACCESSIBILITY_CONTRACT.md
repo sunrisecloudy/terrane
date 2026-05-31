@@ -31,7 +31,7 @@ Every interactive element must also have a stable `data-testid`. `data-testid` i
 
 ## 3. Automated v0.4 Gate
 
-The v0.4 automated gate is intentionally static and deterministic so it can run in the fake host, server control plane, and CI without a browser dependency. It must produce `schemas/accessibility-report.schema.json`.
+The v0.4 automated gate is intentionally static and deterministic so it can run in the reference host, server control plane, and CI without a browser dependency. It must produce `schemas/accessibility-report.schema.json`.
 
 Required checks:
 
@@ -42,7 +42,7 @@ Required checks:
 | `screen_title` | No level-1 heading | fail |
 | `no_unlabeled_controls` | Any interactive control lacks an accessible name | fail |
 
-The fake host and server must expose the same control tools:
+The reference host and server must expose the same control tools:
 
 ```text
 runtime.accessibility_snapshot
@@ -99,10 +99,10 @@ Accessibility fixtures live under `tests/accessibility/` and are executable micr
 The primary regression test is:
 
 ```text
-node --test --no-warnings tools/fake-platform-host/test/accessibility.test.js
+node --test --no-warnings tools/reference-host/test/accessibility.test.js
 ```
 
-The full fake-host test suite also runs accessibility checks through package smoke, microtests, and repair-loop coverage.
+The full reference-host test suite also runs accessibility checks through package smoke, microtests, and repair-loop coverage.
 
 ## 7. Prompt Requirement
 

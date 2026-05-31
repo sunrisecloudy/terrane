@@ -99,7 +99,7 @@ Use `schemas/app-signature.schema.json`.
 ### 5.1 Algorithm
 
 - `algorithm = "ed25519"` is the only production algorithm. The signature is over the canonical byte stream defined in §5.2 and verifies against the platform host's Ed25519 public key.
-- `algorithm = "none-dev"` is permitted only on the fake host or when the runtime is explicitly started with `--dev` and connected to the dev control plane. Production builds reject `none-dev` with `signature_untrusted`.
+- `algorithm = "none-dev"` is permitted only on the reference host or when the runtime is explicitly started with `--dev` and connected to the dev control plane. Production builds reject `none-dev` with `signature_untrusted`.
 
 ### 5.2 Signed payload (the bytes that go into Ed25519.sign)
 
@@ -160,7 +160,7 @@ Each native host generates a platform keypair on first launch:
   - Android: Android Keystore (`KeyProperties.PURPOSE_SIGN`).
   - Windows: DPAPI-encrypted in `%LOCALAPPDATA%\<product>\platform.key`.
   - Linux: libsecret if available; otherwise `$XDG_DATA_HOME/<product>/platform.key` with mode 0600.
-  - Fake host: `~/.cache/native-ai-webapp/platform.key` (test-only).
+  - Reference host: `~/.cache/native-ai-webapp/platform.key` (test-only).
 - The public key is exposed via the control plane for cross-host verification of exported bundles.
 
 ### 7.2 Key id
@@ -201,10 +201,10 @@ Any app update that changes permissions, network policy, resource budget, capabi
 
 ## 10. Dev control-plane constraints
 
-Codex control tools may install unsigned source packages into the fake host only if the install command explicitly sets:
+Codex control tools may install unsigned source packages into the reference host only if the install command explicitly sets:
 
 ```json
-{ "devUnsigned": true, "target": "fake-host" }
+{ "devUnsigned": true, "target": "reference-host" }
 ```
 
 All real native targets must run the normal validation/signing path, even in development. Dev native builds may use the local platform key but must not accept `algorithm = "none-dev"` unless the host is started with `--allow-unsigned-dev`, which itself is a compile-out flag in App Store builds.

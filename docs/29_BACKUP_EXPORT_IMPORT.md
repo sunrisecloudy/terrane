@@ -47,7 +47,7 @@ Top-level shape:
   "exportId": "export_001",
   "createdAt": "2026-05-28T00:00:00Z",
   "runtimeVersion": "0.4.0",
-  "source": { "platform": "fake-host" },
+  "source": { "platform": "reference-host" },
   "apps": [],
   "appVersions": [],
   "appFiles": [],

@@ -5,7 +5,7 @@
     "file-transformer"
   ],
   "platforms": [
-    "fake-host"
+    "reference-host"
   ],
   "setup": [
     {

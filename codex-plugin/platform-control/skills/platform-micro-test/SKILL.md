@@ -5,7 +5,7 @@ description: Run generated webapp micro-tests, smoke tests, or platform smoke su
 
 # Platform Micro-Test
 
-Use this skill when the user asks to validate, install, open, smoke-test, or micro-test a generated webapp package on a dev host or fake host.
+Use this skill when the user asks to validate, install, open, smoke-test, or micro-test a generated webapp package on a dev host or reference host.
 
 ## Workflow
 

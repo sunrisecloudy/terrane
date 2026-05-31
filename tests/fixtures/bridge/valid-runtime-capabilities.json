@@ -9,8 +9,8 @@
   "expected": {
     "ok": true,
     "resultSubset": {
-      "platform": "fake",
-      "target": "fake-host",
+      "platform": "reference",
+      "target": "reference-host",
       "devMode": true,
       "runtimeVersion": "0.1.0",
       "appId": "notes-lite",
@@ -39,7 +39,7 @@
     }
   },
   "platforms": [
-    "fake-host",
+    "reference-host",
     "macos",
     "ios-simulator",
     "android-emulator",

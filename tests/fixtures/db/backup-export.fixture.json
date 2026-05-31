@@ -4,8 +4,8 @@
   "createdAt": "2026-05-28T00:00:00Z",
   "runtimeVersion": "0.4.0",
   "source": {
-    "platform": "fake",
-    "target": "fake-host"
+    "platform": "reference",
+    "target": "reference-host"
   },
   "apps": [
     {
@@ -44,7 +44,7 @@
   "appMigrations": [],
   "appInstallReports": [],
   "runtimeCapabilities": {
-    "platform": "fake-host"
+    "platform": "reference-host"
   },
   "debug": {
     "runtimeSessions": [],

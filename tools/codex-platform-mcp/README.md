@@ -15,7 +15,7 @@ Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
 - `PLATFORM_CONTROL_URL` — base URL, default `http://127.0.0.1:7878`.
 - `PLATFORM_CONTROL_TOKEN_FILE` — optional path to the per-launch token file.
 - `PLATFORM_CONTROL_TOKEN` — explicit test/dev override. If unset, the server reads the token file and fails fast when it is missing or empty.
-- `PLATFORM_CONTROL_DEFAULT_TARGET` — default target, usually `fake-host` or `macos`.
+- `PLATFORM_CONTROL_DEFAULT_TARGET` — default target, usually `reference-host` or `macos`.
 
 ## Required tool groups
 
@@ -43,7 +43,7 @@ npm test
 npm start
 ```
 
-Start with a fake host and contract tests. Then attach to real desktop hosts.
+Start with a reference host and contract tests. Then attach to real desktop hosts.
 Mobile simulator/emulator adapters can come later.
 
 ## v0.4 database tool group

@@ -206,7 +206,7 @@ Allowed `expected` assertions are `textIncludes` and `bridgeCallsInclude`. Bundl
 
 Relationship to `tests/micro/*.microtest.json`:
 
-- `smoke-tests.json` is **package-bundled**, runs **at install time**, and exists to gate activation of a new version. It must pass on the fake host.
+- `smoke-tests.json` is **package-bundled**, runs **at install time**, and exists to gate activation of a new version. It must pass on the reference host.
 - `*.microtest.json` is **platform-bundled** under `tests/micro/`, runs **after install** on real hosts under Codex control, and exists to verify cross-platform behavior. It can call mocks, advance fake timers, and reset state — capabilities not available to bundled smoke tests.
 
 A bundled smoke test must not require mocks, timer advancement, or DB assertions. If those are needed, write a micro-test instead.
@@ -233,7 +233,7 @@ Examples:
 - runtime `0.2.3` accepts app `0.1.7` (downgrade-compatible) and `0.2.0`.
 - runtime `0.2.3` rejects app `0.3.0`.
 
-A dev override (`--allow-runtime-mismatch`) may be passed to the fake host and to dev native builds, but it must be refused by production builds and logged. Pre-1.0 majors follow semver semantics where 0.x is treated as the major; this matches the existing repo convention.
+A dev override (`--allow-runtime-mismatch`) may be passed to the reference host and to dev native builds, but it must be refused by production builds and logged. Pre-1.0 majors follow semver semantics where 0.x is treated as the major; this matches the existing repo convention.
 
 ## 9. Recommended AI output format **[v0.1]**
 

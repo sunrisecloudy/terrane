@@ -49,4 +49,4 @@ ENV GSETTINGS_BACKEND=memory \
     WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
     WEBKIT_DISABLE_COMPOSITING_MODE=1
 
-CMD ["node", "--test", "--no-warnings", "tools/fake-platform-host/test/linux-native-build.test.js"]
+CMD ["node", "--test", "--no-warnings", "tools/reference-host/test/linux-native-build.test.js"]

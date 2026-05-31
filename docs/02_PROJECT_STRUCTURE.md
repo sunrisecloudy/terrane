@@ -264,7 +264,7 @@ codex/
   CODEX_TRUST_REPAIR_PROMPT.md
 ```
 
-Implementation should keep the fake-host package validator and app registry in a shared module so native hosts and server cannot drift from the reference behavior.
+Implementation should keep the reference-host package validator and app registry in a shared module so native hosts and server cannot drift from the reference behavior.
 
 ## v0.4 persistence additions
 

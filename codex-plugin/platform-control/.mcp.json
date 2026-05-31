@@ -5,7 +5,7 @@
       "args": ["../../tools/codex-platform-mcp/src/server.js"],
       "env": {
         "PLATFORM_CONTROL_URL": "http://127.0.0.1:7878",
-        "PLATFORM_CONTROL_DEFAULT_TARGET": "fake-host"
+        "PLATFORM_CONTROL_DEFAULT_TARGET": "reference-host"
       },
       "startup_timeout_sec": 20,
       "tool_timeout_sec": 120,

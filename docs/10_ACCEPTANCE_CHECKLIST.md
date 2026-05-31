@@ -184,15 +184,15 @@
 - [x] All example manifests include `dataVersion`, `capabilities`, `resourceBudget`, and `networkPolicy`.
 - [x] All example packages validate against updated schemas.
 - [x] Package install creates a signature and install report.
-- [x] Fake host persists a configured Ed25519 platform key file and exposes public key metadata.
+- [x] Reference host persists a configured Ed25519 platform key file and exposes public key metadata.
 - [x] Runtime refuses tampered installed packages.
 - [x] App registry stores immutable versions and active-version pointer.
-- [x] Rollback works on fake-host and at least one desktop target.
+- [x] Rollback works on reference-host and at least one desktop target.
 - [x] Runtime capabilities API works on every target.
-- [x] Snapshot/replay works on fake-host.
+- [x] Snapshot/replay works on reference-host.
 - [x] Resource-budget violations are detected.
 - [x] Network policy blocks disallowed requests.
-- [x] Accessibility audit runs in fake-host.
+- [x] Accessibility audit runs in reference-host.
 - [x] Codex repair loop can validate, install, test, patch, and retest an example app.
 
 ## v0.4 database persistence acceptance

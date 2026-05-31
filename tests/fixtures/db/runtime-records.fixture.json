@@ -2,8 +2,8 @@
   "runtimeSessions": [
     {
       "sessionId": "session_1",
-      "target": "fake-host",
-      "platform": "fake",
+      "target": "reference-host",
+      "platform": "reference",
       "runtimeVersion": "0.4.0",
       "activeAppId": "notes-lite",
       "activeInstallId": "install_notes_lite_1",

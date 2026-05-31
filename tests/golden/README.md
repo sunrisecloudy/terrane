@@ -1,6 +1,6 @@
 # Golden Regression Corpus
 
-These fixtures are intentionally small generated apps/packages that the runtime must never break. They should run on fake-host first and then on every native target.
+These fixtures are intentionally small generated apps/packages that the runtime must never break. They should run on reference-host first and then on every native target.
 
 Checked-in golden cases:
 

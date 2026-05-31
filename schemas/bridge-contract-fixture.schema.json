@@ -41,7 +41,7 @@
       "items": {
         "type": "string",
         "enum": [
-          "fake-host",
+          "reference-host",
           "macos",
           "ios-simulator",
           "android-emulator",
@@ -131,7 +131,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "fake-host": {
+        "reference-host": {
           "$ref": "#/$defs/expected"
         },
         "macos": {

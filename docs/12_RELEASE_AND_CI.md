@@ -182,7 +182,7 @@ The WebView runtime is shipped *inside* each native host binary. There is no ove
 | Windows | MSIX bundle update |
 | Linux | Distro package or AppImage update |
 | Server | Operator-driven Zig binary deployment |
-| Fake host (dev) | `git pull` + restart |
+| Reference host (dev) | `git pull` + restart |
 
 When the runtime version changes, every installed generated app is re-evaluated against the new runtime semver rule (docs/04 §8). Apps that fail the rule are kept in storage but cannot mount until the user installs a compatible app version. The host shows a one-time banner listing incompatible apps after a runtime upgrade.
 
@@ -210,7 +210,7 @@ Required jobs:
 - `validate:schemas` — validate manifests, bridge schemas, micro-test files, and control protocol schemas.
 - `test:runtime-headless` — run runtime tests in a browser/WebView-compatible environment.
 - `test:mcp-contract` — run the MCP server against a fake control-plane server.
-- `test:micro-examples` — run micro-tests for the five example webapps against the fake host.
+- `test:micro-examples` — run micro-tests for the five example webapps against the reference host.
 - `test:desktop-smoke` — launch at least one desktop host and run all example app smoke tests.
 
 Optional/manual jobs:
@@ -220,7 +220,7 @@ Optional/manual jobs:
 - Release packaging/signing smoke.
 - Store-specific submission dry runs.
 
-The fake host is required so Codex can test the MCP server without needing every native toolchain installed.
+The reference host is required so Codex can test the MCP server without needing every native toolchain installed.
 
 ## v0.3 CI additions
 
@@ -228,7 +228,7 @@ CI must add stages for:
 
 1. schema validation for all examples and fixtures;
 2. package validator mutation tests;
-3. fake-host install/sign/mount tests;
+3. reference-host install/sign/mount tests;
 4. snapshot/replay tests;
 5. rollback/migration tests;
 6. accessibility audit smoke tests;

@@ -222,7 +222,7 @@ Acceptance:
 
 - `zig build run-server` starts.
 - `/health` returns OK.
-- `/bridge` matches the contract fixtures byte-for-byte against the fake host.
+- `/bridge` matches the contract fixtures byte-for-byte against the reference host.
 - Invalid requests return structured errors.
 
 ## 8. Platform build artifacts **[v0.1]**
@@ -267,7 +267,7 @@ Every native host must include a `PlatformDatabase` module with these responsibi
 | Android | SQLite database in app-private storage; migrations run before WebView runtime loads |
 | Windows | SQLite under LocalAppData; migrations run on launch |
 | Linux | SQLite under XDG data home; migrations run on launch |
-| Fake host | SQLite in-memory by default, file-backed when requested |
+| Reference host | SQLite in-memory by default, file-backed when requested |
 | Server | SQLite for dev, Postgres-compatible logical schema for production |
 
 Native hosts must implement:

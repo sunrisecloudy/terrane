@@ -14,7 +14,7 @@ Use this skill when core state, `core.step`, action logs, replay output, or runt
 3. Compare expected and actual actions with `runtime.assert_core_action` and `runtime.compare_snapshot`.
 4. If the defect is in Zig core, keep the fix deterministic: event in, action/state out, no platform effects in core logic.
 5. If the defect is in bridge wiring, update bridge fixtures and contract tests rather than only patching one host.
-6. Verify with Zig unit/replay tests and the relevant fake-host or server bridge contract tests.
+6. Verify with Zig unit/replay tests and the relevant reference-host or server bridge contract tests.
 
 ## Guardrails
 

@@ -51,7 +51,7 @@ Low volume but required:
 - `core_free` releases output buffer.
 - Invalid JSON returns structured logical error.
 - Oversized input returns safe error.
-- Local Zig core build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/zig-core-build.test.js`, which executes `zig test` and builds native static/shared libraries. On macOS it pins `macos.15.0.0` to avoid the local Zig build-runner Darwin 26 linker issue.
+- Local Zig core build smoke runs with `node --test --no-warnings tools/reference-host/test/zig-core-build.test.js`, which executes `zig test` and builds native static/shared libraries. On macOS it pins `macos.15.0.0` to avoid the local Zig build-runner Darwin 26 linker issue.
 
 ### Property/fuzz tests
 
@@ -134,15 +134,15 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
       "resultSubset": { "target": "zig-server" }
     }
   },
-  "platforms": ["fake-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
+  "platforms": ["reference-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
 }
 ```
 
-`expectedByPlatform` is only for intentional platform-identity differences such as `runtime.capabilities.target` or for a host that rejects an invalid fixture earlier than bridge dispatch. Otherwise fixtures use `expected` and every target must match the fake host.
+`expectedByPlatform` is only for intentional platform-identity differences such as `runtime.capabilities.target` or for a host that rejects an invalid fixture earlier than bridge dispatch. Otherwise fixtures use `expected` and every target must match the reference host.
 
-The runtime capabilities contract is also covered by `tools/fake-platform-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target and checks each native/server implementation exposes the channel-derived `appId`, build/runtime-derived `devMode`, plus manifest-level `storage.read` / `storage.write` capability IDs.
+The runtime capabilities contract is also covered by `tools/reference-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target and checks each native/server implementation exposes the channel-derived `appId`, build/runtime-derived `devMode`, plus manifest-level `storage.read` / `storage.write` capability IDs.
 
-Development-only runtime hooks are covered by `tools/fake-platform-host/test/runtime-web.test.js`, which verifies `window.__APP_RUNTIME_DEVTOOLS__` exposes snapshot/query/bridge/console/storage/core/reset helpers in dev/test mode and is absent outside dev/test mode.
+Development-only runtime hooks are covered by `tools/reference-host/test/runtime-web.test.js`, which verifies `window.__APP_RUNTIME_DEVTOOLS__` exposes snapshot/query/bridge/console/storage/core/reset helpers in dev/test mode and is absent outside dev/test mode.
 
 The harness:
 
@@ -151,7 +151,7 @@ The harness:
 3. Applies `preconditions` via the dev control plane.
 4. Sends the request via the standard bridge dispatch path.
 5. Compares the response to `expectedByPlatform[target]` when present, otherwise `expected`, stripping non-deterministic fields (`id`, `timestamp`, durations) and any field listed under `expected.ignore`.
-6. Fails the fixture if any platform produces a different response than the fake host (which is the reference) without an explicit platform-specific expectation.
+6. Fails the fixture if any platform produces a different response than the reference host (which is the reference) without an explicit platform-specific expectation.
 
 ### 6.2 Required fixtures
 
@@ -169,6 +169,7 @@ valid-core-step-network-snapshot.json
 valid-core-step-unknown-event.json
 invalid-core-step-bad-json.json
 valid-network-request-mocked.json
+invalid-network-path-prefix-denied.json
 valid-network-policy-denied.json
 valid-dialog-open-mocked.json
 valid-dialog-cancelled.json
@@ -181,7 +182,7 @@ runtime-version-incompatible.json
 
 ### 6.3 Reference contract
 
-The fake host (docs/32) is the reference. Every other platform must match its responses byte-for-byte after stripping the listed non-deterministic fields. Drift between platforms is a bug in whichever platform diverges from the fake host, unless the fake host itself is non-conformant.
+The reference host (docs/32) is the reference. Every other platform must match its responses byte-for-byte after stripping the listed non-deterministic fields. Drift between platforms is a bug in whichever platform diverges from the reference host, unless the reference host itself is non-conformant.
 
 ## 7. Native platform tests
 
@@ -197,8 +198,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Core step returns real Zig output.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
-- Local simulator build/package smoke runs with `node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
-- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
+- Local simulator build/package smoke runs with `node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
+- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
 
 ### macOS
 
@@ -216,9 +217,9 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - SQLite app-version rollback restores the previous active install and preserves generated app storage.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside DEBUG builds.
-- Local build and native SwiftPM tests run with `node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js` on macOS hosts.
+- Local build and native SwiftPM tests run with `node --test --no-warnings tools/reference-host/test/macos-native-build.test.js` on macOS hosts.
 - When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
-- Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/macos-native-build.test.js`.
+- Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/macos-native-build.test.js`.
 
 ### Android
 
@@ -231,8 +232,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
-- Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
-- Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
+- Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/reference-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
+- Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
 
 ### Windows
 
@@ -247,8 +248,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Zig DLL loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
-- Local Windows build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host and verifies audited rejection of dev-only startup flags.
-- Full Windows smoke runs with `NATIVE_AI_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
+- Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host and verifies audited rejection of dev-only startup flags.
+- Full Windows smoke runs with `NATIVE_AI_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
 
 ### Linux
 
@@ -262,8 +263,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - Zig shared library loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
-- Local Linux build smoke runs with `node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
-- Full Linux smoke runs with `NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `libzig_core.so`.
+- Local Linux build smoke runs with `node --test --no-warnings tools/reference-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
+- Full Linux smoke runs with `NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `libzig_core.so`.
 
 ### Server
 
@@ -271,8 +272,8 @@ The fake host (docs/32) is the reference. Every other platform must match its re
 - `/health` returns success.
 - `/core/step` matches core contract.
 - Invalid request returns structured error.
-- Source compile/executable smoke runs with `node --test --no-warnings tools/fake-platform-host/test/server-zig-build.test.js`.
-- Bridge fixture contract runs against a fresh Zig server database per fixture with `node --test --no-warnings tools/fake-platform-host/test/server-bridge-contract.test.js`.
+- Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/server-zig-build.test.js`.
+- Bridge fixture contract runs against a fresh Zig server database per fixture with `node --test --no-warnings tools/reference-host/test/server-bridge-contract.test.js`.
 - API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
 
 ## 8. End-to-end tests
@@ -298,7 +299,7 @@ For each platform shell:
 
 ## 9. Platform smoke execution
 
-The checked-in suite is `tests/platform-smoke/all-example-apps.platform-smoke.json`. It targets `fake-host`, `macos`, `linux`, `windows`, `android-emulator`, and `ios-simulator` with the same per-app flow:
+The checked-in suite is `tests/platform-smoke/all-example-apps.platform-smoke.json`. It targets `reference-host`, `macos`, `linux`, `windows`, `android-emulator`, and `ios-simulator` with the same per-app flow:
 
 1. `platform.open_webapp`
 2. `runtime.wait_for`
@@ -309,7 +310,7 @@ The checked-in suite is `tests/platform-smoke/all-example-apps.platform-smoke.js
 Automated baseline:
 
 ```sh
-node --test --no-warnings tools/fake-platform-host/test/platform-smoke.test.js
+node --test --no-warnings tools/reference-host/test/platform-smoke.test.js
 ```
 
 Manual native execution, when the platform toolchain or device is available:
@@ -317,7 +318,7 @@ Manual native execution, when the platform toolchain or device is available:
 1. Launch the target host and confirm its control endpoint/token are available.
 2. Run the same suite through `platform.run_platform_smoke` with the target `platform` value.
 3. Save the run output, screenshots, and any host logs with the release evidence.
-4. Treat any fake-host/native drift as a platform bug unless the fake host violates the bridge contract.
+4. Treat any reference-host/native drift as a platform bug unless the reference host violates the bridge contract.
 
 Required manual target values:
 
@@ -346,7 +347,7 @@ Create malicious packages under `tests/security/malicious-packages/`:
 
 Expected result: rejected at install or denied at runtime.
 
-Native host-side `appId` request-body rejection is covered by `tools/fake-platform-host/test/native-channel-appid-source.test.js`, with macOS/iOS compile coverage in their native build tests.
+Native host-side `appId` request-body rejection is covered by `tools/reference-host/test/native-channel-appid-source.test.js`, with macOS/iOS compile coverage in their native build tests.
 
 ## 11. Performance tests
 
@@ -439,14 +440,14 @@ which verifies unique tool names, per-tool JSON Schema input definitions,
 safe database tool exposure, and MCP-boundary argument validation including
 `confirm: true` gates for destructive calls. `tools/codex-platform-mcp/test/server.test.js`
 verifies invalid tool arguments are rejected before any control-plane request is forwarded.
-Fake-host, Zig server, and macOS control-plane coverage also rejects destructive
+Reference-host, Zig server, and macOS control-plane coverage also rejects destructive
 `platform.reset_webapp` / `runtime.storage_reset` requests without `confirm: true`
 before allowing the confirmed reset path.
-Fake-host console inspection is covered by `tools/fake-platform-host/test/control-utilities.test.js`
-and `tools/fake-platform-host/test/codex-control-acceptance.test.js`, which verify `app.log`
+Reference-host console inspection is covered by `tools/reference-host/test/control-utilities.test.js`
+and `tools/reference-host/test/codex-control-acceptance.test.js`, which verify `app.log`
 bridge calls appear through `runtime.console_logs` and that `runtime.assert_no_console_errors`
 fails on error-level log rows.
-Fake-host notification capture is covered by the same tests, which verify `notification.toast`
+Reference-host notification capture is covered by the same tests, which verify `notification.toast`
 bridge calls are read back from persisted bridge rows through `runtime.notification_capture`.
 
 ### New test levels
@@ -506,12 +507,12 @@ If a generated app fails a micro-test, Codex should:
 - Valid source package produces valid signature and install report.
 - Modified file after signing fails mount.
 - Modified permissions after signing fail mount.
-- `none-dev` signatures are accepted only on fake-host/dev mode.
+- `none-dev` signatures are accepted only on reference-host/dev mode.
 - Real native dev targets run signing path, not unsigned direct execution.
-- macOS dev-control package signing is covered by `tools/fake-platform-host/test/macos-signing-source.test.js` and `tools/fake-platform-host/test/macos-native-build.test.js`, which verify Ed25519 signature fields and install-report storage.
-- macOS Keychain-backed signing-key persistence and `platform.health` public-key metadata are covered by `tools/fake-platform-host/test/macos-native-build.test.js`.
-- macOS active-install signature/content verification before `platform.open_webapp` is covered by `tools/fake-platform-host/test/macos-native-build.test.js`.
-- Fake-host configured platform key persistence and public-key health metadata are covered by `tools/fake-platform-host/test/signing.test.js`.
+- macOS dev-control package signing is covered by `tools/reference-host/test/macos-signing-source.test.js` and `tools/reference-host/test/macos-native-build.test.js`, which verify Ed25519 signature fields and install-report storage.
+- macOS Keychain-backed signing-key persistence and `platform.health` public-key metadata are covered by `tools/reference-host/test/macos-native-build.test.js`.
+- macOS active-install signature/content verification before `platform.open_webapp` is covered by `tools/reference-host/test/macos-native-build.test.js`.
+- Reference-host configured platform key persistence and public-key health metadata are covered by `tools/reference-host/test/signing.test.js`.
 
 ### Versioning/rollback tests
 
@@ -519,7 +520,7 @@ If a generated app fails a micro-test, Codex should:
 - Failed micro-test quarantines new version and keeps previous version active.
 - Rollback restores active pointer and smoke-tests the restored app.
 - Rollback refuses if dataVersion is incompatible and no snapshot/down-migration exists.
-- Desktop rollback is covered on macOS by `native/macos` SwiftPM tests through `tools/fake-platform-host/test/macos-native-build.test.js`.
+- Desktop rollback is covered on macOS by `native/macos` SwiftPM tests through `tools/reference-host/test/macos-native-build.test.js`.
 
 ### Migration tests
 
@@ -536,7 +537,7 @@ If a generated app fails a micro-test, Codex should:
 ### Snapshot/replay tests
 
 - Snapshot captures storage, bridge/core logs, capabilities, resource usage, and app version.
-- Restored snapshot reproduces visible UI and core outputs on fake-host.
+- Restored snapshot reproduces visible UI and core outputs on reference-host.
 - Cross-platform replay differences are reported, not hidden.
 
 ### Resource-budget tests

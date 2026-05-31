@@ -20,11 +20,11 @@ test("control client sends the spec control token header", async (t) => {
   };
 
   const client = new ControlClient("http://127.0.0.1:7878", "test-token");
-  const result = await client.command("platform.health", { target: "fake-host" });
+  const result = await client.command("platform.health", { target: "reference-host" });
 
   assert.equal(result.ok, true);
   assert.equal(request.url, "http://127.0.0.1:7878/control/command");
   assert.equal(request.options.headers["x-platform-control-token"], "test-token");
   assert.equal("authorization" in request.options.headers, false);
-  assert.equal(request.options.body, JSON.stringify({ tool: "platform.health", args: { target: "fake-host" } }));
+  assert.equal(request.options.body, JSON.stringify({ tool: "platform.health", args: { target: "reference-host" } }));
 });

@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-The same generated app should run on iOS, Android, desktop, fake host, and server test surfaces. Capabilities let an app discover what the current host supports.
+The same generated app should run on iOS, Android, desktop, reference host, and server test surfaces. Capabilities let an app discover what the current host supports.
 
 ## 2. API
 

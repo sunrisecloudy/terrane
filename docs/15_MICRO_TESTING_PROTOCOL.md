@@ -21,7 +21,7 @@ The platform has two test surfaces. They use a compatible step vocabulary but se
 | Location | inside the webapp package | `tests/micro/` |
 | Authored by | AI/app author | platform/test author or Codex |
 | Runs when | at install time, before `apps.active_install_id` flips | after install, on any host, on demand |
-| Driver | install validator, fake host | Codex MCP / control plane |
+| Driver | install validator, reference host | Codex MCP / control plane |
 | Can use mocks | no — must work against real-ish bridge | yes — `network_mock_set`, `dialog_mock_set` |
 | Can advance timers | no | yes — `timer_advance` |
 | Can assert DB rows | no | yes — `db.assert_*` |

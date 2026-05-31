@@ -2,9 +2,9 @@
 
 ## 1. Implementation principle
 
-Build the platform in thin vertical slices. Do not generate all platforms in full at once. First prove the contract in the fake host (the reference implementation), then port the same contract to the Zig server, then to one desktop shell, then to the remaining shells.
+Build the platform in thin vertical slices. Do not generate all platforms in full at once. First prove the contract in the reference host (the reference implementation), then port the same contract to the Zig server, then to one desktop shell, then to the remaining shells.
 
-This plan reorders earlier drafts to make the **fake host** the first end-to-end milestone after the Zig core. That way every native shell has a working byte-for-byte reference to diff against, and AI repair loops can run without any native toolchain.
+This plan reorders earlier drafts to make the **reference host** the first end-to-end milestone after the Zig core. That way every native shell has a working byte-for-byte reference to diff against, and AI repair loops can run without any native toolchain.
 
 ## 2. Milestone 0 — repository skeleton
 
@@ -43,9 +43,9 @@ Acceptance:
 - Replay determinism test passes.
 - Pinned Zig toolchain version in `build.zig.zon`.
 
-## 4. Milestone 2 — Fake host (reference contract) **[reordered]**
+## 4. Milestone 2 — Reference host (contract) **[reordered]**
 
-Deliverables (`tools/fake-platform-host/`):
+Deliverables (`tools/reference-host/`):
 
 - Node process serving runtime + examples + bridge per docs/32.
 - SQLite-backed `PlatformDatabase` (in-memory by default).
@@ -56,8 +56,8 @@ Deliverables (`tools/fake-platform-host/`):
 
 Acceptance:
 
-- `node tools/fake-platform-host` starts and serves `/health`.
-- All 5 examples install (fake-host may use dev signing; real native dev hosts use local Ed25519 signing), enable, and pass their bundled smoke tests.
+- `node tools/reference-host` starts and serves `/health`.
+- All 5 examples install (reference-host may use dev signing; real native dev hosts use local Ed25519 signing), enable, and pass their bundled smoke tests.
 - All bridge contract fixtures under `tests/fixtures/bridge/` pass.
 - The control plane refuses requests without `X-Platform-Control-Token`.
 
@@ -81,11 +81,11 @@ Acceptance:
 - All 5 examples load in sandbox.
 - Mock storage persists in memory for a session.
 - Unknown method is denied.
-- The same runtime, served by the fake host, runs the same way.
+- The same runtime, served by the reference host, runs the same way.
 
 ## 6. Milestone 4 — Package validator and signer
 
-Deliverables (`tools/validate-webapp-package/`, signer integrated into the fake host):
+Deliverables (`tools/validate-webapp-package/`, signer integrated into the reference host):
 
 - Manifest schema validation.
 - Package structure validation.
@@ -93,7 +93,7 @@ Deliverables (`tools/validate-webapp-package/`, signer integrated into the fake 
 - Network policy + budget validation.
 - Canonicalization + Ed25519 signing (docs/17).
 - Install report generation.
-- Smoke test runner against the fake host.
+- Smoke test runner against the reference host.
 
 Acceptance:
 
@@ -113,7 +113,7 @@ Deliverables (`server/`):
 Acceptance:
 
 - `zig build run-server` starts.
-- Contract fixtures pass byte-identically to the fake host.
+- Contract fixtures pass byte-identically to the reference host.
 
 ## 8. Milestone 6 — macOS shell **[first native]**
 
@@ -131,7 +131,7 @@ Acceptance:
 
 - macOS app launches and loads all examples.
 - `core.step` and storage work.
-- Contract fixtures match the fake host byte-identically.
+- Contract fixtures match the reference host byte-identically.
 
 ## 9. Milestone 7 — iOS shell
 
@@ -180,7 +180,7 @@ Acceptance:
 
 - Windows app launches examples.
 - `core.step` works.
-- Contract fixtures match the fake host.
+- Contract fixtures match the reference host.
 
 ## 12. Milestone 10 — Linux shell
 
@@ -194,7 +194,7 @@ Acceptance:
 
 - Linux app launches examples.
 - `core.step` works.
-- Contract fixtures match the fake host.
+- Contract fixtures match the reference host.
 
 ## 13. Milestone 11 — Cross-platform hardening
 
@@ -347,7 +347,7 @@ Deliverables:
 
 Acceptance:
 
-- Fake host can reproduce a failing micro-test from snapshot.
+- Reference host can reproduce a failing micro-test from snapshot.
 - Codex can patch and retest a generated app through MCP tools.
 
 ## 15. v0.4 database implementation milestones
@@ -359,9 +359,9 @@ Acceptance:
 - Add DB JSON schemas and test fixtures.
 - Add in-memory SQLite schema test.
 
-### DB-1: Fake-host persistence
+### DB-1: Reference-host persistence
 
-- Fake-host SQLite database service.
+- Reference-host SQLite database service.
 - App install transaction (one transaction across all install tables).
 - `storage.get/set/list/remove` against `app_storage`.
 - Persist bridge calls, core events/actions, runtime snapshots, test runs.

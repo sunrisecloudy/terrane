@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-The platform must include a formal persistence layer that is boring, portable, inspectable, and compatible across native hosts, the fake host, server development, and production server deployments.
+The platform must include a formal persistence layer that is boring, portable, inspectable, and compatible across native hosts, the reference host, server development, and production server deployments.
 
 The database stores:
 
@@ -24,13 +24,13 @@ The database stores:
 
 ```text
 Native hosts: SQLite
-Fake host: SQLite
+Reference host: SQLite
 Local development: SQLite
 Server development: SQLite
 Server production: Postgres-compatible logical schema
 ```
 
-SQLite is the default for iOS, Android, macOS, Windows, Linux, local dev, CI fake host, and smoke tests. The server must support the same logical tables with Postgres-compatible DDL for production.
+SQLite is the default for iOS, Android, macOS, Windows, Linux, local dev, CI reference host, and smoke tests. The server must support the same logical tables with Postgres-compatible DDL for production.
 
 ## 3. Ownership model
 

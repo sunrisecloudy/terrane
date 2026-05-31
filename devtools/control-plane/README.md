@@ -1,6 +1,6 @@
 # Dev Control Plane
 
-The dev control plane is a local-only API exposed by native host dev builds and by the fake host.
+The dev control plane is a local-only API exposed by native host dev builds and by the reference host.
 
 It lets Codex, CI, and local test runners control the platform at micro-test granularity.
 
@@ -52,9 +52,9 @@ Response:
 - Destructive operations require `confirm: true`.
 - Production builds must not bind this server.
 
-## Fake host
+## Reference host
 
-Implement a fake host before platform-specific hosts. It should emulate package install, runtime bridge, storage, logs, and micro-tests so the MCP server can be tested in CI.
+Implement a reference host before platform-specific hosts. It should emulate package install, runtime bridge, storage, logs, and micro-tests so the MCP server can be tested in CI.
 
 ## v0.4 database inspection endpoints
 

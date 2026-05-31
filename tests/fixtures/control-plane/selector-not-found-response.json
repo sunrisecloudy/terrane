@@ -5,7 +5,7 @@
     "message": "No element matched data-testid=missing-button"
   },
   "diagnostics": {
-    "target": "fake-host",
+    "target": "reference-host",
     "sessionId": "session_test",
     "appId": "notes-lite"
   }
