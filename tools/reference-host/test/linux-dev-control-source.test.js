@@ -68,6 +68,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.accessibility_snapshot",
     "runtime.run_accessibility_audit",
     "runtime.assert_accessibility",
+    "runtime.run_smoke_tests",
     "platform.list_targets",
     "platform.list_webapps",
     "runtime.resource_usage",
@@ -238,6 +239,44 @@ test("Linux dev control supports static accessibility controls over bundled app 
   assert.ok(
     control.indexOf('"runtime.accessibility_snapshot"') < control.indexOf('"runtime.resource_usage"'),
     "accessibility controls should be first-class command routes",
+  );
+});
+
+test("Linux dev control supports static bundled smoke tests with test run persistence", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.run_smoke_tests",
+    "runtime_run_smoke_tests_json",
+    "evaluate_smoke_tests_json",
+    "app_text_for_bundled_app(app_id, \"smoke-tests.json\")",
+    "app_text_for_bundled_app(app_id, \"app.js\")",
+    "smoke_selector_exists",
+    "runtime_query_matches(html",
+    "smoke_text_can_appear",
+    "bridge_method_referenced",
+    "bridgeCallsInclude",
+    "textIncludes",
+    "selector.not_found",
+    "text.not_found",
+    "bridge.call_missing",
+    "invalid_smoke_tests",
+    "smoke_tests_missing",
+    "runtime.run_smoke_tests requires appId",
+    "runtime.run_smoke_tests appId is not a valid generated app id",
+    "app_sandbox_is_known_example_app_id",
+    "INSERT INTO micro_tests",
+    "ON CONFLICT(micro_test_id) DO UPDATE SET",
+    "INSERT INTO test_runs",
+    "linux-static-smoke",
+    "db.query_test_runs",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux smoke-test control source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf('"runtime.run_smoke_tests"') < control.indexOf('"runtime.accessibility_snapshot"'),
+    "smoke tests should be routed as a first-class session command",
   );
 });
 

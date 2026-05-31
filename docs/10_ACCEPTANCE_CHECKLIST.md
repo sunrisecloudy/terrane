@@ -175,6 +175,7 @@
 - [x] Debug dev control plane runtime-smoke verifies `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
 - [x] Debug dev control plane Docker-smoke verifies static HTML `runtime.screenshot`, `runtime.query`, target interaction, `runtime.wait_for`, `runtime.timer_advance`, and visible/text assertion commands over bundled app packages.
 - [x] Debug dev control plane Docker-smoke verifies static HTML `runtime.accessibility_snapshot`, `runtime.run_accessibility_audit`, and `runtime.assert_accessibility` controls over bundled app packages.
+- [x] Debug dev control plane Docker-smoke verifies static bundled `runtime.run_smoke_tests` through the token-gated command route and confirms `db.query_test_runs` sees the persisted run.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
 - [x] Debug dev control plane Docker-smoke verifies fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Debug dev control plane runtime-smoke verifies direct `runtime.storage_get`, `runtime.storage_set`, confirmation-gated `runtime.storage_reset` / `platform.reset_webapp`, pre-reset snapshots, and `runtime.assert_storage` with storage-prefix enforcement through the native bridge.

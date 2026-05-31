@@ -2221,18 +2221,23 @@ static void accessibility_control_free(gpointer data) {
   g_free(control);
 }
 
-static gchar *html_for_bundled_app(const gchar *app_id) {
+static gchar *app_text_for_bundled_app(const gchar *app_id, const gchar *relative_path) {
   g_autofree gchar *manifest_path = app_sandbox_manifest_path_for_app(app_id);
   if (manifest_path == NULL) {
-    return g_strdup("");
+    return NULL;
   }
   g_autofree gchar *app_dir = g_path_get_dirname(manifest_path);
-  g_autofree gchar *index_path = g_build_filename(app_dir, "index.html", NULL);
+  g_autofree gchar *file_path = g_build_filename(app_dir, relative_path, NULL);
   gchar *contents = NULL;
-  if (!g_file_get_contents(index_path, &contents, NULL, NULL)) {
-    return g_strdup("");
+  if (!g_file_get_contents(file_path, &contents, NULL, NULL)) {
+    return NULL;
   }
   return contents;
+}
+
+static gchar *html_for_bundled_app(const gchar *app_id) {
+  g_autofree gchar *contents = app_text_for_bundled_app(app_id, "index.html");
+  return contents == NULL ? g_strdup("") : g_steal_pointer(&contents);
 }
 
 static gchar *regex_replace_all(const gchar *text, const gchar *pattern, const gchar *replacement) {
@@ -4008,6 +4013,359 @@ static gchar *control_session_runtime_session_id(sqlite3 *db, const gchar *contr
   return runtime_session_id;
 }
 
+static gchar *runtime_session_for_control_session(DevControlPlane *plane, sqlite3 *db, const gchar *control_session_id, const gchar *app_id) {
+  g_autofree gchar *existing = control_session_runtime_session_id(db, control_session_id);
+  if (existing != NULL && existing[0] != '\0') {
+    return g_steal_pointer(&existing);
+  }
+
+  g_autofree gchar *runtime_session_id = make_id("session");
+  g_autofree gchar *install_id = active_install_id(db, app_id);
+  g_autofree gchar *started_at = now_iso();
+  g_autofree gchar *capabilities = runtime_capabilities_json(plane, app_id);
+  g_autofree gchar *resource_usage = g_strdup_printf("{\"appId\":\"%s\",\"bridgeCalls\":0,\"coreEvents\":0}", app_id);
+  g_autofree gchar *metadata = g_strdup_printf("{\"controlSessionId\":\"%s\",\"source\":\"linux-static-smoke\"}", control_session_id);
+
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(
+                   db,
+                   "INSERT INTO runtime_sessions "
+                   "(session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, resource_high_water_json, metadata_json) "
+                   "VALUES (?, 'linux', 'linux', '0.1.0', ?, ?, ?, 'running', ?, ?, ?)",
+                   -1,
+                   &statement,
+                   NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, runtime_session_id);
+    bind_text(statement, 2, app_id);
+    bind_nullable_text(statement, 3, install_id);
+    bind_text(statement, 4, started_at);
+    bind_text(statement, 5, capabilities);
+    bind_text(statement, 6, resource_usage);
+    bind_text(statement, 7, metadata);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  if (!ok) {
+    return NULL;
+  }
+
+  statement = NULL;
+  if (sqlite3_prepare_v2(db, "UPDATE control_sessions SET runtime_session_id = ? WHERE control_session_id = ? AND runtime_session_id IS NULL", -1, &statement, NULL) == SQLITE_OK) {
+    bind_text(statement, 1, runtime_session_id);
+    bind_text(statement, 2, control_session_id);
+    sqlite3_step(statement);
+  }
+  sqlite3_finalize(statement);
+  return g_steal_pointer(&runtime_session_id);
+}
+
+static gchar *smoke_failure_json(const gchar *test_name, const gchar *code, const gchar *field, const gchar *value) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "test");
+  json_builder_add_string_value(builder, test_name == NULL || test_name[0] == '\0' ? "unnamed" : test_name);
+  json_builder_set_member_name(builder, "code");
+  json_builder_add_string_value(builder, code);
+  if (field != NULL && field[0] != '\0') {
+    json_builder_set_member_name(builder, field);
+    json_builder_add_string_value(builder, value == NULL ? "" : value);
+  }
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gboolean smoke_selector_exists(const gchar *html, const gchar *selector) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "selector");
+  json_builder_add_string_value(builder, selector);
+  json_builder_end_object(builder);
+  JsonNode *root = json_builder_get_root(builder);
+  GPtrArray *matches = runtime_query_matches(html, json_node_get_object(root));
+  gboolean found = matches->len > 0;
+  g_ptr_array_free(matches, TRUE);
+  json_node_unref(root);
+  g_object_unref(builder);
+  return found;
+}
+
+static gboolean smoke_text_can_appear(const gchar *html, GPtrArray *dynamic_text, const gchar *text) {
+  if (text == NULL || text[0] == '\0') {
+    return TRUE;
+  }
+  g_autofree gchar *visible_text = html_text(html);
+  if (strstr(visible_text, text) != NULL) {
+    return TRUE;
+  }
+  for (guint index = 0; dynamic_text != NULL && index < dynamic_text->len; index++) {
+    if (g_strcmp0(g_ptr_array_index(dynamic_text, index), text) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static gboolean bridge_method_referenced(const gchar *app_js, const gchar *bridge_method) {
+  return app_js != NULL && bridge_method != NULL && bridge_method[0] != '\0' && strstr(app_js, bridge_method) != NULL;
+}
+
+static gchar *evaluate_smoke_tests_json(const gchar *app_id, const gchar *smoke_text, gchar **error_code, gchar **error_message) {
+  JsonParser *parser = json_parser_new();
+  if (smoke_text == NULL || !json_parser_load_from_data(parser, smoke_text, -1, NULL) || !JSON_NODE_HOLDS_ARRAY(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    *error_code = g_strdup("invalid_smoke_tests");
+    *error_message = g_strdup("smoke-tests.json must parse as a JSON array");
+    return NULL;
+  }
+
+  JsonNode *root = json_parser_get_root(parser);
+  JsonArray *tests = json_node_get_array(root);
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  g_autofree gchar *app_js = app_text_for_bundled_app(app_id, "app.js");
+  GPtrArray *failures = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *dynamic_text = g_ptr_array_new_with_free_func(g_free);
+  guint assertions = 0;
+
+  for (guint index = 0; index < json_array_get_length(tests); index++) {
+    JsonNode *test_node = json_array_get_element(tests, index);
+    if (!JSON_NODE_HOLDS_OBJECT(test_node)) {
+      g_ptr_array_add(failures, smoke_failure_json("unnamed", "invalid_smoke_test", "message", "Smoke test must be an object"));
+      continue;
+    }
+    JsonObject *test_object = json_node_get_object(test_node);
+    const gchar *test_name = object_string(test_object, "name", "unnamed");
+    JsonArray *steps = object_array(test_object, "steps");
+    if (steps != NULL) {
+      assertions += json_array_get_length(steps);
+      for (guint step_index = 0; step_index < json_array_get_length(steps); step_index++) {
+        JsonNode *step_node = json_array_get_element(steps, step_index);
+        if (!JSON_NODE_HOLDS_OBJECT(step_node)) {
+          g_ptr_array_add(failures, smoke_failure_json(test_name, "invalid_smoke_step", "message", "Smoke step must be an object"));
+          continue;
+        }
+        JsonObject *step = json_node_get_object(step_node);
+        const gchar *selector = object_string(step, "selector", NULL);
+        if (selector != NULL && selector[0] != '\0' && !smoke_selector_exists(html, selector)) {
+          g_ptr_array_add(failures, smoke_failure_json(test_name, "selector.not_found", "selector", selector));
+        }
+        const gchar *step_type = object_string(step, "type", "");
+        const gchar *value = object_string(step, "value", NULL);
+        if ((g_strcmp0(step_type, "fill") == 0 || g_strcmp0(step_type, "select") == 0) && value != NULL) {
+          g_ptr_array_add(dynamic_text, g_strdup(value));
+        }
+      }
+    }
+
+    JsonObject *expected = object_object(test_object, "expected");
+    if (expected != NULL) {
+      GList *members = json_object_get_members(expected);
+      assertions += g_list_length(members);
+      g_list_free(members);
+
+      JsonArray *bridge_calls = object_array(expected, "bridgeCallsInclude");
+      if (bridge_calls != NULL) {
+        for (guint method_index = 0; method_index < json_array_get_length(bridge_calls); method_index++) {
+          JsonNode *method_node = json_array_get_element(bridge_calls, method_index);
+          if (method_node != NULL && JSON_NODE_HOLDS_VALUE(method_node) && json_node_get_value_type(method_node) == G_TYPE_STRING) {
+            const gchar *bridge_method = json_node_get_string(method_node);
+            if (!bridge_method_referenced(app_js, bridge_method)) {
+              g_ptr_array_add(failures, smoke_failure_json(test_name, "bridge.call_missing", "method", bridge_method));
+            }
+          }
+        }
+      }
+
+      const gchar *text_includes = object_string(expected, "textIncludes", NULL);
+      if (text_includes != NULL && !smoke_text_can_appear(html, dynamic_text, text_includes)) {
+        g_ptr_array_add(failures, smoke_failure_json(test_name, "text.not_found", "text", text_includes));
+      }
+    }
+  }
+
+  gboolean ok = failures->len == 0;
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, ok);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "passed" : "failed");
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "total");
+  json_builder_add_int_value(builder, json_array_get_length(tests));
+  json_builder_set_member_name(builder, "assertions");
+  json_builder_add_int_value(builder, assertions);
+  json_builder_set_member_name(builder, "failures");
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < failures->len; index++) {
+    json_builder_add_json_text_or_null(builder, g_ptr_array_index(failures, index));
+  }
+  json_builder_end_array(builder);
+  json_builder_set_member_name(builder, "runner");
+  json_builder_add_string_value(builder, "static");
+  json_builder_set_member_name(builder, "spec");
+  json_builder_add_value(builder, json_node_copy(root));
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(dynamic_text, TRUE);
+  g_ptr_array_free(failures, TRUE);
+  g_object_unref(parser);
+  return result;
+}
+
+static gboolean record_test_run(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    const gchar *micro_test_id,
+    const gchar *name,
+    const gchar *spec_json,
+    const gchar *status,
+    const gchar *result_json,
+    const gchar *diagnostics_json,
+    GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return FALSE;
+  }
+
+  char *sql_error = NULL;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &sql_error) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not begin test run transaction: %s", sql_error == NULL ? sqlite3_errmsg(db) : sql_error);
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    return FALSE;
+  }
+
+  g_autofree gchar *runtime_session_id = app_id == NULL ? NULL : runtime_session_for_control_session(plane, db, control_session_id, app_id);
+  g_autofree gchar *created_at = now_iso();
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = runtime_session_id != NULL &&
+                sqlite3_prepare_v2(
+                    db,
+                    "INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(micro_test_id) DO UPDATE SET "
+                    "app_id = excluded.app_id, "
+                    "name = excluded.name, "
+                    "spec_json = excluded.spec_json, "
+                    "updated_at = excluded.updated_at",
+                    -1,
+                    &statement,
+                    NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, micro_test_id);
+    bind_nullable_text(statement, 2, app_id);
+    bind_text(statement, 3, name);
+    bind_text(statement, 4, spec_json);
+    bind_text(statement, 5, created_at);
+    bind_text(statement, 6, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+
+  g_autofree gchar *test_run_id = make_id("test-run");
+  if (ok) {
+    statement = NULL;
+    ok = sqlite3_prepare_v2(
+             db,
+             "INSERT INTO test_runs (test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json) "
+             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             -1,
+             &statement,
+             NULL) == SQLITE_OK;
+  }
+  if (ok) {
+    bind_text(statement, 1, test_run_id);
+    bind_text(statement, 2, micro_test_id);
+    bind_nullable_text(statement, 3, runtime_session_id);
+    bind_text(statement, 4, control_session_id);
+    bind_nullable_text(statement, 5, app_id);
+    bind_text(statement, 6, status);
+    bind_text(statement, 7, created_at);
+    bind_text(statement, 8, created_at);
+    bind_text(statement, 9, result_json);
+    bind_text(statement, 10, diagnostics_json);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+
+  if (!ok || sqlite3_exec(db, "COMMIT", NULL, NULL, &sql_error) != SQLITE_OK) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Test run could not be recorded: %s", sql_error == NULL ? sqlite3_errmsg(db) : sql_error);
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    return FALSE;
+  }
+  sqlite3_free(sql_error);
+  platform_database_close(db);
+  return TRUE;
+}
+
+static gchar *runtime_run_smoke_tests_json(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  if (app_id == NULL || app_id[0] == '\0') {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("runtime.run_smoke_tests requires appId");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  if (!valid_generated_app_id(app_id) || !app_sandbox_is_known_example_app_id(app_id)) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("runtime.run_smoke_tests appId is not a valid generated app id");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  g_autofree gchar *smoke_text = app_text_for_bundled_app(app_id, "smoke-tests.json");
+  if (smoke_text == NULL || smoke_text[0] == '\0') {
+    *error_code = g_strdup("smoke_tests_missing");
+    *error_message = g_strdup("App has no smoke-tests.json");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  g_autofree gchar *result = evaluate_smoke_tests_json(app_id, smoke_text, error_code, error_message);
+  if (result == NULL) {
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  gboolean passed = strstr(result, "\"ok\":true") != NULL;
+  g_autofree gchar *micro_test_id = g_strdup_printf("smoke:%s", app_id);
+  g_autofree gchar *name = g_strdup_printf("%s bundled smoke tests", app_id);
+  GError *record_error = NULL;
+  if (!record_test_run(
+          plane,
+          control_session_id,
+          app_id,
+          micro_test_id,
+          name,
+          smoke_text,
+          passed ? "passed" : "failed",
+          result,
+          "{\"runner\":\"linux-static-smoke\"}",
+          &record_error)) {
+    *error_code = g_strdup("sqlite_error");
+    *error_message = g_strdup(record_error == NULL ? "Smoke test run could not be recorded" : record_error->message);
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    g_clear_error(&record_error);
+    return NULL;
+  }
+
+  return g_steal_pointer(&result);
+}
+
 static gchar *platform_create_snapshot_json(DevControlPlane *plane, const gchar *control_session_id, const gchar *session_id_arg, const gchar *app_id, const gchar *type, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
@@ -4923,6 +5281,38 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     }
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {
     result = session_capabilities_json(plane, control_session_id, &error);
+  } else if (g_strcmp0(tool, "runtime.run_smoke_tests") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.run_smoke_tests requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id == NULL || app_id[0] == '\0') {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.run_smoke_tests requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (!valid_generated_app_id(app_id) || !app_sandbox_is_known_example_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.run_smoke_tests appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = runtime_run_smoke_tests_json(plane, control_session_id, app_id, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "invalid_smoke_tests", error_message != NULL ? error_message : "Smoke test run failed", error_status);
+      return;
+    }
   } else if (g_strcmp0(tool, "runtime.accessibility_snapshot") == 0 ||
              g_strcmp0(tool, "runtime.run_accessibility_audit") == 0 ||
              g_strcmp0(tool, "runtime.assert_accessibility") == 0) {

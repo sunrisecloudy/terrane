@@ -414,6 +414,30 @@ test(
       assert.equal(accessibilityAssert.statusCode, 200, accessibilityAssert.body);
       assert.equal(JSON.parse(accessibilityAssert.body).result.rule, "no_unlabeled_controls");
 
+      const smokeRun = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.run_smoke_tests", args: { appId: "task-workbench" } },
+      });
+      assert.equal(smokeRun.statusCode, 200, smokeRun.body);
+      const smokeRunBody = JSON.parse(smokeRun.body);
+      assert.equal(smokeRunBody.result.ok, true);
+      assert.equal(smokeRunBody.result.status, "passed");
+      assert.equal(smokeRunBody.result.runner, "static");
+      assert.equal(smokeRunBody.result.appId, "task-workbench");
+      assert.equal(smokeRunBody.result.failures.length, 0);
+
+      const smokeRuns = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_test_runs", args: { appId: "task-workbench" } },
+      });
+      assert.equal(smokeRuns.statusCode, 200, smokeRuns.body);
+      assert.equal(
+        JSON.parse(smokeRuns.body).result.rows.some((row) => row.micro_test_id === "smoke:task-workbench" && row.status === "passed"),
+        true,
+      );
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1399,6 +1423,22 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedSmokeRunCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.run_smoke_tests' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const persistedSmokeTestRunCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM test_runs WHERE app_id = 'task-workbench' AND micro_test_id = 'smoke:task-workbench' AND status = 'passed';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedListTargetsCount = execFileSync(
         "sqlite3",
         [
@@ -1545,6 +1585,8 @@ test(
       assert.equal(Number(acceptedAccessibilitySnapshotCount) >= 1, true);
       assert.equal(Number(acceptedAccessibilityAuditCount) >= 1, true);
       assert.equal(Number(acceptedAccessibilityAssertCount) >= 1, true);
+      assert.equal(Number(acceptedSmokeRunCount) >= 1, true);
+      assert.equal(Number(persistedSmokeTestRunCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
       assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
