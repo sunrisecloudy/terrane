@@ -35,6 +35,7 @@ test("Linux native Dockerfile pins the smoke dependencies and Zig toolchain", ()
     "libsqlite3-dev",
     "meson",
     "ninja-build",
+    "sqlite3",
     "xvfb",
     "dbus-x11",
     "GTK_A11Y=none",

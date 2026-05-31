@@ -1,6 +1,6 @@
 project('native-ai-webapp-host-linux', 'c',
   version: '0.1.0',
-  default_options: ['warning_level=2', 'c_std=c17'])
+  default_options: ['warning_level=2', 'c_std=c17', 'b_ndebug=if-release'])
 
 cc = meson.get_compiler('c')
 gtk_dep = dependency('gtk4')

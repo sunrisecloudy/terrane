@@ -22,6 +22,7 @@ RUN apt-get update \
     nodejs \
     npm \
     pkg-config \
+    sqlite3 \
     xz-utils \
     xvfb \
   && rm -rf /var/lib/apt/lists/*

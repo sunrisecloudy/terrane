@@ -33,6 +33,33 @@ static gboolean native_ai_is_forbidden_dev_flag(const char *argument) {
   return FALSE;
 }
 
+static gboolean native_ai_dev_flag_consumes_next_argument(const char *argument) {
+  return g_strcmp0(argument, "--control-plane-port") == 0;
+}
+
+static char **native_ai_application_argv_without_dev_flags(int argc, char **argv, int *application_argc) {
+  char **application_argv = g_new0(char *, argc + 1);
+  int output_index = 0;
+  gboolean skip_next_argument = FALSE;
+
+  for (int index = 0; index < argc; index++) {
+    if (index > 0 && skip_next_argument) {
+      skip_next_argument = FALSE;
+      continue;
+    }
+
+    if (index > 0 && native_ai_is_forbidden_dev_flag(argv[index])) {
+      skip_next_argument = native_ai_dev_flag_consumes_next_argument(argv[index]);
+      continue;
+    }
+
+    application_argv[output_index++] = argv[index];
+  }
+
+  *application_argc = output_index;
+  return application_argv;
+}
+
 static gchar *native_ai_database_path(void) {
   g_autofree gchar *data_dir = g_build_filename(g_get_user_data_dir(), "NativeAIWebappPlatform", NULL);
   g_mkdir_with_parents(data_dir, 0700);
@@ -179,7 +206,10 @@ int main(int argc, char **argv) {
 
   GtkApplication *application = gtk_application_new("dev.nativeai.webappplatform", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(application, "activate", G_CALLBACK(on_activate), NULL);
-  int status = g_application_run(G_APPLICATION(application), argc, argv);
+  int application_argc = 0;
+  char **application_argv = native_ai_application_argv_without_dev_flags(argc, argv, &application_argc);
+  int status = g_application_run(G_APPLICATION(application), application_argc, application_argv);
+  g_free(application_argv);
   g_object_unref(application);
   return status;
 }

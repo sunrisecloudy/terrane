@@ -40,7 +40,7 @@ The Linux host can be built and smoke-tested from any Docker-capable development
 node --no-warnings tools/run-linux-native-docker.mjs
 ```
 
-The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs:
+The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke plus release-build production-guard audit check:
 
 ```sh
 NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js

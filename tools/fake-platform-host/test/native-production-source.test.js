@@ -13,6 +13,7 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   const windowsDatabase = read("native/windows/src/PlatformDatabase.cpp");
   const linuxMain = read("native/linux/src/main.c");
   const linuxDatabase = read("native/linux/src/platform_database.c");
+  const linuxMeson = read("native/linux/meson.build");
 
   assert.match(app, /NativeProductionGuard\.rejectDevOnlyFlagsIfNeeded\(\)/);
   assert.match(app, /"--control-plane-port"/);
@@ -39,6 +40,7 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   assert.match(windowsDatabase, /CREATE TABLE IF NOT EXISTS control_commands/);
 
   assert.match(linuxMain, /native_ai_reject_dev_only_flags_if_needed\(argc, argv\)/);
+  assert.match(linuxMain, /native_ai_application_argv_without_dev_flags\(argc, argv, &application_argc\)/);
   assert.match(linuxMain, /"--control-plane-port"/);
   assert.match(linuxMain, /"--allow-runtime-mismatch"/);
   assert.match(linuxMain, /"--allow-unsigned-dev"/);
@@ -51,6 +53,7 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   assert.match(linuxMain, /dev_only_flag/);
   assert.match(linuxDatabase, /CREATE TABLE IF NOT EXISTS control_sessions/);
   assert.match(linuxDatabase, /CREATE TABLE IF NOT EXISTS control_commands/);
+  assert.match(linuxMeson, /'b_ndebug=if-release'/);
 });
 
 function read(relativePath) {

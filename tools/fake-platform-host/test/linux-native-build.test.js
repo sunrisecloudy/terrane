@@ -38,20 +38,20 @@ function hasLinuxNativeDependencies() {
   ]);
 }
 
+function linuxNativeSkipReason({ requireZig = false, requireSqliteCli = false } = {}) {
+  if (process.platform !== "linux") return "Linux native smoke only runs on Linux hosts";
+  if (!commandWorks("meson")) return "meson is not available";
+  if (!commandWorks("ninja")) return "ninja is not available";
+  if (requireZig && !commandWorks("zig", ["version"])) return "zig is not available";
+  if (requireSqliteCli && !commandWorks("sqlite3", ["-version"])) return "sqlite3 CLI is not available";
+  if (!hasLinuxNativeDependencies()) return "GTK/WebKitGTK development dependencies are not available";
+  return false;
+}
+
 test(
   "Linux GTK/WebKitGTK host builds and optionally runs native smoke",
   {
-    skip: process.platform !== "linux"
-      ? "Linux native smoke only runs on Linux hosts"
-      : !commandWorks("meson")
-        ? "meson is not available"
-        : !commandWorks("ninja")
-          ? "ninja is not available"
-          : !commandWorks("zig", ["version"])
-            ? "zig is not available"
-            : !hasLinuxNativeDependencies()
-              ? "GTK/WebKitGTK development dependencies are not available"
-              : false,
+    skip: linuxNativeSkipReason({ requireZig: true }),
     timeout: 180_000,
   },
   () => {
@@ -89,6 +89,48 @@ test(
       assert.equal(fs.existsSync(binaryPath), true);
 
       runOptionalSmoke({ binaryPath, scratch, zigCoreSo });
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Linux release host rejects dev-only startup flags and audits the rejection",
+  {
+    skip: linuxNativeSkipReason({ requireSqliteCli: true }),
+    timeout: 120_000,
+  },
+  () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-production-guard-"));
+    try {
+      const buildDir = path.join(scratch, "release-build");
+      execFileSync("meson", ["setup", "--buildtype=release", buildDir, linuxDir], { stdio: "ignore" });
+      execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
+
+      const binaryPath = path.join(buildDir, "native-ai-webapp-host");
+      const xdgDataHome = path.join(scratch, "xdg-data");
+      const result = spawnSync(binaryPath, ["--allow-unsigned-dev"], {
+        cwd: repoRoot,
+        env: { ...process.env, XDG_DATA_HOME: xdgDataHome },
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      assert.equal(result.status, 1, output);
+      assert.match(output, /production build rejects dev-only startup flag --allow-unsigned-dev/);
+
+      const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      assert.equal(fs.existsSync(dbPath), true, "production guard should create the platform audit database");
+      const count = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'native.production_guard' AND decision = 'rejected' AND error_code = 'dev_only_flag' AND args_json LIKE '%--allow-unsigned-dev%';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(count, "1");
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

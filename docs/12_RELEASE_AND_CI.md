@@ -57,7 +57,7 @@ ubuntu-24.04:
   server tests
   runtime tests
   package validator
-  Docker-backed Linux shell build and WebKitGTK smoke on ubuntu-24.04
+  Docker-backed Linux shell build, release production-guard audit, and WebKitGTK smoke on ubuntu-24.04
 
 macos-latest:
   Zig core macOS/iOS build
@@ -134,7 +134,7 @@ The dedicated Windows native artifact job runs on `windows-2022` after installin
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-windows
 ```
 
-The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, and Zig toolchain are all supplied by the checked-in container definition:
+The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition:
 
 ```text
 node --no-warnings tools/run-linux-native-docker.mjs

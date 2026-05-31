@@ -125,6 +125,7 @@
 - [x] Bridge works.
 - [x] Zig shared library loads.
 - [x] Storage persists.
+- [x] Production guard rejects and audits dev-only startup flags in release builds.
 
 ### Server
 
