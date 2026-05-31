@@ -66,6 +66,7 @@
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports explicit `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots.
+- [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports static `runtime.accessibility_snapshot`, `runtime.run_accessibility_audit`, and `runtime.assert_accessibility` over bundled generated app HTML.
 
 ### macOS
 

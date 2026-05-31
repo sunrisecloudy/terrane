@@ -606,6 +606,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return try await runtimeAssertStorage(args: args, sessionId: sessionId)
         case "runtime.storage_reset", "platform.reset_webapp":
             return try runtimeStorageReset(tool: tool, args: args, sessionId: sessionId)
+        case "runtime.accessibility_snapshot":
+            return successBody(result: try accessibilitySnapshot(args: args), sessionId: sessionId)
+        case "runtime.run_accessibility_audit":
+            return successBody(result: try accessibilityAudit(args: args), sessionId: sessionId)
+        case "runtime.assert_accessibility":
+            return try assertAccessibility(args: args, sessionId: sessionId)
         case "runtime.resource_usage":
             let appId = try requiredString(args, key: "appId", message: "runtime.resource_usage requires appId")
             return successBody(result: resourceUsage(appId: appId), sessionId: sessionId)
@@ -680,6 +686,9 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.assert_storage",
                     "runtime.storage_reset",
                     "platform.reset_webapp",
+                    "runtime.accessibility_snapshot",
+                    "runtime.run_accessibility_audit",
+                    "runtime.assert_accessibility",
                     "runtime.resource_usage",
                     "runtime.event_log",
                     "runtime.console_logs",
@@ -838,6 +847,257 @@ final class IOSDevControlPlane: @unchecked Sendable {
             result["clearedLogs"] = try clearRuntimeLogs(appId: appId)
         }
         return successBody(result: result, sessionId: sessionId)
+    }
+
+    private func accessibilitySnapshot(args: [String: Any]) throws -> [String: Any] {
+        let appId = try optionalString(args, key: "appId", message: "runtime.accessibility_snapshot appId must be a string") ?? "notes-lite"
+        return try accessibilitySnapshotFromHtml(appId: appId, html: htmlForStaticApp(appId: appId))
+    }
+
+    private func accessibilityAudit(args: [String: Any]) throws -> [String: Any] {
+        let appId = try optionalString(args, key: "appId", message: "runtime.run_accessibility_audit appId must be a string") ?? "notes-lite"
+        return try accessibilityAuditFromHtml(appId: appId, html: htmlForStaticApp(appId: appId))
+    }
+
+    private func assertAccessibility(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let appId = try optionalString(args, key: "appId", message: "runtime.assert_accessibility appId must be a string") ?? "notes-lite"
+        let rule = try optionalString(args, key: "rule", message: "runtime.assert_accessibility rule must be a string")
+        let report = try accessibilityAuditFromHtml(appId: appId, html: htmlForStaticApp(appId: appId))
+        let checks = report["checks"] as? [[String: Any]] ?? []
+        let failures = checks.filter { check in
+            guard check["status"] as? String == "fail" else { return false }
+            guard let rule else { return true }
+            return check["id"] as? String == rule
+        }
+        guard failures.isEmpty else {
+            throw CommandError(status: 400, code: "accessibility_failed", message: "Accessibility assertion failed", details: ["appId": appId, "rule": rule ?? NSNull(), "failures": failures])
+        }
+        return successBody(result: [
+            "ok": true,
+            "appId": appId,
+            "rule": rule ?? NSNull(),
+            "report": report
+        ], sessionId: sessionId)
+    }
+
+    private func htmlForStaticApp(appId: String) throws -> String {
+        try requireBundledApp(appId, message: "runtime accessibility appId is not a valid generated app id")
+        guard let runtimeURL = URL(string: "\(RuntimeResourceLocator.scheme)://\(appId)/index.html"),
+              let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: runtimeURL),
+              let html = try? String(contentsOf: fileURL, encoding: .utf8)
+        else {
+            throw CommandError(status: 404, code: "app_not_found", message: "Generated app HTML was not found", details: ["appId": appId])
+        }
+        return html
+    }
+
+    private func accessibilitySnapshotFromHtml(appId: String, html: String) -> [String: Any] {
+        [
+            "appId": appId,
+            "title": firstHtmlMatch(html, pattern: #"<title[^>]*>([\s\S]*?)</title>"#),
+            "landmarks": landmarkRecords(html),
+            "headings": headingRecords(html),
+            "controls": controlRecords(html)
+        ]
+    }
+
+    private func accessibilityAuditFromHtml(appId: String, html: String) -> [String: Any] {
+        let snapshot = accessibilitySnapshotFromHtml(appId: appId, html: html)
+        let title = snapshot["title"] as? String ?? ""
+        let landmarks = snapshot["landmarks"] as? [[String: Any]] ?? []
+        let headings = snapshot["headings"] as? [[String: Any]] ?? []
+        let controls = snapshot["controls"] as? [[String: Any]] ?? []
+        let unlabeled = firstUnlabeledControl(controls)
+        let checks: [[String: Any]] = [
+            accessibilityCheck(id: "document_title", ok: !title.isEmpty, message: "Document must include a non-empty <title>."),
+            accessibilityCheck(id: "main_landmark", ok: containsRole(landmarks, role: "main"), message: "Page must include a <main> landmark."),
+            accessibilityCheck(id: "screen_title", ok: containsHeadingLevel(headings, level: 1), message: "Page must include an h1 screen title."),
+            accessibilityCheck(
+                id: "no_unlabeled_controls",
+                ok: unlabeled == nil,
+                message: "Every interactive control must have an accessible name.",
+                selector: unlabeled?["selector"] as? String
+            )
+        ]
+        return [
+            "appId": appId,
+            "checkedAt": Self.now(),
+            "status": checks.contains { $0["status"] as? String == "fail" } ? "fail" : "pass",
+            "checks": checks
+        ]
+    }
+
+    private func landmarkRecords(_ html: String) -> [[String: Any]] {
+        regexContains(html, pattern: #"<main\b"#) ? [["role": "main", "selector": "main"]] : []
+    }
+
+    private func headingRecords(_ html: String) -> [[String: Any]] {
+        regexMatches(html, pattern: #"<h([1-6])\b[^>]*>([\s\S]*?)</h\1>"#).map { match in
+            [
+                "level": Int(capture(match, group: 1, in: html)) ?? 0,
+                "name": htmlText(capture(match, group: 2, in: html))
+            ]
+        }
+    }
+
+    private func controlRecords(_ html: String) -> [[String: Any]] {
+        var records: [[String: Any]] = []
+        for match in regexMatches(html, pattern: #"<(button|select|textarea|a)\b([^>]*)>([\s\S]*?)</\1>"#) {
+            let tag = capture(match, group: 1, in: html).lowercased()
+            let attrs = parseHtmlAttrs(capture(match, group: 2, in: html))
+            records.append(controlRecord(html: html, tag: tag, attrs: attrs, innerHtml: capture(match, group: 3, in: html)))
+        }
+        for match in regexMatches(html, pattern: #"<input\b([^>]*)>"#) {
+            let attrs = parseHtmlAttrs(capture(match, group: 1, in: html))
+            if (attrs["type"] ?? "text").lowercased() == "hidden" {
+                continue
+            }
+            records.append(controlRecord(html: html, tag: "input", attrs: attrs, innerHtml: ""))
+        }
+        return records.sorted {
+            ($0["selector"] as? String ?? "") < ($1["selector"] as? String ?? "")
+        }
+    }
+
+    private func controlRecord(html: String, tag: String, attrs: [String: String], innerHtml: String) -> [String: Any] {
+        let testId = attrs["data-testid"] ?? ""
+        let id = attrs["id"] ?? ""
+        let selector: String
+        if !testId.isEmpty {
+            selector = "[data-testid=\"\(testId)\"]"
+        } else if !id.isEmpty {
+            selector = "#\(id)"
+        } else {
+            selector = tag
+        }
+        return [
+            "tag": tag,
+            "type": attrs["type"] ?? NSNull(),
+            "testId": testId,
+            "selector": selector,
+            "name": accessibleName(html: html, tag: tag, attrs: attrs, innerHtml: innerHtml)
+        ]
+    }
+
+    private func accessibleName(html: String, tag: String, attrs: [String: String], innerHtml: String) -> String {
+        for attr in ["aria-label", "title"] {
+            if let value = attrs[attr]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        if (tag == "button" || tag == "a") {
+            let text = htmlText(innerHtml)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        if let id = attrs["id"], !id.isEmpty {
+            if let label = labelForId(html: html, id: id) {
+                return label
+            }
+            if let label = wrappingLabelForControl(html: html, tag: tag, id: id) {
+                return label
+            }
+        }
+        return ""
+    }
+
+    private func accessibilityCheck(id: String, ok: Bool, message: String, selector: String? = nil) -> [String: Any] {
+        var check: [String: Any] = [
+            "id": id,
+            "status": ok ? "pass" : "fail",
+            "message": message
+        ]
+        if let selector, !selector.isEmpty {
+            check["selector"] = selector
+        }
+        return check
+    }
+
+    private func firstUnlabeledControl(_ controls: [[String: Any]]) -> [String: Any]? {
+        controls.first { control in
+            (control["name"] as? String ?? "").isEmpty
+        }
+    }
+
+    private func containsRole(_ records: [[String: Any]], role: String) -> Bool {
+        records.contains { $0["role"] as? String == role }
+    }
+
+    private func containsHeadingLevel(_ records: [[String: Any]], level: Int) -> Bool {
+        records.contains { ($0["level"] as? Int) == level }
+    }
+
+    private func parseHtmlAttrs(_ attrsText: String) -> [String: String] {
+        var attrs: [String: String] = [:]
+        for match in regexMatches(attrsText, pattern: #"\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#) {
+            let name = capture(match, group: 1, in: attrsText).lowercased()
+            let value = [2, 3, 4].map { capture(match, group: $0, in: attrsText) }.first { !$0.isEmpty } ?? ""
+            attrs[name] = value
+        }
+        return attrs
+    }
+
+    private func firstHtmlMatch(_ html: String, pattern: String) -> String {
+        guard let match = regexMatches(html, pattern: pattern).first else {
+            return ""
+        }
+        return htmlText(capture(match, group: 1, in: html))
+    }
+
+    private func htmlText(_ html: String) -> String {
+        regexReplace(regexReplace(regexReplace(html, pattern: #"<script\b[\s\S]*?</script>"#, template: " "), pattern: #"<style\b[\s\S]*?</style>"#, template: " "), pattern: #"<[^>]+>"#, template: " ")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func labelForId(html: String, id: String) -> String? {
+        let label = firstHtmlMatch(html, pattern: #"<label\b[^>]*\bfor=["']\#(NSRegularExpression.escapedPattern(for: id))["'][^>]*>([\s\S]*?)</label>"#)
+        return label.isEmpty ? nil : label
+    }
+
+    private func wrappingLabelForControl(html: String, tag: String, id: String) -> String? {
+        let escapedId = NSRegularExpression.escapedPattern(for: id)
+        let escapedTag = NSRegularExpression.escapedPattern(for: tag)
+        let raw = firstHtmlMatch(html, pattern: #"<label\b[^>]*>([\s\S]*?<\#(escapedTag)\b[^>]*\bid=["']\#(escapedId)["'][^>]*>[\s\S]*?)</label>"#)
+        if raw.isEmpty {
+            return nil
+        }
+        let label = regexReplace(raw, pattern: #"<\#(escapedTag)\b[\s\S]*"#, template: "")
+        return label.isEmpty ? nil : label
+    }
+
+    private func regexContains(_ text: String, pattern: String) -> Bool {
+        !regexMatches(text, pattern: pattern).isEmpty
+    }
+
+    private func regexMatches(_ text: String, pattern: String) -> [NSTextCheckingResult] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return []
+        }
+        return regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+    }
+
+    private func regexReplace(_ text: String, pattern: String, template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return text
+        }
+        return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text), withTemplate: template)
+    }
+
+    private func capture(_ match: NSTextCheckingResult, group: Int, in text: String) -> String {
+        guard group < match.numberOfRanges,
+              let range = Range(match.range(at: group), in: text)
+        else {
+            return ""
+        }
+        return String(text[range])
     }
 
     private func resourceUsage(appId: String) -> [String: Any] {
