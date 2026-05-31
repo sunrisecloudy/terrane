@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cmath>
+#include <future>
+#include <memory>
 #include <string>
 
 namespace nativeai {
@@ -94,53 +96,71 @@ WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
     : storage_(std::move(databasePath)), dialogs_(ownerWindow) {}
 
 std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext const& context) {
+  auto promise = std::make_shared<std::promise<std::wstring>>();
+  auto future = promise->get_future();
+  HandleJsonAsync(body, context, [promise](std::wstring response) {
+    try {
+      promise->set_value(std::move(response));
+    } catch (...) {
+    }
+  });
+  return future.get();
+}
+
+void WebBridge::HandleJsonAsync(std::wstring body, AppSandboxContext context, BridgeCompletion completion) {
   auto startedAtMs = NowMs();
   BridgeRequest request;
-  request.context = context;
+  request.context = std::move(context);
 
   json::JsonObject parsed{nullptr};
   if (!json::JsonObject::TryParse(body, parsed)) {
-    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge message body must be JSON").Stringify().c_str();
+    completion(BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge message body must be JSON").Stringify().c_str());
+    return;
   }
 
   json::JsonArray extraFields;
   if (!HasOnlyBridgeRequestFields(parsed, extraFields)) {
     json::JsonObject details;
     details.Insert(L"fields", extraFields);
-    return BridgeResponse::Failure(
-               L"",
-               false,
-               L"invalid_request",
-               L"Bridge request contains unknown top-level fields",
-               details)
-        .Stringify()
-        .c_str();
+    completion(BridgeResponse::Failure(
+                   L"",
+                   false,
+                   L"invalid_request",
+                   L"Bridge request contains unknown top-level fields",
+                   details)
+                   .Stringify()
+                   .c_str());
+    return;
   }
 
   if (parsed.HasKey(L"timestamp")) {
     auto timestamp = parsed.GetNamedValue(L"timestamp");
     if (timestamp.ValueType() != json::JsonValueType::Number || !std::isfinite(timestamp.GetNumber())) {
-      return BridgeResponse::Failure(
-                 L"",
-                 false,
-                 L"invalid_request",
-                 L"Bridge request timestamp must be a finite number")
-          .Stringify()
-          .c_str();
+      completion(BridgeResponse::Failure(
+                     L"",
+                     false,
+                     L"invalid_request",
+                     L"Bridge request timestamp must be a finite number")
+                     .Stringify()
+                     .c_str());
+      return;
     }
   }
   if (!parsed.HasKey(L"id") ||
       parsed.GetNamedValue(L"id").ValueType() != json::JsonValueType::String ||
       std::wstring(parsed.GetNamedString(L"id", L"").c_str()).empty()) {
-    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request id must be a non-empty string")
-        .Stringify()
-        .c_str();
+    completion(BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request id must be a non-empty string")
+                   .Stringify()
+                   .c_str());
+    return;
   }
   if (!parsed.HasKey(L"method") || parsed.GetNamedValue(L"method").ValueType() != json::JsonValueType::String) {
-    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request method must be a string").Stringify().c_str();
+    completion(BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request method must be a string").Stringify().c_str());
+    return;
   }
   if (!parsed.HasKey(L"params") || parsed.GetNamedValue(L"params").ValueType() != json::JsonValueType::Object) {
-    return BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request params must be an object").Stringify().c_str();
+    completion(BridgeResponse::Failure(L"", false, L"invalid_request", L"Bridge request params must be an object").Stringify().c_str());
+    return;
   }
 
   request.hasId = true;
@@ -158,7 +178,8 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
         L"Bridge params must not include appId; app id is channel-derived",
         details);
     RecordBridgeCall(request, response, startedAtMs);
-    return response.Stringify().c_str();
+    completion(response.Stringify().c_str());
+    return;
   }
 
   if (auto permission = permissionForBridgeMethod(request.method);
@@ -174,17 +195,28 @@ std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext c
         L"App " + request.context.appId + L" cannot call " + request.method,
         details);
     RecordBridgeCall(request, response, startedAtMs);
-    return response.Stringify().c_str();
+    completion(response.Stringify().c_str());
+    return;
   }
   if (auto budgetResponse = ResourceBudgetFailure(request); budgetResponse.has_value()) {
     RecordBridgeCall(request, budgetResponse.value(), startedAtMs);
-    return budgetResponse.value().Stringify().c_str();
+    completion(budgetResponse.value().Stringify().c_str());
+    return;
+  }
+
+  if (request.method == L"core.step") {
+    core_.StepAsync(request, [this, request, startedAtMs, completion = std::move(completion)](json::JsonObject response) mutable {
+      RecordBridgeCall(request, response, startedAtMs);
+      RecordCoreStep(request, response);
+      completion(response.Stringify().c_str());
+    });
+    return;
   }
 
   auto response = Dispatch(request);
   RecordBridgeCall(request, response, startedAtMs);
   RecordCoreStep(request, response);
-  return response.Stringify().c_str();
+  completion(response.Stringify().c_str());
 }
 
 std::optional<std::wstring> WebBridge::permissionForBridgeMethod(std::wstring const& method) const {

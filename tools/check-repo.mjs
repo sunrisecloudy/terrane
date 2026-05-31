@@ -1467,6 +1467,9 @@ function checkNativeStatic() {
     [windowsBridge, 'features.Insert(L"network.request", json::JsonValue::CreateBooleanValue(true))'],
     [windowsHost, "NetworkPolicyForApp"],
     [windowsHost, "DenyPrivateNetworkForApp"],
+    [windowsHost, "bridge_->HandleJsonAsync"],
+    [windowsHost, "PostMessageW(window_, kAsyncBridgeResponseMessage"],
+    [windowsHost, "TryHandleWindowMessage"],
     [windowsHost, "IsRuntimeMountRequest"],
     [windowsHost, "CreateHostOwnedRuntimeMount"],
     [windowsHost, "NewRuntimeMountToken"],
@@ -1527,15 +1530,30 @@ function checkNativeStatic() {
   if (!windowsDialogHeader.includes("explicit PlatformDialogs(HWND ownerWindow")) {
     throw new Error("Windows dialogs must accept an owner HWND");
   }
-  for (const snippet of ["LoadLibraryW", "GetProcAddress", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_DLL", 'exeDir / L"zig_core.dll"', "core.step app field does not match the channel-derived app id"]) {
+  for (const snippet of [
+    "LoadLibraryW",
+    "GetProcAddress",
+    "core_step_json",
+    "core_free",
+    "NATIVE_AI_ZIG_CORE_DLL",
+    'exeDir / L"zig_core.dll"',
+    "core.step app field does not match the channel-derived app id",
+    "kCoreStepTimeoutMs = 2000",
+    "std::this_thread::sleep_for(std::chrono::milliseconds(kCoreStepTimeoutMs))",
+    "CompleteStep(state, TimeoutFailure(request))",
+    'BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"core.step timed out", details)',
+  ]) {
     if (!windowsCore.includes(snippet)) {
       throw new Error(`Windows Zig core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["bool IsAvailable() const", "CoreStepJsonFn", "CoreFreeFn"]) {
+  for (const snippet of ["bool IsAvailable() const", "CoreStepJsonFn", "CoreFreeFn", "void StepAsync", "std::shared_ptr<CoreRuntime> runtime_"]) {
     if (!windowsCoreHeader.includes(snippet)) {
       throw new Error(`Windows Zig core bridge header missing ${snippet}`);
     }
+  }
+  if (!windowsBridge.includes("void WebBridge::HandleJsonAsync") || !windowsBridge.includes("core_.StepAsync(request")) {
+    throw new Error("Windows WebBridge must dispatch core.step asynchronously");
   }
   for (const snippet of ["winhttp", "ole32", "NATIVE_AI_ZIG_CORE_DLL", "copy_if_different"]) {
     if (!windowsCmake.includes(snippet)) {

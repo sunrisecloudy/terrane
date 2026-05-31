@@ -77,9 +77,10 @@ test("Windows WebView2 bridge cross-checks runtime envelopes against host-owned 
   assert.match(host, /registeredMountsByToken_\.clear\(\)/);
   assert.match(host, /registeredMountsByToken_\[mountToken\] = appId/);
   assert.match(host, /auto context = SandboxContextForRegisteredMount\(appId, mountToken\)/);
-  assert.match(host, /bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
+  assert.match(host, /bridge_->HandleJsonAsync\(/);
   assert.match(host, /Runtime bridge envelope does not match a host-owned mount channel/);
   assert.doesNotMatch(host, /bridge_->HandleJson\(requestJson, SandboxContextForApp\(appId, mountToken\)\)/);
+  assert.doesNotMatch(host, /response = context\.has_value\(\)\s*\?\s*bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
   assert.match(host, /RegisterHostOwnedRuntimeMount\(appId, L"windows-webview-smoke"\)/);
   assert.doesNotMatch(host, /IsRuntimeMountRegistration/);
 

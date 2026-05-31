@@ -8,6 +8,7 @@
 #include "ZigCoreBridge.h"
 
 #include <Windows.h>
+#include <functional>
 #include <optional>
 
 namespace nativeai {
@@ -17,6 +18,8 @@ class WebBridge {
   WebBridge(std::filesystem::path databasePath, HWND ownerWindow);
 
   std::wstring HandleJson(std::wstring const& body, AppSandboxContext const& context);
+  using BridgeCompletion = std::function<void(std::wstring)>;
+  void HandleJsonAsync(std::wstring body, AppSandboxContext context, BridgeCompletion completion);
   sqlite3* DatabaseHandle() const { return storage_.DatabaseHandle(); }
 
  private:

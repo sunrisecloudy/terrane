@@ -21,6 +21,33 @@ test("macOS core.step enforces timeout without blocking the WebView reply path",
   assert.match(macosTests, /coreStepReturnsTimeoutWhenZigCoreExceedsHostTimeout/);
 });
 
+test("Windows core.step enforces a structured host timeout around Zig DLL calls", () => {
+  const windowsBridge = read("native/windows/src/WebBridge.cpp");
+  const windowsCore = read("native/windows/src/ZigCoreBridge.cpp");
+  const windowsCoreHeader = read("native/windows/src/ZigCoreBridge.h");
+  const windowsHost = read("native/windows/src/WebViewHost.cpp");
+  const windowsHostHeader = read("native/windows/src/WebViewHost.h");
+
+  assert.match(windowsCore, /constexpr uint32_t kCoreStepTimeoutMs = 2000/);
+  assert.match(windowsCoreHeader, /void StepAsync\(BridgeRequest request, StepCompletion completion\)/);
+  assert.match(windowsCore, /std::thread\(/);
+  assert.match(windowsCore, /\.detach\(\)/);
+  assert.match(windowsCore, /std::this_thread::sleep_for\(std::chrono::milliseconds\(kCoreStepTimeoutMs\)\)/);
+  assert.match(windowsCore, /CompleteStep\(state, TimeoutFailure\(request\)\)/);
+  assert.match(windowsCore, /std::lock_guard<std::mutex> guard\(runtime->stepMutex\)/);
+  assert.match(windowsCore, /BridgeResponse::Failure\(request\.id, request\.hasId, L"timeout", L"core\.step timed out", details\)/);
+  assert.match(windowsCore, /details\.Insert\(L"timeoutMs", json::JsonValue::CreateNumberValue\(kCoreStepTimeoutMs\)\)/);
+  assert.match(windowsCoreHeader, /std::shared_ptr<CoreRuntime> runtime_/);
+  assert.match(windowsBridge, /void WebBridge::HandleJsonAsync/);
+  assert.match(windowsBridge, /request\.method == L"core\.step"/);
+  assert.match(windowsBridge, /core_\.StepAsync\(request/);
+  assert.match(windowsHost, /bridge_->HandleJsonAsync/);
+  assert.match(windowsHost, /PostMessageW\(window_, kAsyncBridgeResponseMessage/);
+  assert.match(windowsHostHeader, /TryHandleWindowMessage/);
+  assert.doesNotMatch(windowsCore, /int32_t code = stepJson_\(core_/);
+  assert.doesNotMatch(windowsHost, /response = context\.has_value\(\)\s*\?\s*bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
+});
+
 test("Linux core.step loader prefers packaged libzig_core beside the executable", () => {
   const linuxCore = read("native/linux/src/zig_core_bridge.c");
 

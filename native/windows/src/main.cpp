@@ -172,6 +172,12 @@ bool RejectDevOnlyFlagsIfNeeded() {
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  if (g_host) {
+    LRESULT result = 0;
+    if (g_host->TryHandleWindowMessage(message, wparam, lparam, &result)) {
+      return result;
+    }
+  }
   switch (message) {
     case WM_SIZE:
       return 0;

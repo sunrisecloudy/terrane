@@ -331,6 +331,27 @@ bool StorageNotesResponseContainsSmokeValue(std::wstring const& response, std::w
 
 WebViewHost::WebViewHost(HWND window) : window_(window), bridge_(std::make_unique<WebBridge>(DatabasePath(), window)) {}
 
+struct WebViewHost::AsyncBridgeResponse {
+  std::wstring response;
+  std::wstring smokeRequestId;
+  std::wstring smokeAppId;
+  std::wstring smokeMethod;
+};
+
+bool WebViewHost::TryHandleWindowMessage(UINT message, WPARAM, LPARAM lparam, LRESULT* result) {
+  if (message != kAsyncBridgeResponseMessage) {
+    return false;
+  }
+  std::unique_ptr<AsyncBridgeResponse> payload(reinterpret_cast<AsyncBridgeResponse*>(lparam));
+  if (payload) {
+    PostWebBridgeResponse(payload->response, payload->smokeRequestId, payload->smokeAppId, payload->smokeMethod);
+  }
+  if (result != nullptr) {
+    *result = 0;
+  }
+  return true;
+}
+
 void WebViewHost::Initialize() {
   CreateCoreWebView2EnvironmentWithOptions(
       nullptr,
@@ -511,15 +532,22 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
         smokeMethod = std::wstring(requestObject.GetNamedString(L"method", L"").c_str());
         auto requestJson = std::wstring(requestObject.Stringify().c_str());
         auto context = SandboxContextForRegisteredMount(appId, mountToken);
-        response = context.has_value()
-            ? bridge_->HandleJson(requestJson, context.value())
-            : BridgeResponse::Failure(
-                  requestId,
-                  !requestId.empty(),
-                  L"invalid_request",
-                  L"Runtime bridge envelope does not match a host-owned mount channel")
-                  .Stringify()
-                  .c_str();
+        if (context.has_value()) {
+          bridge_->HandleJsonAsync(
+              requestJson,
+              context.value(),
+              [this, smokeRequestId, smokeAppId, smokeMethod](std::wstring bridgeResponse) {
+                PostAsyncBridgeResponse(std::move(bridgeResponse), smokeRequestId, smokeAppId, smokeMethod);
+              });
+          return;
+        }
+        response = BridgeResponse::Failure(
+                       requestId,
+                       !requestId.empty(),
+                       L"invalid_request",
+                       L"Runtime bridge envelope does not match a host-owned mount channel")
+                       .Stringify()
+                       .c_str();
       }
     }
   } else {
@@ -532,9 +560,33 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
                    .c_str();
   }
 
+  PostWebBridgeResponse(response, smokeRequestId, smokeAppId, smokeMethod);
+}
+
+void WebViewHost::PostAsyncBridgeResponse(
+    std::wstring response,
+    std::wstring smokeRequestId,
+    std::wstring smokeAppId,
+    std::wstring smokeMethod) {
+  auto payload = std::make_unique<AsyncBridgeResponse>(
+      AsyncBridgeResponse{std::move(response), std::move(smokeRequestId), std::move(smokeAppId), std::move(smokeMethod)});
+  if (!PostMessageW(window_, kAsyncBridgeResponseMessage, 0, reinterpret_cast<LPARAM>(payload.get()))) {
+    PostWebBridgeResponse(payload->response, payload->smokeRequestId, payload->smokeAppId, payload->smokeMethod);
+    return;
+  }
+  payload.release();
+}
+
+void WebViewHost::PostWebBridgeResponse(
+    std::wstring const& response,
+    std::wstring const& smokeRequestId,
+    std::wstring const& smokeAppId,
+    std::wstring const& smokeMethod) {
   HandleWebBridgeSmokeResponse(smokeRequestId, response);
   HandleRuntimeAppBridgeSmokeResponse(smokeAppId, smokeMethod, response);
-  webview_->PostWebMessageAsString(response.c_str());
+  if (webview_ != nullptr) {
+    webview_->PostWebMessageAsString(response.c_str());
+  }
 }
 
 std::optional<std::wstring> WebViewHost::CreateHostOwnedRuntimeMount(std::wstring const& appId) {

@@ -19,10 +19,23 @@ class WebViewHost {
   explicit WebViewHost(HWND window);
 
   void Initialize();
+  bool TryHandleWindowMessage(UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result);
+  static constexpr UINT kAsyncBridgeResponseMessage = WM_APP + 0x4E1;
 
  private:
+  struct AsyncBridgeResponse;
   void OnNavigationCompleted(ICoreWebView2NavigationCompletedEventArgs* args);
   void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args);
+  void PostAsyncBridgeResponse(
+      std::wstring response,
+      std::wstring smokeRequestId,
+      std::wstring smokeAppId,
+      std::wstring smokeMethod);
+  void PostWebBridgeResponse(
+      std::wstring const& response,
+      std::wstring const& smokeRequestId,
+      std::wstring const& smokeAppId,
+      std::wstring const& smokeMethod);
   bool EnsureSupportedWebView2Runtime(ICoreWebView2Environment* environment);
   std::optional<std::wstring> CreateHostOwnedRuntimeMount(std::wstring const& appId);
   void RegisterHostOwnedRuntimeMount(std::wstring const& appId, std::wstring const& mountToken);
