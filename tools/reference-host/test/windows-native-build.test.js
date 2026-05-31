@@ -307,6 +307,51 @@ test(
       assert.equal(coreStepBody.result.id, "control_core_step");
       assert.equal(coreStepBody.result.ok, true);
 
+      const dbSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.snapshot", args: {} },
+      });
+      assert.equal(dbSnapshot.statusCode, 200, dbSnapshot.body);
+      assert.equal(Array.isArray(JSON.parse(dbSnapshot.body).result.apps), true);
+
+      const dbStorage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_app_storage", args: { appId: "task-workbench" } },
+      });
+      assert.equal(dbStorage.statusCode, 200, dbStorage.body);
+      assert.equal(
+        JSON.parse(dbStorage.body).result.rows.some((row) => row.key === "task-workbench:windows-dev-control-key"),
+        true,
+      );
+
+      const missingDbAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_app_storage", args: {} },
+      });
+      assert.equal(missingDbAppId.statusCode, 400);
+      assert.equal(JSON.parse(missingDbAppId.body).error.code, "invalid_request");
+
+      const unsafeDbTool = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.query_sql", args: { sql: "SELECT * FROM apps" } },
+      });
+      assert.equal(unsafeDbTool.statusCode, 400);
+      assert.equal(JSON.parse(unsafeDbTool.body).error.code, "unsupported_tool");
+
+      for (const tool of ["db.query_app_versions", "db.query_bridge_calls", "db.query_core_events", "db.query_test_runs"]) {
+        const response = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+          method: "POST",
+          token,
+          body: { tool, args: { appId: "task-workbench" } },
+        });
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(Array.isArray(JSON.parse(response.body).result.rows), true);
+      }
+
       const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -349,6 +394,14 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.core_step' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.query_app_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(

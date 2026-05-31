@@ -78,6 +78,16 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "control.sessions.end",
     "runtime.call_bridge",
     "runtime.core_step",
+    "db.snapshot",
+    "db.query_app_storage",
+    "db.query_app_versions",
+    "db.query_bridge_calls",
+    "db.query_core_events",
+    "db.query_test_runs",
+    "SafeTableRowsJson",
+    "DbSnapshotJson",
+    "DbQueryRowsJson",
+    "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
     "DevControlBridgeCall",
@@ -95,5 +105,34 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
 
   for (const snippet of ["src/DevControlPlane.cpp", "ws2_32", "bcrypt"]) {
     assert.equal(cmake.includes(snippet), true, `Windows CMake should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control database inspection uses fixed allowlisted queries only", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "sqlite3_column_type",
+    "SafeTableRowsJson(db, \"apps\"",
+    "SafeTableRowsJson(db, \"app_storage\"",
+    "SafeTableRowsJson(db, \"app_versions\"",
+    "SafeTableRowsJson(db, \"bridge_calls\"",
+    "SafeTableRowsJson(db, \"core_events\"",
+    "SafeTableRowsJson(db, \"test_runs\"",
+    "filterColumn",
+    "filterValue",
+    "LIMIT 100",
+    "db.query_app_storage\" || tool == L\"db.query_app_versions",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows DB control source should contain ${snippet}`);
+  }
+
+  for (const forbidden of [
+    "db.query_sql",
+    "SELECT *",
+    "OptionalStringMember(args.value(), L\"sql\")",
+    "sqlite3_exec(db, WideToUtf8",
+  ]) {
+    assert.equal(control.includes(forbidden), false, `Windows DB control source should not contain ${forbidden}`);
   }
 });

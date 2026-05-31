@@ -23,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 #include <winrt/base.h>
 #include <winrt/Windows.Data.Json.h>
 
@@ -94,6 +95,23 @@ void BindText(sqlite3_stmt* statement, int index, std::wstring const& value) {
 std::wstring ColumnText(sqlite3_stmt* statement, int index) {
   auto text = reinterpret_cast<char const*>(sqlite3_column_text(statement, index));
   return text == nullptr ? L"" : Utf8ToWide(text);
+}
+
+std::wstring SqliteValueJson(sqlite3_stmt* statement, int index) {
+  switch (sqlite3_column_type(statement, index)) {
+    case SQLITE_NULL:
+      return L"null";
+    case SQLITE_INTEGER:
+      return std::to_wstring(sqlite3_column_int64(statement, index));
+    case SQLITE_FLOAT:
+      return std::to_wstring(sqlite3_column_double(statement, index));
+    case SQLITE_TEXT:
+      return JsonString(ColumnText(statement, index));
+    case SQLITE_BLOB:
+      return JsonString(L"<blob>");
+    default:
+      return L"null";
+  }
 }
 
 std::wstring NowIso() {
@@ -832,6 +850,119 @@ struct DevControlPlane::Impl {
     return rows;
   }
 
+  std::wstring SafeTableRowsJson(
+      sqlite3* db,
+      char const* table,
+      std::vector<char const*> const& columns,
+      char const* orderBy,
+      char const* filterColumn = nullptr,
+      std::wstring const& filterValue = L"") {
+    if (columns.empty()) {
+      return L"[]";
+    }
+    std::string sql = "SELECT ";
+    for (size_t index = 0; index < columns.size(); ++index) {
+      if (index > 0) {
+        sql += ", ";
+      }
+      sql += columns[index];
+    }
+    sql += " FROM ";
+    sql += table;
+    bool hasFilter = filterColumn != nullptr && !filterValue.empty();
+    if (hasFilter) {
+      sql += " WHERE ";
+      sql += filterColumn;
+      sql += " = ?";
+    }
+    sql += " ORDER BY ";
+    sql += orderBy;
+    sql += " LIMIT 100";
+
+    sqlite3_stmt* statement = nullptr;
+    std::wstring rows = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &statement, nullptr) == SQLITE_OK) {
+      if (hasFilter) {
+        BindText(statement, 1, filterValue);
+      }
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (!first) {
+          rows += L",";
+        }
+        first = false;
+        rows += L"{";
+        for (size_t index = 0; index < columns.size(); ++index) {
+          if (index > 0) {
+            rows += L",";
+          }
+          rows += JsonString(Utf8ToWide(columns[index])) + L":" + SqliteValueJson(statement, static_cast<int>(index));
+        }
+        rows += L"}";
+      }
+    }
+    sqlite3_finalize(statement);
+    rows += L"]";
+    return rows;
+  }
+
+  std::wstring DbSnapshotJson(std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    return L"{\"apps\":" +
+        SafeTableRowsJson(db, "apps", {"id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"}, "id") +
+        L",\"app_versions\":" +
+        SafeTableRowsJson(db, "app_versions", {"install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"}, "created_at") +
+        L",\"app_storage\":" +
+        SafeTableRowsJson(db, "app_storage", {"app_id", "key", "value_json", "updated_at"}, "updated_at") +
+        L",\"bridge_calls\":" +
+        SafeTableRowsJson(db, "bridge_calls", {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"}, "created_at") +
+        L",\"core_events\":" +
+        SafeTableRowsJson(db, "core_events", {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"}, "created_at") +
+        L",\"test_runs\":" +
+        SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"}, "started_at") +
+        L",\"control_sessions\":" +
+        SafeTableRowsJson(db, "control_sessions", {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"}, "started_at") +
+        L",\"control_commands\":" +
+        SafeTableRowsJson(db, "control_commands", {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "created_at", "duration_ms"}, "created_at") +
+        L",\"runtime_sessions\":" +
+        SafeTableRowsJson(db, "runtime_sessions", {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"}, "started_at") +
+        L",\"runtime_snapshots\":" +
+        SafeTableRowsJson(db, "runtime_snapshots", {"snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"}, "created_at") +
+        L",\"backup_exports\":" +
+        SafeTableRowsJson(db, "backup_exports", {"export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"}, "created_at") +
+        L"}";
+  }
+
+  std::wstring DbQueryRowsJson(std::wstring const& tool, std::wstring const& appId, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    std::wstring rows;
+    if (tool == L"db.query_app_storage") {
+      rows = SafeTableRowsJson(db, "app_storage", {"app_id", "key", "value_json", "updated_at"}, "updated_at", "app_id", appId);
+    } else if (tool == L"db.query_app_versions") {
+      rows = SafeTableRowsJson(db, "app_versions", {"install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"}, "created_at", "app_id", appId);
+    } else if (tool == L"db.query_bridge_calls") {
+      rows = SafeTableRowsJson(db, "bridge_calls", {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"}, "created_at", "app_id", appId);
+    } else if (tool == L"db.query_core_events") {
+      rows = SafeTableRowsJson(db, "core_events", {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"}, "created_at", "app_id", appId);
+    } else if (tool == L"db.query_test_runs") {
+      rows = SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"}, "started_at", "app_id", appId);
+    } else {
+      *error = L"Unsupported DB inspection command";
+      return L"";
+    }
+    return L"{\"rows\":" + rows + L"}";
+  }
+
   std::wstring SessionSnapshotJson(std::wstring const& childControlSessionId, std::wstring* error) {
     PlatformDatabase database(databasePath);
     sqlite3* db = database.handle();
@@ -1172,6 +1303,48 @@ struct DevControlPlane::Impl {
       result = SessionCapabilitiesJson(sessionId, &error);
       if (result.empty()) {
         SendControlRouteError(client, L"", tool, method, path, started, L"not_found", error.empty() ? L"Control session not found" : error, 400);
+        return;
+      }
+    } else if (tool == L"db.snapshot" ||
+        tool == L"db.query_app_storage" ||
+        tool == L"db.query_app_versions" ||
+        tool == L"db.query_bridge_calls" ||
+        tool == L"db.query_core_events" ||
+        tool == L"db.query_test_runs") {
+      std::wstring appId;
+      if (command.HasKey(L"args")) {
+        auto args = OptionalObjectMember(command, L"args");
+        if (!args.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        if (args->HasKey(L"appId")) {
+          auto appIdValue = OptionalStringMember(args.value(), L"appId");
+          if (!appIdValue.has_value()) {
+            SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" appId must be a string", 400);
+            return;
+          }
+          appId = appIdValue.value();
+          if (!appId.empty() && !IsValidAppId(appId)) {
+            SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" appId is not a valid generated app id", 400);
+            return;
+          }
+        }
+      }
+      if ((tool == L"db.query_app_storage" || tool == L"db.query_app_versions") && appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires appId", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = tool == L"db.snapshot" ? DbSnapshotJson(&error) : DbQueryRowsJson(tool, appId, &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
         return;
       }
     } else if (tool == L"runtime.call_bridge" || tool == L"runtime.core_step") {
