@@ -62,6 +62,16 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "db.snapshot",
+    "db.query_app_storage",
+    "db.query_app_versions",
+    "db.query_bridge_calls",
+    "db.query_core_events",
+    "db.query_test_runs",
+    "safe_table_rows_json",
+    "db_snapshot_json",
+    "db_query_rows_json",
+    "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
     "web_bridge_handle_json",
@@ -81,4 +91,32 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
   assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
+});
+
+test("Linux dev control database inspection uses fixed allowlisted queries only", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "sqlite3_column_type",
+    "safe_db_apps",
+    "safe_db_app_storage",
+    "safe_db_app_versions",
+    "safe_db_bridge_calls",
+    "safe_db_core_events",
+    "safe_db_test_runs",
+    "filter_column",
+    "filter_value",
+    "LIMIT 100",
+    'db_tool_requires_app_id(tool)',
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux DB control source should contain ${snippet}`);
+  }
+
+  for (const forbidden of [
+    "db.query_sql",
+    "SELECT *",
+    'object_string(args, "sql"',
+  ]) {
+    assert.equal(control.includes(forbidden), false, `Linux DB control source must not contain ${forbidden}`);
+  }
 });

@@ -374,6 +374,10 @@ static JsonObject *object_object(JsonObject *object, const gchar *member) {
   return node != NULL && JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
 }
 
+static gboolean valid_generated_app_id(const gchar *app_id) {
+  return app_id != NULL && g_regex_match_simple("^[a-z][a-z0-9-]{2,63}$", app_id, 0, 0);
+}
+
 static gchar *object_member_json(JsonObject *object, const gchar *member, const gchar *fallback_json) {
   if (object == NULL || !json_object_has_member(object, member)) {
     return g_strdup(fallback_json);
@@ -491,7 +495,7 @@ static gchar *create_control_session(DevControlPlane *plane, JsonObject *body, G
   g_autofree gchar *runtime_session_id = app_id == NULL ? NULL : make_id("session");
   g_autofree gchar *started_at = now_iso();
 
-  if (app_id != NULL && !g_regex_match_simple("^[a-z][a-z0-9-]{2,63}$", app_id, 0, 0)) {
+  if (app_id != NULL && !valid_generated_app_id(app_id)) {
     g_set_error(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Control session appId is not a valid generated app id");
     return NULL;
   }
@@ -789,6 +793,199 @@ static void append_core_event_rows(JsonBuilder *builder, sqlite3 *db, const gcha
   json_builder_end_array(builder);
 }
 
+typedef struct {
+  const gchar *table;
+  const gchar * const *columns;
+  gsize column_count;
+  const gchar *order_by;
+  const gchar *filter_column;
+} SafeDbTable;
+
+static const gchar * const db_apps_columns[] = {"id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"};
+static const gchar * const db_app_versions_columns[] = {"install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"};
+static const gchar * const db_app_storage_columns[] = {"app_id", "key", "value_json", "updated_at"};
+static const gchar * const db_bridge_calls_columns[] = {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"};
+static const gchar * const db_core_events_columns[] = {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"};
+static const gchar * const db_test_runs_columns[] = {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"};
+static const gchar * const db_control_sessions_columns[] = {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"};
+static const gchar * const db_control_commands_columns[] = {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "created_at", "duration_ms"};
+static const gchar * const db_runtime_sessions_columns[] = {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"};
+static const gchar * const db_runtime_snapshots_columns[] = {"snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"};
+static const gchar * const db_backup_exports_columns[] = {"export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"};
+
+static const SafeDbTable safe_db_apps = {"apps", db_apps_columns, G_N_ELEMENTS(db_apps_columns), "id", NULL};
+static const SafeDbTable safe_db_app_versions = {"app_versions", db_app_versions_columns, G_N_ELEMENTS(db_app_versions_columns), "created_at", "app_id"};
+static const SafeDbTable safe_db_app_storage = {"app_storage", db_app_storage_columns, G_N_ELEMENTS(db_app_storage_columns), "updated_at", "app_id"};
+static const SafeDbTable safe_db_bridge_calls = {"bridge_calls", db_bridge_calls_columns, G_N_ELEMENTS(db_bridge_calls_columns), "created_at", "app_id"};
+static const SafeDbTable safe_db_core_events = {"core_events", db_core_events_columns, G_N_ELEMENTS(db_core_events_columns), "created_at", "app_id"};
+static const SafeDbTable safe_db_test_runs = {"test_runs", db_test_runs_columns, G_N_ELEMENTS(db_test_runs_columns), "started_at", "app_id"};
+static const SafeDbTable safe_db_control_sessions = {"control_sessions", db_control_sessions_columns, G_N_ELEMENTS(db_control_sessions_columns), "started_at", NULL};
+static const SafeDbTable safe_db_control_commands = {"control_commands", db_control_commands_columns, G_N_ELEMENTS(db_control_commands_columns), "created_at", NULL};
+static const SafeDbTable safe_db_runtime_sessions = {"runtime_sessions", db_runtime_sessions_columns, G_N_ELEMENTS(db_runtime_sessions_columns), "started_at", NULL};
+static const SafeDbTable safe_db_runtime_snapshots = {"runtime_snapshots", db_runtime_snapshots_columns, G_N_ELEMENTS(db_runtime_snapshots_columns), "created_at", NULL};
+static const SafeDbTable safe_db_backup_exports = {"backup_exports", db_backup_exports_columns, G_N_ELEMENTS(db_backup_exports_columns), "created_at", NULL};
+
+static const SafeDbTable * const db_snapshot_tables[] = {
+    &safe_db_apps,
+    &safe_db_app_versions,
+    &safe_db_app_storage,
+    &safe_db_bridge_calls,
+    &safe_db_core_events,
+    &safe_db_test_runs,
+    &safe_db_control_sessions,
+    &safe_db_control_commands,
+    &safe_db_runtime_sessions,
+    &safe_db_runtime_snapshots,
+    &safe_db_backup_exports,
+};
+
+static void append_sqlite_value(JsonBuilder *builder, sqlite3_stmt *statement, int column) {
+  switch (sqlite3_column_type(statement, column)) {
+    case SQLITE_NULL:
+      json_builder_add_null_value(builder);
+      break;
+    case SQLITE_INTEGER:
+      json_builder_add_int_value(builder, sqlite3_column_int64(statement, column));
+      break;
+    case SQLITE_FLOAT:
+      json_builder_add_double_value(builder, sqlite3_column_double(statement, column));
+      break;
+    case SQLITE_BLOB: {
+      const guchar *blob = sqlite3_column_blob(statement, column);
+      int bytes = sqlite3_column_bytes(statement, column);
+      g_autofree gchar *encoded = blob == NULL || bytes <= 0 ? g_strdup("") : g_base64_encode(blob, (gsize)bytes);
+      json_builder_add_string_value(builder, encoded);
+      break;
+    }
+    case SQLITE_TEXT:
+    default: {
+      const gchar *text = (const gchar *)sqlite3_column_text(statement, column);
+      text == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, text);
+      break;
+    }
+  }
+}
+
+static void append_safe_table_rows(JsonBuilder *builder, sqlite3 *db, const SafeDbTable *spec, const gchar *filter_value) {
+  json_builder_begin_array(builder);
+  if (db == NULL || spec == NULL || spec->column_count == 0) {
+    json_builder_end_array(builder);
+    return;
+  }
+
+  gboolean has_filter = spec->filter_column != NULL && filter_value != NULL && filter_value[0] != '\0';
+  GString *sql = g_string_new("SELECT ");
+  for (gsize index = 0; index < spec->column_count; index++) {
+    if (index > 0) {
+      g_string_append(sql, ", ");
+    }
+    g_string_append(sql, spec->columns[index]);
+  }
+  g_string_append_printf(sql, " FROM %s", spec->table);
+  if (has_filter) {
+    g_string_append_printf(sql, " WHERE %s = ?", spec->filter_column);
+  }
+  g_string_append_printf(sql, " ORDER BY %s LIMIT 100", spec->order_by);
+
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, sql->str, -1, &statement, NULL) == SQLITE_OK) {
+    if (has_filter) {
+      bind_text(statement, 1, filter_value);
+    }
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      json_builder_begin_object(builder);
+      for (gsize index = 0; index < spec->column_count; index++) {
+        json_builder_set_member_name(builder, spec->columns[index]);
+        append_sqlite_value(builder, statement, (int)index);
+      }
+      json_builder_end_object(builder);
+    }
+  }
+  sqlite3_finalize(statement);
+  g_string_free(sql, TRUE);
+  json_builder_end_array(builder);
+}
+
+static gchar *safe_table_rows_json(sqlite3 *db, const SafeDbTable *spec, const gchar *filter_value) {
+  JsonBuilder *builder = json_builder_new();
+  append_safe_table_rows(builder, db, spec, filter_value);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gboolean is_db_inspection_tool(const gchar *tool) {
+  return g_strcmp0(tool, "db.snapshot") == 0 ||
+         g_strcmp0(tool, "db.query_app_storage") == 0 ||
+         g_strcmp0(tool, "db.query_app_versions") == 0 ||
+         g_strcmp0(tool, "db.query_bridge_calls") == 0 ||
+         g_strcmp0(tool, "db.query_core_events") == 0 ||
+         g_strcmp0(tool, "db.query_test_runs") == 0;
+}
+
+static gboolean db_tool_requires_app_id(const gchar *tool) {
+  return g_strcmp0(tool, "db.query_app_storage") == 0 ||
+         g_strcmp0(tool, "db.query_app_versions") == 0;
+}
+
+static const SafeDbTable *safe_db_table_for_tool(const gchar *tool) {
+  if (g_strcmp0(tool, "db.query_app_storage") == 0) {
+    return &safe_db_app_storage;
+  }
+  if (g_strcmp0(tool, "db.query_app_versions") == 0) {
+    return &safe_db_app_versions;
+  }
+  if (g_strcmp0(tool, "db.query_bridge_calls") == 0) {
+    return &safe_db_bridge_calls;
+  }
+  if (g_strcmp0(tool, "db.query_core_events") == 0) {
+    return &safe_db_core_events;
+  }
+  if (g_strcmp0(tool, "db.query_test_runs") == 0) {
+    return &safe_db_test_runs;
+  }
+  return NULL;
+}
+
+static gchar *db_snapshot_json(DevControlPlane *plane, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  for (gsize index = 0; index < G_N_ELEMENTS(db_snapshot_tables); index++) {
+    const SafeDbTable *spec = db_snapshot_tables[index];
+    json_builder_set_member_name(builder, spec->table);
+    append_safe_table_rows(builder, db, spec, NULL);
+  }
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  platform_database_close(db);
+  return text;
+}
+
+static gchar *db_query_rows_json(DevControlPlane *plane, const gchar *tool, const gchar *app_id, GError **error) {
+  const SafeDbTable *spec = safe_db_table_for_tool(tool);
+  if (spec == NULL) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Unsupported DB inspection command");
+    return NULL;
+  }
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  g_autofree gchar *rows = safe_table_rows_json(db, spec, app_id);
+  platform_database_close(db);
+  return g_strdup_printf("{\"rows\":%s}", rows);
+}
+
 static gchar *session_snapshot_json(DevControlPlane *plane, const gchar *control_session_id, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
@@ -930,7 +1127,7 @@ static gboolean control_session_allows_app(
     *error_message = g_strdup("Control session is not running");
     *status = SOUP_STATUS_BAD_REQUEST;
     allowed = FALSE;
-  } else if (record.app_id != NULL && g_strcmp0(record.app_id, app_id) != 0) {
+  } else if (app_id != NULL && app_id[0] != '\0' && record.app_id != NULL && g_strcmp0(record.app_id, app_id) != 0) {
     *error_code = g_strdup("permission_denied");
     *error_message = g_strdup("Control command appId does not match the control session app");
     *status = SOUP_STATUS_BAD_REQUEST;
@@ -1128,6 +1325,53 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     result = health_result_json(plane);
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {
     result = session_capabilities_json(plane, control_session_id, &error);
+  } else if (is_db_inspection_tool(tool)) {
+    JsonObject *args = NULL;
+    const gchar *app_id = NULL;
+    if (json_object_has_member(body, "args")) {
+      args = object_object(body, "args");
+      if (args == NULL) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "DB inspection command requires args object", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+      if (json_object_has_member(args, "appId")) {
+        JsonNode *app_id_node = json_object_get_member(args, "appId");
+        if (app_id_node == NULL || !JSON_NODE_HOLDS_VALUE(app_id_node) || json_node_get_value_type(app_id_node) != G_TYPE_STRING) {
+          g_object_unref(parser);
+          send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "DB inspection appId must be a string", SOUP_STATUS_BAD_REQUEST);
+          return;
+        }
+        app_id = json_node_get_string(app_id_node);
+        if (app_id != NULL && app_id[0] != '\0' && !valid_generated_app_id(app_id)) {
+          g_object_unref(parser);
+          send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "DB inspection appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+          return;
+        }
+      }
+    }
+    if (db_tool_requires_app_id(tool) && (app_id == NULL || app_id[0] == '\0')) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "DB inspection command requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = g_strcmp0(tool, "db.snapshot") == 0
+        ? db_snapshot_json(plane, &error)
+        : db_query_rows_json(plane, tool, app_id, &error);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not read platform database", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
   } else if (g_strcmp0(tool, "runtime.call_bridge") == 0) {
     JsonObject *args = object_object(body, "args");
     if (args == NULL) {

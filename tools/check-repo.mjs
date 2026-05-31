@@ -1870,6 +1870,16 @@ function checkNativeStatic() {
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "db.snapshot",
+    "db.query_app_storage",
+    "db.query_app_versions",
+    "db.query_bridge_calls",
+    "db.query_core_events",
+    "db.query_test_runs",
+    "safe_table_rows_json",
+    "db_snapshot_json",
+    "db_query_rows_json",
+    "Unsupported DB inspection command",
     "control_call_bridge",
     "control_core_step",
     "web_bridge_handle_json",
@@ -1886,13 +1896,35 @@ function checkNativeStatic() {
       throw new Error(`Linux dev control plane missing ${snippet}`);
     }
   }
+  for (const snippet of [
+    "sqlite3_column_type",
+    "safe_db_apps",
+    "safe_db_app_storage",
+    "safe_db_app_versions",
+    "safe_db_bridge_calls",
+    "safe_db_core_events",
+    "safe_db_test_runs",
+    "filter_column",
+    "filter_value",
+    "LIMIT 100",
+    "db_tool_requires_app_id(tool)",
+  ]) {
+    if (!linuxDevControl.includes(snippet)) {
+      throw new Error(`Linux dev control DB inspection missing ${snippet}`);
+    }
+  }
+  for (const forbidden of ["db.query_sql", "SELECT *", 'object_string(args, "sql"']) {
+    if (linuxDevControl.includes(forbidden)) {
+      throw new Error(`Linux dev control DB inspection must not contain ${forbidden}`);
+    }
+  }
   if (!linuxMeson.includes("'src/dev_control_plane.c'")) {
     throw new Error("Linux Meson build must include dev_control_plane.c");
   }
   if (!linuxMeson.includes("'src/app_sandbox.c'")) {
     throw new Error("Linux Meson build must include app_sandbox.c");
   }
-  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "runtime.call_bridge", "runtime.core_step", "storage.set", "CreateTask", "bridge_calls", "core_events", "core_actions"]) {
+  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "runtime.call_bridge", "runtime.core_step", "db.snapshot", "db.query_app_storage", "db.query_sql", "storage.set", "CreateTask", "bridge_calls", "core_events", "core_actions"]) {
     if (!linuxNativeBuildTest.includes(snippet)) {
       throw new Error(`Linux native build test missing dev control coverage: ${snippet}`);
     }
