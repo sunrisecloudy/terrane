@@ -248,7 +248,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Zig DLL loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
-- Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host and verifies audited rejection of dev-only startup flags.
+- Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host, verifies audited rejection of dev-only startup flags, and builds/launches the packaged artifact from outside the repo root with executable-relative runtime/example/SQLite resources plus `zig_core.dll`.
 - Full Windows smoke runs with `NATIVE_AI_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
 
 ### Linux

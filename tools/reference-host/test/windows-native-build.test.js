@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { packageReleaseArtifacts, windowsWebView2SdkStatus } from "../../../tools/package-release.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const windowsDir = path.join(repoRoot, "native", "windows");
@@ -18,6 +19,31 @@ function commandWorks(command, args = ["--version"]) {
     return false;
   }
 }
+
+function windowsPackagedNativeSmokeSkipReason() {
+  if (process.platform !== "win32") return "Windows packaged native smoke only runs on Windows hosts";
+  if (process.arch !== "x64") return "Windows packaged native smoke requires an x64 Windows host";
+  if (!commandWorks("cmake")) return "cmake is not available";
+  if (!commandWorks("zig", ["version"])) return "zig is not available";
+  const webview2 = windowsWebView2SdkStatus();
+  return webview2.ok ? false : webview2.message;
+}
+
+test("Windows packaged native smoke is wired to release artifacts", () => {
+  const source = fs.readFileSync(new URL("windows-native-build.test.js", import.meta.url), "utf8");
+
+  for (const snippet of [
+    "packageReleaseArtifacts({ outDir, buildNativeWindows: true })",
+    "native-windows-windows-x86_64",
+    'path.join(outDir, "native-apps", "windows", "windows-x86_64", "NativeAIWebappHost")',
+    "runWindowsPackagedArtifactSmoke",
+    "NATIVE_AI_ZIG_CORE_DLL",
+    "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK",
+    "outside-repo-cwd",
+  ]) {
+    assert.equal(source.includes(snippet), true, `Windows packaged smoke source should contain ${snippet}`);
+  }
+});
 
 test(
   "Windows WebView2 host builds and optionally runs native smoke",
@@ -86,6 +112,44 @@ test(
       );
 
       runOptionalSmoke({ binaryPath, scratch });
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "Windows packaged native artifact launches from executable-relative resources",
+  {
+    skip: windowsPackagedNativeSmokeSkipReason(),
+    timeout: 240_000,
+  },
+  () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-packaged-smoke-"));
+    try {
+      const outDir = path.join(scratch, "artifacts");
+      const result = packageReleaseArtifacts({ outDir, buildNativeWindows: true });
+      const nativeArtifact = result.artifacts.find((artifact) => artifact.id === "native-windows-windows-x86_64");
+      assert.notEqual(nativeArtifact, undefined, "release manifest should include the Windows native host artifact");
+
+      const appDir = path.join(outDir, "native-apps", "windows", "windows-x86_64", "NativeAIWebappHost");
+      const binaryPath = path.join(appDir, "NativeAIWebappHost.exe");
+      const packagedCorePath = path.join(appDir, "zig_core.dll");
+      for (const relativePath of [
+        "NativeAIWebappHost.exe",
+        "zig_core.dll",
+        "resources/runtime/index.html",
+        "resources/runtime/runtime.js",
+        "resources/webapps/examples/notes-lite/manifest.json",
+        "resources/webapps/examples/task-workbench/app.js",
+        "resources/db/sqlite/001_initial.sql",
+      ]) {
+        assert.equal(fs.existsSync(path.join(appDir, relativePath)), true, `${relativePath} should be packaged`);
+      }
+      assert.notEqual(fs.statSync(binaryPath).size, 0);
+      assert.notEqual(fs.statSync(packagedCorePath).size, 0);
+
+      runWindowsPackagedArtifactSmoke({ binaryPath, scratch, appDir });
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }
@@ -947,9 +1011,54 @@ function runOptionalSmoke({ binaryPath, scratch }) {
   });
 }
 
-function runSmoke(binaryPath, resultFile, marker, env) {
+function runWindowsPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
+  const storageKey = `notes-lite:windows-packaged-smoke-${process.pid}-${Date.now()}`;
+  const storageValue = `windows-packaged-smoke-${process.pid}-${Date.now()}`;
+  const resultFile = path.join(scratch, "packaged-smoke-result.txt");
+  const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
+  fs.mkdirSync(outsideRepoCwd, { recursive: true });
+  const { NATIVE_AI_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
+  const baseEnv = {
+    ...smokeEnv,
+    NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: path.join(scratch, "packaged-data-home"),
+    NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER: "1",
+    NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
+  };
+
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "runtime-load",
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-set",
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-get",
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
+    ...baseEnv,
+    NATIVE_AI_WINDOWS_SMOKE: "bridge-core-step",
+  }, { cwd: outsideRepoCwd });
+
+  const dbPath = path.join(baseEnv.NATIVE_AI_WINDOWS_SMOKE_DATA_HOME, "NativeAIWebappPlatform", "platform.sqlite");
+  assert.equal(fs.existsSync(dbPath), true, "packaged smoke should persist the platform database");
+  assert.equal(appDir.includes(repoRoot), false, "packaged artifact should live outside the repo root");
+}
+
+function runSmoke(binaryPath, resultFile, marker, env, options = {}) {
   fs.rmSync(resultFile, { force: true });
-  const result = spawnSync(binaryPath, [], { env, cwd: path.dirname(binaryPath), encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(binaryPath, [], {
+    env,
+    cwd: options.cwd ?? path.dirname(binaryPath),
+    encoding: "utf8",
+    timeout: 30_000,
+  });
   const markerOutput = fs.existsSync(resultFile) ? fs.readFileSync(resultFile, "utf8") : "";
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${markerOutput}`;
   assert.equal(output.includes("NATIVE_AI_WINDOWS_SMOKE_FAILED"), false, output);

@@ -30,6 +30,7 @@ Implemented now:
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
 - Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `NATIVE_AI_ZIG_CORE_DLL` first, the executable-adjacent packaged DLL next, and repo-local candidate paths as dev fallbacks.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig DLL load status and returns structured `platform_unsupported` when the DLL is absent.
+- Windows-only release smoke coverage builds the native package, launches it from the staged artifact directory with no `NATIVE_AI_ZIG_CORE_DLL`, and verifies executable-relative runtime/example/SQLite resources plus `zig_core.dll`-backed `core.step`.
 
 MVP acceptance:
 
