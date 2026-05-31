@@ -2009,35 +2009,50 @@ typedef struct {
 } SafeDbTable;
 
 static const gchar * const db_apps_columns[] = {"id", "name", "status", "active_install_id", "active_version", "data_version", "created_at", "updated_at"};
-static const gchar * const db_app_versions_columns[] = {"install_id", "app_id", "version", "runtime_version", "data_version", "content_hash", "status", "created_at", "activated_at"};
+static const gchar * const db_app_versions_columns[] = {"install_id", "app_id", "version", "runtime_version", "data_version", "manifest_json", "manifest_hash", "content_hash", "signature_json", "trust_level", "status", "created_at", "activated_at"};
+static const gchar * const db_app_files_columns[] = {"install_id", "path", "content_text", "content_hash", "size_bytes", "mime", "created_at"};
+static const gchar * const db_app_permissions_columns[] = {"install_id", "app_id", "permission", "requested", "approved", "approved_at", "reason"};
 static const gchar * const db_app_storage_columns[] = {"app_id", "key", "value_json", "updated_at"};
 static const gchar * const db_bridge_calls_columns[] = {"bridge_call_id", "session_id", "app_id", "install_id", "method", "result_json", "error_json", "duration_ms", "created_at"};
 static const gchar * const db_core_events_columns[] = {"event_id", "session_id", "app_id", "install_id", "state_version_before", "event_json", "created_at"};
+static const gchar * const db_core_actions_columns[] = {"action_id", "event_id", "session_id", "app_id", "action_json", "created_at"};
 static const gchar * const db_test_runs_columns[] = {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at"};
 static const gchar * const db_control_sessions_columns[] = {"control_session_id", "target", "runtime_session_id", "actor", "started_at", "ended_at", "status", "metadata_json"};
-static const gchar * const db_control_commands_columns[] = {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "created_at", "duration_ms"};
+static const gchar * const db_control_commands_columns[] = {"command_id", "control_session_id", "runtime_session_id", "tool", "http_method", "path", "decision", "error_code", "args_json", "result_json", "error_json", "created_at", "duration_ms"};
 static const gchar * const db_runtime_sessions_columns[] = {"session_id", "target", "platform", "runtime_version", "active_app_id", "active_install_id", "started_at", "ended_at", "status"};
-static const gchar * const db_runtime_snapshots_columns[] = {"snapshot_id", "session_id", "app_id", "install_id", "type", "content_hash", "created_at"};
+static const gchar * const db_runtime_snapshots_columns[] = {"snapshot_id", "session_id", "app_id", "install_id", "type", "snapshot_json", "content_hash", "created_at"};
+static const gchar * const db_app_migrations_columns[] = {"migration_id", "app_id", "from_data_version", "to_data_version", "migration_json", "content_hash", "created_at"};
+static const gchar * const db_app_install_reports_columns[] = {"report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "content_hash", "created_at"};
 static const gchar * const db_backup_exports_columns[] = {"export_id", "type", "source_platform", "runtime_version", "content_hash", "created_at", "imported_at"};
 
 static const SafeDbTable safe_db_apps = {"apps", db_apps_columns, G_N_ELEMENTS(db_apps_columns), "id", NULL};
 static const SafeDbTable safe_db_app_versions = {"app_versions", db_app_versions_columns, G_N_ELEMENTS(db_app_versions_columns), "created_at", "app_id"};
+static const SafeDbTable safe_db_app_files = {"app_files", db_app_files_columns, G_N_ELEMENTS(db_app_files_columns), "path", NULL};
+static const SafeDbTable safe_db_app_permissions = {"app_permissions", db_app_permissions_columns, G_N_ELEMENTS(db_app_permissions_columns), "permission", NULL};
 static const SafeDbTable safe_db_app_storage = {"app_storage", db_app_storage_columns, G_N_ELEMENTS(db_app_storage_columns), "updated_at", "app_id"};
 static const SafeDbTable safe_db_bridge_calls = {"bridge_calls", db_bridge_calls_columns, G_N_ELEMENTS(db_bridge_calls_columns), "created_at", "app_id"};
 static const SafeDbTable safe_db_core_events = {"core_events", db_core_events_columns, G_N_ELEMENTS(db_core_events_columns), "created_at", "app_id"};
+static const SafeDbTable safe_db_core_actions = {"core_actions", db_core_actions_columns, G_N_ELEMENTS(db_core_actions_columns), "created_at", "app_id"};
 static const SafeDbTable safe_db_test_runs = {"test_runs", db_test_runs_columns, G_N_ELEMENTS(db_test_runs_columns), "started_at", "app_id"};
 static const SafeDbTable safe_db_control_sessions = {"control_sessions", db_control_sessions_columns, G_N_ELEMENTS(db_control_sessions_columns), "started_at", NULL};
 static const SafeDbTable safe_db_control_commands = {"control_commands", db_control_commands_columns, G_N_ELEMENTS(db_control_commands_columns), "created_at", NULL};
 static const SafeDbTable safe_db_runtime_sessions = {"runtime_sessions", db_runtime_sessions_columns, G_N_ELEMENTS(db_runtime_sessions_columns), "started_at", NULL};
 static const SafeDbTable safe_db_runtime_snapshots = {"runtime_snapshots", db_runtime_snapshots_columns, G_N_ELEMENTS(db_runtime_snapshots_columns), "created_at", NULL};
+static const SafeDbTable safe_db_app_migrations = {"app_migrations", db_app_migrations_columns, G_N_ELEMENTS(db_app_migrations_columns), "created_at", NULL};
+static const SafeDbTable safe_db_app_install_reports = {"app_install_reports", db_app_install_reports_columns, G_N_ELEMENTS(db_app_install_reports_columns), "created_at", NULL};
 static const SafeDbTable safe_db_backup_exports = {"backup_exports", db_backup_exports_columns, G_N_ELEMENTS(db_backup_exports_columns), "created_at", NULL};
 
 static const SafeDbTable * const db_snapshot_tables[] = {
     &safe_db_apps,
     &safe_db_app_versions,
+    &safe_db_app_files,
+    &safe_db_app_permissions,
     &safe_db_app_storage,
+    &safe_db_app_migrations,
+    &safe_db_app_install_reports,
     &safe_db_bridge_calls,
     &safe_db_core_events,
+    &safe_db_core_actions,
     &safe_db_test_runs,
     &safe_db_control_sessions,
     &safe_db_control_commands,
@@ -2173,6 +2188,109 @@ static gchar *db_snapshot_json(DevControlPlane *plane, GError **error) {
   g_object_unref(builder);
   platform_database_close(db);
   return text;
+}
+
+static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  g_autofree gchar *export_id = make_id("export");
+  g_autofree gchar *created_at = now_iso();
+  g_autofree gchar *capabilities = runtime_capabilities_json(plane, NULL);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "exportId");
+  json_builder_add_string_value(builder, export_id);
+  json_builder_set_member_name(builder, "type");
+  json_builder_add_string_value(builder, "debug-bundle");
+  json_builder_set_member_name(builder, "createdAt");
+  json_builder_add_string_value(builder, created_at);
+  json_builder_set_member_name(builder, "runtimeVersion");
+  json_builder_add_string_value(builder, "0.4.0");
+  json_builder_set_member_name(builder, "source");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "platform");
+  json_builder_add_string_value(builder, "linux");
+  json_builder_set_member_name(builder, "target");
+  json_builder_add_string_value(builder, "linux-native");
+  json_builder_end_object(builder);
+  json_builder_set_member_name(builder, "apps");
+  append_safe_table_rows(builder, db, &safe_db_apps, NULL);
+  json_builder_set_member_name(builder, "appVersions");
+  append_safe_table_rows(builder, db, &safe_db_app_versions, NULL);
+  json_builder_set_member_name(builder, "appFiles");
+  append_safe_table_rows(builder, db, &safe_db_app_files, NULL);
+  json_builder_set_member_name(builder, "appPermissions");
+  append_safe_table_rows(builder, db, &safe_db_app_permissions, NULL);
+  json_builder_set_member_name(builder, "appStorage");
+  append_safe_table_rows(builder, db, &safe_db_app_storage, NULL);
+  json_builder_set_member_name(builder, "appMigrations");
+  append_safe_table_rows(builder, db, &safe_db_app_migrations, NULL);
+  json_builder_set_member_name(builder, "appInstallReports");
+  append_safe_table_rows(builder, db, &safe_db_app_install_reports, NULL);
+  json_builder_set_member_name(builder, "runtimeCapabilities");
+  json_builder_add_json_text_or_null(builder, capabilities);
+  json_builder_set_member_name(builder, "debug");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "runtimeSessions");
+  append_safe_table_rows(builder, db, &safe_db_runtime_sessions, NULL);
+  json_builder_set_member_name(builder, "bridgeCalls");
+  append_safe_table_rows(builder, db, &safe_db_bridge_calls, NULL);
+  json_builder_set_member_name(builder, "controlSessions");
+  append_safe_table_rows(builder, db, &safe_db_control_sessions, NULL);
+  json_builder_set_member_name(builder, "controlCommands");
+  append_safe_table_rows(builder, db, &safe_db_control_commands, NULL);
+  json_builder_set_member_name(builder, "coreEvents");
+  append_safe_table_rows(builder, db, &safe_db_core_events, NULL);
+  json_builder_set_member_name(builder, "coreActions");
+  append_safe_table_rows(builder, db, &safe_db_core_actions, NULL);
+  json_builder_set_member_name(builder, "runtimeSnapshots");
+  append_safe_table_rows(builder, db, &safe_db_runtime_snapshots, NULL);
+  json_builder_set_member_name(builder, "testRuns");
+  append_safe_table_rows(builder, db, &safe_db_test_runs, NULL);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  g_autofree gchar *without_hash = json_builder_to_text(builder);
+  g_object_unref(builder);
+
+  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, without_hash, -1);
+  g_autofree gchar *content_hash = g_strdup_printf("sha256:%s", hash);
+  gsize without_hash_len = strlen(without_hash);
+  g_autofree gchar *escaped_hash = json_escape(content_hash);
+  g_autofree gchar *document = g_strdup_printf(
+      "%.*s,\"contentHash\":\"%s\"}",
+      (int)(without_hash_len > 0 ? without_hash_len - 1 : 0),
+      without_hash,
+      escaped_hash);
+
+  sqlite3_stmt *statement = NULL;
+  gboolean ok = sqlite3_prepare_v2(
+      db,
+      "INSERT OR REPLACE INTO backup_exports "
+      "(export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) "
+      "VALUES (?, 'debug-bundle', 'linux', '0.4.0', ?, ?, ?)",
+      -1,
+      &statement,
+      NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, export_id);
+    bind_text(statement, 2, document);
+    bind_text(statement, 3, content_hash);
+    bind_text(statement, 4, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+  if (!ok) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not record debug bundle export");
+    return NULL;
+  }
+
+  return g_steal_pointer(&document);
 }
 
 static gchar *db_query_rows_json(DevControlPlane *plane, const gchar *tool, const gchar *app_id, GError **error) {
@@ -2982,6 +3100,24 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     if (result == NULL) {
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not read runtime bridge log data", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "db.export_debug_bundle") == 0) {
+    JsonObject *args = NULL;
+    if (json_object_has_member(body, "args")) {
+      args = object_object(body, "args");
+      if (args == NULL) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "db.export_debug_bundle args must be an object", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+    }
+    (void)args;
+    result = db_export_debug_bundle_json(plane, &error);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not export debug bundle", SOUP_STATUS_INTERNAL_SERVER_ERROR);
       g_clear_error(&error);
       return;
     }

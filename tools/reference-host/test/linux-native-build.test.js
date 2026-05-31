@@ -697,6 +697,27 @@ test(
         assert.equal(Array.isArray(JSON.parse(response.body).result.rows), true);
       }
 
+      const debugBundle = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "db.export_debug_bundle", args: {} },
+      });
+      assert.equal(debugBundle.statusCode, 200, debugBundle.body);
+      const debugBundleBody = JSON.parse(debugBundle.body);
+      assert.equal(debugBundleBody.result.type, "debug-bundle");
+      assert.equal(debugBundleBody.result.source.platform, "linux");
+      assert.equal(debugBundleBody.result.source.target, "linux-native");
+      assert.match(debugBundleBody.result.contentHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(Array.isArray(debugBundleBody.result.apps), true);
+      assert.equal(Array.isArray(debugBundleBody.result.appVersions), true);
+      assert.equal(Array.isArray(debugBundleBody.result.appFiles), true);
+      assert.equal(Array.isArray(debugBundleBody.result.appPermissions), true);
+      assert.equal(Array.isArray(debugBundleBody.result.appStorage), true);
+      assert.equal(debugBundleBody.result.runtimeCapabilities.platform, "linux");
+      assert.equal(debugBundleBody.result.debug.bridgeCalls.some((row) => row.method === "storage.set"), true);
+      assert.equal(debugBundleBody.result.debug.coreEvents.length >= 1, true);
+      assert.equal(debugBundleBody.result.debug.controlCommands.some((row) => row.tool === "db.snapshot"), true);
+
       const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -802,6 +823,22 @@ test(
         [
           dbPath,
           "SELECT COUNT(*) FROM control_commands WHERE tool = 'db.query_app_storage' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedDebugBundleCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'db.export_debug_bundle' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const debugBundleExportCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          `SELECT COUNT(*) FROM backup_exports WHERE type = 'debug-bundle' AND source_platform = 'linux' AND content_hash = '${debugBundleBody.result.contentHash}';`,
         ],
         { encoding: "utf8" },
       ).trim();
@@ -957,6 +994,8 @@ test(
       assert.equal(Number(acceptedCoreActionAssertCount) >= 1, true);
       assert.equal(Number(acceptedDbSnapshotCount) >= 1, true);
       assert.equal(Number(acceptedDbStorageCount) >= 1, true);
+      assert.equal(Number(acceptedDebugBundleCount) >= 1, true);
+      assert.equal(Number(debugBundleExportCount), 1);
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
       assert.equal(Number(acceptedEventLogCount) >= 1, true);
       assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);

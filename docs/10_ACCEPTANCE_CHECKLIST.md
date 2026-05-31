@@ -152,6 +152,7 @@
 - [x] Debug dev control plane Docker-smoke verifies DB-backed `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
 - [x] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
+- [x] Debug dev control plane Docker-smoke verifies `db.export_debug_bundle` returns a hashed Linux debug bundle and persists a `backup_exports` row.
 - [x] Linux native release package includes runtime, example app, SQLite migration, and Zig core resources.
 - [x] Linux native release artifact launches from its packaged directory without repo-root resource assumptions.
 - [x] Linux packaged host resolves runtime resources, app resources, migrations, and `libzig_core.so` relative to the executable.
