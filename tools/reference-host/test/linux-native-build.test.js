@@ -459,6 +459,61 @@ test(
       assert.equal(appLog.statusCode, 200, appLog.body);
       assert.equal(JSON.parse(appLog.body).result.ok, true);
 
+      const toast = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "notification.toast",
+            params: {
+              level: "success",
+              message: "Linux toast captured",
+            },
+          },
+        },
+      });
+      assert.equal(toast.statusCode, 200, toast.body);
+      assert.equal(JSON.parse(toast.body).result.ok, true);
+
+      const bridgeCallAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_bridge_call", args: { appId: "task-workbench", method: "storage.set" } },
+      });
+      assert.equal(bridgeCallAssert.statusCode, 200, bridgeCallAssert.body);
+      assert.equal(JSON.parse(bridgeCallAssert.body).result.latest.method, "storage.set");
+
+      const bridgeCalls = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.bridge_calls", args: { appId: "task-workbench" } },
+      });
+      assert.equal(bridgeCalls.statusCode, 200, bridgeCalls.body);
+      const bridgeCallsBody = JSON.parse(bridgeCalls.body);
+      assert.equal(bridgeCallsBody.result.bridgeCalls.some((row) => row.method === "storage.set"), true);
+      assert.equal(bridgeCallsBody.result.bridgeCalls.some((row) => row.method === "notification.toast"), true);
+
+      const noConsoleErrors = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_no_console_errors", args: { appId: "task-workbench" } },
+      });
+      assert.equal(noConsoleErrors.statusCode, 200, noConsoleErrors.body);
+      assert.equal(JSON.parse(noConsoleErrors.body).result.errors, 0);
+
+      const notificationCapture = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.notification_capture", args: { appId: "task-workbench" } },
+      });
+      assert.equal(notificationCapture.statusCode, 200, notificationCapture.body);
+      assert.equal(
+        JSON.parse(notificationCapture.body).result.notifications.some((row) => row.message === "Linux toast captured" && row.level === "success"),
+        true,
+      );
+
       const resourceUsage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -666,16 +721,6 @@ test(
         assert.equal(completed.statusCode, 200, completed.body);
       }
 
-      const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-        token,
-      });
-      assert.equal(ended.statusCode, 200, ended.body);
-      const endedBody = JSON.parse(ended.body);
-      assert.equal(endedBody.ok, true);
-      assert.equal(endedBody.result.controlSessionId, sessionId);
-      assert.equal(endedBody.result.status, "ended");
-
       const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
       const rejectedCount = execFileSync(
@@ -784,6 +829,38 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedBridgeCallsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.bridge_calls' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedAssertBridgeCallCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_bridge_call' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedNoConsoleErrorsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_no_console_errors' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedNotificationCaptureCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.notification_capture' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedListTargetsCount = execFileSync(
         "sqlite3",
         [
@@ -883,6 +960,10 @@ test(
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
       assert.equal(Number(acceptedEventLogCount) >= 1, true);
       assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);
+      assert.equal(Number(acceptedBridgeCallsCount) >= 1, true);
+      assert.equal(Number(acceptedAssertBridgeCallCount) >= 1, true);
+      assert.equal(Number(acceptedNoConsoleErrorsCount) >= 1, true);
+      assert.equal(Number(acceptedNotificationCaptureCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
       assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
@@ -894,6 +975,52 @@ test(
       assert.equal(Number(coreActionCount) >= 2, true);
       assert.equal(Number(mockedNetworkBridgeCount) >= 1, true);
       assert.equal(Number(mockedDialogBridgeCount) >= 1, true);
+
+      const clearLogs = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.clear_logs", args: { appId: "task-workbench" } },
+      });
+      assert.equal(clearLogs.statusCode, 200, clearLogs.body);
+      assert.equal(Number(JSON.parse(clearLogs.body).result.bridgeCallsCleared) >= 1, true);
+      assert.equal(Number(JSON.parse(clearLogs.body).result.coreEventsCleared) >= 1, true);
+      assert.equal(Number(JSON.parse(clearLogs.body).result.coreActionsCleared) >= 1, true);
+
+      const bridgeCallsAfterClear = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.bridge_calls", args: { appId: "task-workbench" } },
+      });
+      assert.equal(bridgeCallsAfterClear.statusCode, 200, bridgeCallsAfterClear.body);
+      assert.equal(JSON.parse(bridgeCallsAfterClear.body).result.bridgeCalls.length, 0);
+
+      const notificationsAfterClear = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.notification_capture", args: { appId: "task-workbench" } },
+      });
+      assert.equal(notificationsAfterClear.statusCode, 200, notificationsAfterClear.body);
+      assert.equal(JSON.parse(notificationsAfterClear.body).result.notifications.length, 0);
+
+      const acceptedClearLogsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.clear_logs' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(Number(acceptedClearLogsCount) >= 1, true);
+
+      const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        token,
+      });
+      assert.equal(ended.statusCode, 200, ended.body);
+      const endedBody = JSON.parse(ended.body);
+      assert.equal(endedBody.ok, true);
+      assert.equal(endedBody.result.controlSessionId, sessionId);
+      assert.equal(endedBody.result.status, "ended");
 
       const resetSession = await requestControl(ready.port, "/control/sessions", {
         method: "POST",

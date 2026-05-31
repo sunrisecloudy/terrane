@@ -149,6 +149,7 @@
 - [x] Debug dev control plane Docker-smoke verifies fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Debug dev control plane runtime-smoke verifies direct `runtime.storage_get`, `runtime.storage_set`, confirmation-gated `runtime.storage_reset` / `platform.reset_webapp`, pre-reset snapshots, and `runtime.assert_storage` with storage-prefix enforcement through the native bridge.
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`.
+- [x] Debug dev control plane Docker-smoke verifies DB-backed `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
 - [x] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 - [x] Linux native release package includes runtime, example app, SQLite migration, and Zig core resources.

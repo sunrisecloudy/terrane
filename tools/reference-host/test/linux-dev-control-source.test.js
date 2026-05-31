@@ -70,6 +70,11 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
+    "runtime.bridge_calls",
+    "runtime.clear_logs",
+    "runtime.notification_capture",
+    "runtime.assert_bridge_call",
+    "runtime.assert_no_console_errors",
     "runtime.storage_get",
     "runtime.storage_set",
     "runtime.storage_reset",
@@ -252,6 +257,41 @@ test("Linux dev control exposes DB-backed runtime resource and log inspection co
     "control_session_allows_app",
   ]) {
     assert.equal(control.includes(snippet), true, `Linux runtime inspection source should contain ${snippet}`);
+  }
+});
+
+test("Linux dev control exposes bridge log assertions and notification capture", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.bridge_calls",
+    "runtime.clear_logs",
+    "runtime.notification_capture",
+    "runtime.assert_bridge_call",
+    "runtime.assert_no_console_errors",
+    "runtime_bridge_calls_json",
+    "clear_runtime_logs_json",
+    "notification_capture_json",
+    "assert_bridge_call_json",
+    "assert_no_console_errors_json",
+    "append_bridge_call_row_object",
+    "append_notification_rows",
+    "console_log_row_is_error",
+    "Runtime bridge log command requires args object",
+    "Runtime bridge log appId must be a string",
+    "Runtime bridge log appId is not a valid generated app id",
+    "runtime.assert_bridge_call requires appId and method",
+    "Expected bridge call was not recorded",
+    "Console error logs were found",
+    "DELETE FROM %s WHERE app_id = ?",
+    "delete_runtime_log_rows(db, \"bridge_calls\"",
+    "delete_runtime_log_rows(db, \"core_actions\"",
+    "delete_runtime_log_rows(db, \"core_events\"",
+    "WHERE method = 'notification.toast'",
+    "WHERE method = 'app.log'",
+    "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux bridge log source should contain ${snippet}`);
   }
 });
 

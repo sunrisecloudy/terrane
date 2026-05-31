@@ -1317,10 +1317,35 @@ static gchar *runtime_resource_usage_json(DevControlPlane *plane, const gchar *a
   return text;
 }
 
+static void append_bridge_call_row_object(JsonBuilder *builder, sqlite3_stmt *statement) {
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "bridgeCallId");
+  json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
+  json_builder_set_member_name(builder, "sessionId");
+  sqlite3_column_text(statement, 1) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 1));
+  json_builder_set_member_name(builder, "appId");
+  sqlite3_column_text(statement, 2) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 2));
+  json_builder_set_member_name(builder, "installId");
+  sqlite3_column_text(statement, 3) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 3));
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 4));
+  json_builder_set_member_name(builder, "params");
+  json_builder_add_json_text_or_null(builder, (const gchar *)sqlite3_column_text(statement, 5));
+  json_builder_set_member_name(builder, "result");
+  json_builder_add_json_text_or_null(builder, (const gchar *)sqlite3_column_text(statement, 6));
+  json_builder_set_member_name(builder, "error");
+  json_builder_add_json_text_or_null(builder, (const gchar *)sqlite3_column_text(statement, 7));
+  json_builder_set_member_name(builder, "durationMs");
+  sqlite3_column_type(statement, 8) == SQLITE_NULL ? json_builder_add_null_value(builder) : json_builder_add_int_value(builder, sqlite3_column_int64(statement, 8));
+  json_builder_set_member_name(builder, "createdAt");
+  json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 9));
+  json_builder_end_object(builder);
+}
+
 static void append_bridge_call_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id) {
   const gchar *sql = app_id == NULL
-      ? "SELECT bridge_call_id, session_id, app_id, method, created_at FROM bridge_calls ORDER BY created_at"
-      : "SELECT bridge_call_id, session_id, app_id, method, created_at FROM bridge_calls WHERE app_id = ? ORDER BY created_at";
+      ? "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls ORDER BY created_at"
+      : "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls WHERE app_id = ? ORDER BY created_at";
   sqlite3_stmt *statement = NULL;
   json_builder_begin_array(builder);
   if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK) {
@@ -1328,22 +1353,30 @@ static void append_bridge_call_rows(JsonBuilder *builder, sqlite3 *db, const gch
       bind_text(statement, 1, app_id);
     }
     while (sqlite3_step(statement) == SQLITE_ROW) {
-      json_builder_begin_object(builder);
-      json_builder_set_member_name(builder, "bridgeCallId");
-      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
-      json_builder_set_member_name(builder, "sessionId");
-      sqlite3_column_text(statement, 1) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 1));
-      json_builder_set_member_name(builder, "appId");
-      sqlite3_column_text(statement, 2) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 2));
-      json_builder_set_member_name(builder, "method");
-      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 3));
-      json_builder_set_member_name(builder, "createdAt");
-      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 4));
-      json_builder_end_object(builder);
+      append_bridge_call_row_object(builder, statement);
     }
   }
   sqlite3_finalize(statement);
   json_builder_end_array(builder);
+}
+
+static gchar *runtime_bridge_calls_json(DevControlPlane *plane, const gchar *app_id, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "bridgeCalls");
+  append_bridge_call_rows(builder, db, app_id);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  platform_database_close(db);
+  return text;
 }
 
 static void append_core_event_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id);
@@ -1733,6 +1766,67 @@ static void append_console_log_rows(JsonBuilder *builder, sqlite3 *db, const gch
   json_builder_end_array(builder);
 }
 
+static const gchar *json_text_string_member(JsonParser *parser, const gchar *text, const gchar *member) {
+  if (text == NULL || text[0] == '\0' || !json_parser_load_from_data(parser, text, -1, NULL)) {
+    return NULL;
+  }
+  JsonNode *root = json_parser_get_root(parser);
+  if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+    return NULL;
+  }
+  JsonObject *object = json_node_get_object(root);
+  if (!json_object_has_member(object, member)) {
+    return NULL;
+  }
+  JsonNode *node = json_object_get_member(object, member);
+  return node != NULL && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING
+      ? json_node_get_string(node)
+      : NULL;
+}
+
+static void append_notification_rows(JsonBuilder *builder, sqlite3 *db, const gchar *app_id) {
+  const gchar *sql = app_id == NULL
+      ? "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' ORDER BY created_at LIMIT 100"
+      : "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' AND app_id = ? ORDER BY created_at LIMIT 100";
+  sqlite3_stmt *statement = NULL;
+  json_builder_begin_array(builder);
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK) {
+    if (app_id != NULL) {
+      bind_text(statement, 1, app_id);
+    }
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      const gchar *params_json = (const gchar *)sqlite3_column_text(statement, 2);
+      JsonParser *message_parser = json_parser_new();
+      JsonParser *level_parser = json_parser_new();
+      const gchar *message = json_text_string_member(message_parser, params_json, "message");
+      const gchar *level = json_text_string_member(level_parser, params_json, "level");
+
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "bridgeCallId");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 0));
+      json_builder_set_member_name(builder, "appId");
+      sqlite3_column_text(statement, 1) == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 1));
+      json_builder_set_member_name(builder, "message");
+      message == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, message);
+      json_builder_set_member_name(builder, "level");
+      level == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, level);
+      json_builder_set_member_name(builder, "params");
+      json_builder_add_json_text_or_null(builder, params_json);
+      json_builder_set_member_name(builder, "result");
+      json_builder_add_json_text_or_null(builder, (const gchar *)sqlite3_column_text(statement, 3));
+      json_builder_set_member_name(builder, "error");
+      json_builder_add_json_text_or_null(builder, (const gchar *)sqlite3_column_text(statement, 4));
+      json_builder_set_member_name(builder, "createdAt");
+      json_builder_add_string_value(builder, (const gchar *)sqlite3_column_text(statement, 5));
+      json_builder_end_object(builder);
+      g_object_unref(message_parser);
+      g_object_unref(level_parser);
+    }
+  }
+  sqlite3_finalize(statement);
+  json_builder_end_array(builder);
+}
+
 static gchar *runtime_console_logs_json(DevControlPlane *plane, const gchar *app_id, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
@@ -1750,6 +1844,160 @@ static gchar *runtime_console_logs_json(DevControlPlane *plane, const gchar *app
   g_object_unref(builder);
   platform_database_close(db);
   return text;
+}
+
+static gchar *notification_capture_json(DevControlPlane *plane, const gchar *app_id, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "notifications");
+  append_notification_rows(builder, db, app_id);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  platform_database_close(db);
+  return text;
+}
+
+static gchar *assert_bridge_call_json(
+    DevControlPlane *plane,
+    const gchar *app_id,
+    const gchar *method,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at "
+      "FROM bridge_calls WHERE app_id = ? AND method = ? ORDER BY created_at";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not read bridge call rows");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    platform_database_close(db);
+    return NULL;
+  }
+
+  bind_text(statement, 1, app_id);
+  bind_text(statement, 2, method);
+  gint64 count = 0;
+  JsonBuilder *latest_builder = NULL;
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    count++;
+    if (latest_builder != NULL) {
+      g_object_unref(latest_builder);
+    }
+    latest_builder = json_builder_new();
+    append_bridge_call_row_object(latest_builder, statement);
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+
+  if (count == 0 || latest_builder == NULL) {
+    *error_code = g_strdup("assertion_failed");
+    *error_message = g_strdup("Expected bridge call was not recorded");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonNode *latest = json_builder_get_root(latest_builder);
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, method);
+  json_builder_set_member_name(builder, "count");
+  json_builder_add_int_value(builder, count);
+  json_builder_set_member_name(builder, "latest");
+  json_builder_add_value(builder, latest);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_object_unref(latest_builder);
+  return text;
+}
+
+static gboolean console_log_row_is_error(const gchar *params_json, const gchar *error_json) {
+  JsonParser *error_parser = json_parser_new();
+  gboolean has_error = error_json != NULL &&
+      error_json[0] != '\0' &&
+      json_parser_load_from_data(error_parser, error_json, -1, NULL) &&
+      json_parser_get_root(error_parser) != NULL &&
+      json_node_get_node_type(json_parser_get_root(error_parser)) != JSON_NODE_NULL;
+  g_object_unref(error_parser);
+  if (has_error) {
+    return TRUE;
+  }
+
+  JsonParser *params_parser = json_parser_new();
+  const gchar *level = json_text_string_member(params_parser, params_json, "level");
+  gboolean is_error = g_strcmp0(level, "error") == 0;
+  g_object_unref(params_parser);
+  return is_error;
+}
+
+static gchar *assert_no_console_errors_json(
+    DevControlPlane *plane,
+    const gchar *app_id,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return NULL;
+  }
+
+  const gchar *sql = app_id == NULL
+      ? "SELECT params_json, error_json FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at"
+      : "SELECT params_json, error_json FROM bridge_calls WHERE method = 'app.log' AND app_id = ? ORDER BY created_at";
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not read console log rows");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    platform_database_close(db);
+    return NULL;
+  }
+  if (app_id != NULL) {
+    bind_text(statement, 1, app_id);
+  }
+
+  gint64 errors = 0;
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    if (console_log_row_is_error((const gchar *)sqlite3_column_text(statement, 0), (const gchar *)sqlite3_column_text(statement, 1))) {
+      errors++;
+    }
+  }
+  sqlite3_finalize(statement);
+  platform_database_close(db);
+
+  if (errors > 0) {
+    *error_code = g_strdup("console_errors_found");
+    *error_message = g_strdup("Console error logs were found");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+  return g_strdup("{\"ok\":true,\"errors\":0}");
 }
 
 typedef struct {
@@ -2100,6 +2348,63 @@ static gboolean delete_rows_for_app(sqlite3 *db, const gchar *table, const gchar
   }
   sqlite3_finalize(statement);
   return ok;
+}
+
+static gint64 delete_runtime_log_rows(sqlite3 *db, const gchar *table, const gchar *app_id, gboolean *ok) {
+  g_autofree gchar *sql = app_id == NULL || app_id[0] == '\0'
+      ? g_strdup_printf("DELETE FROM %s", table)
+      : g_strdup_printf("DELETE FROM %s WHERE app_id = ?", table);
+  sqlite3_stmt *statement = NULL;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    *ok = FALSE;
+    return 0;
+  }
+  if (app_id != NULL && app_id[0] != '\0') {
+    bind_text(statement, 1, app_id);
+  }
+  if (sqlite3_step(statement) != SQLITE_DONE) {
+    *ok = FALSE;
+    sqlite3_finalize(statement);
+    return 0;
+  }
+  gint64 changes = sqlite3_changes(db);
+  sqlite3_finalize(statement);
+  return changes;
+}
+
+static gchar *clear_runtime_logs_json(DevControlPlane *plane, const gchar *app_id, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  gboolean ok = TRUE;
+  gint64 bridge_calls = delete_runtime_log_rows(db, "bridge_calls", app_id, &ok);
+  gint64 core_actions = delete_runtime_log_rows(db, "core_actions", app_id, &ok);
+  gint64 core_events = delete_runtime_log_rows(db, "core_events", app_id, &ok);
+  platform_database_close(db);
+  if (!ok) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not clear runtime logs");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  app_id == NULL || app_id[0] == '\0' ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "bridgeCallsCleared");
+  json_builder_add_int_value(builder, bridge_calls);
+  json_builder_set_member_name(builder, "coreActionsCleared");
+  json_builder_add_int_value(builder, core_actions);
+  json_builder_set_member_name(builder, "coreEventsCleared");
+  json_builder_add_int_value(builder, core_events);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
 }
 
 static gchar *control_session_runtime_session_id(sqlite3 *db, const gchar *control_session_id) {
@@ -2624,6 +2929,62 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_clear_error(&error);
       return;
     }
+  } else if (g_strcmp0(tool, "runtime.bridge_calls") == 0 ||
+             g_strcmp0(tool, "runtime.clear_logs") == 0 ||
+             g_strcmp0(tool, "runtime.notification_capture") == 0 ||
+             g_strcmp0(tool, "runtime.assert_no_console_errors") == 0) {
+    JsonObject *args = NULL;
+    const gchar *app_id = NULL;
+    if (json_object_has_member(body, "args")) {
+      args = object_object(body, "args");
+      if (args == NULL) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Runtime bridge log command requires args object", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+      if (json_object_has_member(args, "appId")) {
+        JsonNode *app_id_node = json_object_get_member(args, "appId");
+        if (app_id_node == NULL || !JSON_NODE_HOLDS_VALUE(app_id_node) || json_node_get_value_type(app_id_node) != G_TYPE_STRING) {
+          g_object_unref(parser);
+          send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Runtime bridge log appId must be a string", SOUP_STATUS_BAD_REQUEST);
+          return;
+        }
+        app_id = json_node_get_string(app_id_node);
+        if (app_id != NULL && app_id[0] != '\0' && !valid_generated_app_id(app_id)) {
+          g_object_unref(parser);
+          send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Runtime bridge log appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+          return;
+        }
+      }
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.bridge_calls") == 0) {
+      result = runtime_bridge_calls_json(plane, app_id, &error);
+    } else if (g_strcmp0(tool, "runtime.clear_logs") == 0) {
+      result = clear_runtime_logs_json(plane, app_id, &error);
+    } else if (g_strcmp0(tool, "runtime.notification_capture") == 0) {
+      result = notification_capture_json(plane, app_id, &error);
+    } else {
+      result = assert_no_console_errors_json(plane, app_id, &error_code, &error_message, &error_status);
+      if (result == NULL) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "console_errors_found", error_message != NULL ? error_message : "Console error logs were found", error_status);
+        return;
+      }
+    }
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not read runtime bridge log data", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
   } else if (is_db_inspection_tool(tool)) {
     JsonObject *args = NULL;
     const gchar *app_id = NULL;
@@ -2795,6 +3156,34 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Webapp storage could not be reset", SOUP_STATUS_INTERNAL_SERVER_ERROR);
       g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.assert_bridge_call") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_bridge_call requires appId and method", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    const gchar *bridge_method = object_string(args, "method", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id) || bridge_method == NULL || bridge_method[0] == '\0') {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_bridge_call requires appId and method", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    result = assert_bridge_call_json(plane, app_id, bridge_method, &error_code, &error_message, &error_status);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "assertion_failed", error_message != NULL ? error_message : "Expected bridge call was not recorded", error_status);
       return;
     }
   } else if (g_strcmp0(tool, "runtime.network_mock_set") == 0 ||
