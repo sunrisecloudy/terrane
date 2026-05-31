@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -148,6 +149,76 @@ test(
 );
 
 test(
+  "Linux debug dev control health is token-gated and audited",
+  {
+    skip: linuxNativeSkipReason({ requireSqliteCli: true }),
+    timeout: 120_000,
+  },
+  async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-dev-control-"));
+    let child = null;
+    try {
+      const buildDir = path.join(scratch, "debug-build");
+      execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
+      execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
+
+      const binaryPath = path.join(buildDir, "native-ai-webapp-host");
+      const xdgDataHome = path.join(scratch, "xdg-data");
+      const xdgRuntimeDir = path.join(scratch, "xdg-runtime");
+      fs.mkdirSync(xdgRuntimeDir, { recursive: true, mode: 0o700 });
+
+      child = launchHost(binaryPath, ["--native-ai-dev-control", "--control-plane-port=0"], {
+        ...process.env,
+        XDG_DATA_HOME: xdgDataHome,
+        XDG_RUNTIME_DIR: xdgRuntimeDir,
+      });
+      const ready = await waitForControlReady(child);
+      assert.equal(ready.tokenPath, path.join(xdgRuntimeDir, "native-ai-webapp", "control.token"));
+
+      const tokenStat = fs.statSync(ready.tokenPath);
+      assert.equal(tokenStat.mode & 0o777, 0o600);
+      const token = fs.readFileSync(ready.tokenPath, "utf8").trim();
+      assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+
+      const unauthorized = await requestControlHealth(ready.port);
+      assert.equal(unauthorized.statusCode, 401);
+      assert.equal(JSON.parse(unauthorized.body).error.code, "control_auth_required");
+
+      const authorized = await requestControlHealth(ready.port, token);
+      assert.equal(authorized.statusCode, 200);
+      const body = JSON.parse(authorized.body);
+      assert.equal(body.ok, true);
+      assert.equal(body.target, "linux");
+      assert.equal(body.controlPlane.port, ready.port);
+
+      const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
+      const rejectedCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'rejected' AND error_code = 'control_auth_required';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(rejectedCount, "1");
+      assert.equal(acceptedCount, "1");
+    } finally {
+      if (child) await stopChild(child);
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "Linux packaged native artifact launches from executable-relative resources",
   {
     skip: linuxPackagedNativeSmokeSkipReason(),
@@ -280,6 +351,118 @@ function runPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
   const dbPath = path.join(baseEnv.XDG_DATA_HOME, "NativeAIWebappPlatform", "platform.sqlite");
   assert.equal(fs.existsSync(dbPath), true, "packaged smoke should persist the platform database");
   assert.equal(appDir.includes(repoRoot), false, "packaged artifact should live outside the repo root");
+}
+
+function launchHost(binaryPath, hostArgs, env) {
+  let args = [...hostArgs];
+  let command = binaryPath;
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    assert.equal(commandExists("xvfb-run"), true, "xvfb-run is required for headless Linux smoke");
+    command = "xvfb-run";
+    args = ["-a", binaryPath, ...hostArgs];
+  }
+  if (commandWorks("dbus-run-session", ["--version"])) {
+    args = ["--", command, ...args];
+    command = "dbus-run-session";
+  }
+  return spawn(command, args, {
+    cwd: repoRoot,
+    detached: true,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function waitForControlReady(child) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let output = "";
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Timed out waiting for Linux dev control readiness\n${output}`));
+      }
+    }, 30_000);
+
+    function collect(chunk) {
+      output += chunk.toString("utf8");
+      const match = output.match(/NATIVE_AI_LINUX_CONTROL_READY port=(\d+) token_path=([^\s]+)/);
+      if (!match || settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ port: Number(match[1]), tokenPath: match[2], output });
+    }
+
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.once("error", (error) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+    child.once("exit", (code, signal) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`Linux host exited before dev control was ready code=${code} signal=${signal}\n${output}`));
+      }
+    });
+  });
+}
+
+function requestControlHealth(port, token = null) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/health",
+        method: "GET",
+        headers: token ? { "X-Platform-Control-Token": token } : {},
+        timeout: 10_000,
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => resolve({ statusCode: res.statusCode, body }));
+      },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error("Timed out waiting for Linux dev control /health"));
+    });
+    req.end();
+  });
+}
+
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  killChildProcessGroup(child, "SIGTERM");
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        killChildProcessGroup(child, "SIGKILL");
+      }
+      resolve();
+    }, 5_000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+function killChildProcessGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    child.kill(signal);
+  }
 }
 
 function runSmoke(binaryPath, marker, env, { cwd = repoRoot } = {}) {

@@ -1166,14 +1166,17 @@ function checkNativeStatic() {
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
   const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "windows-native-build.test.js"), "utf8");
+  const linuxMain = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "main.c"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
+  const linuxDevControl = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "dev_control_plane.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
   const linuxNotifications = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_notifications.c"), "utf8");
   const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "zig_core_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
   const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
+  const linuxNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "linux-native-build.test.js"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
   const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "ZigCoreBridge.kt"), "utf8");
@@ -1691,6 +1694,40 @@ function checkNativeStatic() {
   for (const snippet of ["libsoup-3.0", "find_library('dl'", "dl_dep"]) {
     if (!linuxMeson.includes(snippet)) {
       throw new Error(`Linux native bridge missing Meson dependency ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "NATIVE_AI_LINUX_DEV_CONTROL",
+    "--native-ai-dev-control",
+    "--control-plane-port",
+    "#ifndef NDEBUG",
+    "dev_control_plane_start(&config",
+  ]) {
+    if (!linuxMain.includes(snippet)) {
+      throw new Error(`Linux dev control startup missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4)",
+    "soup_server_listen(plane->server, socket_address",
+    "X-Platform-Control-Token",
+    "control_auth_required",
+    "g_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600)",
+    "control_sessions",
+    "control_commands",
+    "platform.health",
+    "NATIVE_AI_LINUX_CONTROL_READY port=",
+  ]) {
+    if (!linuxDevControl.includes(snippet)) {
+      throw new Error(`Linux dev control plane missing ${snippet}`);
+    }
+  }
+  if (!linuxMeson.includes("'src/dev_control_plane.c'")) {
+    throw new Error("Linux Meson build must include dev_control_plane.c");
+  }
+  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health"]) {
+    if (!linuxNativeBuildTest.includes(snippet)) {
+      throw new Error(`Linux native build test missing dev control coverage: ${snippet}`);
     }
   }
   const androidRequired = [

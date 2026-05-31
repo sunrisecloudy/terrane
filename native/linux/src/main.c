@@ -1,3 +1,4 @@
+#include "dev_control_plane.h"
 #include "platform_database.h"
 #include "webkit_host.h"
 
@@ -17,6 +18,7 @@ static gboolean native_ai_debug_build_allows_dev_flags(void) {
 static gboolean native_ai_is_forbidden_dev_flag(const char *argument) {
   static const char *flags[] = {
       "--control-plane-port",
+      "--native-ai-dev-control",
       "--allow-runtime-mismatch",
       "--allow-unsigned-dev",
   };
@@ -35,6 +37,43 @@ static gboolean native_ai_is_forbidden_dev_flag(const char *argument) {
 
 static gboolean native_ai_dev_flag_consumes_next_argument(const char *argument) {
   return g_strcmp0(argument, "--control-plane-port") == 0;
+}
+
+static gboolean native_ai_parse_uint16(const char *text, guint *value) {
+  if (text == NULL || text[0] == '\0') {
+    return FALSE;
+  }
+  char *end = NULL;
+  guint64 parsed = g_ascii_strtoull(text, &end, 10);
+  if (end == text || *end != '\0' || parsed > 65535) {
+    return FALSE;
+  }
+  *value = (guint)parsed;
+  return TRUE;
+}
+
+static gboolean native_ai_parse_dev_control_options(int argc, char **argv, gboolean *enabled, guint *port, GError **error) {
+  *enabled = g_strcmp0(g_getenv("NATIVE_AI_LINUX_DEV_CONTROL"), "1") == 0;
+  *port = 0;
+
+  for (int index = 1; index < argc; index++) {
+    if (g_strcmp0(argv[index], "--native-ai-dev-control") == 0) {
+      *enabled = TRUE;
+    } else if (g_strcmp0(argv[index], "--control-plane-port") == 0) {
+      if (index + 1 >= argc || !native_ai_parse_uint16(argv[index + 1], port)) {
+        g_set_error_literal(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "--control-plane-port requires a numeric port between 0 and 65535");
+        return FALSE;
+      }
+      index++;
+    } else if (g_str_has_prefix(argv[index], "--control-plane-port=")) {
+      const char *value = argv[index] + strlen("--control-plane-port=");
+      if (!native_ai_parse_uint16(value, port)) {
+        g_set_error_literal(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "--control-plane-port requires a numeric port between 0 and 65535");
+        return FALSE;
+      }
+    }
+  }
+  return TRUE;
 }
 
 static char **native_ai_application_argv_without_dev_flags(int argc, char **argv, int *application_argc) {
@@ -204,6 +243,36 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  gboolean dev_control_enabled = FALSE;
+  guint dev_control_port = 0;
+  GError *dev_control_error = NULL;
+  if (!native_ai_parse_dev_control_options(argc, argv, &dev_control_enabled, &dev_control_port, &dev_control_error)) {
+    g_printerr("fatal: %s\n", dev_control_error->message);
+    g_error_free(dev_control_error);
+    return 1;
+  }
+
+  DevControlPlane *dev_control = NULL;
+#ifndef NDEBUG
+  if (dev_control_enabled) {
+    g_autofree gchar *db_path = native_ai_database_path();
+    DevControlPlaneConfig config = {
+        .requested_port = dev_control_port,
+        .database_path = db_path,
+    };
+    if ((dev_control = dev_control_plane_start(&config, &dev_control_error)) == NULL) {
+      g_printerr("fatal: could not start Linux dev control plane: %s\n", dev_control_error != NULL ? dev_control_error->message : "unknown error");
+      g_clear_error(&dev_control_error);
+      return 1;
+    }
+  }
+#else
+  if (dev_control_enabled) {
+    g_printerr("fatal: Linux dev control plane is disabled in release builds\n");
+    return 1;
+  }
+#endif
+
   GtkApplication *application = gtk_application_new("dev.nativeai.webappplatform", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(application, "activate", G_CALLBACK(on_activate), NULL);
   int application_argc = 0;
@@ -211,5 +280,8 @@ int main(int argc, char **argv) {
   int status = g_application_run(G_APPLICATION(application), application_argc, application_argv);
   g_free(application_argv);
   g_object_unref(application);
+#ifndef NDEBUG
+  dev_control_plane_stop(dev_control);
+#endif
   return status;
 }
