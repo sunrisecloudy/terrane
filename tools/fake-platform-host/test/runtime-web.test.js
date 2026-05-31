@@ -9,6 +9,7 @@ import { MessageChannel } from "node:worker_threads";
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
 const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+const generatedAppCsp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
   const harness = createRuntimeHarness();
@@ -284,6 +285,9 @@ test("runtime launcher, sandbox, bridge calls, debug log, and structured errors 
     const frame = await mountFirstApp(harness);
     assert.equal(harness.document.getElementById("app-list").children.length, 5);
     assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
+    assert.equal(frame.attributes.get("allow"), "");
+    assert.equal(frame.attributes.get("csp"), generatedAppCsp);
+    assert.equal(frame.srcdoc.includes("<base "), false);
     assert.equal(typeof frame.contentWindow.AppRuntime.call, "function");
 
     vm.runInContext(
@@ -400,7 +404,9 @@ test("runtime uses host app index with content ratings when available", async ()
 
     const frame = await mountAppAtIndex(harness, 0);
     assert.equal(frame.title, "Notes Lite");
-    assert.match(frame.srcdoc, /<base href="\/webapps\/examples\/notes-lite\/">/);
+    assert.equal(frame.srcdoc.includes("<base "), false);
+    assert.match(frame.srcdoc, /<link rel="stylesheet" href="\/webapps\/examples\/notes-lite\/styles\.css">/);
+    assert.match(frame.srcdoc, /<script src="\/webapps\/examples\/notes-lite\/app\.js"><\/script>/);
   } finally {
     harness.close();
   }
@@ -431,7 +437,10 @@ test("runtime can mount every bundled app in a sandboxed frame", async () => {
       assert.equal(harness.document.getElementById("active-title").textContent, appId);
       assert.equal(frame.title, appId);
       assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
-      assert.match(frame.srcdoc, new RegExp(`<base href="/webapps/examples/${appId}/">`));
+      assert.equal(frame.attributes.get("csp"), generatedAppCsp);
+      assert.equal(frame.srcdoc.includes("<base "), false);
+      assert.match(frame.srcdoc, new RegExp(`<link rel="stylesheet" href="/webapps/examples/${appId}/styles\\.css">`));
+      assert.match(frame.srcdoc, new RegExp(`<script src="/webapps/examples/${appId}/app\\.js"></script>`));
       assert.equal(typeof frame.contentWindow.AppRuntime.call, "function");
 
       await vm.runInContext(
@@ -472,6 +481,8 @@ test("runtime uses app-scoped custom-scheme frames when hosted by WebKit native 
     const frame = harness.document.getElementById("app-frame-wrap").children[0];
     assert.ok(frame, "runtime launcher should mount the selected app iframe");
     assert.equal(frame.attributes.get("sandbox"), "allow-scripts allow-same-origin");
+    assert.equal(frame.attributes.get("allow"), "");
+    assert.equal(frame.attributes.get("csp"), generatedAppCsp);
     assert.match(frame.src, /^app-runtime:\/\/notes-lite\/index\.html\?mountToken=/);
     assert.equal(frame.srcdoc, undefined);
   } finally {
@@ -749,7 +760,7 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     return jsonResponse(state.manifest ?? defaultRuntimeManifest());
   }
   if (url.endsWith("/index.html")) {
-    return textResponse("<!doctype html><html><head></head><body><main data-testid=\"app-root\"></main></body></html>");
+    return textResponse("<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body><main data-testid=\"app-root\"></main><script src=\"app.js\"></script></body></html>");
   }
   if (url === "/bridge") {
     const request = JSON.parse(options.body);

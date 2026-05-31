@@ -20,6 +20,7 @@
     ["notification.toast", "notification.toast"],
     ["network.request", "network.request"],
   ]);
+  const GENERATED_APP_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
   let apps = [];
   let activeApp = null;
@@ -125,12 +126,14 @@
     activeDescription.textContent = app.description;
     setStatus(`Mounting ${app.id}`);
 
-    const html = await fetchText(`/webapps/examples/${app.id}/index.html`);
+    const html = rewritePackageResourceUrls(app.id, await fetchText(`/webapps/examples/${app.id}/index.html`));
     const srcdoc = injectRuntimeBootstrap(app, html);
     const frame = document.createElement("iframe");
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
+    frame.setAttribute("allow", "");
     frame.setAttribute("sandbox", usesWebKitNativeAppFrames() ? "allow-scripts allow-same-origin" : "allow-scripts");
+    frame.setAttribute("csp", GENERATED_APP_CSP);
     frame.setAttribute("referrerpolicy", "no-referrer");
 
     frameWrap.textContent = "";
@@ -149,10 +152,42 @@
     return Boolean(webkitNativeBridgeHandler()) && window.location && window.location.protocol === "app-runtime:";
   }
 
+  function rewritePackageResourceUrls(appId, html) {
+    return html
+      .replace(/\s(href|src|poster)=(["'])([^"']*)\2/gi, function (_match, attribute, quote, value) {
+        return ` ${attribute}=${quote}${packageResourceUrl(appId, value)}${quote}`;
+      })
+      .replace(/\ssrcset=(["'])([^"']*)\1/gi, function (_match, quote, value) {
+        return ` srcset=${quote}${rewriteSrcset(appId, value)}${quote}`;
+      });
+  }
+
+  function rewriteSrcset(appId, value) {
+    return value.split(",").map(function (candidate) {
+      const trimmed = candidate.trim();
+      if (!trimmed) return trimmed;
+      const parts = trimmed.split(/\s+/);
+      parts[0] = packageResourceUrl(appId, parts[0]);
+      return parts.join(" ");
+    }).join(", ");
+  }
+
+  function packageResourceUrl(appId, value) {
+    const trimmed = String(value || "").trim();
+    if (
+      trimmed === "" ||
+      trimmed[0] === "#" ||
+      trimmed[0] === "/" ||
+      /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+    ) {
+      return value;
+    }
+    return `/webapps/examples/${encodeURIComponent(appId)}/${trimmed.replace(/^\.\//, "")}`;
+  }
+
   function injectRuntimeBootstrap(app, html) {
     const appId = app.id;
-    const bootstrap = `<base href="/webapps/examples/${appId}/">
-<script>
+    const bootstrap = `<script>
 (function () {
   var runtimeAppId = ${JSON.stringify(appId)};
   var resourceBudget = ${JSON.stringify(app.resourceBudget || {})};

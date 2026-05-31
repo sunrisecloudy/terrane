@@ -686,6 +686,10 @@ function checkRuntimeStatic() {
     "network_policy_denied",
     "resource_budget_exceeded",
     "createMountToken",
+    "GENERATED_APP_CSP",
+    'frame.setAttribute("allow", "")',
+    'usesWebKitNativeAppFrames() ? "allow-scripts allow-same-origin" : "allow-scripts"',
+    'frame.setAttribute("csp", GENERATED_APP_CSP)',
     "mountsByFrame",
     "mountsByPort",
     "bridge.unauthorized_channel",
@@ -701,10 +705,13 @@ function checkRuntimeStatic() {
   if (/message\s*=\s*\{[^}]*appId/s.test(source)) {
     throw new Error("runtime bridge request body must not include appId");
   }
+  if (source.includes("<base href=")) {
+    throw new Error("runtime generated app srcdoc must not inject base href");
+  }
   if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
     throw new Error("runtime AppRuntime.on must not be a no-op");
   }
-  return "bridge=messagechannel,nonce-bound,webkit,android,webview2 request=no-appid permission,policy,budget=runtime-preflight,dom-timer-guards";
+  return "bridge=messagechannel,nonce-bound,iframe-csp,webkit,android,webview2 request=no-appid permission,policy,budget=runtime-preflight,dom-timer-guards";
 }
 
 function checkServerStatic() {

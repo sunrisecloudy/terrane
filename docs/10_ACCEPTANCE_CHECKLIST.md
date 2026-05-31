@@ -15,6 +15,7 @@
 
 - [x] Runtime launcher displays installed/bundled apps.
 - [x] Runtime can load each app in sandbox.
+- [x] Runtime sets generated app iframe CSP and no feature-policy delegations.
 - [x] Runtime exposes `AppRuntime.call`.
 - [x] Runtime rejects unknown methods.
 - [x] Runtime enforces manifest permissions.
