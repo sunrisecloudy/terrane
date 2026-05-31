@@ -639,30 +639,29 @@
 
   function devMockActionsForEvent(event) {
     if (event.type === "CreateTask") {
-      const payload = event.payload || {};
       return [
         {
-          type: "TaskAccepted",
-          title: typeof payload.title === "string" ? payload.title : "",
-          priority: typeof payload.priority === "string" ? payload.priority : "medium",
+          type: "Toast",
+          message: `Task accepted: ${devMockPayloadString(event.payload, "title") || "task"}`,
+          level: "success",
         },
-        { type: "Toast", message: "Task accepted" },
+        { type: "Log", message: "CreateTask handled" },
       ];
     }
-    if (event.type === "ToggleTask") {
-      const payload = event.payload || {};
-      return [{ type: "TaskToggled", id: payload.id || null }];
-    }
     if (event.type === "TransformText") {
-      const payload = event.payload || {};
-      const text = typeof payload.text === "string" ? payload.text : "";
-      const mode = typeof payload.mode === "string" ? payload.mode : "uppercase";
+      const text = devMockPayloadString(event.payload, "text") || "";
+      const mode = devMockPayloadString(event.payload, "mode") || "uppercase";
       return [{ type: "TransformText", text: devMockTransformText(text, mode) }];
     }
     if (event.type === "NetworkSnapshotReceived") {
-      return [{ type: "NetworkSnapshotStored", received: true }];
+      return [{ type: "RenderHint", hint: "network-snapshot-received" }];
     }
-    return [{ type: "EventAccepted", eventType: event.type || "UnknownEvent" }];
+    return [{ type: "Log", message: `Unhandled event: ${event.type}` }];
+  }
+
+  function devMockPayloadString(payload, field) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    return typeof payload[field] === "string" ? payload[field] : null;
   }
 
   function devMockTransformText(text, mode) {

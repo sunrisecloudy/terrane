@@ -45,7 +45,7 @@ test("v0.3 fake-host runtime acceptance covers snapshot replay, budgets, and net
       event,
     });
     assert.equal(step.ok, true);
-    assert.equal(step.result.actions.some((action) => action.type === "EventAccepted"), true);
+    assert.equal(step.result.actions.some((action) => action.type === "Log" && action.message === "Unhandled event: task.created"), true);
 
     const replay = await host.runControlCommand("runtime.replay_events", {
       appId: "task-workbench",
@@ -53,7 +53,10 @@ test("v0.3 fake-host runtime acceptance covers snapshot replay, budgets, and net
     });
     assert.equal(replay.ok, true);
     assert.equal(replay.replay.length, 1);
-    assert.equal(replay.replay[0].result.actions.some((action) => action.type === "EventAccepted"), true);
+    assert.equal(
+      replay.replay[0].result.actions.some((action) => action.type === "Log" && action.message === "Unhandled event: task.created"),
+      true,
+    );
 
     host.installPackage(path.join(examplesDir, "api-dashboard"));
     const deniedNetwork = await host.runControlCommand("runtime.call_bridge", {

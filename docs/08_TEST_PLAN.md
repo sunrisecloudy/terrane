@@ -164,6 +164,9 @@ invalid-unknown-method.json
 invalid-permission-denied.json
 invalid-storage-prefix.json
 valid-core-step.json
+valid-core-step-create-task.json
+valid-core-step-network-snapshot.json
+valid-core-step-unknown-event.json
 invalid-core-step-bad-json.json
 valid-network-request-mocked.json
 valid-network-policy-denied.json

@@ -137,8 +137,8 @@ test("fake-host exposes common control utility tools", async () => {
 
     const coreAction = await host.runControlCommand("runtime.assert_core_action", {
       appId: "task-workbench",
-      type: "EventAccepted",
-      match: { eventType: "task.created" },
+      type: "Log",
+      match: { message: "Unhandled event: task.created" },
     });
     assert.equal(coreAction.ok, true);
 

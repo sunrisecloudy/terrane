@@ -66,26 +66,34 @@ function actionsForEvent(event) {
     case "CreateTask":
       return [
         {
-          type: "TaskAccepted",
-          title: event.payload?.title ?? "",
-          priority: event.payload?.priority ?? "medium",
+          type: "Toast",
+          message: `Task accepted: ${payloadString(event.payload, "title") ?? "task"}`,
+          level: "success",
         },
-        { type: "Toast", message: "Task accepted" },
+        { type: "Log", message: "CreateTask handled" },
       ];
-    case "ToggleTask":
-      return [{ type: "TaskToggled", id: event.payload?.id ?? null }];
+    case "NetworkSnapshotReceived":
+      return [{ type: "RenderHint", hint: "network-snapshot-received" }];
     case "TransformText":
       return [
         {
           type: "TransformText",
-          text: transformText(event.payload?.text ?? "", event.payload?.mode ?? "uppercase"),
+          text: transformText(payloadString(event.payload, "text") ?? "", payloadString(event.payload, "mode") ?? "uppercase"),
         },
       ];
-    case "NetworkSnapshotReceived":
-      return [{ type: "NetworkSnapshotStored", received: true }];
     default:
-      return [{ type: "EventAccepted", eventType: event?.type ?? "UnknownEvent" }];
+      return [
+        {
+          type: "Log",
+          message: `Unhandled event: ${event.type}`,
+        },
+      ];
   }
+}
+
+function payloadString(payload, field) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  return typeof payload[field] === "string" ? payload[field] : null;
 }
 
 function transformText(text, mode) {

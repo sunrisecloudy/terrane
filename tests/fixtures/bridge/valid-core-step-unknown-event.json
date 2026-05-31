@@ -1,0 +1,39 @@
+{
+  "id": "req_core_step_unknown_event",
+  "context": {
+    "appId": "core-replay-lab"
+  },
+  "method": "core.step",
+  "params": {
+    "app": "core-replay-lab",
+    "event": {
+      "type": "ProbeEvent",
+      "payload": {
+        "source": "parity-fixture"
+      }
+    }
+  },
+  "timestamp": 1730000000000,
+  "expected": {
+    "ok": true,
+    "resultSubset": {
+      "ok": true,
+      "stateVersion": 1,
+      "actions": [
+        {
+          "type": "Log",
+          "message": "Unhandled event: ProbeEvent"
+        }
+      ]
+    }
+  },
+  "platforms": [
+    "fake-host",
+    "macos",
+    "ios-simulator",
+    "android-emulator",
+    "windows",
+    "linux",
+    "server"
+  ]
+}

@@ -149,7 +149,13 @@ test("runtime rejects private network requests before host dispatch", async () =
 });
 
 test("runtime dev mock handles bridge calls without host dispatch", async () => {
-  const harness = createRuntimeHarness({ devMock: true });
+  const harness = createRuntimeHarness({
+    devMock: true,
+    manifest: {
+      ...defaultRuntimeManifest(),
+      resourceBudget: { maxBridgeCallsPerMinute: 20 },
+    },
+  });
   try {
     const frame = await mountFirstApp(harness);
 
@@ -179,6 +185,46 @@ test("runtime dev mock handles bridge calls without host dispatch", async () => 
       stateVersion: 1,
       actions: [{ type: "TransformText", text: "hello" }],
     });
+
+    const createTaskResult = await vm.runInContext(
+      [
+        'window.AppRuntime.call("core.step", {',
+        '  app: "notes-lite",',
+        '  event: { type: "CreateTask", payload: { title: "Mock parity" } }',
+        "})",
+      ].join("\n"),
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(createTaskResult.actions, [
+      { type: "Toast", message: "Task accepted: Mock parity", level: "success" },
+      { type: "Log", message: "CreateTask handled" },
+    ]);
+
+    const networkSnapshotResult = await vm.runInContext(
+      [
+        'window.AppRuntime.call("core.step", {',
+        '  app: "notes-lite",',
+        '  event: { type: "NetworkSnapshotReceived", payload: { status: 200 } }',
+        "})",
+      ].join("\n"),
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(networkSnapshotResult.actions, [
+      { type: "RenderHint", hint: "network-snapshot-received" },
+    ]);
+
+    const unknownResult = await vm.runInContext(
+      [
+        'window.AppRuntime.call("core.step", {',
+        '  app: "notes-lite",',
+        '  event: { type: "ProbeEvent", payload: {} }',
+        "})",
+      ].join("\n"),
+      frame.contentWindow.context,
+    );
+    assert.deepEqual(unknownResult.actions, [
+      { type: "Log", message: "Unhandled event: ProbeEvent" },
+    ]);
 
     assert.equal(harness.fetchState.bridgeRequests.length, 0);
   } finally {
