@@ -154,6 +154,51 @@ test("Linux dev control exposes target and webapp listing controls", () => {
   }
 });
 
+test("Linux dev control supports static runtime UI controls over bundled app HTML", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.screenshot",
+    "runtime.query",
+    "runtime.click",
+    "runtime.type",
+    "runtime.set_value",
+    "runtime.press_key",
+    "runtime.drag",
+    "runtime.wait_for",
+    "runtime.timer_advance",
+    "runtime.assert_visible",
+    "runtime.assert_text",
+    "html_for_bundled_app",
+    "html_text",
+    "runtime_query_matches",
+    "runtime_screenshot_json",
+    "runtime_query_json",
+    "runtime_target_command_json",
+    "runtime_wait_for_json",
+    "runtime_timer_advance_json",
+    "runtime_assert_visible_json",
+    "runtime_assert_text_json",
+    "tag_for_attribute",
+    "test_id_selector_value",
+    "static-html-summary",
+    "data-testid",
+    "runtime.query requires appId",
+    "runtime.screenshot requires appId",
+    "runtime.assert_visible requires appId",
+    "runtime.assert_text requires appId and text",
+    "runtime.wait_for bridge_call requires appId and method",
+    "runtime.wait_for requires appId for selector/text waits",
+    "selector.not_found",
+    "text.not_found",
+    "wait_timeout",
+    "Expected runtime condition did not appear",
+    "sha256:",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux static UI control source should contain ${snippet}`);
+  }
+});
+
 test("Linux dev control supports direct storage get, set, reset, and assertions", () => {
   const control = read("native/linux/src/dev_control_plane.c");
 

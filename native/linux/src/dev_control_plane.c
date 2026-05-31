@@ -2033,6 +2033,504 @@ static gchar *assert_bridge_call_json(
   return text;
 }
 
+typedef struct {
+  gchar *kind;
+  gchar *value;
+  gchar *tag;
+} RuntimeUiMatch;
+
+static void runtime_ui_match_free(gpointer data) {
+  RuntimeUiMatch *match = data;
+  if (match == NULL) {
+    return;
+  }
+  g_free(match->kind);
+  g_free(match->value);
+  g_free(match->tag);
+  g_free(match);
+}
+
+static RuntimeUiMatch *runtime_ui_match_new(const gchar *kind, const gchar *value, const gchar *tag) {
+  RuntimeUiMatch *match = g_new0(RuntimeUiMatch, 1);
+  match->kind = g_strdup(kind);
+  match->value = g_strdup(value);
+  match->tag = tag == NULL ? NULL : g_strdup(tag);
+  return match;
+}
+
+static gchar *html_for_bundled_app(const gchar *app_id) {
+  g_autofree gchar *manifest_path = app_sandbox_manifest_path_for_app(app_id);
+  if (manifest_path == NULL) {
+    return g_strdup("");
+  }
+  g_autofree gchar *app_dir = g_path_get_dirname(manifest_path);
+  g_autofree gchar *index_path = g_build_filename(app_dir, "index.html", NULL);
+  gchar *contents = NULL;
+  if (!g_file_get_contents(index_path, &contents, NULL, NULL)) {
+    return g_strdup("");
+  }
+  return contents;
+}
+
+static gchar *regex_replace_all(const gchar *text, const gchar *pattern, const gchar *replacement) {
+  GError *error = NULL;
+  GRegex *regex = g_regex_new(pattern, G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, &error);
+  if (regex == NULL) {
+    g_clear_error(&error);
+    return g_strdup(text == NULL ? "" : text);
+  }
+  gchar *result = g_regex_replace(regex, text == NULL ? "" : text, -1, 0, replacement, 0, &error);
+  g_regex_unref(regex);
+  if (result == NULL) {
+    g_clear_error(&error);
+    return g_strdup(text == NULL ? "" : text);
+  }
+  return result;
+}
+
+static gchar *replace_all_literal(const gchar *text, const gchar *needle, const gchar *replacement) {
+  const gchar *safe = text == NULL ? "" : text;
+  if (needle == NULL || needle[0] == '\0') {
+    return g_strdup(safe);
+  }
+  GString *out = g_string_new("");
+  const gchar *cursor = safe;
+  gsize needle_len = strlen(needle);
+  while (TRUE) {
+    const gchar *hit = strstr(cursor, needle);
+    if (hit == NULL) {
+      g_string_append(out, cursor);
+      break;
+    }
+    g_string_append_len(out, cursor, hit - cursor);
+    g_string_append(out, replacement == NULL ? "" : replacement);
+    cursor = hit + needle_len;
+  }
+  return g_string_free(out, FALSE);
+}
+
+static gchar *collapse_whitespace(const gchar *text) {
+  GString *out = g_string_new("");
+  gboolean in_space = FALSE;
+  for (const gchar *cursor = text == NULL ? "" : text; *cursor != '\0'; cursor++) {
+    if (g_ascii_isspace(*cursor)) {
+      if (out->len > 0 && !in_space) {
+        g_string_append_c(out, ' ');
+      }
+      in_space = TRUE;
+      continue;
+    }
+    g_string_append_c(out, *cursor);
+    in_space = FALSE;
+  }
+  if (out->len > 0 && out->str[out->len - 1] == ' ') {
+    g_string_truncate(out, out->len - 1);
+  }
+  return g_string_free(out, FALSE);
+}
+
+static gchar *html_text(const gchar *html) {
+  g_autofree gchar *without_scripts = regex_replace_all(html, "<script\\b[^>]*>[\\s\\S]*?</script>", " ");
+  g_autofree gchar *without_styles = regex_replace_all(without_scripts, "<style\\b[^>]*>[\\s\\S]*?</style>", " ");
+  g_autofree gchar *without_tags = regex_replace_all(without_styles, "<[^>]+>", " ");
+  g_autofree gchar *nbsp = replace_all_literal(without_tags, "&nbsp;", " ");
+  g_autofree gchar *amp = replace_all_literal(nbsp, "&amp;", "&");
+  g_autofree gchar *lt = replace_all_literal(amp, "&lt;", "<");
+  g_autofree gchar *gt = replace_all_literal(lt, "&gt;", ">");
+  g_autofree gchar *quot = replace_all_literal(gt, "&quot;", "\"");
+  return collapse_whitespace(quot);
+}
+
+static gchar *first_match(const gchar *text, const gchar *pattern) {
+  GError *error = NULL;
+  GRegex *regex = g_regex_new(pattern, G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, &error);
+  if (regex == NULL) {
+    g_clear_error(&error);
+    return g_strdup("");
+  }
+  GMatchInfo *match_info = NULL;
+  gchar *result = NULL;
+  if (g_regex_match(regex, text == NULL ? "" : text, 0, &match_info)) {
+    result = g_match_info_fetch(match_info, 1);
+  }
+  g_match_info_free(match_info);
+  g_regex_unref(regex);
+  return result == NULL ? g_strdup("") : result;
+}
+
+static gboolean regex_contains(const gchar *text, const gchar *pattern) {
+  GError *error = NULL;
+  GRegex *regex = g_regex_new(pattern, G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, &error);
+  if (regex == NULL) {
+    g_clear_error(&error);
+    return FALSE;
+  }
+  gboolean matched = g_regex_match(regex, text == NULL ? "" : text, 0, NULL);
+  g_regex_unref(regex);
+  return matched;
+}
+
+static gint compare_string_pointers(gconstpointer left, gconstpointer right) {
+  const gchar *left_string = *(const gchar * const *)left;
+  const gchar *right_string = *(const gchar * const *)right;
+  return g_strcmp0(left_string, right_string);
+}
+
+static void append_test_id_array(JsonBuilder *builder, const gchar *html) {
+  GRegex *regex = g_regex_new("\\bdata-testid=[\"']([^\"']+)[\"']", G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, NULL);
+  GPtrArray *ids = g_ptr_array_new_with_free_func(g_free);
+  GMatchInfo *match_info = NULL;
+  if (regex != NULL && g_regex_match(regex, html == NULL ? "" : html, 0, &match_info)) {
+    do {
+      gchar *value = g_match_info_fetch(match_info, 1);
+      if (value != NULL && value[0] != '\0') {
+        g_ptr_array_add(ids, value);
+      } else {
+        g_free(value);
+      }
+    } while (g_match_info_next(match_info, NULL));
+  }
+  g_match_info_free(match_info);
+  if (regex != NULL) {
+    g_regex_unref(regex);
+  }
+  g_ptr_array_sort(ids, compare_string_pointers);
+
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < ids->len; index++) {
+    json_builder_add_string_value(builder, g_ptr_array_index(ids, index));
+  }
+  json_builder_end_array(builder);
+  g_ptr_array_free(ids, TRUE);
+}
+
+static gchar *tag_for_attribute(const gchar *html, const gchar *attr, const gchar *value) {
+  if (value == NULL || value[0] == '\0') {
+    return NULL;
+  }
+  g_autofree gchar *escaped_attr = g_regex_escape_string(attr, -1);
+  g_autofree gchar *escaped_value = g_regex_escape_string(value, -1);
+  g_autofree gchar *pattern = g_strdup_printf("<([a-z0-9-]+)\\b[^>]*\\b%s=[\"']%s[\"'][^>]*>", escaped_attr, escaped_value);
+  g_autofree gchar *tag = first_match(html, pattern);
+  if (tag == NULL || tag[0] == '\0') {
+    return NULL;
+  }
+  return g_ascii_strdown(tag, -1);
+}
+
+static gchar *test_id_selector_value(const gchar *selector) {
+  return first_match(selector, "\\[data-testid=[\"']([^\"']+)[\"']\\]");
+}
+
+static gboolean is_simple_tag_selector(const gchar *selector) {
+  return selector != NULL && g_regex_match_simple("^[a-z][a-z0-9-]*$", selector, G_REGEX_CASELESS, 0);
+}
+
+static GPtrArray *runtime_query_matches(const gchar *html, JsonObject *args) {
+  GPtrArray *matches = g_ptr_array_new_with_free_func(runtime_ui_match_free);
+  const gchar *test_id = object_string(args, "testId", NULL);
+  if (test_id != NULL && test_id[0] != '\0') {
+    g_autofree gchar *tag = tag_for_attribute(html, "data-testid", test_id);
+    if (tag != NULL) {
+      g_ptr_array_add(matches, runtime_ui_match_new("testId", test_id, tag));
+    }
+    return matches;
+  }
+
+  const gchar *selector = object_string(args, "selector", NULL);
+  if (selector != NULL && selector[0] == '#' && selector[1] != '\0') {
+    g_autofree gchar *tag = tag_for_attribute(html, "id", selector + 1);
+    if (tag != NULL) {
+      g_ptr_array_add(matches, runtime_ui_match_new("selector", selector, tag));
+    }
+    return matches;
+  }
+
+  if (selector != NULL && selector[0] != '\0') {
+    g_autofree gchar *selector_test_id = test_id_selector_value(selector);
+    if (selector_test_id != NULL && selector_test_id[0] != '\0') {
+      g_autofree gchar *tag = tag_for_attribute(html, "data-testid", selector_test_id);
+      if (tag != NULL) {
+        g_ptr_array_add(matches, runtime_ui_match_new("selector", selector, tag));
+      }
+      return matches;
+    }
+  }
+
+  const gchar *text = object_string(args, "text", NULL);
+  if (text != NULL && text[0] != '\0') {
+    g_autofree gchar *visible_text = html_text(html);
+    if (strstr(visible_text, text) != NULL) {
+      g_ptr_array_add(matches, runtime_ui_match_new("text", text, NULL));
+    }
+    return matches;
+  }
+
+  if (is_simple_tag_selector(selector)) {
+    g_autofree gchar *escaped_selector = g_regex_escape_string(selector, -1);
+    g_autofree gchar *pattern = g_strdup_printf("<%s\\b", escaped_selector);
+    if (regex_contains(html, pattern)) {
+      g_autofree gchar *tag = g_ascii_strdown(selector, -1);
+      g_ptr_array_add(matches, runtime_ui_match_new("selector", selector, tag));
+    }
+  }
+  return matches;
+}
+
+static void append_runtime_ui_match_object(JsonBuilder *builder, RuntimeUiMatch *match) {
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "kind");
+  json_builder_add_string_value(builder, match->kind);
+  json_builder_set_member_name(builder, "value");
+  json_builder_add_string_value(builder, match->value);
+  if (match->tag != NULL) {
+    json_builder_set_member_name(builder, "tag");
+    json_builder_add_string_value(builder, match->tag);
+  }
+  json_builder_end_object(builder);
+}
+
+static void append_runtime_ui_matches(JsonBuilder *builder, GPtrArray *matches) {
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < matches->len; index++) {
+    append_runtime_ui_match_object(builder, g_ptr_array_index(matches, index));
+  }
+  json_builder_end_array(builder);
+}
+
+static gchar *runtime_query_json(const gchar *app_id, JsonObject *args) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  const gchar *test_id = object_string(args, "testId", NULL);
+  const gchar *selector = object_string(args, "selector", NULL);
+  const gchar *text = object_string(args, "text", NULL);
+  g_autofree gchar *test_id_query = test_id == NULL ? NULL : g_strdup_printf("[data-testid=\"%s\"]", test_id);
+  const gchar *query = test_id_query != NULL ? test_id_query : selector != NULL ? selector : text != NULL ? text : "";
+  GPtrArray *matches = runtime_query_matches(html, args);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, matches->len > 0);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "query");
+  json_builder_add_string_value(builder, query);
+  json_builder_set_member_name(builder, "matches");
+  append_runtime_ui_matches(builder, matches);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(matches, TRUE);
+  return result;
+}
+
+static gchar *runtime_screenshot_json(const gchar *app_id, const gchar *label) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  g_autofree gchar *text = html_text(html);
+  g_autofree gchar *raw_title = first_match(html, "<title[^>]*>([\\s\\S]*?)</title>");
+  g_autofree gchar *title = html_text(raw_title);
+  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, text, -1);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "label");
+  label == NULL || label[0] == '\0' ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, label);
+  json_builder_set_member_name(builder, "format");
+  json_builder_add_string_value(builder, "static-html-summary");
+  json_builder_set_member_name(builder, "title");
+  json_builder_add_string_value(builder, title);
+  json_builder_set_member_name(builder, "textHash");
+  g_autofree gchar *text_hash = g_strdup_printf("sha256:%s", hash);
+  json_builder_add_string_value(builder, text_hash);
+  json_builder_set_member_name(builder, "testIds");
+  append_test_id_array(builder, html);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
+static gchar *runtime_target_command_json(
+    const gchar *tool,
+    JsonObject *args,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  if (g_strcmp0(tool, "runtime.press_key") == 0) {
+    const gchar *key = object_string(args, "key", NULL);
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "ok");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_set_member_name(builder, "key");
+    key == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, key);
+    json_builder_end_object(builder);
+    gchar *result = json_builder_to_text(builder);
+    g_object_unref(builder);
+    return result;
+  }
+
+  const gchar *app_id = object_string(args, "appId", "");
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  GPtrArray *matches = runtime_query_matches(html, args);
+  if (matches->len == 0) {
+    g_ptr_array_free(matches, TRUE);
+    *error_code = g_strdup("selector.not_found");
+    *error_message = g_strdup("Runtime target was not found in generated app HTML");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "tool");
+  json_builder_add_string_value(builder, tool);
+  json_builder_set_member_name(builder, "target");
+  append_runtime_ui_match_object(builder, g_ptr_array_index(matches, 0));
+  if (g_strcmp0(tool, "runtime.type") == 0 || g_strcmp0(tool, "runtime.set_value") == 0) {
+    json_builder_set_member_name(builder, "value");
+    json_builder_add_string_value(builder, object_string_any(args, "value", "text", NULL, ""));
+  }
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(matches, TRUE);
+  return result;
+}
+
+static gchar *runtime_assert_visible_json(
+    const gchar *app_id,
+    JsonObject *args,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  GPtrArray *matches = runtime_query_matches(html, args);
+  if (matches->len == 0) {
+    g_ptr_array_free(matches, TRUE);
+    *error_code = g_strdup("selector.not_found");
+    *error_message = g_strdup("Expected runtime target is not visible");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "matches");
+  json_builder_add_int_value(builder, matches->len);
+  json_builder_set_member_name(builder, "target");
+  append_runtime_ui_match_object(builder, g_ptr_array_index(matches, 0));
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(matches, TRUE);
+  return result;
+}
+
+static gchar *runtime_assert_text_json(
+    const gchar *app_id,
+    const gchar *text,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  g_autofree gchar *visible_text = html_text(html);
+  if (strstr(visible_text, text) == NULL) {
+    *error_code = g_strdup("text.not_found");
+    *error_message = g_strdup("Expected text was not found in installed package HTML");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "text");
+  json_builder_add_string_value(builder, text);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
+static gchar *runtime_wait_for_json(
+    DevControlPlane *plane,
+    JsonObject *args,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  const gchar *kind = object_string(args, "kind", "idle");
+  if (g_strcmp0(kind, "idle") == 0) {
+    return g_strdup("{\"ok\":true,\"kind\":\"idle\"}");
+  }
+
+  if (g_strcmp0(kind, "bridge_call") == 0 || g_strcmp0(kind, "bridgeCall") == 0) {
+    const gchar *app_id = object_string(args, "appId", "");
+    const gchar *bridge_method = object_string(args, "method", "");
+    g_autofree gchar *result = assert_bridge_call_json(plane, app_id, bridge_method, error_code, error_message, status);
+    if (result == NULL) {
+      if (g_strcmp0(*error_code, "assertion_failed") == 0) {
+        g_free(*error_code);
+        g_free(*error_message);
+        *error_code = g_strdup("wait_timeout");
+        *error_message = g_strdup("Expected bridge call was not recorded");
+      }
+      return NULL;
+    }
+    g_autofree gchar *prefix = g_str_has_suffix(result, "}") ? g_strndup(result, strlen(result) - 1) : g_strdup(result);
+    g_autofree gchar *escaped_kind = json_escape(kind);
+    return g_strdup_printf("%s,\"kind\":\"%s\"}", prefix, escaped_kind);
+  }
+
+  const gchar *app_id = object_string(args, "appId", "");
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  GPtrArray *matches = runtime_query_matches(html, args);
+  if (matches->len == 0) {
+    g_ptr_array_free(matches, TRUE);
+    *error_code = g_strdup("wait_timeout");
+    *error_message = g_strdup("Expected runtime condition did not appear");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "kind");
+  json_builder_add_string_value(builder, kind);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "matches");
+  json_builder_add_int_value(builder, matches->len);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(matches, TRUE);
+  return result;
+}
+
+static gchar *runtime_timer_advance_json(JsonObject *args) {
+  gint64 milliseconds = object_int_any(args, "ms", "milliseconds", NULL, 0);
+  if (milliseconds < 0) {
+    milliseconds = 0;
+  }
+  return g_strdup_printf("{\"ok\":true,\"advancedMs\":%" G_GINT64_FORMAT "}", milliseconds);
+}
+
 static gboolean console_log_row_is_error(const gchar *params_json, const gchar *error_json) {
   JsonParser *error_parser = json_parser_new();
   gboolean has_error = error_json != NULL &&
@@ -4022,6 +4520,121 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_object_unref(parser);
       send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not read runtime bridge log data", SOUP_STATUS_INTERNAL_SERVER_ERROR);
       g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "runtime.screenshot") == 0 ||
+             g_strcmp0(tool, "runtime.query") == 0 ||
+             g_strcmp0(tool, "runtime.click") == 0 ||
+             g_strcmp0(tool, "runtime.type") == 0 ||
+             g_strcmp0(tool, "runtime.set_value") == 0 ||
+             g_strcmp0(tool, "runtime.press_key") == 0 ||
+             g_strcmp0(tool, "runtime.drag") == 0 ||
+             g_strcmp0(tool, "runtime.wait_for") == 0 ||
+             g_strcmp0(tool, "runtime.timer_advance") == 0 ||
+             g_strcmp0(tool, "runtime.assert_visible") == 0 ||
+             g_strcmp0(tool, "runtime.assert_text") == 0) {
+    JsonObject *args = NULL;
+    if (json_object_has_member(body, "args")) {
+      args = object_object(body, "args");
+      if (args == NULL) {
+        g_autofree gchar *message_text = g_strdup_printf("%s requires args object", tool);
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", message_text, SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+    }
+
+    const gchar *app_id = object_string(args, "appId", NULL);
+    if (app_id != NULL && app_id[0] != '\0' && !valid_generated_app_id(app_id)) {
+      g_autofree gchar *message_text = g_strdup_printf("%s appId is not a valid generated app id", tool);
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", message_text, SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.query") == 0 && (app_id == NULL || app_id[0] == '\0')) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.query requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.screenshot") == 0 && (app_id == NULL || app_id[0] == '\0')) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.screenshot requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if ((g_strcmp0(tool, "runtime.click") == 0 ||
+         g_strcmp0(tool, "runtime.type") == 0 ||
+         g_strcmp0(tool, "runtime.set_value") == 0 ||
+         g_strcmp0(tool, "runtime.drag") == 0) &&
+        (app_id == NULL || app_id[0] == '\0')) {
+      g_autofree gchar *message_text = g_strdup_printf("%s requires appId", tool);
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", message_text, SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.assert_visible") == 0 && (app_id == NULL || app_id[0] == '\0')) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_visible requires appId", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.assert_text") == 0) {
+      const gchar *text_arg = object_string(args, "text", NULL);
+      if (app_id == NULL || app_id[0] == '\0' || text_arg == NULL || text_arg[0] == '\0') {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.assert_text requires appId and text", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+    }
+    if (g_strcmp0(tool, "runtime.wait_for") == 0) {
+      const gchar *wait_kind = object_string(args, "kind", "idle");
+      const gchar *bridge_method = object_string(args, "method", NULL);
+      if ((g_strcmp0(wait_kind, "bridge_call") == 0 || g_strcmp0(wait_kind, "bridgeCall") == 0) &&
+          (app_id == NULL || app_id[0] == '\0' || bridge_method == NULL || bridge_method[0] == '\0')) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.wait_for bridge_call requires appId and method", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+      if (g_strcmp0(wait_kind, "idle") != 0 &&
+          g_strcmp0(wait_kind, "bridge_call") != 0 &&
+          g_strcmp0(wait_kind, "bridgeCall") != 0 &&
+          (app_id == NULL || app_id[0] == '\0')) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.wait_for requires appId for selector/text waits", SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+    }
+
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+
+    if (g_strcmp0(tool, "runtime.screenshot") == 0) {
+      result = runtime_screenshot_json(app_id, object_string(args, "label", NULL));
+    } else if (g_strcmp0(tool, "runtime.query") == 0) {
+      result = runtime_query_json(app_id, args);
+    } else if (g_strcmp0(tool, "runtime.click") == 0 ||
+               g_strcmp0(tool, "runtime.type") == 0 ||
+               g_strcmp0(tool, "runtime.set_value") == 0 ||
+               g_strcmp0(tool, "runtime.press_key") == 0 ||
+               g_strcmp0(tool, "runtime.drag") == 0) {
+      result = runtime_target_command_json(tool, args, &error_code, &error_message, &error_status);
+    } else if (g_strcmp0(tool, "runtime.wait_for") == 0) {
+      result = runtime_wait_for_json(plane, args, &error_code, &error_message, &error_status);
+    } else if (g_strcmp0(tool, "runtime.timer_advance") == 0) {
+      result = runtime_timer_advance_json(args);
+    } else if (g_strcmp0(tool, "runtime.assert_visible") == 0) {
+      result = runtime_assert_visible_json(app_id, args, &error_code, &error_message, &error_status);
+    } else {
+      result = runtime_assert_text_json(app_id, object_string(args, "text", ""), &error_code, &error_message, &error_status);
+    }
+
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "selector.not_found", error_message != NULL ? error_message : "Runtime UI command failed", error_status);
       return;
     }
   } else if (g_strcmp0(tool, "db.export_backup") == 0 || g_strcmp0(tool, "db.export_debug_bundle") == 0) {

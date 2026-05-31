@@ -293,6 +293,95 @@ test(
       assert.equal(listedApps.some((app) => app.appId === "notes-lite" && app.bundled === true && app.installed === false), true);
       assert.equal(listedApps.some((app) => app.appId === "task-workbench" && app.bundled === true && app.installed === false), true);
 
+      const staticScreenshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.screenshot", args: { appId: "task-workbench", label: "linux-ui-smoke" } },
+      });
+      assert.equal(staticScreenshot.statusCode, 200, staticScreenshot.body);
+      assert.equal(JSON.parse(staticScreenshot.body).result.title, "Task Workbench");
+      assert.equal(JSON.parse(staticScreenshot.body).result.testIds.includes("add-task-button"), true);
+
+      const staticQuery = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.query", args: { appId: "task-workbench", testId: "add-task-button" } },
+      });
+      assert.equal(staticQuery.statusCode, 200, staticQuery.body);
+      assert.equal(JSON.parse(staticQuery.body).result.matches[0].tag, "button");
+
+      const staticClick = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.click", args: { appId: "task-workbench", testId: "add-task-button" } },
+      });
+      assert.equal(staticClick.statusCode, 200, staticClick.body);
+      assert.equal(JSON.parse(staticClick.body).result.target.value, "add-task-button");
+
+      const staticDrag = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.drag", args: { appId: "task-workbench", testId: "add-task-button" } },
+      });
+      assert.equal(staticDrag.statusCode, 200, staticDrag.body);
+      assert.equal(JSON.parse(staticDrag.body).result.target.value, "add-task-button");
+
+      const staticType = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.type", args: { appId: "task-workbench", testId: "task-title-input", text: "Linux static UI task" } },
+      });
+      assert.equal(staticType.statusCode, 200, staticType.body);
+      assert.equal(JSON.parse(staticType.body).result.value, "Linux static UI task");
+
+      const staticSetValue = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.set_value", args: { appId: "task-workbench", testId: "task-title-input", value: "Linux set value" } },
+      });
+      assert.equal(staticSetValue.statusCode, 200, staticSetValue.body);
+      assert.equal(JSON.parse(staticSetValue.body).result.value, "Linux set value");
+
+      const staticKey = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.press_key", args: { key: "Enter" } },
+      });
+      assert.equal(staticKey.statusCode, 200, staticKey.body);
+      assert.equal(JSON.parse(staticKey.body).result.key, "Enter");
+
+      const staticWait = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.wait_for", args: { appId: "task-workbench", kind: "text", text: "Task Workbench" } },
+      });
+      assert.equal(staticWait.statusCode, 200, staticWait.body);
+      assert.equal(JSON.parse(staticWait.body).result.kind, "text");
+
+      const staticAssertVisible = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_visible", args: { appId: "task-workbench", testId: "task-workbench-title" } },
+      });
+      assert.equal(staticAssertVisible.statusCode, 200, staticAssertVisible.body);
+      assert.equal(JSON.parse(staticAssertVisible.body).result.ok, true);
+
+      const staticAssertText = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_text", args: { appId: "task-workbench", text: "Task Workbench" } },
+      });
+      assert.equal(staticAssertText.statusCode, 200, staticAssertText.body);
+      assert.equal(JSON.parse(staticAssertText.body).result.ok, true);
+
+      const staticTimer = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.timer_advance", args: { ms: 25 } },
+      });
+      assert.equal(staticTimer.statusCode, 200, staticTimer.body);
+      assert.equal(JSON.parse(staticTimer.body).result.advancedMs, 25);
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1150,6 +1239,38 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedStaticScreenshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.screenshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedStaticQueryCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.query' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedStaticAssertVisibleCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_visible' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedStaticAssertTextCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_text' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedListTargetsCount = execFileSync(
         "sqlite3",
         [
@@ -1265,6 +1386,10 @@ test(
       assert.equal(Number(acceptedAssertBridgeCallCount) >= 1, true);
       assert.equal(Number(acceptedNoConsoleErrorsCount) >= 1, true);
       assert.equal(Number(acceptedNotificationCaptureCount) >= 1, true);
+      assert.equal(Number(acceptedStaticScreenshotCount) >= 1, true);
+      assert.equal(Number(acceptedStaticQueryCount) >= 1, true);
+      assert.equal(Number(acceptedStaticAssertVisibleCount) >= 1, true);
+      assert.equal(Number(acceptedStaticAssertTextCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
       assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
