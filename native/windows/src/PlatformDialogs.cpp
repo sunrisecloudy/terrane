@@ -169,6 +169,29 @@ std::optional<std::string> ReadTextFile(std::filesystem::path const& path, uint6
   return text;
 }
 
+bool AppendSelectedFile(
+    BridgeRequest const& request,
+    json::JsonArray& files,
+    std::filesystem::path const& path,
+    uint64_t maxBytes,
+    std::wstring* errorCode,
+    std::wstring* errorMessage) {
+  auto text = ReadTextFile(path, maxBytes);
+  if (!text.has_value()) {
+    *errorCode = L"quota_exceeded";
+    *errorMessage = L"Selected file could not be read within maxBytes";
+    return false;
+  }
+
+  json::JsonObject file;
+  file.Insert(L"name", json::JsonValue::CreateStringValue(path.filename().wstring()));
+  file.Insert(L"mime", json::JsonValue::CreateStringValue(MimeForPath(request, path)));
+  file.Insert(L"size", json::JsonValue::CreateNumberValue(static_cast<double>(text->size())));
+  file.Insert(L"text", json::JsonValue::CreateStringValue(Utf8ToWide(text.value())));
+  files.Append(file);
+  return true;
+}
+
 bool WriteTextFile(std::filesystem::path const& path, std::wstring const& text) {
   std::ofstream file(path, std::ios::binary | std::ios::trunc);
   if (!file) {
@@ -185,9 +208,7 @@ PlatformDialogs::PlatformDialogs(HWND ownerWindow) : ownerWindow_(ownerWindow) {
 
 winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest const& request) {
   bool invalidMultiple = false;
-  if (BooleanParamIsTrue(request, L"multiple", invalidMultiple)) {
-    return BridgeResponse::Failure(request.id, request.hasId, L"platform_unsupported", L"dialog.openFile multiple selection is not supported on Windows yet");
-  }
+  bool multiple = BooleanParamIsTrue(request, L"multiple", invalidMultiple);
   if (invalidMultiple) {
     return BridgeResponse::Failure(request.id, request.hasId, L"invalid_request", L"dialog.openFile multiple must be a boolean");
   }
@@ -206,7 +227,11 @@ winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest c
 
   DWORD options = 0;
   dialog->GetOptions(&options);
-  dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  options |= FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
+  if (multiple) {
+    options |= FOS_ALLOWMULTISELECT;
+  }
+  dialog->SetOptions(options);
   if (!filterSpecs.empty()) {
     dialog->SetFileTypes(static_cast<UINT>(filterSpecs.size()), filterSpecs.data());
   }
@@ -219,28 +244,45 @@ winrt::Windows::Data::Json::JsonObject PlatformDialogs::OpenFile(BridgeRequest c
     return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file dialog failed");
   }
 
-  winrt::com_ptr<IShellItem> item;
-  if (FAILED(dialog->GetResult(item.put()))) {
-    return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file result was unavailable");
-  }
-  auto path = DialogPath(item.get());
-  if (!path.has_value()) {
-    return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file path was unavailable");
-  }
-
-  auto text = ReadTextFile(path.value(), MaxBytes(request));
-  if (!text.has_value()) {
-    return BridgeResponse::Failure(request.id, request.hasId, L"quota_exceeded", L"Selected file could not be read within maxBytes");
-  }
-
-  json::JsonObject file;
-  file.Insert(L"name", json::JsonValue::CreateStringValue(path->filename().wstring()));
-  file.Insert(L"mime", json::JsonValue::CreateStringValue(MimeForPath(request, path.value())));
-  file.Insert(L"size", json::JsonValue::CreateNumberValue(static_cast<double>(text->size())));
-  file.Insert(L"text", json::JsonValue::CreateStringValue(Utf8ToWide(text.value())));
-
   json::JsonArray files;
-  files.Append(file);
+  auto maxBytes = MaxBytes(request);
+  std::wstring errorCode;
+  std::wstring errorMessage;
+  if (multiple) {
+    winrt::com_ptr<IShellItemArray> items;
+    if (FAILED(dialog->GetResults(items.put()))) {
+      return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file results were unavailable");
+    }
+    DWORD count = 0;
+    if (FAILED(items->GetCount(&count)) || count == 0) {
+      return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file results were empty");
+    }
+    for (DWORD index = 0; index < count; ++index) {
+      winrt::com_ptr<IShellItem> item;
+      if (FAILED(items->GetItemAt(index, item.put()))) {
+        return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file result was unavailable");
+      }
+      auto path = DialogPath(item.get());
+      if (!path.has_value()) {
+        return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file path was unavailable");
+      }
+      if (!AppendSelectedFile(request, files, path.value(), maxBytes, &errorCode, &errorMessage)) {
+        return BridgeResponse::Failure(request.id, request.hasId, errorCode, errorMessage);
+      }
+    }
+  } else {
+    winrt::com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put()))) {
+      return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file result was unavailable");
+    }
+    auto path = DialogPath(item.get());
+    if (!path.has_value()) {
+      return BridgeResponse::Failure(request.id, request.hasId, L"storage_error", L"Open file path was unavailable");
+    }
+    if (!AppendSelectedFile(request, files, path.value(), maxBytes, &errorCode, &errorMessage)) {
+      return BridgeResponse::Failure(request.id, request.hasId, errorCode, errorMessage);
+    }
+  }
 
   json::JsonObject result;
   result.Insert(L"files", files);

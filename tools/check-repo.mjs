@@ -1552,16 +1552,20 @@ function checkNativeStatic() {
     "CoCreateInstance(CLSID_FileSaveDialog",
     "FOS_FORCEFILESYSTEM",
     "FOS_FILEMUSTEXIST",
+    "FOS_ALLOWMULTISELECT",
+    "GetResults(items.put())",
+    "IShellItemArray",
     "SIGDN_FILESYSPATH",
     "dialog_cancelled",
     "kDefaultMaxFileBytes = 512 * 1024",
     "AcceptFilters",
     "SetFileTypes",
-    "multiple selection is not supported on Windows yet",
     "dialog.openFile accept must be an array of strings",
+    "dialog.openFile multiple must be a boolean",
     "dialog.saveFile text must be a string",
     "MaxBytes(request)",
     "quota_exceeded",
+    "AppendSelectedFile",
     'result.Insert(L"files", files)',
     'result.Insert(L"ok", json::JsonValue::CreateBooleanValue(true))',
     "ReadTextFile",
@@ -1573,6 +1577,9 @@ function checkNativeStatic() {
   }
   if (windowsDialogs.includes("will be wired") || (windowsDialogs.includes("platform_unsupported") && !windowsDialogs.includes("CoCreateInstance"))) {
     throw new Error("Windows dialogs must not remain placeholder stubs");
+  }
+  if (windowsDialogs.includes("multiple selection is not supported on Windows yet")) {
+    throw new Error("Windows dialog.openFile must support multiple selection");
   }
   if (!windowsDialogHeader.includes("explicit PlatformDialogs(HWND ownerWindow")) {
     throw new Error("Windows dialogs must accept an owner HWND");

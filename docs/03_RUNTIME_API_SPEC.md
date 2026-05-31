@@ -130,6 +130,7 @@ See docs/27 §9 for the database mapping. All keys must begin with the manifest 
 ```
 
 Cancelled dialogs return error `dialog_cancelled`. Binary support arrives with v0.5 `assets/` work.
+When `dialog.openFile` is called with `"multiple": true`, the response `files` array contains one record per selected file and `maxBytes` applies to each selected file.
 
 ### `notification.toast`
 

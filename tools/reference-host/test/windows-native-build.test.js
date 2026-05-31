@@ -45,6 +45,29 @@ test("Windows packaged native smoke is wired to release artifacts", () => {
   }
 });
 
+test("Windows native dialogs support multi-select openFile source contract", () => {
+  const dialogs = fs.readFileSync(path.join(windowsDir, "src", "PlatformDialogs.cpp"), "utf8");
+
+  for (const snippet of [
+    "dialog.openFile multiple must be a boolean",
+    "FOS_ALLOWMULTISELECT",
+    "GetResults(items.put())",
+    "IShellItemArray",
+    "GetCount(&count)",
+    "GetItemAt(index, item.put())",
+    "AppendSelectedFile",
+    "result.Insert(L\"files\", files)",
+  ]) {
+    assert.equal(dialogs.includes(snippet), true, `Windows dialog source should contain ${snippet}`);
+  }
+
+  assert.equal(
+    dialogs.includes("multiple selection is not supported on Windows yet"),
+    false,
+    "Windows dialog.openFile should not reject multiple selection as unsupported",
+  );
+});
+
 test(
   "Windows WebView2 host builds and optionally runs native smoke",
   {

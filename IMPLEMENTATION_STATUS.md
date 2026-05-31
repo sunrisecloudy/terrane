@@ -144,6 +144,10 @@ Status snapshot: **2026-06-01**.
 | `tests/platform-smoke/` | partial (cross-platform suite is checked in and exercised by the reference-host runner with persisted `test_runs`; native target execution remains environment-dependent) |
 | `tests/server/` | fixtures (mdok smoke verifies `/health`, `/core/step`, public example/package-validation/bridge error paths, token-gated control commands, runtime capabilities, and safe DB snapshot) |
 
+## Current Windows Verification Notes
+
+- Source/static checks on 2026-06-01 verify Windows `dialog.openFile` accepts `multiple: true` via `FOS_ALLOWMULTISELECT` and `IFileOpenDialog::GetResults`; runtime confirmation remains Windows-machine only.
+
 ## Current CRDT Verification Notes
 
 - In `zig-crdt/`, `zig build test` was attempted on 2026-05-31. The sandboxed run could not read Homebrew Zig stdlib/cache files; the escalated run reached the macOS Zig build-runner link step and failed on unresolved Darwin/libSystem symbols such as `__availability_version_check`, `_abort`, and `_clock_gettime`. Treat this as an environment verification blocker until confirmed in CI or a clean local Zig environment.
