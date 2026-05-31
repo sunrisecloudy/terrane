@@ -775,6 +775,118 @@ test(
       assert.equal(controlStorageAssert.statusCode, 200, controlStorageAssert.body);
       assert.equal(JSON.parse(controlStorageAssert.body).result.ok, true);
 
+      const createSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.create_snapshot",
+          args: {
+            appId: "task-workbench",
+            type: "manual",
+          },
+        },
+      });
+      assert.equal(createSnapshot.statusCode, 200, createSnapshot.body);
+      const createSnapshotBody = JSON.parse(createSnapshot.body);
+      assert.match(createSnapshotBody.result.snapshotId, /^snapshot-/);
+      assert.match(createSnapshotBody.result.contentHash, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(createSnapshotBody.result.snapshot.storage.some((row) => row.key === "task-workbench:windows-control-storage"), true);
+
+      const mutateStorage = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:windows-control-storage",
+            value: { source: "runtime.storage_set_mutated" },
+          },
+        },
+      });
+      assert.equal(mutateStorage.statusCode, 200, mutateStorage.body);
+      assert.equal(JSON.parse(mutateStorage.body).result.ok, true);
+
+      const mutatedSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.create_snapshot",
+          args: {
+            appId: "task-workbench",
+            type: "manual",
+          },
+        },
+      });
+      assert.equal(mutatedSnapshot.statusCode, 200, mutatedSnapshot.body);
+      const mutatedSnapshotBody = JSON.parse(mutatedSnapshot.body);
+
+      const compareSameSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.compare_snapshot",
+          args: {
+            appId: "task-workbench",
+            leftSnapshotId: createSnapshotBody.result.snapshotId,
+            rightSnapshotId: createSnapshotBody.result.snapshotId,
+          },
+        },
+      });
+      assert.equal(compareSameSnapshot.statusCode, 200, compareSameSnapshot.body);
+      assert.equal(JSON.parse(compareSameSnapshot.body).result.equal, true);
+
+      const compareMutatedSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.compare_snapshot",
+          args: {
+            appId: "task-workbench",
+            leftSnapshotId: createSnapshotBody.result.snapshotId,
+            rightSnapshotId: mutatedSnapshotBody.result.snapshotId,
+          },
+        },
+      });
+      assert.equal(compareMutatedSnapshot.statusCode, 200, compareMutatedSnapshot.body);
+      assert.equal(JSON.parse(compareMutatedSnapshot.body).result.equal, false);
+
+      const restoreWithoutConfirm = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.restore_snapshot",
+          args: { snapshotId: createSnapshotBody.result.snapshotId },
+        },
+      });
+      assert.equal(restoreWithoutConfirm.statusCode, 400);
+      assert.equal(JSON.parse(restoreWithoutConfirm.body).error.code, "confirmation_required");
+
+      const restoreSnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "platform.restore_snapshot",
+          args: { snapshotId: createSnapshotBody.result.snapshotId, confirm: true },
+        },
+      });
+      assert.equal(restoreSnapshot.statusCode, 200, restoreSnapshot.body);
+      assert.equal(JSON.parse(restoreSnapshot.body).result.restoredStorageKeys >= 1, true);
+
+      const restoredStorageGet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_get",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:windows-control-storage",
+          },
+        },
+      });
+      assert.equal(restoredStorageGet.statusCode, 200, restoredStorageGet.body);
+      assert.equal(JSON.parse(restoredStorageGet.body).result.result.value.source, "runtime.storage_set");
+
       const missingDbAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1016,11 +1128,27 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.storage_set' AND decision = 'accepted' AND error_code IS NULL").get().count),
-          1,
+          2,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.storage_get' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          2,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.create_snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          2,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.restore_snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.restore_snapshot' AND decision = 'rejected' AND error_code = 'confirmation_required'").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.compare_snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          2,
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.reset_webapp' AND decision = 'rejected' AND error_code = 'confirmation_required'").get().count),

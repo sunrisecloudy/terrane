@@ -1881,6 +1881,441 @@ struct DevControlPlane::Impl {
     return dataVersion;
   }
 
+  bool ValidSnapshotType(std::wstring const& type) {
+    return type.empty() ||
+        type == L"bug-report" ||
+        type == L"pre-install" ||
+        type == L"pre-migration" ||
+        type == L"post-test" ||
+        type == L"golden" ||
+        type == L"manual" ||
+        type == L"debug-bundle";
+  }
+
+  std::wstring SnapshotStorageRowsJson(sqlite3* db, std::wstring const& appId) {
+    sqlite3_stmt* statement = nullptr;
+    std::wstring rows = L"[";
+    bool first = true;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT app_id, key, value_json, updated_at FROM app_storage WHERE app_id = ? ORDER BY key",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, appId);
+      while (sqlite3_step(statement) == SQLITE_ROW) {
+        if (!first) {
+          rows += L",";
+        }
+        rows += L"{\"app_id\":" + SqliteValueJson(statement, 0) +
+            L",\"key\":" + SqliteValueJson(statement, 1) +
+            L",\"value_json\":" + SqliteValueJson(statement, 2) +
+            L",\"updated_at\":" + SqliteValueJson(statement, 3) + L"}";
+        first = false;
+      }
+    }
+    sqlite3_finalize(statement);
+    rows += L"]";
+    return rows;
+  }
+
+  std::wstring RuntimeSnapshotDocumentJson(sqlite3* db, std::wstring const& appId, std::wstring const& createdAt) {
+    auto installId = ActiveInstallId(db, appId);
+    auto activeVersion = ActiveVersionForApp(db, appId);
+    auto dataVersion = DataVersionForAppJson(db, appId);
+    auto storageRows = SnapshotStorageRowsJson(db, appId);
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"activeInstallId\":" + JsonNullableString(installId) +
+        L",\"activeVersion\":" + JsonNullableString(activeVersion) +
+        L",\"dataVersion\":" + dataVersion +
+        L",\"storage\":" + storageRows +
+        L",\"createdAt\":" + JsonString(createdAt) + L"}";
+  }
+
+  bool InsertRuntimeSnapshot(
+      sqlite3* db,
+      std::wstring const& snapshotId,
+      std::wstring const& runtimeSessionId,
+      std::wstring const& appId,
+      std::wstring const& installId,
+      std::wstring const& type,
+      std::wstring const& snapshotJson,
+      std::wstring const& contentHash,
+      std::wstring const& createdAt) {
+    sqlite3_stmt* statement = nullptr;
+    bool ok = sqlite3_prepare_v2(
+                  db,
+                  "INSERT INTO runtime_snapshots "
+                  "(snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  -1,
+                  &statement,
+                  nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(statement, 1, snapshotId);
+      BindText(statement, 2, runtimeSessionId);
+      BindText(statement, 3, appId);
+      if (installId.empty()) {
+        sqlite3_bind_null(statement, 4);
+      } else {
+        BindText(statement, 4, installId);
+      }
+      BindText(statement, 5, type.empty() ? L"manual" : type);
+      BindText(statement, 6, snapshotJson);
+      BindText(statement, 7, contentHash);
+      BindText(statement, 8, createdAt);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    return ok;
+  }
+
+  std::wstring PlatformCreateSnapshotJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring const& type,
+      std::optional<std::wstring> const& sessionIdArg,
+      std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+    auto runtimeSessionId = sessionIdArg.has_value() && !sessionIdArg->empty()
+        ? sessionIdArg.value()
+        : RuntimeSessionForControlSession(db, childControlSessionId, appId);
+    if (runtimeSessionId.empty()) {
+      *error = L"Could not create runtime session for snapshot";
+      return L"";
+    }
+    auto snapshotId = MakeId(L"snapshot");
+    auto createdAt = NowIso();
+    auto installId = ActiveInstallId(db, appId);
+    auto activeVersion = ActiveVersionForApp(db, appId);
+    auto dataVersion = DataVersionForAppJson(db, appId);
+    auto storageRows = SnapshotStorageRowsJson(db, appId);
+    auto snapshotJson = RuntimeSnapshotDocumentJson(db, appId, createdAt);
+    auto contentHash = L"sha256:" + Sha256Hex(snapshotJson);
+    if (!InsertRuntimeSnapshot(db, snapshotId, runtimeSessionId, appId, installId, type.empty() ? L"manual" : type, snapshotJson, contentHash, createdAt)) {
+      *error = L"Could not create runtime snapshot";
+      return L"";
+    }
+    return L"{\"ok\":true,\"snapshotId\":" + JsonString(snapshotId) +
+        L",\"contentHash\":" + JsonString(contentHash) +
+        L",\"snapshot\":" + snapshotJson +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"activeInstallId\":" + JsonNullableString(installId) +
+        L",\"activeVersion\":" + JsonNullableString(activeVersion) +
+        L",\"dataVersion\":" + dataVersion +
+        L",\"storage\":" + storageRows +
+        L",\"createdAt\":" + JsonString(createdAt) + L"}";
+  }
+
+  std::wstring RuntimeSnapshotJsonById(
+      sqlite3* db,
+      std::wstring const& snapshotId,
+      std::wstring* contentHash,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT snapshot_json, content_hash FROM runtime_snapshots WHERE snapshot_id = ?", -1, &statement, nullptr) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not read runtime snapshot";
+      return L"";
+    }
+    BindText(statement, 1, snapshotId);
+    std::wstring snapshotJson;
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      snapshotJson = ColumnText(statement, 0);
+      if (contentHash != nullptr) {
+        *contentHash = ColumnText(statement, 1);
+      }
+    }
+    sqlite3_finalize(statement);
+    if (snapshotJson.empty()) {
+      *errorCode = L"snapshot_not_found";
+      *errorMessage = L"Runtime snapshot was not found";
+    }
+    return snapshotJson;
+  }
+
+  std::optional<std::wstring> RuntimeSnapshotAppId(std::wstring const& snapshotId, std::wstring* errorCode, std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return std::nullopt;
+    }
+    std::wstring contentHash;
+    auto snapshotJson = RuntimeSnapshotJsonById(db, snapshotId, &contentHash, errorCode, errorMessage);
+    if (snapshotJson.empty()) {
+      return std::nullopt;
+    }
+    json::JsonObject snapshot{nullptr};
+    if (!json::JsonObject::TryParse(snapshotJson, snapshot)) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Runtime snapshot JSON is invalid";
+      return std::nullopt;
+    }
+    auto appId = OptionalStringMember(snapshot, L"appId");
+    if (!appId.has_value() || appId->empty()) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Runtime snapshot is missing appId";
+      return std::nullopt;
+    }
+    return appId.value();
+  }
+
+  bool InsertStorageSnapshotRow(sqlite3* db, json::JsonObject const& row, std::wstring const& fallbackAppId, std::wstring const& updatedAt, std::wstring* error) {
+    auto rowAppId = TextValue(row, {L"app_id", L"appId"}).value_or(fallbackAppId);
+    auto key = TextValue(row, {L"key"});
+    auto valueJson = JsonTextValue(row, {L"value_json", L"valueJson"}, {L"value"}, L"null").value_or(L"null");
+    if (rowAppId.empty() || !key.has_value() || key->empty()) {
+      *error = L"Snapshot storage row requires app_id and key";
+      return false;
+    }
+    if (!fallbackAppId.empty() && rowAppId != fallbackAppId) {
+      *error = L"Snapshot storage row app_id does not match snapshot appId";
+      return false;
+    }
+    auto expectedPrefix = fallbackAppId + L":";
+    if (!fallbackAppId.empty() && key->rfind(expectedPrefix, 0) != 0) {
+      *error = L"Snapshot storage key is outside app storage prefix";
+      return false;
+    }
+    return ExecutePrepared(
+        db,
+        "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+        {SqlText(rowAppId), SqlText(key.value()), SqlText(valueJson), SqlText(updatedAt)});
+  }
+
+  std::wstring PlatformRestoreSnapshotJson(std::wstring const& snapshotId, std::wstring* errorCode, std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    std::wstring contentHash;
+    auto snapshotJson = RuntimeSnapshotJsonById(db, snapshotId, &contentHash, errorCode, errorMessage);
+    if (snapshotJson.empty()) {
+      return L"";
+    }
+    json::JsonObject snapshot{nullptr};
+    if (!json::JsonObject::TryParse(snapshotJson, snapshot)) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Runtime snapshot JSON is invalid";
+      return L"";
+    }
+    auto appId = OptionalStringMember(snapshot, L"appId");
+    if (!appId.has_value() || appId->empty()) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Runtime snapshot is missing appId";
+      return L"";
+    }
+    auto updatedAt = NowIso();
+    char* sqlError = nullptr;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not begin snapshot restore";
+      sqlite3_free(sqlError);
+      return L"";
+    }
+    bool ok = ExecutePrepared(db, "DELETE FROM app_storage WHERE app_id = ?", {SqlText(appId.value())});
+    uint32_t restoredStorageKeys = 0;
+    auto storage = OptionalArrayMember(snapshot, L"storage");
+    if (!storage.has_value()) {
+      storage = OptionalArrayMember(snapshot, L"appStorage");
+    }
+    if (ok && storage.has_value()) {
+      for (uint32_t index = 0; index < storage->Size(); ++index) {
+        auto value = storage->GetAt(index);
+        if (value.ValueType() != json::JsonValueType::Object ||
+            !InsertStorageSnapshotRow(db, value.GetObject(), appId.value(), updatedAt, errorMessage)) {
+          ok = false;
+          break;
+        }
+        ++restoredStorageKeys;
+      }
+    }
+    if (ok) {
+      auto dataVersion = snapshot.HasKey(L"dataVersion") && snapshot.GetNamedValue(L"dataVersion").ValueType() == json::JsonValueType::Number
+          ? static_cast<int64_t>(snapshot.GetNamedNumber(L"dataVersion"))
+          : 1;
+      ok = ExecutePrepared(
+          db,
+          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+          {
+              SqlNullableText(TextValue(snapshot, {L"activeInstallId", L"active_install_id"})),
+              SqlNullableText(TextValue(snapshot, {L"activeVersion", L"active_version"})),
+              SqlInt(dataVersion),
+              SqlText(updatedAt),
+              SqlText(appId.value()),
+          });
+    }
+    if (!ok) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      if (errorMessage->empty()) {
+        *errorMessage = L"Could not restore runtime snapshot";
+      }
+      *errorCode = L"storage_error";
+      return L"";
+    }
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &sqlError) != SQLITE_OK) {
+      sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      sqlite3_free(sqlError);
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not commit snapshot restore";
+      return L"";
+    }
+    return L"{\"ok\":true,\"snapshotId\":" + JsonString(snapshotId) +
+        L",\"appId\":" + JsonString(appId.value()) +
+        L",\"contentHash\":" + JsonString(contentHash) +
+        L",\"restoredStorageKeys\":" + std::to_wstring(restoredStorageKeys) + L"}";
+  }
+
+  bool SnapshotCompareSkipMember(std::wstring const& member) {
+    return member == L"createdAt" ||
+        member == L"snapshotId" ||
+        member == L"updated_at" ||
+        member == L"updatedAt";
+  }
+
+  std::wstring SnapshotStorageSortKey(json::IJsonValue const& value) {
+    if (value.ValueType() != json::JsonValueType::Object) {
+      return CanonicalJsonValue(value);
+    }
+    auto object = value.GetObject();
+    auto appId = TextValue(object, {L"app_id", L"appId"}).value_or(L"");
+    auto key = TextValue(object, {L"key"}).value_or(L"");
+    return appId + L"\x1f" + key;
+  }
+
+  std::wstring ComparableSnapshotJson(json::IJsonValue const& value) {
+    switch (value.ValueType()) {
+      case json::JsonValueType::Null:
+      case json::JsonValueType::Boolean:
+      case json::JsonValueType::Number:
+      case json::JsonValueType::String:
+        return CanonicalJsonValue(value);
+      case json::JsonValueType::Array: {
+        auto array = value.GetArray();
+        std::wstring out = L"[";
+        for (uint32_t index = 0; index < array.Size(); ++index) {
+          if (index > 0) {
+            out += L",";
+          }
+          out += ComparableSnapshotJson(array.GetAt(index));
+        }
+        out += L"]";
+        return out;
+      }
+      case json::JsonValueType::Object: {
+        auto object = value.GetObject();
+        std::vector<std::wstring> keys;
+        for (auto const& pair : object) {
+          auto key = std::wstring(pair.Key().c_str());
+          if (key == L"appStorage" && object.HasKey(L"storage")) {
+            continue;
+          }
+          if (!SnapshotCompareSkipMember(key)) {
+            keys.push_back(key);
+          }
+        }
+        std::sort(keys.begin(), keys.end());
+        std::wstring out = L"{";
+        for (size_t index = 0; index < keys.size(); ++index) {
+          if (index > 0) {
+            out += L",";
+          }
+          auto child = object.GetNamedValue(keys[index]);
+          std::wstring outputKey = keys[index] == L"appStorage" ? L"storage" : keys[index];
+          if ((keys[index] == L"storage" || keys[index] == L"appStorage") && child.ValueType() == json::JsonValueType::Array) {
+            auto storage = child.GetArray();
+            std::vector<std::pair<std::wstring, std::wstring>> rows;
+            for (uint32_t rowIndex = 0; rowIndex < storage.Size(); ++rowIndex) {
+              auto row = storage.GetAt(rowIndex);
+              rows.push_back({SnapshotStorageSortKey(row), ComparableSnapshotJson(row)});
+            }
+            std::sort(rows.begin(), rows.end(), [](auto const& left, auto const& right) {
+              return left.first < right.first;
+            });
+            std::wstring storageJson = L"[";
+            for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+              if (rowIndex > 0) {
+                storageJson += L",";
+              }
+              storageJson += rows[rowIndex].second;
+            }
+            storageJson += L"]";
+            out += JsonString(outputKey) + L":" + storageJson;
+          } else {
+            out += JsonString(outputKey) + L":" + ComparableSnapshotJson(child);
+          }
+        }
+        out += L"}";
+        return out;
+      }
+    }
+    return CanonicalJsonValue(value);
+  }
+
+  std::wstring SnapshotArgJson(sqlite3* db, json::JsonObject const& args, std::wstring const& valueMember, std::wstring const& idMember, std::wstring* errorCode, std::wstring* errorMessage) {
+    if (args.HasKey(idMember)) {
+      auto snapshotId = OptionalStringMember(args, idMember);
+      if (!snapshotId.has_value() || snapshotId->empty()) {
+        *errorCode = L"invalid_request";
+        *errorMessage = idMember + L" must be a string";
+        return L"";
+      }
+      std::wstring contentHash;
+      return RuntimeSnapshotJsonById(db, snapshotId.value(), &contentHash, errorCode, errorMessage);
+    }
+    if (args.HasKey(valueMember)) {
+      return std::wstring(args.GetNamedValue(valueMember).Stringify().c_str());
+    }
+    *errorCode = L"invalid_request";
+    *errorMessage = L"runtime.compare_snapshot requires left/right snapshots or snapshot ids";
+    return L"";
+  }
+
+  std::wstring RuntimeCompareSnapshotJson(json::JsonObject const& args, std::wstring* errorCode, std::wstring* errorMessage) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Could not open platform database";
+      return L"";
+    }
+    auto leftJson = SnapshotArgJson(db, args, L"left", L"leftSnapshotId", errorCode, errorMessage);
+    if (leftJson.empty()) {
+      return L"";
+    }
+    auto rightJson = SnapshotArgJson(db, args, L"right", L"rightSnapshotId", errorCode, errorMessage);
+    if (rightJson.empty()) {
+      return L"";
+    }
+    json::JsonValue left{nullptr};
+    json::JsonValue right{nullptr};
+    if (!json::JsonValue::TryParse(leftJson, left) || !json::JsonValue::TryParse(rightJson, right)) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"Snapshot value is not valid JSON";
+      return L"";
+    }
+    auto leftComparable = ComparableSnapshotJson(left);
+    auto rightComparable = ComparableSnapshotJson(right);
+    auto leftHash = L"sha256:" + Sha256Hex(leftComparable);
+    auto rightHash = L"sha256:" + Sha256Hex(rightComparable);
+    bool equal = leftComparable == rightComparable;
+    return L"{\"ok\":" + std::wstring(equal ? L"true" : L"false") +
+        L",\"equal\":" + std::wstring(equal ? L"true" : L"false") +
+        L",\"leftHash\":" + JsonString(leftHash) +
+        L",\"rightHash\":" + JsonString(rightHash) + L"}";
+  }
+
   std::wstring RuntimeStorageResetJson(
       std::wstring const& childControlSessionId,
       std::wstring const& appId,
@@ -1899,15 +2334,7 @@ struct DevControlPlane::Impl {
     auto snapshotId = MakeId(L"snapshot");
     auto createdAt = NowIso();
     auto installId = ActiveInstallId(db, appId);
-    auto activeVersion = ActiveVersionForApp(db, appId);
-    auto dataVersion = DataVersionForAppJson(db, appId);
-    auto storageRows = SafeTableRowsJson(db, "app_storage", {"app_id", "key", "value_json", "updated_at"}, "key", "app_id", appId);
-    auto snapshotJson = L"{\"appId\":" + JsonString(appId) +
-        L",\"activeInstallId\":" + JsonNullableString(installId) +
-        L",\"activeVersion\":" + JsonNullableString(activeVersion) +
-        L",\"dataVersion\":" + dataVersion +
-        L",\"storage\":" + storageRows +
-        L",\"createdAt\":" + JsonString(createdAt) + L"}";
+    auto snapshotJson = RuntimeSnapshotDocumentJson(db, appId, createdAt);
     auto contentHash = L"sha256:" + Sha256Hex(snapshotJson);
     sqlite3_stmt* statement = nullptr;
     bool ok = sqlite3_prepare_v2(
@@ -3864,6 +4291,98 @@ struct DevControlPlane::Impl {
       result = RuntimeStorageResetJson(sessionId, appId.value(), &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Webapp storage could not be reset" : error, 500);
+        return;
+      }
+    } else if (tool == L"platform.create_snapshot") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.create_snapshot requires args object", 400);
+        return;
+      }
+      auto appId = OptionalStringMember(args.value(), L"appId");
+      if (!appId.has_value() || appId->empty() || !IsValidAppId(appId.value())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.create_snapshot requires appId", 400);
+        return;
+      }
+      auto snapshotType = OptionalStringMember(args.value(), L"type").value_or(L"manual");
+      if (!ValidSnapshotType(snapshotType)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.create_snapshot type is invalid", 400);
+        return;
+      }
+      auto sessionIdArg = OptionalStringMember(args.value(), L"sessionId");
+      if (args->HasKey(L"sessionId") && (!sessionIdArg.has_value() || sessionIdArg->empty())) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.create_snapshot sessionId must be a string", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformCreateSnapshotJson(sessionId, appId.value(), snapshotType, sessionIdArg, &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not create runtime snapshot" : error, 500);
+        return;
+      }
+    } else if (tool == L"platform.restore_snapshot") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.restore_snapshot requires args object", 400);
+        return;
+      }
+      auto snapshotId = OptionalStringMember(args.value(), L"snapshotId");
+      if (!snapshotId.has_value() || snapshotId->empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.restore_snapshot requires snapshotId", 400);
+        return;
+      }
+      if (!BooleanMemberTrue(args.value(), L"confirm")) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"confirmation_required", L"platform.restore_snapshot requires confirm: true", 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      auto snapshotAppId = RuntimeSnapshotAppId(snapshotId.value(), &errorCode, &errorMessage);
+      if (!snapshotAppId.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"snapshot_not_found" : errorCode, errorMessage.empty() ? L"Runtime snapshot was not found" : errorMessage, errorCode == L"storage_error" ? 500 : 400);
+        return;
+      }
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, snapshotAppId.value(), &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformRestoreSnapshotJson(snapshotId.value(), &errorCode, &errorMessage);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"storage_error" : errorCode, errorMessage.empty() ? L"Could not restore runtime snapshot" : errorMessage, errorCode == L"storage_error" ? 500 : 400);
+        return;
+      }
+    } else if (tool == L"runtime.compare_snapshot") {
+      auto args = OptionalObjectMember(command, L"args");
+      if (!args.has_value()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.compare_snapshot requires args object", 400);
+        return;
+      }
+      std::wstring appId;
+      if (args->HasKey(L"appId")) {
+        auto appIdArg = OptionalStringMember(args.value(), L"appId");
+        if (!appIdArg.has_value() || (!appIdArg->empty() && !IsValidAppId(appIdArg.value()))) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.compare_snapshot appId is not a valid generated app id", 400);
+          return;
+        }
+        appId = appIdArg.value();
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeCompareSnapshotJson(args.value(), &errorCode, &errorMessage);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"invalid_request" : errorCode, errorMessage.empty() ? L"Could not compare runtime snapshots" : errorMessage, errorCode == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"db.export_backup") {

@@ -134,6 +134,9 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.storage_reset",
     "platform.reset_webapp",
     "runtime.assert_storage",
+    "platform.create_snapshot",
+    "platform.restore_snapshot",
+    "runtime.compare_snapshot",
     "ResourceUsageJson",
     "EventLogJson",
     "ConsoleLogsJson",
@@ -149,7 +152,11 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "RuntimeStorageSetJson",
     "RuntimeStorageResetJson",
     "RuntimeAssertStorageJson",
+    "PlatformCreateSnapshotJson",
+    "PlatformRestoreSnapshotJson",
+    "RuntimeCompareSnapshotJson",
     "RecordControlStorageBridgeCall",
+    "SnapshotStorageRowsJson",
     "db.export_backup",
     "DbExportBackupJson",
     "db.import_backup",
@@ -316,6 +323,51 @@ test("Windows dev control supports direct storage get, set, and assertions", () 
   ]) {
     assert.equal(control.includes(snippet), true, `Windows storage control source should contain ${snippet}`);
   }
+});
+
+test("Windows dev control exposes explicit runtime snapshot create, restore, and compare controls", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "platform.create_snapshot",
+    "platform.restore_snapshot",
+    "runtime.compare_snapshot",
+    "PlatformCreateSnapshotJson",
+    "PlatformRestoreSnapshotJson",
+    "RuntimeCompareSnapshotJson",
+    "RuntimeSnapshotJsonById",
+    "RuntimeSnapshotAppId",
+    "ComparableSnapshotJson",
+    "SnapshotCompareSkipMember",
+    "SnapshotStorageSortKey",
+    "SnapshotStorageRowsJson",
+    "ValidSnapshotType",
+    "OptionalArrayMember(snapshot, L\"appStorage\")",
+    "keys[index] == L\"appStorage\"",
+    "platform.create_snapshot requires appId",
+    "platform.restore_snapshot requires confirm: true",
+    "platform.restore_snapshot requires snapshotId",
+    "snapshot_not_found",
+    "runtime.compare_snapshot requires left/right snapshots or snapshot ids",
+    "INSERT INTO runtime_snapshots",
+    "SELECT app_id, key, value_json, updated_at FROM app_storage WHERE app_id = ? ORDER BY key",
+    "SELECT snapshot_json, content_hash FROM runtime_snapshots WHERE snapshot_id = ?",
+    "DELETE FROM app_storage WHERE app_id = ?",
+    "Snapshot storage row app_id does not match snapshot appId",
+    "Snapshot storage key is outside app storage prefix",
+    "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+    "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
+    "leftHash",
+    "rightHash",
+    "sha256:",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows snapshot control source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("platform.create_snapshot") < control.indexOf("db.export_backup"),
+    "snapshot controls should be first-class commands before DB export helpers",
+  );
 });
 
 test("Windows dev control database inspection uses fixed allowlisted queries only", () => {
