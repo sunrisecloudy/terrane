@@ -308,6 +308,50 @@ export class ReferenceHost {
     return { ok: true, text };
   }
 
+  runtimeWaitFor(args) {
+    const kind = args.kind ?? "idle";
+    if (kind === "idle") {
+      return { ok: true, kind };
+    }
+
+    if (kind === "bridge_call" || kind === "bridgeCall") {
+      const appId = requiredArg(args, "appId");
+      const method = requiredArg(args, "method");
+      try {
+        return { ...this.database.assertBridgeCall({ appId, method }), kind };
+      } catch (error) {
+        if (error instanceof PlatformError && error.code === "assertion_failed") {
+          throw new PlatformError("wait_timeout", "Expected bridge call was not recorded", { appId, method });
+        }
+        throw error;
+      }
+    }
+
+    if (kind === "text" || args.text) {
+      try {
+        return { ...this.assertRuntimeText(args), kind };
+      } catch (error) {
+        if (error instanceof PlatformError && error.code === "text.not_found") {
+          throw new PlatformError("wait_timeout", "Expected runtime text did not appear", error.details);
+        }
+        throw error;
+      }
+    }
+
+    if (kind === "selector" || kind === "visible" || args.testId || args.selector) {
+      try {
+        return { ...this.assertRuntimeVisible(args), kind };
+      } catch (error) {
+        if (error instanceof PlatformError && error.code === "selector.not_found") {
+          throw new PlatformError("wait_timeout", "Expected runtime condition did not appear", error.details);
+        }
+        throw error;
+      }
+    }
+
+    throw new PlatformError("invalid_request", "runtime.wait_for requires kind idle, selector, text, or bridge_call", { kind });
+  }
+
   assertRuntimeStorage(args) {
     const appId = requiredArg(args, "appId");
     const key = requiredArg(args, "key");
@@ -644,7 +688,7 @@ export class ReferenceHost {
       case "runtime.drag":
         return this.validateRuntimeTarget(tool, args);
       case "runtime.wait_for":
-        return { ok: true, kind: args.kind ?? "idle" };
+        return this.runtimeWaitFor(args);
       case "runtime.timer_advance":
         return { ok: true, advancedMs: args.ms ?? args.milliseconds ?? 0 };
       case "runtime.fault_inject":
