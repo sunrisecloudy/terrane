@@ -198,6 +198,8 @@ class AndroidDevControlPlane(
 
     private fun controlCommandResult(tool: String, args: JSONObject): JSONObject = when (tool) {
         "platform.health" -> healthJson()
+        "platform.list_targets" -> platformListTargetsJson()
+        "platform.list_webapps" -> platformListWebappsJson(args)
         "runtime.capabilities" -> bridgeCommand(
             appId = args.optString("appId").ifBlank { "notes-lite" },
             method = "runtime.capabilities",
@@ -306,6 +308,90 @@ class AndroidDevControlPlane(
     private fun runtimeConsoleLogsJson(appId: String): JSONObject = JSONObject()
         .put("appId", appId)
         .put("logs", consoleLogRows(appId))
+
+    private fun platformListTargetsJson(): JSONObject =
+        JSONObject()
+            .put(
+                "targets",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("id", "android-emulator")
+                            .put("platform", "android")
+                            .put("status", "available")
+                            .put("runtimeVersion", "0.1.0")
+                            .put(
+                                "controlPlane",
+                                JSONObject()
+                                    .put("port", port)
+                                    .put("debug", true),
+                            ),
+                    ),
+            )
+
+    private fun platformListWebappsJson(args: JSONObject): JSONObject {
+        val includeUninstalled = args.optBoolean("includeUninstalled", false)
+        val apps = JSONArray()
+        val installedIds = mutableSetOf<String>()
+
+        database.readableDatabase.rawQuery(
+            "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version, " +
+                "a.created_at, a.updated_at, v.runtime_version, v.trust_level " +
+                "FROM apps a LEFT JOIN app_versions v ON v.install_id = a.active_install_id " +
+                "WHERE (? = 1 OR a.status <> 'uninstalled') ORDER BY a.id",
+            arrayOf(if (includeUninstalled) "1" else "0"),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val appId = cursor.getString(0)
+                installedIds.add(appId)
+                apps.put(
+                    JSONObject()
+                        .put("appId", appId)
+                        .put("name", cursor.nullableString(1))
+                        .put("status", cursor.nullableString(2))
+                        .put("activeInstallId", cursor.nullableString(3))
+                        .put("activeVersion", cursor.nullableString(4))
+                        .put("dataVersion", cursor.getLong(5))
+                        .put("runtimeVersion", cursor.nullableString(8))
+                        .put("trustLevel", cursor.nullableString(9))
+                        .put("createdAt", cursor.nullableString(6))
+                        .put("updatedAt", cursor.nullableString(7))
+                        .put("bundled", false)
+                        .put("installed", true),
+                )
+            }
+        }
+
+        for (appId in knownBundledAppIds) {
+            appendBundledWebapp(apps, appId, installedIds)
+        }
+        return JSONObject().put("apps", apps)
+    }
+
+    private fun appendBundledWebapp(apps: JSONArray, appId: String, installedIds: Set<String>) {
+        if (installedIds.contains(appId)) return
+        val manifest = bundledManifest(appId)
+        apps.put(
+            JSONObject()
+                .put("appId", manifest?.optString("id")?.ifBlank { appId } ?: appId)
+                .put("name", manifest?.optString("name")?.ifBlank { appId } ?: appId)
+                .put("version", manifest?.optString("version")?.ifBlank { JSONObject.NULL } ?: JSONObject.NULL)
+                .put("description", manifest?.optString("description")?.ifBlank { JSONObject.NULL } ?: JSONObject.NULL)
+                .put("status", "bundled")
+                .put("dataVersion", manifest?.optLong("dataVersion", 1L) ?: 1L)
+                .put("bundled", true)
+                .put("installed", false),
+        )
+    }
+
+    private fun bundledManifest(appId: String): JSONObject? =
+        try {
+            context.assets.open("webapps/examples/$appId/manifest.json").bufferedReader(Charsets.UTF_8).use { reader ->
+                JSONObject(reader.readText())
+            }
+        } catch (_: Exception) {
+            null
+        }
 
     private fun runtimeStorageResetJson(args: JSONObject, clearRuntimeLogs: Boolean): JSONObject {
         if (!args.optBoolean("confirm", false)) {
@@ -422,6 +508,8 @@ class AndroidDevControlPlane(
             "tools" to JSONArray(
                 listOf(
                     "platform.health",
+                    "platform.list_targets",
+                    "platform.list_webapps",
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
@@ -480,18 +568,24 @@ class AndroidDevControlPlane(
             val row = JSONObject()
             for (index in 0 until columnCount) {
                 val name = getColumnName(index)
-                when (getType(index)) {
-                    Cursor.FIELD_TYPE_NULL -> row.put(name, JSONObject.NULL)
-                    Cursor.FIELD_TYPE_INTEGER -> row.put(name, getLong(index))
-                    Cursor.FIELD_TYPE_FLOAT -> row.put(name, getDouble(index))
-                    Cursor.FIELD_TYPE_BLOB -> row.put(name, Base64.encodeToString(getBlob(index), Base64.NO_WRAP))
-                    else -> row.put(name, getString(index))
-                }
+                row.put(name, jsonValue(index))
             }
             rows.put(row)
         }
         return rows
     }
+
+    private fun Cursor.nullableString(index: Int): Any =
+        if (getType(index) == Cursor.FIELD_TYPE_NULL) JSONObject.NULL else getString(index)
+
+    private fun Cursor.jsonValue(index: Int): Any =
+        when (getType(index)) {
+            Cursor.FIELD_TYPE_NULL -> JSONObject.NULL
+            Cursor.FIELD_TYPE_INTEGER -> getLong(index)
+            Cursor.FIELD_TYPE_FLOAT -> getDouble(index)
+            Cursor.FIELD_TYPE_BLOB -> Base64.encodeToString(getBlob(index), Base64.NO_WRAP)
+            else -> getString(index)
+        }
 
     private fun insertControlSession() {
         val values = ContentValues().apply {
@@ -661,6 +755,7 @@ class AndroidDevControlPlane(
 
     companion object {
         private const val tag = "NativeAIAndroidDevControl"
+        private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
         private val safeTables = setOf(
             "apps",
             "app_versions",

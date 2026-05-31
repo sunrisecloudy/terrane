@@ -114,6 +114,8 @@ test("Android debug dev control plane is loopback-bound, token-gated, audited, a
     "control.sessions.capabilities",
     "control.sessions.end",
     "platform.health",
+    "platform.list_targets",
+    "platform.list_webapps",
     "runtime.capabilities",
     "runtime.call_bridge",
     "runtime.core_step",
@@ -153,6 +155,33 @@ test("Android debug dev control plane is loopback-bound, token-gated, audited, a
     "Timed out waiting for native bridge response",
   ]) {
     assert.equal(bridge.includes(snippet), true, `Android bridge should expose control dispatch snippet ${snippet}`);
+  }
+});
+
+test("Android debug dev control exposes target and webapp listing controls", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+
+  for (const snippet of [
+    "platform.list_targets",
+    "platform.list_webapps",
+    "platformListTargetsJson",
+    "platformListWebappsJson",
+    "appendBundledWebapp",
+    "bundledManifest",
+    "knownBundledAppIds",
+    "\"android-emulator\"",
+    "\"available\"",
+    "includeUninstalled",
+    "webapps/examples/$appId/manifest.json",
+    "notes-lite",
+    "task-workbench",
+    "api-dashboard",
+    "bundled",
+    "installed",
+    "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version",
+    "LEFT JOIN app_versions v ON v.install_id = a.active_install_id",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android list control source should contain ${snippet}`);
   }
 });
 
