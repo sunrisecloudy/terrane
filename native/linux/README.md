@@ -21,7 +21,8 @@ resources/examples/
 Implemented now:
 
 - Creates a GTK application window with a WebKitGTK runtime view.
-- Registers `app-runtime` as a secure custom scheme and loads the runtime through it.
+- Registers `app-runtime` as a secure/CORS-enabled custom scheme and loads the runtime plus app-scoped generated app resources through it.
+- Injects the native `AppRuntime` bootstrap into app-scoped WebKit frames so generated app scripts run from their package URL instead of `srcdoc`.
 - Receives runtime bridge payloads through reply-capable `WebKitUserContentManager` script-message handling.
 - Handles runtime-owned `{ appId, mountToken, request }` bridge envelopes and derives app context from the envelope on the host side.
 - Applies native-side permission checks before dispatching bridge calls.
@@ -30,6 +31,29 @@ Implemented now:
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
 - Loads `libzig_core.so` through `dlopen` for `core.step`, using `NATIVE_AI_ZIG_CORE_SO` first and then repo-local/install candidate paths.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
+
+## Docker smoke
+
+The Linux host can be built and smoke-tested from any Docker-capable development machine, including macOS:
+
+```sh
+node --no-warnings tools/run-linux-native-docker.mjs
+```
+
+The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs:
+
+```sh
+NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/fake-platform-host/test/linux-native-build.test.js
+```
+
+Useful options:
+
+```sh
+node --no-warnings tools/run-linux-native-docker.mjs --platform linux/amd64
+node --no-warnings tools/run-linux-native-docker.mjs --skip-build
+node --no-warnings tools/run-linux-native-docker.mjs --build-only
+node --no-warnings tools/run-linux-native-docker.mjs --dry-run
+```
 
 MVP acceptance:
 

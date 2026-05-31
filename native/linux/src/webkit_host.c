@@ -5,6 +5,51 @@
 static const gchar *k_runtime_scheme = "app-runtime";
 
 static AppSandboxContext sandbox_context_for_app(const gchar *app_id, const gchar *mount_token);
+static gboolean is_known_example_app_id(const gchar *app_id);
+
+static const gchar *k_app_runtime_user_script =
+    "(function(){"
+    "if(window.AppRuntime)return;"
+    "if(window.location.protocol!=='app-runtime:'||window.location.hostname==='runtime')return;"
+    "var appId=window.location.hostname;"
+    "var match=window.location.search.match(/[?&]mountToken=([^&]+)/);"
+    "var mountToken=match?decodeURIComponent(match[1].replace(/\\+/g,' ')):'';"
+    "var knownEvents=new Set(['runtime.ready','runtime.suspend','runtime.resume','app.error','app.budget_warning','app.permission_revoked']);"
+    "var eventHandlers=new Map();"
+    "var nextId=1;"
+    "function emit(eventName,payload){"
+    "var handlers=eventHandlers.get(eventName);"
+    "if(!handlers)return;"
+    "Array.from(handlers).forEach(function(handler){try{handler(payload||{});}catch(error){console.error('AppRuntime event handler failed',error);}});"
+    "}"
+    "function emitAppError(error,source){"
+    "emit('app.error',{code:error&&error.code?error.code:'runtime_error',message:error&&error.message?error.message:String(error||'Unknown runtime error'),source:source});"
+    "}"
+    "function normalizeResponse(response,id){"
+    "if(typeof response==='string'){try{return JSON.parse(response);}catch(_){return {id:id,ok:false,error:{code:'invalid_response',message:'Native bridge returned non-JSON',details:{}}};}}"
+    "return response||{id:id,ok:false,error:{code:'invalid_response',message:'Native bridge returned an empty response',details:{}}};"
+    "}"
+    "function call(method,params){"
+    "return new Promise(function(resolve,reject){"
+    "if(typeof method!=='string'||!method){reject({code:'invalid_request',message:'Bridge method must be a non-empty string',details:{}});return;}"
+    "var bodyParams=params==null?{}:params;"
+    "if(typeof bodyParams!=='object'||Array.isArray(bodyParams)){reject({code:'invalid_request',message:'Bridge params must be an object',details:{}});return;}"
+    "var handler=window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.NativeAIPlatformBridge;"
+    "if(!handler||typeof handler.postMessage!=='function'){reject({code:'bridge_unavailable',message:'Native bridge is unavailable',details:{}});return;}"
+    "var id='app_req_'+nextId++;"
+    "var envelope={appId:appId,mountToken:mountToken,request:{id:id,method:method,params:bodyParams,timestamp:Date.now()}};"
+    "Promise.resolve(handler.postMessage(envelope)).then(function(raw){var response=normalizeResponse(raw,id);if(response.ok){resolve(response.result);}else{emitAppError(response.error,'bridge');reject(response.error);}}).catch(function(error){var bridgeError={code:'runtime_error',message:error&&error.message?error.message:String(error),details:{}};emitAppError(bridgeError,'bridge');reject(bridgeError);});"
+    "});"
+    "}"
+    "function on(eventName,handler){"
+    "if(!knownEvents.has(eventName)||typeof handler!=='function')return function(){};"
+    "if(!eventHandlers.has(eventName))eventHandlers.set(eventName,new Set());"
+    "var handlers=eventHandlers.get(eventName);handlers.add(handler);"
+    "return function(){handlers.delete(handler);};"
+    "}"
+    "window.AppRuntime={call:call,capabilities:function(){return call('runtime.capabilities',{});},on:on};"
+    "window.setTimeout(function(){call('runtime.capabilities',{}).then(function(capabilities){emit('runtime.ready',{runtimeVersion:capabilities.runtimeVersion||'0.1.0',appId:appId,capabilities:capabilities});}).catch(function(error){emitAppError(error,'runtime.ready');});},0);"
+    "})();";
 
 static gboolean logical_path_is_allowed(const gchar *path) {
   return path != NULL &&
@@ -32,13 +77,19 @@ static gchar *logical_path_for_runtime_uri(const gchar *uri) {
   const gchar *authority_and_path = uri + strlen("app-runtime://");
   const gchar *slash = strchr(authority_and_path, '/');
   g_autofree gchar *host = slash == NULL ? g_strdup(authority_and_path) : g_strndup(authority_and_path, slash - authority_and_path);
-  const gchar *path = slash == NULL ? "" : slash + 1;
+  const gchar *raw_path = slash == NULL ? "" : slash + 1;
+  g_autofree gchar *path_without_query = g_strndup(raw_path, strcspn(raw_path, "?#"));
+  const gchar *path = path_without_query;
 
   if (g_strcmp0(host, "runtime") == 0) {
     if (path[0] == '\0' || g_strcmp0(path, "index.html") == 0) {
       return g_strdup("runtime/index.html");
     }
     return g_strdup(path);
+  }
+
+  if (is_known_example_app_id(host)) {
+    return g_strdup_printf("webapps/examples/%s/%s", host, path[0] == '\0' ? "index.html" : path);
   }
 
   if (path[0] == '\0') {
@@ -968,13 +1019,22 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   WebKitWebContext *context = webkit_web_context_get_default();
   WebKitSecurityManager *security_manager = webkit_web_context_get_security_manager(context);
   webkit_security_manager_register_uri_scheme_as_secure(security_manager, k_runtime_scheme);
+  webkit_security_manager_register_uri_scheme_as_cors_enabled(security_manager, k_runtime_scheme);
   webkit_web_context_register_uri_scheme(context, k_runtime_scheme, runtime_scheme_cb, NULL, NULL);
 
-  WebKitUserContentManager *content_manager = webkit_user_content_manager_new();
+  host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new());
+  WebKitUserContentManager *content_manager = webkit_web_view_get_user_content_manager(host->web_view);
+  WebKitUserScript *app_runtime_script = webkit_user_script_new(
+      k_app_runtime_user_script,
+      WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+      NULL,
+      NULL);
+  webkit_user_content_manager_add_script(content_manager, app_runtime_script);
+  webkit_user_script_unref(app_runtime_script);
   webkit_user_content_manager_register_script_message_handler_with_reply(content_manager, "NativeAIPlatformBridge", NULL);
   g_signal_connect(content_manager, "script-message-with-reply-received::NativeAIPlatformBridge", G_CALLBACK(on_script_message_with_reply), host);
 
-  host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(content_manager));
   g_signal_connect(host->web_view, "load-changed", G_CALLBACK(on_load_changed), host);
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));
   g_autofree gchar *db_path = database_path();

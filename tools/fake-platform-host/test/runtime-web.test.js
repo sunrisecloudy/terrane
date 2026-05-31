@@ -450,6 +450,35 @@ test("runtime can mount every bundled app in a sandboxed frame", async () => {
   }
 });
 
+test("runtime uses app-scoped custom-scheme frames when hosted by WebKit native bridge", async () => {
+  const harness = createRuntimeHarness();
+  harness.parentWindow.location = { protocol: "app-runtime:", hostname: "runtime", search: "" };
+  harness.parentWindow.webkit = {
+    messageHandlers: {
+      NativeAIPlatformBridge: {
+        postMessage() {
+          return Promise.resolve({ ok: true, result: { runtimeVersion: "test" } });
+        },
+      },
+    },
+  };
+  try {
+    await loadRuntime(harness);
+
+    const appButton = harness.document.getElementById("app-list").children[0];
+    appButton.dispatch("click");
+    await flushAsync();
+
+    const frame = harness.document.getElementById("app-frame-wrap").children[0];
+    assert.ok(frame, "runtime launcher should mount the selected app iframe");
+    assert.equal(frame.attributes.get("sandbox"), "allow-scripts allow-same-origin");
+    assert.match(frame.src, /^app-runtime:\/\/notes-lite\/index\.html\?mountToken=/);
+    assert.equal(frame.srcdoc, undefined);
+  } finally {
+    harness.close();
+  }
+});
+
 async function loadRuntime(harness) {
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
   vm.runInContext(runtimeSource, harness.parentContext);

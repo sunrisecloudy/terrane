@@ -15,6 +15,11 @@ const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
 const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server";
 const MACOS_HOST_EXECUTABLE_NAME = "NativeAIHostMac";
 const MACOS_HOST_BUNDLE_NAME = "NativeAIHostMac.app";
+const WINDOWS_HOST_EXECUTABLE_NAME = "NativeAIWebappHost.exe";
+const WINDOWS_HOST_APP_DIR_NAME = "NativeAIWebappHost";
+const WINDOWS_WEBVIEW2_ARCH = "x64";
+const WINDOWS_WEBVIEW2_INCLUDE = path.join("build", "native", "include", "WebView2.h");
+const WINDOWS_WEBVIEW2_STATIC_LIB = path.join("build", "native", WINDOWS_WEBVIEW2_ARCH, "WebView2LoaderStatic.lib");
 const ZIG_CORE_ARTIFACTS = [
   {
     id: "ios-arm64-device",
@@ -80,6 +85,7 @@ export function packageReleaseArtifacts({
   buildZigCore = false,
   buildServer = false,
   buildNativeMacOS = false,
+  buildNativeWindows = false,
 } = {}) {
   const resolvedOutDir = path.resolve(outDir);
   fs.mkdirSync(resolvedOutDir, { recursive: true });
@@ -94,7 +100,10 @@ export function packageReleaseArtifacts({
 
   const zigCoreArtifacts = buildZigCore ? buildZigCoreArtifacts({ outDir: resolvedOutDir }) : [];
   const serverArtifacts = buildServer ? buildServerArtifacts({ outDir: resolvedOutDir }) : [];
-  const nativeArtifacts = buildNativeMacOS ? buildMacOSNativeArtifacts({ outDir: resolvedOutDir }) : [];
+  const nativeArtifacts = [
+    ...(buildNativeMacOS ? buildMacOSNativeArtifacts({ outDir: resolvedOutDir }) : []),
+    ...(buildNativeWindows ? buildWindowsNativeArtifacts({ outDir: resolvedOutDir }) : []),
+  ];
   const directoryArtifacts = [
     ...(buildZigCore
       ? []
@@ -344,6 +353,112 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
   }
 }
 
+export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
+  if (process.platform !== "win32") {
+    throw new Error("--build-native-windows requires a Windows host");
+  }
+  if (process.arch !== "x64") {
+    throw new Error("--build-native-windows currently produces windows-x86_64 artifacts and requires an x64 host");
+  }
+  requireCommand("cmake", ["--version"], "--build-native-windows requires CMake on PATH");
+  requireCommand("zig", ["version"], "--build-native-windows requires Zig on PATH");
+  requireWindowsWebView2Sdk();
+
+  const resolvedOutDir = path.resolve(outDir);
+  const targetId = "windows-x86_64";
+  const windowsDir = path.join(repoRoot, "native", "windows");
+  const artifactDir = path.join(resolvedOutDir, "native-apps", "windows", targetId, WINDOWS_HOST_APP_DIR_NAME);
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-release-cache-"));
+  const buildDir = path.join(cacheRoot, "cmake-build");
+  const zigCoreDll = path.join(cacheRoot, "zig_core.dll");
+  const env = {
+    ...process.env,
+    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
+    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
+  };
+
+  try {
+    buildWindowsZigCoreDll({ outputPath: zigCoreDll, env });
+    execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, "-DCMAKE_BUILD_TYPE=Release"], {
+      env,
+      stdio: "ignore",
+    });
+    execFileSync("cmake", ["--build", buildDir, "--config", "Release"], {
+      env,
+      stdio: "ignore",
+    });
+
+    const builtExecutable = resolveWindowsHostExecutable(buildDir, "Release");
+    if (!builtExecutable) {
+      throw new Error("Windows host Release build did not produce NativeAIWebappHost.exe");
+    }
+    const builtAppDir = path.dirname(builtExecutable);
+    const builtResourcesDir = path.join(builtAppDir, "resources");
+    if (!fs.existsSync(path.join(builtResourcesDir, "runtime", "index.html"))) {
+      throw new Error("Windows host Release build did not stage resources/runtime/index.html");
+    }
+    if (!fs.existsSync(path.join(builtResourcesDir, "webapps", "examples", "notes-lite", "manifest.json"))) {
+      throw new Error("Windows host Release build did not stage resources/webapps/examples");
+    }
+    if (!fs.existsSync(path.join(builtResourcesDir, "db", "sqlite", "001_initial.sql"))) {
+      throw new Error("Windows host Release build did not stage resources/db/sqlite/001_initial.sql");
+    }
+
+    fs.rmSync(artifactDir, { recursive: true, force: true });
+    fs.mkdirSync(artifactDir, { recursive: true });
+    fs.copyFileSync(builtExecutable, path.join(artifactDir, WINDOWS_HOST_EXECUTABLE_NAME));
+    fs.cpSync(builtResourcesDir, path.join(artifactDir, "resources"), { recursive: true });
+    fs.copyFileSync(zigCoreDll, path.join(artifactDir, "zig_core.dll"));
+
+    return [
+      {
+        id: `native-windows-${targetId}`,
+        path: path.join("native-apps", "windows", targetId, WINDOWS_HOST_APP_DIR_NAME),
+        kind: "native-host-app",
+        target: targetId,
+        files: describeDirectoryFiles(artifactDir, path.join("native-apps", "windows", targetId, WINDOWS_HOST_APP_DIR_NAME)),
+      },
+    ];
+  } finally {
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+export function windowsWebView2SdkStatus(env = process.env) {
+  const sdkDir = env.NATIVE_AI_WEBVIEW2_NUGET_DIR;
+  if (!sdkDir) {
+    return {
+      ok: false,
+      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR must point to an expanded Microsoft.Web.WebView2 package containing ${WINDOWS_WEBVIEW2_INCLUDE} and ${WINDOWS_WEBVIEW2_STATIC_LIB}`,
+    };
+  }
+
+  const includePath = path.join(sdkDir, WINDOWS_WEBVIEW2_INCLUDE);
+  if (!fs.existsSync(includePath)) {
+    return {
+      ok: false,
+      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_INCLUDE}: ${includePath}`,
+    };
+  }
+
+  const staticLibPath = path.join(sdkDir, WINDOWS_WEBVIEW2_STATIC_LIB);
+  if (!fs.existsSync(staticLibPath)) {
+    return {
+      ok: false,
+      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_STATIC_LIB}: ${staticLibPath}`,
+    };
+  }
+
+  return { ok: true, sdkDir, includePath, staticLibPath };
+}
+
+function requireWindowsWebView2Sdk() {
+  const status = windowsWebView2SdkStatus();
+  if (!status.ok) {
+    throw new Error(`--build-native-windows requires a WebView2 SDK: ${status.message}`);
+  }
+}
+
 function buildMacOSZigCoreDylib({ outputPath, env }) {
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -367,6 +482,55 @@ function buildMacOSZigCoreDylib({ outputPath, env }) {
     },
   );
   fs.chmodSync(outputPath, 0o755);
+}
+
+function buildWindowsZigCoreDll({ outputPath, env }) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  execFileSync(
+    "zig",
+    [
+      "build-lib",
+      "src/lib.zig",
+      "--name",
+      "zig_core",
+      "-dynamic",
+      "-target",
+      "x86_64-windows-gnu",
+      "-lc",
+      `-femit-bin=${outputPath}`,
+    ],
+    {
+      cwd: path.join(repoRoot, "zig-core"),
+      env,
+      stdio: "ignore",
+    },
+  );
+}
+
+function resolveWindowsHostExecutable(buildDir, configuration) {
+  const candidates = [
+    path.join(buildDir, configuration, WINDOWS_HOST_EXECUTABLE_NAME),
+    path.join(buildDir, WINDOWS_HOST_EXECUTABLE_NAME),
+    path.join(buildDir, "bin", configuration, WINDOWS_HOST_EXECUTABLE_NAME),
+    path.join(buildDir, "bin", WINDOWS_HOST_EXECUTABLE_NAME),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  const matches = walk(buildDir).filter(
+    (filePath) => path.basename(filePath).toLowerCase() === WINDOWS_HOST_EXECUTABLE_NAME.toLowerCase()
+      && fs.statSync(filePath).isFile(),
+  );
+  return matches.find((filePath) => filePath.split(path.sep).includes(configuration)) ?? matches[0] ?? null;
+}
+
+function requireCommand(command, args, message) {
+  try {
+    execFileSync(command, args, { stdio: "ignore" });
+  } catch {
+    throw new Error(message);
+  }
 }
 
 function macOSInfoPlist() {
@@ -597,6 +761,8 @@ function parseCliArgs(argv) {
       options.buildServer = true;
     } else if (arg === "--build-native-macos") {
       options.buildNativeMacOS = true;
+    } else if (arg === "--build-native-windows") {
+      options.buildNativeWindows = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }

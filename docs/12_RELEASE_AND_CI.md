@@ -57,7 +57,7 @@ ubuntu-24.04:
   server tests
   runtime tests
   package validator
-  Linux shell build and WebKitGTK smoke on ubuntu-24.04
+  Docker-backed Linux shell build and WebKitGTK smoke on ubuntu-24.04
 
 macos-latest:
   Zig core macOS/iOS build
@@ -67,6 +67,7 @@ macos-latest:
 windows-2022:
   Zig core Windows build
   Windows shell build on windows-2022
+  Windows native release artifact package on windows-2022
   WebView2 smoke with the pinned WebView2 SDK package
 
 android emulator job:
@@ -82,7 +83,7 @@ The release artifact packager is:
 node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Windows host app directory with runtime/example resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -103,9 +104,17 @@ artifacts/
   release-manifest.json
   native-apps/
     macos/macos-arm64/NativeAIHostMac.app/
+    windows/windows-x86_64/NativeAIWebappHost/
+      NativeAIWebappHost.exe
+      zig_core.dll
+      resources/runtime/
+      resources/webapps/examples/
+      resources/db/sqlite/
 ```
 
 The macOS native app artifact path is `native-apps/macos/macos-arm64/NativeAIHostMac.app` on Apple Silicon CI runners.
+
+The Windows native app artifact path is `native-apps/windows/windows-x86_64/NativeAIWebappHost` on the `windows-2022` release runner.
 
 The dedicated Linux server artifact job runs:
 
@@ -117,6 +126,18 @@ The dedicated macOS native artifact job runs on `macos-latest`:
 
 ```text
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
+```
+
+The dedicated Windows native artifact job runs on `windows-2022` after installing the pinned WebView2 SDK package:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts --build-native-windows
+```
+
+The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, and Zig toolchain are all supplied by the checked-in container definition:
+
+```text
+node --no-warnings tools/run-linux-native-docker.mjs
 ```
 
 The default static packaging command without build flags still creates placeholder target directories for downstream jobs.

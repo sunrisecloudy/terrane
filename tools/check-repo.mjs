@@ -272,9 +272,12 @@ function checkCiWorkflow() {
     "tools/package-release.mjs --out artifacts --build-server",
     "macos-native-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-native-macos",
+    "windows-native-release-artifacts",
+    "tools/package-release.mjs --out artifacts --build-native-windows",
     "linux-native-smoke",
-    "NATIVE_AI_LINUX_SMOKE_LAUNCH",
-    "libwebkitgtk-6.0-dev",
+    "Linux Native Smoke (Docker)",
+    "Docker-backed Linux native launch smoke",
+    "tools/run-linux-native-docker.mjs",
     "macos-native-smoke",
     "NATIVE_AI_MACOS_SMOKE_LAUNCH",
     "ios-simulator-smoke",
@@ -294,12 +297,13 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native,native=linux/macos/ios/android/windows-smoke";
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
   const script = fs.readFileSync(path.join(repoRoot, "tools", "package-release.mjs"), "utf8");
   const docs = fs.readFileSync(path.join(repoRoot, "docs", "12_RELEASE_AND_CI.md"), "utf8");
+  const toolsReadme = fs.readFileSync(path.join(repoRoot, "tools", "README.md"), "utf8");
   const ignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
   const test = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "release-packaging.test.js"), "utf8");
   const requiredScriptSnippets = [
@@ -310,9 +314,12 @@ function checkReleasePackaging() {
     "buildZigCoreArtifacts",
     "buildServerArtifacts",
     "buildMacOSNativeArtifacts",
+    "buildWindowsNativeArtifacts",
+    "windowsWebView2SdkStatus",
     "--build-zig-core",
     "--build-server",
     "--build-native-macos",
+    "--build-native-windows",
     "sha256",
     "server-executable",
     "native-host-app",
@@ -322,6 +329,9 @@ function checkReleasePackaging() {
     "zig_core.lib",
     "native-ai-server",
     "NativeAIHostMac.app",
+    "NativeAIWebappHost.exe",
+    "NativeAIWebappHost",
+    "resources/db/sqlite/001_initial.sql",
   ];
   for (const snippet of requiredScriptSnippets) {
     if (!script.includes(snippet)) {
@@ -333,6 +343,10 @@ function checkReleasePackaging() {
     "linux-x86_64/native-ai-server",
     "native-apps/macos/macos-arm64/NativeAIHostMac.app",
     "tools/package-release.mjs --out artifacts --build-native-macos",
+    "native-apps/windows/windows-x86_64/NativeAIWebappHost",
+    "resources/db/sqlite/",
+    "tools/package-release.mjs --out artifacts --build-native-windows",
+    "tools/run-linux-native-docker.mjs",
     "release-manifest.json",
   ]) {
     if (!docs.includes(snippet)) {
@@ -342,13 +356,22 @@ function checkReleasePackaging() {
   if (!ignore.includes("artifacts/")) {
     throw new Error(".gitignore must ignore generated release artifacts");
   }
+  for (const snippet of ["run-linux-native-docker", "--build-native-windows", "tools/run-linux-native-docker.mjs"]) {
+    if (!toolsReadme.includes(snippet)) {
+      throw new Error(`tools/README missing ${snippet}`);
+    }
+  }
   for (const snippet of [
     "listZipEntries",
     "buildZigCore: true",
     "buildServer: true",
     "buildNativeMacOS: true",
+    "buildNativeWindows: true",
     "server-executable",
     "native-host-app",
+    "NativeAIWebappHost.exe",
+    "zig_core.dll",
+    "resources/db/sqlite/001_initial.sql",
     "runtime-web/index.html",
     "webapps/examples/notes-lite/manifest.json",
   ]) {
@@ -356,7 +379,7 @@ function checkReleasePackaging() {
       throw new Error(`release packaging test missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,windows-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

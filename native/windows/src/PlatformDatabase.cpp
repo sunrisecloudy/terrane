@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <string>
 #include <vector>
 
 namespace nativeai {
@@ -20,6 +21,27 @@ std::filesystem::path RepoRoot() {
     current = current.parent_path();
   }
   return std::filesystem::current_path();
+}
+
+std::filesystem::path ExecutableDirectory() {
+  std::vector<wchar_t> buffer(MAX_PATH);
+  while (true) {
+    DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+      return std::filesystem::current_path();
+    }
+    if (length < buffer.size()) {
+      return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+    }
+    buffer.resize(buffer.size() * 2);
+  }
+}
+
+std::vector<std::filesystem::path> MigrationDirCandidates() {
+  return {
+      ExecutableDirectory() / L"resources" / L"db" / L"sqlite",
+      RepoRoot() / L"db" / L"sqlite",
+  };
 }
 
 std::string ReadTextFile(std::filesystem::path const& path) {
@@ -66,8 +88,25 @@ void PlatformDatabase::ExecSql(char const* sql, char const* label) {
 }
 
 void PlatformDatabase::ApplyCheckedInMigrations() {
-  auto migrationsDir = RepoRoot() / L"db" / L"sqlite";
-  if (!std::filesystem::exists(migrationsDir)) {
+  std::filesystem::path migrationsDir;
+  for (auto const& candidate : MigrationDirCandidates()) {
+    if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+      migrationsDir = candidate;
+      break;
+    }
+  }
+
+  std::vector<std::filesystem::path> migrations;
+  if (!migrationsDir.empty()) {
+    for (auto const& entry : std::filesystem::directory_iterator(migrationsDir)) {
+      if (entry.is_regular_file() && entry.path().extension() == L".sql") {
+        migrations.push_back(entry.path());
+      }
+    }
+    std::sort(migrations.begin(), migrations.end());
+  }
+
+  if (migrations.empty()) {
     ExecSql(
         "CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
         "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));"
@@ -78,14 +117,6 @@ void PlatformDatabase::ApplyCheckedInMigrations() {
         "fallback schema");
     return;
   }
-
-  std::vector<std::filesystem::path> migrations;
-  for (auto const& entry : std::filesystem::directory_iterator(migrationsDir)) {
-    if (entry.is_regular_file() && entry.path().extension() == L".sql") {
-      migrations.push_back(entry.path());
-    }
-  }
-  std::sort(migrations.begin(), migrations.end());
 
   for (auto const& migration : migrations) {
     auto sql = ReadTextFile(migration);

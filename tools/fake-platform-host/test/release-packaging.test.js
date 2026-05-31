@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { listZipEntries, packageReleaseArtifacts } from "../../../tools/package-release.mjs";
+import { listZipEntries, packageReleaseArtifacts, windowsWebView2SdkStatus } from "../../../tools/package-release.mjs";
 
 function hasZig() {
   try {
@@ -22,6 +22,25 @@ function hasSwift() {
   } catch {
     return false;
   }
+}
+
+function hasCmake() {
+  try {
+    execFileSync("cmake", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function windowsReleaseSkipReason() {
+  if (process.platform !== "win32") return "Windows native release artifact only builds on Windows hosts";
+  if (process.arch !== "x64") return "Windows native release artifact currently requires an x64 Windows host";
+  if (!hasCmake()) return "cmake is not available";
+  if (!hasZig()) return "zig is not available";
+
+  const sdkStatus = windowsWebView2SdkStatus();
+  return sdkStatus.ok ? false : sdkStatus.message;
 }
 
 test("release packaging creates deterministic static artifact archives and manifest", () => {
@@ -127,6 +146,42 @@ test(
       ]) {
         const manifestPath = path.join(nativeArtifact.path, relativePath).split(path.sep).join("/");
         assert.equal(nativeArtifact.files.some((file) => file.path === manifestPath && file.sha256.length === 64), true);
+        assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
+      }
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "release packaging can build the Windows native host app artifact",
+  {
+    skip: windowsReleaseSkipReason(),
+    timeout: 180_000,
+  },
+  () => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-windows-artifacts-"));
+    try {
+      const result = packageReleaseArtifacts({ outDir, buildNativeWindows: true });
+      const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
+      const nativeArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "native-host-app");
+      assert.equal(nativeArtifacts.length, 1);
+
+      const [nativeArtifact] = nativeArtifacts;
+      assert.equal(nativeArtifact.target, "windows-x86_64");
+      assert.equal(nativeArtifact.path, "native-apps/windows/windows-x86_64/NativeAIWebappHost");
+      for (const relativePath of [
+        "NativeAIWebappHost.exe",
+        "zig_core.dll",
+        "resources/runtime/index.html",
+        "resources/webapps/examples/notes-lite/manifest.json",
+        "resources/db/sqlite/001_initial.sql",
+      ]) {
+        const manifestPath = path.join(nativeArtifact.path, relativePath).split(path.sep).join("/");
+        const file = nativeArtifact.files.find((entry) => entry.path === manifestPath);
+        assert.notEqual(file, undefined);
+        assert.match(file.sha256, /^[a-f0-9]{64}$/);
         assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
       }
     } finally {

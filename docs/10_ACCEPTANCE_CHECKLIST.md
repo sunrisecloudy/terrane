@@ -120,11 +120,11 @@
 
 ### Linux
 
-- [ ] GTK/WebKitGTK app launches.
-- [ ] Runtime loads resources.
-- [ ] Bridge works.
-- [ ] Zig shared library loads.
-- [ ] Storage persists.
+- [x] GTK/WebKitGTK app launches.
+- [x] Runtime loads resources.
+- [x] Bridge works.
+- [x] Zig shared library loads.
+- [x] Storage persists.
 
 ### Server
 

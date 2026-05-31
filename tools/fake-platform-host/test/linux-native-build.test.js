@@ -18,6 +18,15 @@ function commandWorks(command, args = ["--version"]) {
   }
 }
 
+function commandExists(command) {
+  try {
+    execFileSync("sh", ["-c", "command -v \"$1\" >/dev/null", "sh", command], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function hasLinuxNativeDependencies() {
   return commandWorks("pkg-config", [
     "--exists",
@@ -63,6 +72,11 @@ test(
         ],
         {
           cwd: path.join(repoRoot, "zig-core"),
+          env: {
+            ...process.env,
+            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
+            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
+          },
           stdio: "ignore",
         },
       );
@@ -144,7 +158,7 @@ function runSmoke(binaryPath, marker, env) {
   let args = [];
   let command = binaryPath;
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-    assert.equal(commandWorks("xvfb-run"), true, "xvfb-run is required for headless Linux smoke");
+    assert.equal(commandExists("xvfb-run"), true, "xvfb-run is required for headless Linux smoke");
     command = "xvfb-run";
     args.push("-a", binaryPath);
   }

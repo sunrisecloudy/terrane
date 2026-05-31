@@ -130,15 +130,23 @@
     const frame = document.createElement("iframe");
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
-    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("sandbox", usesWebKitNativeAppFrames() ? "allow-scripts allow-same-origin" : "allow-scripts");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    frame.srcdoc = srcdoc;
 
     frameWrap.textContent = "";
-    frameWrap.appendChild(frame);
     activeFrame = frame;
     mountsByFrame.set(frame, mount);
+    if (usesWebKitNativeAppFrames()) {
+      frame.src = `app-runtime://${encodeURIComponent(app.id)}/index.html?mountToken=${encodeURIComponent(mount.mountToken)}`;
+    } else {
+      frame.srcdoc = srcdoc;
+    }
+    frameWrap.appendChild(frame);
     setStatus(`Mounted ${app.id}`);
+  }
+
+  function usesWebKitNativeAppFrames() {
+    return Boolean(webkitNativeBridgeHandler()) && window.location && window.location.protocol === "app-runtime:";
   }
 
   function injectRuntimeBootstrap(app, html) {
