@@ -116,6 +116,7 @@
 - [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] Source/static checks verify Android WebView bridge hardening: `WEB_MESSAGE_LISTENER` feature gate, single internal origin allowlist, no `addJavascriptInterface`, file-URL access disabled, release debugging disabled, and Safe Browsing enabled.
 - [x] Source/static and debug APK build checks verify Android `network.request` uses OkHttp with manifest policy enforcement and timeout clamping.
+- [x] Source/static and debug APK build checks verify Android debug dev control first slice is debug-only, loopback-bound, private-token-file gated, SQLite-audited, exposes health/session/control routes, routes `runtime.capabilities` / `runtime.call_bridge` / `runtime.core_step` through the native bridge, and restricts DB inspection to allowlisted queries.
 
 ### Windows
 

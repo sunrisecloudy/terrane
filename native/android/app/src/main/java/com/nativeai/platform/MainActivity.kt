@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var dialogs: PlatformDialogs
     private lateinit var assetLoader: WebViewAssetLoader
     private var smokeProbe: AndroidSmokeProbe? = null
+    private var devControlPlane: AndroidDevControlPlane? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +44,15 @@ class MainActivity : ComponentActivity() {
             dialogs = dialogs,
             contextForApp = { appId -> sandboxContextFromManifest(appId) },
         )
+        if (BuildConfig.DEBUG) {
+            devControlPlane = AndroidDevControlPlane(
+                context = this,
+                bridge = bridge,
+                requestedPort = intent.getIntExtra("native_ai_control_port", 0),
+            ).also { it.start() }
+        } else {
+            Log.i("NativeAIPlatform", "Android dev control plane is disabled in release builds")
+        }
 
         webView = WebView(this)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
@@ -81,6 +91,12 @@ class MainActivity : ComponentActivity() {
 
         setContentView(webView)
         webView.loadUrl("https://appassets.androidplatform.net/runtime/index.html")
+    }
+
+    override fun onDestroy() {
+        devControlPlane?.stop()
+        devControlPlane = null
+        super.onDestroy()
     }
 
     private fun sandboxContextFromManifest(appId: String): AppSandboxContext {

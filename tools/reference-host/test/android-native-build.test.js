@@ -79,6 +79,83 @@ test("Android WebView bridge setup is hardened before runtime load", () => {
   assert.equal(activity.includes("addJavascriptInterface"), false);
 });
 
+test("Android debug dev control plane is loopback-bound, token-gated, audited, and bridge-routed", () => {
+  const activity = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+
+  for (const snippet of [
+    "AndroidDevControlPlane",
+    "BuildConfig.DEBUG",
+    "native_ai_control_port",
+    "Android dev control plane is disabled in release builds",
+    "devControlPlane?.stop()",
+  ]) {
+    assert.equal(activity.includes(snippet), true, `Android activity should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "BuildConfig.DEBUG",
+    "ServerSocket(requestedPort, 50, InetAddress.getByName(\"127.0.0.1\"))",
+    "control.token",
+    "Context.MODE_PRIVATE",
+    "SecureRandom().nextBytes(bytes)",
+    "Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING",
+    "X-Platform-Control-Token",
+    "headers[\"x-platform-control-token\"]",
+    "control_auth_required",
+    "HTTP/1.1 $status $statusText",
+    "\"/health\"",
+    "\"/control/sessions\"",
+    "\"/control/command\"",
+    "control.sessions.create",
+    "control.sessions.snapshot",
+    "control.sessions.events",
+    "control.sessions.capabilities",
+    "control.sessions.end",
+    "platform.health",
+    "runtime.capabilities",
+    "runtime.call_bridge",
+    "runtime.core_step",
+    "db.snapshot",
+    "db.query_app_storage",
+    "db.query_app_versions",
+    "db.query_bridge_calls",
+    "db.query_core_events",
+    "db.query_test_runs",
+    "safeTables",
+    "safeFilterColumns",
+    "database.readableDatabase.query(table",
+    "control_sessions",
+    "control_commands",
+    "insertWithOnConflict(\"control_sessions\"",
+    "database.writableDatabase.insert(\"control_commands\"",
+    "NATIVE_AI_ANDROID_CONTROL_READY port=",
+    "Unsupported Android dev control command",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android dev control source should contain ${snippet}`);
+  }
+
+  for (const forbidden of [
+    "rawQuery(\"SELECT *",
+    "db.query_sql",
+    "execSQL(args",
+    "addJavascriptInterface",
+  ]) {
+    assert.equal(control.includes(forbidden), false, `Android dev control source should not contain ${forbidden}`);
+  }
+
+  for (const snippet of [
+    "handleControlBridgeCall",
+    "mountToken\" to \"android-dev-control\"",
+    "sourceOrigin = trustedRuntimeOrigin",
+    "CountDownLatch",
+    "Timed out waiting for native bridge response",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Android bridge should expose control dispatch snippet ${snippet}`);
+  }
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {

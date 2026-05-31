@@ -9,6 +9,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class NativeBridge(
     context: Context,
@@ -23,6 +25,34 @@ class NativeBridge(
     private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
     private val runtimeEnvelopeFields = setOf("appId", "mountToken", "request")
     private val bridgeRequestFields = setOf("id", "method", "params", "timestamp")
+
+    fun handleControlBridgeCall(appId: String, method: String, params: JSONObject, id: String = "control_${UUID.randomUUID()}"): JSONObject {
+        var responseText: String? = null
+        val latch = CountDownLatch(1)
+        val envelope = JSONObject(
+            mapOf(
+                "appId" to appId,
+                "mountToken" to "android-dev-control",
+                "request" to JSONObject(mapOf("id" to id, "method" to method, "params" to params)),
+            ),
+        )
+        handleEnvelope(
+            body = envelope.toString(),
+            isMainFrame = true,
+            sourceOrigin = trustedRuntimeOrigin,
+        ) { response ->
+            responseText = response
+            latch.countDown()
+        }
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            return BridgeResponse.failure(id, "timeout", "Timed out waiting for native bridge response")
+        }
+        return try {
+            JSONObject(requireNotNull(responseText))
+        } catch (error: Exception) {
+            BridgeResponse.failure(id, "invalid_response", "Native bridge returned invalid JSON")
+        }
+    }
 
     fun handleEnvelope(body: String, isMainFrame: Boolean, sourceOrigin: String, respond: (String) -> Unit) {
         val envelope = try {

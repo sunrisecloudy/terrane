@@ -45,6 +45,7 @@ Current implementation status:
 - `dialog.openFile` and `dialog.saveFile` use `ActivityResultContracts.OpenDocument`, `OpenMultipleDocuments`, and `CreateDocument` with asynchronous bridge replies.
 - `core.step` uses a JNI wrapper that loads packaged `libzig_core.so` and calls the shared Zig C ABI.
 - `runtime.capabilities` reports `core.step` from actual JNI/Zig core availability and returns structured `platform_unsupported` when unavailable.
+- Debug builds start a loopback-only dev control first slice with a private per-launch `control.token`, SQLite-audited `control_sessions` / `control_commands`, token-gated `/health`, `/control/sessions`, and `/control/command` routes, bridge-routed `runtime.capabilities` / `runtime.call_bridge` / `runtime.core_step`, and allowlisted safe DB inspection commands.
 
 ## Dev control plane
 
