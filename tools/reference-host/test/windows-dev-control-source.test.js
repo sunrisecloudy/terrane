@@ -78,6 +78,17 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "control.sessions.end",
     "runtime.call_bridge",
     "runtime.core_step",
+    "runtime.screenshot",
+    "runtime.query",
+    "runtime.click",
+    "runtime.type",
+    "runtime.set_value",
+    "runtime.press_key",
+    "runtime.drag",
+    "runtime.wait_for",
+    "runtime.timer_advance",
+    "runtime.assert_visible",
+    "runtime.assert_text",
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
@@ -96,6 +107,13 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "platform.list_webapps",
     "PlatformListTargetsJson",
     "PlatformListWebappsJson",
+    "RuntimeScreenshotJson",
+    "RuntimeQueryJson",
+    "RuntimeTargetCommandJson",
+    "RuntimeWaitForJson",
+    "RuntimeTimerAdvanceJson",
+    "RuntimeAssertVisibleJson",
+    "RuntimeAssertTextJson",
     "BundledWebappJson",
     "BundledManifest",
     "RuntimeResourceRoot",
@@ -166,6 +184,51 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
 
   for (const snippet of ["src/DevControlPlane.cpp", "ws2_32", "bcrypt"]) {
     assert.equal(cmake.includes(snippet), true, `Windows CMake should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control supports static runtime UI controls over bundled app HTML", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "runtime.screenshot",
+    "runtime.query",
+    "runtime.click",
+    "runtime.type",
+    "runtime.set_value",
+    "runtime.press_key",
+    "runtime.drag",
+    "runtime.wait_for",
+    "runtime.timer_advance",
+    "runtime.assert_visible",
+    "runtime.assert_text",
+    "HtmlForBundledApp",
+    "HtmlText",
+    "RuntimeQueryMatches",
+    "RuntimeScreenshotJson",
+    "RuntimeQueryJson",
+    "RuntimeTargetCommandJson",
+    "RuntimeWaitForJson",
+    "RuntimeTimerAdvanceJson",
+    "RuntimeAssertVisibleJson",
+    "RuntimeAssertTextJson",
+    "TagForAttribute",
+    "TestIdSelectorValue",
+    "static-html-summary",
+    "data-testid",
+    "runtime.query requires appId",
+    "runtime.screenshot requires appId",
+    "runtime.assert_visible requires appId",
+    "runtime.assert_text requires appId and text",
+    "runtime.wait_for bridge_call requires appId and method",
+    "runtime.wait_for requires appId for selector/text waits",
+    "selector.not_found",
+    "text.not_found",
+    "wait_timeout",
+    "Expected runtime condition did not appear",
+    "sha256:",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows static UI control source should contain ${snippet}`);
   }
 });
 

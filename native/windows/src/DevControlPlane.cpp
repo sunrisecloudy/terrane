@@ -18,11 +18,13 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cwctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -633,6 +635,139 @@ std::wstring UpperAscii(std::wstring value) {
   return value;
 }
 
+std::wstring LowerAscii(std::wstring value) {
+  for (auto& ch : value) {
+    if (ch >= L'A' && ch <= L'Z') {
+      ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+  }
+  return value;
+}
+
+std::wstring RegexEscape(std::wstring const& value) {
+  std::wstring escaped;
+  for (wchar_t ch : value) {
+    switch (ch) {
+      case L'\\':
+      case L'.':
+      case L'^':
+      case L'$':
+      case L'|':
+      case L'(':
+      case L')':
+      case L'[':
+      case L']':
+      case L'{':
+      case L'}':
+      case L'*':
+      case L'+':
+      case L'?':
+        escaped.push_back(L'\\');
+        break;
+      default:
+        break;
+    }
+    escaped.push_back(ch);
+  }
+  return escaped;
+}
+
+std::wstring RegexFirst(std::wstring const& text, std::wstring const& pattern) {
+  try {
+    std::wregex regex(pattern, std::regex_constants::icase);
+    std::wsmatch match;
+    if (std::regex_search(text, match, regex) && match.size() > 1) {
+      return match[1].str();
+    }
+  } catch (...) {
+  }
+  return L"";
+}
+
+std::wstring HtmlText(std::wstring html) {
+  try {
+    html = std::regex_replace(html, std::wregex(LR"(<script\b[\s\S]*?</script>)", std::regex_constants::icase), L" ");
+    html = std::regex_replace(html, std::wregex(LR"(<style\b[\s\S]*?</style>)", std::regex_constants::icase), L" ");
+    html = std::regex_replace(html, std::wregex(LR"(<[^>]+>)"), L" ");
+    html = std::regex_replace(html, std::wregex(LR"(&nbsp;)"), L" ");
+    html = std::regex_replace(html, std::wregex(LR"(&amp;)"), L"&");
+    html = std::regex_replace(html, std::wregex(LR"(&lt;)"), L"<");
+    html = std::regex_replace(html, std::wregex(LR"(&gt;)"), L">");
+    html = std::regex_replace(html, std::wregex(LR"(&quot;)"), L"\"");
+    html = std::regex_replace(html, std::wregex(LR"(\s+)"), L" ");
+  } catch (...) {
+  }
+  while (!html.empty() && iswspace(html.front())) {
+    html.erase(html.begin());
+  }
+  while (!html.empty() && iswspace(html.back())) {
+    html.pop_back();
+  }
+  return html;
+}
+
+std::vector<std::wstring> TestIds(std::wstring const& html) {
+  std::vector<std::wstring> ids;
+  try {
+    std::wregex regex(LR"(\bdata-testid=["']([^"']+)["'])", std::regex_constants::icase);
+    auto begin = std::wsregex_iterator(html.begin(), html.end(), regex);
+    auto end = std::wsregex_iterator();
+    for (auto cursor = begin; cursor != end; ++cursor) {
+      ids.push_back((*cursor)[1].str());
+    }
+  } catch (...) {
+  }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  return ids;
+}
+
+std::wstring JsonStringArray(std::vector<std::wstring> const& values) {
+  std::wstring out = L"[";
+  for (size_t index = 0; index < values.size(); ++index) {
+    if (index > 0) {
+      out += L",";
+    }
+    out += JsonString(values[index]);
+  }
+  out += L"]";
+  return out;
+}
+
+std::optional<std::wstring> TagForAttribute(std::wstring const& html, std::wstring const& attr, std::wstring const& value) {
+  try {
+    std::wregex regex(
+        L"<([a-z0-9-]+)\\b[^>]*\\b" + RegexEscape(attr) + L"=[\"']" + RegexEscape(value) + L"[\"'][^>]*>",
+        std::regex_constants::icase);
+    std::wsmatch match;
+    if (std::regex_search(html, match, regex) && match.size() > 1) {
+      return LowerAscii(match[1].str());
+    }
+  } catch (...) {
+  }
+  return std::nullopt;
+}
+
+std::optional<std::wstring> TestIdSelectorValue(std::wstring const& selector) {
+  try {
+    std::wregex regex(LR"(\[data-testid=["']([^"']+)["']\])", std::regex_constants::icase);
+    std::wsmatch match;
+    if (std::regex_search(selector, match, regex) && match.size() > 1) {
+      return match[1].str();
+    }
+  } catch (...) {
+  }
+  return std::nullopt;
+}
+
+bool IsSimpleTagSelector(std::wstring const& selector) {
+  try {
+    return std::regex_match(selector, std::wregex(LR"(^[a-z][a-z0-9-]*$)", std::regex_constants::icase));
+  } catch (...) {
+    return false;
+  }
+}
+
 std::wstring Base64Url(std::array<unsigned char, 32> const& bytes) {
   static constexpr wchar_t alphabet[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
   std::wstring out;
@@ -997,6 +1132,203 @@ struct DevControlPlane::Impl {
     }
     apps += L"]";
     return L"{\"apps\":" + apps + L"}";
+  }
+
+  std::wstring HtmlForBundledApp(std::wstring const& appId) {
+    return ReadTextFile(RuntimeResourceRoot() / L"webapps" / L"examples" / appId / L"index.html");
+  }
+
+  std::vector<std::wstring> RuntimeQueryMatches(std::wstring const& html, json::JsonObject const& args) {
+    std::vector<std::wstring> matches;
+    auto testId = OptionalStringMember(args, L"testId");
+    if (testId.has_value() && !testId->empty()) {
+      auto tag = TagForAttribute(html, L"data-testid", testId.value());
+      if (tag.has_value()) {
+        matches.push_back(L"{\"kind\":\"testId\",\"value\":" + JsonString(testId.value()) + L",\"tag\":" + JsonString(tag.value()) + L"}");
+      }
+      return matches;
+    }
+
+    auto selector = OptionalStringMember(args, L"selector");
+    if (selector.has_value() && selector->size() > 1 && selector->front() == L'#') {
+      auto id = selector->substr(1);
+      auto tag = TagForAttribute(html, L"id", id);
+      if (tag.has_value()) {
+        matches.push_back(L"{\"kind\":\"selector\",\"value\":" + JsonString(selector.value()) + L",\"tag\":" + JsonString(tag.value()) + L"}");
+      }
+      return matches;
+    }
+
+    if (selector.has_value()) {
+      auto selectorTestId = TestIdSelectorValue(selector.value());
+      if (selectorTestId.has_value()) {
+        auto tag = TagForAttribute(html, L"data-testid", selectorTestId.value());
+        if (tag.has_value()) {
+          matches.push_back(L"{\"kind\":\"selector\",\"value\":" + JsonString(selector.value()) + L",\"tag\":" + JsonString(tag.value()) + L"}");
+        }
+        return matches;
+      }
+    }
+
+    auto text = OptionalStringMember(args, L"text");
+    if (text.has_value() && !text->empty() && HtmlText(html).find(text.value()) != std::wstring::npos) {
+      matches.push_back(L"{\"kind\":\"text\",\"value\":" + JsonString(text.value()) + L"}");
+      return matches;
+    }
+
+    if (selector.has_value() && IsSimpleTagSelector(selector.value())) {
+      try {
+        std::wregex regex(L"<" + RegexEscape(selector.value()) + L"\\b", std::regex_constants::icase);
+        if (std::regex_search(html, regex)) {
+          auto tag = LowerAscii(selector.value());
+          matches.push_back(L"{\"kind\":\"selector\",\"value\":" + JsonString(selector.value()) + L",\"tag\":" + JsonString(tag) + L"}");
+        }
+      } catch (...) {
+      }
+    }
+    return matches;
+  }
+
+  std::wstring RuntimeQueryJson(std::wstring const& appId, json::JsonObject const& args) {
+    auto html = HtmlForBundledApp(appId);
+    auto testId = OptionalStringMember(args, L"testId");
+    auto selector = OptionalStringMember(args, L"selector");
+    auto text = OptionalStringMember(args, L"text");
+    std::wstring query = testId.has_value()
+        ? L"[data-testid=\"" + testId.value() + L"\"]"
+        : selector.value_or(text.value_or(L""));
+    auto matches = RuntimeQueryMatches(html, args);
+    std::wstring matchJson = L"[";
+    for (size_t index = 0; index < matches.size(); ++index) {
+      if (index > 0) {
+        matchJson += L",";
+      }
+      matchJson += matches[index];
+    }
+    matchJson += L"]";
+    return L"{\"ok\":" + std::wstring(matches.empty() ? L"false" : L"true") +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"query\":" + JsonString(query) +
+        L",\"matches\":" + matchJson + L"}";
+  }
+
+  std::wstring RuntimeScreenshotJson(std::wstring const& appId, std::optional<std::wstring> const& label) {
+    auto html = HtmlForBundledApp(appId);
+    auto text = HtmlText(html);
+    auto title = HtmlText(RegexFirst(html, LR"(<title[^>]*>([\s\S]*?)</title>)"));
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"label\":" + (label.has_value() && !label->empty() ? JsonString(label.value()) : L"null") +
+        L",\"format\":\"static-html-summary\",\"title\":" + JsonString(title) +
+        L",\"textHash\":\"sha256:" + Sha256Hex(text) +
+        L"\",\"testIds\":" + JsonStringArray(TestIds(html)) + L"}";
+  }
+
+  std::wstring RuntimeTargetCommandJson(
+      std::wstring const& tool,
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    if (tool == L"runtime.press_key") {
+      return L"{\"ok\":true,\"key\":" + JsonNullableString(OptionalStringMember(args, L"key").value_or(L"")) + L"}";
+    }
+    auto appId = OptionalStringMember(args, L"appId").value_or(L"");
+    auto matches = RuntimeQueryMatches(HtmlForBundledApp(appId), args);
+    if (matches.empty()) {
+      *errorCode = L"selector.not_found";
+      *errorMessage = L"Runtime target was not found in generated app HTML";
+      return L"";
+    }
+    std::wstring response = L"{\"ok\":true,\"tool\":" + JsonString(tool) +
+        L",\"target\":" + matches.front();
+    if (tool == L"runtime.type" || tool == L"runtime.set_value") {
+      auto value = OptionalStringMember(args, L"value");
+      if (!value.has_value()) {
+        value = OptionalStringMember(args, L"text");
+      }
+      response += L",\"value\":" + JsonString(value.value_or(L""));
+    }
+    response += L"}";
+    return response;
+  }
+
+  std::wstring RuntimeAssertVisibleJson(
+      std::wstring const& appId,
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto matches = RuntimeQueryMatches(HtmlForBundledApp(appId), args);
+    if (matches.empty()) {
+      *errorCode = L"selector.not_found";
+      *errorMessage = L"Expected runtime target is not visible";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"matches\":" + std::to_wstring(matches.size()) +
+        L",\"target\":" + matches.front() + L"}";
+  }
+
+  std::wstring RuntimeAssertTextJson(
+      std::wstring const& appId,
+      std::wstring const& text,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    if (HtmlText(HtmlForBundledApp(appId)).find(text) == std::wstring::npos) {
+      *errorCode = L"text.not_found";
+      *errorMessage = L"Expected text was not found in installed package HTML";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) + L",\"text\":" + JsonString(text) + L"}";
+  }
+
+  std::wstring RuntimeWaitForJson(
+      json::JsonObject const& args,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    auto kind = StringMemberOr(args, L"kind", L"idle");
+    if (kind == L"idle") {
+      return L"{\"ok\":true,\"kind\":\"idle\"}";
+    }
+    if (kind == L"bridge_call" || kind == L"bridgeCall") {
+      auto appId = OptionalStringMember(args, L"appId").value_or(L"");
+      auto bridgeMethod = OptionalStringMember(args, L"method").value_or(L"");
+      if (appId.empty() || bridgeMethod.empty()) {
+        *errorCode = L"invalid_request";
+        *errorMessage = L"runtime.wait_for bridge_call requires appId and method";
+        return L"";
+      }
+      auto result = AssertBridgeCallJson(appId, bridgeMethod, errorCode, errorMessage);
+      if (result.empty()) {
+        if (*errorCode == L"assertion_failed") {
+          *errorCode = L"wait_timeout";
+          *errorMessage = L"Expected bridge call was not recorded";
+        }
+        return L"";
+      }
+      return result.substr(0, result.size() - 1) + L",\"kind\":" + JsonString(kind) + L"}";
+    }
+    auto appId = OptionalStringMember(args, L"appId").value_or(L"");
+    if (appId.empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"runtime.wait_for requires appId for selector/text waits";
+      return L"";
+    }
+    auto matches = RuntimeQueryMatches(HtmlForBundledApp(appId), args);
+    if (matches.empty()) {
+      *errorCode = L"wait_timeout";
+      *errorMessage = L"Expected runtime condition did not appear";
+      return L"";
+    }
+    return L"{\"ok\":true,\"kind\":" + JsonString(kind) +
+        L",\"appId\":" + JsonString(appId) +
+        L",\"matches\":" + std::to_wstring(matches.size()) + L"}";
+  }
+
+  std::wstring RuntimeTimerAdvanceJson(json::JsonObject const& args) {
+    auto milliseconds = IntValue(args, {L"ms", L"milliseconds"}, 0);
+    if (milliseconds < 0) {
+      milliseconds = 0;
+    }
+    return L"{\"ok\":true,\"advancedMs\":" + std::to_wstring(milliseconds) + L"}";
   }
 
   int64_t CountTableForApp(sqlite3* db, std::wstring const& table, std::wstring const& appId) {
@@ -3123,6 +3455,110 @@ struct DevControlPlane::Impl {
       result = SessionCapabilitiesJson(sessionId, &error);
       if (result.empty()) {
         SendControlRouteError(client, L"", tool, method, path, started, L"not_found", error.empty() ? L"Control session not found" : error, 400);
+        return;
+      }
+    } else if (tool == L"runtime.screenshot" ||
+        tool == L"runtime.query" ||
+        tool == L"runtime.click" ||
+        tool == L"runtime.type" ||
+        tool == L"runtime.set_value" ||
+        tool == L"runtime.press_key" ||
+        tool == L"runtime.drag" ||
+        tool == L"runtime.wait_for" ||
+        tool == L"runtime.timer_advance" ||
+        tool == L"runtime.assert_visible" ||
+        tool == L"runtime.assert_text") {
+      json::JsonObject args = json::JsonObject::Parse(L"{}");
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires args object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+      }
+
+      std::wstring appId = OptionalStringMember(args, L"appId").value_or(L"");
+      if (!appId.empty() && !IsValidAppId(appId)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" appId is not a valid generated app id", 400);
+        return;
+      }
+      if (tool == L"runtime.query" && appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.query requires appId", 400);
+        return;
+      }
+      if (tool == L"runtime.screenshot" && appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.screenshot requires appId", 400);
+        return;
+      }
+      if ((tool == L"runtime.click" || tool == L"runtime.type" || tool == L"runtime.set_value" || tool == L"runtime.drag") && appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", tool + L" requires appId", 400);
+        return;
+      }
+      if (tool == L"runtime.assert_visible" && appId.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_visible requires appId", 400);
+        return;
+      }
+      if (tool == L"runtime.assert_text") {
+        auto text = OptionalStringMember(args, L"text");
+        if (appId.empty() || !text.has_value() || text->empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.assert_text requires appId and text", 400);
+          return;
+        }
+      }
+      if (tool == L"runtime.wait_for") {
+        auto waitKind = StringMemberOr(args, L"kind", L"idle");
+        if ((waitKind == L"bridge_call" || waitKind == L"bridgeCall") && (appId.empty() || !OptionalStringMember(args, L"method").has_value())) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.wait_for bridge_call requires appId and method", 400);
+          return;
+        }
+        if (waitKind != L"idle" && waitKind != L"bridge_call" && waitKind != L"bridgeCall" && appId.empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.wait_for requires appId for selector/text waits", 400);
+          return;
+        }
+      }
+
+      if (!appId.empty()) {
+        std::wstring errorCode;
+        std::wstring errorMessage;
+        int errorStatus = 400;
+        if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+          return;
+        }
+      } else {
+        std::wstring errorCode;
+        std::wstring errorMessage;
+        int errorStatus = 400;
+        if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+          return;
+        }
+      }
+
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      if (tool == L"runtime.screenshot") {
+        result = RuntimeScreenshotJson(appId, OptionalStringMember(args, L"label"));
+      } else if (tool == L"runtime.query") {
+        result = RuntimeQueryJson(appId, args);
+      } else if (tool == L"runtime.click" ||
+          tool == L"runtime.type" ||
+          tool == L"runtime.set_value" ||
+          tool == L"runtime.press_key" ||
+          tool == L"runtime.drag") {
+        result = RuntimeTargetCommandJson(tool, args, &errorCode, &errorMessage);
+      } else if (tool == L"runtime.wait_for") {
+        result = RuntimeWaitForJson(args, &errorCode, &errorMessage);
+      } else if (tool == L"runtime.timer_advance") {
+        result = RuntimeTimerAdvanceJson(args);
+      } else if (tool == L"runtime.assert_visible") {
+        result = RuntimeAssertVisibleJson(appId, args, &errorCode, &errorMessage);
+      } else {
+        result = RuntimeAssertTextJson(appId, OptionalStringMember(args, L"text").value_or(L""), &errorCode, &errorMessage);
+      }
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode.empty() ? L"selector.not_found" : errorCode, errorMessage.empty() ? L"Runtime UI command failed" : errorMessage, errorCode == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.resource_usage") {

@@ -346,6 +346,87 @@ test(
         true,
       );
 
+      const staticScreenshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.screenshot", args: { appId: "task-workbench", label: "windows-ui-smoke" } },
+      });
+      assert.equal(staticScreenshot.statusCode, 200, staticScreenshot.body);
+      assert.equal(JSON.parse(staticScreenshot.body).result.title, "Task Workbench");
+      assert.equal(JSON.parse(staticScreenshot.body).result.testIds.includes("add-task-button"), true);
+
+      const staticQuery = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.query", args: { appId: "task-workbench", testId: "add-task-button" } },
+      });
+      assert.equal(staticQuery.statusCode, 200, staticQuery.body);
+      assert.equal(JSON.parse(staticQuery.body).result.matches[0].tag, "button");
+
+      const staticClick = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.click", args: { appId: "task-workbench", testId: "add-task-button" } },
+      });
+      assert.equal(staticClick.statusCode, 200, staticClick.body);
+      assert.equal(JSON.parse(staticClick.body).result.target.value, "add-task-button");
+
+      const staticType = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.type", args: { appId: "task-workbench", testId: "task-title-input", text: "Windows static UI task" } },
+      });
+      assert.equal(staticType.statusCode, 200, staticType.body);
+      assert.equal(JSON.parse(staticType.body).result.value, "Windows static UI task");
+
+      const staticSetValue = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.set_value", args: { appId: "task-workbench", testId: "task-title-input", value: "Windows set value" } },
+      });
+      assert.equal(staticSetValue.statusCode, 200, staticSetValue.body);
+      assert.equal(JSON.parse(staticSetValue.body).result.value, "Windows set value");
+
+      const staticKey = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.press_key", args: { key: "Enter" } },
+      });
+      assert.equal(staticKey.statusCode, 200, staticKey.body);
+      assert.equal(JSON.parse(staticKey.body).result.key, "Enter");
+
+      const staticWait = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.wait_for", args: { appId: "task-workbench", kind: "text", text: "Task Workbench" } },
+      });
+      assert.equal(staticWait.statusCode, 200, staticWait.body);
+      assert.equal(JSON.parse(staticWait.body).result.kind, "text");
+
+      const staticAssertVisible = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_visible", args: { appId: "task-workbench", testId: "task-workbench-title" } },
+      });
+      assert.equal(staticAssertVisible.statusCode, 200, staticAssertVisible.body);
+      assert.equal(JSON.parse(staticAssertVisible.body).result.ok, true);
+
+      const staticAssertText = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_text", args: { appId: "task-workbench", text: "Task Workbench" } },
+      });
+      assert.equal(staticAssertText.statusCode, 200, staticAssertText.body);
+      assert.equal(JSON.parse(staticAssertText.body).result.ok, true);
+
+      const staticTimer = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.timer_advance", args: { ms: 25 } },
+      });
+      assert.equal(staticTimer.statusCode, 200, staticTimer.body);
+      assert.equal(JSON.parse(staticTimer.body).result.advancedMs, 25);
+
       const commandCapabilities = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -911,6 +992,22 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.notification_capture' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.screenshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.query' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_visible' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_text' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(
