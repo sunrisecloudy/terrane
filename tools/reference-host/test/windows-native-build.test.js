@@ -383,6 +383,50 @@ test(
         true,
       );
 
+      const controlStorageSet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_set",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:windows-control-storage",
+            value: { source: "runtime.storage_set" },
+          },
+        },
+      });
+      assert.equal(controlStorageSet.statusCode, 200, controlStorageSet.body);
+      assert.equal(JSON.parse(controlStorageSet.body).result.ok, true);
+
+      const controlStorageGet = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.storage_get",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:windows-control-storage",
+          },
+        },
+      });
+      assert.equal(controlStorageGet.statusCode, 200, controlStorageGet.body);
+      assert.equal(JSON.parse(controlStorageGet.body).result.result.value.source, "runtime.storage_set");
+
+      const controlStorageAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.assert_storage",
+          args: {
+            appId: "task-workbench",
+            key: "task-workbench:windows-control-storage",
+            value: { source: "runtime.storage_set" },
+          },
+        },
+      });
+      assert.equal(controlStorageAssert.statusCode, 200, controlStorageAssert.body);
+      assert.equal(JSON.parse(controlStorageAssert.body).result.ok, true);
+
       const missingDbAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -520,6 +564,18 @@ test(
           1,
         );
         assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.storage_set' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.storage_get' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'db.snapshot' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
@@ -553,6 +609,10 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.set' AND app_id = 'task-workbench'").get().count) >= 1,
+          true,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM bridge_calls WHERE method = 'storage.get' AND app_id = 'task-workbench'").get().count) >= 1,
           true,
         );
         assert.equal(

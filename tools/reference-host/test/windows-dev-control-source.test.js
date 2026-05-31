@@ -81,9 +81,16 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.assert_storage",
     "ResourceUsageJson",
     "EventLogJson",
     "ConsoleLogsJson",
+    "RuntimeStorageGetJson",
+    "RuntimeStorageSetJson",
+    "RuntimeAssertStorageJson",
+    "RecordControlStorageBridgeCall",
     "db.export_backup",
     "DbExportBackupJson",
     "db.import_backup",
@@ -118,6 +125,34 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
 
   for (const snippet of ["src/DevControlPlane.cpp", "ws2_32", "bcrypt"]) {
     assert.equal(cmake.includes(snippet), true, `Windows CMake should contain ${snippet}`);
+  }
+});
+
+test("Windows dev control supports direct storage get, set, and assertions", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+
+  for (const snippet of [
+    "PlatformStorage storage(databasePath)",
+    "runtime.storage_get",
+    "runtime.storage_set",
+    "runtime.assert_storage",
+    "control_storage_get",
+    "control_storage_set",
+    "StorageBridgeRequest",
+    "storage.get",
+    "storage.set",
+    "storage.read",
+    "storage.write",
+    "runtime.storage_get requires appId and key",
+    "runtime.storage_set requires appId, key, and value",
+    "runtime.assert_storage requires appId, key, and value",
+    "Expected storage key was not found",
+    "Storage value did not match expected value",
+    "CanonicalJsonValue",
+    "RecordControlStorageBridgeCall",
+    "INSERT INTO bridge_calls",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows storage control source should contain ${snippet}`);
   }
 });
 

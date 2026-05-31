@@ -10,6 +10,7 @@
 
 #include "BridgeTypes.h"
 #include "PlatformDatabase.h"
+#include "PlatformStorage.h"
 #include "WebViewHost.h"
 
 #include <algorithm>
@@ -244,6 +245,10 @@ std::wstring ObjectMemberJsonOr(json::JsonObject const& object, std::wstring con
   return member.has_value() ? std::wstring(member->Stringify().c_str()) : fallback;
 }
 
+bool HasMember(json::JsonObject const& object, std::wstring const& key) {
+  return object.HasKey(key) && object.GetNamedValue(key).ValueType() != json::JsonValueType::Null;
+}
+
 std::optional<json::IJsonValue> FirstJsonValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
   for (auto const& key : keys) {
     if (!object.HasKey(key)) {
@@ -255,6 +260,48 @@ std::optional<json::IJsonValue> FirstJsonValue(json::JsonObject const& object, s
     }
   }
   return std::nullopt;
+}
+
+std::wstring CanonicalJsonValue(json::IJsonValue const& value) {
+  switch (value.ValueType()) {
+    case json::JsonValueType::Null:
+      return L"null";
+    case json::JsonValueType::Boolean:
+      return value.GetBoolean() ? L"true" : L"false";
+    case json::JsonValueType::Number:
+    case json::JsonValueType::String:
+      return std::wstring(value.Stringify().c_str());
+    case json::JsonValueType::Array: {
+      auto array = value.GetArray();
+      std::wstring out = L"[";
+      for (uint32_t index = 0; index < array.Size(); ++index) {
+        if (index > 0) {
+          out += L",";
+        }
+        out += CanonicalJsonValue(array.GetAt(index));
+      }
+      out += L"]";
+      return out;
+    }
+    case json::JsonValueType::Object: {
+      auto object = value.GetObject();
+      std::vector<std::wstring> keys;
+      for (auto const& pair : object) {
+        keys.push_back(std::wstring(pair.Key().c_str()));
+      }
+      std::sort(keys.begin(), keys.end());
+      std::wstring out = L"{";
+      for (size_t index = 0; index < keys.size(); ++index) {
+        if (index > 0) {
+          out += L",";
+        }
+        out += JsonString(keys[index]) + L":" + CanonicalJsonValue(object.GetNamedValue(keys[index]));
+      }
+      out += L"}";
+      return out;
+    }
+  }
+  return std::wstring(value.Stringify().c_str());
 }
 
 std::optional<std::wstring> TextValue(json::JsonObject const& object, std::vector<std::wstring> const& keys) {
@@ -835,6 +882,245 @@ struct DevControlPlane::Impl {
     std::wstring startedAt;
     std::wstring endedAt;
   };
+
+  BridgeRequest StorageBridgeRequest(
+      std::wstring const& requestId,
+      std::wstring const& appId,
+      std::wstring const& method,
+      json::JsonObject const& params,
+      std::wstring const& permission) {
+    BridgeRequest request;
+    request.hasId = true;
+    request.id = requestId;
+    request.method = method;
+    request.params = params;
+    request.context.appId = appId;
+    request.context.storagePrefix = appId + L":";
+    request.context.approvedPermissions.insert(permission);
+    return request;
+  }
+
+  std::wstring RuntimeSessionForControlSession(sqlite3* db, std::wstring const& childControlSessionId, std::wstring const& appId) {
+    ControlSessionRecord record;
+    if (LoadControlSession(db, childControlSessionId, &record) && !record.runtimeSessionId.empty()) {
+      return record.runtimeSessionId;
+    }
+
+    auto runtimeSessionId = MakeId(L"session");
+    auto metadataJson = L"{\"controlSessionId\":" + JsonString(childControlSessionId) + L",\"source\":\"windows-dev-control-storage\"}";
+    sqlite3_stmt* statement = nullptr;
+    bool ok = sqlite3_prepare_v2(
+                  db,
+                  "INSERT INTO runtime_sessions "
+                  "(session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, resource_high_water_json, metadata_json) "
+                  "VALUES (?, 'windows', 'windows', '0.1.0', ?, NULL, datetime('now'), 'running', ?, '{}', ?)",
+                  -1,
+                  &statement,
+                  nullptr) == SQLITE_OK;
+    if (ok) {
+      BindText(statement, 1, runtimeSessionId);
+      BindText(statement, 2, appId);
+      BindText(statement, 3, RuntimeCapabilitiesJson(appId));
+      BindText(statement, 4, metadataJson);
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    if (!ok) {
+      return L"";
+    }
+
+    if (sqlite3_prepare_v2(
+            db,
+            "UPDATE control_sessions SET runtime_session_id = ? WHERE control_session_id = ? AND runtime_session_id IS NULL",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, runtimeSessionId);
+      BindText(statement, 2, childControlSessionId);
+      sqlite3_step(statement);
+    }
+    sqlite3_finalize(statement);
+    return runtimeSessionId;
+  }
+
+  std::optional<std::wstring> JsonMemberText(json::JsonObject const& object, std::wstring const& key) {
+    if (!object.HasKey(key) || object.GetNamedValue(key).ValueType() == json::JsonValueType::Null) {
+      return std::nullopt;
+    }
+    return std::wstring(object.GetNamedValue(key).Stringify().c_str());
+  }
+
+  void RecordControlStorageBridgeCall(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring const& method,
+      json::JsonObject const& params,
+      json::JsonObject const& response,
+      uint64_t startedAtMs) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr || appId.empty()) {
+      return;
+    }
+    auto runtimeSessionId = RuntimeSessionForControlSession(db, childControlSessionId, appId);
+    if (runtimeSessionId.empty()) {
+      return;
+    }
+    auto okValue = response.GetNamedValue(L"ok", json::JsonValue::CreateBooleanValue(false));
+    bool ok = okValue.ValueType() == json::JsonValueType::Boolean && okValue.GetBoolean();
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(
+            db,
+            "INSERT INTO bridge_calls "
+            "(bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) "
+            "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, datetime('now'))",
+            -1,
+            &statement,
+            nullptr) == SQLITE_OK) {
+      BindText(statement, 1, MakeId(L"bridge-call"));
+      BindText(statement, 2, runtimeSessionId);
+      BindText(statement, 3, appId);
+      BindText(statement, 4, method);
+      BindText(statement, 5, std::wstring(params.Stringify().c_str()));
+      auto result = JsonMemberText(response, L"result");
+      auto error = JsonMemberText(response, L"error");
+      if (ok && result.has_value()) {
+        BindText(statement, 6, result.value());
+      } else {
+        sqlite3_bind_null(statement, 6);
+      }
+      if (!ok && error.has_value()) {
+        BindText(statement, 7, error.value());
+      } else {
+        sqlite3_bind_null(statement, 7);
+      }
+      sqlite3_bind_int64(statement, 8, static_cast<sqlite3_int64>(GetTickCount64() - startedAtMs));
+      sqlite3_step(statement);
+    }
+    sqlite3_finalize(statement);
+  }
+
+  bool StorageCommandArgs(
+      json::JsonObject const& command,
+      std::wstring const& tool,
+      bool requireValue,
+      json::JsonObject* args,
+      std::wstring* appId,
+      std::wstring* key,
+      std::wstring* error) {
+    auto parsedArgs = OptionalObjectMember(command, L"args");
+    if (!parsedArgs.has_value()) {
+      *error = tool + L" requires args object";
+      return false;
+    }
+    std::wstring appIdError;
+    if (!OptionalArgsAppId(command, tool, appId, &appIdError)) {
+      *error = appIdError;
+      return false;
+    }
+    auto keyValue = OptionalStringMember(parsedArgs.value(), L"key");
+    if (appId->empty() || !keyValue.has_value() || keyValue->empty() || (requireValue && !HasMember(parsedArgs.value(), L"value"))) {
+      if (tool == L"runtime.storage_get") {
+        *error = L"runtime.storage_get requires appId and key";
+      } else if (tool == L"runtime.storage_set") {
+        *error = L"runtime.storage_set requires appId, key, and value";
+      } else {
+        *error = L"runtime.assert_storage requires appId, key, and value";
+      }
+      return false;
+    }
+    *args = parsedArgs.value();
+    *key = keyValue.value();
+    return true;
+  }
+
+  std::wstring RuntimeStorageGetJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring const& key,
+      json::JsonObject const& args,
+      uint64_t startedAtMs) {
+    json::JsonObject params;
+    params.Insert(L"key", json::JsonValue::CreateStringValue(key));
+    params.Insert(
+        L"defaultValue",
+        args.HasKey(L"defaultValue") ? args.GetNamedValue(L"defaultValue") : json::JsonValue::CreateNullValue());
+    auto requestId = StringMemberOr(args, L"id", L"control_storage_get");
+    auto request = StorageBridgeRequest(requestId, appId, L"storage.get", params, L"storage.read");
+    PlatformStorage storage(databasePath);
+    auto response = storage.Get(request);
+    RecordControlStorageBridgeCall(childControlSessionId, appId, L"storage.get", params, response, startedAtMs);
+    return std::wstring(response.Stringify().c_str());
+  }
+
+  std::wstring RuntimeStorageSetJson(
+      std::wstring const& childControlSessionId,
+      std::wstring const& appId,
+      std::wstring const& key,
+      json::JsonObject const& args,
+      uint64_t startedAtMs) {
+    json::JsonObject params;
+    params.Insert(L"key", json::JsonValue::CreateStringValue(key));
+    params.Insert(L"value", args.HasKey(L"value") ? args.GetNamedValue(L"value") : json::JsonValue::CreateNullValue());
+    auto requestId = StringMemberOr(args, L"id", L"control_storage_set");
+    auto request = StorageBridgeRequest(requestId, appId, L"storage.set", params, L"storage.write");
+    PlatformStorage storage(databasePath);
+    auto response = storage.Set(request);
+    RecordControlStorageBridgeCall(childControlSessionId, appId, L"storage.set", params, response, startedAtMs);
+    return std::wstring(response.Stringify().c_str());
+  }
+
+  std::optional<std::wstring> StoredStorageValue(std::wstring const& appId, std::wstring const& key, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return std::nullopt;
+    }
+    sqlite3_stmt* statement = nullptr;
+    std::optional<std::wstring> value;
+    if (sqlite3_prepare_v2(db, "SELECT value_json FROM app_storage WHERE app_id = ? AND key = ?", -1, &statement, nullptr) != SQLITE_OK) {
+      *error = L"Could not read app storage";
+      return std::nullopt;
+    }
+    BindText(statement, 1, appId);
+    BindText(statement, 2, key);
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      value = ColumnText(statement, 0);
+    }
+    sqlite3_finalize(statement);
+    return value;
+  }
+
+  std::wstring RuntimeAssertStorageJson(
+      std::wstring const& appId,
+      std::wstring const& key,
+      json::IJsonValue const& expected,
+      std::wstring* errorCode,
+      std::wstring* errorMessage) {
+    std::wstring storageError;
+    auto actualText = StoredStorageValue(appId, key, &storageError);
+    if (!actualText.has_value()) {
+      *errorCode = storageError.empty() ? L"assertion_failed" : L"storage_error";
+      *errorMessage = storageError.empty() ? L"Expected storage key was not found" : storageError;
+      return L"";
+    }
+
+    json::JsonValue actual{nullptr};
+    if (!json::JsonValue::TryParse(actualText.value(), actual)) {
+      *errorCode = L"storage_error";
+      *errorMessage = L"Stored value was not valid JSON";
+      return L"";
+    }
+    if (CanonicalJsonValue(actual) != CanonicalJsonValue(expected)) {
+      *errorCode = L"assertion_failed";
+      *errorMessage = L"Storage value did not match expected value";
+      return L"";
+    }
+    return L"{\"ok\":true,\"appId\":" + JsonString(appId) +
+        L",\"key\":" + JsonString(key) +
+        L",\"value\":" + actualText.value() + L"}";
+  }
 
   bool LoadControlSession(sqlite3* db, std::wstring const& sessionId, ControlSessionRecord* record) {
     sqlite3_stmt* statement = nullptr;
@@ -1926,6 +2212,46 @@ struct DevControlPlane::Impl {
       result = tool == L"runtime.event_log" ? EventLogJson(appId, &error) : ConsoleLogsJson(appId, &error);
       if (result.empty()) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
+        return;
+      }
+    } else if (tool == L"runtime.storage_get" || tool == L"runtime.storage_set") {
+      json::JsonObject args{nullptr};
+      std::wstring appId;
+      std::wstring key;
+      std::wstring argsError;
+      if (!StorageCommandArgs(command, tool, tool == L"runtime.storage_set", &args, &appId, &key, &argsError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", argsError, 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = tool == L"runtime.storage_get"
+          ? RuntimeStorageGetJson(sessionId, appId, key, args, started)
+          : RuntimeStorageSetJson(sessionId, appId, key, args, started);
+    } else if (tool == L"runtime.assert_storage") {
+      json::JsonObject args{nullptr};
+      std::wstring appId;
+      std::wstring key;
+      std::wstring argsError;
+      if (!StorageCommandArgs(command, tool, true, &args, &appId, &key, &argsError)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", argsError, 400);
+        return;
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, appId, &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = RuntimeAssertStorageJson(appId, key, args.GetNamedValue(L"value"), &errorCode, &errorMessage);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorCode == L"storage_error" ? 500 : 400);
         return;
       }
     } else if (tool == L"db.export_backup") {
