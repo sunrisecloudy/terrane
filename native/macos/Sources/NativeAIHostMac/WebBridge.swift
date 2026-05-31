@@ -567,11 +567,8 @@ struct AppSandboxContext {
     }
 
     private static func manifest(for appId: String) -> [String: Any] {
-        let manifestURL = RuntimeResourceLocator.repoRootURL()
-            .appendingPathComponent("webapps/examples")
-            .appendingPathComponent(appId)
-            .appendingPathComponent("manifest.json")
-        guard let data = try? Data(contentsOf: manifestURL),
+        guard let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: appId),
+              let data = try? Data(contentsOf: manifestURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return [:]

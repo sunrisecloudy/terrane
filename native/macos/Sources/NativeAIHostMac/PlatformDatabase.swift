@@ -12,7 +12,7 @@ final class PlatformDatabase {
         }
 
         execute("PRAGMA foreign_keys = ON;")
-        applyCheckedInMigrations()
+        applyMigrations()
         runIntegrityCheck()
     }
 
@@ -25,22 +25,20 @@ final class PlatformDatabase {
         return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
     }
 
-    private func applyCheckedInMigrations() {
-        let migrationsURL = RuntimeResourceLocator.repoRootURL().appendingPathComponent("db/sqlite")
+    private func applyMigrations() {
+        guard let migrationsURL = RuntimeResourceLocator.sqliteMigrationsDirectoryURL() else {
+            executeFallbackSchema()
+            return
+        }
+
         guard let migrations = try? FileManager.default.contentsOfDirectory(
             at: migrationsURL,
             includingPropertiesForKeys: nil
         )
             .filter({ $0.pathExtension == "sql" })
-            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
-            !migrations.isEmpty
+            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         else {
-            execute(
-                """
-                CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));
-                """
-            )
+            executeFallbackSchema()
             return
         }
 
@@ -49,6 +47,15 @@ final class PlatformDatabase {
                 execute(sql)
             }
         }
+    }
+
+    private func executeFallbackSchema() {
+        execute(
+            """
+            CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));
+            """
+        )
     }
 
     private func runIntegrityCheck() {

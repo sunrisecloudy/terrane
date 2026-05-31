@@ -29,6 +29,7 @@ test("Apple native hosts route runtime and generated-app resources through app-r
     assertContains(source, 'logicalPath.hasPrefix("runtime/")', label);
     assertContains(source, 'logicalPath.hasPrefix("webapps/examples/")', label);
     assertContains(source, 'webapps/examples/\\(host)/', label);
+    assertContains(source, "exampleManifestURL(for appId: String)", label);
     assertContains(source, "isGeneratedAppIndexURL", label);
     assertContains(source, "appRuntimeUserScript", label);
     assertContains(source, "runtime.ready_for_port", label);
@@ -39,6 +40,40 @@ test("Apple native hosts route runtime and generated-app resources through app-r
     assertContains(source, "mimeType(for:", label);
     assert.equal(source.includes("loadFileURL("), false, `${label} must not load runtime as file:// with absolute /runtime paths`);
   }
+});
+
+test("macOS native host resolves packaged release resources before repo-root fallbacks", () => {
+  const locator = readRepoFile("native/macos/Sources/NativeAIHostMac/WebHostView.swift");
+  const database = readRepoFile("native/macos/Sources/NativeAIHostMac/PlatformDatabase.swift");
+  const bridge = readRepoFile("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
+  const control = readRepoFile("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+
+  assertContains(locator, 'Bundle.main.resourceURL?.appendingPathComponent("runtime")', "macOS locator");
+  assertContains(locator, 'Bundle.main.resourceURL?.appendingPathComponent("webapps/examples")', "macOS locator");
+  assertContains(locator, 'Bundle.main.resourceURL?.appendingPathComponent("db/sqlite")', "macOS locator");
+  assertContains(locator, "firstExistingDirectory", "macOS locator");
+  assert.equal(
+    locator.indexOf('Bundle.main.resourceURL?.appendingPathComponent("runtime")') <
+      locator.indexOf('repoRootURL().appendingPathComponent("runtime-web")'),
+    true,
+    "macOS locator should prefer Contents/Resources/runtime before repo-root runtime-web",
+  );
+  assert.equal(
+    locator.indexOf('Bundle.main.resourceURL?.appendingPathComponent("webapps/examples")') <
+      locator.indexOf('repoRootURL().appendingPathComponent("webapps/examples")'),
+    true,
+    "macOS locator should prefer Contents/Resources/webapps/examples before repo-root examples",
+  );
+  assert.equal(
+    locator.indexOf('Bundle.main.resourceURL?.appendingPathComponent("db/sqlite")') <
+      locator.indexOf('repoRootURL().appendingPathComponent("db/sqlite")'),
+    true,
+    "macOS locator should prefer Contents/Resources/db/sqlite before repo-root SQLite migrations",
+  );
+  assertContains(database, "RuntimeResourceLocator.sqliteMigrationsDirectoryURL()", "macOS database");
+  assertContains(bridge, "RuntimeResourceLocator.exampleManifestURL(for: appId)", "macOS bridge");
+  assertContains(control, "RuntimeResourceLocator.exampleManifestURL(for: appId)", "macOS control plane");
+  assertContains(control, "RuntimeResourceLocator.exampleFileURL(appId: appId, path: path)", "macOS control plane");
 });
 
 test("Linux native host maps app-runtime /runtime paths to runtime-web files", () => {

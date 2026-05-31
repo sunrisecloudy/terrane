@@ -52,7 +52,7 @@ const targetAssertions = [
           "sqlite3_open",
           "PRAGMA foreign_keys = ON",
           "PRAGMA integrity_check",
-          'appendingPathComponent("db/sqlite")',
+          "RuntimeResourceLocator.sqliteMigrationsDirectoryURL()",
           "CREATE TABLE IF NOT EXISTS apps",
         ],
       },

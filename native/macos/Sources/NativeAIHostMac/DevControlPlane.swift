@@ -3121,11 +3121,8 @@ final class DevControlPlane: @unchecked Sendable {
            manifest["permissions"] != nil || manifest["networkPolicy"] != nil {
             return manifest
         }
-        let manifestURL = RuntimeResourceLocator.repoRootURL()
-            .appendingPathComponent("webapps/examples")
-            .appendingPathComponent(appId)
-            .appendingPathComponent("manifest.json")
-        guard let data = try? Data(contentsOf: manifestURL),
+        guard let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: appId),
+              let data = try? Data(contentsOf: manifestURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return [:]
@@ -5182,10 +5179,9 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func bundledAppText(appId: String, path: String) -> String? {
-        let fileURL = RuntimeResourceLocator.repoRootURL()
-            .appendingPathComponent("webapps/examples")
-            .appendingPathComponent(appId)
-            .appendingPathComponent(path)
+        guard let fileURL = RuntimeResourceLocator.exampleFileURL(appId: appId, path: path) else {
+            return nil
+        }
         return try? String(contentsOf: fileURL, encoding: .utf8)
     }
 

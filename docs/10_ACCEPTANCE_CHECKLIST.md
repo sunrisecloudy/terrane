@@ -75,6 +75,7 @@
 
 - [x] macOS app launches.
 - [x] Runtime loads from bundle.
+- [x] Packaged macOS `.app` resources prefer `Contents/Resources/runtime`, `Contents/Resources/webapps/examples`, and `Contents/Resources/db/sqlite` before repo-root dev fallbacks.
 - [x] Bridge works.
 - [x] Storage persists.
 - [x] Storage bridge failures return structured `storage_error` responses.

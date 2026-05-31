@@ -105,6 +105,9 @@ artifacts/
   release-manifest.json
   native-apps/
     macos/macos-arm64/NativeAIHostMac.app/
+      Contents/Resources/runtime/
+      Contents/Resources/webapps/examples/
+      Contents/Resources/db/sqlite/
     linux/linux-x86_64/NativeAIWebappHost/
       native-ai-webapp-host
       libzig_core.so

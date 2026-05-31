@@ -22,6 +22,12 @@ struct NativeHostTests {
         let manifest = try #require(RuntimeResourceLocator.fileURL(forRuntimeURL: manifestURL))
         #expect(manifest.path.hasSuffix("webapps/examples/notes-lite/manifest.json"))
         #expect(RuntimeResourceLocator.mimeType(for: manifest) == "application/json")
+        #expect(RuntimeResourceLocator.exampleManifestURL(for: "notes-lite")?.path.hasSuffix("webapps/examples/notes-lite/manifest.json") == true)
+        #expect(RuntimeResourceLocator.exampleFileURL(appId: "notes-lite", path: "../manifest.json") == nil)
+
+        let migrations = try #require(RuntimeResourceLocator.sqliteMigrationsDirectoryURL())
+        #expect(migrations.path.hasSuffix("db/sqlite"))
+        #expect(FileManager.default.fileExists(atPath: migrations.appendingPathComponent("001_initial.sql").path))
 
         let escapedURL = URL(string: "app-runtime://runtime/../../docs/00_PRD.md")!
         #expect(RuntimeResourceLocator.fileURL(forRuntimeURL: escapedURL) == nil)

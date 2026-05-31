@@ -259,9 +259,50 @@ enum RuntimeResourceLocator {
         URL(string: "\(scheme)://runtime/index.html")!
     }
 
+    static func runtimeDirectoryURL() -> URL? {
+        firstExistingDirectory([
+            Bundle.main.resourceURL?.appendingPathComponent("runtime"),
+            repoRootURL().appendingPathComponent("runtime-web")
+        ])
+    }
+
+    static func examplesDirectoryURL() -> URL? {
+        firstExistingDirectory([
+            Bundle.main.resourceURL?.appendingPathComponent("webapps/examples"),
+            repoRootURL().appendingPathComponent("webapps/examples")
+        ])
+    }
+
+    static func sqliteMigrationsDirectoryURL() -> URL? {
+        firstExistingDirectory([
+            Bundle.main.resourceURL?.appendingPathComponent("db/sqlite"),
+            repoRootURL().appendingPathComponent("db/sqlite")
+        ])
+    }
+
     static func isGeneratedAppIndexURL(_ url: URL) -> Bool {
         let logicalPath = logicalResourcePath(for: url)
         return logicalPath.hasPrefix("webapps/examples/") && logicalPath.hasSuffix("/index.html")
+    }
+
+    static func exampleAppDirectoryURL(for appId: String) -> URL? {
+        guard isSafePathSegment(appId) else { return nil }
+        guard let examplesDirectory = examplesDirectoryURL() else { return nil }
+        let appDirectory = examplesDirectory.appendingPathComponent(appId)
+        return directoryExists(at: appDirectory) ? appDirectory : nil
+    }
+
+    static func exampleManifestURL(for appId: String) -> URL? {
+        guard let appDirectory = exampleAppDirectoryURL(for: appId) else { return nil }
+        let manifestURL = appDirectory.appendingPathComponent("manifest.json")
+        return FileManager.default.fileExists(atPath: manifestURL.path) ? manifestURL : nil
+    }
+
+    static func exampleFileURL(appId: String, path: String) -> URL? {
+        guard isSafePathSegment(appId), isAllowedExampleRelativePath(path) else { return nil }
+        guard let appDirectory = exampleAppDirectoryURL(for: appId) else { return nil }
+        let fileURL = appDirectory.appendingPathComponent(path)
+        return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
     }
 
     static func fileURL(forRuntimeURL url: URL) -> URL? {
@@ -271,17 +312,16 @@ enum RuntimeResourceLocator {
 
         if logicalPath.hasPrefix("runtime/") {
             let relative = String(logicalPath.dropFirst("runtime/".count))
-            return firstExistingURL([
-                Bundle.main.resourceURL?.appendingPathComponent("runtime").appendingPathComponent(relative),
-                repoRootURL().appendingPathComponent("runtime-web").appendingPathComponent(relative)
-            ])
+            guard let runtimeDirectory = runtimeDirectoryURL() else { return nil }
+            let fileURL = runtimeDirectory.appendingPathComponent(relative)
+            return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
         }
 
         if logicalPath.hasPrefix("webapps/examples/") {
-            return firstExistingURL([
-                Bundle.main.resourceURL?.appendingPathComponent(logicalPath),
-                repoRootURL().appendingPathComponent(logicalPath)
-            ])
+            let relative = String(logicalPath.dropFirst("webapps/examples/".count))
+            guard let examplesDirectory = examplesDirectoryURL() else { return nil }
+            let fileURL = examplesDirectory.appendingPathComponent(relative)
+            return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
         }
 
         return nil
@@ -320,8 +360,27 @@ enum RuntimeResourceLocator {
             (path.hasPrefix("runtime/") || path.hasPrefix("webapps/examples/"))
     }
 
-    private static func firstExistingURL(_ urls: [URL?]) -> URL? {
-        urls.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
+    private static func isAllowedExampleRelativePath(_ path: String) -> Bool {
+        !path.isEmpty &&
+            !path.hasPrefix("/") &&
+            !path.contains("..") &&
+            !path.contains("\\")
+    }
+
+    private static func isSafePathSegment(_ value: String) -> Bool {
+        !value.isEmpty &&
+            !value.contains("..") &&
+            !value.contains("/") &&
+            !value.contains("\\")
+    }
+
+    private static func firstExistingDirectory(_ urls: [URL?]) -> URL? {
+        urls.compactMap { $0 }.first { directoryExists(at: $0) }
+    }
+
+    private static func directoryExists(at url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 }
 
