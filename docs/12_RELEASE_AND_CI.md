@@ -151,7 +151,7 @@ node --no-warnings tools/package-release.mjs --out artifacts --build-native-wind
 
 The Windows native smoke job also builds the release host and verifies that production/release builds reject `--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev` while writing a `native.production_guard` audit record.
 
-The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition:
+The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition. It also builds the packaged Linux native artifact and launches it from outside the repo root without `NATIVE_AI_ZIG_CORE_SO`, proving runtime resources, example apps, SQLite migrations, and `libzig_core.so` resolve relative to the executable:
 
 ```text
 node --no-warnings tools/run-linux-native-docker.mjs

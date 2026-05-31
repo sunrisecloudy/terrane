@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { linuxDockerCommands } from "../../../tools/run-linux-native-docker.mjs";
+import { defaultPlatform, linuxDockerCommands } from "../../../tools/run-linux-native-docker.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -21,6 +21,13 @@ test("Linux Docker helper builds an image and runs the native launch smoke with 
   assert.equal(commands.runArgs.includes("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1"), true);
   assert.equal(commands.runArgs.includes("WEBKIT_DISABLE_COMPOSITING_MODE=1"), true);
   assert.equal(commands.runArgs.includes("tools/fake-platform-host/test/linux-native-build.test.js"), true);
+});
+
+test("Linux Docker helper defaults to the supported linux-x86_64 release target on non-x64 hosts", () => {
+  const commands = linuxDockerCommands({ rootDir: repoRoot, image: "native-ai-linux-smoke:test-default" });
+  assert.equal(defaultPlatform, process.arch === "x64" ? "" : "linux/amd64");
+  assert.equal(commands.buildArgs.includes(defaultPlatform), defaultPlatform !== "");
+  assert.equal(commands.runArgs.includes(defaultPlatform), defaultPlatform !== "");
 });
 
 test("Linux native Dockerfile pins the smoke dependencies and Zig toolchain", () => {

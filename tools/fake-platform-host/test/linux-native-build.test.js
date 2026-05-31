@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { packageReleaseArtifacts } from "../../../tools/package-release.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const linuxDir = path.join(repoRoot, "native", "linux");
@@ -45,6 +46,15 @@ function linuxNativeSkipReason({ requireZig = false, requireSqliteCli = false } 
   if (requireZig && !commandWorks("zig", ["version"])) return "zig is not available";
   if (requireSqliteCli && !commandWorks("sqlite3", ["-version"])) return "sqlite3 CLI is not available";
   if (!hasLinuxNativeDependencies()) return "GTK/WebKitGTK development dependencies are not available";
+  return false;
+}
+
+function linuxPackagedNativeSmokeSkipReason() {
+  const baseReason = linuxNativeSkipReason({ requireZig: true });
+  if (baseReason) return baseReason;
+  if (process.env.NATIVE_AI_LINUX_SMOKE_LAUNCH !== "1") {
+    return "set NATIVE_AI_LINUX_SMOKE_LAUNCH=1 to run packaged Linux native launch smoke";
+  }
   return false;
 }
 
@@ -137,6 +147,44 @@ test(
   },
 );
 
+test(
+  "Linux packaged native artifact launches from executable-relative resources",
+  {
+    skip: linuxPackagedNativeSmokeSkipReason(),
+    timeout: 240_000,
+  },
+  () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-packaged-smoke-"));
+    try {
+      const outDir = path.join(scratch, "artifacts");
+      const result = packageReleaseArtifacts({ outDir, buildNativeLinux: true });
+      const nativeArtifact = result.artifacts.find((artifact) => artifact.id === "native-linux-linux-x86_64");
+      assert.notEqual(nativeArtifact, undefined, "release manifest should include the Linux native host artifact");
+
+      const appDir = path.join(outDir, "native-apps", "linux", "linux-x86_64", "NativeAIWebappHost");
+      const binaryPath = path.join(appDir, "native-ai-webapp-host");
+      const packagedCorePath = path.join(appDir, "libzig_core.so");
+      for (const relativePath of [
+        "native-ai-webapp-host",
+        "libzig_core.so",
+        "resources/runtime/index.html",
+        "resources/runtime/runtime.js",
+        "resources/webapps/examples/notes-lite/manifest.json",
+        "resources/webapps/examples/task-workbench/app.js",
+        "resources/db/sqlite/001_initial.sql",
+      ]) {
+        assert.equal(fs.existsSync(path.join(appDir, relativePath)), true, `${relativePath} should be packaged`);
+      }
+      assert.notEqual(fs.statSync(binaryPath).mode & 0o111, 0);
+      assert.notEqual(fs.statSync(packagedCorePath).mode & 0o111, 0);
+
+      runPackagedArtifactSmoke({ binaryPath, scratch, appDir });
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
   if (process.env.NATIVE_AI_LINUX_SMOKE_LAUNCH !== "1") return;
   const storageKey = `notes-lite:linux-smoke-${process.pid}-${Date.now()}`;
@@ -196,7 +244,45 @@ function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
   });
 }
 
-function runSmoke(binaryPath, marker, env) {
+function runPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
+  const storageKey = `notes-lite:linux-packaged-smoke-${process.pid}-${Date.now()}`;
+  const storageValue = `linux-packaged-smoke-${process.pid}-${Date.now()}`;
+  const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
+  fs.mkdirSync(outsideRepoCwd, { recursive: true });
+  const { NATIVE_AI_ZIG_CORE_SO: _ignoredZigCoreSo, ...smokeEnv } = process.env;
+  const baseEnv = {
+    ...smokeEnv,
+    NATIVE_AI_LINUX_SMOKE_EXIT_AFTER: "1",
+    XDG_DATA_HOME: path.join(scratch, "packaged-xdg-data"),
+  };
+
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_RUNTIME_LOADED", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "runtime-load",
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-storage-set",
+    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-storage-get",
+    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+  }, { cwd: outsideRepoCwd });
+  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
+    ...baseEnv,
+    NATIVE_AI_LINUX_SMOKE: "bridge-core-step",
+  }, { cwd: outsideRepoCwd });
+
+  const dbPath = path.join(baseEnv.XDG_DATA_HOME, "NativeAIWebappPlatform", "platform.sqlite");
+  assert.equal(fs.existsSync(dbPath), true, "packaged smoke should persist the platform database");
+  assert.equal(appDir.includes(repoRoot), false, "packaged artifact should live outside the repo root");
+}
+
+function runSmoke(binaryPath, marker, env, { cwd = repoRoot } = {}) {
   let args = [];
   let command = binaryPath;
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
@@ -209,7 +295,7 @@ function runSmoke(binaryPath, marker, env) {
     command = "dbus-run-session";
   }
 
-  const result = spawnSync(command, args, { env, cwd: repoRoot, encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(command, args, { env, cwd, encoding: "utf8", timeout: 30_000 });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   assert.equal(output.includes("NATIVE_AI_LINUX_SMOKE_FAILED"), false, output);
   if (output.includes(marker)) return;

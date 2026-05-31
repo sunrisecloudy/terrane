@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const defaultImage = "native-ai-linux-smoke:local";
+export const defaultPlatform = process.arch === "x64" ? "" : "linux/amd64";
 
 export function linuxDockerCommands({
   rootDir = repoRoot,
   image = defaultImage,
-  platform = "",
+  platform = defaultPlatform,
   dockerfile = path.join(rootDir, "native", "linux", "Dockerfile"),
 } = {}) {
   const buildArgs = [
@@ -61,7 +62,7 @@ export function linuxDockerCommands({
 function parseArgs(argv) {
   const options = {
     image: defaultImage,
-    platform: "",
+    platform: defaultPlatform,
     build: true,
     run: true,
     dryRun: false,

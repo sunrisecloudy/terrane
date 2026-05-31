@@ -316,6 +316,7 @@ function checkReleasePackaging() {
   const toolsReadme = fs.readFileSync(path.join(repoRoot, "tools", "README.md"), "utf8");
   const ignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
   const test = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "release-packaging.test.js"), "utf8");
+  const linuxNativeTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "linux-native-build.test.js"), "utf8");
   const requiredScriptSnippets = [
     "runtime-web.zip",
     "example-webapps.zip",
@@ -384,9 +385,15 @@ function checkReleasePackaging() {
   if (!ignore.includes("artifacts/")) {
     throw new Error(".gitignore must ignore generated release artifacts");
   }
-  for (const snippet of ["run-linux-native-docker", "--build-native-linux", "--build-native-windows", "tools/run-linux-native-docker.mjs"]) {
+  for (const snippet of ["run-linux-native-docker", "--build-native-linux", "--build-native-windows", "tools/run-linux-native-docker.mjs", "linux/amd64"]) {
     if (!toolsReadme.includes(snippet)) {
       throw new Error(`tools/README missing ${snippet}`);
+    }
+  }
+  const linuxDockerHelper = fs.readFileSync(path.join(repoRoot, "tools", "run-linux-native-docker.mjs"), "utf8");
+  for (const snippet of ["defaultPlatform", "process.arch === \"x64\" ? \"\" : \"linux/amd64\""]) {
+    if (!linuxDockerHelper.includes(snippet)) {
+      throw new Error(`Linux Docker helper missing ${snippet}`);
     }
   }
   for (const snippet of [
@@ -410,6 +417,21 @@ function checkReleasePackaging() {
   ]) {
     if (!test.includes(snippet)) {
       throw new Error(`release packaging test missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "Linux packaged native artifact launches from executable-relative resources",
+    "packageReleaseArtifacts({ outDir, buildNativeLinux: true })",
+    "NATIVE_AI_ZIG_CORE_SO",
+    "outside-repo-cwd",
+    "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK",
+    "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK",
+    "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK",
+    "resources/runtime/index.html",
+    "resources/db/sqlite/001_initial.sql",
+  ]) {
+    if (!linuxNativeTest.includes(snippet)) {
+      throw new Error(`Linux native packaged smoke missing ${snippet}`);
     }
   }
   return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,linux-native-host,windows-native-host,manifest";
