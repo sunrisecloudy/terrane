@@ -69,6 +69,7 @@
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports explicit `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots.
 - [x] Source/static and simulator build checks verify iOS DEBUG simulator dev control supports static `runtime.accessibility_snapshot`, `runtime.run_accessibility_audit`, and `runtime.assert_accessibility` over bundled generated app HTML.
+- [x] Source/static checks verify iOS DEBUG simulator dev control supports static `runtime.run_smoke_tests`, `runtime.run_microtest`, and `platform.run_platform_smoke` with `test_runs` persistence.
 
 ### macOS
 

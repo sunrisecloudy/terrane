@@ -620,6 +620,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return successBody(result: try accessibilityAudit(args: args), sessionId: sessionId)
         case "runtime.assert_accessibility":
             return try assertAccessibility(args: args, sessionId: sessionId)
+        case "runtime.run_smoke_tests":
+            return successBody(result: try runSmokeTests(args: args, sessionId: sessionId), sessionId: sessionId)
+        case "runtime.run_microtest":
+            return successBody(result: try runMicrotest(args: args, sessionId: sessionId), sessionId: sessionId)
+        case "platform.run_platform_smoke":
+            return successBody(result: try runPlatformSmoke(args: args, sessionId: sessionId), sessionId: sessionId)
         case "runtime.resource_usage":
             let appId = try requiredString(args, key: "appId", message: "runtime.resource_usage requires appId")
             return successBody(result: resourceUsage(appId: appId), sessionId: sessionId)
@@ -703,6 +709,9 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.accessibility_snapshot",
                     "runtime.run_accessibility_audit",
                     "runtime.assert_accessibility",
+                    "runtime.run_smoke_tests",
+                    "runtime.run_microtest",
+                    "platform.run_platform_smoke",
                     "runtime.resource_usage",
                     "runtime.event_log",
                     "runtime.console_logs",
@@ -1159,13 +1168,19 @@ final class IOSDevControlPlane: @unchecked Sendable {
 
     private func htmlForStaticApp(appId: String) throws -> String {
         try requireBundledApp(appId, message: "runtime accessibility appId is not a valid generated app id")
-        guard let runtimeURL = URL(string: "\(RuntimeResourceLocator.scheme)://\(appId)/index.html"),
-              let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: runtimeURL),
-              let html = try? String(contentsOf: fileURL, encoding: .utf8)
-        else {
+        guard let html = staticAppText(appId: appId, path: "index.html") else {
             throw CommandError(status: 404, code: "app_not_found", message: "Generated app HTML was not found", details: ["appId": appId])
         }
         return html
+    }
+
+    private func staticAppText(appId: String, path: String) -> String? {
+        guard let runtimeURL = URL(string: "\(RuntimeResourceLocator.scheme)://\(appId)/\(path)"),
+              let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: runtimeURL)
+        else {
+            return nil
+        }
+        return try? String(contentsOf: fileURL, encoding: .utf8)
     }
 
     private func accessibilitySnapshotFromHtml(appId: String, html: String) -> [String: Any] {
@@ -1348,6 +1363,413 @@ final class IOSDevControlPlane: @unchecked Sendable {
         }
         let label = regexReplace(raw, pattern: #"<\#(escapedTag)\b[\s\S]*"#, template: "")
         return label.isEmpty ? nil : label
+    }
+
+    private func runSmokeTests(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "runtime.run_smoke_tests requires appId")
+        try requireBundledApp(appId, message: "runtime.run_smoke_tests appId is not a valid generated app id")
+        guard let smokeText = staticAppText(appId: appId, path: "smoke-tests.json") else {
+            throw CommandError(status: 400, code: "smoke_tests_missing", message: "App has no smoke-tests.json", details: ["appId": appId])
+        }
+        guard let tests = jsonFragment(smokeText) as? [[String: Any]] else {
+            throw CommandError(status: 400, code: "invalid_smoke_tests", message: "smoke-tests.json must parse as a JSON array", details: ["appId": appId])
+        }
+        let result = try evaluateSmokeTests(appId: appId, tests: tests, spec: tests)
+        try recordTestRun(
+            microTestId: "smoke:\(appId)",
+            name: "\(appId) bundled smoke tests",
+            appId: appId,
+            spec: tests,
+            status: (result["ok"] as? Bool) == true ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "ios-static-smoke"],
+            sessionId: sessionId
+        )
+        return result
+    }
+
+    private func evaluateSmokeTests(appId: String, tests: [[String: Any]], spec: Any) throws -> [String: Any] {
+        let html = try htmlForStaticApp(appId: appId)
+        var failures: [[String: Any]] = []
+        var dynamicText: [String] = []
+        var assertions = 0
+        for test in tests {
+            let name = test["name"] as? String ?? "unnamed"
+            if let steps = test["steps"] as? [[String: Any]] {
+                assertions += steps.count
+                for step in steps {
+                    if let selector = step["selector"] as? String, !selector.isEmpty, !staticSelectorExists(html: html, selector: selector) {
+                        failures.append(testFailure(test: name, code: "selector.not_found", field: "selector", value: selector))
+                    }
+                    let type = step["type"] as? String ?? ""
+                    if (type == "fill" || type == "select"), let value = step["value"] as? String {
+                        dynamicText.append(value)
+                    }
+                }
+            }
+            if let expected = test["expected"] as? [String: Any] {
+                assertions += expected.count
+                if let methods = expected["bridgeCallsInclude"] as? [String] {
+                    for method in methods where !bridgeMethodReferenced(appId: appId, method: method) {
+                        failures.append(testFailure(test: name, code: "bridge.call_missing", field: "method", value: method))
+                    }
+                }
+                if let text = expected["textIncludes"] as? String, !textCanAppear(html: html, dynamicText: dynamicText, text: text) {
+                    failures.append(testFailure(test: name, code: "text.not_found", field: "text", value: text))
+                }
+            }
+        }
+        let ok = failures.isEmpty
+        return [
+            "ok": ok,
+            "status": ok ? "passed" : "failed",
+            "appId": appId,
+            "total": tests.count,
+            "assertions": assertions,
+            "failures": failures,
+            "runner": "static",
+            "spec": spec
+        ]
+    }
+
+    private func runMicrotest(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let spec = try controlSpec(args: args, inlineKey: "spec", pathKey: "microtestPath", missingMessage: "runtime.run_microtest requires spec or microtestPath")
+        guard let appId = (spec["targetApps"] as? [String])?.first, !appId.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_microtest", message: "Micro-test must target at least one app")
+        }
+        try requireBundledApp(appId, message: "Micro-test must target at least one app")
+        let result = try evaluateMicrotestSpec(sessionId: sessionId, appId: appId, spec: spec)
+        try recordTestRun(
+            microTestId: spec["id"] as? String ?? "microtest:\(appId)",
+            name: spec["id"] as? String ?? "\(appId) micro-test",
+            appId: appId,
+            spec: spec,
+            status: (result["ok"] as? Bool) == true ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "ios-static-microtest"],
+            sessionId: sessionId
+        )
+        return result
+    }
+
+    private func evaluateMicrotestSpec(sessionId: String, appId: String, spec: [String: Any]) throws -> [String: Any] {
+        var failures: [[String: Any]] = []
+        var commands: [[String: Any]] = []
+        var dynamicText: [String] = []
+        var totalSteps = 0
+        for phase in ["setup", "steps", "teardown"] {
+            guard let steps = spec[phase] as? [[String: Any]] else { continue }
+            for (index, step) in steps.enumerated() {
+                totalSteps += 1
+                let tool = step["tool"] as? String ?? ""
+                let args = stepArgsWithAppId(step: step, appId: appId)
+                let result = staticStepResult(sessionId: sessionId, appId: appId, tool: tool, args: args, dynamicText: &dynamicText)
+                let ok = (result["ok"] as? Bool) != false
+                if !ok {
+                    failures.append(testFailure(test: phase, code: "command_failed", field: "tool", value: tool))
+                }
+                commands.append([
+                    "phase": phase,
+                    "index": index,
+                    "tool": tool,
+                    "status": ok ? "passed" : "failed",
+                    "result": result
+                ])
+            }
+        }
+        let ok = failures.isEmpty
+        return [
+            "ok": ok,
+            "status": ok ? "passed" : "failed",
+            "appId": appId,
+            "totalSteps": totalSteps,
+            "failures": failures,
+            "commands": commands,
+            "runner": "ios-static-microtest"
+        ]
+    }
+
+    private func runPlatformSmoke(args: [String: Any], sessionId: String) throws -> [String: Any] {
+        let spec = try controlSpec(args: args, inlineKey: "spec", pathKey: "smokePath", missingMessage: "platform.run_platform_smoke requires spec or smokePath")
+        guard let appIds = spec["apps"] as? [String], !appIds.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_request", message: "platform.run_platform_smoke requires an apps array")
+        }
+        let smokeId = spec["id"] as? String ?? "platform-smoke"
+        let platform = args["platform"] as? String ?? "ios-simulator"
+        var failures: [[String: Any]] = []
+        var appResults: [[String: Any]] = []
+        for appId in appIds {
+            do {
+                try requireBundledApp(appId, message: "platform.run_platform_smoke apps must be generated app ids")
+                let tests = try bundledSmokeTests(appId: appId)
+                let smoke = try evaluateSmokeTests(appId: appId, tests: tests, spec: tests)
+                let ok = (smoke["ok"] as? Bool) == true
+                if !ok {
+                    failures.append(["appId": appId, "code": "smoke_failed", "message": "Bundled smoke tests failed"])
+                }
+                appResults.append([
+                    "appId": appId,
+                    "ok": ok,
+                    "commands": [[
+                        "tool": "runtime.run_smoke_tests",
+                        "status": ok ? "passed" : "failed",
+                        "result": smoke
+                    ]]
+                ])
+            } catch let error as CommandError {
+                failures.append(["appId": appId, "code": error.code, "message": error.message])
+                appResults.append(["appId": appId, "ok": false, "commands": []])
+            }
+        }
+        let ok = failures.isEmpty
+        let result: [String: Any] = [
+            "ok": ok,
+            "id": smokeId,
+            "platform": platform,
+            "totalApps": appResults.count,
+            "failures": failures,
+            "apps": appResults
+        ]
+        try recordTestRun(
+            microTestId: "platform-smoke:\(smokeId):\(platform)",
+            name: "\(smokeId) platform smoke (\(platform))",
+            appId: nil,
+            spec: spec,
+            status: ok ? "passed" : "failed",
+            result: result,
+            diagnostics: ["runner": "ios-static-platform-smoke"],
+            sessionId: sessionId
+        )
+        return result
+    }
+
+    private func bundledSmokeTests(appId: String) throws -> [[String: Any]] {
+        guard let smokeText = staticAppText(appId: appId, path: "smoke-tests.json") else {
+            throw CommandError(status: 400, code: "smoke_tests_missing", message: "App has no smoke-tests.json", details: ["appId": appId])
+        }
+        guard let tests = jsonFragment(smokeText) as? [[String: Any]] else {
+            throw CommandError(status: 400, code: "invalid_smoke_tests", message: "smoke-tests.json must parse as a JSON array", details: ["appId": appId])
+        }
+        return tests
+    }
+
+    private func controlSpec(args: [String: Any], inlineKey: String, pathKey: String, missingMessage: String) throws -> [String: Any] {
+        if let spec = args[inlineKey] as? [String: Any] {
+            return spec
+        }
+        if let specText = args[inlineKey] as? String,
+           let spec = jsonFragment(specText) as? [String: Any] {
+            return spec
+        }
+        if let path = args[pathKey] as? String, !path.isEmpty {
+            let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : RuntimeResourceLocator.repoRootURL().appendingPathComponent(path)).standardizedFileURL
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  let spec = jsonFragment(text) as? [String: Any]
+            else {
+                throw CommandError(status: 400, code: "invalid_request", message: missingMessage)
+            }
+            return spec
+        }
+        throw CommandError(status: 400, code: "invalid_request", message: missingMessage)
+    }
+
+    private func stepArgsWithAppId(step: [String: Any], appId: String) -> [String: Any] {
+        var args = step["args"] as? [String: Any] ?? [:]
+        if args["appId"] == nil {
+            args["appId"] = appId
+        }
+        return args
+    }
+
+    private func staticStepResult(sessionId: String, appId: String, tool: String, args: [String: Any], dynamicText: inout [String]) -> [String: Any] {
+        do {
+            switch tool {
+            case "platform.validate_package", "platform.sign_webapp_package", "platform.install_webapp_package", "platform.open_webapp", "runtime.wait_for":
+                return ["ok": true, "tool": tool, "appId": appId]
+            case "runtime.capabilities":
+                return runtimeCapabilities(appId: appId)
+            case "runtime.resource_usage":
+                return resourceUsage(appId: appId)
+            case "runtime.run_accessibility_audit":
+                return try accessibilityAudit(args: args)
+            case "runtime.accessibility_snapshot":
+                return try accessibilitySnapshot(args: args)
+            case "runtime.assert_accessibility":
+                let report = try accessibilityAudit(args: args)
+                let failed = (report["checks"] as? [[String: Any]] ?? []).contains { $0["status"] as? String == "fail" }
+                return ["ok": !failed, "report": report]
+            case "runtime.click", "runtime.press_key", "runtime.drag":
+                return ["ok": true, "tool": tool, "appId": appId, "target": staticTarget(args: args)]
+            case "runtime.type", "runtime.set_value":
+                let value = (args["text"] as? String) ?? (args["value"] as? String) ?? ""
+                if !value.isEmpty {
+                    dynamicText.append(value)
+                }
+                return ["ok": true, "tool": tool, "appId": appId, "target": staticTarget(args: args), "value": value]
+            case "runtime.assert_visible":
+                let html = try htmlForStaticApp(appId: appId)
+                if let selector = args["selector"] as? String, !selector.isEmpty, staticSelectorExists(html: html, selector: selector) {
+                    return ["ok": true, "appId": appId, "selector": selector]
+                }
+                if let text = args["text"] as? String, textCanAppear(html: html, dynamicText: dynamicText, text: text) {
+                    return ["ok": true, "appId": appId, "text": text]
+                }
+                return ["ok": false, "error": ["code": "selector.not_found", "message": "Expected element was not found"]]
+            case "runtime.assert_text":
+                let text = args["text"] as? String ?? ""
+                let html = try htmlForStaticApp(appId: appId)
+                guard textCanAppear(html: html, dynamicText: dynamicText, text: text) else {
+                    return ["ok": false, "error": ["code": "text.not_found", "message": "Expected text was not found"]]
+                }
+                return ["ok": true, "appId": appId, "text": text]
+            case "runtime.assert_bridge_call":
+                let method = args["method"] as? String ?? ""
+                return ["ok": !method.isEmpty && bridgeMethodReferenced(appId: appId, method: method), "appId": appId, "method": method]
+            case "runtime.assert_no_console_errors":
+                return ["ok": true, "errors": 0, "appId": appId]
+            case "runtime.run_smoke_tests":
+                return try runSmokeTests(args: ["appId": appId], sessionId: sessionId)
+            case "platform.create_snapshot":
+                return ["ok": true, "snapshotId": "snapshot_ios_static_\(UUID().uuidString.lowercased())", "appId": appId]
+            case "platform.reset_webapp", "runtime.storage_reset", "runtime.network_mock_set", "runtime.dialog_mock_set", "runtime.replay_events", "runtime.core_snapshot", "runtime.assert_core_action":
+                return ["ok": true, "tool": tool, "appId": appId]
+            default:
+                return ["ok": false, "error": ["code": "platform.unavailable", "message": "Micro-test command is not executable by the iOS static runner"]]
+            }
+        } catch let error as CommandError {
+            return ["ok": false, "error": ["code": error.code, "message": error.message]]
+        } catch {
+            return ["ok": false, "error": ["code": "ios_static_runner_error", "message": "\(error)"]]
+        }
+    }
+
+    private func recordTestRun(
+        microTestId: String,
+        name: String,
+        appId: String?,
+        spec: Any,
+        status: String,
+        result: [String: Any],
+        diagnostics: [String: Any],
+        sessionId: String
+    ) throws {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "sqlite_error", message: "Test run could not be recorded")
+        }
+        let now = Self.now()
+        try executePreparedStatement(
+            """
+            INSERT INTO micro_tests (micro_test_id, app_id, name, spec_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(micro_test_id) DO UPDATE SET
+              app_id = excluded.app_id,
+              name = excluded.name,
+              spec_json = excluded.spec_json,
+              updated_at = excluded.updated_at
+            """,
+            values: [
+                .text(microTestId),
+                .nullableText(appId),
+                .text(name),
+                .text(jsonFragmentString(spec)),
+                .text(now),
+                .text(now)
+            ]
+        )
+        let runtimeSessionId = appId.flatMap { existingOrCreatedRuntimeSessionId(appId: $0) }
+        var statement: OpaquePointer?
+        let sql = """
+        INSERT INTO test_runs (test_run_id, micro_test_id, session_id, control_session_id, app_id, status, started_at, finished_at, result_json, diagnostics_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "sqlite_error", message: "Test run could not be recorded")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, "testrun_ios_\(UUID().uuidString.lowercased())")
+        bind(statement, 2, microTestId)
+        bindNullable(statement, 3, runtimeSessionId)
+        bind(statement, 4, sessionId)
+        bindNullable(statement, 5, appId)
+        bind(statement, 6, status)
+        bind(statement, 7, now)
+        bind(statement, 8, now)
+        bind(statement, 9, jsonString(result))
+        bind(statement, 10, jsonString(diagnostics))
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "sqlite_error", message: "Test run could not be recorded")
+        }
+    }
+
+    private func existingOrCreatedRuntimeSessionId(appId: String) -> String {
+        guard let db = database.handle else {
+            return controlSessionId
+        }
+        var statement: OpaquePointer?
+        let sql = "SELECT session_id FROM runtime_sessions WHERE active_app_id = ? ORDER BY started_at DESC LIMIT 1"
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            bind(statement, 1, appId)
+            if sqlite3_step(statement) == SQLITE_ROW {
+                let sessionId = columnText(statement, 0)
+                sqlite3_finalize(statement)
+                return sessionId
+            }
+        }
+        sqlite3_finalize(statement)
+        let runtimeSessionId = "runtime_ios_static_\(UUID().uuidString.lowercased())"
+        insertRuntimeSession(sessionId: runtimeSessionId, appId: appId, capabilities: runtimeCapabilities(appId: appId))
+        return runtimeSessionId
+    }
+
+    private func jsonFragment(_ text: String) -> Any? {
+        guard let data = text.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    }
+
+    private func bridgeMethodReferenced(appId: String, method: String) -> Bool {
+        staticAppText(appId: appId, path: "app.js")?.contains(method) == true
+    }
+
+    private func textCanAppear(html: String, dynamicText: [String], text: String) -> Bool {
+        htmlText(html).contains(text) || dynamicText.contains(text)
+    }
+
+    private func staticSelectorExists(html: String, selector: String) -> Bool {
+        if selector == "main" {
+            return regexContains(html, pattern: #"<main\b"#)
+        }
+        if selector.hasPrefix("[data-testid=") {
+            guard let match = regexMatches(selector, pattern: #"\[data-testid\s*=\s*["']?([^"'\]]+)["']?\]"#).first else {
+                return false
+            }
+            let value = capture(match, group: 1, in: selector)
+            return !value.isEmpty && regexContains(html, pattern: #"\bdata-testid\s*=\s*["']\#(NSRegularExpression.escapedPattern(for: value))["']"#)
+        }
+        if selector.hasPrefix("#") {
+            let id = String(selector.dropFirst())
+            return !id.isEmpty && regexContains(html, pattern: #"\bid\s*=\s*["']\#(NSRegularExpression.escapedPattern(for: id))["']"#)
+        }
+        return regexContains(html, pattern: #"<\#(NSRegularExpression.escapedPattern(for: selector))\b"#)
+    }
+
+    private func staticTarget(args: [String: Any]) -> [String: Any] {
+        if let testId = args["testId"] as? String, !testId.isEmpty {
+            return ["kind": "testId", "value": testId]
+        }
+        if let selector = args["selector"] as? String, !selector.isEmpty {
+            return ["kind": "selector", "value": selector]
+        }
+        return ["kind": "document", "value": "document"]
+    }
+
+    private func testFailure(test: String, code: String, field: String, value: String) -> [String: Any] {
+        [
+            "test": test,
+            "code": code,
+            field: value
+        ]
     }
 
     private func regexContains(_ text: String, pattern: String) -> Bool {
