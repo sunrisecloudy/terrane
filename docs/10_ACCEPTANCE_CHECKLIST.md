@@ -126,6 +126,7 @@
 - [x] Source/static and debug APK build checks verify Android debug dev control supports DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` consumed by Android network/dialog bridge calls.
 - [x] Source/static and debug APK build checks verify Android debug dev control includes `runtime_snapshots` / `backup_exports` in safe `db.snapshot` output and supports `db.export_debug_bundle` with a persisted `backup_exports` row.
 - [x] Source/static and debug APK build checks verify Android debug dev control supports `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots.
+- [x] Source/static and debug APK build checks verify Android debug dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 
 ### Windows
 

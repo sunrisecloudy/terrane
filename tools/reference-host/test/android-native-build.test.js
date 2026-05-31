@@ -528,6 +528,60 @@ test("Android debug dev control creates, restores, and compares runtime snapshot
   );
 });
 
+test("Android debug dev control snapshots, replays, and asserts core actions", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+
+  for (const snippet of [
+    "runtime.core_snapshot",
+    "runtime.replay_events",
+    "runtime.assert_core_action",
+    "runtimeCoreSnapshotJson",
+    "runtimeReplayEventsJson",
+    "runtimeAssertCoreActionJson",
+    "runtime.core_snapshot requires appId",
+    "runtime.replay_events requires appId",
+    "runtime.replay_events events must be an array",
+    "runtime.assert_core_action requires appId",
+    "runtime.assert_core_action type must be a string",
+    "runtime.assert_core_action match must be an object",
+    "core_action.not_found",
+    "Expected core action was not found",
+    "ZigCoreBridge()",
+    "control_replay_$index",
+    "AppSandboxContext(",
+    "approvedPermissions = setOf(\"core.step\")",
+    "mountToken = controlSessionId",
+    "COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0)",
+    "coreEventRowsJson",
+    "coreActionRowsJson",
+    "rowsWithParsedJsonField",
+    "parseJsonValue(row.optString(jsonColumn))",
+    "jsonMatchesSubset",
+    "typedStringOrNull",
+    ".put(\"actions\", actions)",
+    ".put(\"action\", latestAction",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android core debug control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "private fun recordCoreStep",
+    "request.method != \"core.step\"",
+    "database.writableDatabase.insert(\"core_events\"",
+    "database.writableDatabase.insert(\"core_actions\"",
+    "put(\"action_json\", jsonString(action))",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Android core logging source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("\"runtime.replay_events\" -> runtimeReplayEventsJson(args)") <
+      control.indexOf("\"runtime.storage_get\""),
+    "core replay/assertion controls should be first-class runtime commands before storage-only helpers",
+  );
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {

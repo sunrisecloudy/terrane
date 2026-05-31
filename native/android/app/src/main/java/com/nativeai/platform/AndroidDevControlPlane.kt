@@ -220,6 +220,9 @@ class AndroidDevControlPlane(
             )
             bridgeCommand(appId, "core.step", JSONObject(mapOf("event" to event)), "android_control_core_step")
         }
+        "runtime.core_snapshot" -> runtimeCoreSnapshotJson(args)
+        "runtime.replay_events" -> runtimeReplayEventsJson(args)
+        "runtime.assert_core_action" -> runtimeAssertCoreActionJson(args)
         "runtime.storage_get" -> {
             val appId = requiredString(args, "appId")
             bridgeCommand(appId, "storage.get", storageGetParams(args), "android_control_storage_get")
@@ -313,11 +316,109 @@ class AndroidDevControlPlane(
         .put("networkRequestsLastMinute", scalarLong("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'network.request' AND datetime(created_at) >= datetime('now', '-60 seconds')", arrayOf(appId)))
         .put("logLinesLastMinute", scalarLong("SELECT COUNT(*) FROM bridge_calls WHERE app_id = ? AND method = 'app.log' AND datetime(created_at) >= datetime('now', '-60 seconds')", arrayOf(appId)))
 
+    private fun runtimeCoreSnapshotJson(args: JSONObject): JSONObject {
+        val appId = requiredToolString(args, "appId", "runtime.core_snapshot requires appId")
+        return JSONObject()
+            .put("appId", appId)
+            .put(
+                "stateVersion",
+                scalarLong(
+                    "SELECT COALESCE(MAX(COALESCE(state_version_before, -1) + 1), 0) FROM core_events WHERE app_id = ?",
+                    arrayOf(appId),
+                ),
+            )
+            .put("coreEvents", coreEventRowsJson(appId))
+            .put("coreActions", coreActionRowsJson(appId))
+    }
+
+    private fun runtimeReplayEventsJson(args: JSONObject): JSONObject {
+        val appId = requiredToolString(args, "appId", "runtime.replay_events requires appId")
+        val events = args.opt("events") as? JSONArray
+            ?: throw ControlCommandException(400, "invalid_request", "runtime.replay_events events must be an array")
+        val replayCore = ZigCoreBridge()
+        val context = AppSandboxContext(
+            appId = appId,
+            storagePrefix = "$appId:",
+            approvedPermissions = setOf("core.step"),
+            mountToken = controlSessionId,
+        )
+        val replay = JSONArray()
+        for (index in 0 until events.length()) {
+            val event = events.opt(index) ?: JSONObject.NULL
+            val request = BridgeRequest(
+                JSONObject()
+                    .put("id", "control_replay_$index")
+                    .put("method", "core.step")
+                    .put("params", JSONObject().put("event", event)),
+                context,
+            )
+            val response = parseJsonObject(replayCore.step(request))
+            val result = response?.optJSONObject("result") ?: JSONObject()
+                .put("ok", false)
+                .put(
+                    "error",
+                    response?.optJSONObject("error") ?: JSONObject()
+                        .put("code", "core_error")
+                        .put("message", "Replay event failed")
+                        .put("details", JSONObject()),
+                )
+                .put("actions", JSONArray())
+            replay.put(
+                JSONObject()
+                    .put("index", index)
+                    .put("event", event)
+                    .put("result", result),
+            )
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId)
+            .put("replay", replay)
+    }
+
+    private fun runtimeAssertCoreActionJson(args: JSONObject): JSONObject {
+        val appId = requiredToolString(args, "appId", "runtime.assert_core_action requires appId")
+        val expectedType = typedStringOrNull(args, "type", "runtime.assert_core_action type must be a string")
+            ?: typedStringOrNull(args, "actionType", "runtime.assert_core_action type must be a string")
+        val expectedMatch = if (args.has("match")) {
+            args.opt("match") as? JSONObject
+                ?: throw ControlCommandException(400, "invalid_request", "runtime.assert_core_action match must be an object")
+        } else {
+            null
+        }
+        val expectedAction = if (args.has("action")) args.opt("action") ?: JSONObject.NULL else null
+        val rows = coreActionRowsJson(appId)
+        val actions = JSONArray()
+        var latest: JSONObject? = null
+        var latestAction: JSONObject? = null
+        for (index in 0 until rows.length()) {
+            val row = rows.getJSONObject(index)
+            val action = row.optJSONObject("action") ?: parseJsonObject(row.optString("action_json")) ?: continue
+            if (expectedType != null && action.optString("type") != expectedType) continue
+            if (expectedAction != null && !jsonValuesEqual(action, expectedAction)) continue
+            if (expectedMatch != null && !jsonMatchesSubset(action, expectedMatch)) continue
+            actions.put(action)
+            latest = row
+            latestAction = action
+        }
+        if (actions.length() == 0) {
+            throw ControlCommandException(400, "core_action.not_found", "Expected core action was not found")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId)
+            .put("type", expectedType ?: JSONObject.NULL)
+            .put("count", actions.length())
+            .put("actions", actions)
+            .put("latest", latest ?: JSONObject.NULL)
+            .put("action", latestAction ?: JSONObject.NULL)
+    }
+
     private fun runtimeEventLogJson(appId: String): JSONObject = JSONObject()
         .put("appId", appId)
         .put("bridgeCalls", tableRows("bridge_calls", "app_id", appId))
-        .put("coreEvents", tableRows("core_events", "app_id", appId))
-        .put("coreActions", tableRows("core_actions", "app_id", appId))
+        .put("coreEvents", coreEventRowsJson(appId))
+        .put("coreActions", coreActionRowsJson(appId))
 
     private fun runtimeConsoleLogsJson(appId: String): JSONObject = JSONObject()
         .put("appId", appId)
@@ -1068,6 +1169,9 @@ class AndroidDevControlPlane(
                     "runtime.capabilities",
                     "runtime.call_bridge",
                     "runtime.core_step",
+                    "runtime.core_snapshot",
+                    "runtime.replay_events",
+                    "runtime.assert_core_action",
                     "runtime.storage_get",
                     "runtime.storage_set",
                     "runtime.assert_storage",
@@ -1174,6 +1278,23 @@ class AndroidDevControlPlane(
     private fun queryRowsJson(table: String, args: JSONObject, filterColumn: String): JSONObject {
         val appId = args.optString("appId").ifBlank { null }
         return JSONObject(mapOf("rows" to tableRows(table, if (appId == null) null else filterColumn, appId)))
+    }
+
+    private fun coreEventRowsJson(appId: String): JSONArray =
+        rowsWithParsedJsonField(tableRows("core_events", "app_id", appId), "event_json", "event")
+
+    private fun coreActionRowsJson(appId: String): JSONArray =
+        rowsWithParsedJsonField(tableRows("core_actions", "app_id", appId), "action_json", "action")
+
+    private fun rowsWithParsedJsonField(rows: JSONArray, jsonColumn: String, parsedKey: String): JSONArray {
+        val enriched = JSONArray()
+        for (index in 0 until rows.length()) {
+            val row = rows.getJSONObject(index)
+            val copy = JSONObject(row.toString())
+            copy.put(parsedKey, parseJsonValue(row.optString(jsonColumn)))
+            enriched.put(copy)
+        }
+        return enriched
     }
 
     private fun tableRows(table: String, filterColumn: String? = null, filterValue: String? = null): JSONArray {
@@ -1292,6 +1413,15 @@ class AndroidDevControlPlane(
     private fun requiredStorageString(args: JSONObject, key: String, message: String): String =
         args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", message) }
 
+    private fun typedStringOrNull(args: JSONObject, key: String, message: String): String? {
+        if (!args.has(key)) return null
+        val value = args.opt(key)
+        if (value !is String || value.isBlank()) {
+            throw ControlCommandException(400, "invalid_request", message)
+        }
+        return value
+    }
+
     private fun writeControlTokenFile() {
         context.openFileOutput(tokenPath.name, Context.MODE_PRIVATE).use { output ->
             output.write("$token\n".toByteArray(Charsets.UTF_8))
@@ -1398,6 +1528,21 @@ class AndroidDevControlPlane(
             return normalizedLeft.toDouble() == normalizedRight.toDouble()
         }
         return normalizedLeft == normalizedRight
+    }
+
+    private fun jsonMatchesSubset(actual: Any?, expected: Any?): Boolean {
+        val normalizedExpected = expected ?: JSONObject.NULL
+        if (normalizedExpected is JSONObject) {
+            val actualObject = actual as? JSONObject ?: return false
+            val keys = normalizedExpected.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (!actualObject.has(key)) return false
+                if (!jsonMatchesSubset(actualObject.opt(key), normalizedExpected.opt(key))) return false
+            }
+            return true
+        }
+        return jsonValuesEqual(actual, normalizedExpected)
     }
 
     private fun controlOk(result: JSONObject): JSONObject = JSONObject(mapOf("ok" to true, "result" to result))
