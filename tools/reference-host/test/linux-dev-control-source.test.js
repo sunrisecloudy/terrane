@@ -22,6 +22,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "dev_control_plane_stop",
     "dev_control_plane_port",
     "dev_control_plane_token_path",
+    "dev_control_plane_set_bridge",
   ]) {
     assert.equal(header.includes(snippet), true, `dev control header should expose ${snippet}`);
   }
@@ -32,6 +33,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "--native-ai-dev-control",
     "--control-plane-port",
     "dev_control_plane_start(&config",
+    "dev_control_plane_set_bridge(dev_control",
     "Linux dev control plane is disabled in release builds",
   ]) {
     assert.equal(main.includes(snippet), true, `Linux main should contain ${snippet}`);
@@ -58,6 +60,13 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control.sessions.create",
     "control.sessions.snapshot",
     "control.sessions.events",
+    "runtime.call_bridge",
+    "runtime.core_step",
+    "control_call_bridge",
+    "control_core_step",
+    "web_bridge_handle_json",
+    "app_sandbox_context_for_app",
+    "core.step",
     "unsupported_tool",
     "UPDATE control_sessions SET status = 'ended'",
     "health_result_json",
@@ -70,5 +79,6 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   }
 
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
+  assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
 });

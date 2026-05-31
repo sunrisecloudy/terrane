@@ -151,13 +151,38 @@ test(
 test(
   "Linux debug dev control health is token-gated and audited",
   {
-    skip: linuxNativeSkipReason({ requireSqliteCli: true }),
-    timeout: 120_000,
+    skip: linuxNativeSkipReason({ requireSqliteCli: true, requireZig: true }),
+    timeout: 180_000,
   },
   async () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-dev-control-"));
     let child = null;
     try {
+      const zigCoreSo = path.join(scratch, "libzig_core.so");
+      execFileSync(
+        "zig",
+        [
+          "build-lib",
+          "src/lib.zig",
+          "--name",
+          "zig_core",
+          "-dynamic",
+          "-lc",
+          "-fsoname=libzig_core.so",
+          `-femit-bin=${zigCoreSo}`,
+        ],
+        {
+          cwd: path.join(repoRoot, "zig-core"),
+          env: {
+            ...process.env,
+            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
+            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
+          },
+          stdio: "ignore",
+        },
+      );
+      assert.equal(fs.existsSync(zigCoreSo), true);
+
       const buildDir = path.join(scratch, "debug-build");
       execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
       execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
@@ -171,6 +196,7 @@ test(
         ...process.env,
         XDG_DATA_HOME: xdgDataHome,
         XDG_RUNTIME_DIR: xdgRuntimeDir,
+        NATIVE_AI_ZIG_CORE_SO: zigCoreSo,
       });
       const ready = await waitForControlReady(child);
       assert.equal(ready.tokenPath, path.join(xdgRuntimeDir, "native-ai-webapp", "control.token"));
@@ -201,14 +227,14 @@ test(
       const session = await requestControl(ready.port, "/control/sessions", {
         method: "POST",
         token,
-        body: { appId: "notes-lite", metadata: { smoke: "linux-dev-control" } },
+        body: { appId: "task-workbench", metadata: { smoke: "linux-dev-control" } },
       });
       assert.equal(session.statusCode, 200, session.body);
       const sessionBody = JSON.parse(session.body);
       assert.equal(sessionBody.ok, true);
       assert.match(sessionBody.result.controlSessionId, /^control-/);
       assert.match(sessionBody.result.runtimeSessionId, /^session-/);
-      assert.equal(sessionBody.result.appId, "notes-lite");
+      assert.equal(sessionBody.result.appId, "task-workbench");
       assert.equal(sessionBody.result.status, "running");
 
       const sessionId = sessionBody.result.controlSessionId;
@@ -217,7 +243,7 @@ test(
       const snapshotBody = JSON.parse(snapshot.body);
       assert.equal(snapshotBody.ok, true);
       assert.equal(snapshotBody.result.controlSessionId, sessionId);
-      assert.equal(snapshotBody.result.snapshot.appId, "notes-lite");
+      assert.equal(snapshotBody.result.snapshot.appId, "task-workbench");
       assert.equal(snapshotBody.result.snapshot.target, "linux");
 
       const events = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/events`, { token });
@@ -245,13 +271,65 @@ test(
       assert.equal(commandBody.result.ok, true);
       assert.equal(commandBody.result.target, "linux");
 
-      const unsupported = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+      const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
-        body: { tool: "runtime.call_bridge", args: {} },
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.set",
+            params: {
+              key: "task-workbench:linux-dev-control-key",
+              value: { source: "linux-dev-control" },
+            },
+          },
+        },
       });
-      assert.equal(unsupported.statusCode, 400);
-      assert.equal(JSON.parse(unsupported.body).error.code, "unsupported_tool");
+      assert.equal(callBridge.statusCode, 200, callBridge.body);
+      const callBridgeBody = JSON.parse(callBridge.body);
+      assert.equal(callBridgeBody.ok, true);
+      assert.equal(callBridgeBody.result.id, "control_call_bridge");
+      assert.equal(callBridgeBody.result.ok, true);
+      assert.equal(callBridgeBody.result.result.ok, true);
+      assert.equal(Number(callBridgeBody.result.result.bytesWritten) > 0, true);
+
+      const coreStep = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.core_step",
+          args: {
+            appId: "task-workbench",
+            event: { type: "CreateTask", payload: { title: "Linux control task" } },
+          },
+        },
+      });
+      assert.equal(coreStep.statusCode, 200, coreStep.body);
+      const coreStepBody = JSON.parse(coreStep.body);
+      assert.equal(coreStepBody.ok, true);
+      assert.equal(coreStepBody.result.id, "control_core_step");
+      assert.equal(coreStepBody.result.ok, true);
+      assert.equal(coreStepBody.result.result.ok, true);
+      assert.equal(typeof coreStepBody.result.result.stateVersion, "number");
+      assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Toast"), true);
+      assert.equal(coreStepBody.result.result.actions.some((action) => action.type === "Log"), true);
+
+      const missingAppId = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.call_bridge", args: { method: "storage.set", params: {} } },
+      });
+      assert.equal(missingAppId.statusCode, 400);
+      assert.equal(JSON.parse(missingAppId.body).error.code, "invalid_request");
+
+      const missingEvent = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.core_step", args: { appId: "task-workbench" } },
+      });
+      assert.equal(missingEvent.statusCode, 400);
+      assert.equal(JSON.parse(missingEvent.body).error.code, "invalid_request");
 
       const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
         method: "DELETE",
@@ -291,16 +369,61 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
-      const unsupportedCount = execFileSync(
+      const acceptedCallBridgeCount = execFileSync(
         "sqlite3",
         [
           dbPath,
-          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'rejected' AND error_code = 'unsupported_tool';",
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'accepted' AND error_code IS NULL;",
         ],
         { encoding: "utf8" },
       ).trim();
-      assert.equal(Number(sessionAuditCount) >= 6, true);
-      assert.equal(unsupportedCount, "1");
+      const acceptedCoreStepCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.core_step' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const bridgeCallCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = 'task-workbench' AND method = 'storage.set' AND error_json IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const coreBridgeCallCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM bridge_calls WHERE app_id = 'task-workbench' AND method = 'core.step' AND error_json IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const coreEventCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM core_events WHERE app_id = 'task-workbench' AND event_json LIKE '%CreateTask%';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const coreActionCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM core_actions WHERE app_id = 'task-workbench';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(Number(sessionAuditCount) >= 8, true);
+      assert.equal(Number(acceptedCallBridgeCount) >= 1, true);
+      assert.equal(Number(acceptedCoreStepCount) >= 1, true);
+      assert.equal(Number(bridgeCallCount) >= 1, true);
+      assert.equal(Number(coreBridgeCallCount) >= 1, true);
+      assert.equal(Number(coreEventCount) >= 1, true);
+      assert.equal(Number(coreActionCount) >= 2, true);
     } finally {
       if (child) await stopChild(child);
       fs.rmSync(scratch, { recursive: true, force: true });

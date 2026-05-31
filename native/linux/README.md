@@ -81,9 +81,9 @@ This host must support a dev/test-only control plane for Codex micro-testing.
 
 Required behavior:
 
-- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, and a bounded `platform.health` session command.
+- Enable only in debug/dev builds. Linux currently implements token-gated `GET /health`, session lifecycle routes, minimal DB-backed snapshots/events/capabilities, `platform.health`, and permission-checked `runtime.call_bridge` / `runtime.core_step` session commands through the native bridge.
 - Require a random control token. Linux writes it to `$XDG_RUNTIME_DIR/native-ai-webapp/control.token` unless `PLATFORM_CONTROL_TOKEN_FILE` is set.
-- Expose host/runtime/session state through the control protocol. Bridge-driving session commands remain future work for Linux.
+- Expose host/runtime/session state through the control protocol and route bridge-driving session commands through the same manifest-derived sandbox context as the WebKit runtime.
 - Route UI control, bridge inspection, storage mocks, network mocks, dialog mocks, and replay operations to the runtime.
 - Compile out or hard-disable the control plane in production/release builds.
 

@@ -1168,6 +1168,7 @@ function checkNativeStatic() {
   const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "windows-native-build.test.js"), "utf8");
   const linuxMain = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "main.c"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
+  const linuxAppSandbox = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "app_sandbox.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxDevControl = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "dev_control_plane.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
@@ -1603,18 +1604,17 @@ function checkNativeStatic() {
     [linuxHost, "runtime-web"],
     [linuxHost, "content_type_for_path"],
     [linuxHost, "app-runtime://runtime/index.html"],
-    [linuxHost, "sandbox_context_from_uri"],
-    [linuxHost, "sandbox_context_for_app"],
+    [linuxHost, "app_sandbox_context_for_app"],
     [linuxHost, "is_runtime_envelope"],
     [linuxHost, "has_valid_runtime_envelope"],
     [linuxHost, "has_only_runtime_envelope_fields"],
     [linuxHost, "Runtime bridge envelope is required"],
-    [linuxHost, "is_known_example_app_id"],
+    [linuxHost, "app_sandbox_is_known_example_app_id"],
     [linuxHost, "mount_token"],
-    [linuxHost, "network_policy_for_app"],
-    [linuxHost, "deny_private_network_for_app"],
-    [linuxHost, ".network_policy"],
-    [linuxHost, ".deny_private_network"],
+    [linuxAppSandbox, "network_policy_for_app"],
+    [linuxAppSandbox, "deny_private_network_for_app"],
+    [linuxAppSandbox, ".network_policy"],
+    [linuxAppSandbox, ".deny_private_network"],
     [linuxHost, "web_bridge_new(db_path, GTK_WINDOW(host->window))"],
     [linuxBridge, "permission_for_bridge_method"],
     [linuxBridge, "approved_permissions_contains"],
@@ -1637,7 +1637,7 @@ function checkNativeStatic() {
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
-    [linuxHost, "pathPrefix"],
+    [linuxAppSandbox, "pathPrefix"],
     [linuxNetwork, "requested_timeout_ms"],
     [linuxNetwork, "network.request timeoutMs must be a positive integer"],
     [linuxNetwork, "effective_timeout_ms"],
@@ -1702,6 +1702,7 @@ function checkNativeStatic() {
     "--control-plane-port",
     "#ifndef NDEBUG",
     "dev_control_plane_start(&config",
+    "dev_control_plane_set_bridge(dev_control",
   ]) {
     if (!linuxMain.includes(snippet)) {
       throw new Error(`Linux dev control startup missing ${snippet}`);
@@ -1721,6 +1722,13 @@ function checkNativeStatic() {
     "control.sessions.create",
     "control.sessions.snapshot",
     "control.sessions.events",
+    "runtime.call_bridge",
+    "runtime.core_step",
+    "control_call_bridge",
+    "control_core_step",
+    "web_bridge_handle_json",
+    "app_sandbox_context_for_app",
+    "core.step",
     "unsupported_tool",
     "UPDATE control_sessions SET status = 'ended'",
     "control_sessions",
@@ -1735,7 +1743,10 @@ function checkNativeStatic() {
   if (!linuxMeson.includes("'src/dev_control_plane.c'")) {
     throw new Error("Linux Meson build must include dev_control_plane.c");
   }
-  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "unsupported_tool"]) {
+  if (!linuxMeson.includes("'src/app_sandbox.c'")) {
+    throw new Error("Linux Meson build must include app_sandbox.c");
+  }
+  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "runtime.call_bridge", "runtime.core_step", "storage.set", "CreateTask", "bridge_calls", "core_events", "core_actions"]) {
     if (!linuxNativeBuildTest.includes(snippet)) {
       throw new Error(`Linux native build test missing dev control coverage: ${snippet}`);
     }

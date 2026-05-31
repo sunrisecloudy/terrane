@@ -1,5 +1,6 @@
 #include "dev_control_plane.h"
 
+#include "app_sandbox.h"
 #include "platform_database.h"
 
 #include <errno.h>
@@ -17,12 +18,14 @@
 
 struct _DevControlPlane {
   SoupServer *server;
+  WebBridge *bridge;
   gchar *database_path;
   gchar *control_session_id;
   gchar *token;
   gchar *token_hash;
   gchar *token_path;
   guint port;
+  gboolean ready_announced;
 };
 
 static void bind_text(sqlite3_stmt *statement, int index, const gchar *value) {
@@ -363,6 +366,14 @@ static const gchar *object_string(JsonObject *object, const gchar *member, const
   return fallback;
 }
 
+static JsonObject *object_object(JsonObject *object, const gchar *member) {
+  if (object == NULL || !json_object_has_member(object, member)) {
+    return NULL;
+  }
+  JsonNode *node = json_object_get_member(object, member);
+  return node != NULL && JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
+}
+
 static gchar *object_member_json(JsonObject *object, const gchar *member, const gchar *fallback_json) {
   if (object == NULL || !json_object_has_member(object, member)) {
     return g_strdup(fallback_json);
@@ -372,6 +383,44 @@ static gchar *object_member_json(JsonObject *object, const gchar *member, const 
     return g_strdup(fallback_json);
   }
   return json_node_to_text(node);
+}
+
+static gchar *bridge_call_request_json(const gchar *request_id, const gchar *bridge_method, JsonNode *params_node) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, request_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, bridge_method);
+  json_builder_set_member_name(builder, "params");
+  if (params_node == NULL) {
+    json_builder_begin_object(builder);
+    json_builder_end_object(builder);
+  } else {
+    json_builder_add_value(builder, json_node_copy(params_node));
+  }
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static gchar *core_step_request_json(const gchar *request_id, JsonNode *event_node) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, request_id);
+  json_builder_set_member_name(builder, "method");
+  json_builder_add_string_value(builder, "core.step");
+  json_builder_set_member_name(builder, "params");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "event");
+  json_builder_add_value(builder, json_node_copy(event_node));
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
 }
 
 static gchar *runtime_capabilities_json(DevControlPlane *plane, const gchar *app_id) {
@@ -851,6 +900,48 @@ static gchar *session_capabilities_json(DevControlPlane *plane, const gchar *con
   return text;
 }
 
+static gboolean control_session_allows_app(
+    DevControlPlane *plane,
+    const gchar *control_session_id,
+    const gchar *app_id,
+    gchar **error_code,
+    gchar **error_message,
+    guint *status) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    *error_code = g_strdup("storage_error");
+    *error_message = g_strdup("Could not open platform database");
+    *status = SOUP_STATUS_INTERNAL_SERVER_ERROR;
+    return FALSE;
+  }
+
+  ControlSessionRecord record = {0};
+  if (!load_control_session(db, control_session_id, &record)) {
+    platform_database_close(db);
+    *error_code = g_strdup("not_found");
+    *error_message = g_strdup("Control session not found");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return FALSE;
+  }
+
+  gboolean allowed = TRUE;
+  if (g_strcmp0(record.status, "running") != 0) {
+    *error_code = g_strdup("invalid_request");
+    *error_message = g_strdup("Control session is not running");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    allowed = FALSE;
+  } else if (record.app_id != NULL && g_strcmp0(record.app_id, app_id) != 0) {
+    *error_code = g_strdup("permission_denied");
+    *error_message = g_strdup("Control command appId does not match the control session app");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    allowed = FALSE;
+  }
+
+  control_session_record_clear(&record);
+  platform_database_close(db);
+  return allowed;
+}
+
 static gchar *session_id_from_path(const gchar *path, const gchar *suffix) {
   const gchar *normalized = g_str_has_prefix(path, "/control/sessions/") ? path + strlen("/control") : path;
   if (!g_str_has_prefix(normalized, "/sessions/")) {
@@ -1037,6 +1128,74 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     result = health_result_json(plane);
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {
     result = session_capabilities_json(plane, control_session_id, &error);
+  } else if (g_strcmp0(tool, "runtime.call_bridge") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.call_bridge requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    const gchar *bridge_method = object_string(args, "method", NULL);
+    if (app_id == NULL || app_id[0] == '\0' || bridge_method == NULL || bridge_method[0] == '\0') {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.call_bridge requires appId and method", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    JsonNode *params = json_object_get_member(args, "params");
+    if (params != NULL && !JSON_NODE_HOLDS_OBJECT(params)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.call_bridge params must be an object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (plane->bridge == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "platform_unsupported", "Linux dev control bridge is not available", SOUP_STATUS_SERVICE_UNAVAILABLE);
+      return;
+    }
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    const gchar *request_id = object_string(args, "id", "control_call_bridge");
+    g_autofree gchar *bridge_body = bridge_call_request_json(request_id, bridge_method, params);
+    AppSandboxContext context = app_sandbox_context_for_app(app_id, control_session_id);
+    result = web_bridge_handle_json(plane->bridge, bridge_body, context);
+  } else if (g_strcmp0(tool, "runtime.core_step") == 0) {
+    JsonObject *args = object_object(body, "args");
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.core_step requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    const gchar *app_id = object_string(args, "appId", NULL);
+    JsonNode *event = json_object_get_member(args, "event");
+    if (app_id == NULL || app_id[0] == '\0' || event == NULL || !JSON_NODE_HOLDS_OBJECT(event)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "runtime.core_step requires appId and event object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (plane->bridge == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "platform_unsupported", "Linux dev control bridge is not available", SOUP_STATUS_SERVICE_UNAVAILABLE);
+      return;
+    }
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    const gchar *request_id = object_string(args, "id", "control_core_step");
+    g_autofree gchar *bridge_body = core_step_request_json(request_id, event);
+    AppSandboxContext context = app_sandbox_context_for_app(app_id, control_session_id);
+    result = web_bridge_handle_json(plane->bridge, bridge_body, context);
   } else {
     g_object_unref(parser);
     send_control_route_error(plane, message, control_session_id, tool, method, path, started, "unsupported_tool", "Linux dev control session command is not supported yet", SOUP_STATUS_BAD_REQUEST);
@@ -1146,8 +1305,18 @@ DevControlPlane *dev_control_plane_start(const DevControlPlaneConfig *config, GE
 
   plane->port = bound_port(plane->server);
   insert_control_session(plane);
-  g_print("NATIVE_AI_LINUX_CONTROL_READY port=%u token_path=%s\n", plane->port, plane->token_path);
   return plane;
+}
+
+void dev_control_plane_set_bridge(DevControlPlane *plane, WebBridge *bridge) {
+  if (plane == NULL) {
+    return;
+  }
+  plane->bridge = bridge;
+  if (!plane->ready_announced && plane->bridge != NULL) {
+    plane->ready_announced = TRUE;
+    g_print("NATIVE_AI_LINUX_CONTROL_READY port=%u token_path=%s\n", plane->port, plane->token_path);
+  }
 }
 
 void dev_control_plane_stop(DevControlPlane *plane) {
@@ -1185,6 +1354,11 @@ DevControlPlane *dev_control_plane_start(const DevControlPlaneConfig *config, GE
   (void)config;
   g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Linux dev control plane is disabled in release builds");
   return NULL;
+}
+
+void dev_control_plane_set_bridge(DevControlPlane *plane, WebBridge *bridge) {
+  (void)plane;
+  (void)bridge;
 }
 
 void dev_control_plane_stop(DevControlPlane *plane) {

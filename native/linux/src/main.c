@@ -232,8 +232,9 @@ static gboolean native_ai_reject_dev_only_flags_if_needed(int argc, char **argv)
 }
 
 static void on_activate(GtkApplication *application, gpointer user_data) {
-  (void)user_data;
+  DevControlPlane *dev_control = user_data;
   WebKitHost *host = webkit_host_new(application);
+  dev_control_plane_set_bridge(dev_control, host->bridge);
   webkit_host_present(host);
   g_object_set_data_full(G_OBJECT(application), "native-ai-webapp-host", host, (GDestroyNotify)webkit_host_free);
 }
@@ -274,7 +275,7 @@ int main(int argc, char **argv) {
 #endif
 
   GtkApplication *application = gtk_application_new("dev.nativeai.webappplatform", G_APPLICATION_DEFAULT_FLAGS);
-  g_signal_connect(application, "activate", G_CALLBACK(on_activate), NULL);
+  g_signal_connect(application, "activate", G_CALLBACK(on_activate), dev_control);
   int application_argc = 0;
   char **application_argv = native_ai_application_argv_without_dev_flags(argc, argv, &application_argc);
   int status = g_application_run(G_APPLICATION(application), application_argc, application_argv);

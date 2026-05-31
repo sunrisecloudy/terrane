@@ -13,6 +13,7 @@ dl_dep = cc.find_library('dl', required: false)
 executable('native-ai-webapp-host',
   [
     'src/main.c',
+    'src/app_sandbox.c',
     'src/bridge_types.c',
     'src/dev_control_plane.c',
     'src/platform_database.c',
