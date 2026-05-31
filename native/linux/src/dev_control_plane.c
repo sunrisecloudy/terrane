@@ -760,6 +760,198 @@ static gchar *runtime_capabilities_json(DevControlPlane *plane, const gchar *app
   return text;
 }
 
+static gchar *platform_list_targets_json(DevControlPlane *plane) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "targets");
+  json_builder_begin_array(builder);
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, "linux-native");
+  json_builder_set_member_name(builder, "platform");
+  json_builder_add_string_value(builder, "linux");
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, "available");
+  json_builder_set_member_name(builder, "runtimeVersion");
+  json_builder_add_string_value(builder, "0.1.0");
+  json_builder_set_member_name(builder, "controlPlane");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "port");
+  json_builder_add_int_value(builder, plane->port);
+  json_builder_set_member_name(builder, "debug");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_end_object(builder);
+  json_builder_end_object(builder);
+  json_builder_end_array(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return text;
+}
+
+static void json_builder_add_nullable_sql_text(JsonBuilder *builder, sqlite3_stmt *statement, int column) {
+  const unsigned char *text = sqlite3_column_text(statement, column);
+  if (text == NULL) {
+    json_builder_add_null_value(builder);
+  } else {
+    json_builder_add_string_value(builder, (const gchar *)text);
+  }
+}
+
+static void json_builder_add_manifest_summary_member(JsonBuilder *builder, const gchar *member, const gchar *app_id, const gchar *fallback) {
+  g_autofree gchar *manifest_path = app_sandbox_manifest_path_for_app(app_id);
+  g_autofree gchar *contents = NULL;
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+    if (fallback == NULL) {
+      json_builder_add_null_value(builder);
+    } else {
+      json_builder_add_string_value(builder, fallback);
+    }
+    return;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, contents, -1, NULL)) {
+    g_object_unref(parser);
+    if (fallback == NULL) {
+      json_builder_add_null_value(builder);
+    } else {
+      json_builder_add_string_value(builder, fallback);
+    }
+    return;
+  }
+
+  JsonObject *manifest = json_node_get_object(json_parser_get_root(parser));
+  const gchar *value = object_string(manifest, member, fallback);
+  if (value == NULL) {
+    json_builder_add_null_value(builder);
+  } else {
+    json_builder_add_string_value(builder, value);
+  }
+  g_object_unref(parser);
+}
+
+static gint64 manifest_data_version(const gchar *app_id) {
+  g_autofree gchar *manifest_path = app_sandbox_manifest_path_for_app(app_id);
+  g_autofree gchar *contents = NULL;
+  if (manifest_path == NULL || !g_file_get_contents(manifest_path, &contents, NULL, NULL)) {
+    return 1;
+  }
+
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, contents, -1, NULL)) {
+    g_object_unref(parser);
+    return 1;
+  }
+  JsonObject *manifest = json_node_get_object(json_parser_get_root(parser));
+  gint64 version = json_object_get_int_member_with_default(manifest, "dataVersion", 1);
+  g_object_unref(parser);
+  return version;
+}
+
+static void append_bundled_webapp(JsonBuilder *builder, const gchar *app_id, GHashTable *installed_ids) {
+  if (g_hash_table_contains(installed_ids, app_id)) {
+    return;
+  }
+
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "name");
+  json_builder_add_manifest_summary_member(builder, "name", app_id, app_id);
+  json_builder_set_member_name(builder, "version");
+  json_builder_add_manifest_summary_member(builder, "version", app_id, NULL);
+  json_builder_set_member_name(builder, "description");
+  json_builder_add_manifest_summary_member(builder, "description", app_id, NULL);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, "bundled");
+  json_builder_set_member_name(builder, "dataVersion");
+  json_builder_add_int_value(builder, manifest_data_version(app_id));
+  json_builder_set_member_name(builder, "bundled");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "installed");
+  json_builder_add_boolean_value(builder, FALSE);
+  json_builder_end_object(builder);
+}
+
+static gchar *platform_list_webapps_json(DevControlPlane *plane, gboolean include_uninstalled, GError **error) {
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  GHashTable *installed_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "apps");
+  json_builder_begin_array(builder);
+
+  sqlite3_stmt *statement = NULL;
+  const gchar *sql =
+      "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version, "
+      "a.created_at, a.updated_at, v.runtime_version, v.trust_level "
+      "FROM apps a LEFT JOIN app_versions v ON v.install_id = a.active_install_id "
+      "WHERE (? = 1 OR a.status <> 'uninstalled') ORDER BY a.id";
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) {
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not list webapps: %s", sqlite3_errmsg(db));
+    sqlite3_finalize(statement);
+    g_hash_table_destroy(installed_ids);
+    g_object_unref(builder);
+    platform_database_close(db);
+    return NULL;
+  }
+
+  sqlite3_bind_int(statement, 1, include_uninstalled ? 1 : 0);
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    const gchar *app_id = (const gchar *)sqlite3_column_text(statement, 0);
+    if (app_id == NULL) {
+      continue;
+    }
+    g_hash_table_add(installed_ids, g_strdup(app_id));
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "appId");
+    json_builder_add_string_value(builder, app_id);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_nullable_sql_text(builder, statement, 1);
+    json_builder_set_member_name(builder, "status");
+    json_builder_add_nullable_sql_text(builder, statement, 2);
+    json_builder_set_member_name(builder, "activeInstallId");
+    json_builder_add_nullable_sql_text(builder, statement, 3);
+    json_builder_set_member_name(builder, "activeVersion");
+    json_builder_add_nullable_sql_text(builder, statement, 4);
+    json_builder_set_member_name(builder, "dataVersion");
+    json_builder_add_int_value(builder, sqlite3_column_int64(statement, 5));
+    json_builder_set_member_name(builder, "runtimeVersion");
+    json_builder_add_nullable_sql_text(builder, statement, 8);
+    json_builder_set_member_name(builder, "trustLevel");
+    json_builder_add_nullable_sql_text(builder, statement, 9);
+    json_builder_set_member_name(builder, "createdAt");
+    json_builder_add_nullable_sql_text(builder, statement, 6);
+    json_builder_set_member_name(builder, "updatedAt");
+    json_builder_add_nullable_sql_text(builder, statement, 7);
+    json_builder_set_member_name(builder, "bundled");
+    json_builder_add_boolean_value(builder, FALSE);
+    json_builder_set_member_name(builder, "installed");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+  }
+  sqlite3_finalize(statement);
+
+  const gchar *bundled_ids[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"};
+  for (gsize index = 0; index < G_N_ELEMENTS(bundled_ids); index++) {
+    append_bundled_webapp(builder, bundled_ids[index], installed_ids);
+  }
+
+  json_builder_end_array(builder);
+  json_builder_end_object(builder);
+  gchar *text = json_builder_to_text(builder);
+  g_hash_table_destroy(installed_ids);
+  g_object_unref(builder);
+  platform_database_close(db);
+  return text;
+}
+
 static gchar *active_install_id(sqlite3 *db, const gchar *app_id) {
   if (app_id == NULL || app_id[0] == '\0') {
     return NULL;
@@ -2046,6 +2238,22 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
   g_autofree gchar *result = NULL;
   if (g_strcmp0(tool, "platform.health") == 0) {
     result = health_result_json(plane);
+  } else if (g_strcmp0(tool, "platform.list_targets") == 0) {
+    result = platform_list_targets_json(plane);
+  } else if (g_strcmp0(tool, "platform.list_webapps") == 0) {
+    JsonObject *args = json_object_has_member(body, "args") ? object_object(body, "args") : NULL;
+    if (json_object_has_member(body, "args") && args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "platform.list_webapps args must be an object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    result = platform_list_webapps_json(plane, object_boolean_true(args, "includeUninstalled"), &error);
+    if (result == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not list webapps", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {
     result = session_capabilities_json(plane, control_session_id, &error);
   } else if (g_strcmp0(tool, "runtime.resource_usage") == 0 ||

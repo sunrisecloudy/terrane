@@ -62,6 +62,8 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control.sessions.events",
     "runtime.call_bridge",
     "runtime.core_step",
+    "platform.list_targets",
+    "platform.list_webapps",
     "runtime.resource_usage",
     "runtime.event_log",
     "runtime.console_logs",
@@ -94,6 +96,8 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "unsupported_tool",
     "UPDATE control_sessions SET status = 'ended'",
     "health_result_json",
+    "platform_list_targets_json",
+    "platform_list_webapps_json",
     "control_sessions",
     "control_commands",
     "platform.health",
@@ -105,6 +109,31 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
   assert.equal(meson.includes("'src/dev_control_plane.c'"), true);
   assert.equal(meson.includes("'src/app_sandbox.c'"), true);
   assert.equal(meson.includes("libsoup-3.0"), true);
+});
+
+test("Linux dev control exposes target and webapp listing controls", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "platform.list_targets",
+    "platform.list_webapps",
+    "platform_list_targets_json",
+    "platform_list_webapps_json",
+    "\"linux-native\"",
+    "\"available\"",
+    "includeUninstalled",
+    "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version",
+    "LEFT JOIN app_versions v ON v.install_id = a.active_install_id",
+    "app_sandbox_manifest_path_for_app",
+    "append_bundled_webapp",
+    "notes-lite",
+    "task-workbench",
+    "api-dashboard",
+    "bundled",
+    "installed",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux list control source should contain ${snippet}`);
+  }
 });
 
 test("Linux dev control supports direct storage get, set, reset, and assertions", () => {

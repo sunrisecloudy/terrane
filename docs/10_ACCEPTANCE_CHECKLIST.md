@@ -139,6 +139,7 @@
 - [x] Storage persists.
 - [x] Production guard rejects and audits dev-only startup flags in release builds.
 - [x] Debug dev control plane writes a 0600 per-launch token file, binds to loopback, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and audits accepted/rejected requests.
+- [x] Debug dev control plane runtime-smoke verifies `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
 - [x] Debug dev control plane runtime-smoke verifies direct `runtime.storage_get`, `runtime.storage_set`, confirmation-gated `runtime.storage_reset` / `platform.reset_webapp`, pre-reset snapshots, and `runtime.assert_storage` with storage-prefix enforcement through the native bridge.
 - [x] Debug dev control plane runtime-smoke verifies DB-backed `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs`.

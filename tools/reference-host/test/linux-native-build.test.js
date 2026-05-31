@@ -271,6 +271,27 @@ test(
       assert.equal(commandBody.result.ok, true);
       assert.equal(commandBody.result.target, "linux");
 
+      const listTargets = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.list_targets", args: {} },
+      });
+      assert.equal(listTargets.statusCode, 200, listTargets.body);
+      assert.equal(
+        JSON.parse(listTargets.body).result.targets.some((target) => target.id === "linux-native" && target.status === "available"),
+        true,
+      );
+
+      const listWebapps = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.list_webapps", args: {} },
+      });
+      assert.equal(listWebapps.statusCode, 200, listWebapps.body);
+      const listedApps = JSON.parse(listWebapps.body).result.apps;
+      assert.equal(listedApps.some((app) => app.appId === "notes-lite" && app.bundled === true && app.installed === false), true);
+      assert.equal(listedApps.some((app) => app.appId === "task-workbench" && app.bundled === true && app.installed === false), true);
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -694,6 +715,22 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedListTargetsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.list_targets' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedListWebappsCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.list_webapps' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedNetworkMockCount = execFileSync(
         "sqlite3",
         [
@@ -774,6 +811,8 @@ test(
       assert.equal(Number(acceptedResourceUsageCount) >= 1, true);
       assert.equal(Number(acceptedEventLogCount) >= 1, true);
       assert.equal(Number(acceptedConsoleLogsCount) >= 1, true);
+      assert.equal(Number(acceptedListTargetsCount) >= 1, true);
+      assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockResetCount) >= 1, true);
       assert.equal(Number(acceptedDialogMockCount) >= 1, true);
