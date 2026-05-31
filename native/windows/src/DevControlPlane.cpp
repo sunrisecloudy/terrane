@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -145,6 +146,84 @@ std::wstring NowIso() {
 
 std::wstring JsonNullableString(std::wstring const& value) {
   return value.empty() ? L"null" : JsonString(value);
+}
+
+std::wstring ReadTextFile(std::filesystem::path const& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  return Utf8ToWide(text);
+}
+
+std::filesystem::path ExecutableDirectory() {
+  std::wstring buffer(MAX_PATH, L'\0');
+  DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0) {
+    return std::filesystem::current_path();
+  }
+  buffer.resize(length);
+  return std::filesystem::path(buffer).parent_path();
+}
+
+std::filesystem::path RepoRoot() {
+  auto current = std::filesystem::current_path();
+  for (int depth = 0; depth < 8; ++depth) {
+    if (std::filesystem::exists(current / L"docs" / L"00_PRD.md")) {
+      return current;
+    }
+    if (!current.has_parent_path()) {
+      break;
+    }
+    current = current.parent_path();
+  }
+  return std::filesystem::current_path();
+}
+
+std::filesystem::path RuntimeResourceRoot() {
+  auto resourceRoot = ExecutableDirectory() / L"resources";
+  if (std::filesystem::exists(resourceRoot / L"runtime" / L"index.html") &&
+      std::filesystem::exists(resourceRoot / L"webapps" / L"examples")) {
+    return resourceRoot;
+  }
+  return RepoRoot();
+}
+
+std::array<wchar_t const*, 5> BundledWebappIds() {
+  return {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab"};
+}
+
+bool ContainsAppId(std::vector<std::wstring> const& appIds, std::wstring const& appId) {
+  return std::find(appIds.begin(), appIds.end(), appId) != appIds.end();
+}
+
+std::optional<json::JsonObject> BundledManifest(std::wstring const& appId) {
+  auto manifestText = ReadTextFile(RuntimeResourceRoot() / L"webapps" / L"examples" / appId / L"manifest.json");
+  json::JsonObject manifest{nullptr};
+  if (manifestText.empty() || !json::JsonObject::TryParse(manifestText, manifest)) {
+    return std::nullopt;
+  }
+  return manifest;
+}
+
+std::optional<std::wstring> ManifestString(json::JsonObject const& manifest, wchar_t const* key) {
+  if (!manifest.HasKey(key)) {
+    return std::nullopt;
+  }
+  auto value = manifest.GetNamedValue(key);
+  if (value.ValueType() != json::JsonValueType::String) {
+    return std::nullopt;
+  }
+  return std::wstring(value.GetString().c_str());
+}
+
+int64_t ManifestDataVersion(json::JsonObject const& manifest) {
+  if (!manifest.HasKey(L"dataVersion")) {
+    return 1;
+  }
+  auto value = manifest.GetNamedValue(L"dataVersion");
+  return value.ValueType() == json::JsonValueType::Number ? static_cast<int64_t>(value.GetNumber()) : 1;
 }
 
 bool IsValidAppId(std::wstring const& appId) {
@@ -814,6 +893,89 @@ struct DevControlPlane::Impl {
         L"\"network.request\":true,\"dialog.openFile\":true,\"dialog.saveFile\":true,"
         L"\"notification.toast\":true,\"app.log\":true,\"runtime.capabilities\":true,"
         L"\"core.step\":true}}";
+  }
+
+  std::wstring PlatformListTargetsJson() {
+    return L"{\"targets\":[{\"id\":\"windows-native\",\"platform\":\"windows\",\"status\":\"available\","
+        L"\"runtimeVersion\":\"0.1.0\",\"controlPlane\":{\"port\":" +
+        std::to_wstring(port) +
+        L",\"debug\":true}}]}";
+  }
+
+  std::wstring BundledWebappJson(std::wstring const& appId) {
+    auto manifest = BundledManifest(appId);
+    auto name = manifest.has_value() ? ManifestString(manifest.value(), L"name") : std::nullopt;
+    auto version = manifest.has_value() ? ManifestString(manifest.value(), L"version") : std::nullopt;
+    auto description = manifest.has_value() ? ManifestString(manifest.value(), L"description") : std::nullopt;
+    auto dataVersion = manifest.has_value() ? ManifestDataVersion(manifest.value()) : 1;
+    return L"{\"appId\":" + JsonString(appId) +
+        L",\"name\":" + JsonString(name.value_or(appId)) +
+        L",\"version\":" + (version.has_value() ? JsonString(version.value()) : L"null") +
+        L",\"description\":" + (description.has_value() ? JsonString(description.value()) : L"null") +
+        L",\"status\":\"bundled\",\"dataVersion\":" + std::to_wstring(dataVersion) +
+        L",\"bundled\":true,\"installed\":false}";
+  }
+
+  std::wstring PlatformListWebappsJson(bool includeUninstalled, std::wstring* error) {
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *error = L"Could not open platform database";
+      return L"";
+    }
+
+    sqlite3_stmt* statement = nullptr;
+    char const* sql =
+        "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version, "
+        "a.created_at, a.updated_at, v.runtime_version, v.trust_level "
+        "FROM apps a LEFT JOIN app_versions v ON v.install_id = a.active_install_id "
+        "WHERE (? = 1 OR a.status <> 'uninstalled') ORDER BY a.id";
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK) {
+      *error = L"Could not list Windows webapps: " + Utf8ToWide(sqlite3_errmsg(db));
+      return L"";
+    }
+    sqlite3_bind_int(statement, 1, includeUninstalled ? 1 : 0);
+
+    std::vector<std::wstring> installedIds;
+    std::wstring apps = L"[";
+    bool first = true;
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+      auto appId = ColumnText(statement, 0);
+      if (appId.empty()) {
+        continue;
+      }
+      installedIds.push_back(appId);
+      if (!first) {
+        apps += L",";
+      }
+      first = false;
+      apps += L"{\"appId\":" + JsonString(appId) +
+          L",\"name\":" + SqliteValueJson(statement, 1) +
+          L",\"status\":" + SqliteValueJson(statement, 2) +
+          L",\"activeInstallId\":" + SqliteValueJson(statement, 3) +
+          L",\"activeVersion\":" + SqliteValueJson(statement, 4) +
+          L",\"dataVersion\":" + SqliteValueJson(statement, 5) +
+          L",\"runtimeVersion\":" + SqliteValueJson(statement, 8) +
+          L",\"trustLevel\":" + SqliteValueJson(statement, 9) +
+          L",\"createdAt\":" + SqliteValueJson(statement, 6) +
+          L",\"updatedAt\":" + SqliteValueJson(statement, 7) +
+          L",\"bundled\":false,\"installed\":true}";
+    }
+    sqlite3_finalize(statement);
+
+    for (auto const* bundledId : BundledWebappIds()) {
+      std::wstring appId = bundledId;
+      if (ContainsAppId(installedIds, appId)) {
+        continue;
+      }
+      if (!first) {
+        apps += L",";
+      }
+      first = false;
+      apps += BundledWebappJson(appId);
+    }
+    apps += L"]";
+    return L"{\"apps\":" + apps + L"}";
   }
 
   int64_t CountTableForApp(sqlite3* db, std::wstring const& table, std::wstring const& appId) {
@@ -2704,6 +2866,39 @@ struct DevControlPlane::Impl {
         return;
       }
       result = Utf8ToWide(HealthJson(port));
+    } else if (tool == L"platform.list_targets") {
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformListTargetsJson();
+    } else if (tool == L"platform.list_webapps") {
+      json::JsonObject args{nullptr};
+      bool includeUninstalled = false;
+      if (command.HasKey(L"args")) {
+        auto parsedArgs = OptionalObjectMember(command, L"args");
+        if (!parsedArgs.has_value()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"platform.list_webapps args must be an object", 400);
+          return;
+        }
+        args = parsedArgs.value();
+        includeUninstalled = BooleanMemberTrue(args, L"includeUninstalled");
+      }
+      std::wstring errorCode;
+      std::wstring errorMessage;
+      int errorStatus = 400;
+      if (!ControlSessionAllowsApp(sessionId, L"", &errorCode, &errorMessage, &errorStatus)) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
+        return;
+      }
+      result = PlatformListWebappsJson(includeUninstalled, &error);
+      if (result.empty()) {
+        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not list Windows webapps" : error, 500);
+        return;
+      }
     } else if (tool == L"runtime.capabilities") {
       std::wstring errorCode;
       std::wstring errorMessage;

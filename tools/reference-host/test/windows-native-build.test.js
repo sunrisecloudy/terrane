@@ -327,6 +327,25 @@ test(
       assert.equal(command.statusCode, 200, command.body);
       assert.equal(JSON.parse(command.body).result.target, "windows");
 
+      const listTargets = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.list_targets", args: {} },
+      });
+      assert.equal(listTargets.statusCode, 200, listTargets.body);
+      assert.equal(JSON.parse(listTargets.body).result.targets[0].id, "windows-native");
+
+      const listWebapps = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.list_webapps", args: { includeUninstalled: true } },
+      });
+      assert.equal(listWebapps.statusCode, 200, listWebapps.body);
+      assert.equal(
+        JSON.parse(listWebapps.body).result.apps.some((app) => app.appId === "notes-lite" && app.bundled === true),
+        true,
+      );
+
       const commandCapabilities = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -795,6 +814,14 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.list_targets' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'platform.list_webapps' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(
