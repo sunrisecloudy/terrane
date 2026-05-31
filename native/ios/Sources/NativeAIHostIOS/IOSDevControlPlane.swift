@@ -632,6 +632,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return successBody(result: try replayEvents(args: args), sessionId: sessionId)
         case "runtime.assert_core_action":
             return successBody(result: try assertCoreAction(args: args), sessionId: sessionId)
+        case "platform.create_snapshot":
+            return successBody(result: try createSnapshot(args: args), sessionId: sessionId)
+        case "platform.restore_snapshot":
+            return successBody(result: try restoreSnapshot(args: args), sessionId: sessionId)
+        case "runtime.compare_snapshot":
+            return successBody(result: try compareSnapshot(args: args), sessionId: sessionId)
         case "db.snapshot",
              "db.query_app_storage",
              "db.query_app_versions",
@@ -685,6 +691,9 @@ final class IOSDevControlPlane: @unchecked Sendable {
                     "runtime.core_snapshot",
                     "runtime.replay_events",
                     "runtime.assert_core_action",
+                    "platform.create_snapshot",
+                    "platform.restore_snapshot",
+                    "runtime.compare_snapshot",
                     "db.snapshot",
                     "db.query_app_storage",
                     "db.query_app_versions",
@@ -998,6 +1007,102 @@ final class IOSDevControlPlane: @unchecked Sendable {
         ]
     }
 
+    private func createSnapshot(args: [String: Any]) throws -> [String: Any] {
+        let appId = try requiredString(args, key: "appId", message: "platform.create_snapshot requires appId")
+        try requireBundledApp(appId, message: "platform.create_snapshot appId is not a valid generated app id")
+        let type = (args["type"] as? String) ?? "manual"
+        guard Self.snapshotTypes.contains(type) else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Snapshot type is not allowed")
+        }
+        let metadata = activeAppMetadata(appId: appId)
+        let createdAt = Self.now()
+        let storage = appStorageRows(appId: appId)
+        let snapshotId = "snapshot_ios_\(UUID().uuidString.lowercased())"
+        let snapshot: [String: Any] = [
+            "appId": appId,
+            "activeInstallId": metadata.activeInstallId ?? NSNull(),
+            "activeVersion": metadata.activeVersion ?? NSNull(),
+            "dataVersion": metadata.dataVersion,
+            "storage": storage,
+            "createdAt": createdAt
+        ]
+        let snapshotJson = jsonString(snapshot)
+        let contentHash = "sha256:\(Self.sha256Hex(snapshotJson))"
+        guard insertRuntimeSnapshot(
+            snapshotId: snapshotId,
+            sessionId: validRuntimeSessionId(args["sessionId"] as? String),
+            appId: appId,
+            installId: metadata.activeInstallId,
+            type: type,
+            snapshotJson: snapshotJson,
+            contentHash: contentHash,
+            createdAt: createdAt
+        ) else {
+            throw CommandError(status: 500, code: "storage_error", message: "Snapshot could not be created", details: ["appId": appId])
+        }
+        return [
+            "snapshotId": snapshotId,
+            "contentHash": contentHash,
+            "snapshot": snapshot,
+            "appId": appId,
+            "activeInstallId": metadata.activeInstallId ?? NSNull(),
+            "activeVersion": metadata.activeVersion ?? NSNull(),
+            "dataVersion": metadata.dataVersion,
+            "storage": storage,
+            "createdAt": createdAt
+        ]
+    }
+
+    private func restoreSnapshot(args: [String: Any]) throws -> [String: Any] {
+        guard args["confirm"] as? Bool == true else {
+            throw CommandError(status: 400, code: "confirmation_required", message: "platform.restore_snapshot requires confirm: true")
+        }
+        let snapshotId = try requiredString(args, key: "snapshotId", message: "platform.restore_snapshot requires snapshotId")
+        let record = try readSnapshot(snapshotId: snapshotId)
+        guard let snapshot = record["snapshot"] as? [String: Any] else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Runtime snapshot JSON is invalid")
+        }
+        guard let appId = snapshot["appId"] as? String, !appId.isEmpty else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Runtime snapshot requires appId")
+        }
+        let storage = snapshot["storage"] as? [[String: Any]] ?? snapshot["appStorage"] as? [[String: Any]] ?? []
+        let now = Self.now()
+        try beginTransaction()
+        do {
+            try ensureAppRow(appId: appId, snapshot: snapshot, updatedAt: now)
+            try deleteAppStorage(appId: appId)
+            var restored = 0
+            for row in storage {
+                try restoreStorageRow(row, fallbackAppId: appId, updatedAt: now)
+                restored += 1
+            }
+            try commitTransaction()
+            return [
+                "ok": true,
+                "snapshotId": snapshotId,
+                "appId": appId,
+                "restoredStorageKeys": restored
+            ]
+        } catch {
+            rollbackTransaction()
+            throw error
+        }
+    }
+
+    private func compareSnapshot(args: [String: Any]) throws -> [String: Any] {
+        let left = try snapshotArgument(args: args, valueKey: "left", snapshotIdKey: "leftSnapshotId")
+        let right = try snapshotArgument(args: args, valueKey: "right", snapshotIdKey: "rightSnapshotId")
+        let leftJson = jsonString(comparableSnapshotValue(left))
+        let rightJson = jsonString(comparableSnapshotValue(right))
+        let equal = leftJson == rightJson
+        return [
+            "ok": equal,
+            "equal": equal,
+            "leftHash": "sha256:\(Self.sha256Hex(leftJson))",
+            "rightHash": "sha256:\(Self.sha256Hex(rightJson))"
+        ]
+    }
+
     private func clearRuntimeLogs(appId: String?) throws -> [String: Any] {
         let scoped = appId?.isEmpty == false
         return [
@@ -1025,6 +1130,266 @@ final class IOSDevControlPlane: @unchecked Sendable {
             throw CommandError(status: 500, code: "storage_error", message: "Could not clear runtime logs")
         }
         return Int(sqlite3_changes(db))
+    }
+
+    private func requireBundledApp(_ appId: String, message: String) throws {
+        if BundledAppCatalog.denialReason(appId: appId) != nil {
+            throw CommandError(status: 400, code: "invalid_request", message: message, details: ["appId": appId])
+        }
+    }
+
+    private func activeAppMetadata(appId: String) -> ActiveAppMetadata {
+        guard let db = database.handle else {
+            return ActiveAppMetadata(activeInstallId: nil, activeVersion: manifest(appId: appId)["version"] as? String, dataVersion: dataVersion(appId: appId))
+        }
+        let sql = "SELECT active_install_id, active_version, data_version FROM apps WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return ActiveAppMetadata(activeInstallId: nil, activeVersion: manifest(appId: appId)["version"] as? String, dataVersion: dataVersion(appId: appId))
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        if sqlite3_step(statement) == SQLITE_ROW {
+            return ActiveAppMetadata(
+                activeInstallId: nullableColumnText(statement, 0),
+                activeVersion: nullableColumnText(statement, 1),
+                dataVersion: sqlite3_column_type(statement, 2) == SQLITE_NULL ? dataVersion(appId: appId) : Int(sqlite3_column_int64(statement, 2))
+            )
+        }
+        return ActiveAppMetadata(activeInstallId: nil, activeVersion: manifest(appId: appId)["version"] as? String, dataVersion: dataVersion(appId: appId))
+    }
+
+    private func dataVersion(appId: String) -> Int {
+        if let value = manifest(appId: appId)["dataVersion"] as? Int {
+            return value
+        }
+        if let value = manifest(appId: appId)["dataVersion"] as? NSNumber {
+            return value.intValue
+        }
+        return 1
+    }
+
+    private func appStorageRows(appId: String) -> [[String: Any]] {
+        guard let db = database.handle else { return [] }
+        let sql = "SELECT app_id, key, value_json, updated_at FROM app_storage WHERE app_id = ? ORDER BY key"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        var rows: [[String: Any]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append([
+                "app_id": columnText(statement, 0),
+                "key": columnText(statement, 1),
+                "value_json": columnText(statement, 2),
+                "updated_at": columnText(statement, 3)
+            ])
+        }
+        return rows
+    }
+
+    private func insertRuntimeSnapshot(
+        snapshotId: String,
+        sessionId: String?,
+        appId: String,
+        installId: String?,
+        type: String,
+        snapshotJson: String,
+        contentHash: String,
+        createdAt: String
+    ) -> Bool {
+        guard let db = database.handle else { return false }
+        let sql = """
+        INSERT INTO runtime_snapshots (snapshot_id, session_id, app_id, install_id, type, snapshot_json, content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, snapshotId)
+        bindNullable(statement, 2, sessionId)
+        bind(statement, 3, appId)
+        bindNullable(statement, 4, installId)
+        bind(statement, 5, type)
+        bind(statement, 6, snapshotJson)
+        bind(statement, 7, contentHash)
+        bind(statement, 8, createdAt)
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+
+    private func validRuntimeSessionId(_ sessionId: String?) -> String? {
+        guard let sessionId, !sessionId.isEmpty else {
+            return nil
+        }
+        return scalarInt("SELECT COUNT(*) FROM runtime_sessions WHERE session_id = ?", appId: sessionId) > 0 ? sessionId : nil
+    }
+
+    private func readSnapshot(snapshotId: String) throws -> [String: Any] {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        let sql = "SELECT snapshot_id, snapshot_json, content_hash, created_at FROM runtime_snapshots WHERE snapshot_id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare snapshot read")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, snapshotId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw CommandError(status: 404, code: "snapshot_not_found", message: "Runtime snapshot not found: \(snapshotId)")
+        }
+        guard let snapshot = jsonValue(columnText(statement, 1)) as? [String: Any] else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Runtime snapshot JSON is invalid")
+        }
+        return [
+            "snapshotId": columnText(statement, 0),
+            "snapshot": snapshot,
+            "contentHash": columnText(statement, 2),
+            "createdAt": columnText(statement, 3)
+        ]
+    }
+
+    private func beginTransaction() throws {
+        guard executeStatement("BEGIN IMMEDIATE") else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not begin snapshot restore transaction")
+        }
+    }
+
+    private func commitTransaction() throws {
+        guard executeStatement("COMMIT") else {
+            _ = executeStatement("ROLLBACK")
+            throw CommandError(status: 500, code: "storage_error", message: "Could not commit snapshot restore transaction")
+        }
+    }
+
+    private func rollbackTransaction() {
+        _ = executeStatement("ROLLBACK")
+    }
+
+    private func executeStatement(_ sql: String) -> Bool {
+        guard let db = database.handle else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_DONE
+    }
+
+    private func ensureAppRow(appId: String, snapshot: [String: Any], updatedAt: String) throws {
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        let dataVersion = intValue(snapshot["dataVersion"]) ?? 1
+        let sql = """
+        INSERT INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at)
+        VALUES (?, ?, 'enabled', ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET active_install_id = excluded.active_install_id, active_version = excluded.active_version, data_version = excluded.data_version, status = 'enabled', updated_at = excluded.updated_at
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare app snapshot restore")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, appId)
+        bind(statement, 2, appId)
+        bindNullable(statement, 3, snapshot["activeInstallId"] as? String)
+        bindNullable(statement, 4, snapshot["activeVersion"] as? String)
+        sqlite3_bind_int64(statement, 5, Int64(dataVersion))
+        bind(statement, 6, updatedAt)
+        bind(statement, 7, updatedAt)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not restore app snapshot metadata")
+        }
+    }
+
+    private func deleteAppStorage(appId: String) throws {
+        _ = try deleteRows(sql: "DELETE FROM app_storage WHERE app_id = ?", appId: appId)
+    }
+
+    private func restoreStorageRow(_ row: [String: Any], fallbackAppId: String, updatedAt: String) throws {
+        let rowAppId = row["app_id"] as? String ?? row["appId"] as? String ?? fallbackAppId
+        guard !rowAppId.isEmpty,
+              let key = row["key"] as? String,
+              !key.isEmpty
+        else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Snapshot storage row requires app_id and key")
+        }
+        guard rowAppId == fallbackAppId else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Snapshot storage row app_id does not match snapshot appId")
+        }
+        guard key.hasPrefix("\(rowAppId):") else {
+            throw CommandError(status: 400, code: "invalid_request", message: "Snapshot storage key is outside app storage prefix")
+        }
+        guard let db = database.handle else {
+            throw CommandError(status: 500, code: "storage_error", message: "Platform database is not available")
+        }
+        let sql = """
+        INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw CommandError(status: 500, code: "storage_error", message: "Could not prepare snapshot storage restore")
+        }
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, rowAppId)
+        bind(statement, 2, key)
+        bind(statement, 3, storageSnapshotValueJson(row))
+        bind(statement, 4, updatedAt)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw CommandError(status: 500, code: "storage_error", message: "Snapshot storage row could not be restored")
+        }
+    }
+
+    private func storageSnapshotValueJson(_ row: [String: Any]) -> String {
+        if let raw = row["value_json"] as? String ?? row["valueJson"] as? String {
+            return raw
+        }
+        return jsonFragmentString(row["value"] ?? NSNull())
+    }
+
+    private func snapshotArgument(args: [String: Any], valueKey: String, snapshotIdKey: String) throws -> Any {
+        if let snapshotId = args[snapshotIdKey] as? String, !snapshotId.isEmpty {
+            return try readSnapshot(snapshotId: snapshotId)["snapshot"] ?? NSNull()
+        }
+        if let value = args[valueKey], !(value is NSNull) {
+            return value
+        }
+        throw CommandError(status: 400, code: "invalid_request", message: "runtime.compare_snapshot requires left/right snapshots or snapshot ids")
+    }
+
+    private func comparableSnapshotValue(_ value: Any) -> Any {
+        guard var snapshot = value as? [String: Any] else {
+            return value
+        }
+        snapshot.removeValue(forKey: "createdAt")
+        snapshot.removeValue(forKey: "snapshotId")
+        if snapshot["storage"] == nil, let appStorage = snapshot["appStorage"] {
+            snapshot["storage"] = appStorage
+        }
+        snapshot.removeValue(forKey: "appStorage")
+        if let storage = snapshot["storage"] as? [[String: Any]] {
+            snapshot["storage"] = storage.map { row in
+                var stable = row
+                stable.removeValue(forKey: "updated_at")
+                stable.removeValue(forKey: "updatedAt")
+                return stable
+            }.sorted { left, right in
+                storageSortKey(left) < storageSortKey(right)
+            }
+        }
+        return snapshot
+    }
+
+    private func storageSortKey(_ row: [String: Any]) -> String {
+        let appId = row["app_id"] as? String ?? row["appId"] as? String ?? ""
+        let key = row["key"] as? String ?? ""
+        return "\(appId)|\(key)"
     }
 
     private func scalarInt(_ sql: String, appId: String) -> Int {
@@ -1129,6 +1494,16 @@ final class IOSDevControlPlane: @unchecked Sendable {
             return NSNull()
         }
         return value
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        return nil
     }
 
     private func parsedCoreRows(_ spec: SafeDbTable, appId: String, limit: Int, jsonColumn: String, parsedKey: String) -> [[String: Any]] {
@@ -1717,6 +2092,15 @@ final class IOSDevControlPlane: @unchecked Sendable {
         return text
     }
 
+    private func jsonFragmentString(_ value: Any) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return "null"
+        }
+        return text
+    }
+
     private static func now() -> String {
         ISO8601DateFormatter().string(from: Date())
     }
@@ -1759,6 +2143,22 @@ final class IOSDevControlPlane: @unchecked Sendable {
         let appFilterColumn: String?
         let requiresAppId: Bool
     }
+
+    private struct ActiveAppMetadata {
+        let activeInstallId: String?
+        let activeVersion: String?
+        let dataVersion: Int
+    }
+
+    private static let snapshotTypes: Set<String> = [
+        "bug-report",
+        "pre-install",
+        "pre-migration",
+        "post-test",
+        "golden",
+        "manual",
+        "debug-bundle"
+    ]
 
     private static let safeDbApps = SafeDbTable(
         table: "apps",
