@@ -153,6 +153,7 @@
 - [x] Source/static checks verify Windows debug dev control supports static HTML `runtime.screenshot`, `runtime.query`, target interaction, wait/timer, and visible/text assertion commands.
 - [x] Source/static checks verify Windows debug dev control supports fresh-core `runtime.replay_events` plus DB-backed `runtime.core_snapshot` and `runtime.assert_core_action`.
 - [x] Source/static checks verify Windows debug dev control supports explicit `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots.
+- [x] Source/static checks verify Windows debug dev control supports DB-backed one-shot `runtime.fault_inject` consumed before permission/budget bridge dispatch.
 - [ ] Debug dev control plane runtime-smoke verifies `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
 - [ ] Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 

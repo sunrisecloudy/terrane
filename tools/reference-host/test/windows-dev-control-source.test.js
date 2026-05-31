@@ -97,6 +97,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "runtime.notification_capture",
     "runtime.assert_bridge_call",
     "runtime.assert_no_console_errors",
+    "runtime.fault_inject",
     "runtime.core_snapshot",
     "runtime.replay_events",
     "runtime.assert_core_action",
@@ -145,6 +146,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "NotificationCaptureJson",
     "AssertBridgeCallJson",
     "AssertNoConsoleErrorsJson",
+    "RuntimeFaultInjectJson",
     "RuntimeNetworkMockSetJson",
     "RuntimeNetworkMockResetJson",
     "RuntimeDialogMockSetJson",
@@ -285,6 +287,46 @@ test("Windows dev control supports DB-backed network and dialog mocks", () => {
   ]) {
     assert.equal(network.includes(snippet), true, `Windows network mock source should contain ${snippet}`);
   }
+});
+
+test("Windows dev control exposes DB-backed one-shot runtime fault injection", () => {
+  const control = read("native/windows/src/DevControlPlane.cpp");
+  const bridge = read("native/windows/src/WebBridge.cpp");
+
+  for (const snippet of [
+    "runtime.fault_inject",
+    "RuntimeFaultInjectJson",
+    "runtime.fault_inject requires a bridge method",
+    "Unknown bridge method",
+    "fault_injected",
+    "Injected bridge fault",
+    "INSERT INTO fault_injections",
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    "faultId",
+    "once",
+    "runtime.fault_inject appId is not a valid generated app id",
+    "ControlSessionAllowsApp",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Windows fault-injection control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "FaultInjectionFailure",
+    "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections",
+    "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?)",
+    "ORDER BY created_at LIMIT 1",
+    "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?",
+    "BridgeResponse::Failure(request.id, request.hasId",
+    "RecordBridgeCall(request, faultResponse",
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Windows bridge fault source should contain ${snippet}`);
+  }
+
+  const appIdRejection = bridge.indexOf("Bridge params must not include appId");
+  const faultCheck = bridge.indexOf("FaultInjectionFailure(request)");
+  const permissionCheck = bridge.indexOf("permissionForBridgeMethod(request.method)");
+  assert.equal(appIdRejection >= 0 && faultCheck > appIdRejection, true);
+  assert.equal(permissionCheck > faultCheck, true);
 });
 
 test("Windows dev control supports direct storage get, set, and assertions", () => {

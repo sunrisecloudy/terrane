@@ -458,6 +458,59 @@ test(
       assert.equal(commandCapabilities.statusCode, 200, commandCapabilities.body);
       assert.equal(JSON.parse(commandCapabilities.body).result.features["runtime.capabilities"], true);
 
+      const faultInject = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.fault_inject",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            code: "windows_fault_injected",
+            message: "Windows injected bridge fault",
+            details: { probe: "windows-fault-injection" },
+            once: true,
+          },
+        },
+      });
+      assert.equal(faultInject.statusCode, 200, faultInject.body);
+      assert.match(JSON.parse(faultInject.body).result.faultId, /^fault-/);
+
+      const faultedBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            params: { key: "task-workbench:windows-fault-probe" },
+          },
+        },
+      });
+      assert.equal(faultedBridge.statusCode, 200, faultedBridge.body);
+      const faultedBridgeBody = JSON.parse(faultedBridge.body);
+      assert.equal(faultedBridgeBody.result.ok, false);
+      assert.equal(faultedBridgeBody.result.error.code, "windows_fault_injected");
+      assert.equal(faultedBridgeBody.result.error.details.probe, "windows-fault-injection");
+      assert.equal(faultedBridgeBody.result.error.details.appId, "task-workbench");
+      assert.equal(faultedBridgeBody.result.error.details.method, "storage.get");
+
+      const faultConsumedBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: {
+          tool: "runtime.call_bridge",
+          args: {
+            appId: "task-workbench",
+            method: "storage.get",
+            params: { key: "task-workbench:windows-fault-probe" },
+          },
+        },
+      });
+      assert.equal(faultConsumedBridge.statusCode, 200, faultConsumedBridge.body);
+      assert.equal(JSON.parse(faultConsumedBridge.body).result.ok, true);
+
       const apiSession = await requestControl(ready.port, "/control/sessions", {
         method: "POST",
         token,
@@ -1183,6 +1236,10 @@ test(
         );
         assert.equal(
           Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.assert_storage' AND decision = 'accepted' AND error_code IS NULL").get().count),
+          1,
+        );
+        assert.equal(
+          Number(database.prepare("SELECT COUNT(*) AS count FROM control_commands WHERE tool = 'runtime.fault_inject' AND decision = 'accepted' AND error_code IS NULL").get().count),
           1,
         );
         assert.equal(

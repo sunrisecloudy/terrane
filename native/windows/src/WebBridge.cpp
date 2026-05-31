@@ -95,6 +95,23 @@ bool HasOnlyBridgeRequestFields(json::JsonObject const& object, json::JsonArray&
   return extraFields.Size() == 0;
 }
 
+json::JsonObject FaultDetailsFromJson(
+    std::wstring const& detailsJson,
+    std::wstring const& faultId,
+    BridgeRequest const& request) {
+  json::JsonObject details;
+  json::JsonValue parsed{nullptr};
+  if (json::JsonValue::TryParse(detailsJson, parsed) && parsed.ValueType() == json::JsonValueType::Object) {
+    for (auto const& entry : parsed.GetObject()) {
+      details.Insert(entry.Key(), entry.Value());
+    }
+  }
+  details.Insert(L"faultId", json::JsonValue::CreateStringValue(faultId));
+  details.Insert(L"appId", json::JsonValue::CreateStringValue(request.context.appId));
+  details.Insert(L"method", json::JsonValue::CreateStringValue(request.method));
+  return details;
+}
+
 }  // namespace
 
 WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
@@ -187,6 +204,12 @@ void WebBridge::HandleJsonAsync(std::wstring body, AppSandboxContext context, Br
     return;
   }
 
+  if (auto faultResponse = FaultInjectionFailure(request); faultResponse.has_value()) {
+    RecordBridgeCall(request, faultResponse.value(), startedAtMs);
+    completion(faultResponse.value().Stringify().c_str());
+    return;
+  }
+
   if (auto permission = permissionForBridgeMethod(request.method);
       permission.has_value() && !request.context.approvedPermissions.contains(permission.value())) {
     json::JsonObject details;
@@ -236,6 +259,58 @@ std::optional<std::wstring> WebBridge::permissionForBridgeMethod(std::wstring co
     return method;
   }
   return std::nullopt;
+}
+
+std::optional<json::JsonObject> WebBridge::FaultInjectionFailure(BridgeRequest const& request) const {
+  sqlite3* db = DatabaseHandle();
+  if (db == nullptr || request.context.appId.empty()) {
+    return std::nullopt;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(
+          db,
+          "SELECT fault_id, code, message, COALESCE(details_json, '{}'), once FROM fault_injections "
+          "WHERE enabled = 1 AND method = ? AND (app_id IS NULL OR app_id = ?) AND (session_id IS NULL OR session_id = ?) "
+          "ORDER BY created_at LIMIT 1",
+          -1,
+          &statement,
+          nullptr) != SQLITE_OK) {
+    return std::nullopt;
+  }
+  BindText(statement, 1, request.method);
+  BindText(statement, 2, request.context.appId);
+  BindText(statement, 3, RuntimeSessionId(request));
+
+  std::optional<json::JsonObject> response;
+  if (sqlite3_step(statement) == SQLITE_ROW) {
+    auto faultId = ColumnText(statement, 0);
+    auto code = ColumnText(statement, 1);
+    auto message = ColumnText(statement, 2);
+    auto details = FaultDetailsFromJson(ColumnText(statement, 3), faultId, request);
+    bool once = sqlite3_column_int(statement, 4) != 0;
+    response = BridgeResponse::Failure(request.id, request.hasId, code, message, details);
+    sqlite3_finalize(statement);
+    if (once) {
+      DisableFaultInjection(faultId);
+    }
+    return response;
+  }
+  sqlite3_finalize(statement);
+  return std::nullopt;
+}
+
+void WebBridge::DisableFaultInjection(std::wstring const& faultId) const {
+  sqlite3* db = DatabaseHandle();
+  if (db == nullptr) {
+    return;
+  }
+  sqlite3_stmt* statement = nullptr;
+  if (sqlite3_prepare_v2(db, "UPDATE fault_injections SET enabled = 0 WHERE fault_id = ?", -1, &statement, nullptr) != SQLITE_OK) {
+    return;
+  }
+  BindText(statement, 1, faultId);
+  sqlite3_step(statement);
+  sqlite3_finalize(statement);
 }
 
 json::JsonObject WebBridge::Dispatch(BridgeRequest const& request) {

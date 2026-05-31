@@ -311,12 +311,16 @@ bool OptionalArgsAppId(json::JsonObject const& command, std::wstring const& tool
   }
   auto value = OptionalStringMember(args.value(), L"appId");
   if (!value.has_value()) {
-    *error = tool + L" appId must be a string";
+    *error = tool == L"runtime.fault_inject"
+        ? L"runtime.fault_inject appId must be a string"
+        : tool + L" appId must be a string";
     return false;
   }
   *appId = value.value();
   if (!appId->empty() && !IsValidAppId(*appId)) {
-    *error = tool + L" appId is not a valid generated app id";
+    *error = tool == L"runtime.fault_inject"
+        ? L"runtime.fault_inject appId is not a valid generated app id"
+        : tool + L" appId is not a valid generated app id";
     return false;
   }
   return true;
@@ -1727,6 +1731,119 @@ struct DevControlPlane::Impl {
             ? args.GetNamedValue(L"cancelled")
             : json::JsonValue::CreateBooleanValue(false));
     return response;
+  }
+
+  std::optional<std::wstring> FaultMethodForArgs(json::JsonObject const& args) {
+    auto method = OptionalStringMember(args, L"method");
+    if (method.has_value() && !method->empty()) {
+      return method.value();
+    }
+    auto kind = OptionalStringMember(args, L"kind");
+    if (!kind.has_value() || kind->empty()) {
+      return std::nullopt;
+    }
+    if (kind.value() == L"storage.read") {
+      return L"storage.get";
+    }
+    if (kind.value() == L"storage.write") {
+      return L"storage.set";
+    }
+    if (kind.value() == L"network" || kind.value() == L"network.request") {
+      return L"network.request";
+    }
+    if (kind.value() == L"core" || kind.value() == L"core.step") {
+      return L"core.step";
+    }
+    return kind.value();
+  }
+
+  bool IsKnownControlBridgeMethod(std::wstring const& method) {
+    return method == L"storage.get" ||
+        method == L"storage.set" ||
+        method == L"storage.remove" ||
+        method == L"storage.list" ||
+        method == L"dialog.openFile" ||
+        method == L"dialog.saveFile" ||
+        method == L"notification.toast" ||
+        method == L"network.request" ||
+        method == L"core.step" ||
+        method == L"runtime.capabilities" ||
+        method == L"app.log";
+  }
+
+  std::wstring FaultDetailsJson(json::JsonObject const& args) {
+    if (args.HasKey(L"details") && args.GetNamedValue(L"details").ValueType() != json::JsonValueType::Null) {
+      return std::wstring(args.GetNamedValue(L"details").Stringify().c_str());
+    }
+    auto kind = OptionalStringMember(args, L"kind");
+    if (kind.has_value() && !kind->empty()) {
+      return L"{\"kind\":" + JsonString(kind.value()) + L"}";
+    }
+    return L"{}";
+  }
+
+  bool FaultOnce(json::JsonObject const& args) {
+    if (!args.HasKey(L"once")) {
+      return true;
+    }
+    auto value = args.GetNamedValue(L"once");
+    return value.ValueType() == json::JsonValueType::Boolean ? value.GetBoolean() : true;
+  }
+
+  std::wstring RuntimeFaultInjectJson(json::JsonObject const& args, std::wstring* errorCode, std::wstring* errorMessage) {
+    auto method = FaultMethodForArgs(args);
+    if (!method.has_value() || method->empty()) {
+      *errorCode = L"invalid_request";
+      *errorMessage = L"runtime.fault_inject requires a bridge method";
+      return L"";
+    }
+    if (!IsKnownControlBridgeMethod(method.value())) {
+      *errorCode = L"unknown_method";
+      *errorMessage = L"Unknown bridge method: " + method.value();
+      return L"";
+    }
+
+    auto appId = OptionalStringMember(args, L"appId");
+    auto sessionId = OptionalStringMember(args, L"sessionId");
+    auto code = StringMemberOr(args, L"code", L"fault_injected");
+    auto message = StringMemberOr(args, L"message", L"Injected bridge fault");
+    auto detailsJson = FaultDetailsJson(args);
+    bool once = FaultOnce(args);
+    auto faultId = MakeId(L"fault");
+    PlatformDatabase database(databasePath);
+    sqlite3* db = database.handle();
+    if (db == nullptr) {
+      *errorCode = L"sqlite_error";
+      *errorMessage = L"Fault injection could not be registered";
+      return L"";
+    }
+    if (!ExecutePrepared(
+            db,
+            "INSERT INTO fault_injections (fault_id, session_id, app_id, method, code, message, details_json, once, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+            {
+                SqlText(faultId),
+                SqlNullableText(sessionId),
+                SqlNullableText(appId),
+                SqlText(method.value()),
+                SqlText(code),
+                SqlText(message),
+                SqlText(detailsJson),
+                SqlInt(once ? 1 : 0),
+                SqlText(NowIso()),
+            })) {
+      *errorCode = L"sqlite_error";
+      *errorMessage = L"Fault injection could not be registered";
+      return L"";
+    }
+    return L"{\"ok\":true,\"faultId\":" + JsonString(faultId) +
+        L",\"sessionId\":" + JsonNullableString(sessionId.value_or(L"")) +
+        L",\"appId\":" + JsonNullableString(appId.value_or(L"")) +
+        L",\"method\":" + JsonString(method.value()) +
+        L",\"code\":" + JsonString(code) +
+        L",\"message\":" + JsonString(message) +
+        L",\"details\":" + detailsJson +
+        L",\"once\":" + std::wstring(once ? L"true" : L"false") + L"}";
   }
 
   std::wstring RuntimeNetworkMockSetJson(json::JsonObject const& args, std::wstring* error) {
@@ -4060,7 +4177,8 @@ struct DevControlPlane::Impl {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Could not read platform database" : error, 500);
         return;
       }
-    } else if (tool == L"runtime.network_mock_set" ||
+    } else if (tool == L"runtime.fault_inject" ||
+        tool == L"runtime.network_mock_set" ||
         tool == L"runtime.network_mock_reset" ||
         tool == L"runtime.dialog_mock_set") {
       json::JsonObject args;
@@ -4088,6 +4206,17 @@ struct DevControlPlane::Impl {
           return;
         }
       }
+      if (tool == L"runtime.fault_inject") {
+        auto faultMethod = FaultMethodForArgs(args);
+        if (!faultMethod.has_value() || faultMethod->empty()) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.fault_inject requires a bridge method", 400);
+          return;
+        }
+        if (!IsKnownControlBridgeMethod(faultMethod.value())) {
+          SendControlRouteError(client, sessionId, tool, method, path, started, L"unknown_method", L"Unknown bridge method: " + faultMethod.value(), 400);
+          return;
+        }
+      }
       if (tool == L"runtime.network_mock_set" &&
           (!NetworkMockUrlPattern(args).has_value() || !args.HasKey(L"response") || args.GetNamedValue(L"response").ValueType() == json::JsonValueType::Null)) {
         SendControlRouteError(client, sessionId, tool, method, path, started, L"invalid_request", L"runtime.network_mock_set requires urlPattern or match.url and response", 400);
@@ -4104,7 +4233,9 @@ struct DevControlPlane::Impl {
         SendControlRouteError(client, sessionId, tool, method, path, started, errorCode, errorMessage, errorStatus);
         return;
       }
-      if (tool == L"runtime.network_mock_set") {
+      if (tool == L"runtime.fault_inject") {
+        result = RuntimeFaultInjectJson(args, &errorCode, &error);
+      } else if (tool == L"runtime.network_mock_set") {
         result = RuntimeNetworkMockSetJson(args, &error);
       } else if (tool == L"runtime.network_mock_reset") {
         result = RuntimeNetworkMockResetJson(args, &error);
@@ -4112,7 +4243,16 @@ struct DevControlPlane::Impl {
         result = RuntimeDialogMockSetJson(args, &error);
       }
       if (result.empty()) {
-        SendControlRouteError(client, sessionId, tool, method, path, started, L"storage_error", error.empty() ? L"Mock control operation failed" : error, 500);
+        SendControlRouteError(
+            client,
+            sessionId,
+            tool,
+            method,
+            path,
+            started,
+            errorCode.empty() ? L"storage_error" : errorCode,
+            error.empty() ? L"Mock control operation failed" : error,
+            errorCode == L"sqlite_error" || errorCode.empty() ? 500 : 400);
         return;
       }
     } else if (tool == L"runtime.assert_bridge_call") {
