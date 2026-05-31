@@ -1265,6 +1265,14 @@ function checkNativeStatic() {
       throw new Error(`macOS network missing policy enforcement: ${snippet}`);
     }
   }
+  for (const snippet of ["requestedTimeoutMs", "network.request timeoutMs must be a positive integer", "effectiveTimeoutMs", "NSURLErrorTimedOut", "timeoutFailure(id: request.id, timeoutMs: effectiveTimeoutMs)"]) {
+    if (!macNetwork.includes(snippet)) {
+      throw new Error(`macOS network missing timeoutMs parity: ${snippet}`);
+    }
+  }
+  if (macNetwork.includes("TimeInterval(rule.timeoutMs) / 1000.0")) {
+    throw new Error("macOS network.request must clamp request timeoutMs before configuring URLSession");
+  }
   if (macNetwork.includes("platform_unsupported")) {
     throw new Error("macOS network.request must not remain a platform_unsupported stub");
   }
@@ -1377,6 +1385,14 @@ function checkNativeStatic() {
     if (!iosNetwork.includes(snippet)) {
       throw new Error(`iOS network missing policy enforcement: ${snippet}`);
     }
+  }
+  for (const snippet of ["requestedTimeoutMs", "network.request timeoutMs must be a positive integer", "effectiveTimeoutMs", "NSURLErrorTimedOut", "timeoutFailure(id: request.id, timeoutMs: effectiveTimeoutMs)"]) {
+    if (!iosNetwork.includes(snippet)) {
+      throw new Error(`iOS network missing timeoutMs parity: ${snippet}`);
+    }
+  }
+  if (iosNetwork.includes("TimeInterval(rule.timeoutMs) / 1000.0")) {
+    throw new Error("iOS network.request must clamp request timeoutMs before configuring URLSession");
   }
   if (iosNetwork.includes("platform_unsupported")) {
     throw new Error("iOS network.request must not remain a platform_unsupported stub");
@@ -1582,7 +1598,11 @@ function checkNativeStatic() {
     [linuxNetwork, "requested_timeout_ms"],
     [linuxNetwork, "network.request timeoutMs must be a positive integer"],
     [linuxNetwork, "effective_timeout_ms"],
+    [linuxNetwork, "RequestTimeout"],
+    [linuxNetwork, "g_cond_wait_until"],
+    [linuxNetwork, "g_cancellable_cancel"],
     [linuxNetwork, "G_IO_ERROR_TIMED_OUT"],
+    [linuxNetwork, "G_IO_ERROR_CANCELLED"],
     [linuxNetwork, '"timeout"'],
   ];
   for (const [source, snippet] of linuxRequired) {
@@ -1599,6 +1619,11 @@ function checkNativeStatic() {
   }
   if (linuxStorage.includes("app_id_for_key")) {
     throw new Error("Linux storage must not derive app id from storage key");
+  }
+  for (const snippet of ['g_object_set(session, "timeout"', "(timeout_ms + 999) / 1000"]) {
+    if (linuxNetwork.includes(snippet)) {
+      throw new Error(`Linux network.request must enforce timeoutMs with millisecond cancellable precision, not SoupSession seconds: ${snippet}`);
+    }
   }
   for (const snippet of ["soup_session_send_and_read", "network_policy_denied", "NetworkPolicyRule", "SOUP_MESSAGE_NO_REDIRECT", "is_private_network_host", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!linuxNetwork.includes(snippet)) {
@@ -1705,6 +1730,16 @@ function checkNativeStatic() {
   for (const snippet of ["HttpURLConnection", "network_policy_denied", "NetworkPolicyRule", "instanceFollowRedirects = false", "CountDownLatch", "isPrivateNetworkHost", "network.request private network targets are denied", "network.request credentials are not allowed"]) {
     if (!androidNetwork.includes(snippet)) {
       throw new Error(`Android network missing policy enforcement: ${snippet}`);
+    }
+  }
+  for (const snippet of ["requestedTimeoutMs", "network.request timeoutMs must be a positive integer", "effectiveTimeoutMs", "timeoutFailure(request, effectiveTimeoutMs)", "JSONObject(mapOf(\"timeoutMs\" to timeoutMs))"]) {
+    if (!androidNetwork.includes(snippet)) {
+      throw new Error(`Android network missing timeoutMs parity: ${snippet}`);
+    }
+  }
+  for (const snippet of ["rule.timeoutMs + 1_000", "connectTimeout = rule.timeoutMs", "readTimeout = rule.timeoutMs"]) {
+    if (androidNetwork.includes(snippet)) {
+      throw new Error(`Android network.request must clamp request timeoutMs before transport timeout: ${snippet}`);
     }
   }
   if (androidNetwork.includes("platform_unsupported")) {

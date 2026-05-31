@@ -31,10 +31,20 @@ final class PlatformNetwork {
         if let bodyData, bodyData.count > rule.maxRequestBytes {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.request body exceeds manifest.networkPolicy maxRequestBytes")
         }
+        let requestedTimeout = Self.requestedTimeoutMs(from: request.params)
+        if case let .invalid(value) = requestedTimeout {
+            return .failure(
+                id: request.id,
+                code: "invalid_request",
+                message: "network.request timeoutMs must be a positive integer",
+                details: ["timeoutMs": value]
+            )
+        }
+        let effectiveTimeoutMs = Self.effectiveTimeoutMs(rule: rule, requested: requestedTimeout.value)
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method
-        urlRequest.timeoutInterval = TimeInterval(rule.timeoutMs) / 1000.0
+        urlRequest.timeoutInterval = TimeInterval(effectiveTimeoutMs) / 1000.0
         urlRequest.httpShouldHandleCookies = false
         urlRequest.httpBody = bodyData
         for (name, value) in headers {
@@ -61,7 +71,7 @@ final class PlatformNetwork {
             semaphore.signal()
         }.resume()
         if semaphore.wait(timeout: .now() + urlRequest.timeoutInterval + 1.0) == .timedOut {
-            return .failure(id: request.id, code: "timeout", message: "network.request timed out")
+            return Self.timeoutFailure(id: request.id, timeoutMs: effectiveTimeoutMs)
         }
 
         if redirectGuard.deniedRedirect {
@@ -69,6 +79,10 @@ final class PlatformNetwork {
         }
         let result = resultBox.value()
         if let responseError = result.error {
+            let error = responseError as NSError
+            if error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut {
+                return Self.timeoutFailure(id: request.id, timeoutMs: effectiveTimeoutMs)
+            }
             return .failure(id: request.id, code: "network_error", message: responseError.localizedDescription)
         }
         guard let httpResponse = result.response as? HTTPURLResponse else {
@@ -141,6 +155,41 @@ final class PlatformNetwork {
             headers[name.lowercased()] = String(describing: value)
         }
         return headers
+    }
+
+    private static func requestedTimeoutMs(from params: [String: Any]) -> RequestedTimeout {
+        guard let value = params["timeoutMs"] else {
+            return .absent
+        }
+        if value is Bool {
+            return .invalid(value)
+        }
+        if let intValue = value as? Int {
+            return intValue > 0 ? .valid(intValue) : .invalid(value)
+        }
+        if let doubleValue = value as? Double {
+            return doubleValue.isFinite && doubleValue > 0 && doubleValue <= Double(Int.max) && doubleValue.rounded(.towardZero) == doubleValue
+                ? .valid(Int(doubleValue))
+                : .invalid(value)
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .invalid(value)
+            }
+            let doubleValue = number.doubleValue
+            return doubleValue.isFinite && doubleValue > 0 && doubleValue <= Double(Int.max) && doubleValue.rounded(.towardZero) == doubleValue
+                ? .valid(Int(doubleValue))
+                : .invalid(value)
+        }
+        return .invalid(value)
+    }
+
+    private static func effectiveTimeoutMs(rule: NetworkPolicyRule, requested: Int?) -> Int {
+        requested.map { min(rule.timeoutMs, $0) } ?? rule.timeoutMs
+    }
+
+    private static func timeoutFailure(id: String?, timeoutMs: Int) -> BridgeResponse {
+        .failure(id: id, code: "timeout", message: "network.request timed out", details: ["timeoutMs": timeoutMs])
     }
 
     static func isPrivateNetworkHost(_ rawHost: String?) -> Bool {
@@ -303,6 +352,19 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
 private enum NetworkBody {
     case valid(Data?)
     case invalid
+}
+
+private enum RequestedTimeout {
+    case absent
+    case valid(Int)
+    case invalid(Any)
+
+    var value: Int? {
+        if case let .valid(value) = self {
+            return value
+        }
+        return nil
+    }
 }
 
 private final class NetworkRedirectState: @unchecked Sendable {

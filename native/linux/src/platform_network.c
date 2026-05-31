@@ -10,6 +10,56 @@ typedef struct {
   gsize len;
 } RequestBody;
 
+typedef struct {
+  GCancellable *cancellable;
+  guint timeout_ms;
+  GMutex mutex;
+  GCond cond;
+  gboolean completed;
+} RequestTimeout;
+
+static gpointer request_timeout_thread(gpointer user_data) {
+  RequestTimeout *timeout = user_data;
+  gint64 deadline = g_get_monotonic_time() + ((gint64)timeout->timeout_ms * G_TIME_SPAN_MILLISECOND);
+
+  g_mutex_lock(&timeout->mutex);
+  while (!timeout->completed) {
+    if (!g_cond_wait_until(&timeout->cond, &timeout->mutex, deadline)) {
+      if (!timeout->completed) {
+        g_cancellable_cancel(timeout->cancellable);
+      }
+      break;
+    }
+  }
+  g_mutex_unlock(&timeout->mutex);
+  return NULL;
+}
+
+static GThread *request_timeout_start(RequestTimeout *timeout, GCancellable *cancellable, guint timeout_ms) {
+  if (timeout_ms == 0) {
+    return NULL;
+  }
+  timeout->cancellable = cancellable;
+  timeout->timeout_ms = timeout_ms;
+  timeout->completed = FALSE;
+  g_mutex_init(&timeout->mutex);
+  g_cond_init(&timeout->cond);
+  return g_thread_new("network-request-timeout", request_timeout_thread, timeout);
+}
+
+static void request_timeout_finish(RequestTimeout *timeout, GThread *thread) {
+  if (thread == NULL) {
+    return;
+  }
+  g_mutex_lock(&timeout->mutex);
+  timeout->completed = TRUE;
+  g_cond_signal(&timeout->cond);
+  g_mutex_unlock(&timeout->mutex);
+  g_thread_join(thread);
+  g_cond_clear(&timeout->cond);
+  g_mutex_clear(&timeout->mutex);
+}
+
 static gchar *origin_for_uri(GUri *uri) {
   const gchar *scheme = g_uri_get_scheme(uri);
   const gchar *host = g_uri_get_host(uri);
@@ -380,10 +430,16 @@ JsonNode *platform_network_request(PlatformNetwork *network, const BridgeRequest
     }
 
     guint timeout_ms = effective_timeout_ms(rule, has_requested_timeout, requested_timeout);
-    g_object_set(session, "timeout", MAX(1, (timeout_ms + 999) / 1000), NULL);
-    GBytes *response = soup_session_send_and_read(session, message, NULL, &error);
+    GCancellable *cancellable = g_cancellable_new();
+    RequestTimeout request_timeout = {0};
+    GThread *timeout_thread = request_timeout_start(&request_timeout, cancellable, timeout_ms);
+    GBytes *response = soup_session_send_and_read(session, message, cancellable, &error);
+    request_timeout_finish(&request_timeout, timeout_thread);
+    gboolean cancelled_by_timeout = g_cancellable_is_cancelled(cancellable);
+    g_object_unref(cancellable);
     if (error != NULL) {
-      if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)) {
+      if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT) ||
+          (cancelled_by_timeout && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) {
         JsonNode *failure = timeout_failure(request, timeout_ms);
         g_clear_error(&error);
         g_clear_object(&message);

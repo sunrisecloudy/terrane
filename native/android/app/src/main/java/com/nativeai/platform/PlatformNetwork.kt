@@ -40,8 +40,21 @@ class PlatformNetwork {
         if (body != null && body.size > rule.maxRequestBytes) {
             return BridgeResponse.failure(request.id, "network_policy_denied", "network.request body exceeds manifest.networkPolicy maxRequestBytes").toString()
         }
+        val requestedTimeoutMs = when (val parsedTimeout = requestedTimeoutMs(request.params)) {
+            is NetworkTimeout.Invalid -> {
+                return BridgeResponse.failure(
+                    request.id,
+                    "invalid_request",
+                    "network.request timeoutMs must be a positive integer",
+                    JSONObject(mapOf("timeoutMs" to parsedTimeout.value)),
+                ).toString()
+            }
+            NetworkTimeout.Missing -> null
+            is NetworkTimeout.Valid -> parsedTimeout.value
+        }
+        val effectiveTimeoutMs = effectiveTimeoutMs(rule, requestedTimeoutMs)
 
-        return performRequestOffMainThread(request, url, method, headers, body, rule, request.context.networkPolicy, request.context.denyPrivateNetwork)
+        return performRequestOffMainThread(request, url, method, headers, body, rule, effectiveTimeoutMs, request.context.networkPolicy, request.context.denyPrivateNetwork)
     }
 
     private fun performRequestOffMainThread(
@@ -51,6 +64,7 @@ class PlatformNetwork {
         headers: Map<String, String>,
         body: ByteArray?,
         rule: NetworkPolicyRule,
+        effectiveTimeoutMs: Int,
         policy: List<NetworkPolicyRule>,
         denyPrivateNetwork: Boolean,
     ): String {
@@ -58,18 +72,18 @@ class PlatformNetwork {
         val latch = CountDownLatch(1)
         Thread {
             try {
-                result.set(performRequest(request, initialUrl, method, headers, body, rule, policy, denyPrivateNetwork))
+                result.set(performRequest(request, initialUrl, method, headers, body, rule, effectiveTimeoutMs, policy, denyPrivateNetwork))
             } catch (error: Exception) {
                 result.set(BridgeResponse.failure(request.id, "network_error", error.localizedMessage ?: "network.request failed").toString())
             } finally {
                 latch.countDown()
             }
         }.start()
-        val completed = latch.await((rule.timeoutMs + 1_000).toLong(), TimeUnit.MILLISECONDS)
+        val completed = latch.await((effectiveTimeoutMs + 1_000).toLong(), TimeUnit.MILLISECONDS)
         return if (completed) {
             result.get()
         } else {
-            BridgeResponse.failure(request.id, "timeout", "network.request timed out").toString()
+            timeoutFailure(request, effectiveTimeoutMs)
         }
     }
 
@@ -80,6 +94,7 @@ class PlatformNetwork {
         headers: Map<String, String>,
         body: ByteArray?,
         rule: NetworkPolicyRule,
+        effectiveTimeoutMs: Int,
         policy: List<NetworkPolicyRule>,
         denyPrivateNetwork: Boolean,
     ): String {
@@ -88,8 +103,8 @@ class PlatformNetwork {
             val connection = (currentUrl.openConnection() as HttpURLConnection).apply {
                 requestMethod = method
                 instanceFollowRedirects = false
-                connectTimeout = rule.timeoutMs
-                readTimeout = rule.timeoutMs
+                connectTimeout = effectiveTimeoutMs
+                readTimeout = effectiveTimeoutMs
                 useCaches = false
                 doInput = true
                 headers.forEach { (name, value) -> setRequestProperty(name, value) }
@@ -134,7 +149,7 @@ class PlatformNetwork {
                 return BridgeResponse.success(request.id, result).toString()
             } catch (_: SocketTimeoutException) {
                 connection.disconnect()
-                return BridgeResponse.failure(request.id, "timeout", "network.request timed out").toString()
+                return timeoutFailure(request, effectiveTimeoutMs)
             } catch (error: Exception) {
                 connection.disconnect()
                 return BridgeResponse.failure(request.id, "network_error", error.localizedMessage ?: "network.request failed").toString()
@@ -162,6 +177,29 @@ class PlatformNetwork {
         if (value !is String) return NetworkBody.Invalid
         return NetworkBody.Valid(value.toByteArray(Charsets.UTF_8))
     }
+
+    private fun requestedTimeoutMs(params: JSONObject): NetworkTimeout {
+        if (!params.has("timeoutMs")) return NetworkTimeout.Missing
+        val value = params.opt("timeoutMs") ?: JSONObject.NULL
+        if (value !is Number) return NetworkTimeout.Invalid(value)
+        val doubleValue = value.toDouble()
+        val longValue = value.toLong()
+        if (!java.lang.Double.isFinite(doubleValue) || doubleValue <= 0 || doubleValue != longValue.toDouble() || longValue > Int.MAX_VALUE) {
+            return NetworkTimeout.Invalid(value)
+        }
+        return NetworkTimeout.Valid(longValue.toInt())
+    }
+
+    private fun effectiveTimeoutMs(rule: NetworkPolicyRule, requestedTimeoutMs: Int?): Int =
+        requestedTimeoutMs?.let { minOf(rule.timeoutMs, it) } ?: rule.timeoutMs
+
+    private fun timeoutFailure(request: BridgeRequest, timeoutMs: Int): String =
+        BridgeResponse.failure(
+            request.id,
+            "timeout",
+            "network.request timed out",
+            JSONObject(mapOf("timeoutMs" to timeoutMs)),
+        ).toString()
 
     private fun readResponseBytes(connection: HttpURLConnection, maxBytes: Int): ByteArray? {
         val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
@@ -259,6 +297,12 @@ class PlatformNetwork {
 private sealed class NetworkBody {
     data class Valid(val bytes: ByteArray?) : NetworkBody()
     data object Invalid : NetworkBody()
+}
+
+private sealed class NetworkTimeout {
+    data object Missing : NetworkTimeout()
+    data class Valid(val value: Int) : NetworkTimeout()
+    data class Invalid(val value: Any) : NetworkTimeout()
 }
 
 data class NetworkPolicyRule(
