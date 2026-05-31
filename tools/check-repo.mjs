@@ -1713,6 +1713,16 @@ function checkNativeStatic() {
     "X-Platform-Control-Token",
     "control_auth_required",
     "g_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600)",
+    "control_route_handler",
+    "session_create_handler",
+    "session_snapshot_handler",
+    "session_events_handler",
+    "session_command_handler",
+    "control.sessions.create",
+    "control.sessions.snapshot",
+    "control.sessions.events",
+    "unsupported_tool",
+    "UPDATE control_sessions SET status = 'ended'",
     "control_sessions",
     "control_commands",
     "platform.health",
@@ -1725,7 +1735,7 @@ function checkNativeStatic() {
   if (!linuxMeson.includes("'src/dev_control_plane.c'")) {
     throw new Error("Linux Meson build must include dev_control_plane.c");
   }
-  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health"]) {
+  for (const snippet of ["Linux debug dev control health is token-gated and audited", "XDG_RUNTIME_DIR", "X-Platform-Control-Token", "control_auth_required", "platform.health", "/control/sessions", "unsupported_tool"]) {
     if (!linuxNativeBuildTest.includes(snippet)) {
       throw new Error(`Linux native build test missing dev control coverage: ${snippet}`);
     }

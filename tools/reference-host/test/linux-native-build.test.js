@@ -191,13 +191,85 @@ test(
       assert.equal(body.target, "linux");
       assert.equal(body.controlPlane.port, ready.port);
 
+      const unauthorizedSession = await requestControl(ready.port, "/sessions", {
+        method: "POST",
+        body: { appId: "notes-lite" },
+      });
+      assert.equal(unauthorizedSession.statusCode, 401);
+      assert.equal(JSON.parse(unauthorizedSession.body).error.code, "control_auth_required");
+
+      const session = await requestControl(ready.port, "/control/sessions", {
+        method: "POST",
+        token,
+        body: { appId: "notes-lite", metadata: { smoke: "linux-dev-control" } },
+      });
+      assert.equal(session.statusCode, 200, session.body);
+      const sessionBody = JSON.parse(session.body);
+      assert.equal(sessionBody.ok, true);
+      assert.match(sessionBody.result.controlSessionId, /^control-/);
+      assert.match(sessionBody.result.runtimeSessionId, /^session-/);
+      assert.equal(sessionBody.result.appId, "notes-lite");
+      assert.equal(sessionBody.result.status, "running");
+
+      const sessionId = sessionBody.result.controlSessionId;
+      const snapshot = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}/snapshot`, { token });
+      assert.equal(snapshot.statusCode, 200, snapshot.body);
+      const snapshotBody = JSON.parse(snapshot.body);
+      assert.equal(snapshotBody.ok, true);
+      assert.equal(snapshotBody.result.controlSessionId, sessionId);
+      assert.equal(snapshotBody.result.snapshot.appId, "notes-lite");
+      assert.equal(snapshotBody.result.snapshot.target, "linux");
+
+      const events = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/events`, { token });
+      assert.equal(events.statusCode, 200, events.body);
+      const eventsBody = JSON.parse(events.body);
+      assert.equal(eventsBody.ok, true);
+      assert.equal(Array.isArray(eventsBody.result.bridgeCalls), true);
+      assert.equal(Array.isArray(eventsBody.result.coreEvents), true);
+
+      const capabilities = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/capabilities`, { token });
+      assert.equal(capabilities.statusCode, 200, capabilities.body);
+      const capabilitiesBody = JSON.parse(capabilities.body);
+      assert.equal(capabilitiesBody.ok, true);
+      assert.equal(capabilitiesBody.result.platform, "linux");
+      assert.equal(capabilitiesBody.result.features["runtime.capabilities"], true);
+
+      const command = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "platform.health", args: {} },
+      });
+      assert.equal(command.statusCode, 200, command.body);
+      const commandBody = JSON.parse(command.body);
+      assert.equal(commandBody.ok, true);
+      assert.equal(commandBody.result.ok, true);
+      assert.equal(commandBody.result.target, "linux");
+
+      const unsupported = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.call_bridge", args: {} },
+      });
+      assert.equal(unsupported.statusCode, 400);
+      assert.equal(JSON.parse(unsupported.body).error.code, "unsupported_tool");
+
+      const ended = await requestControl(ready.port, `/control/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        token,
+      });
+      assert.equal(ended.statusCode, 200, ended.body);
+      const endedBody = JSON.parse(ended.body);
+      assert.equal(endedBody.ok, true);
+      assert.equal(endedBody.result.controlSessionId, sessionId);
+      assert.equal(endedBody.result.status, "ended");
+
       const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
       const rejectedCount = execFileSync(
         "sqlite3",
         [
           dbPath,
-          "SELECT COUNT(*) FROM control_commands WHERE tool = 'platform.health' AND http_method = 'GET' AND path = '/health' AND decision = 'rejected' AND error_code = 'control_auth_required';",
+          "SELECT COUNT(*) FROM control_commands WHERE http_method = 'GET' AND path = '/health' AND decision = 'rejected' AND error_code = 'control_auth_required';",
         ],
         { encoding: "utf8" },
       ).trim();
@@ -211,6 +283,24 @@ test(
       ).trim();
       assert.equal(rejectedCount, "1");
       assert.equal(acceptedCount, "1");
+      const sessionAuditCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE path LIKE '%/sessions%' AND decision = 'accepted';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const unsupportedCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.call_bridge' AND decision = 'rejected' AND error_code = 'unsupported_tool';",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(Number(sessionAuditCount) >= 6, true);
+      assert.equal(unsupportedCount, "1");
     } finally {
       if (child) await stopChild(child);
       fs.rmSync(scratch, { recursive: true, force: true });
@@ -413,14 +503,25 @@ function waitForControlReady(child) {
 }
 
 function requestControlHealth(port, token = null) {
+  return requestControl(port, "/health", { token });
+}
+
+function requestControl(port, pathName, { method = "GET", token = null, body = null } = {}) {
   return new Promise((resolve, reject) => {
+    const headers = token ? { "X-Platform-Control-Token": token } : {};
+    let bodyText = null;
+    if (body !== null) {
+      bodyText = JSON.stringify(body);
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(bodyText);
+    }
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/health",
-        method: "GET",
-        headers: token ? { "X-Platform-Control-Token": token } : {},
+        path: pathName,
+        method,
+        headers,
         timeout: 10_000,
       },
       (res) => {
@@ -434,9 +535,9 @@ function requestControlHealth(port, token = null) {
     );
     req.on("error", reject);
     req.on("timeout", () => {
-      req.destroy(new Error("Timed out waiting for Linux dev control /health"));
+      req.destroy(new Error(`Timed out waiting for Linux dev control ${method} ${pathName}`));
     });
-    req.end();
+    req.end(bodyText);
   });
 }
 
