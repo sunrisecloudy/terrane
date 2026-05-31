@@ -243,6 +243,9 @@ class AndroidDevControlPlane(
         "runtime.network_mock_set" -> runtimeNetworkMockSetJson(args)
         "runtime.network_mock_reset" -> runtimeNetworkMockResetJson(args)
         "runtime.dialog_mock_set" -> runtimeDialogMockSetJson(args)
+        "platform.create_snapshot" -> platformCreateSnapshotJson(args)
+        "platform.restore_snapshot" -> platformRestoreSnapshotJson(args)
+        "runtime.compare_snapshot" -> runtimeCompareSnapshotJson(args)
         "db.snapshot" -> dbSnapshotJson()
         "db.export_debug_bundle" -> dbExportDebugBundleJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
@@ -700,6 +703,218 @@ class AndroidDevControlPlane(
         }
     }
 
+    private fun platformCreateSnapshotJson(args: JSONObject): JSONObject {
+        val appId = requiredToolString(args, "appId", "platform.create_snapshot requires appId")
+        if (!knownBundledAppIds.contains(appId)) {
+            throw ControlCommandException(400, "invalid_request", "platform.create_snapshot appId is not a valid generated app id")
+        }
+        val type = optionalString(args, "type") ?: "manual"
+        if (!snapshotTypes.contains(type)) {
+            throw ControlCommandException(400, "invalid_request", "Snapshot type is not allowed")
+        }
+        val sessionId = optionalString(args, "sessionId")
+        val metadata = activeAppMetadata(appId)
+        val createdAt = Instant.now().toString()
+        val storageRows = tableRows("app_storage", "app_id", appId)
+        val snapshotId = "snapshot_android_${UUID.randomUUID().toString().lowercase()}"
+        val snapshot = JSONObject()
+            .put("appId", appId)
+            .put("activeInstallId", metadata.activeInstallId ?: JSONObject.NULL)
+            .put("activeVersion", metadata.activeVersion ?: JSONObject.NULL)
+            .put("dataVersion", metadata.dataVersion)
+            .put("storage", storageRows)
+            .put("createdAt", createdAt)
+        val snapshotText = snapshot.toString()
+        val contentHash = "sha256:${sha256Hex(snapshotText)}"
+        val values = ContentValues().apply {
+            put("snapshot_id", snapshotId)
+            if (sessionId == null) putNull("session_id") else put("session_id", sessionId)
+            put("app_id", appId)
+            if (metadata.activeInstallId == null) putNull("install_id") else put("install_id", metadata.activeInstallId)
+            put("type", type)
+            put("snapshot_json", snapshotText)
+            put("content_hash", contentHash)
+            put("created_at", createdAt)
+        }
+        val inserted = database.writableDatabase.insert("runtime_snapshots", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Snapshot could not be created")
+        }
+        return JSONObject()
+            .put("snapshotId", snapshotId)
+            .put("contentHash", contentHash)
+            .put("snapshot", snapshot)
+            .put("appId", appId)
+            .put("activeInstallId", metadata.activeInstallId ?: JSONObject.NULL)
+            .put("activeVersion", metadata.activeVersion ?: JSONObject.NULL)
+            .put("dataVersion", metadata.dataVersion)
+            .put("storage", storageRows)
+            .put("createdAt", createdAt)
+    }
+
+    private fun platformRestoreSnapshotJson(args: JSONObject): JSONObject {
+        if (!args.optBoolean("confirm", false)) {
+            throw ControlCommandException(400, "confirmation_required", "platform.restore_snapshot requires confirm: true")
+        }
+        val snapshotId = requiredToolString(args, "snapshotId", "platform.restore_snapshot requires snapshotId")
+        val snapshot = runtimeSnapshotById(snapshotId)
+        val appId = optionalString(snapshot, "appId")
+        val storage = snapshot.optJSONArray("storage") ?: snapshot.optJSONArray("appStorage") ?: JSONArray()
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            if (appId != null) {
+                db.delete("app_storage", "app_id = ?", arrayOf(appId))
+            }
+            var restored = 0
+            val updatedAt = Instant.now().toString()
+            for (index in 0 until storage.length()) {
+                val row = storage.optJSONObject(index)
+                    ?: throw ControlCommandException(400, "invalid_request", "Snapshot storage row must be an object")
+                val inserted = db.insertWithOnConflict("app_storage", null, storageSnapshotValues(row, appId, updatedAt), SQLiteDatabase.CONFLICT_REPLACE)
+                if (inserted < 0) {
+                    throw ControlCommandException(400, "sqlite_error", "Snapshot storage row could not be restored")
+                }
+                restored++
+            }
+            if (appId != null && snapshot.has("activeInstallId") && !snapshot.isNull("activeInstallId")) {
+                db.update(
+                    "apps",
+                    ContentValues().apply {
+                        put("active_install_id", snapshot.optString("activeInstallId"))
+                        if (snapshot.has("activeVersion") && !snapshot.isNull("activeVersion")) {
+                            put("active_version", snapshot.optString("activeVersion"))
+                        } else {
+                            putNull("active_version")
+                        }
+                        put("data_version", snapshot.optLong("dataVersion", 1L))
+                        put("status", "enabled")
+                        put("updated_at", updatedAt)
+                    },
+                    "id = ?",
+                    arrayOf(appId),
+                )
+            }
+            db.setTransactionSuccessful()
+            return JSONObject()
+                .put("ok", true)
+                .put("snapshotId", snapshotId)
+                .put("appId", appId ?: JSONObject.NULL)
+                .put("restoredStorageKeys", restored)
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun runtimeCompareSnapshotJson(args: JSONObject): JSONObject {
+        val left = snapshotArgument(args, "left", "leftSnapshotId")
+        val right = snapshotArgument(args, "right", "rightSnapshotId")
+        val leftComparable = comparableSnapshotJson(left)
+        val rightComparable = comparableSnapshotJson(right)
+        val leftHash = "sha256:${sha256Hex(leftComparable)}"
+        val rightHash = "sha256:${sha256Hex(rightComparable)}"
+        val equal = leftComparable == rightComparable
+        return JSONObject()
+            .put("ok", equal)
+            .put("equal", equal)
+            .put("leftHash", leftHash)
+            .put("rightHash", rightHash)
+    }
+
+    private fun runtimeSnapshotById(snapshotId: String): JSONObject {
+        database.readableDatabase.rawQuery(
+            "SELECT snapshot_json FROM runtime_snapshots WHERE snapshot_id = ?",
+            arrayOf(snapshotId),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                return parseJsonObject(cursor.getString(0))
+                    ?: throw ControlCommandException(400, "invalid_request", "Runtime snapshot JSON is invalid")
+            }
+        }
+        throw ControlCommandException(404, "snapshot_not_found", "Runtime snapshot not found: $snapshotId")
+    }
+
+    private fun snapshotArgument(args: JSONObject, valueKey: String, snapshotIdKey: String): JSONObject {
+        val snapshotId = optionalString(args, snapshotIdKey)
+        if (snapshotId != null) {
+            return runtimeSnapshotById(snapshotId)
+        }
+        val value = args.opt(valueKey)
+        if (value is JSONObject) {
+            return value
+        }
+        throw ControlCommandException(400, "invalid_request", "runtime.compare_snapshot requires left/right snapshots or snapshot ids")
+    }
+
+    private fun storageSnapshotValues(row: JSONObject, fallbackAppId: String?, updatedAt: String): ContentValues {
+        val appId = optionalString(row, "app_id") ?: optionalString(row, "appId") ?: fallbackAppId
+        val key = optionalString(row, "key")
+        if (appId.isNullOrBlank() || key.isNullOrBlank()) {
+            throw ControlCommandException(400, "invalid_request", "Snapshot storage row requires app_id and key")
+        }
+        if (fallbackAppId != null && appId != fallbackAppId) {
+            throw ControlCommandException(400, "invalid_request", "Snapshot storage row app_id does not match snapshot appId")
+        }
+        if (!key.startsWith("$appId:")) {
+            throw ControlCommandException(400, "invalid_request", "Snapshot storage key is outside app storage prefix")
+        }
+        return ContentValues().apply {
+            put("app_id", appId)
+            put("key", key)
+            put("value_json", storageSnapshotValueJson(row))
+            put("updated_at", updatedAt)
+        }
+    }
+
+    private fun storageSnapshotValueJson(row: JSONObject): String {
+        val rawValueJson = optionalString(row, "value_json") ?: optionalString(row, "valueJson")
+        if (rawValueJson != null) return rawValueJson
+        return jsonString(row.opt("value") ?: JSONObject.NULL)
+    }
+
+    private fun comparableSnapshotJson(snapshot: JSONObject): String =
+        comparableJsonValue(snapshot, storageContext = false)
+
+    private fun comparableJsonValue(value: Any?, storageContext: Boolean): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is JSONObject -> comparableJsonObject(value)
+        is JSONArray -> {
+            val values = (0 until value.length()).map { index -> value.opt(index) ?: JSONObject.NULL }
+            val normalized = if (storageContext) values.sortedWith { left, right ->
+                storageSortKey(left).compareTo(storageSortKey(right))
+            } else values
+            normalized.joinToString(prefix = "[", postfix = "]", separator = ",") { item ->
+                comparableJsonValue(item, storageContext = false)
+            }
+        }
+        is String -> JSONObject.quote(value)
+        is Number -> value.toString()
+        is Boolean -> value.toString()
+        else -> JSONObject.quote(value.toString())
+    }
+
+    private fun comparableJsonObject(value: JSONObject): String {
+        val members = mutableMapOf<String, Any?>()
+        val keys = value.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (snapshotCompareSkipFields.contains(key)) continue
+            val normalizedKey = if (key == "appStorage") "storage" else key
+            members[normalizedKey] = value.opt(key) ?: JSONObject.NULL
+        }
+        return members.keys.sorted().joinToString(prefix = "{", postfix = "}", separator = ",") { key ->
+            val child = members[key]
+            "${JSONObject.quote(key)}:${comparableJsonValue(child, storageContext = key == "storage")}"
+        }
+    }
+
+    private fun storageSortKey(value: Any?): String {
+        val row = value as? JSONObject ?: return ""
+        val appId = optionalString(row, "app_id") ?: optionalString(row, "appId") ?: ""
+        val key = optionalString(row, "key") ?: ""
+        return "$appId|$key"
+    }
+
     private fun consoleLogRows(appId: String?): JSONArray {
         val rows = JSONArray()
         val sql = if (appId == null) {
@@ -808,6 +1023,24 @@ class AndroidDevControlPlane(
         }
     }
 
+    private fun activeAppMetadata(appId: String): ActiveAppMetadata {
+        database.readableDatabase.rawQuery("SELECT active_install_id, active_version, data_version FROM apps WHERE id = ?", arrayOf(appId)).use { cursor ->
+            if (cursor.moveToFirst()) {
+                return ActiveAppMetadata(
+                    activeInstallId = cursor.nullableStringValue(0),
+                    activeVersion = cursor.nullableStringValue(1),
+                    dataVersion = if (cursor.isNull(2)) 1L else cursor.getLong(2),
+                )
+            }
+        }
+        val manifest = bundledManifest(appId)
+        return ActiveAppMetadata(
+            activeInstallId = null,
+            activeVersion = manifest?.optString("version")?.ifBlank { null },
+            dataVersion = manifest?.optLong("dataVersion", 1L) ?: 1L,
+        )
+    }
+
     private fun healthJson(): JSONObject = JSONObject(
         mapOf(
             "name" to "android",
@@ -852,6 +1085,9 @@ class AndroidDevControlPlane(
                     "runtime.network_mock_set",
                     "runtime.network_mock_reset",
                     "runtime.dialog_mock_set",
+                    "platform.create_snapshot",
+                    "platform.restore_snapshot",
+                    "runtime.compare_snapshot",
                     "db.snapshot",
                     "db.export_debug_bundle",
                     "db.query_app_storage",
@@ -1172,12 +1408,15 @@ class AndroidDevControlPlane(
 
     private data class HttpJsonResponse(val status: Int, val body: JSONObject)
     private data class SessionRoute(val sessionId: String, val action: String)
+    private data class ActiveAppMetadata(val activeInstallId: String?, val activeVersion: String?, val dataVersion: Long)
     private class ControlCommandException(val status: Int, val code: String, message: String) : Exception(message)
 
     companion object {
         private const val tag = "NativeAIAndroidDevControl"
         private const val androidRuntimeVersion = "0.1.0"
         private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
+        private val snapshotTypes = setOf("bug-report", "pre-install", "pre-migration", "post-test", "golden", "manual", "debug-bundle")
+        private val snapshotCompareSkipFields = setOf("createdAt", "snapshotId", "updated_at", "updatedAt")
         private val knownBridgeMethods = setOf(
             "storage.get",
             "storage.set",

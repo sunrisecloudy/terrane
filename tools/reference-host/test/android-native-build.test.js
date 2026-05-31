@@ -474,6 +474,60 @@ test("Android debug dev control exports DB-backed debug bundles safely", () => {
   }
 });
 
+test("Android debug dev control creates, restores, and compares runtime snapshots", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const migrationRuntime = read("db/sqlite/002_runtime_debug.sql");
+
+  for (const snippet of [
+    "platform.create_snapshot",
+    "platform.restore_snapshot",
+    "runtime.compare_snapshot",
+    "platformCreateSnapshotJson",
+    "platformRestoreSnapshotJson",
+    "runtimeCompareSnapshotJson",
+    "platform.create_snapshot requires appId",
+    "platform.create_snapshot appId is not a valid generated app id",
+    "Snapshot type is not allowed",
+    "platform.restore_snapshot requires confirm: true",
+    "platform.restore_snapshot requires snapshotId",
+    "runtime.compare_snapshot requires left/right snapshots or snapshot ids",
+    "snapshot_not_found",
+    "runtimeSnapshotById",
+    "activeAppMetadata",
+    "storageSnapshotValues",
+    "storageSnapshotValueJson",
+    "comparableSnapshotJson",
+    "snapshotCompareSkipFields",
+    "storageSortKey",
+    "snapshotTypes",
+    "db.insertWithOnConflict(\"app_storage\"",
+    "db.delete(\"app_storage\", \"app_id = ?\", arrayOf(appId))",
+    "database.writableDatabase.insert(\"runtime_snapshots\"",
+    "contentHash",
+    "restoredStorageKeys",
+    "leftHash",
+    "rightHash",
+    "\"appStorage\") ?: JSONArray()",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android snapshot control source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "CREATE TABLE IF NOT EXISTS runtime_snapshots",
+    "snapshot_json TEXT NOT NULL",
+    "content_hash TEXT NOT NULL",
+    "idx_runtime_snapshots_session_created",
+  ]) {
+    assert.equal(migrationRuntime.includes(snippet), true, `Runtime snapshot migration should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf("platform.restore_snapshot\" -> platformRestoreSnapshotJson(args)") <
+      control.indexOf("\"db.snapshot\" -> dbSnapshotJson()"),
+    "snapshot controls should be first-class control commands, not DB query fallbacks",
+  );
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {
