@@ -9,7 +9,7 @@ import { MessageChannel } from "node:worker_threads";
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
 const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
-const generatedAppCsp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
+const generatedAppCsp = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
   const harness = createRuntimeHarness();
@@ -459,7 +459,7 @@ test("runtime can mount every bundled app in a sandboxed frame", async () => {
   }
 });
 
-test("runtime uses app-scoped custom-scheme frames when hosted by WebKit native bridge", async () => {
+test("runtime keeps WebKit native app frames on the parent-owned sandbox channel", async () => {
   const harness = createRuntimeHarness();
   harness.parentWindow.location = { protocol: "app-runtime:", hostname: "runtime", search: "" };
   harness.parentWindow.webkit = {
@@ -480,11 +480,91 @@ test("runtime uses app-scoped custom-scheme frames when hosted by WebKit native 
 
     const frame = harness.document.getElementById("app-frame-wrap").children[0];
     assert.ok(frame, "runtime launcher should mount the selected app iframe");
-    assert.equal(frame.attributes.get("sandbox"), "allow-scripts allow-same-origin");
+    assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
     assert.equal(frame.attributes.get("allow"), "");
     assert.equal(frame.attributes.get("csp"), generatedAppCsp);
     assert.match(frame.src, /^app-runtime:\/\/notes-lite\/index\.html\?mountToken=/);
     assert.equal(frame.srcdoc, undefined);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime sends WebKit native bridge envelopes from the parent-owned port mount", async () => {
+  const nativeEnvelopes = [];
+  let appPort;
+  const harness = createRuntimeHarness();
+  harness.parentWindow.location = { protocol: "app-runtime:", hostname: "runtime", search: "" };
+  harness.parentWindow.webkit = {
+    messageHandlers: {
+      NativeAIPlatformBridge: {
+        postMessage(envelope) {
+          nativeEnvelopes.push(envelope);
+          if (envelope.request.method === "runtime.capabilities") {
+            return Promise.resolve({ id: envelope.request.id, ok: true, result: { runtimeVersion: "test", features: {} } });
+          }
+          return Promise.resolve({ id: envelope.request.id, ok: true, result: { value: ["native"] } });
+        },
+      },
+    },
+  };
+  try {
+    await loadRuntime(harness);
+
+    const appButton = harness.document.getElementById("app-list").children[0];
+    appButton.dispatch("click");
+    await flushAsync();
+
+    const frame = harness.document.getElementById("app-frame-wrap").children[0];
+    frame.contentWindow.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "runtime.port") {
+        appPort = event.ports[0];
+      }
+    });
+    frame.contentWindow.parent.postMessage({ type: "runtime.ready_for_port" }, "*");
+    await flushAsync();
+
+    assert.ok(appPort, "WebKit app frame should receive a MessagePort from the parent runtime");
+    const result = await postPortRequest(appPort, {
+      id: "webkit_storage_probe",
+      method: "storage.get",
+      params: { key: "notes-lite:notes", defaultValue: [] },
+      timestamp: Date.now(),
+    });
+    await flushAsync();
+
+    assert.deepEqual(result.result, { value: ["native"] });
+    const storageEnvelope = nativeEnvelopes.find((envelope) => envelope.request.method === "storage.get");
+    assert.ok(storageEnvelope, "storage.get should dispatch through the native WebKit handler");
+    assert.equal(storageEnvelope.appId, "notes-lite");
+    assert.equal(typeof storageEnvelope.mountToken, "string");
+    assert.equal(storageEnvelope.request.params.key, "notes-lite:notes");
+    assert.equal("appId" in storageEnvelope.request.params, false);
+    assert.equal(harness.fetchState.bridgeRequests.length, 0);
+  } finally {
+    if (appPort) appPort.close();
+    harness.close();
+  }
+});
+
+test("runtime emits app.error when a sandbox posts a bridge request outside its assigned channel", async () => {
+  const harness = createRuntimeHarness();
+  try {
+    const frame = await mountFirstApp(harness);
+    vm.runInContext(
+      'window.__appErrors = []; window.AppRuntime.on("app.error", function (payload) { window.__appErrors.push(payload); });',
+      frame.contentWindow.context,
+    );
+    vm.runInContext(
+      'window.parent.postMessage({ id: "direct-parent", method: "storage.get", params: { key: "notes-lite:notes" } }, "*");',
+      frame.contentWindow.context,
+    );
+    await flushAsync();
+
+    const errors = vm.runInContext("window.__appErrors", frame.contentWindow.context);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].code, "bridge.unauthorized_channel");
+    assert.equal(errors[0].source, "postMessage");
   } finally {
     harness.close();
   }
@@ -821,6 +901,13 @@ function extractBootstrapScript(srcdoc) {
   const match = srcdoc.match(/<script>\n?([\s\S]*?)<\/script>/);
   assert.ok(match, "mounted app srcdoc should include the runtime bootstrap script");
   return match[1];
+}
+
+async function postPortRequest(port, request) {
+  return new Promise((resolve) => {
+    port.once("message", resolve);
+    port.postMessage(request);
+  });
 }
 
 async function flushAsync() {

@@ -20,7 +20,7 @@
     ["notification.toast", "notification.toast"],
     ["network.request", "network.request"],
   ]);
-  const GENERATED_APP_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
+  const GENERATED_APP_CSP = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
   let apps = [];
   let activeApp = null;
@@ -28,6 +28,7 @@
   let activeMount = null;
   const mountsByFrame = new WeakMap();
   const mountsByPort = new WeakMap();
+  const portsByMountToken = new Map();
   const androidBridgePending = new Map();
   let androidBridgeHandlerAttached = false;
   const webview2BridgePending = new Map();
@@ -48,17 +49,29 @@
   });
 
   window.addEventListener("message", function (event) {
-    if (!activeFrame || event.source !== activeFrame.contentWindow) return;
+    if (!activeFrame) return;
+    const sourceWindow = event.source || activeFrame.contentWindow;
+    if (event.source && event.source !== activeFrame.contentWindow) return;
     if (!event.data || event.data.type !== "runtime.ready_for_port") {
       addBridgeLog(activeMount ? activeMount.appId : "unknown", "postMessage", "bridge.unauthorized_channel");
+      emitRuntimeEvent(activeMount, "app.error", {
+        code: "bridge.unauthorized_channel",
+        message: "Bridge message arrived outside the assigned MessageChannel",
+        source: "postMessage"
+      });
       return;
     }
     const mount = mountsByFrame.get(activeFrame);
     if (!mount || !activeMount || mount.mountToken !== activeMount.mountToken) {
       addBridgeLog(mount ? mount.appId : "unknown", "runtime.ready_for_port", "bridge.unauthorized_channel");
+      emitRuntimeEvent(mount || activeMount, "app.error", {
+        code: "bridge.unauthorized_channel",
+        message: "Bridge port request did not match the active mount",
+        source: "runtime.ready_for_port"
+      });
       return;
     }
-    attachBridgePort(event, mount);
+    attachBridgePort(sourceWindow, mount);
   });
 
   installRuntimeDevtools();
@@ -112,6 +125,9 @@
   }
 
   async function mountApp(app) {
+    if (activeMount) {
+      portsByMountToken.delete(activeMount.mountToken);
+    }
     const mount = {
       app: app,
       appId: app.id,
@@ -132,7 +148,7 @@
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
     frame.setAttribute("allow", "");
-    frame.setAttribute("sandbox", usesWebKitNativeAppFrames() ? "allow-scripts allow-same-origin" : "allow-scripts");
+    frame.setAttribute("sandbox", "allow-scripts");
     frame.setAttribute("csp", GENERATED_APP_CSP);
     frame.setAttribute("referrerpolicy", "no-referrer");
 
@@ -402,9 +418,10 @@
     return `${bootstrap}${html}`;
   }
 
-  function attachBridgePort(event, mount) {
+  function attachBridgePort(targetWindow, mount) {
     const channel = new MessageChannel();
     mountsByPort.set(channel.port1, mount);
+    portsByMountToken.set(mount.mountToken, channel.port1);
     channel.port1.onmessage = async function (portEvent) {
       const portMount = mountsByPort.get(channel.port1);
       if (!portMount || portMount.mountToken !== mount.mountToken) {
@@ -441,7 +458,18 @@
         });
       }
     };
-    event.source.postMessage({ type: "runtime.port" }, "*", [channel.port2]);
+    targetWindow.postMessage({ type: "runtime.port" }, "*", [channel.port2]);
+  }
+
+  function emitRuntimeEvent(mount, eventName, payload) {
+    if (!mount) return;
+    const port = portsByMountToken.get(mount.mountToken);
+    if (!port || typeof port.postMessage !== "function") return;
+    port.postMessage({
+      type: "runtime.event",
+      eventName: eventName,
+      payload: payload || {}
+    });
   }
 
   async function dispatchBridgeRequest(request, mount) {

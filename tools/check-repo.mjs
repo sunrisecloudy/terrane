@@ -720,12 +720,17 @@ function checkRuntimeStatic() {
     "resource_budget_exceeded",
     "createMountToken",
     "GENERATED_APP_CSP",
+    "script-src 'self' app-runtime:",
     'frame.setAttribute("allow", "")',
-    'usesWebKitNativeAppFrames() ? "allow-scripts allow-same-origin" : "allow-scripts"',
+    'frame.setAttribute("sandbox", "allow-scripts")',
     'frame.setAttribute("csp", GENERATED_APP_CSP)',
+    "frame.srcdoc = srcdoc",
     "mountsByFrame",
     "mountsByPort",
+    "portsByMountToken",
+    "emitRuntimeEvent",
     "bridge.unauthorized_channel",
+    "Bridge message arrived outside the assigned MessageChannel",
     '"x-app-id": mount.appId',
     '"x-mount-token": mount.mountToken',
     "body: JSON.stringify(request)",
@@ -740,6 +745,9 @@ function checkRuntimeStatic() {
   }
   if (source.includes("<base href=")) {
     throw new Error("runtime generated app srcdoc must not inject base href");
+  }
+  if (source.includes("allow-same-origin")) {
+    throw new Error("runtime generated app iframes must not use allow-same-origin");
   }
   if (/on:\s*function\s*\(\)\s*\{\s*return function \(\) \{\};\s*\}/s.test(source)) {
     throw new Error("runtime AppRuntime.on must not be a no-op");
@@ -1402,6 +1410,11 @@ function checkNativeStatic() {
     [linuxHost, "jsc_value_to_json"],
     [linuxHost, "webkit_script_message_reply_return_value"],
     [linuxHost, "logical_path_for_runtime_uri"],
+    [linuxHost, "logical_path_is_generated_app_index"],
+    [linuxHost, "html_with_app_runtime_bootstrap"],
+    [linuxHost, "html_with_app_runtime_csp"],
+    [linuxHost, "script-src 'self' app-runtime:"],
+    [linuxHost, "g_memory_input_stream_new_from_data"],
     [linuxHost, "runtime-web"],
     [linuxHost, "content_type_for_path"],
     [linuxHost, "app-runtime://runtime/index.html"],
@@ -1409,6 +1422,8 @@ function checkNativeStatic() {
     [linuxHost, "sandbox_context_for_app"],
     [linuxHost, "is_runtime_envelope"],
     [linuxHost, "has_valid_runtime_envelope"],
+    [linuxHost, "has_only_runtime_envelope_fields"],
+    [linuxHost, "Runtime bridge envelope is required"],
     [linuxHost, "is_known_example_app_id"],
     [linuxHost, "mount_token"],
     [linuxHost, "network_policy_for_app"],
@@ -1436,6 +1451,13 @@ function checkNativeStatic() {
     if (!source.includes(snippet)) {
       throw new Error(`Linux host missing ${snippet}`);
     }
+  }
+  if (linuxHost.includes("var handler=window.webkit") ||
+      linuxHost.includes("envelope={appId:appId")) {
+    throw new Error("Linux native host must not inject a direct AppRuntime/native bridge into generated app frames");
+  }
+  if (linuxHost.includes("response = web_bridge_handle_json(host->bridge, payload")) {
+    throw new Error("Linux WebKit message handler must require runtime-owned envelopes");
   }
   if (linuxStorage.includes("app_id_for_key")) {
     throw new Error("Linux storage must not derive app id from storage key");

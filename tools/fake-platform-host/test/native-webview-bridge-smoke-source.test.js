@@ -47,6 +47,17 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsSmoke, /path\.dirname\(binaryPath\)/);
 
   assert.match(linuxHost, /messageHandlers && window\.webkit\.messageHandlers\.NativeAIPlatformBridge/);
+  assert.match(linuxHost, /window\.AppRuntime=\{call:call/);
+  assert.match(linuxHost, /html_with_app_runtime_bootstrap/);
+  assert.match(linuxHost, /html_with_app_runtime_csp/);
+  assert.match(linuxHost, /script-src 'self' app-runtime:/);
+  assert.match(linuxHost, /logical_path_is_generated_app_index/);
+  assert.match(linuxHost, /g_memory_input_stream_new_from_data/);
+  assert.doesNotMatch(linuxHost, /var handler=window\.webkit/);
+  assert.doesNotMatch(linuxHost, /envelope=\{appId:appId/);
+  assert.match(linuxHost, /has_only_runtime_envelope_fields/);
+  assert.match(linuxHost, /Runtime bridge envelope is required/);
+  assert.doesNotMatch(linuxHost, /response = web_bridge_handle_json\(host->bridge, payload/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_set/);
   assert.match(linuxHost, /linux_smoke_bridge_storage_get/);
   assert.match(linuxHost, /linux_smoke_bridge_core_step/);

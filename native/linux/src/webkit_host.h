@@ -11,6 +11,7 @@ typedef struct {
   WebKitWebView *web_view;
   WebBridge *bridge;
   gboolean smoke_ran;
+  gboolean smoke_finished;
 } WebKitHost;
 
 WebKitHost *webkit_host_new(GtkApplication *application);
