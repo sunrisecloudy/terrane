@@ -110,6 +110,7 @@
 - [x] Debug dev control plane supports `runtime.assert_storage`, `runtime.core_snapshot`, and DB-backed `runtime.assert_core_action` for storage/core-log assertions.
 - [x] Debug dev control plane captures `notification.toast` calls through `runtime.notification_capture`.
 - [x] Debug dev control plane supports DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
+- [x] macOS `network.request` returns bridge-fixture-aligned structured denial details for blocked headers, credential headers, private hosts, request/response byte limits, and mock redirect policy denials.
 - [x] Debug dev control plane supports DB-backed one-shot `runtime.fault_inject` for bridge calls.
 - [x] Debug dev control plane runs bundled static smoke tests through `runtime.run_smoke_tests` and persists `test_runs`.
 - [x] Debug dev control plane signs webapp packages with Ed25519, not `none-dev`.

@@ -224,6 +224,32 @@ struct NativeHostTests {
         #expect(details["appId"] as? String == "notes-lite")
     }
 
+    @Test("network.request policy denials include bridge fixture detail subsets")
+    func networkRequestPolicyDenialsIncludeBridgeFixtureDetailSubsets() throws {
+        let fixtureNames = [
+            "invalid-network-credential-header.json",
+            "invalid-network-header-denied.json",
+            "invalid-network-private-denied.json",
+            "invalid-network-body-too-large.json",
+            "invalid-network-path-prefix-denied.json",
+            "valid-network-policy-denied.json",
+        ]
+        let network = PlatformNetwork()
+
+        for fixtureName in fixtureNames {
+            let fixture = try bridgeFixture(fixtureName)
+            let context = try bridgeFixtureContext(fixture)
+            let response = network.request(BridgeRequest(
+                id: fixture["id"] as? String,
+                method: try #require(fixture["method"] as? String),
+                params: try #require(fixture["params"] as? [String: Any]),
+                context: context
+            ))
+
+            try expectBridgeDictionary(response.asDictionary(), matches: fixture)
+        }
+    }
+
     @Test("SQLite app registry rolls back active version and preserves storage")
     func sqliteAppRegistryRollsBackActiveVersion() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -1691,6 +1717,68 @@ struct NativeHostTests {
         #expect(try sqliteControlCommandCount(dbURL: dbURL, decision: "accepted") >= 95)
     }
 
+    @Test("debug control mock network denials include bridge fixture detail subsets")
+    func debugControlMockNetworkDenialsIncludeBridgeFixtureDetailSubsets() async throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("native-ai-macos-network-details-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let tokenURL = tempDir.appendingPathComponent("control.token")
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+
+        let controlPlane = try DevControlPlane(configuration: .init(
+            port: 0,
+            tokenFileURL: tokenURL,
+            databaseURL: dbURL,
+            tokenOverride: nil
+        ))
+        try controlPlane.start(waitUntilReady: true)
+        defer {
+            controlPlane.stop()
+        }
+
+        let responseLimitFixture = try bridgeFixture("invalid-network-response-too-large.json")
+        let redirectFixture = try bridgeFixture("invalid-network-redirect-denied.json")
+        let appId = try #require((responseLimitFixture["context"] as? [String: Any])?["appId"] as? String)
+        let manifest = try bridgeFixtureManifest(responseLimitFixture)
+        let registry = try PlatformAppRegistry(databaseURL: dbURL)
+        try registry.installVersion(
+            appId: appId,
+            name: manifest["name"] as? String ?? "API Dashboard",
+            version: "0.1.0-network-details",
+            manifestJSON: try jsonObjectString(manifest),
+            contentHash: "network-details-hash",
+            installId: "install-network-details"
+        )
+
+        let token = try String(contentsOf: tokenURL, encoding: .utf8)
+        let port = try #require(controlPlane.boundPort)
+        let commandURL = URL(string: "http://127.0.0.1:\(port)/control/command")!
+
+        for fixture in [responseLimitFixture, redirectFixture] {
+            try await applyNetworkMocks(from: fixture, appId: appId, commandURL: commandURL, token: token)
+            let bridgeCall = try await httpRequest(
+                commandURL,
+                method: "POST",
+                headers: ["X-Platform-Control-Token": token],
+                body: try jsonObjectString([
+                    "tool": "runtime.call_bridge",
+                    "args": [
+                        "appId": appId,
+                        "id": fixture["id"] as? String ?? "control_call_bridge",
+                        "method": try #require(fixture["method"] as? String),
+                        "params": try #require(fixture["params"] as? [String: Any]),
+                    ],
+                ])
+            )
+
+            #expect(bridgeCall.statusCode == 200)
+            try expectBridgeDictionary(try jsonResult(bridgeCall), matches: fixture)
+        }
+    }
+
     @Test("debug control bridge validates and budgets app.log")
     func debugControlBridgeValidatesAndBudgetsAppLog() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -2571,6 +2659,129 @@ private func jsonInt(_ value: Any?) -> Int {
 private func jsonObjectString(_ object: Any) throws -> String {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     return try #require(String(data: data, encoding: .utf8))
+}
+
+private func repoRootURL() -> URL {
+    var url = URL(fileURLWithPath: #filePath)
+    for _ in 0..<5 {
+        url.deleteLastPathComponent()
+    }
+    return url
+}
+
+private func bridgeFixture(_ fileName: String) throws -> [String: Any] {
+    let url = repoRootURL()
+        .appendingPathComponent("tests/fixtures/bridge")
+        .appendingPathComponent(fileName)
+    let data = try Data(contentsOf: url)
+    return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func exampleManifest(appId: String) throws -> [String: Any] {
+    let url = repoRootURL()
+        .appendingPathComponent("webapps/examples")
+        .appendingPathComponent(appId)
+        .appendingPathComponent("manifest.json")
+    let data = try Data(contentsOf: url)
+    return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func bridgeFixtureManifest(_ fixture: [String: Any]) throws -> [String: Any] {
+    let context = try #require(fixture["context"] as? [String: Any])
+    let appId = try #require(context["appId"] as? String)
+    var manifest = try exampleManifest(appId: appId)
+    let preconditions = fixture["preconditions"] as? [String: Any] ?? [:]
+    if let manifestPatch = preconditions["manifestPatch"] as? [String: Any] {
+        for (key, value) in manifestPatch {
+            manifest[key] = value
+        }
+    }
+    if let resourceBudgetPatch = preconditions["resourceBudget"] as? [String: Any] {
+        var resourceBudget = manifest["resourceBudget"] as? [String: Any] ?? [:]
+        for (key, value) in resourceBudgetPatch {
+            resourceBudget[key] = value
+        }
+        manifest["resourceBudget"] = resourceBudget
+    }
+    return manifest
+}
+
+private func bridgeFixtureContext(_ fixture: [String: Any]) throws -> AppSandboxContext {
+    let manifest = try bridgeFixtureManifest(fixture)
+    let context = try #require(fixture["context"] as? [String: Any])
+    let appId = try #require(context["appId"] as? String)
+    let networkPolicy = manifest["networkPolicy"] as? [String: Any] ?? [:]
+    return AppSandboxContext(
+        appId: appId,
+        storagePrefix: manifest["storagePrefix"] as? String,
+        approvedPermissions: Set(manifest["permissions"] as? [String] ?? []),
+        networkPolicy: NetworkPolicyRule.fromManifest(manifest),
+        denyPrivateNetwork: (networkPolicy["denyPrivateNetwork"] as? Bool) ?? true,
+        resourceBudget: AppSandboxContext.resourceBudget(from: manifest),
+        mountToken: "fixture-test-mount"
+    )
+}
+
+private func applyNetworkMocks(
+    from fixture: [String: Any],
+    appId: String,
+    commandURL: URL,
+    token: String
+) async throws {
+    let preconditions = fixture["preconditions"] as? [String: Any] ?? [:]
+    let networkMocks = preconditions["networkMocks"] as? [[String: Any]] ?? []
+    for mock in networkMocks {
+        let response = try await httpRequest(
+            commandURL,
+            method: "POST",
+            headers: ["X-Platform-Control-Token": token],
+            body: try jsonObjectString([
+                "tool": "runtime.network_mock_set",
+                "args": [
+                    "appId": appId,
+                    "method": mock["method"] as? String ?? "GET",
+                    "urlPattern": try #require(mock["urlPattern"] as? String),
+                    "response": mock["response"] ?? NSNull(),
+                ],
+            ])
+        )
+        #expect(response.statusCode == 200)
+    }
+}
+
+private func expectBridgeDictionary(_ response: [String: Any], matches fixture: [String: Any]) throws {
+    let expected = try #require(fixture["expected"] as? [String: Any])
+    if let expectedOK = expected["ok"] as? Bool {
+        #expect(response["ok"] as? Bool == expectedOK)
+    }
+    if let expectedErrorCode = expected["errorCode"] as? String {
+        let error = try #require(response["error"] as? [String: Any])
+        #expect(error["code"] as? String == expectedErrorCode)
+        if let detailsSubset = expected["errorDetailsSubset"] as? [String: Any] {
+            let details = try #require(error["details"] as? [String: Any])
+            expectDictionary(details, containsSubset: detailsSubset)
+        }
+    }
+}
+
+private func expectDictionary(_ actual: [String: Any], containsSubset subset: [String: Any]) {
+    for (key, expected) in subset {
+        let actualValue = actual[key]
+        if let expected = expected as? String {
+            #expect(actualValue as? String == expected)
+        } else if let expected = expected as? Bool {
+            #expect(actualValue as? Bool == expected)
+        } else if let expected = expected as? Int {
+            #expect(jsonInt(actualValue) == expected)
+        } else if let expected = expected as? NSNumber {
+            #expect(jsonInt(actualValue) == expected.intValue)
+        } else if let expected = expected as? [String: Any],
+                  let actualValue = actualValue as? [String: Any] {
+            expectDictionary(actualValue, containsSubset: expected)
+        } else {
+            #expect(Bool(false), "Unsupported bridge fixture subset value for key \(key)")
+        }
+    }
 }
 
 enum NativeHostTestError: Error, CustomStringConvertible {

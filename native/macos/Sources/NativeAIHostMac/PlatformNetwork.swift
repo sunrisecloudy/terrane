@@ -9,10 +9,12 @@ final class PlatformNetwork {
             return .failure(id: request.id, code: "invalid_request", message: "network.request requires an absolute url")
         }
         if request.context.denyPrivateNetwork && Self.isPrivateNetworkHost(url.host) {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request private network targets are denied")
-        }
-        if let credentials = request.params["credentials"], !(credentials is NSNull) {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request credentials are not allowed")
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request private network targets are denied",
+                details: Self.privateNetworkDeniedDetails(origin: origin, host: url.host)
+            )
         }
 
         let method = (request.params["method"] as? String ?? "GET").uppercased()
@@ -26,11 +28,32 @@ final class PlatformNetwork {
         }
 
         let path = Self.path(for: url)
-        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, path: path, headers: Array(headers.keys)) }) else {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
+        guard let rule = request.context.networkPolicy.first(where: { $0.matchesTarget(origin: origin, method: method, path: path) }) else {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request is not allowed by manifest.networkPolicy",
+                details: Self.networkPolicyDeniedDetails(origin: origin, method: method)
+            )
+        }
+        if let headerFailure = Self.headerPolicyFailure(id: request.id, headers: headers, rule: rule) {
+            return headerFailure
+        }
+        if let credentials = request.params["credentials"], !(credentials is NSNull) {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request credentials are not allowed",
+                details: ["credentials": credentials]
+            )
         }
         if let bodyData, bodyData.count > rule.maxRequestBytes {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request body exceeds manifest.networkPolicy maxRequestBytes")
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request body exceeds manifest.networkPolicy maxRequestBytes",
+                details: Self.maxRequestBytesDetails(limit: rule.maxRequestBytes, bytes: bodyData.count)
+            )
         }
         let requestedTimeout = Self.requestedTimeoutMs(from: request.params)
         if case let .invalid(value) = requestedTimeout {
@@ -48,7 +71,7 @@ final class PlatformNetwork {
         urlRequest.timeoutInterval = TimeInterval(effectiveTimeoutMs) / 1000.0
         urlRequest.httpShouldHandleCookies = false
         urlRequest.httpBody = bodyData
-        for (name, value) in headers {
+        for (name, value) in headers.values {
             urlRequest.setValue(value, forHTTPHeaderField: name)
         }
 
@@ -59,7 +82,7 @@ final class PlatformNetwork {
         configuration.timeoutIntervalForRequest = urlRequest.timeoutInterval
         configuration.timeoutIntervalForResource = urlRequest.timeoutInterval
 
-        let redirectGuard = NetworkRedirectGuard(policy: request.context.networkPolicy, denyPrivateNetwork: request.context.denyPrivateNetwork, method: method, headers: Array(headers.keys))
+        let redirectGuard = NetworkRedirectGuard(policy: request.context.networkPolicy, denyPrivateNetwork: request.context.denyPrivateNetwork, method: method)
         let session = URLSession(configuration: configuration, delegate: redirectGuard, delegateQueue: nil)
         defer {
             session.invalidateAndCancel()
@@ -75,8 +98,13 @@ final class PlatformNetwork {
             return Self.timeoutFailure(id: request.id, timeoutMs: effectiveTimeoutMs)
         }
 
-        if redirectGuard.deniedRedirect {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request redirect is not allowed by manifest.networkPolicy")
+        if let redirectFailure = redirectGuard.deniedFailure {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: redirectFailure.message,
+                details: redirectFailure.details
+            )
         }
         let result = resultBox.value()
         if let responseError = result.error {
@@ -90,8 +118,14 @@ final class PlatformNetwork {
             return .failure(id: request.id, code: "network_error", message: "network.request did not return an HTTP response")
         }
         let data = result.data ?? Data()
-        if data.count > rule.maxResponseBytes {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
+        let maxResponseBytes = Self.effectiveMaxResponseBytes(rule: rule, resourceBudget: request.context.resourceBudget)
+        if data.count > maxResponseBytes {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.response exceeds manifest.networkPolicy maxResponseBytes",
+                details: Self.maxResponseBytesDetails(limit: maxResponseBytes, bytes: data.count)
+            )
         }
 
         return .success(id: request.id, result: [
@@ -120,24 +154,29 @@ final class PlatformNetwork {
         url.path.isEmpty ? "/" : url.path
     }
 
-    private static func headers(from value: Any?) -> [String: String]? {
+    private static func headers(from value: Any?) -> NetworkHeaders? {
         guard let value else {
-            return [:]
+            return NetworkHeaders()
         }
         if value is NSNull {
-            return [:]
+            return NetworkHeaders()
         }
         guard let raw = value as? [String: Any] else {
             return nil
         }
         var headers: [String: String] = [:]
+        var normalizedNames: [String] = []
+        var originalNames: [String: String] = [:]
         for (name, headerValue) in raw {
             guard let text = headerValue as? String else {
                 return nil
             }
-            headers[name.lowercased()] = text
+            let normalized = name.lowercased()
+            headers[normalized] = text
+            normalizedNames.append(normalized)
+            originalNames[normalized] = name
         }
-        return headers
+        return NetworkHeaders(values: headers, normalizedNames: normalizedNames, originalNames: originalNames)
     }
 
     private static func bodyData(from value: Any?) -> NetworkBody {
@@ -197,14 +236,50 @@ final class PlatformNetwork {
         .failure(id: id, code: "timeout", message: "network.request timed out", details: ["timeoutMs": timeoutMs])
     }
 
+    private static func headerPolicyFailure(id: String?, headers: NetworkHeaders, rule: NetworkPolicyRule) -> BridgeResponse? {
+        guard let violation = rule.headerViolation(in: headers.normalizedNames) else {
+            return nil
+        }
+        let header = headers.originalName(for: violation.header)
+        var details: [String: Any] = ["header": header]
+        if !violation.credential {
+            details["allowedHeaders"] = Array(rule.allowedHeaders).sorted()
+        }
+        return .failure(
+            id: id,
+            code: "network_policy_denied",
+            message: violation.credential
+                ? "network.request credential headers are not allowed"
+                : "network.request header is outside manifest.networkPolicy",
+            details: details
+        )
+    }
+
+    static func networkPolicyDeniedDetails(origin: String, method: String) -> [String: Any] {
+        ["origin": origin, "method": method]
+    }
+
+    static func privateNetworkDeniedDetails(origin: String, host: String?) -> [String: Any] {
+        ["origin": origin, "host": normalizedNetworkHost(host)]
+    }
+
+    static func maxRequestBytesDetails(limit: Int, bytes: Int) -> [String: Any] {
+        ["maxRequestBytes": limit, "bytes": bytes]
+    }
+
+    static func maxResponseBytesDetails(limit: Int, bytes: Int) -> [String: Any] {
+        ["maxResponseBytes": limit, "bytes": bytes]
+    }
+
+    static func effectiveMaxResponseBytes(rule: NetworkPolicyRule, resourceBudget: [String: Int]) -> Int {
+        guard let budgetLimit = resourceBudget["maxNetworkResponseBytes"] else {
+            return rule.maxResponseBytes
+        }
+        return min(rule.maxResponseBytes, budgetLimit)
+    }
+
     static func isPrivateNetworkHost(_ rawHost: String?) -> Bool {
-        var host = (rawHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if host.hasPrefix("[") && host.hasSuffix("]") {
-            host = String(host.dropFirst().dropLast())
-        }
-        if let zone = host.firstIndex(of: "%") {
-            host = String(host[..<zone])
-        }
+        let host = normalizedNetworkHost(rawHost)
         if host == "localhost" || host.hasSuffix(".localhost") {
             return true
         }
@@ -224,6 +299,17 @@ final class PlatformNetwork {
             return privateIpv4MappedHost(String(host.dropFirst("::ffff:".count)))
         }
         return false
+    }
+
+    static func normalizedNetworkHost(_ rawHost: String?) -> String {
+        var host = (rawHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("[") && host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if let zone = host.firstIndex(of: "%") {
+            host = String(host[..<zone])
+        }
+        return host
     }
 
     private static func ipv4Octets(_ host: String) -> [UInt8]? {
@@ -279,23 +365,37 @@ struct NetworkPolicyRule {
     let maxResponseBytes: Int
     let timeoutMs: Int
 
-    func allows(origin: String, method: String, path: String, headers: [String]) -> Bool {
+    func matchesTarget(origin: String, method: String, path: String) -> Bool {
         guard self.origin == origin, methods.contains(method) else {
             return false
         }
         if let pathPrefix, !path.hasPrefix(pathPrefix) {
             return false
         }
+        return true
+    }
+
+    func headerViolation(in headers: [String]) -> NetworkPolicyHeaderViolation? {
         for header in headers {
             let normalized = header.lowercased()
             if normalized == "cookie" || normalized == "set-cookie" {
-                return false
-            }
-            if !allowedHeaders.contains(normalized) {
-                return false
+                return NetworkPolicyHeaderViolation(header: normalized, credential: true)
             }
         }
-        return true
+        for header in headers {
+            let normalized = header.lowercased()
+            if !allowedHeaders.contains(normalized) {
+                return NetworkPolicyHeaderViolation(header: normalized, credential: false)
+            }
+        }
+        return nil
+    }
+
+    func allows(origin: String, method: String, path: String, headers: [String]) -> Bool {
+        guard matchesTarget(origin: origin, method: method, path: path) else {
+            return false
+        }
+        return headerViolation(in: headers) == nil
     }
 
     static func fromManifest(_ manifest: [String: Any]) -> [NetworkPolicyRule] {
@@ -321,22 +421,46 @@ struct NetworkPolicyRule {
     }
 }
 
+struct NetworkPolicyHeaderViolation {
+    let header: String
+    let credential: Bool
+}
+
+private struct NetworkPolicyFailure {
+    let message: String
+    let details: [String: Any]
+}
+
+private struct NetworkHeaders {
+    let values: [String: String]
+    let normalizedNames: [String]
+    let originalNames: [String: String]
+
+    init(values: [String: String] = [:], normalizedNames: [String] = [], originalNames: [String: String] = [:]) {
+        self.values = values
+        self.normalizedNames = normalizedNames
+        self.originalNames = originalNames
+    }
+
+    func originalName(for normalized: String) -> String {
+        originalNames[normalized] ?? normalized
+    }
+}
+
 private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
     private let policy: [NetworkPolicyRule]
     private let denyPrivateNetwork: Bool
     private let method: String
-    private let headers: [String]
     private let state = NetworkRedirectState()
 
-    var deniedRedirect: Bool {
-        state.denied
+    var deniedFailure: NetworkPolicyFailure? {
+        state.failure
     }
 
-    init(policy: [NetworkPolicyRule], denyPrivateNetwork: Bool, method: String, headers: [String]) {
+    init(policy: [NetworkPolicyRule], denyPrivateNetwork: Bool, method: String) {
         self.policy = policy
         self.denyPrivateNetwork = denyPrivateNetwork
         self.method = method
-        self.headers = headers
     }
 
     func urlSession(
@@ -347,11 +471,25 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         guard let url = request.url,
-              let origin = PlatformNetwork.origin(for: url),
-              !(denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host)),
-              policy.contains(where: { $0.allows(origin: origin, method: method, path: PlatformNetwork.path(for: url), headers: headers) })
+              let origin = PlatformNetwork.origin(for: url)
         else {
-            state.markDenied()
+            state.markDenied(NetworkPolicyFailure(message: "network.response redirect is outside manifest.networkPolicy", details: [:]))
+            completionHandler(nil)
+            return
+        }
+        if denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host) {
+            state.markDenied(NetworkPolicyFailure(
+                message: "network.response redirect targets private network",
+                details: PlatformNetwork.privateNetworkDeniedDetails(origin: origin, host: url.host)
+            ))
+            completionHandler(nil)
+            return
+        }
+        guard policy.contains(where: { $0.matchesTarget(origin: origin, method: method, path: PlatformNetwork.path(for: url)) }) else {
+            state.markDenied(NetworkPolicyFailure(
+                message: "network.response redirect is outside manifest.networkPolicy",
+                details: PlatformNetwork.networkPolicyDeniedDetails(origin: origin, method: method)
+            ))
             completionHandler(nil)
             return
         }
@@ -379,17 +517,17 @@ private enum RequestedTimeout {
 
 private final class NetworkRedirectState: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = false
+    private var value: NetworkPolicyFailure?
 
-    var denied: Bool {
+    var failure: NetworkPolicyFailure? {
         lock.lock()
         defer { lock.unlock() }
         return value
     }
 
-    func markDenied() {
+    func markDenied(_ failure: NetworkPolicyFailure) {
         lock.lock()
-        value = true
+        value = failure
         lock.unlock()
     }
 }

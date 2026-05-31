@@ -2994,10 +2994,12 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         if request.context.denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host) {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request private network targets are denied")
-        }
-        if let credentials = request.params["credentials"], !(credentials is NSNull) {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request credentials are not allowed")
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request private network targets are denied",
+                details: PlatformNetwork.privateNetworkDeniedDetails(origin: origin, host: url.host)
+            )
         }
         let method = (request.params["method"] as? String ?? "GET").uppercased()
         guard let headers = stringHeaders(request.params["headers"]) else {
@@ -3006,11 +3008,32 @@ final class DevControlPlane: @unchecked Sendable {
         guard let bodyBytes = bodyByteCount(request.params["body"]) else {
             return .failure(id: request.id, code: "invalid_request", message: "network.request body must be a string or null")
         }
-        guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, path: PlatformNetwork.path(for: url), headers: Array(headers.keys)) }) else {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
+        guard let rule = request.context.networkPolicy.first(where: { $0.matchesTarget(origin: origin, method: method, path: PlatformNetwork.path(for: url)) }) else {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request is not allowed by manifest.networkPolicy",
+                details: PlatformNetwork.networkPolicyDeniedDetails(origin: origin, method: method)
+            )
+        }
+        if let headerFailure = networkHeaderPolicyFailure(id: request.id, headers: headers, rule: rule) {
+            return headerFailure
+        }
+        if let credentials = request.params["credentials"], !(credentials is NSNull) {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request credentials are not allowed",
+                details: ["credentials": credentials]
+            )
         }
         if bodyBytes > rule.maxRequestBytes {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.request body exceeds manifest.networkPolicy maxRequestBytes")
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request body exceeds manifest.networkPolicy maxRequestBytes",
+                details: PlatformNetwork.maxRequestBytesDetails(limit: rule.maxRequestBytes, bytes: bodyBytes)
+            )
         }
         guard let mock = findNetworkMock(
             sessionId: activeRuntimeSessionId,
@@ -3041,8 +3064,25 @@ final class DevControlPlane: @unchecked Sendable {
             }
         }
         let response = networkResponsePayload(mock)
-        if responseByteCount(response) > rule.maxResponseBytes {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
+        let responseBytes = responseByteCount(response)
+        let maxResponseBytes = PlatformNetwork.effectiveMaxResponseBytes(rule: rule, resourceBudget: request.context.resourceBudget)
+        if responseBytes > maxResponseBytes {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.response exceeds manifest.networkPolicy maxResponseBytes",
+                details: PlatformNetwork.maxResponseBytesDetails(limit: maxResponseBytes, bytes: responseBytes)
+            )
+        }
+        if let redirectFailure = mockedNetworkRedirectFailure(
+            response: response,
+            currentURL: url,
+            policy: request.context.networkPolicy,
+            denyPrivateNetwork: request.context.denyPrivateNetwork,
+            method: method,
+            id: request.id
+        ) {
+            return redirectFailure
         }
         return .success(id: request.id, result: response)
     }
@@ -4984,6 +5024,24 @@ final class DevControlPlane: @unchecked Sendable {
         return headers
     }
 
+    private func networkHeaderPolicyFailure(id: String?, headers: [String: String], rule: NetworkPolicyRule) -> BridgeResponse? {
+        guard let violation = rule.headerViolation(in: Array(headers.keys)) else {
+            return nil
+        }
+        var details: [String: Any] = ["header": violation.header]
+        if !violation.credential {
+            details["allowedHeaders"] = Array(rule.allowedHeaders).sorted()
+        }
+        return .failure(
+            id: id,
+            code: "network_policy_denied",
+            message: violation.credential
+                ? "network.request credential headers are not allowed"
+                : "network.request header is outside manifest.networkPolicy",
+            details: details
+        )
+    }
+
     private func bodyByteCount(_ value: Any?) -> Int? {
         guard let value, !(value is NSNull) else {
             return 0
@@ -5047,6 +5105,62 @@ final class DevControlPlane: @unchecked Sendable {
         }
         object.removeValue(forKey: "delayMs")
         return object
+    }
+
+    private func mockedNetworkRedirectFailure(
+        response: Any,
+        currentURL: URL,
+        policy: [NetworkPolicyRule],
+        denyPrivateNetwork: Bool,
+        method: String,
+        id: String?
+    ) -> BridgeResponse? {
+        guard let object = response as? [String: Any],
+              let status = intValue(object["status"]),
+              status >= 300,
+              status < 400,
+              let location = headerString(object["headers"], name: "location")
+        else {
+            return nil
+        }
+        guard let redirectURL = URL(string: location, relativeTo: currentURL)?.absoluteURL,
+              let origin = PlatformNetwork.origin(for: redirectURL)
+        else {
+            return .failure(
+                id: id,
+                code: "network_policy_denied",
+                message: "network.response redirect location is invalid",
+                details: ["location": location]
+            )
+        }
+        if denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(redirectURL.host) {
+            return .failure(
+                id: id,
+                code: "network_policy_denied",
+                message: "network.response redirect targets private network",
+                details: PlatformNetwork.privateNetworkDeniedDetails(origin: origin, host: redirectURL.host)
+            )
+        }
+        guard policy.contains(where: { $0.matchesTarget(origin: origin, method: method, path: PlatformNetwork.path(for: redirectURL)) }) else {
+            return .failure(
+                id: id,
+                code: "network_policy_denied",
+                message: "network.response redirect is outside manifest.networkPolicy",
+                details: PlatformNetwork.networkPolicyDeniedDetails(origin: origin, method: method)
+            )
+        }
+        return nil
+    }
+
+    private func headerString(_ value: Any?, name: String) -> String? {
+        guard let headers = value as? [String: Any] else {
+            return nil
+        }
+        let wanted = name.lowercased()
+        for (header, rawValue) in headers where header.lowercased() == wanted {
+            return String(describing: rawValue)
+        }
+        return nil
     }
 
     private func responseByteCount(_ value: Any) -> Int {
