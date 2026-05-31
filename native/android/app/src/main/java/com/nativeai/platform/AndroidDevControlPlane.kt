@@ -231,6 +231,11 @@ class AndroidDevControlPlane(
         "runtime.resource_usage" -> runtimeResourceUsageJson(requiredString(args, "appId"))
         "runtime.event_log" -> runtimeEventLogJson(requiredString(args, "appId"))
         "runtime.console_logs" -> runtimeConsoleLogsJson(requiredString(args, "appId"))
+        "runtime.bridge_calls" -> runtimeBridgeCallsJson(optionalString(args, "appId"))
+        "runtime.clear_logs" -> runtimeClearLogsJson(args)
+        "runtime.notification_capture" -> runtimeNotificationCaptureJson(optionalString(args, "appId"))
+        "runtime.assert_bridge_call" -> runtimeAssertBridgeCallJson(args)
+        "runtime.assert_no_console_errors" -> runtimeAssertNoConsoleErrorsJson(optionalString(args, "appId"))
         "runtime.storage_reset" -> runtimeStorageResetJson(args, clearRuntimeLogs = false)
         "platform.reset_webapp" -> runtimeStorageResetJson(args, clearRuntimeLogs = true)
         "db.snapshot" -> dbSnapshotJson()
@@ -308,6 +313,59 @@ class AndroidDevControlPlane(
     private fun runtimeConsoleLogsJson(appId: String): JSONObject = JSONObject()
         .put("appId", appId)
         .put("logs", consoleLogRows(appId))
+
+    private fun runtimeBridgeCallsJson(appId: String?): JSONObject = JSONObject()
+        .put("appId", appId ?: JSONObject.NULL)
+        .put("bridgeCalls", bridgeCallRows(appId))
+
+    private fun runtimeClearLogsJson(args: JSONObject): JSONObject {
+        val appId = optionalString(args, "appId")
+        val db = database.writableDatabase
+        val bridgeCalls = deleteLogRows(db, "bridge_calls", appId)
+        val coreActions = deleteLogRows(db, "core_actions", appId)
+        val coreEvents = deleteLogRows(db, "core_events", appId)
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId ?: JSONObject.NULL)
+            .put("bridgeCallsCleared", bridgeCalls)
+            .put("coreActionsCleared", coreActions)
+            .put("coreEventsCleared", coreEvents)
+    }
+
+    private fun runtimeNotificationCaptureJson(appId: String?): JSONObject = JSONObject()
+        .put("appId", appId ?: JSONObject.NULL)
+        .put("notifications", notificationRows(appId))
+
+    private fun runtimeAssertBridgeCallJson(args: JSONObject): JSONObject {
+        val appId = requiredToolString(args, "appId", "runtime.assert_bridge_call requires appId and method")
+        val method = requiredToolString(args, "method", "runtime.assert_bridge_call requires appId and method")
+        val rows = bridgeCallRows(appId, method)
+        if (rows.length() == 0) {
+            throw ControlCommandException(400, "assertion_failed", "Expected bridge call was not recorded")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("appId", appId)
+            .put("method", method)
+            .put("count", rows.length())
+            .put("latest", rows.getJSONObject(rows.length() - 1))
+    }
+
+    private fun runtimeAssertNoConsoleErrorsJson(appId: String?): JSONObject {
+        val logs = consoleLogRows(appId)
+        var errors = 0
+        for (index in 0 until logs.length()) {
+            val row = logs.getJSONObject(index)
+            val error = row.opt("error")
+            if (row.optString("level") == "error" || (error != null && error != JSONObject.NULL)) {
+                errors++
+            }
+        }
+        if (errors > 0) {
+            throw ControlCommandException(400, "console_errors_found", "Console error logs were found")
+        }
+        return JSONObject().put("ok", true).put("errors", 0)
+    }
 
     private fun platformListTargetsJson(): JSONObject =
         JSONObject()
@@ -449,12 +507,15 @@ class AndroidDevControlPlane(
         }
     }
 
-    private fun consoleLogRows(appId: String): JSONArray {
+    private fun consoleLogRows(appId: String?): JSONArray {
         val rows = JSONArray()
-        database.readableDatabase.rawQuery(
-            "SELECT bridge_call_id, app_id, params_json, error_json, created_at FROM bridge_calls WHERE app_id = ? AND method = 'app.log' ORDER BY created_at LIMIT 100",
-            arrayOf(appId),
-        ).use { cursor ->
+        val sql = if (appId == null) {
+            "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'app.log' ORDER BY created_at LIMIT 100"
+        } else {
+            "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE app_id = ? AND method = 'app.log' ORDER BY created_at LIMIT 100"
+        }
+        val selectionArgs = if (appId == null) emptyArray() else arrayOf(appId)
+        database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
             while (cursor.moveToNext()) {
                 val params = parseJsonObject(cursor.getString(2)) ?: JSONObject()
                 val level = params.optString("level")
@@ -466,13 +527,81 @@ class AndroidDevControlPlane(
                         .put("level", if (level.isBlank()) JSONObject.NULL else level)
                         .put("message", if (message.isBlank()) JSONObject.NULL else message)
                         .put("params", params)
-                        .put("error", cursor.getString(3)?.let { parseJsonObject(it) ?: it } ?: JSONObject.NULL)
-                        .put("createdAt", cursor.getString(4)),
+                        .put("result", parseJsonValue(cursor.nullableStringValue(3)))
+                        .put("error", parseJsonValue(cursor.nullableStringValue(4)))
+                        .put("createdAt", cursor.getString(5)),
                 )
             }
         }
         return rows
     }
+
+    private fun notificationRows(appId: String?): JSONArray {
+        val rows = JSONArray()
+        val sql = if (appId == null) {
+            "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE method = 'notification.toast' ORDER BY created_at LIMIT 100"
+        } else {
+            "SELECT bridge_call_id, app_id, params_json, result_json, error_json, created_at FROM bridge_calls WHERE app_id = ? AND method = 'notification.toast' ORDER BY created_at LIMIT 100"
+        }
+        val selectionArgs = if (appId == null) emptyArray() else arrayOf(appId)
+        database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
+            while (cursor.moveToNext()) {
+                val params = parseJsonObject(cursor.getString(2)) ?: JSONObject()
+                val message = params.optString("message")
+                val level = params.optString("level")
+                rows.put(
+                    JSONObject()
+                        .put("bridgeCallId", cursor.getString(0))
+                        .put("appId", cursor.getString(1))
+                        .put("message", if (message.isBlank()) JSONObject.NULL else message)
+                        .put("level", if (level.isBlank()) JSONObject.NULL else level)
+                        .put("params", params)
+                        .put("result", parseJsonValue(cursor.nullableStringValue(3)))
+                        .put("error", parseJsonValue(cursor.nullableStringValue(4)))
+                        .put("createdAt", cursor.getString(5)),
+                )
+            }
+        }
+        return rows
+    }
+
+    private fun bridgeCallRows(appId: String?, method: String? = null): JSONArray {
+        val rows = JSONArray()
+        val base = "SELECT bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at FROM bridge_calls"
+        val sql = when {
+            appId == null && method == null -> "$base ORDER BY created_at"
+            appId == null -> "$base WHERE method = ? ORDER BY created_at"
+            method == null -> "$base WHERE app_id = ? ORDER BY created_at"
+            else -> "$base WHERE app_id = ? AND method = ? ORDER BY created_at"
+        }
+        val selectionArgs = when {
+            appId == null && method == null -> emptyArray()
+            appId == null -> arrayOf(method)
+            method == null -> arrayOf(appId)
+            else -> arrayOf(appId, method)
+        }
+        database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
+            while (cursor.moveToNext()) {
+                rows.put(
+                    JSONObject()
+                        .put("bridgeCallId", cursor.getString(0))
+                        .put("sessionId", cursor.nullableStringValue(1) ?: JSONObject.NULL)
+                        .put("appId", cursor.nullableStringValue(2) ?: JSONObject.NULL)
+                        .put("installId", cursor.nullableStringValue(3) ?: JSONObject.NULL)
+                        .put("method", cursor.getString(4))
+                        .put("params", parseJsonValue(cursor.nullableStringValue(5)))
+                        .put("result", parseJsonValue(cursor.nullableStringValue(6)))
+                        .put("error", parseJsonValue(cursor.nullableStringValue(7)))
+                        .put("durationMs", if (cursor.isNull(8)) JSONObject.NULL else cursor.getLong(8))
+                        .put("createdAt", cursor.getString(9)),
+                )
+            }
+        }
+        return rows
+    }
+
+    private fun deleteLogRows(db: SQLiteDatabase, table: String, appId: String?): Int =
+        if (appId == null) db.delete(table, null, null) else db.delete(table, "app_id = ?", arrayOf(appId))
 
     private fun scalarLong(sql: String, selectionArgs: Array<String>): Long {
         database.readableDatabase.rawQuery(sql, selectionArgs).use { cursor ->
@@ -519,6 +648,11 @@ class AndroidDevControlPlane(
                     "runtime.resource_usage",
                     "runtime.event_log",
                     "runtime.console_logs",
+                    "runtime.bridge_calls",
+                    "runtime.clear_logs",
+                    "runtime.notification_capture",
+                    "runtime.assert_bridge_call",
+                    "runtime.assert_no_console_errors",
                     "runtime.storage_reset",
                     "platform.reset_webapp",
                     "db.snapshot",
@@ -659,6 +793,12 @@ class AndroidDevControlPlane(
     private fun requiredString(args: JSONObject, key: String): String =
         args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", "Control command requires $key") }
 
+    private fun optionalString(args: JSONObject, key: String): String? =
+        args.optString(key).ifBlank { null }
+
+    private fun requiredToolString(args: JSONObject, key: String, message: String): String =
+        args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", message) }
+
     private fun requiredStorageString(args: JSONObject, key: String, message: String): String =
         args.optString(key).ifBlank { throw ControlCommandException(400, "invalid_request", message) }
 
@@ -723,6 +863,22 @@ class AndroidDevControlPlane(
     } catch (_: Exception) {
         null
     }
+
+    private fun parseJsonValue(text: String?): Any {
+        if (text.isNullOrBlank()) return JSONObject.NULL
+        return try {
+            JSONObject(text)
+        } catch (_: Exception) {
+            try {
+                JSONArray(text)
+            } catch (_: Exception) {
+                JSONObject.NULL
+            }
+        }
+    }
+
+    private fun Cursor.nullableStringValue(index: Int): String? =
+        if (isNull(index)) null else getString(index)
 
     private fun jsonValuesEqual(left: Any?, right: Any?): Boolean {
         val normalizedLeft = left ?: JSONObject.NULL

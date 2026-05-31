@@ -120,6 +120,7 @@
 - [x] Source/static and debug APK build checks verify Android debug dev control first slice is debug-only, loopback-bound, private-token-file gated, SQLite-audited, exposes health/session/control routes, routes `runtime.capabilities` / `runtime.call_bridge` / `runtime.core_step` through the native bridge, and restricts DB inspection to allowlisted queries.
 - [x] Source/static and debug APK build checks verify Android debug dev control supports `platform.list_targets` and `platform.list_webapps` with bundled app metadata through the token-gated command route.
 - [x] Source/static and debug APK build checks verify Android debug dev control routes `runtime.storage_get`, `runtime.storage_set`, `runtime.assert_storage`, `runtime.resource_usage`, `runtime.event_log`, and `runtime.console_logs` through native bridge and fixed SQLite readers.
+- [x] Source/static and debug APK build checks verify Android debug dev control supports DB-backed `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, and `runtime.assert_no_console_errors`.
 - [x] Source/static and debug APK build checks verify Android debug dev control supports confirmation-gated `runtime.storage_reset` / `platform.reset_webapp` with pre-reset `runtime_snapshots`.
 
 ### Windows
