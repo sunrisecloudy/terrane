@@ -425,6 +425,43 @@ static const gchar *object_string(JsonObject *object, const gchar *member, const
   return fallback;
 }
 
+static const gchar *object_string_any(JsonObject *object, const gchar *first, const gchar *second, const gchar *third, const gchar *fallback) {
+  const gchar *members[] = {first, second, third};
+  for (gsize index = 0; index < G_N_ELEMENTS(members); index++) {
+    const gchar *member = members[index];
+    const gchar *value = member == NULL ? NULL : object_string(object, member, NULL);
+    if (value != NULL) {
+      return value;
+    }
+  }
+  return fallback;
+}
+
+static gint64 object_int_any(JsonObject *object, const gchar *first, const gchar *second, const gchar *third, gint64 fallback) {
+  const gchar *members[] = {first, second, third};
+  for (gsize index = 0; index < G_N_ELEMENTS(members); index++) {
+    const gchar *member = members[index];
+    if (object == NULL || member == NULL || !json_object_has_member(object, member)) {
+      continue;
+    }
+    JsonNode *node = json_object_get_member(object, member);
+    if (node == NULL || !JSON_NODE_HOLDS_VALUE(node)) {
+      continue;
+    }
+    GType value_type = json_node_get_value_type(node);
+    if (value_type == G_TYPE_INT64 || value_type == G_TYPE_INT || value_type == G_TYPE_LONG || value_type == G_TYPE_UINT || value_type == G_TYPE_UINT64) {
+      return json_node_get_int(node);
+    }
+    if (value_type == G_TYPE_BOOLEAN) {
+      return json_node_get_boolean(node) ? 1 : 0;
+    }
+    if (value_type == G_TYPE_DOUBLE) {
+      return (gint64)json_node_get_double(node);
+    }
+  }
+  return fallback;
+}
+
 static gboolean object_boolean_true(JsonObject *object, const gchar *member) {
   if (object == NULL || !json_object_has_member(object, member)) {
     return FALSE;
@@ -454,6 +491,37 @@ static gchar *object_member_json(JsonObject *object, const gchar *member, const 
     return g_strdup(fallback_json);
   }
   return json_node_to_text(node);
+}
+
+static gchar *object_json_text_any(JsonObject *object, const gchar *first_text, const gchar *second_text, const gchar *object_member, const gchar *fallback_json) {
+  const gchar *text = object_string_any(object, first_text, second_text, NULL, NULL);
+  if (text != NULL) {
+    return g_strdup(text);
+  }
+  if (object != NULL && object_member != NULL && json_object_has_member(object, object_member)) {
+    JsonNode *node = json_object_get_member(object, object_member);
+    if (node != NULL && !JSON_NODE_HOLDS_NULL(node)) {
+      return json_node_to_text(node);
+    }
+  }
+  return fallback_json == NULL ? NULL : g_strdup(fallback_json);
+}
+
+static JsonArray *object_array(JsonObject *object, const gchar *member) {
+  if (object == NULL || !json_object_has_member(object, member)) {
+    return NULL;
+  }
+  JsonNode *node = json_object_get_member(object, member);
+  return node != NULL && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
+}
+
+static gboolean json_array_object_at(JsonArray *array, guint index, JsonObject **object_out) {
+  JsonNode *node = array == NULL ? NULL : json_array_get_element(array, index);
+  if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node)) {
+    return FALSE;
+  }
+  *object_out = json_node_get_object(node);
+  return TRUE;
 }
 
 static const gchar *object_nonempty_string(JsonObject *object, const gchar *member) {
@@ -2254,7 +2322,7 @@ static gchar *db_snapshot_json(DevControlPlane *plane, GError **error) {
   return text;
 }
 
-static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error) {
+static gchar *db_export_document_json(DevControlPlane *plane, const gchar *export_type, gboolean include_debug, GError **error) {
   sqlite3 *db = platform_database_open(plane->database_path);
   if (db == NULL) {
     g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
@@ -2270,7 +2338,7 @@ static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error
   json_builder_set_member_name(builder, "exportId");
   json_builder_add_string_value(builder, export_id);
   json_builder_set_member_name(builder, "type");
-  json_builder_add_string_value(builder, "debug-bundle");
+  json_builder_add_string_value(builder, export_type);
   json_builder_set_member_name(builder, "createdAt");
   json_builder_add_string_value(builder, created_at);
   json_builder_set_member_name(builder, "runtimeVersion");
@@ -2300,22 +2368,24 @@ static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error
   json_builder_add_json_text_or_null(builder, capabilities);
   json_builder_set_member_name(builder, "debug");
   json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "runtimeSessions");
-  append_safe_table_rows(builder, db, &safe_db_runtime_sessions, NULL);
-  json_builder_set_member_name(builder, "bridgeCalls");
-  append_safe_table_rows(builder, db, &safe_db_bridge_calls, NULL);
-  json_builder_set_member_name(builder, "controlSessions");
-  append_safe_table_rows(builder, db, &safe_db_control_sessions, NULL);
-  json_builder_set_member_name(builder, "controlCommands");
-  append_safe_table_rows(builder, db, &safe_db_control_commands, NULL);
-  json_builder_set_member_name(builder, "coreEvents");
-  append_safe_table_rows(builder, db, &safe_db_core_events, NULL);
-  json_builder_set_member_name(builder, "coreActions");
-  append_safe_table_rows(builder, db, &safe_db_core_actions, NULL);
-  json_builder_set_member_name(builder, "runtimeSnapshots");
-  append_safe_table_rows(builder, db, &safe_db_runtime_snapshots, NULL);
-  json_builder_set_member_name(builder, "testRuns");
-  append_safe_table_rows(builder, db, &safe_db_test_runs, NULL);
+  if (include_debug) {
+    json_builder_set_member_name(builder, "runtimeSessions");
+    append_safe_table_rows(builder, db, &safe_db_runtime_sessions, NULL);
+    json_builder_set_member_name(builder, "bridgeCalls");
+    append_safe_table_rows(builder, db, &safe_db_bridge_calls, NULL);
+    json_builder_set_member_name(builder, "controlSessions");
+    append_safe_table_rows(builder, db, &safe_db_control_sessions, NULL);
+    json_builder_set_member_name(builder, "controlCommands");
+    append_safe_table_rows(builder, db, &safe_db_control_commands, NULL);
+    json_builder_set_member_name(builder, "coreEvents");
+    append_safe_table_rows(builder, db, &safe_db_core_events, NULL);
+    json_builder_set_member_name(builder, "coreActions");
+    append_safe_table_rows(builder, db, &safe_db_core_actions, NULL);
+    json_builder_set_member_name(builder, "runtimeSnapshots");
+    append_safe_table_rows(builder, db, &safe_db_runtime_snapshots, NULL);
+    json_builder_set_member_name(builder, "testRuns");
+    append_safe_table_rows(builder, db, &safe_db_test_runs, NULL);
+  }
   json_builder_end_object(builder);
   json_builder_end_object(builder);
   g_autofree gchar *without_hash = json_builder_to_text(builder);
@@ -2336,25 +2406,353 @@ static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error
       db,
       "INSERT OR REPLACE INTO backup_exports "
       "(export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) "
-      "VALUES (?, 'debug-bundle', 'linux', '0.4.0', ?, ?, ?)",
+      "VALUES (?, ?, 'linux', '0.4.0', ?, ?, ?)",
       -1,
       &statement,
       NULL) == SQLITE_OK;
   if (ok) {
     bind_text(statement, 1, export_id);
-    bind_text(statement, 2, document);
-    bind_text(statement, 3, content_hash);
-    bind_text(statement, 4, created_at);
+    bind_text(statement, 2, export_type);
+    bind_text(statement, 3, document);
+    bind_text(statement, 4, content_hash);
+    bind_text(statement, 5, created_at);
     ok = sqlite3_step(statement) == SQLITE_DONE;
   }
   sqlite3_finalize(statement);
   platform_database_close(db);
   if (!ok) {
-    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not record debug bundle export");
+    g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not record %s export", export_type);
     return NULL;
   }
 
   return g_steal_pointer(&document);
+}
+
+static gchar *db_export_backup_json(DevControlPlane *plane, GError **error) {
+  return db_export_document_json(plane, "backup", FALSE, error);
+}
+
+static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error) {
+  return db_export_document_json(plane, "debug-bundle", TRUE, error);
+}
+
+static gchar *db_import_backup_json(DevControlPlane *plane, JsonObject *document, JsonNode *document_node, GError **error) {
+  const gchar *type = object_string(document, "type", "");
+  if (g_strcmp0(type, "backup") != 0 && g_strcmp0(type, "debug-bundle") != 0 && g_strcmp0(type, "test-fixture") != 0) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Backup import requires type backup, debug-bundle, or test-fixture");
+    return NULL;
+  }
+
+  JsonArray *apps = object_array(document, "apps");
+  JsonArray *versions = object_array(document, "appVersions");
+  JsonArray *files = object_array(document, "appFiles");
+  JsonArray *permissions = object_array(document, "appPermissions");
+  JsonArray *storage_rows = object_array(document, "appStorage");
+  if (apps == NULL || versions == NULL || files == NULL || permissions == NULL || storage_rows == NULL) {
+    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Backup import document is missing required arrays");
+    return NULL;
+  }
+  JsonArray *migrations = object_array(document, "appMigrations");
+  JsonArray *reports = object_array(document, "appInstallReports");
+
+  sqlite3 *db = platform_database_open(plane->database_path);
+  if (db == NULL) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not open platform database");
+    return NULL;
+  }
+
+  g_autofree gchar *created_at = now_iso();
+  char *sql_error = NULL;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &sql_error) != SQLITE_OK) {
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Could not start backup import transaction");
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    return NULL;
+  }
+
+  gboolean ok = TRUE;
+
+  for (guint index = 0; ok && index < json_array_get_length(apps); index++) {
+    JsonObject *app = NULL;
+    ok = json_array_object_at(apps, index, &app);
+    const gchar *app_id = ok ? object_string_any(app, "id", "appId", NULL, NULL) : NULL;
+    if (app_id == NULL || app_id[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO apps (id, name, status, active_install_id, active_version, data_version, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, app_id);
+      bind_text(statement, 2, object_string(app, "name", app_id));
+      bind_text(statement, 3, object_string(app, "status", "enabled"));
+      bind_nullable_text(statement, 4, object_string_any(app, "active_install_id", "activeInstallId", NULL, NULL));
+      bind_nullable_text(statement, 5, object_string_any(app, "active_version", "activeVersion", NULL, NULL));
+      sqlite3_bind_int64(statement, 6, object_int_any(app, "data_version", "dataVersion", NULL, 1));
+      bind_text(statement, 7, object_string_any(app, "created_at", "createdAt", NULL, created_at));
+      bind_text(statement, 8, object_string_any(app, "updated_at", "updatedAt", NULL, created_at));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && index < json_array_get_length(versions); index++) {
+    JsonObject *version = NULL;
+    ok = json_array_object_at(versions, index, &version);
+    const gchar *install_id = ok ? object_string_any(version, "install_id", "installId", NULL, NULL) : NULL;
+    const gchar *app_id = ok ? object_string_any(version, "app_id", "appId", NULL, NULL) : NULL;
+    const gchar *app_version = ok ? object_string_any(version, "version", "appVersion", NULL, NULL) : NULL;
+    if (install_id == NULL || install_id[0] == '\0' || app_id == NULL || app_id[0] == '\0' || app_version == NULL || app_version[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    g_autofree gchar *manifest_json = object_json_text_any(version, "manifest_json", "manifestJson", "manifest", "{}");
+    g_autofree gchar *signature_json = object_json_text_any(version, "signature_json", "signatureJson", "signature", NULL);
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, install_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, app_version);
+      bind_text(statement, 4, object_string_any(version, "runtime_version", "runtimeVersion", NULL, "0.1.0"));
+      sqlite3_bind_int64(statement, 5, object_int_any(version, "data_version", "dataVersion", NULL, 1));
+      bind_text(statement, 6, manifest_json);
+      bind_text(statement, 7, object_string_any(version, "manifest_hash", "manifestHash", NULL, ""));
+      bind_text(statement, 8, object_string_any(version, "content_hash", "contentHash", NULL, ""));
+      bind_nullable_text(statement, 9, signature_json);
+      bind_text(statement, 10, object_string_any(version, "trust_level", "trustLevel", NULL, "developer"));
+      bind_text(statement, 11, object_string(version, "status", "installed"));
+      bind_text(statement, 12, object_string_any(version, "created_at", "installedAt", "createdAt", created_at));
+      bind_nullable_text(statement, 13, object_string_any(version, "activated_at", "activatedAt", NULL, NULL));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && index < json_array_get_length(files); index++) {
+    JsonObject *file = NULL;
+    ok = json_array_object_at(files, index, &file);
+    const gchar *install_id = ok ? object_string_any(file, "install_id", "installId", NULL, NULL) : NULL;
+    const gchar *path_value = ok ? object_string(file, "path", NULL) : NULL;
+    if (install_id == NULL || install_id[0] == '\0' || path_value == NULL || path_value[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    const gchar *content_text = object_string_any(file, "content_text", "contentText", NULL, "");
+    const gchar *content_hash = object_string_any(file, "content_hash", "contentHash", NULL, NULL);
+    g_autofree gchar *computed_hash = NULL;
+    if (content_hash == NULL || content_hash[0] == '\0') {
+      g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, content_text, -1);
+      computed_hash = g_strdup_printf("sha256:%s", hash);
+      content_hash = computed_hash;
+    }
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_files (install_id, path, content_text, content_hash, size_bytes, mime, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, install_id);
+      bind_text(statement, 2, path_value);
+      bind_text(statement, 3, content_text);
+      bind_text(statement, 4, content_hash);
+      sqlite3_bind_int64(statement, 5, object_int_any(file, "size_bytes", "sizeBytes", NULL, (gint64)strlen(content_text)));
+      bind_text(statement, 6, object_string(file, "mime", "text/plain"));
+      bind_text(statement, 7, object_string_any(file, "created_at", "createdAt", NULL, created_at));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && index < json_array_get_length(permissions); index++) {
+    JsonObject *permission = NULL;
+    ok = json_array_object_at(permissions, index, &permission);
+    const gchar *install_id = ok ? object_string_any(permission, "install_id", "installId", NULL, NULL) : NULL;
+    const gchar *app_id = ok ? object_string_any(permission, "app_id", "appId", NULL, NULL) : NULL;
+    const gchar *permission_name = ok ? object_string(permission, "permission", NULL) : NULL;
+    if (install_id == NULL || install_id[0] == '\0' || app_id == NULL || app_id[0] == '\0' || permission_name == NULL || permission_name[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_permissions (install_id, app_id, permission, requested, approved, approved_at, reason) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, install_id);
+      bind_text(statement, 2, app_id);
+      bind_text(statement, 3, permission_name);
+      sqlite3_bind_int64(statement, 4, object_int_any(permission, "requested", NULL, NULL, 1));
+      sqlite3_bind_int64(statement, 5, object_int_any(permission, "approved", NULL, NULL, 0));
+      bind_nullable_text(statement, 6, object_string_any(permission, "approved_at", "approvedAt", NULL, NULL));
+      bind_nullable_text(statement, 7, object_string(permission, "reason", NULL));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && index < json_array_get_length(storage_rows); index++) {
+    JsonObject *storage = NULL;
+    ok = json_array_object_at(storage_rows, index, &storage);
+    const gchar *app_id = ok ? object_string_any(storage, "app_id", "appId", NULL, NULL) : NULL;
+    const gchar *key = ok ? object_string(storage, "key", NULL) : NULL;
+    if (app_id == NULL || app_id[0] == '\0' || key == NULL || key[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    g_autofree gchar *value_json = object_json_text_any(storage, "value_json", "valueJson", "value", "null");
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_storage (app_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, app_id);
+      bind_text(statement, 2, key);
+      bind_text(statement, 3, value_json);
+      bind_text(statement, 4, object_string_any(storage, "updated_at", "updatedAt", NULL, created_at));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && migrations != NULL && index < json_array_get_length(migrations); index++) {
+    JsonObject *migration = NULL;
+    ok = json_array_object_at(migrations, index, &migration);
+    const gchar *migration_id = ok ? object_string_any(migration, "migration_id", "migrationId", NULL, NULL) : NULL;
+    const gchar *app_id = ok ? object_string_any(migration, "app_id", "appId", NULL, NULL) : NULL;
+    if (migration_id == NULL || migration_id[0] == '\0' || app_id == NULL || app_id[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    g_autofree gchar *migration_json = object_json_text_any(migration, "migration_json", "migrationJson", "migration", "{}");
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_migrations (migration_id, app_id, from_data_version, to_data_version, migration_json, content_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, migration_id);
+      bind_text(statement, 2, app_id);
+      sqlite3_bind_int64(statement, 3, object_int_any(migration, "from_data_version", "fromDataVersion", NULL, 1));
+      sqlite3_bind_int64(statement, 4, object_int_any(migration, "to_data_version", "toDataVersion", NULL, 1));
+      bind_text(statement, 5, migration_json);
+      bind_text(statement, 6, object_string_any(migration, "content_hash", "contentHash", NULL, ""));
+      bind_text(statement, 7, object_string_any(migration, "created_at", "createdAt", NULL, created_at));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  for (guint index = 0; ok && reports != NULL && index < json_array_get_length(reports); index++) {
+    JsonObject *report = NULL;
+    ok = json_array_object_at(reports, index, &report);
+    const gchar *report_id = ok ? object_string_any(report, "report_id", "reportId", NULL, NULL) : NULL;
+    const gchar *app_id = ok ? object_string_any(report, "app_id", "appId", NULL, NULL) : NULL;
+    if (report_id == NULL || report_id[0] == '\0' || app_id == NULL || app_id[0] == '\0') {
+      ok = FALSE;
+      break;
+    }
+    g_autofree gchar *validation_json = object_json_text_any(report, "validation_json", "validationJson", "validation", NULL);
+    g_autofree gchar *security_json = object_json_text_any(report, "security_json", "securityJson", "security", NULL);
+    g_autofree gchar *permissions_json = object_json_text_any(report, "permissions_json", "permissionsJson", "permissions", NULL);
+    g_autofree gchar *compatibility_json = object_json_text_any(report, "compatibility_json", "compatibilityJson", "compatibility", NULL);
+    g_autofree gchar *smoke_test_json = object_json_text_any(report, "smoke_test_json", "smokeTestJson", "smokeTest", NULL);
+    sqlite3_stmt *statement = NULL;
+    ok = sqlite3_prepare_v2(
+        db,
+        "INSERT OR REPLACE INTO app_install_reports (report_id, app_id, install_id, status, validation_json, security_json, permissions_json, compatibility_json, smoke_test_json, content_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        -1,
+        &statement,
+        NULL) == SQLITE_OK;
+    if (ok) {
+      bind_text(statement, 1, report_id);
+      bind_text(statement, 2, app_id);
+      bind_nullable_text(statement, 3, object_string_any(report, "install_id", "installId", NULL, NULL));
+      bind_text(statement, 4, object_string(report, "status", "accepted"));
+      bind_nullable_text(statement, 5, validation_json);
+      bind_nullable_text(statement, 6, security_json);
+      bind_nullable_text(statement, 7, permissions_json);
+      bind_nullable_text(statement, 8, compatibility_json);
+      bind_nullable_text(statement, 9, smoke_test_json);
+      bind_nullable_text(statement, 10, object_string_any(report, "content_hash", "contentHash", NULL, NULL));
+      bind_text(statement, 11, object_string_any(report, "created_at", "createdAt", NULL, created_at));
+      ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+  }
+
+  JsonObject *source = object_object(document, "source");
+  const gchar *source_platform = object_string(source, "platform", "unknown");
+  const gchar *content_hash = object_string(document, "contentHash", NULL);
+  g_autofree gchar *document_text = json_node_to_text(document_node);
+  g_autofree gchar *computed_content_hash = NULL;
+  if (content_hash == NULL || content_hash[0] == '\0') {
+    g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, document_text, -1);
+    computed_content_hash = g_strdup_printf("sha256:%s", hash);
+    content_hash = computed_content_hash;
+  }
+  g_autofree gchar *import_id = make_id("import");
+  sqlite3_stmt *statement = NULL;
+  ok = ok && sqlite3_prepare_v2(
+                 db,
+                 "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at, imported_at) "
+                 "VALUES (?, 'import', ?, ?, ?, ?, ?, ?)",
+                 -1,
+                 &statement,
+                 NULL) == SQLITE_OK;
+  if (ok) {
+    bind_text(statement, 1, import_id);
+    bind_text(statement, 2, source_platform);
+    bind_text(statement, 3, object_string(document, "runtimeVersion", "0.4.0"));
+    bind_text(statement, 4, document_text);
+    bind_text(statement, 5, content_hash);
+    bind_text(statement, 6, created_at);
+    bind_text(statement, 7, created_at);
+    ok = sqlite3_step(statement) == SQLITE_DONE;
+  }
+  sqlite3_finalize(statement);
+
+  if (!ok || sqlite3_exec(db, "COMMIT", NULL, NULL, &sql_error) != SQLITE_OK) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_free(sql_error);
+    platform_database_close(db);
+    g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_FAILED, "Backup import could not be completed");
+    return NULL;
+  }
+  sqlite3_free(sql_error);
+  platform_database_close(db);
+
+  return g_strdup_printf(
+      "{\"ok\":true,\"apps\":%u,\"appVersions\":%u,\"appStorage\":%u}",
+      json_array_get_length(apps),
+      json_array_get_length(versions),
+      json_array_get_length(storage_rows));
 }
 
 static gchar *db_query_rows_json(DevControlPlane *plane, const gchar *tool, const gchar *app_id, GError **error) {
@@ -3626,21 +4024,43 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
       g_clear_error(&error);
       return;
     }
-  } else if (g_strcmp0(tool, "db.export_debug_bundle") == 0) {
+  } else if (g_strcmp0(tool, "db.export_backup") == 0 || g_strcmp0(tool, "db.export_debug_bundle") == 0) {
     JsonObject *args = NULL;
     if (json_object_has_member(body, "args")) {
       args = object_object(body, "args");
       if (args == NULL) {
+        const gchar *message_text = g_strcmp0(tool, "db.export_backup") == 0 ? "db.export_backup args must be an object" : "db.export_debug_bundle args must be an object";
         g_object_unref(parser);
-        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "db.export_debug_bundle args must be an object", SOUP_STATUS_BAD_REQUEST);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", message_text, SOUP_STATUS_BAD_REQUEST);
         return;
       }
     }
     (void)args;
-    result = db_export_debug_bundle_json(plane, &error);
+    result = g_strcmp0(tool, "db.export_backup") == 0 ? db_export_backup_json(plane, &error) : db_export_debug_bundle_json(plane, &error);
+    if (result == NULL) {
+      const gchar *message_text = g_strcmp0(tool, "db.export_backup") == 0 ? "Could not export backup" : "Could not export debug bundle";
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : message_text, SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      g_clear_error(&error);
+      return;
+    }
+  } else if (g_strcmp0(tool, "db.import_backup") == 0) {
+    JsonObject *args = json_object_has_member(body, "args") ? object_object(body, "args") : NULL;
+    if (args == NULL) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "db.import_backup requires args object", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    JsonNode *backup_node = json_object_get_member(args, "backup");
+    if (backup_node == NULL || !JSON_NODE_HOLDS_OBJECT(backup_node)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "db.import_backup requires backup", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    result = db_import_backup_json(plane, json_node_get_object(backup_node), backup_node, &error);
     if (result == NULL) {
       g_object_unref(parser);
-      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "storage_error", error != NULL ? error->message : "Could not export debug bundle", SOUP_STATUS_INTERNAL_SERVER_ERROR);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_backup", error != NULL ? error->message : "Backup import could not be completed", SOUP_STATUS_BAD_REQUEST);
       g_clear_error(&error);
       return;
     }
