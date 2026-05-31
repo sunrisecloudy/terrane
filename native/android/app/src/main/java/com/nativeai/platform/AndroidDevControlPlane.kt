@@ -244,6 +244,7 @@ class AndroidDevControlPlane(
         "runtime.network_mock_reset" -> runtimeNetworkMockResetJson(args)
         "runtime.dialog_mock_set" -> runtimeDialogMockSetJson(args)
         "db.snapshot" -> dbSnapshotJson()
+        "db.export_debug_bundle" -> dbExportDebugBundleJson()
         "db.query_app_storage" -> queryRowsJson("app_storage", args, "app_id")
         "db.query_app_versions" -> queryRowsJson("app_versions", args, "app_id")
         "db.query_bridge_calls" -> queryRowsJson("bridge_calls", args, "app_id")
@@ -852,6 +853,7 @@ class AndroidDevControlPlane(
                     "runtime.network_mock_reset",
                     "runtime.dialog_mock_set",
                     "db.snapshot",
+                    "db.export_debug_bundle",
                     "db.query_app_storage",
                     "db.query_app_versions",
                     "db.query_bridge_calls",
@@ -866,16 +868,72 @@ class AndroidDevControlPlane(
         mapOf(
             "apps" to tableRows("apps"),
             "app_versions" to tableRows("app_versions"),
+            "app_files" to tableRows("app_files"),
+            "app_permissions" to tableRows("app_permissions"),
+            "app_installations" to tableRows("app_installations"),
             "app_storage" to tableRows("app_storage"),
+            "app_install_reports" to tableRows("app_install_reports"),
+            "app_migrations" to tableRows("app_migrations"),
+            "migration_runs" to tableRows("migration_runs"),
             "runtime_sessions" to tableRows("runtime_sessions"),
             "bridge_calls" to tableRows("bridge_calls"),
             "core_events" to tableRows("core_events"),
             "core_actions" to tableRows("core_actions"),
+            "runtime_snapshots" to tableRows("runtime_snapshots"),
             "control_sessions" to tableRows("control_sessions"),
             "control_commands" to tableRows("control_commands"),
             "test_runs" to tableRows("test_runs"),
+            "backup_exports" to tableRows("backup_exports"),
         ),
     )
+
+    private fun dbExportDebugBundleJson(): JSONObject {
+        val exportId = "debugbundle_android_${UUID.randomUUID().toString().lowercase()}"
+        val createdAt = Instant.now().toString()
+        val document = JSONObject()
+            .put("exportId", exportId)
+            .put("type", "debug-bundle")
+            .put("source", JSONObject()
+                .put("platform", "android")
+                .put("target", "android-emulator"),
+            )
+            .put("runtimeVersion", androidRuntimeVersion)
+            .put("createdAt", createdAt)
+            .put("apps", tableRows("apps"))
+            .put("appVersions", tableRows("app_versions"))
+            .put("appFiles", tableRows("app_files"))
+            .put("appPermissions", tableRows("app_permissions"))
+            .put("appStorage", tableRows("app_storage"))
+            .put("appInstallReports", tableRows("app_install_reports"))
+            .put("runtimeCapabilities", controlCapabilitiesJson())
+            .put("debug", JSONObject()
+                .put("runtimeSessions", tableRows("runtime_sessions"))
+                .put("bridgeCalls", tableRows("bridge_calls"))
+                .put("controlSessions", tableRows("control_sessions"))
+                .put("controlCommands", tableRows("control_commands"))
+                .put("coreEvents", tableRows("core_events"))
+                .put("coreActions", tableRows("core_actions"))
+                .put("runtimeSnapshots", tableRows("runtime_snapshots"))
+                .put("testRuns", tableRows("test_runs")),
+            )
+        val contentHash = "sha256:${sha256Hex(document.toString())}"
+        document.put("contentHash", contentHash)
+        val values = ContentValues().apply {
+            put("export_id", exportId)
+            put("type", "debug-bundle")
+            put("source_platform", "android")
+            put("runtime_version", androidRuntimeVersion)
+            put("export_json", document.toString())
+            put("content_hash", contentHash)
+            put("created_at", createdAt)
+            putNull("imported_at")
+        }
+        val inserted = database.writableDatabase.insert("backup_exports", null, values)
+        if (inserted < 0) {
+            throw ControlCommandException(400, "sqlite_error", "Could not export debug bundle")
+        }
+        return document
+    }
 
     private fun queryRowsJson(table: String, args: JSONObject, filterColumn: String): JSONObject {
         val appId = args.optString("appId").ifBlank { null }
@@ -1118,6 +1176,7 @@ class AndroidDevControlPlane(
 
     companion object {
         private const val tag = "NativeAIAndroidDevControl"
+        private const val androidRuntimeVersion = "0.1.0"
         private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
         private val knownBridgeMethods = setOf(
             "storage.get",
@@ -1135,14 +1194,22 @@ class AndroidDevControlPlane(
         private val safeTables = setOf(
             "apps",
             "app_versions",
+            "app_files",
+            "app_permissions",
+            "app_installations",
             "app_storage",
+            "app_install_reports",
+            "app_migrations",
+            "migration_runs",
             "runtime_sessions",
             "bridge_calls",
             "core_events",
             "core_actions",
+            "runtime_snapshots",
             "control_sessions",
             "control_commands",
             "test_runs",
+            "backup_exports",
         )
         private val safeFilterColumns = setOf("app_id", "control_session_id")
 

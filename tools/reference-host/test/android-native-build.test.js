@@ -419,6 +419,61 @@ test("Android debug dev control registers and consumes DB-backed network and dia
   }
 });
 
+test("Android debug dev control exports DB-backed debug bundles safely", () => {
+  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const migrationRuntime = read("db/sqlite/002_runtime_debug.sql");
+  const migrationBackup = read("db/sqlite/004_migrations_and_snapshots.sql");
+
+  for (const snippet of [
+    "db.export_debug_bundle",
+    "dbExportDebugBundleJson",
+    "debugbundle_android_",
+    "\"type\", \"debug-bundle\"",
+    "\"source_platform\", \"android\"",
+    "runtimeVersion",
+    "contentHash",
+    "sha256:${sha256Hex(document.toString())}",
+    "database.writableDatabase.insert(\"backup_exports\"",
+    "Could not export debug bundle",
+    "\"runtime_snapshots\" to tableRows(\"runtime_snapshots\")",
+    "\"backup_exports\" to tableRows(\"backup_exports\")",
+    "\"app_files\" to tableRows(\"app_files\")",
+    "\"app_permissions\" to tableRows(\"app_permissions\")",
+    "\"app_install_reports\" to tableRows(\"app_install_reports\")",
+    "\"migration_runs\" to tableRows(\"migration_runs\")",
+    "\"runtimeSnapshots\", tableRows(\"runtime_snapshots\")",
+    "\"bridgeCalls\", tableRows(\"bridge_calls\")",
+    "\"testRuns\", tableRows(\"test_runs\")",
+    "private const val androidRuntimeVersion = \"0.1.0\"",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Android debug bundle source should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "runtime_snapshots",
+    "snapshot_json",
+    "content_hash",
+  ]) {
+    assert.equal(migrationRuntime.includes(snippet), true, `Runtime snapshot migration should contain ${snippet}`);
+  }
+
+  for (const snippet of [
+    "CREATE TABLE IF NOT EXISTS backup_exports",
+    "export_json TEXT NOT NULL",
+    "idx_backup_exports_created",
+  ]) {
+    assert.equal(migrationBackup.includes(snippet), true, `Backup export migration should contain ${snippet}`);
+  }
+
+  for (const forbidden of [
+    "rawQuery(args",
+    "execSQL(args",
+    "db.query_sql",
+  ]) {
+    assert.equal(control.includes(forbidden), false, `Android debug bundle source should not expose ${forbidden}`);
+  }
+});
+
 test(
   "Android native scaffold assembles debug APK with synced runtime assets and JNI libraries",
   {
