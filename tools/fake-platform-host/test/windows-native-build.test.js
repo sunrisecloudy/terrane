@@ -91,6 +91,60 @@ test(
   },
 );
 
+test(
+  "Windows release host rejects dev-only startup flags and audits the rejection",
+  {
+    skip: process.platform !== "win32"
+      ? "Windows native smoke only runs on Windows hosts"
+      : !commandWorks("cmake")
+        ? "cmake is not available"
+        : false,
+    timeout: 180_000,
+  },
+  () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-production-guard-"));
+    try {
+      const buildDir = path.join(scratch, "release-build");
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir], { stdio: "ignore" });
+      execFileSync("cmake", ["--build", buildDir, "--config", "Release"], { stdio: "ignore" });
+      const binaryPath = resolveWindowsHostBinary(buildDir);
+      assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after Release CMake build");
+
+      const dataHome = path.join(scratch, "data-home");
+      const forbiddenFlags = [
+        "--allow-unsigned-dev",
+        "--allow-runtime-mismatch=1",
+        "--control-plane-port=5123",
+      ];
+      for (const flag of forbiddenFlags) {
+        const result = spawnSync(binaryPath, [flag], {
+          env: {
+            ...process.env,
+            NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
+          },
+          cwd: path.dirname(binaryPath),
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+        assert.equal(result.error, undefined, output);
+        assert.equal(result.status, 1, output);
+      }
+
+      const dbPath = path.join(dataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      assert.equal(fs.existsSync(dbPath), true, "production guard should create the platform audit database");
+      const databaseBytes = fs.readFileSync(dbPath, "utf8");
+      assert.match(databaseBytes, /native\.production_guard/);
+      assert.match(databaseBytes, /dev_only_flag/);
+      for (const flag of forbiddenFlags) {
+        assert.equal(databaseBytes.includes(flag), true, `audit database should include rejected flag ${flag}`);
+      }
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);
+
 function resolveWindowsHostBinary(buildDir) {
   for (const candidate of [
     path.join(buildDir, "Debug", "NativeAIWebappHost.exe"),

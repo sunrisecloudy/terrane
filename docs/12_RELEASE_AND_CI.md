@@ -149,6 +149,8 @@ The dedicated Windows native artifact job runs on `windows-2022` after installin
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-windows
 ```
 
+The Windows native smoke job also builds the release host and verifies that production/release builds reject `--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev` while writing a `native.production_guard` audit record.
+
 The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition:
 
 ```text

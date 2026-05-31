@@ -446,7 +446,13 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
       }
     }
   } else {
-    response = bridge_->HandleJson(body, SandboxContextFromSource(sourceText));
+    response = BridgeResponse::Failure(
+                   L"",
+                   false,
+                   L"invalid_request",
+                   parsedOk ? L"Runtime bridge envelope is required" : L"Runtime bridge envelope must be JSON")
+                   .Stringify()
+                   .c_str();
   }
 
   HandleWebBridgeSmokeResponse(smokeRequestId, response);
@@ -966,11 +972,6 @@ std::wstring WebViewHost::BridgeCall(
   return bridge_->HandleJson(std::wstring(request.Stringify().c_str()), SandboxContextForApp(appId, L"windows-smoke"));
 }
 
-AppSandboxContext WebViewHost::SandboxContextFromSource(std::wstring const& source) const {
-  auto appId = AppIdFromSource(source);
-  return SandboxContextForApp(appId, L"");
-}
-
 AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const {
   return AppSandboxContext{
       .appId = appId,
@@ -981,19 +982,6 @@ AppSandboxContext WebViewHost::SandboxContextForApp(std::wstring const& appId, s
       .denyPrivateNetwork = DenyPrivateNetworkForApp(appId),
       .mountToken = mountToken,
   };
-}
-
-std::wstring WebViewHost::AppIdFromSource(std::wstring const& source) const {
-  for (std::wstring marker : {L"/webapps/examples/", L"/examples/"}) {
-    auto markerIndex = source.find(marker);
-    if (markerIndex == std::wstring::npos) {
-      continue;
-    }
-    auto start = markerIndex + marker.size();
-    auto end = source.find(L"/", start);
-    return source.substr(start, end == std::wstring::npos ? std::wstring::npos : end - start);
-  }
-  return L"unknown";
 }
 
 std::set<std::wstring> WebViewHost::PermissionsForApp(std::wstring const& appId) const {

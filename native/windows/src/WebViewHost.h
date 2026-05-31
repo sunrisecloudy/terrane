@@ -48,13 +48,11 @@ class WebViewHost {
       std::wstring const& id,
       std::wstring const& method,
       winrt::Windows::Data::Json::JsonObject const& params);
-  AppSandboxContext SandboxContextFromSource(std::wstring const& source) const;
   AppSandboxContext SandboxContextForApp(std::wstring const& appId, std::wstring const& mountToken) const;
   std::set<std::wstring> PermissionsForApp(std::wstring const& appId) const;
   std::vector<NetworkPolicyRule> NetworkPolicyForApp(std::wstring const& appId) const;
   std::map<std::wstring, uint32_t> ResourceBudgetForApp(std::wstring const& appId) const;
   bool DenyPrivateNetworkForApp(std::wstring const& appId) const;
-  std::wstring AppIdFromSource(std::wstring const& source) const;
 
   static std::filesystem::path RepoRoot();
   static std::filesystem::path RuntimeRoot();

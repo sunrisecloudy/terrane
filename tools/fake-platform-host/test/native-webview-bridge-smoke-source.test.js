@@ -35,6 +35,9 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsHost, /WebView2RuntimeMeetsMinimum/);
   assert.match(windowsHost, /WebView2 runtime version 1\.0\.2592 or later is required/);
   assert.match(windowsHost, /HasOnlyRuntimeEnvelopeFields/);
+  assert.match(windowsHost, /Runtime bridge envelope is required/);
+  assert.doesNotMatch(windowsHost, /SandboxContextFromSource/);
+  assert.doesNotMatch(windowsHost, /response = bridge_->HandleJson\(body, SandboxContextFromSource\(sourceText\)\)/);
   assert.match(windowsHost, /windows_smoke_runtime_app_seed_storage/);
   assert.match(windowsHost, /StorageNotesResponseContainsSmokeValue/);
   assert.match(windowsBridge, /HasOnlyBridgeRequestFields/);

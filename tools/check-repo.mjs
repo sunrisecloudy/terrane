@@ -1131,6 +1131,7 @@ function checkNativeStatic() {
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
   const iosNotifications = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNotifications.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
+  const windowsMain = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "main.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsDialogs = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.cpp"), "utf8");
   const windowsNotifications = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNotifications.cpp"), "utf8");
@@ -1140,6 +1141,7 @@ function checkNativeStatic() {
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
   const windowsCmake = fs.readFileSync(path.join(repoRoot, "native", "windows", "CMakeLists.txt"), "utf8");
+  const windowsNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "fake-platform-host", "test", "windows-native-build.test.js"), "utf8");
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
@@ -1392,11 +1394,11 @@ function checkNativeStatic() {
     [windowsHost, "add_WebMessageReceived"],
     [windowsHost, "get_Source"],
     [windowsHost, "https://runtime.local.platform/"],
-    [windowsHost, "SandboxContextFromSource"],
     [windowsHost, "SandboxContextForApp"],
     [windowsHost, "IsRuntimeEnvelope"],
     [windowsHost, "HasValidRuntimeEnvelope"],
     [windowsHost, "HasOnlyRuntimeEnvelopeFields"],
+    [windowsHost, "Runtime bridge envelope is required"],
     [windowsHost, "mountToken"],
     [windowsHost, "IsKnownExampleAppId"],
     [windowsHost, "get_BrowserVersionString"],
@@ -1431,6 +1433,10 @@ function checkNativeStatic() {
     if (!source.includes(snippet)) {
       throw new Error(`Windows host missing ${snippet}`);
     }
+  }
+  if (windowsHost.includes("response = bridge_->HandleJson(body, SandboxContextFromSource(sourceText))") ||
+      windowsHost.includes("SandboxContextFromSource")) {
+    throw new Error("Windows WebView2 bridge dispatch must require runtime envelopes");
   }
   if (windowsStorage.includes("appIdFor")) {
     throw new Error("Windows storage must not derive app id from storage key");
@@ -1467,6 +1473,31 @@ function checkNativeStatic() {
   for (const snippet of ["winhttp", "ole32", "NATIVE_AI_ZIG_CORE_DLL", "copy_if_different"]) {
     if (!windowsCmake.includes(snippet)) {
       throw new Error(`Windows native bridge must link ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "RecordProductionGuardAudit",
+    "IsForbiddenDevFlag",
+    "--allow-unsigned-dev",
+    "--allow-runtime-mismatch",
+    "--control-plane-port",
+    "native.production_guard",
+    "dev_only_flag",
+  ]) {
+    if (!windowsMain.includes(snippet)) {
+      throw new Error(`Windows production guard missing ${snippet}`);
+    }
+  }
+  for (const snippet of [
+    "Windows release host rejects dev-only startup flags and audits the rejection",
+    "--config\", \"Release",
+    "--allow-runtime-mismatch=1",
+    "--control-plane-port=5123",
+    "native\\.production_guard",
+    "platform.sqlite",
+  ]) {
+    if (!windowsNativeBuildTest.includes(snippet)) {
+      throw new Error(`Windows native build test missing production guard coverage: ${snippet}`);
     }
   }
   const linuxRequired = [
