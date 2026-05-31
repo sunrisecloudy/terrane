@@ -56,6 +56,7 @@
 - [x] Zig core step works.
 - [x] Bundled app index exposes content ratings and enforces the iOS age gate.
 - [x] iOS bridge rejects app ids outside the bundled app index.
+- [x] `notification.toast` validates message/level params against the bridge contract.
 
 ### macOS
 
@@ -67,6 +68,7 @@
 - [x] WebView content-process termination records a failed runtime session and offers a reload action.
 - [x] Dialogs work or return structured unsupported errors.
 - [x] Zig core step works.
+- [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] `core.step` times out with structured `timeout` errors without blocking the WebView reply path.
 - [x] Production guard rejects and audits dev-only startup flags outside DEBUG builds.
 - [x] Debug dev control plane writes a 0600 token file, authenticates health/session/snapshot/events/command routes, and audits accepted/rejected requests.
@@ -110,6 +112,7 @@
 - [x] Bridge works.
 - [x] JNI Zig core step works.
 - [x] Storage persists.
+- [x] `notification.toast` validates message/level params against the bridge contract.
 
 ### Windows
 

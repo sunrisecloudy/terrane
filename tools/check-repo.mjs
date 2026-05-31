@@ -1119,6 +1119,7 @@ function checkNativeStatic() {
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
+  const macNotifications = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNotifications.swift"), "utf8");
   const macDevControl = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "DevControlPlane.swift"), "utf8");
   const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
   const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
@@ -1128,9 +1129,11 @@ function checkNativeStatic() {
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
+  const iosNotifications = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNotifications.swift"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsBridge = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebBridge.cpp"), "utf8");
   const windowsDialogs = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.cpp"), "utf8");
+  const windowsNotifications = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNotifications.cpp"), "utf8");
   const windowsDialogHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.h"), "utf8");
   const windowsCore = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.cpp"), "utf8");
   const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.h"), "utf8");
@@ -1140,6 +1143,7 @@ function checkNativeStatic() {
   const linuxHost = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "webkit_host.c"), "utf8");
   const linuxBridge = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "web_bridge.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
+  const linuxNotifications = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_notifications.c"), "utf8");
   const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "zig_core_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
@@ -1153,6 +1157,7 @@ function checkNativeStatic() {
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
   const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
   const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDialogs.kt"), "utf8");
+  const androidNotifications = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNotifications.kt"), "utf8");
   const nativeNoAppIdParams = [
     [macBridge, 'request.params["appId"] != nil'],
     [iosBridge, 'request.params["appId"] != nil'],
@@ -1163,6 +1168,25 @@ function checkNativeStatic() {
   for (const [source, snippet] of nativeNoAppIdParams) {
     if (!source.includes(snippet) || !source.includes("Bridge params must not include appId; app id is channel-derived")) {
       throw new Error("native bridges must reject appId in bridge params using channel-derived context");
+    }
+  }
+  const nativeNotificationValidators = [
+    ["macOS", macNotifications, "validNotificationLevel(level)"],
+    ["iOS", iosNotifications, "validNotificationLevel(level)"],
+    ["Android", androidNotifications, 'level !in setOf("info", "success", "warning", "error")'],
+    ["Windows", windowsNotifications, "ValidNotificationLevel(level)"],
+    ["Linux", linuxNotifications, "valid_notification_level(level)"],
+  ];
+  for (const [label, source, levelSnippet] of nativeNotificationValidators) {
+    for (const snippet of [
+      "notification.toast requires message",
+      "notification.toast level must be a string",
+      "notification.toast level must be info, success, warning, or error",
+      levelSnippet,
+    ]) {
+      if (!source.includes(snippet)) {
+        throw new Error(`${label} notification.toast contract validation missing ${snippet}`);
+      }
     }
   }
   const macRequired = [

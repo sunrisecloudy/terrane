@@ -6,11 +6,31 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
-test("Linux and Windows native notification.toast validate fake-host contract params", () => {
+test("native notification.toast implementations validate fake-host contract params", () => {
+  const macosNotifications = read("native/macos/Sources/NativeAIHostMac/PlatformNotifications.swift");
+  const iosNotifications = read("native/ios/Sources/NativeAIHostIOS/PlatformNotifications.swift");
+  const androidNotifications = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNotifications.kt");
   const windowsNotifications = read("native/windows/src/PlatformNotifications.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxNotifications = read("native/linux/src/platform_notifications.c");
   const linuxHost = read("native/linux/src/webkit_host.c");
+
+  for (const [label, source] of [
+    ["macOS", macosNotifications],
+    ["iOS", iosNotifications],
+    ["Android", androidNotifications],
+  ]) {
+    assert.match(source, /notification\.toast requires message/, `${label} requires message`);
+    assert.match(source, /notification\.toast level must be a string/, `${label} validates level type`);
+    assert.match(source, /notification\.toast level must be info, success, warning, or error/, `${label} validates level enum`);
+    assert.match(source, /"level"/, `${label} includes invalid level details`);
+  }
+  assert.match(macosNotifications, /validNotificationLevel\(level\)/);
+  assert.match(iosNotifications, /validNotificationLevel\(level\)/);
+  assert.match(androidNotifications, /level !in setOf\("info", "success", "warning", "error"\)/);
+  assert.doesNotMatch(macosNotifications, /request\.params\["message"\] \?\? ""/);
+  assert.doesNotMatch(iosNotifications, /request\.params\["message"\] \?\? ""/);
+  assert.doesNotMatch(androidNotifications, /fun toast\(request: BridgeRequest\): String = BridgeResponse\.success/);
 
   assert.match(windowsNotifications, /notification\.toast requires message/);
   assert.match(windowsNotifications, /notification\.toast level must be a string/);

@@ -2055,6 +2055,46 @@ struct NativeHostTests {
         #expect(!actions.isEmpty)
     }
 
+    @Test("notification.toast validates bridge contract params")
+    func notificationToastValidatesBridgeContractParams() throws {
+        let context = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["notification.toast"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "test-mount"
+        )
+        let notifications = PlatformNotifications()
+
+        let valid = notifications.toast(BridgeRequest(
+            id: "toast-valid",
+            method: "notification.toast",
+            params: ["message": "Saved", "level": "success"],
+            context: context
+        ))
+        #expect(valid.ok)
+
+        let missingMessage = notifications.toast(BridgeRequest(
+            id: "toast-missing-message",
+            method: "notification.toast",
+            params: ["level": "info"],
+            context: context
+        ))
+        #expect(!missingMessage.ok)
+        #expect(missingMessage.error?["code"] as? String == "invalid_request")
+
+        let invalidLevel = notifications.toast(BridgeRequest(
+            id: "toast-invalid-level",
+            method: "notification.toast",
+            params: ["message": "Saved", "level": "warn"],
+            context: context
+        ))
+        #expect(!invalidLevel.ok)
+        #expect(invalidLevel.error?["code"] as? String == "invalid_request")
+        let details = try #require(invalidLevel.error?["details"] as? [String: Any])
+        #expect(details["level"] as? String == "warn")
+    }
+
     @MainActor
     @Test("file dialogs return selected files, save output, and structured cancellations")
     func fileDialogsReturnResultsAndCancellationErrors() throws {
