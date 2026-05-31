@@ -65,6 +65,9 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "runtime.core_snapshot",
     "runtime.replay_events",
     "runtime.assert_core_action",
+    "runtime.accessibility_snapshot",
+    "runtime.run_accessibility_audit",
+    "runtime.assert_accessibility",
     "platform.list_targets",
     "platform.list_webapps",
     "runtime.resource_usage",
@@ -198,6 +201,44 @@ test("Linux dev control supports static runtime UI controls over bundled app HTM
   ]) {
     assert.equal(control.includes(snippet), true, `Linux static UI control source should contain ${snippet}`);
   }
+});
+
+test("Linux dev control supports static accessibility controls over bundled app HTML", () => {
+  const control = read("native/linux/src/dev_control_plane.c");
+
+  for (const snippet of [
+    "runtime.accessibility_snapshot",
+    "runtime.run_accessibility_audit",
+    "runtime.assert_accessibility",
+    "runtime_accessibility_snapshot_json",
+    "runtime_accessibility_audit_json",
+    "runtime_assert_accessibility_json",
+    "accessibility_controls_from_html",
+    "append_accessibility_landmarks",
+    "append_accessibility_headings",
+    "append_accessibility_controls",
+    "html_attr_value",
+    "accessibility_label_for_id",
+    "accessibility_wrapping_label_for_control",
+    "accessibility_control_name",
+    "document_title",
+    "main_landmark",
+    "screen_title",
+    "no_unlabeled_controls",
+    "Every interactive control must have an accessible name.",
+    "accessibility_failed",
+    "Accessibility assertion failed",
+    "checkedAt",
+    "testId",
+    "notes-lite",
+  ]) {
+    assert.equal(control.includes(snippet), true, `Linux accessibility control source should contain ${snippet}`);
+  }
+
+  assert.ok(
+    control.indexOf('"runtime.accessibility_snapshot"') < control.indexOf('"runtime.resource_usage"'),
+    "accessibility controls should be first-class command routes",
+  );
 });
 
 test("Linux dev control supports direct storage get, set, reset, and assertions", () => {

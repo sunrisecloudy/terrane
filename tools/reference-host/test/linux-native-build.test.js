@@ -382,6 +382,38 @@ test(
       assert.equal(staticTimer.statusCode, 200, staticTimer.body);
       assert.equal(JSON.parse(staticTimer.body).result.advancedMs, 25);
 
+      const accessibilitySnapshot = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.accessibility_snapshot", args: { appId: "task-workbench" } },
+      });
+      assert.equal(accessibilitySnapshot.statusCode, 200, accessibilitySnapshot.body);
+      assert.equal(JSON.parse(accessibilitySnapshot.body).result.title, "Task Workbench");
+      assert.equal(
+        JSON.parse(accessibilitySnapshot.body).result.controls.some((control) => control.testId === "add-task-button"),
+        true,
+      );
+
+      const accessibilityAudit = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.run_accessibility_audit", args: { appId: "task-workbench" } },
+      });
+      assert.equal(accessibilityAudit.statusCode, 200, accessibilityAudit.body);
+      assert.equal(JSON.parse(accessibilityAudit.body).result.status, "pass");
+      assert.equal(
+        JSON.parse(accessibilityAudit.body).result.checks.some((check) => check.id === "no_unlabeled_controls" && check.status === "pass"),
+        true,
+      );
+
+      const accessibilityAssert = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
+        method: "POST",
+        token,
+        body: { tool: "runtime.assert_accessibility", args: { appId: "task-workbench", rule: "no_unlabeled_controls" } },
+      });
+      assert.equal(accessibilityAssert.statusCode, 200, accessibilityAssert.body);
+      assert.equal(JSON.parse(accessibilityAssert.body).result.rule, "no_unlabeled_controls");
+
       const callBridge = await requestControl(ready.port, `/sessions/${encodeURIComponent(sessionId)}/command`, {
         method: "POST",
         token,
@@ -1343,6 +1375,30 @@ test(
         ],
         { encoding: "utf8" },
       ).trim();
+      const acceptedAccessibilitySnapshotCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.accessibility_snapshot' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedAccessibilityAuditCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.run_accessibility_audit' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const acceptedAccessibilityAssertCount = execFileSync(
+        "sqlite3",
+        [
+          dbPath,
+          "SELECT COUNT(*) FROM control_commands WHERE tool = 'runtime.assert_accessibility' AND decision = 'accepted' AND error_code IS NULL;",
+        ],
+        { encoding: "utf8" },
+      ).trim();
       const acceptedListTargetsCount = execFileSync(
         "sqlite3",
         [
@@ -1486,6 +1542,9 @@ test(
       assert.equal(Number(acceptedStaticQueryCount) >= 1, true);
       assert.equal(Number(acceptedStaticAssertVisibleCount) >= 1, true);
       assert.equal(Number(acceptedStaticAssertTextCount) >= 1, true);
+      assert.equal(Number(acceptedAccessibilitySnapshotCount) >= 1, true);
+      assert.equal(Number(acceptedAccessibilityAuditCount) >= 1, true);
+      assert.equal(Number(acceptedAccessibilityAssertCount) >= 1, true);
       assert.equal(Number(acceptedListTargetsCount) >= 1, true);
       assert.equal(Number(acceptedListWebappsCount) >= 1, true);
       assert.equal(Number(acceptedNetworkMockCount) >= 1, true);

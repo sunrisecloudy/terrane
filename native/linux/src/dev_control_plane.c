@@ -2181,6 +2181,14 @@ typedef struct {
   gchar *tag;
 } RuntimeUiMatch;
 
+typedef struct {
+  gchar *tag;
+  gchar *type;
+  gchar *test_id;
+  gchar *selector;
+  gchar *name;
+} AccessibilityControl;
+
 static void runtime_ui_match_free(gpointer data) {
   RuntimeUiMatch *match = data;
   if (match == NULL) {
@@ -2198,6 +2206,19 @@ static RuntimeUiMatch *runtime_ui_match_new(const gchar *kind, const gchar *valu
   match->value = g_strdup(value);
   match->tag = tag == NULL ? NULL : g_strdup(tag);
   return match;
+}
+
+static void accessibility_control_free(gpointer data) {
+  AccessibilityControl *control = data;
+  if (control == NULL) {
+    return;
+  }
+  g_free(control->tag);
+  g_free(control->type);
+  g_free(control->test_id);
+  g_free(control->selector);
+  g_free(control->name);
+  g_free(control);
 }
 
 static gchar *html_for_bundled_app(const gchar *app_id) {
@@ -2310,6 +2331,143 @@ static gboolean regex_contains(const gchar *text, const gchar *pattern) {
   gboolean matched = g_regex_match(regex, text == NULL ? "" : text, 0, NULL);
   g_regex_unref(regex);
   return matched;
+}
+
+static gchar *html_attr_value(const gchar *attrs, const gchar *name) {
+  g_autofree gchar *escaped_name = g_regex_escape_string(name, -1);
+  g_autofree gchar *pattern = g_strdup_printf("\\b%s\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+))", escaped_name);
+  GError *error = NULL;
+  GRegex *regex = g_regex_new(pattern, G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, &error);
+  if (regex == NULL) {
+    g_clear_error(&error);
+    return g_strdup("");
+  }
+
+  GMatchInfo *match_info = NULL;
+  gchar *result = NULL;
+  if (g_regex_match(regex, attrs == NULL ? "" : attrs, 0, &match_info)) {
+    for (gint index = 1; index <= 3; index++) {
+      gchar *value = g_match_info_fetch(match_info, index);
+      if (value != NULL && value[0] != '\0') {
+        result = value;
+        break;
+      }
+      g_free(value);
+    }
+  }
+  if (match_info != NULL) {
+    g_match_info_free(match_info);
+  }
+  g_regex_unref(regex);
+  return result == NULL ? g_strdup("") : result;
+}
+
+static gchar *accessibility_label_for_id(const gchar *html, const gchar *id) {
+  if (id == NULL || id[0] == '\0') {
+    return g_strdup("");
+  }
+  g_autofree gchar *escaped_id = g_regex_escape_string(id, -1);
+  g_autofree gchar *pattern = g_strdup_printf("<label\\b[^>]*\\bfor=[\"']%s[\"'][^>]*>([\\s\\S]*?)</label>", escaped_id);
+  g_autofree gchar *raw = first_match(html, pattern);
+  return html_text(raw);
+}
+
+static gchar *accessibility_wrapping_label_for_control(const gchar *html, const gchar *tag, const gchar *id) {
+  if (id == NULL || id[0] == '\0') {
+    return g_strdup("");
+  }
+  g_autofree gchar *escaped_tag = g_regex_escape_string(tag, -1);
+  g_autofree gchar *escaped_id = g_regex_escape_string(id, -1);
+  g_autofree gchar *pattern = g_strdup_printf("<label\\b[^>]*>([\\s\\S]*?<%s\\b[^>]*\\bid=[\"']%s[\"'][^>]*>[\\s\\S]*?)</label>", escaped_tag, escaped_id);
+  g_autofree gchar *raw = first_match(html, pattern);
+  return html_text(raw);
+}
+
+static gchar *accessibility_control_name(const gchar *html, const gchar *tag, const gchar *attrs, const gchar *inner_html) {
+  g_autofree gchar *aria_label = html_attr_value(attrs, "aria-label");
+  if (aria_label[0] != '\0') {
+    return g_strdup(aria_label);
+  }
+  g_autofree gchar *title = html_attr_value(attrs, "title");
+  if (title[0] != '\0') {
+    return g_strdup(title);
+  }
+  g_autofree gchar *inner_text = html_text(inner_html);
+  if ((g_strcmp0(tag, "button") == 0 || g_strcmp0(tag, "a") == 0) && inner_text[0] != '\0') {
+    return g_strdup(inner_text);
+  }
+  g_autofree gchar *id = html_attr_value(attrs, "id");
+  if (id[0] != '\0') {
+    g_autofree gchar *label = accessibility_label_for_id(html, id);
+    if (label[0] != '\0') {
+      return g_strdup(label);
+    }
+    g_autofree gchar *wrapped_label = accessibility_wrapping_label_for_control(html, tag, id);
+    if (wrapped_label[0] != '\0') {
+      return g_strdup(wrapped_label);
+    }
+  }
+  return g_strdup("");
+}
+
+static AccessibilityControl *accessibility_control_new(const gchar *html, const gchar *tag, const gchar *attrs, const gchar *inner_html) {
+  AccessibilityControl *control = g_new0(AccessibilityControl, 1);
+  control->tag = g_ascii_strdown(tag, -1);
+  g_autofree gchar *type = html_attr_value(attrs, "type");
+  control->type = type[0] == '\0' ? NULL : g_strdup(type);
+  g_autofree gchar *test_id = html_attr_value(attrs, "data-testid");
+  control->test_id = g_strdup(test_id);
+  g_autofree gchar *id = html_attr_value(attrs, "id");
+  if (test_id[0] != '\0') {
+    control->selector = g_strdup_printf("[data-testid=\"%s\"]", test_id);
+  } else if (id[0] != '\0') {
+    control->selector = g_strdup_printf("#%s", id);
+  } else {
+    control->selector = g_strdup(control->tag);
+  }
+  control->name = accessibility_control_name(html, control->tag, attrs, inner_html);
+  return control;
+}
+
+static GPtrArray *accessibility_controls_from_html(const gchar *html) {
+  GPtrArray *controls = g_ptr_array_new_with_free_func(accessibility_control_free);
+  GRegex *paired = g_regex_new("<(button|select|textarea|a)\\b([^>]*)>([\\s\\S]*?)</\\1>", G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, NULL);
+  GMatchInfo *match_info = NULL;
+  if (paired != NULL && g_regex_match(paired, html == NULL ? "" : html, 0, &match_info)) {
+    do {
+      g_autofree gchar *tag = g_match_info_fetch(match_info, 1);
+      g_autofree gchar *attrs = g_match_info_fetch(match_info, 2);
+      g_autofree gchar *inner_html = g_match_info_fetch(match_info, 3);
+      if (tag != NULL && tag[0] != '\0') {
+        g_ptr_array_add(controls, accessibility_control_new(html, tag, attrs, inner_html));
+      }
+    } while (g_match_info_next(match_info, NULL));
+  }
+  if (match_info != NULL) {
+    g_match_info_free(match_info);
+  }
+  if (paired != NULL) {
+    g_regex_unref(paired);
+  }
+
+  GRegex *inputs = g_regex_new("<input\\b([^>]*)>", G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, NULL);
+  match_info = NULL;
+  if (inputs != NULL && g_regex_match(inputs, html == NULL ? "" : html, 0, &match_info)) {
+    do {
+      g_autofree gchar *attrs = g_match_info_fetch(match_info, 1);
+      g_autofree gchar *type = html_attr_value(attrs, "type");
+      if (g_ascii_strcasecmp(type[0] == '\0' ? "text" : type, "hidden") != 0) {
+        g_ptr_array_add(controls, accessibility_control_new(html, "input", attrs, ""));
+      }
+    } while (g_match_info_next(match_info, NULL));
+  }
+  if (match_info != NULL) {
+    g_match_info_free(match_info);
+  }
+  if (inputs != NULL) {
+    g_regex_unref(inputs);
+  }
+  return controls;
 }
 
 static gint compare_string_pointers(gconstpointer left, gconstpointer right) {
@@ -2490,6 +2648,216 @@ static gchar *runtime_screenshot_json(const gchar *app_id, const gchar *label) {
   json_builder_add_string_value(builder, text_hash);
   json_builder_set_member_name(builder, "testIds");
   append_test_id_array(builder, html);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  return result;
+}
+
+static void append_accessibility_landmarks(JsonBuilder *builder, const gchar *html) {
+  json_builder_begin_array(builder);
+  if (regex_contains(html, "<main\\b")) {
+    g_autofree gchar *raw_main = first_match(html, "<main\\b[^>]*>([\\s\\S]*?)</main>");
+    g_autofree gchar *name = html_text(raw_main);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "role");
+    json_builder_add_string_value(builder, "main");
+    json_builder_set_member_name(builder, "selector");
+    json_builder_add_string_value(builder, "main");
+    if (name[0] != '\0') {
+      json_builder_set_member_name(builder, "name");
+      json_builder_add_string_value(builder, name);
+    }
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+}
+
+static void append_accessibility_headings(JsonBuilder *builder, const gchar *html) {
+  json_builder_begin_array(builder);
+  GRegex *regex = g_regex_new("<h([1-6])\\b[^>]*>([\\s\\S]*?)</h\\1>", G_REGEX_CASELESS | G_REGEX_DOTALL | G_REGEX_MULTILINE, 0, NULL);
+  GMatchInfo *match_info = NULL;
+  if (regex != NULL && g_regex_match(regex, html == NULL ? "" : html, 0, &match_info)) {
+    do {
+      g_autofree gchar *level = g_match_info_fetch(match_info, 1);
+      g_autofree gchar *raw_name = g_match_info_fetch(match_info, 2);
+      g_autofree gchar *name = html_text(raw_name);
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "level");
+      json_builder_add_int_value(builder, g_ascii_strtoll(level, NULL, 10));
+      json_builder_set_member_name(builder, "name");
+      json_builder_add_string_value(builder, name);
+      json_builder_end_object(builder);
+    } while (g_match_info_next(match_info, NULL));
+  }
+  if (match_info != NULL) {
+    g_match_info_free(match_info);
+  }
+  if (regex != NULL) {
+    g_regex_unref(regex);
+  }
+  json_builder_end_array(builder);
+}
+
+static void append_accessibility_controls(JsonBuilder *builder, GPtrArray *controls) {
+  json_builder_begin_array(builder);
+  for (guint index = 0; index < controls->len; index++) {
+    AccessibilityControl *control = g_ptr_array_index(controls, index);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "tag");
+    json_builder_add_string_value(builder, control->tag);
+    json_builder_set_member_name(builder, "type");
+    control->type == NULL ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, control->type);
+    json_builder_set_member_name(builder, "testId");
+    json_builder_add_string_value(builder, control->test_id == NULL ? "" : control->test_id);
+    json_builder_set_member_name(builder, "selector");
+    json_builder_add_string_value(builder, control->selector == NULL ? control->tag : control->selector);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_string_value(builder, control->name == NULL ? "" : control->name);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+}
+
+static AccessibilityControl *first_unlabeled_accessibility_control(GPtrArray *controls) {
+  for (guint index = 0; index < controls->len; index++) {
+    AccessibilityControl *control = g_ptr_array_index(controls, index);
+    if (control->name == NULL || control->name[0] == '\0') {
+      return control;
+    }
+  }
+  return NULL;
+}
+
+static void append_accessibility_check(JsonBuilder *builder, const gchar *id, gboolean ok, const gchar *message, const gchar *selector) {
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "id");
+  json_builder_add_string_value(builder, id);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, ok ? "pass" : "fail");
+  json_builder_set_member_name(builder, "message");
+  json_builder_add_string_value(builder, message);
+  if (selector != NULL && selector[0] != '\0') {
+    json_builder_set_member_name(builder, "selector");
+    json_builder_add_string_value(builder, selector);
+  }
+  json_builder_end_object(builder);
+}
+
+static gchar *runtime_accessibility_snapshot_json(const gchar *app_id) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  g_autofree gchar *raw_title = first_match(html, "<title[^>]*>([\\s\\S]*?)</title>");
+  g_autofree gchar *title = html_text(raw_title);
+  GPtrArray *controls = accessibility_controls_from_html(html);
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "title");
+  json_builder_add_string_value(builder, title);
+  json_builder_set_member_name(builder, "landmarks");
+  append_accessibility_landmarks(builder, html);
+  json_builder_set_member_name(builder, "headings");
+  append_accessibility_headings(builder, html);
+  json_builder_set_member_name(builder, "controls");
+  append_accessibility_controls(builder, controls);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(controls, TRUE);
+  return result;
+}
+
+static gchar *runtime_accessibility_audit_json(const gchar *app_id) {
+  g_autofree gchar *html = html_for_bundled_app(app_id);
+  g_autofree gchar *raw_title = first_match(html, "<title[^>]*>([\\s\\S]*?)</title>");
+  g_autofree gchar *title = html_text(raw_title);
+  GPtrArray *controls = accessibility_controls_from_html(html);
+  AccessibilityControl *unlabeled = first_unlabeled_accessibility_control(controls);
+  gboolean has_title = title[0] != '\0';
+  gboolean has_main = regex_contains(html, "<main\\b");
+  gboolean has_h1 = regex_contains(html, "<h1\\b[^>]*>[\\s\\S]*?</h1>");
+  gboolean pass = has_title && has_main && has_h1 && unlabeled == NULL;
+  g_autofree gchar *checked_at = now_iso();
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "checkedAt");
+  json_builder_add_string_value(builder, checked_at);
+  json_builder_set_member_name(builder, "status");
+  json_builder_add_string_value(builder, pass ? "pass" : "fail");
+  json_builder_set_member_name(builder, "checks");
+  json_builder_begin_array(builder);
+  append_accessibility_check(builder, "document_title", has_title, "Document must include a non-empty <title>.", NULL);
+  append_accessibility_check(builder, "main_landmark", has_main, "Page must include a <main> landmark.", NULL);
+  append_accessibility_check(builder, "screen_title", has_h1, "Page must include an h1 screen title.", NULL);
+  append_accessibility_check(
+      builder,
+      "no_unlabeled_controls",
+      unlabeled == NULL,
+      "Every interactive control must have an accessible name.",
+      unlabeled == NULL ? NULL : unlabeled->selector);
+  json_builder_end_array(builder);
+  json_builder_end_object(builder);
+  gchar *result = json_builder_to_text(builder);
+  g_object_unref(builder);
+  g_ptr_array_free(controls, TRUE);
+  return result;
+}
+
+static gboolean accessibility_report_has_failure_for_rule(const gchar *report_json, const gchar *rule) {
+  JsonParser *parser = json_parser_new();
+  if (!json_parser_load_from_data(parser, report_json, -1, NULL) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+    g_object_unref(parser);
+    return TRUE;
+  }
+  JsonObject *report = json_node_get_object(json_parser_get_root(parser));
+  JsonArray *checks = json_object_has_member(report, "checks") && JSON_NODE_HOLDS_ARRAY(json_object_get_member(report, "checks"))
+      ? json_object_get_array_member(report, "checks")
+      : NULL;
+  gboolean failed = FALSE;
+  if (checks != NULL) {
+    guint length = json_array_get_length(checks);
+    for (guint index = 0; index < length; index++) {
+      JsonNode *node = json_array_get_element(checks, index);
+      if (!JSON_NODE_HOLDS_OBJECT(node)) {
+        continue;
+      }
+      JsonObject *check = json_node_get_object(node);
+      const gchar *id = object_string(check, "id", "");
+      const gchar *status = object_string(check, "status", "");
+      if (g_strcmp0(status, "fail") == 0 && (rule == NULL || rule[0] == '\0' || g_strcmp0(id, rule) == 0)) {
+        failed = TRUE;
+        break;
+      }
+    }
+  }
+  g_object_unref(parser);
+  return failed;
+}
+
+static gchar *runtime_assert_accessibility_json(const gchar *app_id, const gchar *rule, gchar **error_code, gchar **error_message, guint *status) {
+  g_autofree gchar *report = runtime_accessibility_audit_json(app_id);
+  if (accessibility_report_has_failure_for_rule(report, rule)) {
+    *error_code = g_strdup("accessibility_failed");
+    *error_message = g_strdup("Accessibility assertion failed");
+    *status = SOUP_STATUS_BAD_REQUEST;
+    return NULL;
+  }
+
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "ok");
+  json_builder_add_boolean_value(builder, TRUE);
+  json_builder_set_member_name(builder, "appId");
+  json_builder_add_string_value(builder, app_id);
+  json_builder_set_member_name(builder, "rule");
+  rule == NULL || rule[0] == '\0' ? json_builder_add_null_value(builder) : json_builder_add_string_value(builder, rule);
+  json_builder_set_member_name(builder, "report");
+  json_builder_add_json_text_or_null(builder, report);
   json_builder_end_object(builder);
   gchar *result = json_builder_to_text(builder);
   g_object_unref(builder);
@@ -4555,6 +4923,45 @@ static void session_command_handler(DevControlPlane *plane, SoupServerMessage *m
     }
   } else if (g_strcmp0(tool, "runtime.capabilities") == 0) {
     result = session_capabilities_json(plane, control_session_id, &error);
+  } else if (g_strcmp0(tool, "runtime.accessibility_snapshot") == 0 ||
+             g_strcmp0(tool, "runtime.run_accessibility_audit") == 0 ||
+             g_strcmp0(tool, "runtime.assert_accessibility") == 0) {
+    JsonObject *args = NULL;
+    if (json_object_has_member(body, "args")) {
+      args = object_object(body, "args");
+      if (args == NULL) {
+        g_autofree gchar *message_text = g_strdup_printf("%s requires args object", tool);
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", message_text, SOUP_STATUS_BAD_REQUEST);
+        return;
+      }
+    }
+    const gchar *app_id = object_string(args, "appId", "notes-lite");
+    if (app_id == NULL || app_id[0] == '\0' || !valid_generated_app_id(app_id)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, "invalid_request", "Accessibility appId is not a valid generated app id", SOUP_STATUS_BAD_REQUEST);
+      return;
+    }
+    g_autofree gchar *error_code = NULL;
+    g_autofree gchar *error_message = NULL;
+    guint error_status = SOUP_STATUS_BAD_REQUEST;
+    if (!control_session_allows_app(plane, control_session_id, app_id, &error_code, &error_message, &error_status)) {
+      g_object_unref(parser);
+      send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code, error_message, error_status);
+      return;
+    }
+    if (g_strcmp0(tool, "runtime.accessibility_snapshot") == 0) {
+      result = runtime_accessibility_snapshot_json(app_id);
+    } else if (g_strcmp0(tool, "runtime.run_accessibility_audit") == 0) {
+      result = runtime_accessibility_audit_json(app_id);
+    } else {
+      result = runtime_assert_accessibility_json(app_id, object_string(args, "rule", NULL), &error_code, &error_message, &error_status);
+      if (result == NULL) {
+        g_object_unref(parser);
+        send_control_route_error(plane, message, control_session_id, tool, method, path, started, error_code != NULL ? error_code : "accessibility_failed", error_message != NULL ? error_message : "Accessibility assertion failed", error_status);
+        return;
+      }
+    }
   } else if (g_strcmp0(tool, "runtime.resource_usage") == 0 ||
              g_strcmp0(tool, "runtime.event_log") == 0 ||
              g_strcmp0(tool, "runtime.console_logs") == 0) {
