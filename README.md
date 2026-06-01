@@ -78,7 +78,7 @@ Generated app package
 ```
 
 Terrane is still an active implementation/spec repository, not a stable public
-SDK. Use the first session above to explore the product shape; use
+SDK. Use the local preview above to explore the product shape; use
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) to check what is complete,
 partial, or spec-only before depending on a surface.
 
