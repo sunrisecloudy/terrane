@@ -35,10 +35,10 @@ test("Windows packaged native smoke is wired to release artifacts", () => {
   for (const snippet of [
     "packageReleaseArtifacts({ outDir, buildNativeWindows: true })",
     "native-windows-windows-x86_64",
-    'path.join(outDir, "native-apps", "windows", "windows-x86_64", "NativeAIWebappHost")',
+    'path.join(outDir, "native-apps", "windows", "windows-x86_64", "TerraneHost")',
     "runWindowsPackagedArtifactSmoke",
-    "NATIVE_AI_ZIG_CORE_DLL",
-    "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK",
+    "TERRANE_ZIG_CORE_DLL",
+    "TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK",
     "outside-repo-cwd",
   ]) {
     assert.equal(source.includes(snippet), true, `Windows packaged smoke source should contain ${snippet}`);
@@ -81,7 +81,7 @@ test(
     timeout: 180_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-smoke-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-smoke-"));
     try {
       const zigCoreDll = path.join(scratch, "zig_core.dll");
       execFileSync(
@@ -108,15 +108,15 @@ test(
       assert.equal(fs.existsSync(zigCoreDll), true);
 
       const buildDir = path.join(scratch, "build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DNATIVE_AI_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
-      assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after CMake build");
+      assert.notEqual(binaryPath, null, "TerraneHost.exe should exist after CMake build");
       const binaryDir = path.dirname(binaryPath);
       assert.equal(
         fs.existsSync(path.join(binaryDir, "zig_core.dll")),
         true,
-        "zig_core.dll should be staged next to NativeAIWebappHost.exe for package-style loading",
+        "zig_core.dll should be staged next to TerraneHost.exe for package-style loading",
       );
       assert.equal(
         fs.existsSync(path.join(binaryDir, "resources", "runtime", "index.html")),
@@ -148,18 +148,18 @@ test(
     timeout: 240_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-packaged-smoke-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-packaged-smoke-"));
     try {
       const outDir = path.join(scratch, "artifacts");
       const result = packageReleaseArtifacts({ outDir, buildNativeWindows: true });
       const nativeArtifact = result.artifacts.find((artifact) => artifact.id === "native-windows-windows-x86_64");
       assert.notEqual(nativeArtifact, undefined, "release manifest should include the Windows native host artifact");
 
-      const appDir = path.join(outDir, "native-apps", "windows", "windows-x86_64", "NativeAIWebappHost");
-      const binaryPath = path.join(appDir, "NativeAIWebappHost.exe");
+      const appDir = path.join(outDir, "native-apps", "windows", "windows-x86_64", "TerraneHost");
+      const binaryPath = path.join(appDir, "TerraneHost.exe");
       const packagedCorePath = path.join(appDir, "zig_core.dll");
       for (const relativePath of [
-        "NativeAIWebappHost.exe",
+        "TerraneHost.exe",
         "zig_core.dll",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
@@ -192,17 +192,17 @@ test(
     timeout: 180_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-production-guard-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-production-guard-"));
     try {
       const buildDir = path.join(scratch, "release-build");
       execFileSync("cmake", ["-S", windowsDir, "-B", buildDir], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Release"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
-      assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after Release CMake build");
+      assert.notEqual(binaryPath, null, "TerraneHost.exe should exist after Release CMake build");
 
       const dataHome = path.join(scratch, "data-home");
       const forbiddenFlags = [
-        "--native-ai-dev-control",
+        "--terrane-dev-control",
         "--allow-unsigned-dev",
         "--allow-runtime-mismatch=1",
         "--control-plane-port=5123",
@@ -211,7 +211,7 @@ test(
         const result = spawnSync(binaryPath, [flag], {
           env: {
             ...process.env,
-            NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
+            TERRANE_WINDOWS_SMOKE_DATA_HOME: dataHome,
           },
           cwd: path.dirname(binaryPath),
           encoding: "utf8",
@@ -222,7 +222,7 @@ test(
         assert.equal(result.status, 1, output);
       }
 
-      const dbPath = path.join(dataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const dbPath = path.join(dataHome, "Terrane", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "production guard should create the platform audit database");
       const databaseBytes = fs.readFileSync(dbPath, "utf8");
       assert.match(databaseBytes, /native\.production_guard/);
@@ -247,7 +247,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-dev-control-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-dev-control-"));
     let child = null;
     try {
       const zigCoreDll = path.join(scratch, "zig_core.dll");
@@ -273,19 +273,19 @@ test(
         },
       );
       const buildDir = path.join(scratch, "debug-build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DNATIVE_AI_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
-      assert.notEqual(binaryPath, null, "NativeAIWebappHost.exe should exist after Debug CMake build");
+      assert.notEqual(binaryPath, null, "TerraneHost.exe should exist after Debug CMake build");
 
       const dataHome = path.join(scratch, "data-home");
       const resultFile = path.join(scratch, "dev-control-result.txt");
       const tokenPath = path.join(scratch, "control.token");
-      child = spawn(binaryPath, ["--native-ai-dev-control", "--control-plane-port=0"], {
+      child = spawn(binaryPath, ["--terrane-dev-control", "--control-plane-port=0"], {
         env: {
           ...process.env,
-          NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
-          NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
+          TERRANE_WINDOWS_SMOKE_DATA_HOME: dataHome,
+          TERRANE_WINDOWS_SMOKE_RESULT_FILE: resultFile,
           PLATFORM_CONTROL_TOKEN_FILE: tokenPath,
         },
         cwd: path.dirname(binaryPath),
@@ -1105,7 +1105,7 @@ test(
       assert.equal(ended.statusCode, 200, ended.body);
       assert.equal(JSON.parse(ended.body).result.status, "ended");
 
-      const dbPath = path.join(dataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const dbPath = path.join(dataHome, "Terrane", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
       const { DatabaseSync } = await import("node:sqlite");
       const database = new DatabaseSync(dbPath);
@@ -1320,9 +1320,9 @@ test(
 
 function resolveWindowsHostBinary(buildDir) {
   for (const candidate of [
-    path.join(buildDir, "Debug", "NativeAIWebappHost.exe"),
-    path.join(buildDir, "NativeAIWebappHost.exe"),
-    path.join(buildDir, "Release", "NativeAIWebappHost.exe"),
+    path.join(buildDir, "Debug", "TerraneHost.exe"),
+    path.join(buildDir, "TerraneHost.exe"),
+    path.join(buildDir, "Release", "TerraneHost.exe"),
   ]) {
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -1330,65 +1330,65 @@ function resolveWindowsHostBinary(buildDir) {
 }
 
 function runOptionalSmoke({ binaryPath, scratch }) {
-  if (process.env.NATIVE_AI_WINDOWS_SMOKE_LAUNCH !== "1") return;
+  if (process.env.TERRANE_WINDOWS_SMOKE_LAUNCH !== "1") return;
   const storageKey = `notes-lite:windows-smoke-${process.pid}-${Date.now()}`;
   const storageValue = `windows-smoke-${process.pid}-${Date.now()}`;
   const dataHome = path.join(scratch, "data-home");
   const resultFile = path.join(scratch, "smoke-result.txt");
-  const { NATIVE_AI_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
+  const { TERRANE_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
-    NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: dataHome,
-    NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER: "1",
-    NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
+    TERRANE_WINDOWS_SMOKE_DATA_HOME: dataHome,
+    TERRANE_WINDOWS_SMOKE_EXIT_AFTER: "1",
+    TERRANE_WINDOWS_SMOKE_RESULT_FILE: resultFile,
   };
 
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_RUNTIME_LOADED", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "runtime-load",
+    TERRANE_WINDOWS_SMOKE: "runtime-load",
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "storage-set",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "storage-set",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "storage-get",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "storage-get",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "core-step",
+    TERRANE_WINDOWS_SMOKE: "core-step",
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "fixed-bridge-surface",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "fixed-bridge-surface",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-set",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "bridge-storage-set",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-get",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "bridge-storage-get",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-core-step",
+    TERRANE_WINDOWS_SMOKE: "bridge-core-step",
   });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "runtime-app-storage-get",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "runtime-app-storage-get",
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   });
 }
 
@@ -1398,36 +1398,36 @@ function runWindowsPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
   const resultFile = path.join(scratch, "packaged-smoke-result.txt");
   const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
   fs.mkdirSync(outsideRepoCwd, { recursive: true });
-  const { NATIVE_AI_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
+  const { TERRANE_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
-    NATIVE_AI_WINDOWS_SMOKE_DATA_HOME: path.join(scratch, "packaged-data-home"),
-    NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER: "1",
-    NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE: resultFile,
+    TERRANE_WINDOWS_SMOKE_DATA_HOME: path.join(scratch, "packaged-data-home"),
+    TERRANE_WINDOWS_SMOKE_EXIT_AFTER: "1",
+    TERRANE_WINDOWS_SMOKE_RESULT_FILE: resultFile,
   };
 
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_RUNTIME_LOADED", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "runtime-load",
+    TERRANE_WINDOWS_SMOKE: "runtime-load",
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-set",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "bridge-storage-set",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-storage-get",
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_WINDOWS_SMOKE: "bridge-storage-get",
+    TERRANE_WINDOWS_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_WINDOWS_SMOKE_STORAGE_VALUE: storageValue,
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, resultFile, "NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
+  runSmoke(binaryPath, resultFile, "TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_WINDOWS_SMOKE: "bridge-core-step",
+    TERRANE_WINDOWS_SMOKE: "bridge-core-step",
   }, { cwd: outsideRepoCwd });
 
-  const dbPath = path.join(baseEnv.NATIVE_AI_WINDOWS_SMOKE_DATA_HOME, "NativeAIWebappPlatform", "platform.sqlite");
+  const dbPath = path.join(baseEnv.TERRANE_WINDOWS_SMOKE_DATA_HOME, "Terrane", "platform.sqlite");
   assert.equal(fs.existsSync(dbPath), true, "packaged smoke should persist the platform database");
   assert.equal(appDir.includes(repoRoot), false, "packaged artifact should live outside the repo root");
 }
@@ -1442,7 +1442,7 @@ function runSmoke(binaryPath, resultFile, marker, env, options = {}) {
   });
   const markerOutput = fs.existsSync(resultFile) ? fs.readFileSync(resultFile, "utf8") : "";
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${markerOutput}`;
-  assert.equal(output.includes("NATIVE_AI_WINDOWS_SMOKE_FAILED"), false, output);
+  assert.equal(output.includes("TERRANE_WINDOWS_SMOKE_FAILED"), false, output);
   assert.equal(result.error, undefined, output);
   assert.equal(result.status, 0, output);
   assert.equal(output.includes(marker), true, `Timed out waiting for ${marker}\n${output}`);
@@ -1461,7 +1461,7 @@ function waitForWindowsControlReady(child, resultFile) {
 
     function completeFromText(text) {
       output += text;
-      const match = output.match(/NATIVE_AI_WINDOWS_CONTROL_READY port=(\d+) token_path=([^\r\n]+)/);
+      const match = output.match(/TERRANE_WINDOWS_CONTROL_READY port=(\d+) token_path=([^\r\n]+)/);
       if (!match || settled) return;
       settled = true;
       clearTimeout(timer);

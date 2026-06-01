@@ -1,6 +1,6 @@
 ---
 name: platform-micro-test
-description: Run generated webapp micro-tests, smoke tests, or platform smoke suites through the Native AI Webapp Platform control MCP without bypassing the runtime bridge.
+description: Run generated webapp micro-tests, smoke tests, or platform smoke suites through the Terrane control MCP without bypassing the runtime bridge.
 ---
 
 # Platform Micro-Test

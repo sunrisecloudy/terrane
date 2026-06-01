@@ -4,7 +4,7 @@
 
 #include <Windows.h>
 
-namespace nativeai {
+namespace terrane {
 
 class PlatformDialogs {
  public:
@@ -17,4 +17,4 @@ class PlatformDialogs {
   HWND ownerWindow_ = nullptr;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

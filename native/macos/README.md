@@ -40,7 +40,7 @@ Current implementation status:
 - Implements native open/save dialogs and toast logging.
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
 - Accepts runtime-owned bridge envelopes from the main WKWebView frame and derives native permissions/policy from the envelope app id.
-- Loads `libzig_core.dylib` through a small C shim for `core.step`, using `NATIVE_AI_ZIG_CORE_DYLIB` first and then the repo-local `zig-core/zig-out/lib/libzig_core.dylib`.
+- Loads `libzig_core.dylib` through a small C shim for `core.step`, using `TERRANE_ZIG_CORE_DYLIB` first and then the repo-local `zig-core/zig-out/lib/libzig_core.dylib`.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
 
 

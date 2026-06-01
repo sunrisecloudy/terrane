@@ -45,7 +45,7 @@ test("forbidden JS source snippets are rejected with policy codes", () => {
     ["forbidden_sql_api", "const db = openDatabase('app', '1.0', 'app', 1024); db.transaction(tx => tx.executeSql('select 1'));"],
     ["forbidden_native_bridge", "webkit.messageHandlers.bridge.postMessage({})"],
     ["forbidden_native_bridge", "native.exec('open', {})"],
-    ["forbidden_native_bridge", "NativeAIPlatformBridge.postMessage({})"],
+    ["forbidden_native_bridge", "TerranePlatformBridge.postMessage({})"],
     ["forbidden_appid_param", 'AppRuntime.call("storage.get", { appId: "other-app", key: "notes-lite:notes" })'],
     ["forbidden_parent_access", "window.parent.postMessage({}, '*')"],
     ["forbidden_service_worker", "navigator.serviceWorker.register('/sw.js')"],

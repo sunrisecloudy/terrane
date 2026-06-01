@@ -33,7 +33,7 @@ export class BrowserSmokeRunner {
     const chromePath = this.chromePath ?? findChromeExecutable();
     if (!chromePath) {
       throw new PlatformError("browser_smoke_unavailable", "No Chrome-compatible executable found for browser smoke tests", {
-        env: "NATIVE_AI_CHROME_PATH",
+        env: "TERRANE_CHROME_PATH",
       });
     }
 
@@ -344,7 +344,7 @@ function installDefaultSmokeMocks(database, { appId, sessionId }) {
 }
 
 async function launchChrome(chromePath, { timeoutMs }) {
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-browser-smoke-"));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-browser-smoke-"));
   const args = [
     "--headless=new",
     "--remote-debugging-address=127.0.0.1",
@@ -584,7 +584,7 @@ function contentType(filePath) {
 }
 
 function findChromeExecutable() {
-  const explicit = process.env.NATIVE_AI_CHROME_PATH;
+  const explicit = process.env.TERRANE_CHROME_PATH;
   if (explicit && fs.existsSync(explicit)) return explicit;
 
   const candidates = [

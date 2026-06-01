@@ -178,7 +178,7 @@ static gchar *token_file_path(GError **error) {
     g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_INVAL, "Linux dev control token file requires XDG_RUNTIME_DIR or PLATFORM_CONTROL_TOKEN_FILE");
     return NULL;
   }
-  return g_build_filename(runtime_dir, "native-ai-webapp", "control.token", NULL);
+  return g_build_filename(runtime_dir, "terrane", "control.token", NULL);
 }
 
 static gboolean read_exact_random(guint8 *bytes, gsize len) {
@@ -5546,7 +5546,7 @@ static void package_validate_source_policy(PackageRead *package) {
       {"forbidden_network_api", "\\bfetch\\s*\\("},
       {"forbidden_network_api", "\\bXMLHttpRequest\\b"},
       {"forbidden_storage_api", "\\blocalStorage\\b|\\bsessionStorage\\b|\\bindexedDB\\b|\\bdocument\\.cookie\\b"},
-      {"forbidden_native_bridge", "\\bwebkit\\.messageHandlers\\b|\\bchrome\\.webview\\b|\\bAndroid\\.|\\bNativeAIPlatformBridge\\b"}};
+      {"forbidden_native_bridge", "\\bwebkit\\.messageHandlers\\b|\\bchrome\\.webview\\b|\\bAndroid\\.|\\bTerranePlatformBridge\\b"}};
   for (gsize index = 0; index < G_N_ELEMENTS(checks); index++) {
     if (regex_contains(app_js, checks[index][1])) {
       g_ptr_array_add(package->errors, package_issue_json(checks[index][0], "app.js uses a forbidden generated-app API", "{}"));
@@ -8179,7 +8179,7 @@ DevControlPlane *dev_control_plane_start(const DevControlPlaneConfig *config, GE
   }
   plane->token_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, plane->token, -1);
 
-  plane->server = soup_server_new("server-header", "NativeAIWebappLinuxDevControl", NULL);
+  plane->server = soup_server_new("server-header", "TerraneWebappLinuxDevControl", NULL);
   soup_server_add_handler(plane->server, "/health", health_handler, plane, NULL);
   soup_server_add_handler(plane->server, NULL, control_route_handler, plane, NULL);
 
@@ -8205,7 +8205,7 @@ void dev_control_plane_set_bridge(DevControlPlane *plane, WebBridge *bridge) {
   plane->bridge = bridge;
   if (!plane->ready_announced && plane->bridge != NULL) {
     plane->ready_announced = TRUE;
-    g_print("NATIVE_AI_LINUX_CONTROL_READY port=%u token_path=%s\n", plane->port, plane->token_path);
+    g_print("TERRANE_LINUX_CONTROL_READY port=%u token_path=%s\n", plane->port, plane->token_path);
   }
 }
 

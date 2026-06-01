@@ -7,7 +7,7 @@
 #include <vector>
 #include <winrt/Windows.Data.Json.h>
 
-namespace nativeai {
+namespace terrane {
 
 struct NetworkPolicyRule {
   std::wstring origin;
@@ -54,4 +54,4 @@ struct BridgeResponse {
 std::string WideToUtf8(std::wstring const& value);
 std::wstring Utf8ToWide(std::string const& value);
 
-}  // namespace nativeai
+}  // namespace terrane

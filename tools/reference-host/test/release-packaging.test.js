@@ -81,7 +81,7 @@ function windowsReleaseSkipReason() {
 }
 
 test("release packaging creates deterministic static artifact archives and manifest", () => {
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-artifacts-"));
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-artifacts-"));
   try {
     const first = packageReleaseArtifacts({ outDir });
     const firstManifest = JSON.parse(fs.readFileSync(first.manifestPath, "utf8"));
@@ -125,7 +125,7 @@ test(
     timeout: 60_000,
   },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-zig-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-zig-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildZigCore: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
@@ -165,7 +165,7 @@ test(
     timeout: 120_000,
   },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-macos-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-macos-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildNativeMacOS: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
@@ -175,7 +175,7 @@ test(
       const [nativeArtifact] = nativeArtifacts;
       assert.match(nativeArtifact.target, /^macos-(arm64|x86_64)$/);
       for (const relativePath of [
-        "Contents/MacOS/NativeAIHostMac",
+        "Contents/MacOS/TerraneHostMac",
         "Contents/Resources/runtime/index.html",
         "Contents/Resources/webapps/examples/notes-lite/manifest.json",
         "Contents/Resources/db/sqlite/001_initial.sql",
@@ -198,7 +198,7 @@ test(
     timeout: 180_000,
   },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-linux-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-linux-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildNativeLinux: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
@@ -208,9 +208,9 @@ test(
       const [nativeArtifact] = nativeArtifacts;
       assert.equal(nativeArtifact.id, "native-linux-linux-x86_64");
       assert.equal(nativeArtifact.target, "linux-x86_64");
-      assert.equal(nativeArtifact.path, "native-apps/linux/linux-x86_64/NativeAIWebappHost");
+      assert.equal(nativeArtifact.path, "native-apps/linux/linux-x86_64/TerraneHost");
       for (const relativePath of [
-        "native-ai-webapp-host",
+        "terrane-host",
         "libzig_core.so",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
@@ -226,7 +226,7 @@ test(
         assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
       }
 
-      for (const relativePath of ["native-ai-webapp-host", "libzig_core.so"]) {
+      for (const relativePath of ["terrane-host", "libzig_core.so"]) {
         assert.notEqual(fs.statSync(path.join(outDir, nativeArtifact.path, relativePath)).mode & 0o111, 0);
       }
     } finally {
@@ -242,7 +242,7 @@ test(
     timeout: 180_000,
   },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-windows-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-windows-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildNativeWindows: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
@@ -251,9 +251,9 @@ test(
 
       const [nativeArtifact] = nativeArtifacts;
       assert.equal(nativeArtifact.target, "windows-x86_64");
-      assert.equal(nativeArtifact.path, "native-apps/windows/windows-x86_64/NativeAIWebappHost");
+      assert.equal(nativeArtifact.path, "native-apps/windows/windows-x86_64/TerraneHost");
       for (const relativePath of [
-        "NativeAIWebappHost.exe",
+        "TerraneHost.exe",
         "zig_core.dll",
         "resources/runtime/index.html",
         "resources/webapps/examples/notes-lite/manifest.json",
@@ -278,7 +278,7 @@ test(
     timeout: 60_000,
   },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-release-server-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-server-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildServer: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));

@@ -14,17 +14,17 @@ export function controlTokenPath({ env = process.env, platform = process.platfor
 
   if (platform === "win32") {
     const localAppData = env.LOCALAPPDATA ?? path.join(homeDir, "AppData", "Local");
-    return path.join(localAppData, "native-ai-webapp", "control.token");
+    return path.join(localAppData, "terrane", "control.token");
   }
 
   if (platform === "darwin") {
-    return path.join(homeDir, "Library", "Application Support", "native-ai-webapp", "control.token");
+    return path.join(homeDir, "Library", "Application Support", "terrane", "control.token");
   }
 
   if (!env.XDG_RUNTIME_DIR) {
     throw new Error("Control token file requires PLATFORM_CONTROL_TOKEN_FILE or XDG_RUNTIME_DIR");
   }
-  return path.join(env.XDG_RUNTIME_DIR, "native-ai-webapp", "control.token");
+  return path.join(env.XDG_RUNTIME_DIR, "terrane", "control.token");
 }
 
 export function readControlToken({

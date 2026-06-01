@@ -1,6 +1,6 @@
 # zig-crdt
 
-Standalone deterministic CRDT notebook profile for the native AI webapp platform.
+Standalone deterministic CRDT notebook profile for the Terrane.
 
 The package intentionally owns only replayable CRDT logic. Hosts derive app, actor,
 notebook, ACL, and session context before passing envelopes to the C ABI.

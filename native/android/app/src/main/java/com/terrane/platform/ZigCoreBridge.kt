@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.util.Log
 import org.json.JSONObject
@@ -53,14 +53,14 @@ class ZigCoreBridge {
             System.loadLibrary("zig_core")
             true
         }.onFailure { error ->
-            Log.e("NativeAIPlatformCore", "System.loadLibrary(\"zig_core\") failed", error)
+            Log.e("TerranePlatformCore", "System.loadLibrary(\"zig_core\") failed", error)
         }.getOrDefault(false)
 
         private val jniLoaded: Boolean = runCatching {
             System.loadLibrary("zig_core_jni")
             true
         }.onFailure { error ->
-            Log.e("NativeAIPlatformCore", "System.loadLibrary(\"zig_core_jni\") failed", error)
+            Log.e("TerranePlatformCore", "System.loadLibrary(\"zig_core_jni\") failed", error)
         }.getOrDefault(false)
     }
 }

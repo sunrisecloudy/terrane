@@ -446,7 +446,7 @@
     "description": "An AI proposal-only actor attempts a canonical text edit; the host rejects it before applying any Loro update.",
     "id": "permission-denied"
   },
-  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "schemaVersion": "terrane-notebook-crdt-fixture-v0.1",
   "sync": {
     "rejectedBeforeMerge": true,
     "rejectedOperationIds": [

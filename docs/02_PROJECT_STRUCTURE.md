@@ -88,8 +88,8 @@ repo/
 
   native/
     ios/
-      NativeAIWebappHost.xcodeproj
-      NativeAIWebappHost/
+      TerraneHost.xcodeproj
+      TerraneHost/
         App.swift
         WebHostView.swift
         WebBridge.swift
@@ -103,8 +103,8 @@ repo/
           examples/
 
     macos/
-      NativeAIWebappHost.xcodeproj
-      NativeAIWebappHost/
+      TerraneHost.xcodeproj
+      TerraneHost/
         App.swift
         WebHostView.swift
         WebBridge.swift
@@ -124,7 +124,7 @@ repo/
         build.gradle.kts
         src/main/
           AndroidManifest.xml
-          java/com/example/nativeaiwebapp/
+          java/com/example/terranewebapp/
             MainActivity.kt
             WebBridge.kt
             ZigCoreBridge.kt
@@ -140,7 +140,7 @@ repo/
             x86_64/
 
     windows/
-      NativeAIWebappHost.sln
+      TerraneHost.sln
       src/
         main.cpp
         WebViewHost.cpp

@@ -3,18 +3,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "NativeAIHostMac",
+    name: "TerraneHostMac",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "NativeAIHostMac", targets: ["NativeAIHostMac"])
+        .executable(name: "TerraneHostMac", targets: ["TerraneHostMac"])
     ],
     targets: [
         .target(name: "CZigCoreBridge"),
         .target(name: "CZigCrdtBridge"),
         .executableTarget(
-            name: "NativeAIHostMac",
+            name: "TerraneHostMac",
             dependencies: ["CZigCoreBridge", "CZigCrdtBridge"],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
@@ -26,8 +26,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "NativeAIHostMacTests",
-            dependencies: ["NativeAIHostMac"]
+            name: "TerraneHostMacTests",
+            dependencies: ["TerraneHostMac"]
         )
     ]
 )

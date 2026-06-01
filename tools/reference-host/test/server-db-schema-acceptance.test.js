@@ -95,7 +95,7 @@ test("server opens the v0.4 schema through SQLite by default", () => {
   assert.match(build, /server\.linkSystemLibrary\("sqlite3"\)/);
   assert.match(build, /tests\.linkSystemLibrary\("sqlite3"\)/);
   assert.match(source, /@cInclude\("sqlite3\.h"\)/);
-  assert.match(source, /getEnvVarOwned\(allocator, "NATIVE_AI_SERVER_DB"\)/);
+  assert.match(source, /getEnvVarOwned\(allocator, "TERRANE_SERVER_DB"\)/);
   assert.match(source, /allocator\.dupe\(u8, "server-platform\.sqlite"\)/);
   assert.match(source, /sqlite3_open\(path_z\.ptr, &db\)/);
   assert.match(source, /PRAGMA foreign_keys = ON/);

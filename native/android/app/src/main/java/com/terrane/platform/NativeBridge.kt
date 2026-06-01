@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.content.ContentValues
 import android.content.Context
@@ -254,10 +254,10 @@ class NativeBridge(
         }
         val line = "Generated app log [${request.context.appId}] $message"
         when (level) {
-            "debug" -> Log.d("NativeAIPlatformAppLog", line)
-            "info" -> Log.i("NativeAIPlatformAppLog", line)
-            "warn" -> Log.w("NativeAIPlatformAppLog", line)
-            "error" -> Log.e("NativeAIPlatformAppLog", line)
+            "debug" -> Log.d("TerranePlatformAppLog", line)
+            "info" -> Log.i("TerranePlatformAppLog", line)
+            "warn" -> Log.w("TerranePlatformAppLog", line)
+            "error" -> Log.e("TerranePlatformAppLog", line)
         }
         return BridgeResponse.success(request.id, JSONObject(mapOf("ok" to true))).toString()
     }

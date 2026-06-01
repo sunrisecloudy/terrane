@@ -8,8 +8,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 test("Apple native network policy enforces allow pathPrefix", () => {
   for (const relativePath of [
-    "native/macos/Sources/NativeAIHostMac/PlatformNetwork.swift",
-    "native/ios/Sources/NativeAIHostIOS/PlatformNetwork.swift",
+    "native/macos/Sources/TerraneHostMac/PlatformNetwork.swift",
+    "native/ios/Sources/TerraneHostIOS/PlatformNetwork.swift",
   ]) {
     const source = read(relativePath);
     assert.match(source, /let pathPrefix: String\?/);
@@ -18,12 +18,12 @@ test("Apple native network policy enforces allow pathPrefix", () => {
     assert.match(source, /if let pathPrefix, !path\.hasPrefix\(pathPrefix\)/);
     assert.match(source, /path: PlatformNetwork\.path\(for: url\)/);
   }
-  const macDevControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+  const macDevControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
   assert.match(macDevControl, /path: PlatformNetwork\.path\(for: url\)/);
 });
 
 test("Android native network policy enforces allow pathPrefix", () => {
-  const source = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNetwork.kt");
+  const source = read("native/android/app/src/main/java/com/terrane/platform/PlatformNetwork.kt");
 
   assert.match(source, /val pathPrefix: String\?/);
   assert.match(source, /pathPrefix = raw\.optString\("pathPrefix", ""\)\.ifBlank \{ null \}/);

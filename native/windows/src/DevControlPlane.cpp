@@ -35,7 +35,7 @@
 #include <winrt/base.h>
 #include <winrt/Windows.Data.Json.h>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 namespace {
 
@@ -62,7 +62,7 @@ std::filesystem::path DefaultTokenPath() {
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppData)) && localAppData != nullptr) {
     std::filesystem::path path(localAppData);
     CoTaskMemFree(localAppData);
-    return path / L"NativeAIWebappPlatform" / L"control.token";
+    return path / L"Terrane" / L"control.token";
   }
   return std::filesystem::current_path() / L"control.token";
 }
@@ -929,7 +929,7 @@ bool WriteTokenFile(std::filesystem::path const& tokenPath, std::wstring const& 
 }
 
 void WriteControlLine(std::wstring const& line) {
-  auto markerPath = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE");
+  auto markerPath = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_RESULT_FILE");
   if (!markerPath.empty()) {
     std::ofstream file{std::filesystem::path(markerPath), std::ios::binary | std::ios::app};
     file << WideToUtf8(line) << "\n";
@@ -1048,7 +1048,7 @@ struct DevControlPlane::Impl {
     if (host.load() == nullptr || readyAnnounced.exchange(true)) {
       return;
     }
-    WriteControlLine(L"NATIVE_AI_WINDOWS_CONTROL_READY port=" + std::to_wstring(port) + L" token_path=" + tokenPath.wstring());
+    WriteControlLine(L"TERRANE_WINDOWS_CONTROL_READY port=" + std::to_wstring(port) + L" token_path=" + tokenPath.wstring());
   }
 
   void Stop() {
@@ -2025,7 +2025,7 @@ struct DevControlPlane::Impl {
           {L"forbidden_network_api", std::wregex(LR"(\bfetch\s*\()", std::regex_constants::icase)},
           {L"forbidden_network_api", std::wregex(LR"(\bXMLHttpRequest\b)", std::regex_constants::icase)},
           {L"forbidden_storage_api", std::wregex(LR"(\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bdocument\.cookie\b)", std::regex_constants::icase)},
-          {L"forbidden_native_bridge", std::wregex(LR"(\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bNativeAIPlatformBridge\b)", std::regex_constants::icase)},
+          {L"forbidden_native_bridge", std::wregex(LR"(\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bTerranePlatformBridge\b)", std::regex_constants::icase)},
       };
     } catch (...) {
       return;
@@ -8175,4 +8175,4 @@ std::filesystem::path DevControlPlane::TokenPath() const {
   return impl_ == nullptr ? std::filesystem::path() : impl_->tokenPath;
 }
 
-}  // namespace nativeai
+}  // namespace terrane

@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -48,10 +48,10 @@ class MainActivity : ComponentActivity() {
             devControlPlane = AndroidDevControlPlane(
                 context = this,
                 bridge = bridge,
-                requestedPort = intent.getIntExtra("native_ai_control_port", 0),
+                requestedPort = intent.getIntExtra("terrane_control_port", 0),
             ).also { it.start() }
         } else {
-            Log.i("NativeAIPlatform", "Android dev control plane is disabled in release builds")
+            Log.i("TerranePlatform", "Android dev control plane is disabled in release builds")
         }
 
         webView = WebView(this)
@@ -76,12 +76,12 @@ class MainActivity : ComponentActivity() {
         }
 
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            Log.e("NativeAIPlatform", "Android WebMessageListener support is required for the runtime bridge")
-            throw IllegalStateException("Android WebMessageListener support is required for NativeAI runtime bridge")
+            Log.e("TerranePlatform", "Android WebMessageListener support is required for the runtime bridge")
+            throw IllegalStateException("Android WebMessageListener support is required for Terrane runtime bridge")
         }
         WebViewCompat.addWebMessageListener(
             webView,
-            "NativeAIPlatformBridge",
+            "TerranePlatformBridge",
             setOf("https://appassets.androidplatform.net"),
         ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
             bridge.handleEnvelope(message.data ?: "{}", isMainFrame, sourceOrigin.toString()) { response ->
@@ -182,7 +182,7 @@ private class AndroidSmokeProbe(
                     require(response.optBoolean("ok") && response.optJSONObject("result")?.optBoolean("ok") == true) {
                         "storage.set failed: $response"
                     }
-                    emitSuccess(webView, activity, "NATIVE_AI_ANDROID_SMOKE_STORAGE_SET_OK")
+                    emitSuccess(webView, activity, "TERRANE_ANDROID_SMOKE_STORAGE_SET_OK")
                 }
                 AndroidSmokeAction.StorageGet -> {
                     val response = bridgeCall(
@@ -198,7 +198,7 @@ private class AndroidSmokeProbe(
                     require(response.optBoolean("ok") && actual == storageValue) {
                         "storage.get mismatch: $response"
                     }
-                    emitSuccess(webView, activity, "NATIVE_AI_ANDROID_SMOKE_STORAGE_GET_OK")
+                    emitSuccess(webView, activity, "TERRANE_ANDROID_SMOKE_STORAGE_GET_OK")
                 }
                 AndroidSmokeAction.CoreStep -> {
                     val caps = bridgeCall(
@@ -237,12 +237,12 @@ private class AndroidSmokeProbe(
                     require(hasPersistedCoreLogs(activity, "task-workbench")) {
                         "core smoke did not persist bridge/core log rows"
                     }
-                    emitSuccess(webView, activity, "NATIVE_AI_ANDROID_SMOKE_CORE_STEP_OK")
+                    emitSuccess(webView, activity, "TERRANE_ANDROID_SMOKE_CORE_STEP_OK")
                 }
                 AndroidSmokeAction.RuntimeLoad -> Unit
             }
         } catch (error: Exception) {
-            Log.e(tag, "NATIVE_AI_ANDROID_SMOKE_FAILED: ${error.message}", error)
+            Log.e(tag, "TERRANE_ANDROID_SMOKE_FAILED: ${error.message}", error)
             finishAfterSmoke(webView, activity)
         }
     }
@@ -308,10 +308,10 @@ private class AndroidSmokeProbe(
                   return document.querySelector('[data-testid="runtime-status"]') &&
                     document.querySelector('[data-testid="runtime-status"]').textContent === "Ready";
                 }, "runtime ready");
-                console.log("NATIVE_AI_ANDROID_SMOKE_RUNTIME_LOADED");
+                console.log("TERRANE_ANDROID_SMOKE_RUNTIME_LOADED");
             """
             AndroidSmokeAction.StorageSet -> storageScript(
-                marker = "NATIVE_AI_ANDROID_SMOKE_STORAGE_SET_OK",
+                marker = "TERRANE_ANDROID_SMOKE_STORAGE_SET_OK",
                 operation = """
                     const setResponse = await nativeCall("notes-lite", "android_smoke_storage_set", "storage.set", { key: key, value: { smokeValue: value } });
                     if (!setResponse || !setResponse.ok || !setResponse.result || setResponse.result.ok !== true) {
@@ -320,7 +320,7 @@ private class AndroidSmokeProbe(
                 """,
             )
             AndroidSmokeAction.StorageGet -> storageScript(
-                marker = "NATIVE_AI_ANDROID_SMOKE_STORAGE_GET_OK",
+                marker = "TERRANE_ANDROID_SMOKE_STORAGE_GET_OK",
                 operation = """
                     const getResponse = await nativeCall("notes-lite", "android_smoke_storage_get", "storage.get", { key: key, defaultValue: null });
                     const actual = getResponse && getResponse.result && getResponse.result.value && getResponse.result.value.smokeValue;
@@ -342,7 +342,7 @@ private class AndroidSmokeProbe(
                 if (!coreResponse || !coreResponse.ok || !coreResponse.result || coreResponse.result.ok !== true || !Array.isArray(coreResponse.result.actions)) {
                   throw new Error("core.step failed: " + JSON.stringify(coreResponse));
                 }
-                console.log("NATIVE_AI_ANDROID_SMOKE_CORE_STEP_OK");
+                console.log("TERRANE_ANDROID_SMOKE_CORE_STEP_OK");
             """
         }
         return """
@@ -365,10 +365,10 @@ private class AndroidSmokeProbe(
                 }
                 const androidBridgePending = new Map();
                 const androidBridge = await waitFor(function () {
-                  return window.NativeAIPlatformBridge &&
-                    typeof window.NativeAIPlatformBridge.postMessage === "function" &&
-                    window.NativeAIPlatformBridge;
-                }, "NativeAIPlatformBridge");
+                  return window.TerranePlatformBridge &&
+                    typeof window.TerranePlatformBridge.postMessage === "function" &&
+                    window.TerranePlatformBridge;
+                }, "TerranePlatformBridge");
                 androidBridge.onmessage = function (event) {
                   const response = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
                   const responseId = response && response.id;
@@ -394,7 +394,7 @@ private class AndroidSmokeProbe(
                 }
                 $body
               } catch (error) {
-                console.error("NATIVE_AI_ANDROID_SMOKE_FAILED: " + (error && error.message ? error.message : String(error)));
+                console.error("TERRANE_ANDROID_SMOKE_FAILED: " + (error && error.message ? error.message : String(error)));
               }
             })();
         """
@@ -418,24 +418,24 @@ private class AndroidSmokeProbe(
     }
 
     companion object {
-        private const val tag = "NativeAIPlatformSmoke"
-        private const val successMarker = "NATIVE_AI_ANDROID_SMOKE_"
-        private const val failureMarker = "NATIVE_AI_ANDROID_SMOKE_FAILED"
+        private const val tag = "TerranePlatformSmoke"
+        private const val successMarker = "TERRANE_ANDROID_SMOKE_"
+        private const val failureMarker = "TERRANE_ANDROID_SMOKE_FAILED"
 
         fun fromIntent(intent: Intent): AndroidSmokeProbe? {
-            val storageAction = intent.getStringExtra("native_ai_smoke_storage_action")
+            val storageAction = intent.getStringExtra("terrane_smoke_storage_action")
             val action = when {
                 storageAction == "set" -> AndroidSmokeAction.StorageSet
                 storageAction == "get" -> AndroidSmokeAction.StorageGet
-                intent.getBooleanExtra("native_ai_smoke_core_step", false) -> AndroidSmokeAction.CoreStep
-                intent.getBooleanExtra("native_ai_smoke_runtime_load", false) -> AndroidSmokeAction.RuntimeLoad
+                intent.getBooleanExtra("terrane_smoke_core_step", false) -> AndroidSmokeAction.CoreStep
+                intent.getBooleanExtra("terrane_smoke_runtime_load", false) -> AndroidSmokeAction.RuntimeLoad
                 else -> null
             } ?: return null
             return AndroidSmokeProbe(
                 action = action,
-                storageKey = intent.getStringExtra("native_ai_smoke_storage_key"),
-                storageValue = intent.getStringExtra("native_ai_smoke_storage_value"),
-                exitAfterSmoke = intent.getBooleanExtra("native_ai_smoke_exit_after", false),
+                storageKey = intent.getStringExtra("terrane_smoke_storage_key"),
+                storageValue = intent.getStringExtra("terrane_smoke_storage_value"),
+                exitAfterSmoke = intent.getBooleanExtra("terrane_smoke_exit_after", false),
             )
         }
     }

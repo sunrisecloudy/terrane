@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct NativeAIHostIOSApp: App {
+struct TerraneHostIOSApp: App {
     var body: some Scene {
         WindowGroup {
             WebHostView()

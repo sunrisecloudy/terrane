@@ -8,26 +8,26 @@
 extern "C" {
 #endif
 
-typedef struct NativeAIZigCore NativeAIZigCore;
+typedef struct TerraneZigCore TerraneZigCore;
 
-NativeAIZigCore *native_ai_zig_core_open(const char *path);
-void native_ai_zig_core_close(NativeAIZigCore *bridge);
+TerraneZigCore *terrane_zig_core_open(const char *path);
+void terrane_zig_core_close(TerraneZigCore *bridge);
 
-int32_t native_ai_zig_core_step_json(
-    NativeAIZigCore *bridge,
+int32_t terrane_zig_core_step_json(
+    TerraneZigCore *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
     size_t *output_len
 );
 
-void native_ai_zig_core_free_output(
-    NativeAIZigCore *bridge,
+void terrane_zig_core_free_output(
+    TerraneZigCore *bridge,
     uint8_t *output_ptr,
     size_t output_len
 );
 
-const char *native_ai_zig_core_last_error(void);
+const char *terrane_zig_core_last_error(void);
 
 #ifdef __cplusplus
 }

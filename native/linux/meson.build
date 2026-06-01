@@ -1,4 +1,4 @@
-project('native-ai-webapp-host-linux', 'c',
+project('terrane-host-linux', 'c',
   version: '0.1.0',
   default_options: ['warning_level=2', 'c_std=c17', 'b_ndebug=if-release'])
 
@@ -10,7 +10,7 @@ sqlite_dep = dependency('sqlite3')
 soup_dep = dependency('libsoup-3.0')
 dl_dep = cc.find_library('dl', required: false)
 
-executable('native-ai-webapp-host',
+executable('terrane-host',
   [
     'src/main.c',
     'src/app_sandbox.c',

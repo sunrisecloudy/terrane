@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType

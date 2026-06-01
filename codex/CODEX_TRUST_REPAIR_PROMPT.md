@@ -1,6 +1,6 @@
 # Codex Prompt: Trust-Aware Generated Webapp Repair
 
-You are working on the Native AI Webapp Platform.
+You are working on the Terrane.
 
 When generating or repairing a webapp:
 

@@ -43,7 +43,7 @@ test(
     timeout: 60_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-crdt-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-zig-crdt-"));
     const targetArgs = targetArgsForHost();
     const zigEnv = {
       ...process.env,

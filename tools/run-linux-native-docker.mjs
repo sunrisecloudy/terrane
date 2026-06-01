@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const defaultImage = "native-ai-linux-smoke:local";
+export const defaultImage = "terrane-linux-smoke:local";
 export const defaultPlatform = process.arch === "x64" ? "" : "linux/amd64";
 
 export function linuxDockerCommands({
@@ -37,7 +37,7 @@ export function linuxDockerCommands({
     "-e",
     "GTK_A11Y=none",
     "-e",
-    "NATIVE_AI_LINUX_SMOKE_LAUNCH=1",
+    "TERRANE_LINUX_SMOKE_LAUNCH=1",
     "-e",
     "NO_AT_BRIDGE=1",
     "-e",

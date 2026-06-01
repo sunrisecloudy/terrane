@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace nativeai {
+namespace terrane {
 
 class ZigCoreBridge {
  public:
@@ -66,4 +66,4 @@ class ZigCoreBridge {
   std::filesystem::path loadedPath_;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

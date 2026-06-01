@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.content.ContentValues
 import android.content.Context
@@ -45,7 +45,7 @@ class AndroidDevControlPlane(
         if (!running.compareAndSet(false, true)) return
         writeControlTokenFile()
         insertControlSession()
-        acceptThread = thread(name = "NativeAIAndroidDevControl", isDaemon = true) {
+        acceptThread = thread(name = "TerraneAndroidDevControl", isDaemon = true) {
             while (running.get()) {
                 try {
                     server.accept().use { socket -> handleClient(socket) }
@@ -56,7 +56,7 @@ class AndroidDevControlPlane(
                 }
             }
         }
-        Log.i(tag, "NATIVE_AI_ANDROID_CONTROL_READY port=$port tokenPath=${tokenPath.absolutePath}")
+        Log.i(tag, "TERRANE_ANDROID_CONTROL_READY port=$port tokenPath=${tokenPath.absolutePath}")
     }
 
     fun stop() {
@@ -2084,7 +2084,7 @@ class AndroidDevControlPlane(
     private class ControlCommandException(val status: Int, val code: String, message: String) : Exception(message)
 
     companion object {
-        private const val tag = "NativeAIAndroidDevControl"
+        private const val tag = "TerraneAndroidDevControl"
         private const val androidRuntimeVersion = "0.1.0"
         private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
         private val snapshotTypes = setOf("bug-report", "pre-install", "pre-migration", "post-test", "golden", "manual", "debug-bundle")

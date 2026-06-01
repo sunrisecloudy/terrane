@@ -7,7 +7,7 @@ final class ZigCrdtBridge: @unchecked Sendable {
         private let bridge: OpaquePointer
 
         init?(path: String) {
-            guard let bridge = path.withCString({ native_ai_zig_crdt_open($0) }) else {
+            guard let bridge = path.withCString({ terrane_zig_crdt_open($0) }) else {
                 return nil
             }
             self.path = path
@@ -15,11 +15,11 @@ final class ZigCrdtBridge: @unchecked Sendable {
         }
 
         deinit {
-            native_ai_zig_crdt_close(bridge)
+            terrane_zig_crdt_close(bridge)
         }
 
         func materialize(input: Data) throws -> Any {
-            try call(input: input, native_ai_zig_crdt_materialize_json)
+            try call(input: input, terrane_zig_crdt_materialize_json)
         }
 
         private func call(
@@ -46,7 +46,7 @@ final class ZigCrdtBridge: @unchecked Sendable {
                 throw ZigCrdtError.emptyOutput
             }
             defer {
-                native_ai_zig_crdt_free_output(bridge, outputPointer, outputLength)
+                terrane_zig_crdt_free_output(bridge, outputPointer, outputLength)
             }
 
             return try JSONSerialization.jsonObject(with: Data(bytes: outputPointer, count: outputLength))
@@ -92,7 +92,7 @@ final class ZigCrdtBridge: @unchecked Sendable {
             paths.append(libraryPathOverride)
         }
 
-        if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CRDT_DYLIB"],
+        if let overridePath = ProcessInfo.processInfo.environment["TERRANE_ZIG_CRDT_DYLIB"],
            !overridePath.isEmpty {
             paths.append(overridePath)
         }

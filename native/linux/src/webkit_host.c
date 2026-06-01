@@ -199,7 +199,7 @@ static gchar *repo_root(void) {
 }
 
 static gchar *database_path(void) {
-  g_autofree gchar *data_dir = g_build_filename(g_get_user_data_dir(), "NativeAIWebappPlatform", NULL);
+  g_autofree gchar *data_dir = g_build_filename(g_get_user_data_dir(), "Terrane", NULL);
   g_mkdir_with_parents(data_dir, 0700);
   return g_build_filename(data_dir, "platform.sqlite", NULL);
 }
@@ -407,14 +407,14 @@ static gchar *bridge_call(WebKitHost *host, const gchar *app_id, const gchar *id
 }
 
 static void finish_smoke(WebKitHost *host) {
-  if (g_strcmp0(g_getenv("NATIVE_AI_LINUX_SMOKE_EXIT_AFTER"), "1") == 0) {
+  if (g_strcmp0(g_getenv("TERRANE_LINUX_SMOKE_EXIT_AFTER"), "1") == 0) {
     g_application_quit(G_APPLICATION(host->application));
   }
 }
 
 static void smoke_failure(WebKitHost *host, const gchar *message) {
   host->smoke_finished = TRUE;
-  g_printerr("NATIVE_AI_LINUX_SMOKE_FAILED: %s\n", message);
+  g_printerr("TERRANE_LINUX_SMOKE_FAILED: %s\n", message);
   finish_smoke(host);
 }
 
@@ -462,10 +462,10 @@ static gint table_log_count(WebKitHost *host, const gchar *table, const gchar *a
 }
 
 static void run_storage_smoke(WebKitHost *host, gboolean set_value) {
-  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
-  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  const gchar *key = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_VALUE");
   if (key == NULL || value == NULL) {
-    smoke_failure(host, "storage smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    smoke_failure(host, "storage smoke requires TERRANE_LINUX_SMOKE_STORAGE_KEY and TERRANE_LINUX_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -507,7 +507,7 @@ static void run_storage_smoke(WebKitHost *host, gboolean set_value) {
     }
   }
 
-  smoke_success(host, set_value ? "NATIVE_AI_LINUX_SMOKE_STORAGE_SET_OK" : "NATIVE_AI_LINUX_SMOKE_STORAGE_GET_OK");
+  smoke_success(host, set_value ? "TERRANE_LINUX_SMOKE_STORAGE_SET_OK" : "TERRANE_LINUX_SMOKE_STORAGE_GET_OK");
 }
 
 static void run_core_smoke(WebKitHost *host) {
@@ -537,7 +537,7 @@ static void run_core_smoke(WebKitHost *host) {
     smoke_failure(host, "core smoke did not persist core_events/core_actions rows");
     return;
   }
-  smoke_success(host, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK");
+  smoke_success(host, "TERRANE_LINUX_SMOKE_CORE_STEP_OK");
 }
 
 static gboolean require_smoke_ok(WebKitHost *host, const gchar *response) {
@@ -549,10 +549,10 @@ static gboolean require_smoke_ok(WebKitHost *host, const gchar *response) {
 }
 
 static void run_fixed_bridge_surface_smoke(WebKitHost *host) {
-  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
-  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  const gchar *key = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_VALUE");
   if (key == NULL || value == NULL) {
-    smoke_failure(host, "fixed bridge surface smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    smoke_failure(host, "fixed bridge surface smoke requires TERRANE_LINUX_SMOKE_STORAGE_KEY and TERRANE_LINUX_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -699,7 +699,7 @@ static void run_fixed_bridge_surface_smoke(WebKitHost *host) {
     return;
   }
 
-  smoke_success(host, "NATIVE_AI_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK");
+  smoke_success(host, "TERRANE_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK");
 }
 
 static void maybe_finish_web_bridge_smoke(WebKitHost *host, const gchar *request_id, const gchar *response) {
@@ -707,24 +707,24 @@ static void maybe_finish_web_bridge_smoke(WebKitHost *host, const gchar *request
     return;
   }
   if (g_strcmp0(request_id, "linux_smoke_bridge_storage_set") == 0) {
-    json_response_ok(response) ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK") : smoke_failure(host, response);
+    json_response_ok(response) ? smoke_success(host, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK") : smoke_failure(host, response);
   } else if (g_strcmp0(request_id, "linux_smoke_bridge_storage_get") == 0) {
-    const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    const gchar *value = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_VALUE");
     json_response_ok(response) && storage_smoke_response_matches(response, value)
-        ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK")
+        ? smoke_success(host, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK")
         : smoke_failure(host, response);
   } else if (g_strcmp0(request_id, "linux_smoke_bridge_core_step") == 0) {
-    json_response_ok(response) ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK") : smoke_failure(host, response);
+    json_response_ok(response) ? smoke_success(host, "TERRANE_LINUX_SMOKE_BRIDGE_CORE_STEP_OK") : smoke_failure(host, response);
   }
 }
 
 static void maybe_finish_runtime_app_bridge_smoke(WebKitHost *host, const gchar *app_id, const gchar *method, const gchar *response) {
-  if (g_strcmp0(g_getenv("NATIVE_AI_LINUX_SMOKE"), "runtime-app-storage-get") != 0) {
+  if (g_strcmp0(g_getenv("TERRANE_LINUX_SMOKE"), "runtime-app-storage-get") != 0) {
     return;
   }
   if (g_strcmp0(app_id, "notes-lite") == 0 && g_strcmp0(method, "storage.get") == 0) {
     json_response_ok(response)
-        ? smoke_success(host, "NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
+        ? smoke_success(host, "TERRANE_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
         : smoke_failure(host, response);
   }
 }
@@ -803,7 +803,7 @@ static void start_web_bridge_smoke(WebKitHost *host, const gchar *app_id, const 
   g_autofree gchar *envelope = runtime_envelope_json(app_id, "linux-webkit-smoke", id, method, params);
   g_autofree gchar *script = g_strdup_printf(
       "(function () {"
-      "var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.NativeAIPlatformBridge;"
+      "var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.TerranePlatformBridge;"
       "if (!handler || typeof handler.postMessage !== 'function') return 'missing-webkit-bridge';"
       "handler.postMessage(%s);"
       "return 'posted';"
@@ -813,10 +813,10 @@ static void start_web_bridge_smoke(WebKitHost *host, const gchar *app_id, const 
 }
 
 static void run_web_bridge_storage_smoke(WebKitHost *host, gboolean set_value) {
-  const gchar *key = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_KEY");
-  const gchar *value = g_getenv("NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+  const gchar *key = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_KEY");
+  const gchar *value = g_getenv("TERRANE_LINUX_SMOKE_STORAGE_VALUE");
   if (key == NULL || value == NULL) {
-    smoke_failure(host, "web bridge storage smoke requires NATIVE_AI_LINUX_SMOKE_STORAGE_KEY and NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE");
+    smoke_failure(host, "web bridge storage smoke requires TERRANE_LINUX_SMOKE_STORAGE_KEY and TERRANE_LINUX_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -862,14 +862,14 @@ static void run_smoke(WebKitHost *host) {
   if (host->smoke_ran) {
     return;
   }
-  const gchar *action = g_getenv("NATIVE_AI_LINUX_SMOKE");
+  const gchar *action = g_getenv("TERRANE_LINUX_SMOKE");
   if (action == NULL || action[0] == '\0') {
     return;
   }
   host->smoke_ran = TRUE;
-  g_print("NATIVE_AI_LINUX_SMOKE_STARTED_%s\n", action);
+  g_print("TERRANE_LINUX_SMOKE_STARTED_%s\n", action);
   if (g_strcmp0(action, "runtime-load") == 0) {
-    smoke_success(host, "NATIVE_AI_LINUX_SMOKE_RUNTIME_LOADED");
+    smoke_success(host, "TERRANE_LINUX_SMOKE_RUNTIME_LOADED");
   } else if (g_strcmp0(action, "storage-set") == 0) {
     run_storage_smoke(host, TRUE);
   } else if (g_strcmp0(action, "storage-get") == 0) {
@@ -1000,7 +1000,7 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
   WebKitHost *host = g_new0(WebKitHost, 1);
   host->application = application;
   host->window = gtk_application_window_new(application);
-  gtk_window_set_title(GTK_WINDOW(host->window), "Native AI Webapp Platform");
+  gtk_window_set_title(GTK_WINDOW(host->window), "Terrane");
   gtk_window_set_default_size(GTK_WINDOW(host->window), 1200, 820);
 
   WebKitWebContext *context = webkit_web_context_get_default();
@@ -1011,8 +1011,8 @@ WebKitHost *webkit_host_new(GtkApplication *application) {
 
   host->web_view = WEBKIT_WEB_VIEW(webkit_web_view_new());
   WebKitUserContentManager *content_manager = webkit_web_view_get_user_content_manager(host->web_view);
-  webkit_user_content_manager_register_script_message_handler_with_reply(content_manager, "NativeAIPlatformBridge", NULL);
-  g_signal_connect(content_manager, "script-message-with-reply-received::NativeAIPlatformBridge", G_CALLBACK(on_script_message_with_reply), host);
+  webkit_user_content_manager_register_script_message_handler_with_reply(content_manager, "TerranePlatformBridge", NULL);
+  g_signal_connect(content_manager, "script-message-with-reply-received::TerranePlatformBridge", G_CALLBACK(on_script_message_with_reply), host);
 
   g_signal_connect(host->web_view, "load-changed", G_CALLBACK(on_load_changed), host);
   gtk_window_set_child(GTK_WINDOW(host->window), GTK_WIDGET(host->web_view));

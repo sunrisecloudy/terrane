@@ -8,7 +8,7 @@
 #include <optional>
 #include <winsqlite/winsqlite3.h>
 
-namespace nativeai {
+namespace terrane {
 
 class PlatformStorage {
  public:
@@ -33,4 +33,4 @@ class PlatformStorage {
   PlatformDatabase database_;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

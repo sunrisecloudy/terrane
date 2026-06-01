@@ -5,7 +5,7 @@ import { PlatformError } from "./errors.js";
 import { repoRoot, resolveInside } from "./paths.js";
 
 export class TestRunner {
-  constructor({ database, runControlCommand = null, browserSmokeRunner = null, smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static" }) {
+  constructor({ database, runControlCommand = null, browserSmokeRunner = null, smokeRunner = process.env.TERRANE_SMOKE_RUNNER ?? "static" }) {
     this.database = database;
     this.runControlCommand = runControlCommand;
     this.browserSmokeRunner = browserSmokeRunner;

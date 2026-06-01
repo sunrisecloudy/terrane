@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -336,4 +336,4 @@ winrt::Windows::Data::Json::JsonObject PlatformDialogs::SaveFile(BridgeRequest c
   return BridgeResponse::Success(request.id, request.hasId, result);
 }
 
-}  // namespace nativeai
+}  // namespace terrane

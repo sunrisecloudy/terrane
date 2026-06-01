@@ -84,7 +84,7 @@ test("native and server capability implementations expose app-scoped manifest ca
   const contracts = [
     {
       target: "macos",
-      source: "native/macos/Sources/NativeAIHostMac/WebBridge.swift",
+      source: "native/macos/Sources/TerraneHostMac/WebBridge.swift",
       snippets: [
         '"platform": "macos"',
         '"target": "macos"',
@@ -98,7 +98,7 @@ test("native and server capability implementations expose app-scoped manifest ca
     },
     {
       target: "ios-simulator",
-      source: "native/ios/Sources/NativeAIHostIOS/WebBridge.swift",
+      source: "native/ios/Sources/TerraneHostIOS/WebBridge.swift",
       snippets: [
         '"platform": "ios"',
         '"target": "ios-simulator"',
@@ -112,7 +112,7 @@ test("native and server capability implementations expose app-scoped manifest ca
     },
     {
       target: "android",
-      source: "native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt",
+      source: "native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt",
       snippets: [
         '"platform" to "android"',
         '"target" to "android"',

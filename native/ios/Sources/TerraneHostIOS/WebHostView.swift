@@ -11,7 +11,7 @@ struct WebHostView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let bridge = context.coordinator.bridge
         let contentController = WKUserContentController()
-        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "NativeAIPlatformBridge")
+        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "TerranePlatformBridge")
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController
@@ -55,7 +55,7 @@ struct WebHostView: UIViewRepresentable {
                 devControlPlane?.start()
             } catch {
                 devControlPlane = nil
-                print("NATIVE_AI_IOS_CONTROL_FAILED \(error)")
+                print("TERRANE_IOS_CONTROL_FAILED \(error)")
                 fflush(stdout)
             }
 #endif
@@ -84,13 +84,13 @@ struct WebHostView: UIViewRepresentable {
 
 #if DEBUG
 final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
-    static let loadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED"
-    static let storageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
-    static let storageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
-    static let storageResetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_OK"
-    static let coreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK"
-    static let allExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK"
-    static let markerFileName = "native-ai-ios-smoke-runtime-loaded.txt"
+    static let loadedMarker = "TERRANE_IOS_SMOKE_RUNTIME_LOADED"
+    static let storageSetMarker = "TERRANE_IOS_SMOKE_STORAGE_SET_OK"
+    static let storageGetMarker = "TERRANE_IOS_SMOKE_STORAGE_GET_OK"
+    static let storageResetMarker = "TERRANE_IOS_SMOKE_STORAGE_RESET_OK"
+    static let coreStepMarker = "TERRANE_IOS_SMOKE_CORE_STEP_OK"
+    static let allExamplesMarker = "TERRANE_IOS_SMOKE_ALL_EXAMPLES_OK"
+    static let markerFileName = "terrane-ios-smoke-runtime-loaded.txt"
 
     private let exitAfterLoad: Bool
     private let storageSmoke: StorageSmoke?
@@ -109,11 +109,11 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     static func fromCommandLine() -> IOSSmokeRuntimeProbe? {
         let args = CommandLine.arguments
         let storageSmoke = StorageSmoke.fromCommandLine(args)
-        let storageResetSmoke = args.contains("--native-ai-smoke-storage-reset")
-        let coreStepSmoke = args.contains("--native-ai-smoke-core-step")
-        let allExamplesSmoke = args.contains("--native-ai-smoke-all-examples")
-        guard args.contains("--native-ai-smoke-runtime-load") ||
-            args.contains("--native-ai-smoke-exit-on-runtime-load") ||
+        let storageResetSmoke = args.contains("--terrane-smoke-storage-reset")
+        let coreStepSmoke = args.contains("--terrane-smoke-core-step")
+        let allExamplesSmoke = args.contains("--terrane-smoke-all-examples")
+        guard args.contains("--terrane-smoke-runtime-load") ||
+            args.contains("--terrane-smoke-exit-on-runtime-load") ||
             storageSmoke != nil ||
             storageResetSmoke ||
             coreStepSmoke ||
@@ -122,7 +122,7 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
             return nil
         }
         return IOSSmokeRuntimeProbe(
-            exitAfterLoad: args.contains("--native-ai-smoke-exit-on-runtime-load"),
+            exitAfterLoad: args.contains("--terrane-smoke-exit-on-runtime-load"),
             storageSmoke: storageSmoke,
             storageResetSmoke: storageResetSmoke,
             coreStepSmoke: coreStepSmoke,
@@ -153,11 +153,11 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        emitSmokeMarker("NATIVE_AI_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
+        emitSmokeMarker("TERRANE_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        emitSmokeMarker("NATIVE_AI_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
+        emitSmokeMarker("TERRANE_IOS_SMOKE_RUNTIME_FAILED: \(error.localizedDescription)")
     }
 
     private func emitSmokeMarker(_ marker: String) {
@@ -186,14 +186,14 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     private func runStorageResetSmoke(in webView: WKWebView) {
         Task { @MainActor [weak self, weak webView] in
             guard let webView else {
-                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: web view released")
+                self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: web view released")
                 self?.exitIfRequested()
                 return
             }
             do {
                 let seedValue = try await webView.callAsyncJavaScript(StorageResetSmoke.seedJavaScript(), arguments: [:], in: nil, contentWorld: .page)
                 guard let seedMarker = seedValue as? String, seedMarker == StorageResetSmoke.seedMarker else {
-                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset seed failed \(String(describing: seedValue))")
+                    self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: reset seed failed \(String(describing: seedValue))")
                     self?.exitIfRequested()
                     return
                 }
@@ -204,20 +204,20 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
                       reset.contentHash.hasPrefix("sha256:"),
                       storage.runtimeSnapshotExists(snapshotId: reset.snapshotId, appId: StorageResetSmoke.appId)
                 else {
-                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset did not create a manual runtime snapshot")
+                    self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: reset did not create a manual runtime snapshot")
                     self?.exitIfRequested()
                     return
                 }
                 let verifyValue = try await webView.callAsyncJavaScript(StorageResetSmoke.verifyJavaScript(), arguments: [:], in: nil, contentWorld: .page)
                 guard let marker = verifyValue as? String, marker == Self.storageResetMarker else {
-                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: reset verification failed \(String(describing: verifyValue))")
+                    self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: reset verification failed \(String(describing: verifyValue))")
                     self?.exitIfRequested()
                     return
                 }
                 self?.emitSmokeMarker(marker)
                 self?.exitIfRequested()
             } catch {
-                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
+                self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
                 self?.exitIfRequested()
             }
         }
@@ -234,26 +234,26 @@ final class IOSSmokeRuntimeProbe: NSObject, WKNavigationDelegate {
     private func runAsyncBridgeSmoke(script: String, successMarker: String, in webView: WKWebView) {
         Task { @MainActor [weak self, weak webView] in
             guard let webView else {
-                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: web view released")
+                self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: web view released")
                 self?.exitIfRequested()
                 return
             }
             do {
                 let value = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
                 guard let marker = value as? String, marker == successMarker else {
-                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: unexpected result \(String(describing: value))")
+                    self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: unexpected result \(String(describing: value))")
                     self?.exitIfRequested()
                     return
                 }
                 if marker == Self.coreStepMarker && !Self.hasPersistedCoreLogs(appId: "task-workbench") {
-                    self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: core smoke did not persist bridge/core log rows")
+                    self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: core smoke did not persist bridge/core log rows")
                     self?.exitIfRequested()
                     return
                 }
                 self?.emitSmokeMarker(marker)
                 self?.exitIfRequested()
             } catch {
-                self?.emitSmokeMarker("NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
+                self?.emitSmokeMarker("TERRANE_IOS_SMOKE_BRIDGE_FAILED: \(error.localizedDescription)")
                 self?.exitIfRequested()
             }
         }
@@ -299,9 +299,9 @@ private struct CoreStepSmoke {
         try {
           const bridge = window.webkit &&
             window.webkit.messageHandlers &&
-            window.webkit.messageHandlers.NativeAIPlatformBridge;
+            window.webkit.messageHandlers.TerranePlatformBridge;
           if (!bridge || typeof bridge.postMessage !== "function") {
-            throw new Error("NativeAIPlatformBridge is unavailable");
+            throw new Error("TerranePlatformBridge is unavailable");
           }
           const appId = "task-workbench";
           const mountToken = "ios-smoke";
@@ -318,9 +318,9 @@ private struct CoreStepSmoke {
           if (!response || !response.ok || !response.result || response.result.ok !== true || !Array.isArray(response.result.actions)) {
             throw new Error("core.step failed: " + JSON.stringify(response));
           }
-          return "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
+          return "TERRANE_IOS_SMOKE_CORE_STEP_OK";
         } catch (error) {
-          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+          return "TERRANE_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
         """
     }
@@ -332,9 +332,9 @@ private struct AllExampleAppsSmoke {
         try {
           const bridge = window.webkit &&
             window.webkit.messageHandlers &&
-            window.webkit.messageHandlers.NativeAIPlatformBridge;
+            window.webkit.messageHandlers.TerranePlatformBridge;
           if (!bridge || typeof bridge.postMessage !== "function") {
-            throw new Error("NativeAIPlatformBridge is unavailable");
+            throw new Error("TerranePlatformBridge is unavailable");
           }
           const appIds = ["notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"];
           function request(appId, id, method, params) {
@@ -346,9 +346,9 @@ private struct AllExampleAppsSmoke {
               throw new Error("runtime.capabilities failed for " + appId + ": " + JSON.stringify(capabilities));
             }
           }
-          return "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
+          return "TERRANE_IOS_SMOKE_ALL_EXAMPLES_OK";
         } catch (error) {
-          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+          return "TERRANE_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
         """
     }
@@ -360,16 +360,16 @@ private struct StorageResetSmoke {
     static let key = "notes-lite:ios-smoke-reset"
     static let value = "ios-smoke-reset-seed"
     static let sessionId = "runtime_ios_notes-lite_ios-smoke"
-    static let seedMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_SEEDED"
+    static let seedMarker = "TERRANE_IOS_SMOKE_STORAGE_RESET_SEEDED"
 
     static func seedJavaScript() -> String {
         """
         try {
           const bridge = window.webkit &&
             window.webkit.messageHandlers &&
-            window.webkit.messageHandlers.NativeAIPlatformBridge;
+            window.webkit.messageHandlers.TerranePlatformBridge;
           if (!bridge || typeof bridge.postMessage !== "function") {
-            throw new Error("NativeAIPlatformBridge is unavailable");
+            throw new Error("TerranePlatformBridge is unavailable");
           }
           const appId = "\(appId)";
           const mountToken = "\(mountToken)";
@@ -393,7 +393,7 @@ private struct StorageResetSmoke {
           }
           return "\(seedMarker)";
         } catch (error) {
-          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+          return "TERRANE_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
         """
     }
@@ -403,9 +403,9 @@ private struct StorageResetSmoke {
         try {
           const bridge = window.webkit &&
             window.webkit.messageHandlers &&
-            window.webkit.messageHandlers.NativeAIPlatformBridge;
+            window.webkit.messageHandlers.TerranePlatformBridge;
           if (!bridge || typeof bridge.postMessage !== "function") {
-            throw new Error("NativeAIPlatformBridge is unavailable");
+            throw new Error("TerranePlatformBridge is unavailable");
           }
           const appId = "\(appId)";
           const mountToken = "\(mountToken)";
@@ -420,7 +420,7 @@ private struct StorageResetSmoke {
           }
           return "\(IOSSmokeRuntimeProbe.storageResetMarker)";
         } catch (error) {
-          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+          return "TERRANE_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
         """
     }
@@ -439,24 +439,24 @@ private struct StorageSmoke {
     var successMarker: String {
         switch action {
         case .set:
-            return "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK"
+            return "TERRANE_IOS_SMOKE_STORAGE_SET_OK"
         case .get:
-            return "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK"
+            return "TERRANE_IOS_SMOKE_STORAGE_GET_OK"
         }
     }
 
     static func fromCommandLine(_ args: [String]) -> StorageSmoke? {
         let action: Action?
-        if args.contains("--native-ai-smoke-storage-set") {
+        if args.contains("--terrane-smoke-storage-set") {
             action = .set
-        } else if args.contains("--native-ai-smoke-storage-get") {
+        } else if args.contains("--terrane-smoke-storage-get") {
             action = .get
         } else {
             action = nil
         }
         guard let action,
-              let key = value(after: "--native-ai-smoke-storage-key", in: args),
-              let value = value(after: "--native-ai-smoke-storage-value", in: args)
+              let key = value(after: "--terrane-smoke-storage-key", in: args),
+              let value = value(after: "--terrane-smoke-storage-value", in: args)
         else {
             return nil
         }
@@ -491,9 +491,9 @@ private struct StorageSmoke {
         try {
           const bridge = window.webkit &&
             window.webkit.messageHandlers &&
-            window.webkit.messageHandlers.NativeAIPlatformBridge;
+            window.webkit.messageHandlers.TerranePlatformBridge;
           if (!bridge || typeof bridge.postMessage !== "function") {
-            throw new Error("NativeAIPlatformBridge is unavailable");
+            throw new Error("TerranePlatformBridge is unavailable");
           }
           const appId = "notes-lite";
           const mountToken = "ios-smoke";
@@ -509,7 +509,7 @@ private struct StorageSmoke {
           }
         \(actionScript)
         } catch (error) {
-          return "NATIVE_AI_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
+          return "TERRANE_IOS_SMOKE_BRIDGE_FAILED: " + (error && error.message ? error.message : String(error));
         }
         """
     }

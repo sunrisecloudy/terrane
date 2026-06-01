@@ -145,7 +145,7 @@ final class PlatformDialogs: NSObject, UIDocumentPickerDelegate {
     }
 
     private func writeTemporaryExportFile(_ request: BridgeRequest) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-ai-dialogs", isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("terrane-dialogs", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let suggestedName = (request.params["suggestedName"] as? String ?? "output.txt")
             .split(separator: "/")

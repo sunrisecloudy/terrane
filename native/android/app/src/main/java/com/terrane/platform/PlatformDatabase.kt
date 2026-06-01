@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
@@ -59,7 +59,7 @@ class PlatformDatabase(private val context: Context) : SQLiteOpenHelper(context,
     private fun runIntegrityCheck(db: SQLiteDatabase) {
         db.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
             if (cursor.moveToFirst() && cursor.getString(0) != "ok") {
-                Log.e("NativeAIPlatformDatabase", "PRAGMA integrity_check failed: ${cursor.getString(0)}")
+                Log.e("TerranePlatformDatabase", "PRAGMA integrity_check failed: ${cursor.getString(0)}")
             }
         }
     }

@@ -104,7 +104,7 @@ Use `schemas/app-signature.schema.json`.
 ### 5.2 Signed payload (the bytes that go into Ed25519.sign)
 
 ```
-"native-ai-webapp/sig/v1\n"
+"terrane/sig/v1\n"
 appId "\n"
 appVersion "\n"
 dataVersion "\n"
@@ -160,7 +160,7 @@ Each native host generates a platform keypair on first launch:
   - Android: Android Keystore (`KeyProperties.PURPOSE_SIGN`).
   - Windows: DPAPI-encrypted in `%LOCALAPPDATA%\<product>\platform.key`.
   - Linux: libsecret if available; otherwise `$XDG_DATA_HOME/<product>/platform.key` with mode 0600.
-  - Reference host: `~/.cache/native-ai-webapp/platform.key` (test-only).
+  - Reference host: `~/.cache/terrane/platform.key` (test-only).
 - The public key is exposed via the control plane for cross-host verification of exported bundles.
 
 ### 7.2 Key id

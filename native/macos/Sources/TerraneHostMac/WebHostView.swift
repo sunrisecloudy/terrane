@@ -17,7 +17,7 @@ final class WebHostView: NSView, WKNavigationDelegate {
         self.crashRecovery = RuntimeCrashRecovery()
 
         let contentController = WKUserContentController()
-        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "NativeAIPlatformBridge")
+        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "TerranePlatformBridge")
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController

@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const server = b.addExecutable(.{
-        .name = "native-ai-server",
+        .name = "terrane-server",
         .root_module = server_module,
     });
     server.linkLibC();

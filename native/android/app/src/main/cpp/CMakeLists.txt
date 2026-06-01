@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(native_ai_android_core LANGUAGES CXX)
+project(terrane_android_core LANGUAGES CXX)
 
 add_library(zig_core_jni SHARED zig_core_jni.cpp)
 

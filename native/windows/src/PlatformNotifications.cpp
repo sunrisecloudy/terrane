@@ -1,6 +1,6 @@
 #include "PlatformNotifications.h"
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -58,4 +58,4 @@ json::JsonObject PlatformNotifications::Toast(BridgeRequest const& request) {
   return BridgeResponse::Success(request.id, request.hasId, result);
 }
 
-}  // namespace nativeai
+}  // namespace terrane

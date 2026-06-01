@@ -10,7 +10,7 @@ test("native bridges reject appId in bridge params before dispatch", () => {
   const targets = [
     {
       label: "macOS",
-      path: "native/macos/Sources/NativeAIHostMac/WebBridge.swift",
+      path: "native/macos/Sources/TerraneHostMac/WebBridge.swift",
       snippets: [
         'request.params["appId"] != nil',
         'message: "Bridge params must not include appId; app id is channel-derived"',
@@ -19,7 +19,7 @@ test("native bridges reject appId in bridge params before dispatch", () => {
     },
     {
       label: "iOS",
-      path: "native/ios/Sources/NativeAIHostIOS/WebBridge.swift",
+      path: "native/ios/Sources/TerraneHostIOS/WebBridge.swift",
       snippets: [
         'request.params["appId"] != nil',
         'message: "Bridge params must not include appId; app id is channel-derived"',
@@ -28,7 +28,7 @@ test("native bridges reject appId in bridge params before dispatch", () => {
     },
     {
       label: "Android",
-      path: "native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt",
+      path: "native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt",
       snippets: [
         'request.params.has("appId")',
         '"Bridge params must not include appId; app id is channel-derived"',

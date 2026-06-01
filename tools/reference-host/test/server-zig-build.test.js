@@ -44,9 +44,9 @@ test(
     timeout: 60_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-server-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-zig-server-"));
     const targetArgs = targetArgsForHost();
-    const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
+    const executablePath = path.join(scratch, process.platform === "win32" ? "terrane-server.exe" : "terrane-server");
     const zigEnv = {
       ...process.env,
       ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
@@ -61,7 +61,7 @@ test(
 
       if (process.platform === "darwin") {
         assert.equal(hasCc(), true);
-        const objectPath = path.join(scratch, "native-ai-server.o");
+        const objectPath = path.join(scratch, "terrane-server.o");
         execFileSync(
           "zig",
           ["build-obj", ...zigServerModuleArgs(), ...targetArgs, "-lc", `-femit-bin=${objectPath}`],

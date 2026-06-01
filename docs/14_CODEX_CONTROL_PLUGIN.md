@@ -199,7 +199,7 @@ The control plane uses a per-launch session token. Spec:
 | Token size | 32 bytes, cryptographically random |
 | Encoding | URL-safe base64 (no padding), 43 chars |
 | Header | `X-Platform-Control-Token: <token>` |
-| Where written | `$XDG_RUNTIME_DIR/native-ai-webapp/control.token` (Linux), `~/Library/Application Support/<bundle>/control.token` (macOS), `%LOCALAPPDATA%\<product>\control.token` (Windows). File mode `0600` on POSIX; ACL restricted to current user on Windows. |
+| Where written | `$XDG_RUNTIME_DIR/terrane/control.token` (Linux), `~/Library/Application Support/<bundle>/control.token` (macOS), `%LOCALAPPDATA%\<product>\control.token` (Windows). File mode `0600` on POSIX; ACL restricted to current user on Windows. |
 | Rotation | New token on every host launch. Previous file truncated before write. |
 | Lifetime | Until the host process exits. No renewal endpoint. |
 | Bind address | `127.0.0.1` only in dev builds. Production builds compile the listener out entirely. |

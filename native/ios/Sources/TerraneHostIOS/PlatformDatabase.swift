@@ -12,7 +12,7 @@ final class PlatformDatabase {
         }
 
         execute("PRAGMA foreign_keys = ON;")
-        applyMigrations()
+        applyCheckedInMigrations()
         runIntegrityCheck()
     }
 
@@ -22,12 +22,20 @@ final class PlatformDatabase {
 
     private static func defaultDatabaseURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("NativeAIWebappPlatform/platform.sqlite")
+        return base.appendingPathComponent("Terrane/platform.sqlite")
     }
 
-    private func applyMigrations() {
-        guard let migrationsURL = RuntimeResourceLocator.sqliteMigrationsDirectoryURL() else {
-            executeFallbackSchema()
+    private func applyCheckedInMigrations() {
+        guard let migrationsURL = firstExistingURL([
+            Bundle.main.resourceURL?.appendingPathComponent("db/sqlite"),
+            RuntimeResourceLocator.repoRootURL().appendingPathComponent("db/sqlite")
+        ]) else {
+            execute(
+                """
+                CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));
+                """
+            )
             return
         }
 
@@ -38,7 +46,6 @@ final class PlatformDatabase {
             .filter({ $0.pathExtension == "sql" })
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         else {
-            executeFallbackSchema()
             return
         }
 
@@ -47,15 +54,6 @@ final class PlatformDatabase {
                 execute(sql)
             }
         }
-    }
-
-    private func executeFallbackSchema() {
-        execute(
-            """
-            CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));
-            """
-        )
     }
 
     private func runIntegrityCheck() {
@@ -80,5 +78,9 @@ final class PlatformDatabase {
             fputs("PlatformDatabase failed to apply SQL: \(message)\n", stderr)
         }
         sqlite3_free(error)
+    }
+
+    private func firstExistingURL(_ candidates: [URL?]) -> URL? {
+        candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 }

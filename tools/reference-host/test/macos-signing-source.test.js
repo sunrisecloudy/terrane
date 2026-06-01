@@ -8,11 +8,11 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 test("macOS dev control signs packages with Ed25519 instead of none-dev", () => {
   const control = fs.readFileSync(
-    path.join(repoRoot, "native/macos/Sources/NativeAIHostMac/DevControlPlane.swift"),
+    path.join(repoRoot, "native/macos/Sources/TerraneHostMac/DevControlPlane.swift"),
     "utf8",
   );
   const tests = fs.readFileSync(
-    path.join(repoRoot, "native/macos/Tests/NativeAIHostMacTests/NativeHostTests.swift"),
+    path.join(repoRoot, "native/macos/Tests/TerraneHostMacTests/NativeHostTests.swift"),
     "utf8",
   );
 

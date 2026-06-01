@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try controlPlane.start()
                 self.controlPlane = controlPlane
                 if let port = controlPlane.boundPort {
-                    print("NATIVE_AI_MACOS_CONTROL_READY port=\(port)")
+                    print("TERRANE_MACOS_CONTROL_READY port=\(port)")
                 }
             }
         } catch {
@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Native AI Webapp Platform"
+        window.title = "Terrane"
         window.center()
         window.contentView = hostView
         window.makeKeyAndOrderFront(nil)
@@ -173,12 +173,12 @@ enum NativeProductionGuard {
 
 #if DEBUG
 enum MacSmokeProbe {
-    static let launchedMarker = "NATIVE_AI_MACOS_SMOKE_APP_LAUNCHED"
-    static let markerFileName = "native-ai-macos-smoke-launched.txt"
+    static let launchedMarker = "TERRANE_MACOS_SMOKE_APP_LAUNCHED"
+    static let markerFileName = "terrane-macos-smoke-launched.txt"
 
     static func emitLaunchMarkerAndExitIfRequested() -> Bool {
         let args = CommandLine.arguments
-        guard args.contains("--native-ai-smoke-launch") else { return false }
+        guard args.contains("--terrane-smoke-launch") else { return false }
         print(launchedMarker)
         fflush(stdout)
         let markerURL = smokeMarkerURL()
@@ -187,7 +187,7 @@ enum MacSmokeProbe {
             withIntermediateDirectories: true
         )
         try? launchedMarker.write(to: markerURL, atomically: true, encoding: .utf8)
-        if args.contains("--native-ai-smoke-exit-after-launch") {
+        if args.contains("--terrane-smoke-exit-after-launch") {
             DispatchQueue.main.async {
                 NSApp.terminate(nil)
             }
@@ -197,7 +197,7 @@ enum MacSmokeProbe {
     }
 
     private static func smokeMarkerURL() -> URL {
-        if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_SMOKE_MARKER_PATH"],
+        if let overridePath = ProcessInfo.processInfo.environment["TERRANE_MACOS_SMOKE_MARKER_PATH"],
            !overridePath.isEmpty {
             return URL(fileURLWithPath: overridePath)
         }

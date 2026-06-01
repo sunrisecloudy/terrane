@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native bridges validate and budget app.log", () => {
-  const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
-  const androidHost = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
-  const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
-  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
-  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+  const androidBridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
+  const androidHost = read("native/android/app/src/main/java/com/terrane/platform/MainActivity.kt");
+  const iosBridge = read("native/ios/Sources/TerraneHostIOS/WebBridge.swift");
+  const macosBridge = read("native/macos/Sources/TerraneHostMac/WebBridge.swift");
+  const macosControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");

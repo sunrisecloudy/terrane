@@ -24,15 +24,15 @@ test("bundled example manifests expose App Store content ratings", () => {
 
 test("iOS host serves a content-rating gated bundled app index", () => {
   const catalog = fs.readFileSync(
-    path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "BundledAppCatalog.swift"),
+    path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "BundledAppCatalog.swift"),
     "utf8",
   );
   const webHost = fs.readFileSync(
-    path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"),
+    path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "WebHostView.swift"),
     "utf8",
   );
   const bridge = fs.readFileSync(
-    path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"),
+    path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "WebBridge.swift"),
     "utf8",
   );
 
@@ -41,8 +41,8 @@ test("iOS host serves a content-rating gated bundled app index", () => {
   }
   assert.match(catalog, /"source": "ios-bundled"/);
   assert.match(catalog, /"contentRating": contentRating/);
-  assert.match(catalog, /NATIVE_AI_IOS_MAX_CONTENT_AGE/);
-  assert.match(catalog, /--native-ai-max-content-age/);
+  assert.match(catalog, /TERRANE_IOS_MAX_CONTENT_AGE/);
+  assert.match(catalog, /--terrane-max-content-age/);
   assert.match(catalog, /static func denialReason\(appId: String\) -> String\?/);
   assert.match(catalog, /guard bundledAppIds\.contains\(appId\)/);
   assert.match(catalog, /return "not_bundled"/);

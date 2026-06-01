@@ -27,11 +27,11 @@ From `docs/10_ACCEPTANCE_CHECKLIST.md`:
 Run on a Windows machine with WebView2/CMake/native build dependencies available:
 
 ```powershell
-$env:NATIVE_AI_WINDOWS_SMOKE_LAUNCH = "1"
+$env:TERRANE_WINDOWS_SMOKE_LAUNCH = "1"
 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js
 ```
 
-If the packaged artifact smoke is separate in your environment, also run the release/package flow that stages `resources/runtime`, `resources/webapps/examples`, `resources/db/sqlite`, and `zig_core.dll`, then launch without `NATIVE_AI_ZIG_CORE_DLL`.
+If the packaged artifact smoke is separate in your environment, also run the release/package flow that stages `resources/runtime`, `resources/webapps/examples`, `resources/db/sqlite`, and `zig_core.dll`, then launch without `TERRANE_ZIG_CORE_DLL`.
 
 ## Likely Windows implementation gaps
 

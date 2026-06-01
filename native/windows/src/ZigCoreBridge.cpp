@@ -9,7 +9,7 @@
 #include <vector>
 #include <winrt/base.h>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -217,7 +217,7 @@ std::vector<std::filesystem::path> ZigCoreBridge::CandidateLibraryPaths() {
   auto cwd = std::filesystem::current_path();
   auto exeDir = ExecutableDirectory();
   return {
-      EnvironmentPath(L"NATIVE_AI_ZIG_CORE_DLL"),
+      EnvironmentPath(L"TERRANE_ZIG_CORE_DLL"),
       exeDir / L"zig_core.dll",
       cwd / L"zig-core" / L"zig-out" / L"bin" / L"zig_core.dll",
       cwd / L"zig-core" / L"zig-out" / L"lib" / L"zig_core.dll",
@@ -276,4 +276,4 @@ winrt::Windows::Data::Json::JsonObject ZigCoreBridge::TimeoutFailure(BridgeReque
   return BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"core.step timed out", details);
 }
 
-}  // namespace nativeai
+}  // namespace terrane

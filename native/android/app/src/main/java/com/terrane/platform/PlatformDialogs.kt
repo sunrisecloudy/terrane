@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import android.net.Uri
 import android.provider.OpenableColumns

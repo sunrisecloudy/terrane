@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NativeAIHostAndroid"
+rootProject.name = "TerraneHostAndroid"
 include(":app")

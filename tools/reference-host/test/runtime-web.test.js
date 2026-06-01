@@ -510,7 +510,7 @@ test("runtime keeps WebKit native app frames on the parent-owned sandbox channel
   harness.parentWindow.location = { protocol: "app-runtime:", hostname: "runtime", search: "" };
   harness.parentWindow.webkit = {
     messageHandlers: {
-      NativeAIPlatformBridge: {
+      TerranePlatformBridge: {
         postMessage() {
           return Promise.resolve({ ok: true, result: { runtimeVersion: "test" } });
         },
@@ -543,7 +543,7 @@ test("runtime sends WebKit native bridge envelopes from the parent-owned port mo
   harness.parentWindow.location = { protocol: "app-runtime:", hostname: "runtime", search: "" };
   harness.parentWindow.webkit = {
     messageHandlers: {
-      NativeAIPlatformBridge: {
+      TerranePlatformBridge: {
         postMessage(envelope) {
           nativeEnvelopes.push(envelope);
           if (envelope.request.method === "runtime.capabilities") {

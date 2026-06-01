@@ -19,7 +19,7 @@ export class ReferenceHost {
     allowRuntimeMismatch = false,
     capabilityOverrides = {},
     browserSmokeRunner = null,
-    smokeRunner = process.env.NATIVE_AI_SMOKE_RUNNER ?? "static",
+    smokeRunner = process.env.TERRANE_SMOKE_RUNNER ?? "static",
     keyFile = false,
   } = {}) {
     this.database = new PlatformDatabase({ dbFile });

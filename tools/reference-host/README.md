@@ -22,7 +22,7 @@ When launched from `src/server.js`, the reference host generates a fresh 32-byte
 
 `runtime.run_smoke_tests` accepts `runner: "browser"` to execute an installed app's `index.html`, `styles.css`, and `app.js` in headless Chrome. The runner injects the documented `AppRuntime.call` surface, sends bridge calls through the reference-host dispatcher, records bridge calls/errors, and drives the bundled `smoke-tests.json` click/fill/select steps against the real DOM.
 
-Set `NATIVE_AI_CHROME_PATH` when Chrome is not in a standard location. Set `NATIVE_AI_SMOKE_RUNNER=browser` to make browser execution the default, or `NATIVE_AI_SMOKE_RUNNER=auto` to try Chrome and fall back to the static checker when unavailable.
+Set `TERRANE_CHROME_PATH` when Chrome is not in a standard location. Set `TERRANE_SMOKE_RUNNER=browser` to make browser execution the default, or `TERRANE_SMOKE_RUNNER=auto` to try Chrome and fall back to the static checker when unavailable.
 
 ## v0.4 persistence requirement
 

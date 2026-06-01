@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native bridges enforce bridge and network rate budgets", () => {
-  const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
-  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
-  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
-  const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const iosBridge = read("native/ios/Sources/TerraneHostIOS/WebBridge.swift");
+  const macosBridge = read("native/macos/Sources/TerraneHostMac/WebBridge.swift");
+  const macosControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
+  const androidBridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsBridgeHeader = read("native/windows/src/WebBridge.h");
   const linuxBridge = read("native/linux/src/web_bridge.c");
@@ -49,9 +49,9 @@ test("native bridges enforce bridge and network rate budgets", () => {
 });
 
 test("macOS bridge quarantines and restores after repeated resource budget errors", () => {
-  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
-  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
-  const macosBudgetQuarantine = read("native/macos/Sources/NativeAIHostMac/BridgeBudgetQuarantine.swift");
+  const macosBridge = read("native/macos/Sources/TerraneHostMac/WebBridge.swift");
+  const macosControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
+  const macosBudgetQuarantine = read("native/macos/Sources/TerraneHostMac/BridgeBudgetQuarantine.swift");
 
   assert.match(macosBridge, /BridgeBudgetQuarantine\.activeInstallId\(database: db, appId: request\.context\.appId\)/);
   assert.match(macosBridge, /BridgeBudgetQuarantine\.maybeQuarantineAfterBudgetError\(/);

@@ -12,13 +12,13 @@ const FIXED_DOS_TIME = 0;
 const FIXED_DOS_DATE = 33;
 const PLATFORM_VERSION = "0.1.0";
 const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
-const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server";
-const MACOS_HOST_EXECUTABLE_NAME = "NativeAIHostMac";
-const MACOS_HOST_BUNDLE_NAME = "NativeAIHostMac.app";
-const LINUX_HOST_EXECUTABLE_NAME = "native-ai-webapp-host";
-const LINUX_HOST_APP_DIR_NAME = "NativeAIWebappHost";
-const WINDOWS_HOST_EXECUTABLE_NAME = "NativeAIWebappHost.exe";
-const WINDOWS_HOST_APP_DIR_NAME = "NativeAIWebappHost";
+const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "terrane-server.exe" : "terrane-server";
+const MACOS_HOST_EXECUTABLE_NAME = "TerraneHostMac";
+const MACOS_HOST_BUNDLE_NAME = "TerraneHostMac.app";
+const LINUX_HOST_EXECUTABLE_NAME = "terrane-host";
+const LINUX_HOST_APP_DIR_NAME = "TerraneHost";
+const WINDOWS_HOST_EXECUTABLE_NAME = "TerraneHost.exe";
+const WINDOWS_HOST_APP_DIR_NAME = "TerraneHost";
 const WINDOWS_WEBVIEW2_ARCH = "x64";
 const WINDOWS_WEBVIEW2_INCLUDE = path.join("build", "native", "include", "WebView2.h");
 const WINDOWS_WEBVIEW2_STATIC_LIB = path.join("build", "native", WINDOWS_WEBVIEW2_ARCH, "WebView2LoaderStatic.lib");
@@ -173,7 +173,7 @@ export function buildZigCoreArtifacts({ outDir = path.join(repoRoot, "artifacts"
   const resolvedOutDir = path.resolve(outDir);
   const zigCoreDir = path.join(repoRoot, "zig-core");
   const headerPath = path.join(zigCoreDir, "include", "zig_core.h");
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-core-cache-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-zig-core-cache-"));
   const artifacts = [];
 
   try {
@@ -217,7 +217,7 @@ export function buildServerArtifacts({ outDir = path.join(repoRoot, "artifacts")
   const targetId = hostServerTargetId();
   const artifactDir = path.join(resolvedOutDir, "server", targetId);
   const outputPath = path.join(artifactDir, SERVER_EXECUTABLE_NAME);
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-release-cache-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-release-cache-"));
   const env = {
     ...process.env,
     ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "global"),
@@ -230,7 +230,7 @@ export function buildServerArtifacts({ outDir = path.join(repoRoot, "artifacts")
     const targetArgs = serverTargetArgsForHost();
     const optimizeArgs = ["-O", "ReleaseSafe"];
     if (process.platform === "darwin") {
-      const objectPath = path.join(cacheRoot, "native-ai-server.o");
+      const objectPath = path.join(cacheRoot, "terrane-server.o");
       execFileSync("zig", ["build-obj", ...moduleArgs, ...targetArgs, ...optimizeArgs, "-lc", `-femit-bin=${objectPath}`], {
         cwd: serverDir,
         env,
@@ -281,7 +281,7 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
   const macosContentsDir = path.join(contentsDir, "MacOS");
   const resourcesDir = path.join(contentsDir, "Resources");
   const frameworksDir = path.join(contentsDir, "Frameworks");
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-macos-release-cache-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-macos-release-cache-"));
   const scratchPath = path.join(cacheRoot, "swiftpm");
   const moduleCachePath = path.join(cacheRoot, "module-cache");
   const env = {
@@ -372,7 +372,7 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
   const targetId = "windows-x86_64";
   const windowsDir = path.join(repoRoot, "native", "windows");
   const artifactDir = path.join(resolvedOutDir, "native-apps", "windows", targetId, WINDOWS_HOST_APP_DIR_NAME);
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-windows-release-cache-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-release-cache-"));
   const buildDir = path.join(cacheRoot, "cmake-build");
   const zigCoreDll = path.join(cacheRoot, "zig_core.dll");
   const env = {
@@ -394,7 +394,7 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
 
     const builtExecutable = resolveWindowsHostExecutable(buildDir, "Release");
     if (!builtExecutable) {
-      throw new Error("Windows host Release build did not produce NativeAIWebappHost.exe");
+      throw new Error("Windows host Release build did not produce TerraneHost.exe");
     }
     const builtAppDir = path.dirname(builtExecutable);
     const builtResourcesDir = path.join(builtAppDir, "resources");
@@ -444,7 +444,7 @@ export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifa
   const targetId = "linux-x86_64";
   const linuxDir = path.join(repoRoot, "native", "linux");
   const artifactDir = path.join(resolvedOutDir, "native-apps", "linux", targetId, LINUX_HOST_APP_DIR_NAME);
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-release-cache-"));
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-release-cache-"));
   const buildDir = path.join(cacheRoot, "meson-build");
   const zigCoreSo = path.join(cacheRoot, "libzig_core.so");
   const env = {
@@ -497,11 +497,11 @@ export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifa
 }
 
 export function windowsWebView2SdkStatus(env = process.env) {
-  const sdkDir = env.NATIVE_AI_WEBVIEW2_NUGET_DIR;
+  const sdkDir = env.TERRANE_WEBVIEW2_NUGET_DIR;
   if (!sdkDir) {
     return {
       ok: false,
-      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR must point to an expanded Microsoft.Web.WebView2 package containing ${WINDOWS_WEBVIEW2_INCLUDE} and ${WINDOWS_WEBVIEW2_STATIC_LIB}`,
+      message: `TERRANE_WEBVIEW2_NUGET_DIR must point to an expanded Microsoft.Web.WebView2 package containing ${WINDOWS_WEBVIEW2_INCLUDE} and ${WINDOWS_WEBVIEW2_STATIC_LIB}`,
     };
   }
 
@@ -509,7 +509,7 @@ export function windowsWebView2SdkStatus(env = process.env) {
   if (!fs.existsSync(includePath)) {
     return {
       ok: false,
-      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_INCLUDE}: ${includePath}`,
+      message: `TERRANE_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_INCLUDE}: ${includePath}`,
     };
   }
 
@@ -517,7 +517,7 @@ export function windowsWebView2SdkStatus(env = process.env) {
   if (!fs.existsSync(staticLibPath)) {
     return {
       ok: false,
-      message: `NATIVE_AI_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_STATIC_LIB}: ${staticLibPath}`,
+      message: `TERRANE_WEBVIEW2_NUGET_DIR is missing ${WINDOWS_WEBVIEW2_STATIC_LIB}: ${staticLibPath}`,
     };
   }
 
@@ -637,10 +637,10 @@ function macOSInfoPlist() {
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
-  <key>CFBundleIdentifier</key><string>dev.nativeai.host.macos</string>
+  <key>CFBundleIdentifier</key><string>dev.terrane.host.macos</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
-  <key>CFBundleDisplayName</key><string>Native AI Webapp Platform</string>
+  <key>CFBundleDisplayName</key><string>Terrane</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${PLATFORM_VERSION}</string>
   <key>CFBundleVersion</key><string>1</string>

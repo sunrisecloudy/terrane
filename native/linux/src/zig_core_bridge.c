@@ -111,7 +111,7 @@ JsonNode *zig_core_bridge_step(ZigCoreBridge *core, const BridgeRequest *request
 
 static gchar **candidate_library_paths(void) {
   GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
-  const gchar *override_path = g_getenv("NATIVE_AI_ZIG_CORE_SO");
+  const gchar *override_path = g_getenv("TERRANE_ZIG_CORE_SO");
   if (override_path != NULL && override_path[0] != '\0') {
     g_ptr_array_add(paths, g_strdup(override_path));
   }

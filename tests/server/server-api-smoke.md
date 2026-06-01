@@ -8,7 +8,7 @@ control_token: server-smoke-token
 # Zig Server API Smoke
 
 Run this suite against a dev Zig server started with
-`NATIVE_AI_SERVER_CONTROL_TOKEN=server-smoke-token`.
+`TERRANE_SERVER_CONTROL_TOKEN=server-smoke-token`.
 
 ## Health
 

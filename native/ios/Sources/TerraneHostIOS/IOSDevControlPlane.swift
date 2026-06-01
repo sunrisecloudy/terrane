@@ -27,7 +27,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
                args.indices.contains(args.index(after: index)) {
                 return UInt16(args[args.index(after: index)])
             }
-            return UInt16(env["NATIVE_AI_IOS_CONTROL_PORT"] ?? "")
+            return UInt16(env["TERRANE_IOS_CONTROL_PORT"] ?? "")
         }
 
         private static func tokenFileURL(from env: [String: String]) -> URL {
@@ -37,7 +37,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ??
                 FileManager.default.temporaryDirectory
             return base
-                .appendingPathComponent("native-ai-webapp")
+                .appendingPathComponent("terrane")
                 .appendingPathComponent("control.token")
         }
     }
@@ -52,7 +52,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
     let tokenFileURL: URL
     let controlSessionId: String
 
-    private let queue = DispatchQueue(label: "dev.nativeai.ios.control-plane")
+    private let queue = DispatchQueue(label: "dev.terrane.ios.control-plane")
     private let database: PlatformDatabase
     private let bridgeCommandHandler: BridgeCommandHandler?
     private var listener: NWListener?
@@ -80,7 +80,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
     @MainActor
     static func enabledFromProcess(bridge: WebBridge) throws -> IOSDevControlPlane? {
         let env = ProcessInfo.processInfo.environment
-        guard CommandLine.arguments.contains("--native-ai-dev-control") || env["NATIVE_AI_IOS_DEV_CONTROL"] == "1" else {
+        guard CommandLine.arguments.contains("--terrane-dev-control") || env["TERRANE_IOS_DEV_CONTROL"] == "1" else {
             return nil
         }
         return try IOSDevControlPlane { appId, method, params, id in
@@ -96,7 +96,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
             case .ready:
                 self.emitReadyMarker()
             case let .failed(error):
-                print("NATIVE_AI_IOS_CONTROL_FAILED \(error)")
+                print("TERRANE_IOS_CONTROL_FAILED \(error)")
                 fflush(stdout)
             default:
                 break
@@ -3388,7 +3388,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
     }
 
     private func emitReadyMarker() {
-        print("NATIVE_AI_IOS_CONTROL_READY port=\(boundPort ?? 0) tokenPath=\(tokenFileURL.path)")
+        print("TERRANE_IOS_CONTROL_READY port=\(boundPort ?? 0) tokenPath=\(tokenFileURL.path)")
         fflush(stdout)
     }
 

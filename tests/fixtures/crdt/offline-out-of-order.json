@@ -791,7 +791,7 @@
     "description": "Offline peers produce independent updates; an out-of-order update is pending until the base snapshot arrives, then all peers converge.",
     "id": "offline-out-of-order"
   },
-  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "schemaVersion": "terrane-notebook-crdt-fixture-v0.1",
   "sync": {
     "converged": true,
     "inOrderReplay": [

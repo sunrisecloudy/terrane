@@ -5,7 +5,7 @@ import path from "node:path";
 import { canonicalJson, sha256 } from "./util.js";
 import { PlatformError } from "./errors.js";
 
-const SIGNATURE_PREFIX = "native-ai-webapp/sig/v1";
+const SIGNATURE_PREFIX = "terrane/sig/v1";
 
 export function createPlatformKeypair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
@@ -13,7 +13,7 @@ export function createPlatformKeypair() {
 }
 
 export function defaultPlatformKeyFile({ env = process.env, homeDir = os.homedir() } = {}) {
-  return path.join(env.XDG_CACHE_HOME || path.join(homeDir, ".cache"), "native-ai-webapp", "platform.key");
+  return path.join(env.XDG_CACHE_HOME || path.join(homeDir, ".cache"), "terrane", "platform.key");
 }
 
 export function loadOrCreatePlatformKeypair({ keyFile = defaultPlatformKeyFile() } = {}) {

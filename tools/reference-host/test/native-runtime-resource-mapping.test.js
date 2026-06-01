@@ -16,8 +16,8 @@ function assertContains(source, snippet, label) {
 
 test("Apple native hosts route runtime and generated-app resources through app-runtime scheme", () => {
   for (const [label, relativePath] of [
-    ["macOS", "native/macos/Sources/NativeAIHostMac/WebHostView.swift"],
-    ["iOS", "native/ios/Sources/NativeAIHostIOS/WebHostView.swift"],
+    ["macOS", "native/macos/Sources/TerraneHostMac/WebHostView.swift"],
+    ["iOS", "native/ios/Sources/TerraneHostIOS/WebHostView.swift"],
   ]) {
     const source = readRepoFile(relativePath);
 
@@ -43,10 +43,10 @@ test("Apple native hosts route runtime and generated-app resources through app-r
 });
 
 test("macOS native host resolves packaged release resources before repo-root fallbacks", () => {
-  const locator = readRepoFile("native/macos/Sources/NativeAIHostMac/WebHostView.swift");
-  const database = readRepoFile("native/macos/Sources/NativeAIHostMac/PlatformDatabase.swift");
-  const bridge = readRepoFile("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
-  const control = readRepoFile("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+  const locator = readRepoFile("native/macos/Sources/TerraneHostMac/WebHostView.swift");
+  const database = readRepoFile("native/macos/Sources/TerraneHostMac/PlatformDatabase.swift");
+  const bridge = readRepoFile("native/macos/Sources/TerraneHostMac/WebBridge.swift");
+  const control = readRepoFile("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
 
   assertContains(locator, 'Bundle.main.resourceURL?.appendingPathComponent("runtime")', "macOS locator");
   assertContains(locator, 'Bundle.main.resourceURL?.appendingPathComponent("webapps/examples")', "macOS locator");
@@ -104,7 +104,7 @@ test("Linux native host maps app-runtime /runtime paths to runtime-web files", (
 
 test("Android native host packages runtime-web under the /runtime asset path", () => {
   const gradle = readRepoFile("native/android/app/build.gradle.kts");
-  const activity = readRepoFile("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
+  const activity = readRepoFile("native/android/app/src/main/java/com/terrane/platform/MainActivity.kt");
 
   assertContains(gradle, 'from(repoRoot.resolve("runtime-web"))', "Android Gradle");
   assertContains(gradle, 'into("runtime")', "Android Gradle");
@@ -119,16 +119,16 @@ test("Windows native host stages runtime-web under the /runtime WebView2 path", 
   const host = readRepoFile("native/windows/src/WebViewHost.cpp");
   const core = readRepoFile("native/windows/src/ZigCoreBridge.cpp");
 
-  assertContains(cmake, 'copy_directory "${NATIVE_AI_REPO_ROOT}/runtime-web"', "Windows CMake");
+  assertContains(cmake, 'copy_directory "${TERRANE_REPO_ROOT}/runtime-web"', "Windows CMake");
   assertContains(cmake, "resources/runtime", "Windows CMake");
-  assertContains(cmake, 'copy_directory "${NATIVE_AI_REPO_ROOT}/webapps/examples"', "Windows CMake");
+  assertContains(cmake, 'copy_directory "${TERRANE_REPO_ROOT}/webapps/examples"', "Windows CMake");
   assertContains(cmake, "resources/webapps/examples", "Windows CMake");
-  assertContains(cmake, 'NATIVE_AI_ZIG_CORE_DLL "" CACHE FILEPATH', "Windows CMake");
-  assertContains(cmake, 'copy_if_different "${NATIVE_AI_ZIG_CORE_DLL}"', "Windows CMake");
+  assertContains(cmake, 'TERRANE_ZIG_CORE_DLL "" CACHE FILEPATH', "Windows CMake");
+  assertContains(cmake, 'copy_if_different "${TERRANE_ZIG_CORE_DLL}"', "Windows CMake");
   assertContains(host, 'webview_->Navigate(L"https://runtime.local.platform/runtime/index.html")', "Windows host");
   assertContains(host, 'resourceRoot / L"runtime" / L"index.html"', "Windows host");
   assertContains(host, 'resourceRoot / L"webapps" / L"examples"', "Windows host");
-  assertContains(core, 'EnvironmentPath(L"NATIVE_AI_ZIG_CORE_DLL")', "Windows Zig core bridge");
+  assertContains(core, 'EnvironmentPath(L"TERRANE_ZIG_CORE_DLL")', "Windows Zig core bridge");
   assertContains(core, 'exeDir / L"zig_core.dll"', "Windows Zig core bridge");
   assert.equal(
     core.indexOf('exeDir / L"zig_core.dll"') < core.indexOf('cwd / L"zig-core" / L"zig-out"'),

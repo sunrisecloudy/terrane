@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -232,4 +232,4 @@ bool PlatformStorage::HasStoragePrefix(BridgeRequest const& request, std::wstrin
   return key.rfind(request.context.storagePrefix, 0) == 0;
 }
 
-}  // namespace nativeai
+}  // namespace terrane

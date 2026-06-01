@@ -29,13 +29,13 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
 
   for (const snippet of [
     "_DEBUG",
-    "NATIVE_AI_WINDOWS_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_WINDOWS_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "DevControlPlaneConfig config",
     "devControl->Start(config",
     "Windows dev control plane is disabled in release builds",
-    "RecordProductionGuardAudit(L\"NATIVE_AI_WINDOWS_DEV_CONTROL\")",
+    "RecordProductionGuardAudit(L\"TERRANE_WINDOWS_DEV_CONTROL\")",
     "devControl->SetHost(g_host.get())",
   ]) {
     assert.equal(main.includes(snippet), true, `Windows main should contain ${snippet}`);
@@ -51,7 +51,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "SO_RCVTIMEO",
     "PLATFORM_CONTROL_TOKEN_FILE",
     "FOLDERID_LocalAppData",
-    "NativeAIWebappPlatform",
+    "Terrane",
     "control.token",
     "BCryptGenRandom",
     "Base64Url",
@@ -203,7 +203,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "unsupported_tool",
     "platform.health",
     "Audit(L\"platform.health\"",
-    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "TERRANE_WINDOWS_CONTROL_READY port=",
     "control_sessions",
     "control_commands",
     "UPDATE control_sessions SET status = 'ended'",

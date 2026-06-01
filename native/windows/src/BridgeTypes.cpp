@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 json::JsonObject BridgeResponse::Success(
@@ -58,4 +58,4 @@ std::wstring Utf8ToWide(std::string const& value) {
   return out;
 }
 
-}  // namespace nativeai
+}  // namespace terrane

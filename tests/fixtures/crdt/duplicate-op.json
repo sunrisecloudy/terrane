@@ -576,7 +576,7 @@
     "description": "A duplicated sync update is imported twice and leaves the materialized notebook unchanged after the first import.",
     "id": "duplicate-op"
   },
-  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "schemaVersion": "terrane-notebook-crdt-fixture-v0.1",
   "sync": {
     "duplicateReplay": [
       {

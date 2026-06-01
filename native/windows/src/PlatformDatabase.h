@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <winsqlite/winsqlite3.h>
 
-namespace nativeai {
+namespace terrane {
 
 class PlatformDatabase {
  public:
@@ -23,4 +23,4 @@ class PlatformDatabase {
   sqlite3* db_ = nullptr;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

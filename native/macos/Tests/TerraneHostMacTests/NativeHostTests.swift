@@ -1,5 +1,5 @@
 import Foundation
-@testable import NativeAIHostMac
+@testable import TerraneHostMac
 import SQLite3
 import Testing
 import WebKit
@@ -36,7 +36,7 @@ struct NativeHostTests {
     @Test("runtime crash recovery records a failed session and reload offer")
     func runtimeCrashRecoveryRecordsFailedSessionAndReloadOffer() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-crash-recovery-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-crash-recovery-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -72,35 +72,35 @@ struct NativeHostTests {
     @Test("production guard rejects exact dev-only startup flags")
     func productionGuardRejectsExactDevOnlyStartupFlags() throws {
         #expect(NativeProductionGuard.rejectedDevOnlyFlag(
-            in: ["NativeAIHostMac", "--control-plane-port"],
+            in: ["TerraneHostMac", "--control-plane-port"],
             allowDevFlags: false
         ) == "--control-plane-port")
         #expect(NativeProductionGuard.rejectedDevOnlyFlag(
-            in: ["NativeAIHostMac", "--allow-runtime-mismatch=true"],
+            in: ["TerraneHostMac", "--allow-runtime-mismatch=true"],
             allowDevFlags: false
         ) == "--allow-runtime-mismatch=true")
         #expect(NativeProductionGuard.rejectedDevOnlyFlag(
-            in: ["NativeAIHostMac", "--allow-unsigned-dev"],
+            in: ["TerraneHostMac", "--allow-unsigned-dev"],
             allowDevFlags: false
         ) == "--allow-unsigned-dev")
         #expect(NativeProductionGuard.rejectedDevOnlyFlag(
-            in: ["NativeAIHostMac", "--control-plane-portish"],
+            in: ["TerraneHostMac", "--control-plane-portish"],
             allowDevFlags: false
         ) == nil)
         #expect(NativeProductionGuard.rejectedDevOnlyFlag(
-            in: ["NativeAIHostMac", "--control-plane-port"],
+            in: ["TerraneHostMac", "--control-plane-port"],
             allowDevFlags: true
         ) == nil)
 
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-production-guard-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-production-guard-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
         }
         let dbURL = tempDir.appendingPathComponent("platform.sqlite")
         let rejected = NativeProductionGuard.rejectDevOnlyFlagsIfNeeded(
-            arguments: ["NativeAIHostMac", "--allow-unsigned-dev"],
+            arguments: ["TerraneHostMac", "--allow-unsigned-dev"],
             allowDevFlags: false,
             databaseURL: dbURL
         )
@@ -111,7 +111,7 @@ struct NativeHostTests {
     @Test("SQLite storage persists by app id and storage prefix")
     func sqliteStoragePersistsWithAppScope() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-storage-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-storage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -162,7 +162,7 @@ struct NativeHostTests {
     @Test("SQLite storage enforces manifest maxStorageBytes")
     func sqliteStorageEnforcesManifestMaxStorageBytes() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-storage-budget-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-storage-budget-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -196,7 +196,7 @@ struct NativeHostTests {
     @Test("SQLite storage returns storage_error when the database cannot open")
     func sqliteStorageReturnsStorageErrorWhenDatabaseCannotOpen() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-storage-error-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-storage-error-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -253,7 +253,7 @@ struct NativeHostTests {
     @Test("SQLite app registry rolls back active version and preserves storage")
     func sqliteAppRegistryRollsBackActiveVersion() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-rollback-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-rollback-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -332,8 +332,8 @@ struct NativeHostTests {
     @Test("debug control plane persists its signing key in Keychain")
     func debugControlPlanePersistsSigningKeyInKeychain() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-signing-key-\(UUID().uuidString)", isDirectory: true)
-        let signingKeyAccount = "native-ai-macos-signing-key-\(UUID().uuidString)"
+            .appendingPathComponent("terrane-macos-signing-key-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "terrane-macos-signing-key-\(UUID().uuidString)"
         DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
@@ -369,8 +369,8 @@ struct NativeHostTests {
     @Test("debug control plane rejects tampered installed packages before open")
     func debugControlPlaneRejectsTamperedInstalledPackageBeforeOpen() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-verified-mount-\(UUID().uuidString)", isDirectory: true)
-        let signingKeyAccount = "native-ai-macos-verified-mount-\(UUID().uuidString)"
+            .appendingPathComponent("terrane-macos-verified-mount-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "terrane-macos-verified-mount-\(UUID().uuidString)"
         DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
@@ -436,8 +436,8 @@ struct NativeHostTests {
     @Test("debug control plane writes token file, authenticates health, and audits requests")
     func debugControlPlaneAuthenticatesHealthAndAuditsRequests() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-control-\(UUID().uuidString)", isDirectory: true)
-        let signingKeyAccount = "native-ai-macos-control-\(UUID().uuidString)"
+            .appendingPathComponent("terrane-macos-control-\(UUID().uuidString)", isDirectory: true)
+        let signingKeyAccount = "terrane-macos-control-\(UUID().uuidString)"
         DevControlPlane.deleteSigningKeyForTests(account: signingKeyAccount)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
@@ -1720,7 +1720,7 @@ struct NativeHostTests {
     @Test("debug control mock network denials include bridge fixture detail subsets")
     func debugControlMockNetworkDenialsIncludeBridgeFixtureDetailSubsets() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-network-details-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-network-details-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -1782,7 +1782,7 @@ struct NativeHostTests {
     @Test("debug control bridge validates and budgets app.log")
     func debugControlBridgeValidatesAndBudgetsAppLog() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-log-budget-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-log-budget-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -1888,7 +1888,7 @@ struct NativeHostTests {
     @Test("debug control bridge enforces bridge and network rate budgets")
     func debugControlBridgeEnforcesBridgeAndNetworkRateBudgets() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-rate-budget-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-rate-budget-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -2004,7 +2004,7 @@ struct NativeHostTests {
     @Test("debug control bridge quarantines and restores after repeated resource budget violations")
     func debugControlBridgeQuarantinesAndRestoresAfterRepeatedResourceBudgetViolations() async throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-budget-quarantine-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-budget-quarantine-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -2140,7 +2140,7 @@ struct NativeHostTests {
 
     @Test("core.step returns real Zig output when a dylib is available")
     func coreStepReturnsRealZigOutput() throws {
-        guard let dylibPath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST"],
+        guard let dylibPath = ProcessInfo.processInfo.environment["TERRANE_ZIG_CORE_DYLIB_FOR_TEST"],
               FileManager.default.fileExists(atPath: dylibPath)
         else {
             return
@@ -2212,7 +2212,7 @@ struct NativeHostTests {
     @Test("file dialogs return selected files, save output, and structured cancellations")
     func fileDialogsReturnResultsAndCancellationErrors() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-dialogs-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-dialogs-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -2286,7 +2286,7 @@ struct NativeHostTests {
     @Test("open file dialogs support multiple selection, accept filters, maxBytes, and validation errors")
     func openFileDialogsSupportDocumentedOptions() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("native-ai-macos-open-dialog-options-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("terrane-macos-open-dialog-options-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             try? FileManager.default.removeItem(at: tempDir)
@@ -2378,9 +2378,9 @@ struct NativeHostTests {
     func webViewLoadsRuntimeAndDispatchesBridge() async throws {
         let bridge = WebBridge()
         let contentController = WKUserContentController()
-        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "NativeAIPlatformBridge")
+        contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "TerranePlatformBridge")
         defer {
-            contentController.removeScriptMessageHandler(forName: "NativeAIPlatformBridge")
+            contentController.removeScriptMessageHandler(forName: "TerranePlatformBridge")
         }
 
         let configuration = WKWebViewConfiguration()

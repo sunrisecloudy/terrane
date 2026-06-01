@@ -29,8 +29,8 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
 
   for (const snippet of [
     "#ifndef NDEBUG",
-    "NATIVE_AI_LINUX_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_LINUX_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "dev_control_plane_start(&config",
     "dev_control_plane_set_bridge(dev_control",
@@ -44,7 +44,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4)",
     "soup_server_listen(plane->server, socket_address",
     'g_getenv("XDG_RUNTIME_DIR")',
-    '"native-ai-webapp", "control.token"',
+    '"terrane", "control.token"',
     "g_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600)",
     "g_base64_encode(bytes, sizeof(bytes))",
     "X-Platform-Control-Token",
@@ -124,7 +124,7 @@ test("Linux dev control plane is debug-only, loopback-bound, token-gated, and au
     "control_sessions",
     "control_commands",
     "platform.health",
-    "NATIVE_AI_LINUX_CONTROL_READY port=",
+    "TERRANE_LINUX_CONTROL_READY port=",
   ]) {
     assert.equal(control.includes(snippet), true, `Linux dev control source should contain ${snippet}`);
   }

@@ -20,7 +20,7 @@ typedef int32_t (*CoreStepJsonFn)(
 );
 typedef void (*CoreFreeFn)(ZigCoreBuffer buffer);
 
-struct NativeAIZigCore {
+struct TerraneZigCore {
     void *handle;
     ZigCore *core;
     CoreDestroyFn destroy;
@@ -30,11 +30,11 @@ struct NativeAIZigCore {
 
 static const char *last_error = NULL;
 
-const char *native_ai_zig_core_last_error(void) {
+const char *terrane_zig_core_last_error(void) {
     return last_error;
 }
 
-NativeAIZigCore *native_ai_zig_core_open(const char *path) {
+TerraneZigCore *terrane_zig_core_open(const char *path) {
     last_error = NULL;
     void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) {
@@ -59,11 +59,11 @@ NativeAIZigCore *native_ai_zig_core_open(const char *path) {
         return NULL;
     }
 
-    NativeAIZigCore *bridge = (NativeAIZigCore *)calloc(1, sizeof(NativeAIZigCore));
+    TerraneZigCore *bridge = (TerraneZigCore *)calloc(1, sizeof(TerraneZigCore));
     if (bridge == NULL) {
         destroy(core);
         dlclose(handle);
-        last_error = "failed to allocate NativeAIZigCore";
+        last_error = "failed to allocate TerraneZigCore";
         return NULL;
     }
 
@@ -75,7 +75,7 @@ NativeAIZigCore *native_ai_zig_core_open(const char *path) {
     return bridge;
 }
 
-void native_ai_zig_core_close(NativeAIZigCore *bridge) {
+void terrane_zig_core_close(TerraneZigCore *bridge) {
     if (bridge == NULL) {
         return;
     }
@@ -88,8 +88,8 @@ void native_ai_zig_core_close(NativeAIZigCore *bridge) {
     free(bridge);
 }
 
-int32_t native_ai_zig_core_step_json(
-    NativeAIZigCore *bridge,
+int32_t terrane_zig_core_step_json(
+    TerraneZigCore *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
@@ -116,8 +116,8 @@ int32_t native_ai_zig_core_step_json(
     return 0;
 }
 
-void native_ai_zig_core_free_output(
-    NativeAIZigCore *bridge,
+void terrane_zig_core_free_output(
+    TerraneZigCore *bridge,
     uint8_t *output_ptr,
     size_t output_len
 ) {

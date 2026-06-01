@@ -41,7 +41,7 @@ test("Linux network.request honors request timeoutMs and maps GLib timeouts", ()
 });
 
 test("macOS network.request honors request timeoutMs and maps URLSession timeouts", () => {
-  const source = read("native/macos/Sources/NativeAIHostMac/PlatformNetwork.swift");
+  const source = read("native/macos/Sources/TerraneHostMac/PlatformNetwork.swift");
 
   assert.match(source, /requestedTimeoutMs/);
   assert.match(source, /network\.request timeoutMs must be a positive integer/);
@@ -54,7 +54,7 @@ test("macOS network.request honors request timeoutMs and maps URLSession timeout
 });
 
 test("iOS network.request honors request timeoutMs and maps URLSession timeouts", () => {
-  const source = read("native/ios/Sources/NativeAIHostIOS/PlatformNetwork.swift");
+  const source = read("native/ios/Sources/TerraneHostIOS/PlatformNetwork.swift");
 
   assert.match(source, /requestedTimeoutMs/);
   assert.match(source, /network\.request timeoutMs must be a positive integer/);
@@ -67,7 +67,7 @@ test("iOS network.request honors request timeoutMs and maps URLSession timeouts"
 });
 
 test("Android network.request honors request timeoutMs and maps socket timeouts", () => {
-  const source = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNetwork.kt");
+  const source = read("native/android/app/src/main/java/com/terrane/platform/PlatformNetwork.kt");
 
   assert.match(source, /requestedTimeoutMs/);
   assert.match(source, /OkHttpClient\.Builder/);

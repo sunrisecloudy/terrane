@@ -1,4 +1,4 @@
-package com.nativeai.platform
+package com.terrane.platform
 
 import org.json.JSONObject
 

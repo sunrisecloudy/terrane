@@ -4,8 +4,8 @@ plugins {
 }
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
-val generatedNativeAiAssets = layout.buildDirectory.dir("generated/native-ai-assets")
-val generatedZigCoreJniLibs = layout.buildDirectory.dir("generated/native-ai-zig-core/jniLibs")
+val generatedNativeAiAssets = layout.buildDirectory.dir("generated/terrane-assets")
+val generatedZigCoreJniLibs = layout.buildDirectory.dir("generated/terrane-zig-core/jniLibs")
 val syncNativeAiAssets by tasks.registering(Sync::class) {
     into(generatedNativeAiAssets)
     from(repoRoot.resolve("runtime-web")) {
@@ -59,11 +59,11 @@ val buildAndroidZigCore by tasks.registering {
 }
 
 android {
-    namespace = "com.nativeai.platform"
+    namespace = "com.terrane.platform"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.nativeai.platform"
+        applicationId = "com.terrane.platform"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

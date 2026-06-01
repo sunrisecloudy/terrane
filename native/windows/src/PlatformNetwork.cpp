@@ -12,7 +12,7 @@
 #include <sstream>
 #include <vector>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -690,7 +690,7 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request, sqlite3*
     return mockResponse.value();
   }
 
-  HttpHandle session{WinHttpOpen(L"NativeAIWebappPlatform/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0)};
+  HttpHandle session{WinHttpOpen(L"Terrane/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0)};
   if (session.value == nullptr) {
     return Failure(request, L"network_error", L"WinHTTP session creation failed");
   }
@@ -759,4 +759,4 @@ json::JsonObject PlatformNetwork::Request(BridgeRequest const& request, sqlite3*
   return Failure(request, L"network_error", L"network.request exceeded redirect limit");
 }
 
-}  // namespace nativeai
+}  // namespace terrane

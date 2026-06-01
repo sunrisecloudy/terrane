@@ -13,22 +13,22 @@ final class DevControlPlane: @unchecked Sendable {
         var tokenFileURL: URL
         var databaseURL: URL?
         var tokenOverride: String?
-        var signingKeyAccount = "native-ai-webapp.macos.dev-control.platform-key"
+        var signingKeyAccount = "terrane.macos.dev-control.platform-key"
 
         static func defaultConfiguration() -> Configuration {
             Configuration(
-                port: UInt16(ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_CONTROL_PORT"] ?? ""),
+                port: UInt16(ProcessInfo.processInfo.environment["TERRANE_MACOS_CONTROL_PORT"] ?? ""),
                 tokenFileURL: defaultTokenFileURL(),
                 databaseURL: nil,
                 tokenOverride: nil,
-                signingKeyAccount: ProcessInfo.processInfo.environment["NATIVE_AI_MACOS_SIGNING_KEY_ACCOUNT"]
-                    ?? "native-ai-webapp.macos.dev-control.platform-key"
+                signingKeyAccount: ProcessInfo.processInfo.environment["TERRANE_MACOS_SIGNING_KEY_ACCOUNT"]
+                    ?? "terrane.macos.dev-control.platform-key"
             )
         }
 
         private static func defaultTokenFileURL() -> URL {
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return base.appendingPathComponent("native-ai-webapp/control.token")
+            return base.appendingPathComponent("terrane/control.token")
         }
     }
 
@@ -73,12 +73,12 @@ final class DevControlPlane: @unchecked Sendable {
     private let crdt = ZigCrdtBridge()
     private let signingKey: Curve25519.Signing.PrivateKey
     private let signingKeyAccount: String
-    private let queue = DispatchQueue(label: "dev.nativeai.macos.control-plane")
+    private let queue = DispatchQueue(label: "dev.terrane.macos.control-plane")
     private var listener: NWListener?
     private var sessionStatus = "running"
     private var activeRuntimeSessionId: String?
     private var activeAppId: String?
-    private static let signingKeyService = "native-ai-webapp.macos.dev-control"
+    private static let signingKeyService = "terrane.macos.dev-control"
     private static let snapshotTypes: Set<String> = [
         "bug-report",
         "pre-install",
@@ -117,7 +117,7 @@ final class DevControlPlane: @unchecked Sendable {
     static func enabledFromProcess() throws -> DevControlPlane? {
         let args = CommandLine.arguments
         let env = ProcessInfo.processInfo.environment
-        guard args.contains("--native-ai-dev-control") || env["NATIVE_AI_MACOS_DEV_CONTROL"] == "1" else {
+        guard args.contains("--terrane-dev-control") || env["TERRANE_MACOS_DEV_CONTROL"] == "1" else {
             return nil
         }
         return try DevControlPlane()
@@ -3660,7 +3660,7 @@ final class DevControlPlane: @unchecked Sendable {
             ("forbidden_network_api", #"\bfetch\s*\("#),
             ("forbidden_network_api", #"\bXMLHttpRequest\b"#),
             ("forbidden_storage_api", #"\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bdocument\.cookie\b"#),
-            ("forbidden_native_bridge", #"\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bNativeAIPlatformBridge\b"#),
+            ("forbidden_native_bridge", #"\bwebkit\.messageHandlers\b|\bchrome\.webview\b|\bAndroid\.|\bTerranePlatformBridge\b"#),
         ]
         for (code, pattern) in checks where appJs.range(of: pattern, options: .regularExpression) != nil {
             errors.append(packageIssue(code, "app.js uses a forbidden generated-app API", details: [:]))
@@ -5544,7 +5544,7 @@ final class DevControlPlane: @unchecked Sendable {
         signedAt: String
     ) -> String {
         [
-            "native-ai-webapp/sig/v1",
+            "terrane/sig/v1",
             appId,
             appVersion,
             String(dataVersion),

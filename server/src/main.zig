@@ -10,7 +10,7 @@ const max_request_bytes = 1024 * 1024;
 const max_package_files = 32;
 const max_migration_files = 16;
 const runtime_version = "0.1.0";
-const signature_prefix = "native-ai-webapp/sig/v1";
+const signature_prefix = "terrane/sig/v1";
 const network_credentials_denied_message = "network.request credentials are not allowed";
 const control_auth_failure_limit = 3;
 const control_auth_ban_ms: i64 = 60 * std.time.ms_per_s;
@@ -31,7 +31,7 @@ pub fn main() !void {
     defer server.deinit();
     var control_auth_tracker = ControlAuthTracker{};
 
-    std.debug.print("native-ai zig server listening on http://127.0.0.1:{d}\n", .{port});
+    std.debug.print("terrane zig server listening on http://127.0.0.1:{d}\n", .{port});
     if (control_token_config.token_file) |token_file| {
         std.debug.print("control token file: {s}\n", .{token_file});
     }
@@ -80,28 +80,28 @@ fn initControlToken(allocator: std.mem.Allocator) !ControlTokenConfig {
 }
 
 fn configuredControlTokenAlloc(allocator: std.mem.Allocator) !?[]u8 {
-    if (try envVarNonEmptyAlloc(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN")) |token| return token;
+    if (try envVarNonEmptyAlloc(allocator, "TERRANE_SERVER_CONTROL_TOKEN")) |token| return token;
     return envVarNonEmptyAlloc(allocator, "PLATFORM_CONTROL_TOKEN");
 }
 
 fn controlTokenFilePath(allocator: std.mem.Allocator) ![]u8 {
     if (try argValueAlloc(allocator, "--token-file")) |path| return path;
-    if (try envVarNonEmptyAlloc(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN_FILE")) |path| return path;
+    if (try envVarNonEmptyAlloc(allocator, "TERRANE_SERVER_CONTROL_TOKEN_FILE")) |path| return path;
     if (try envVarNonEmptyAlloc(allocator, "PLATFORM_CONTROL_TOKEN_FILE")) |path| return path;
 
     if (builtin.os.tag == .windows) {
         const local_app_data = (try envVarNonEmptyAlloc(allocator, "LOCALAPPDATA")) orelse try homeRelativePath(allocator, &.{ "AppData", "Local" });
         defer allocator.free(local_app_data);
-        return std.fs.path.join(allocator, &.{ local_app_data, "native-ai-webapp", "control.token" });
+        return std.fs.path.join(allocator, &.{ local_app_data, "terrane", "control.token" });
     }
 
     if (builtin.os.tag == .macos) {
-        return homeRelativePath(allocator, &.{ "Library", "Application Support", "native-ai-webapp", "control.token" });
+        return homeRelativePath(allocator, &.{ "Library", "Application Support", "terrane", "control.token" });
     }
 
     const runtime_dir = (try envVarNonEmptyAlloc(allocator, "XDG_RUNTIME_DIR")) orelse return error.ControlTokenPathRequired;
     defer allocator.free(runtime_dir);
-    return std.fs.path.join(allocator, &.{ runtime_dir, "native-ai-webapp", "control.token" });
+    return std.fs.path.join(allocator, &.{ runtime_dir, "terrane", "control.token" });
 }
 
 fn homeRelativePath(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
@@ -185,7 +185,7 @@ fn enforceProductionStartupRules(allocator: std.mem.Allocator) !void {
 }
 
 fn isProductionMode(allocator: std.mem.Allocator) bool {
-    const env = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_ENV") catch return false;
+    const env = std.process.getEnvVarOwned(allocator, "TERRANE_SERVER_ENV") catch return false;
     defer allocator.free(env);
     return std.ascii.eqlIgnoreCase(env, "production") or std.ascii.eqlIgnoreCase(env, "prod");
 }
@@ -210,6 +210,7 @@ fn isDevControlPath(path: []const u8) bool {
         std.mem.startsWith(u8, path, "/db/") or
         std.mem.eql(u8, path, "/webapps/validate") or
         std.mem.eql(u8, path, "/webapps/install") or
+        std.mem.startsWith(u8, path, "/control/packages/") or
         std.mem.startsWith(u8, path, "/packages/") or
         appIdFromRollbackPath(path) != null;
 }
@@ -2352,7 +2353,7 @@ fn rejectControlAuth(
 }
 
 fn requireControlToken(allocator: std.mem.Allocator, provided_token: ?[]const u8) !void {
-    const expected = try std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_CONTROL_TOKEN");
+    const expected = try std.process.getEnvVarOwned(allocator, "TERRANE_SERVER_CONTROL_TOKEN");
     defer allocator.free(expected);
     return requireControlTokenValue(expected, provided_token);
 }
@@ -7768,8 +7769,8 @@ fn signaturePayloadAlloc(
 }
 
 fn serverSigningKeyPair(allocator: std.mem.Allocator) !std.crypto.sign.Ed25519.KeyPair {
-    const seed_source = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_SIGNING_SEED") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => try allocator.dupe(u8, "native-ai-zig-server-dev-signing-key-v0.4"),
+    const seed_source = std.process.getEnvVarOwned(allocator, "TERRANE_SERVER_SIGNING_SEED") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, "terrane-zig-server-dev-signing-key-v0.4"),
         else => return err,
     };
     defer allocator.free(seed_source);
@@ -8471,7 +8472,7 @@ fn coreAuditContextAlloc(allocator: std.mem.Allocator, body: []const u8) !CoreAu
 }
 
 fn openPlatformDb(allocator: std.mem.Allocator) !*sqlite.sqlite3 {
-    const raw_path = std.process.getEnvVarOwned(allocator, "NATIVE_AI_SERVER_DB") catch |err| switch (err) {
+    const raw_path = std.process.getEnvVarOwned(allocator, "TERRANE_SERVER_DB") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, "server-platform.sqlite"),
         else => return err,
     };
@@ -13021,7 +13022,7 @@ fn validateServerJsPolicy(
     if (jsHasCall(js, "fetch") or containsAny(js, &.{ "XMLHttpRequest", "WebSocket", "EventSource", "navigator.sendBeacon" })) try errors.append(allocator, "forbidden_network_api");
     if (containsAny(js, &.{ "localStorage", "sessionStorage", "indexedDB", "document.cookie", "cookieStore" })) try errors.append(allocator, "forbidden_storage_api");
     if (jsHasCall(js, "openDatabase") or jsHasCall(js, "executeSql") or containsAny(js, &.{ "SQLDatabase", "sqlite3" })) try errors.append(allocator, "forbidden_sql_api");
-    if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "NativeAIPlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
+    if (containsAny(js, &.{ "webkit.messageHandlers", "chrome.webview", "Android.", "native.exec", "TerranePlatformBridge" })) try errors.append(allocator, "forbidden_native_bridge");
     if (containsAny(js, &.{ "window.parent", "window.top", "window.opener" })) try errors.append(allocator, "forbidden_parent_access");
     if (containsAny(js, &.{"shell.exec"})) try errors.append(allocator, "forbidden_bridge_method");
     if (hasRuntimeBridgeCallAppIdParam(js)) try errors.append(allocator, "forbidden_appid_param");
@@ -13818,7 +13819,7 @@ test "resource budget bridge errors include repair details" {
         details,
     );
     defer std.testing.allocator.free(response);
-    try std.testing.expect(std.mem.indexOf(u8, response, "\"details\":{\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"details\":{\"appId\":\"notes-lite\",\"budget\":\"maxBridgeCallsPerMinute\",\"current\":601,\"max\":600") != null);
 }
 
 test "server package validation rejects direct native bridge globals" {
@@ -13851,7 +13852,7 @@ test "server package validation rejects direct native bridge globals" {
         \\    {"path": "manifest.json", "content": "{}"},
         \\    {"path": "index.html", "content": "<main>Native bridge test</main>"},
         \\    {"path": "styles.css", "content": ""},
-        \\    {"path": "app.js", "content": "NativeAIPlatformBridge.postMessage({});"}
+        \\    {"path": "app.js", "content": "TerranePlatformBridge.postMessage({});"}
         \\  ]
         \\}
     );

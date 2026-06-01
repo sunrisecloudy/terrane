@@ -42,10 +42,10 @@ enum BundledAppCatalog {
     }
 
     static func maximumAllowedAge() -> Int? {
-        if let age = commandLineValue(after: "--native-ai-max-content-age") {
+        if let age = commandLineValue(after: "--terrane-max-content-age") {
             return age
         }
-        if let raw = ProcessInfo.processInfo.environment["NATIVE_AI_IOS_MAX_CONTENT_AGE"],
+        if let raw = ProcessInfo.processInfo.environment["TERRANE_IOS_MAX_CONTENT_AGE"],
            let age = Int(raw) {
             return age
         }

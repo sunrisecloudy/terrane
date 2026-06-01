@@ -3,17 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "NativeAIHostIOS",
+    name: "TerraneHostIOS",
     platforms: [
         .iOS(.v17)
     ],
     products: [
-        .executable(name: "NativeAIHostIOS", targets: ["NativeAIHostIOS"])
+        .executable(name: "TerraneHostIOS", targets: ["TerraneHostIOS"])
     ],
     targets: [
         .target(name: "CZigCoreBridge"),
         .executableTarget(
-            name: "NativeAIHostIOS",
+            name: "TerraneHostIOS",
             dependencies: ["CZigCoreBridge"],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))

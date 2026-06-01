@@ -10,7 +10,7 @@ test("native bridges enforce strict request and runtime-envelope shapes", () => 
   const targets = [
     {
       label: "macOS",
-      path: "native/macos/Sources/NativeAIHostMac/WebBridge.swift",
+      path: "native/macos/Sources/TerraneHostMac/WebBridge.swift",
       snippets: [
         "hasOnlyRuntimeEnvelopeFields",
         "Runtime bridge envelope contains unknown top-level fields",
@@ -27,7 +27,7 @@ test("native bridges enforce strict request and runtime-envelope shapes", () => 
     },
     {
       label: "iOS",
-      path: "native/ios/Sources/NativeAIHostIOS/WebBridge.swift",
+      path: "native/ios/Sources/TerraneHostIOS/WebBridge.swift",
       snippets: [
         "hasOnlyRuntimeEnvelopeFields",
         "Runtime bridge envelope contains unknown top-level fields",
@@ -44,7 +44,7 @@ test("native bridges enforce strict request and runtime-envelope shapes", () => 
     },
     {
       label: "Android",
-      path: "native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt",
+      path: "native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt",
       snippets: [
         "hasOnlyRuntimeEnvelopeFields",
         "Runtime bridge envelope contains unknown top-level fields",

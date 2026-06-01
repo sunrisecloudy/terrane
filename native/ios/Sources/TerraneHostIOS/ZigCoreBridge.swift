@@ -7,7 +7,7 @@ final class ZigCoreBridge {
 
         init?(linked: Bool, path: String? = nil) {
             if linked {
-                guard let bridge = native_ai_zig_core_open(nil) else {
+                guard let bridge = terrane_zig_core_open(nil) else {
                     return nil
                 }
                 self.bridge = bridge
@@ -15,7 +15,7 @@ final class ZigCoreBridge {
             }
 
             guard let path,
-                  let bridge = path.withCString({ native_ai_zig_core_open($0) })
+                  let bridge = path.withCString({ terrane_zig_core_open($0) })
             else {
                 return nil
             }
@@ -23,7 +23,7 @@ final class ZigCoreBridge {
         }
 
         deinit {
-            native_ai_zig_core_close(bridge)
+            terrane_zig_core_close(bridge)
         }
 
         func step(input: Data) throws -> Any {
@@ -31,7 +31,7 @@ final class ZigCoreBridge {
             var outputLength = 0
             let code = input.withUnsafeBytes { rawBuffer -> Int32 in
                 let inputPointer = rawBuffer.bindMemory(to: UInt8.self).baseAddress
-                return native_ai_zig_core_step_json(
+                return terrane_zig_core_step_json(
                     bridge,
                     inputPointer,
                     input.count,
@@ -47,7 +47,7 @@ final class ZigCoreBridge {
                 throw ZigCoreError.emptyOutput
             }
             defer {
-                native_ai_zig_core_free_output(bridge, outputPointer, outputLength)
+                terrane_zig_core_free_output(bridge, outputPointer, outputLength)
             }
 
             let outputData = Data(bytes: outputPointer, count: outputLength)
@@ -137,7 +137,7 @@ final class ZigCoreBridge {
     private static func candidateLibraryPaths() -> [String] {
         var paths: [String] = []
 
-        if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB"],
+        if let overridePath = ProcessInfo.processInfo.environment["TERRANE_ZIG_CORE_DYLIB"],
            !overridePath.isEmpty {
             paths.append(overridePath)
         }

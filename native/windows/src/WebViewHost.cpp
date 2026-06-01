@@ -11,7 +11,7 @@
 #include <winrt/Windows.Data.Json.h>
 #include <wrl/event.h>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -174,7 +174,7 @@ void BindSmokeSqlText(sqlite3_stmt* statement, int index, std::wstring const& va
 }
 
 void WriteSmokeLine(std::wstring const& line) {
-  auto markerPath = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_RESULT_FILE");
+  auto markerPath = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_RESULT_FILE");
   if (!markerPath.empty()) {
     std::ofstream file{std::filesystem::path(markerPath), std::ios::binary | std::ios::app};
     file << WideToUtf8(line) << "\n";
@@ -489,8 +489,8 @@ bool WebViewHost::EnsureSupportedWebView2Runtime(ICoreWebView2Environment* envir
     SmokeFailure(L"WebView2 runtime version 1.0.2592 or later is required; found " + versionText);
     return false;
   }
-  if (!EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE").empty()) {
-    WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_WEBVIEW2_VERSION_OK " + versionText);
+  if (!EnvironmentValue(L"TERRANE_WINDOWS_SMOKE").empty()) {
+    WriteSmokeLine(L"TERRANE_WINDOWS_SMOKE_WEBVIEW2_VERSION_OK " + versionText);
   }
   return true;
 }
@@ -538,8 +538,8 @@ void WebViewHost::OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args) {
     auto okValue = parsed.GetNamedValue(L"ok", json::JsonValue::CreateBooleanValue(false));
     auto ok = okValue.ValueType() == json::JsonValueType::Boolean && okValue.GetBoolean();
     if (ok) {
-      WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_JS_READY");
-      SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_LOADED");
+      WriteSmokeLine(L"TERRANE_WINDOWS_SMOKE_RUNTIME_JS_READY");
+      SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_RUNTIME_LOADED");
     } else {
       SmokeFailure(L"WebView2 runtime readiness check failed: " + std::wstring(parsed.GetNamedString(L"detail", L"").c_str()));
     }
@@ -679,12 +679,12 @@ void WebViewHost::RunSmoke() {
   if (smokeRan_) {
     return;
   }
-  auto action = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE");
+  auto action = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE");
   if (action.empty()) {
     return;
   }
   smokeRan_ = true;
-  WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_STARTED_" + action);
+  WriteSmokeLine(L"TERRANE_WINDOWS_SMOKE_STARTED_" + action);
   if (action == L"runtime-load") {
     RunRuntimeLoadSmoke();
   } else if (action == L"storage-set") {
@@ -767,10 +767,10 @@ void WebViewHost::RunRuntimeLoadSmoke() {
 }
 
 void WebViewHost::RunStorageSmoke(bool setValue) {
-  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
-  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  auto key = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
   if (key.empty() || value.empty()) {
-    SmokeFailure(L"storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    SmokeFailure(L"storage smoke requires TERRANE_WINDOWS_SMOKE_STORAGE_KEY and TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -809,7 +809,7 @@ void WebViewHost::RunStorageSmoke(bool setValue) {
     }
   }
 
-  SmokeSuccess(setValue ? L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_SET_OK" : L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_GET_OK");
+  SmokeSuccess(setValue ? L"TERRANE_WINDOWS_SMOKE_STORAGE_SET_OK" : L"TERRANE_WINDOWS_SMOKE_STORAGE_GET_OK");
 }
 
 void WebViewHost::RunCoreSmoke() {
@@ -832,14 +832,14 @@ void WebViewHost::RunCoreSmoke() {
     SmokeFailure(L"core smoke did not persist core_events/core_actions rows");
     return;
   }
-  SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_CORE_STEP_OK");
+  SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_CORE_STEP_OK");
 }
 
 void WebViewHost::RunFixedBridgeSurfaceSmoke() {
-  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
-  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  auto key = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
   if (key.empty() || value.empty()) {
-    SmokeFailure(L"fixed bridge surface smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    SmokeFailure(L"fixed bridge surface smoke requires TERRANE_WINDOWS_SMOKE_STORAGE_KEY and TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -929,14 +929,14 @@ void WebViewHost::RunFixedBridgeSurfaceSmoke() {
     return;
   }
 
-  SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK");
+  SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK");
 }
 
 void WebViewHost::RunWebBridgeStorageSmoke(bool setValue) {
-  auto key = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY");
-  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  auto key = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_KEY");
+  auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
   if (key.empty() || value.empty()) {
-    SmokeFailure(L"web bridge storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_KEY and NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    SmokeFailure(L"web bridge storage smoke requires TERRANE_WINDOWS_SMOKE_STORAGE_KEY and TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -974,9 +974,9 @@ void WebViewHost::RunRuntimeAppBridgeSmoke() {
     SmokeFailure(L"WebView2 is not initialized");
     return;
   }
-  auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+  auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
   if (value.empty()) {
-    SmokeFailure(L"runtime app storage smoke requires NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    SmokeFailure(L"runtime app storage smoke requires TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     return;
   }
 
@@ -1083,16 +1083,16 @@ void WebViewHost::StartWebBridgeSmoke(
 void WebViewHost::HandleWebBridgeSmokeResponse(std::wstring const& requestId, std::wstring const& response) {
   if (requestId == L"windows_smoke_bridge_storage_set") {
     JsonResponseOk(response)
-        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK")
+        ? SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK")
         : SmokeFailure(response);
   } else if (requestId == L"windows_smoke_bridge_storage_get") {
-    auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     JsonResponseOk(response) && StorageSmokeResponseMatches(response, value)
-        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK")
+        ? SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK")
         : SmokeFailure(response);
   } else if (requestId == L"windows_smoke_bridge_core_step") {
     JsonResponseOk(response)
-        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK")
+        ? SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK")
         : SmokeFailure(response);
   }
 }
@@ -1101,27 +1101,27 @@ void WebViewHost::HandleRuntimeAppBridgeSmokeResponse(
     std::wstring const& appId,
     std::wstring const& method,
     std::wstring const& response) {
-  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE") != L"runtime-app-storage-get") {
+  if (EnvironmentValue(L"TERRANE_WINDOWS_SMOKE") != L"runtime-app-storage-get") {
     return;
   }
   if (appId == L"notes-lite" && method == L"storage.get") {
-    auto value = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_STORAGE_VALUE");
+    auto value = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_STORAGE_VALUE");
     JsonResponseOk(response) && StorageNotesResponseContainsSmokeValue(response, value)
-        ? SmokeSuccess(L"NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
+        ? SmokeSuccess(L"TERRANE_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK")
         : SmokeFailure(response);
   }
 }
 
 void WebViewHost::SmokeSuccess(std::wstring const& marker) {
   WriteSmokeLine(marker);
-  if (EnvironmentIsOne(L"NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER")) {
+  if (EnvironmentIsOne(L"TERRANE_WINDOWS_SMOKE_EXIT_AFTER")) {
     PostQuitMessage(0);
   }
 }
 
 void WebViewHost::SmokeFailure(std::wstring const& message) {
-  WriteSmokeLine(L"NATIVE_AI_WINDOWS_SMOKE_FAILED: " + message);
-  if (EnvironmentIsOne(L"NATIVE_AI_WINDOWS_SMOKE_EXIT_AFTER")) {
+  WriteSmokeLine(L"TERRANE_WINDOWS_SMOKE_FAILED: " + message);
+  if (EnvironmentIsOne(L"TERRANE_WINDOWS_SMOKE_EXIT_AFTER")) {
     PostQuitMessage(0);
   }
 }
@@ -1307,16 +1307,16 @@ std::filesystem::path WebViewHost::RuntimeRoot() {
 }
 
 std::filesystem::path WebViewHost::DatabasePath() {
-  auto smokeDataHome = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_DATA_HOME");
+  auto smokeDataHome = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_DATA_HOME");
   if (!smokeDataHome.empty()) {
-    return std::filesystem::path(smokeDataHome) / L"NativeAIWebappPlatform" / L"platform.sqlite";
+    return std::filesystem::path(smokeDataHome) / L"Terrane" / L"platform.sqlite";
   }
 
   PWSTR localAppData = nullptr;
   SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppData);
   std::filesystem::path path(localAppData == nullptr ? L"." : localAppData);
   CoTaskMemFree(localAppData);
-  return path / L"NativeAIWebappPlatform" / L"platform.sqlite";
+  return path / L"Terrane" / L"platform.sqlite";
 }
 
-}  // namespace nativeai
+}  // namespace terrane

@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native bridges persist bridge and core logs", () => {
-  const androidBridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
-  const androidHost = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
-  const iosBridge = read("native/ios/Sources/NativeAIHostIOS/WebBridge.swift");
-  const iosHost = read("native/ios/Sources/NativeAIHostIOS/WebHostView.swift");
+  const androidBridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
+  const androidHost = read("native/android/app/src/main/java/com/terrane/platform/MainActivity.kt");
+  const iosBridge = read("native/ios/Sources/TerraneHostIOS/WebBridge.swift");
+  const iosHost = read("native/ios/Sources/TerraneHostIOS/WebHostView.swift");
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
@@ -71,8 +71,8 @@ test("native bridges persist bridge and core logs", () => {
 });
 
 test("macOS WebView crash recovery records failed runtime session and reload action", () => {
-  const macosHost = read("native/macos/Sources/NativeAIHostMac/WebHostView.swift");
-  const macosCrashRecovery = read("native/macos/Sources/NativeAIHostMac/RuntimeCrashRecovery.swift");
+  const macosHost = read("native/macos/Sources/TerraneHostMac/WebHostView.swift");
+  const macosCrashRecovery = read("native/macos/Sources/TerraneHostMac/RuntimeCrashRecovery.swift");
 
   assert.match(macosHost, /WKNavigationDelegate/);
   assert.match(macosHost, /webViewWebContentProcessDidTerminate\(_ webView: WKWebView\)/);

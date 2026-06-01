@@ -35,15 +35,15 @@ test("control config reads token file and trims whitespace", () => {
 test("control token path follows documented platform locations", () => {
   assert.equal(
     controlTokenPath({ env: {}, platform: "darwin", homeDir: "/Users/me" }),
-    path.join("/Users/me", "Library", "Application Support", "native-ai-webapp", "control.token"),
+    path.join("/Users/me", "Library", "Application Support", "terrane", "control.token"),
   );
   assert.equal(
     controlTokenPath({ env: { XDG_RUNTIME_DIR: "/run/user/501" }, platform: "linux", homeDir: "/home/me" }),
-    path.join("/run/user/501", "native-ai-webapp", "control.token"),
+    path.join("/run/user/501", "terrane", "control.token"),
   );
   assert.equal(
     controlTokenPath({ env: { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, platform: "win32", homeDir: "C:\\Users\\me" }),
-    path.join("C:\\Users\\me\\AppData\\Local", "native-ai-webapp", "control.token"),
+    path.join("C:\\Users\\me\\AppData\\Local", "terrane", "control.token"),
   );
 });
 

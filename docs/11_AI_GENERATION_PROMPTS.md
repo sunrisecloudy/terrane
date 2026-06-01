@@ -155,7 +155,7 @@ Package:
 ## 4. Codex implementation prompt
 
 ```text
-Implement the Native AI Webapp Platform v0.1 according to the documentation in docs/.
+Implement the Terrane v0.1 according to the documentation in docs/.
 
 Start with the smallest vertical slice:
 1. Zig core fake core.step with tests.

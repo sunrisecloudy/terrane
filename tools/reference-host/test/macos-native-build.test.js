@@ -64,9 +64,9 @@ function buildMacOSZigCore(scratch) {
 }
 
 function runOptionalLaunchSmoke({ scratch, env }) {
-  if (process.env.NATIVE_AI_MACOS_SMOKE_LAUNCH !== "1") return;
-  const smokeTmp = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-macos-launch-"));
-  const markerPath = path.join(smokeTmp, "native-ai-macos-smoke-launched.txt");
+  if (process.env.TERRANE_MACOS_SMOKE_LAUNCH !== "1") return;
+  const smokeTmp = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-macos-launch-"));
+  const markerPath = path.join(smokeTmp, "terrane-macos-smoke-launched.txt");
   try {
     execFileSync(
       "swift",
@@ -74,23 +74,23 @@ function runOptionalLaunchSmoke({ scratch, env }) {
         "run",
         "--scratch-path",
         scratch,
-        "NativeAIHostMac",
-        "--native-ai-smoke-launch",
-        "--native-ai-smoke-exit-after-launch",
+        "TerraneHostMac",
+        "--terrane-smoke-launch",
+        "--terrane-smoke-exit-after-launch",
       ],
       {
         cwd: macosDir,
         encoding: "utf8",
         env: {
           ...env,
-          NATIVE_AI_MACOS_SMOKE_MARKER_PATH: markerPath,
+          TERRANE_MACOS_SMOKE_MARKER_PATH: markerPath,
           TMPDIR: `${smokeTmp}${path.sep}`,
         },
         timeout: 60_000,
       },
     );
     assert.equal(fs.existsSync(markerPath), true);
-    assert.equal(fs.readFileSync(markerPath, "utf8"), "NATIVE_AI_MACOS_SMOKE_APP_LAUNCHED");
+    assert.equal(fs.readFileSync(markerPath, "utf8"), "TERRANE_MACOS_SMOKE_APP_LAUNCHED");
   } finally {
     fs.rmSync(smokeTmp, { recursive: true, force: true });
   }
@@ -103,13 +103,13 @@ test(
     timeout: 120_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-macos-swiftpm-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-macos-swiftpm-"));
     try {
       const zigCoreDylib = buildMacOSZigCore(scratch);
       const env = {
         ...process.env,
         MACOSX_DEPLOYMENT_TARGET: "13.0",
-        ...(zigCoreDylib ? { NATIVE_AI_ZIG_CORE_DYLIB_FOR_TEST: zigCoreDylib } : {}),
+        ...(zigCoreDylib ? { TERRANE_ZIG_CORE_DYLIB_FOR_TEST: zigCoreDylib } : {}),
       };
       const output = execFileSync("swift", ["test", "--scratch-path", scratch], {
         cwd: macosDir,

@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native notification.toast implementations validate reference-host contract params", () => {
-  const macosNotifications = read("native/macos/Sources/NativeAIHostMac/PlatformNotifications.swift");
-  const iosNotifications = read("native/ios/Sources/NativeAIHostIOS/PlatformNotifications.swift");
-  const androidNotifications = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNotifications.kt");
+  const macosNotifications = read("native/macos/Sources/TerraneHostMac/PlatformNotifications.swift");
+  const iosNotifications = read("native/ios/Sources/TerraneHostIOS/PlatformNotifications.swift");
+  const androidNotifications = read("native/android/app/src/main/java/com/terrane/platform/PlatformNotifications.kt");
   const windowsNotifications = read("native/windows/src/PlatformNotifications.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxNotifications = read("native/linux/src/platform_notifications.c");

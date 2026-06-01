@@ -16,7 +16,7 @@ const APP_ID: &str = "notebook-app";
 const LORO_CHECKOUT: &str = "external-lib/loro";
 const LORO_PINNED_COMMIT: &str = "ab91df67e322d01f75621742ff83d0fb4a000e79";
 const NOTEBOOK_SCHEMA: &str = "notebook-crdt-v0";
-const FIXTURE_SCHEMA: &str = "native-ai-notebook-crdt-fixture-v0.1";
+const FIXTURE_SCHEMA: &str = "terrane-notebook-crdt-fixture-v0.1";
 
 #[derive(Clone)]
 struct Actor {

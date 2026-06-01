@@ -21,7 +21,7 @@ typedef int32_t (*CoreStepJsonFn)(
 );
 typedef void (*CoreFreeFn)(ZigCoreBuffer buffer);
 
-struct NativeAIZigCore {
+struct TerraneZigCore {
     void *handle;
     ZigCore *core;
     CoreDestroyFn destroy;
@@ -30,7 +30,7 @@ struct NativeAIZigCore {
     bool linked;
 };
 
-static NativeAIZigCore *open_with_symbols(
+static TerraneZigCore *open_with_symbols(
     void *handle,
     CoreCreateFn create,
     CoreDestroyFn destroy,
@@ -39,7 +39,7 @@ static NativeAIZigCore *open_with_symbols(
     bool linked
 );
 
-static NativeAIZigCore *open_with_default_symbols(void) {
+static TerraneZigCore *open_with_default_symbols(void) {
     return open_with_symbols(
         NULL,
         (CoreCreateFn)dlsym(RTLD_DEFAULT, "core_create"),
@@ -50,7 +50,7 @@ static NativeAIZigCore *open_with_default_symbols(void) {
     );
 }
 
-static NativeAIZigCore *open_with_symbols(
+static TerraneZigCore *open_with_symbols(
     void *handle,
     CoreCreateFn create,
     CoreDestroyFn destroy,
@@ -67,7 +67,7 @@ static NativeAIZigCore *open_with_symbols(
         return NULL;
     }
 
-    NativeAIZigCore *bridge = (NativeAIZigCore *)calloc(1, sizeof(NativeAIZigCore));
+    TerraneZigCore *bridge = (TerraneZigCore *)calloc(1, sizeof(TerraneZigCore));
     if (bridge == NULL) {
         destroy(core);
         return NULL;
@@ -82,7 +82,7 @@ static NativeAIZigCore *open_with_symbols(
     return bridge;
 }
 
-NativeAIZigCore *native_ai_zig_core_open(const char *path) {
+TerraneZigCore *terrane_zig_core_open(const char *path) {
     if (path == NULL) {
         return open_with_default_symbols();
     }
@@ -92,7 +92,7 @@ NativeAIZigCore *native_ai_zig_core_open(const char *path) {
         return NULL;
     }
 
-    NativeAIZigCore *bridge = open_with_symbols(
+    TerraneZigCore *bridge = open_with_symbols(
         handle,
         (CoreCreateFn)dlsym(handle, "core_create"),
         (CoreDestroyFn)dlsym(handle, "core_destroy"),
@@ -106,7 +106,7 @@ NativeAIZigCore *native_ai_zig_core_open(const char *path) {
     return bridge;
 }
 
-void native_ai_zig_core_close(NativeAIZigCore *bridge) {
+void terrane_zig_core_close(TerraneZigCore *bridge) {
     if (bridge == NULL) {
         return;
     }
@@ -119,8 +119,8 @@ void native_ai_zig_core_close(NativeAIZigCore *bridge) {
     free(bridge);
 }
 
-int32_t native_ai_zig_core_step_json(
-    NativeAIZigCore *bridge,
+int32_t terrane_zig_core_step_json(
+    TerraneZigCore *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
@@ -147,8 +147,8 @@ int32_t native_ai_zig_core_step_json(
     return 0;
 }
 
-void native_ai_zig_core_free_output(
-    NativeAIZigCore *bridge,
+void terrane_zig_core_free_output(
+    TerraneZigCore *bridge,
     uint8_t *output_ptr,
     size_t output_len
 ) {

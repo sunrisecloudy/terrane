@@ -210,7 +210,7 @@ function parseSqlSchema(sql) {
 }
 
 function applyPostgresMigrations(url, sql) {
-  const schema = `native_ai_schema_check_${process.pid}_${Date.now()}`;
+  const schema = `terrane_schema_check_${process.pid}_${Date.now()}`;
   const wrapped = `BEGIN; CREATE SCHEMA ${schema}; SET search_path TO ${schema}; ${sql}; ROLLBACK;`;
   execFileSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-q", "-c", wrapped], {
     encoding: "utf8",
@@ -299,18 +299,18 @@ function checkCiWorkflow() {
     "Docker-backed Linux native launch smoke",
     "tools/run-linux-native-docker.mjs",
     "macos-native-smoke",
-    "NATIVE_AI_MACOS_SMOKE_LAUNCH",
+    "TERRANE_MACOS_SMOKE_LAUNCH",
     "ios-simulator-smoke",
-    "NATIVE_AI_IOS_SMOKE_LAUNCH",
+    "TERRANE_IOS_SMOKE_LAUNCH",
     "android-emulator-smoke",
     "android-actions/setup-android@v3",
     "gradle/actions/setup-gradle@v4",
     "gradle-version: 8.10.2",
     "reactivecircus/android-emulator-runner@v2",
-    "NATIVE_AI_ANDROID_SMOKE_LAUNCH=1",
+    "TERRANE_ANDROID_SMOKE_LAUNCH=1",
     "windows-native-smoke",
-    "NATIVE_AI_WINDOWS_SMOKE_LAUNCH",
-    "NATIVE_AI_WEBVIEW2_NUGET_DIR",
+    "TERRANE_WINDOWS_SMOKE_LAUNCH",
+    "TERRANE_WEBVIEW2_NUGET_DIR",
   ];
   for (const snippet of required) {
     if (!workflow.includes(snippet)) {
@@ -351,18 +351,18 @@ function checkReleasePackaging() {
     "ios-arm64-device",
     "windows-x86_64",
     "zig_core.lib",
-    "native-ai-server",
-    "NativeAIHostMac.app",
+    "terrane-server",
+    "TerraneHostMac.app",
     "LINUX_HOST_EXECUTABLE_NAME",
     "LINUX_HOST_APP_DIR_NAME",
-    "native-ai-webapp-host",
+    "terrane-host",
     "libzig_core.so",
     '"resources", "runtime"',
     '"resources", "webapps", "examples"',
     '"resources", "db", "sqlite"',
     "webkitgtk-6.0",
-    "NativeAIWebappHost.exe",
-    "NativeAIWebappHost",
+    "TerraneHost.exe",
+    "TerraneHost",
     "resources/db/sqlite/001_initial.sql",
   ];
   for (const snippet of requiredScriptSnippets) {
@@ -372,17 +372,17 @@ function checkReleasePackaging() {
   }
   for (const snippet of [
     "tools/package-release.mjs --out artifacts --build-zig-core --build-server",
-    "linux-x86_64/native-ai-server",
-    "native-apps/macos/macos-arm64/NativeAIHostMac.app",
+    "linux-x86_64/terrane-server",
+    "native-apps/macos/macos-arm64/TerraneHostMac.app",
     "tools/package-release.mjs --out artifacts --build-native-macos",
-    "native-apps/linux/linux-x86_64/NativeAIWebappHost",
-    "native-ai-webapp-host",
+    "native-apps/linux/linux-x86_64/TerraneHost",
+    "terrane-host",
     "libzig_core.so",
     "resources/runtime/",
     "resources/webapps/examples/",
     "resources/db/sqlite/",
     "tools/package-release.mjs --out artifacts --build-native-linux",
-    "native-apps/windows/windows-x86_64/NativeAIWebappHost",
+    "native-apps/windows/windows-x86_64/TerraneHost",
     "resources/db/sqlite/",
     "tools/package-release.mjs --out artifacts --build-native-windows",
     "tools/run-linux-native-docker.mjs",
@@ -416,10 +416,10 @@ function checkReleasePackaging() {
     "buildNativeWindows: true",
     "server-executable",
     "native-host-app",
-    "native-ai-webapp-host",
+    "terrane-host",
     "libzig_core.so",
-    "native-apps/linux/linux-x86_64/NativeAIWebappHost",
-    "NativeAIWebappHost.exe",
+    "native-apps/linux/linux-x86_64/TerraneHost",
+    "TerraneHost.exe",
     "zig_core.dll",
     "resources/db/sqlite/001_initial.sql",
     "runtime-web/index.html",
@@ -432,11 +432,11 @@ function checkReleasePackaging() {
   for (const snippet of [
     "Linux packaged native artifact launches from executable-relative resources",
     "packageReleaseArtifacts({ outDir, buildNativeLinux: true })",
-    "NATIVE_AI_ZIG_CORE_SO",
+    "TERRANE_ZIG_CORE_SO",
     "outside-repo-cwd",
-    "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK",
-    "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK",
-    "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK",
+    "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK",
+    "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK",
+    "TERRANE_LINUX_SMOKE_BRIDGE_CORE_STEP_OK",
     "resources/runtime/index.html",
     "resources/db/sqlite/001_initial.sql",
   ]) {
@@ -651,7 +651,7 @@ function checkReferenceHostStatic() {
     [bridgeFixturesTest, "assertDeepSubset"],
     [bridgeFixturesTest, "resultSubset"],
     [bridgeFixturesTest, "errorDetailsSubset"],
-    [testRunner, "NATIVE_AI_SMOKE_RUNNER"],
+    [testRunner, "TERRANE_SMOKE_RUNNER"],
     [testRunner, 'runner: "static"'],
     [testRunner, 'from: "browser"'],
     [bridgeDispatcher, "assertAppLogParams"],
@@ -737,7 +737,7 @@ function checkRuntimeStatic() {
     "webkitNativeBridgeHandler",
     "androidNativeBridgeHandler",
     "webview2NativeBridgeHandler",
-    "NativeAIPlatformBridge",
+    "TerranePlatformBridge",
     "window.chrome && window.chrome.webview",
     "addEventListener(\"message\"",
     "handler.onmessage",
@@ -826,7 +826,7 @@ function checkServerStatic() {
     "fn handleControlCommand",
     "fn enforceProductionStartupRules",
     "fn isDevControlPath",
-    "NATIVE_AI_SERVER_ENV",
+    "TERRANE_SERVER_ENV",
     "production_control_disabled",
     "--allow-unsigned-dev",
     "--allow-runtime-mismatch",
@@ -843,7 +843,7 @@ function checkServerStatic() {
     "fn writeControlTokenFile",
     "control.token",
     "PLATFORM_CONTROL_TOKEN_FILE",
-    "NATIVE_AI_SERVER_CONTROL_TOKEN",
+    "TERRANE_SERVER_CONTROL_TOKEN",
     'headerValue(headers, "x-platform-control-token")',
     '"/control/command"',
     '"/webapps/install"',
@@ -929,7 +929,7 @@ function checkServerStatic() {
     "ed25519",
     "fn signaturePayloadAlloc",
     "fn serverSigningKeyPair",
-    "NATIVE_AI_SERVER_SIGNING_SEED",
+    "TERRANE_SERVER_SIGNING_SEED",
     "fn installWebappPackage",
     "fn runtimeCompatibilityJsonAlloc",
     "fn runtimeVersionsCompatible",
@@ -1133,7 +1133,7 @@ function checkServerStatic() {
     "fn isAllowedRuntimeBridgeMethod",
     "\"unknown_method\"",
     "\"missing_permission\"",
-    "\"NativeAIPlatformBridge\"",
+    "\"TerranePlatformBridge\"",
   ];
   for (const snippet of required) {
     if (!source.includes(snippet)) {
@@ -1144,27 +1144,27 @@ function checkServerStatic() {
 }
 
 function checkNativeStatic() {
-  const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebBridge.swift"), "utf8");
-  const macHost = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "WebHostView.swift"), "utf8");
-  const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "ZigCoreBridge.swift"), "utf8");
+  const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "WebBridge.swift"), "utf8");
+  const macHost = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "WebHostView.swift"), "utf8");
+  const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "ZigCoreBridge.swift"), "utf8");
   const macCoreShim = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
-  const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformStorage.swift"), "utf8");
-  const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNetwork.swift"), "utf8");
-  const macDialogs = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformDialogs.swift"), "utf8");
-  const macNotifications = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "PlatformNotifications.swift"), "utf8");
-  const macDevControl = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "NativeAIHostMac", "DevControlPlane.swift"), "utf8");
-  const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
-  const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
-  const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
-  const iosDevControl = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
+  const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformStorage.swift"), "utf8");
+  const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformNetwork.swift"), "utf8");
+  const macDialogs = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformDialogs.swift"), "utf8");
+  const macNotifications = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformNotifications.swift"), "utf8");
+  const macDevControl = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "DevControlPlane.swift"), "utf8");
+  const iosBridge = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "WebBridge.swift"), "utf8");
+  const iosHost = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "WebHostView.swift"), "utf8");
+  const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformDialogs.swift"), "utf8");
+  const iosDevControl = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "IOSDevControlPlane.swift"), "utf8");
   const iosNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "ios-native-build.test.js"), "utf8");
-  const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "ZigCoreBridge.swift"), "utf8");
+  const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "ZigCoreBridge.swift"), "utf8");
   const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
-  const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformStorage.swift"), "utf8");
-  const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
-  const iosNotifications = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "NativeAIHostIOS", "PlatformNotifications.swift"), "utf8");
+  const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformStorage.swift"), "utf8");
+  const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformNetwork.swift"), "utf8");
+  const iosNotifications = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformNotifications.swift"), "utf8");
   const runtimeWebSource = fs.readFileSync(path.join(repoRoot, "runtime-web", "runtime.js"), "utf8");
   const windowsHost = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.cpp"), "utf8");
   const windowsHostHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "WebViewHost.h"), "utf8");
@@ -1194,16 +1194,16 @@ function checkNativeStatic() {
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
   const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
   const linuxNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "linux-native-build.test.js"), "utf8");
-  const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "MainActivity.kt"), "utf8");
-  const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "NativeBridge.kt"), "utf8");
-  const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "ZigCoreBridge.kt"), "utf8");
+  const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "MainActivity.kt"), "utf8");
+  const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "NativeBridge.kt"), "utf8");
+  const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "ZigCoreBridge.kt"), "utf8");
   const androidCoreJni = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "zig_core_jni.cpp"), "utf8");
   const androidCoreCmake = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "CMakeLists.txt"), "utf8");
-  const androidDatabase = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDatabase.kt"), "utf8");
-  const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformStorage.kt"), "utf8");
-  const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNetwork.kt"), "utf8");
-  const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformDialogs.kt"), "utf8");
-  const androidNotifications = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "nativeai", "platform", "PlatformNotifications.kt"), "utf8");
+  const androidDatabase = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformDatabase.kt"), "utf8");
+  const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformStorage.kt"), "utf8");
+  const androidNetwork = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformNetwork.kt"), "utf8");
+  const androidDialogs = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformDialogs.kt"), "utf8");
+  const androidNotifications = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformNotifications.kt"), "utf8");
   const nativeNoAppIdParams = [
     [macBridge, 'request.params["appId"] != nil'],
     [iosBridge, 'request.params["appId"] != nil'],
@@ -1330,10 +1330,10 @@ function checkNativeStatic() {
   }
   for (const snippet of [
     "import CZigCoreBridge",
-    "NATIVE_AI_ZIG_CORE_DYLIB",
+    "TERRANE_ZIG_CORE_DYLIB",
     "RuntimeResourceLocator.repoRootURL()",
-    "native_ai_zig_core_step_json",
-    "native_ai_zig_core_free_output",
+    "terrane_zig_core_step_json",
+    "terrane_zig_core_free_output",
     "core.step app field does not match the channel-derived app id",
     "platform_unsupported",
   ]) {
@@ -1411,7 +1411,7 @@ function checkNativeStatic() {
     [iosBridge, "denyPrivateNetwork"],
     [iosBridge, "permissionForBridgeMethod"],
     [iosBridge, "approvedPermissions.contains(permission)"],
-    [iosHost, "--native-ai-smoke-all-examples"],
+    [iosHost, "--terrane-smoke-all-examples"],
     [iosHost, "AllExampleAppsSmoke"],
     [iosHost, '"notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"'],
     [iosHost, "#if targetEnvironment(simulator)"],
@@ -1437,19 +1437,19 @@ function checkNativeStatic() {
     "import SQLite3",
     "SecRandomCopyBytes",
     "PLATFORM_CONTROL_TOKEN_FILE",
-    "NATIVE_AI_IOS_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_IOS_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "/control/sessions",
     "/control/command",
     "/capabilities",
     "/command",
     ".applicationSupportDirectory",
-    "native-ai-webapp",
+    "terrane",
     "control.token",
     "x-platform-control-token",
     "parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address(\"127.0.0.1\")!), port: listenPort)",
-    "NATIVE_AI_IOS_CONTROL_READY port=",
+    "TERRANE_IOS_CONTROL_READY port=",
     "control_auth_required",
     "request.method == \"GET\" && request.normalizedPath == \"/health\"",
     "request.method == \"POST\" && isSessionCreatePath(request.normalizedPath)",
@@ -1804,10 +1804,10 @@ function checkNativeStatic() {
   for (const snippet of [
     "import CZigCoreBridge",
     "Library(linked: true)",
-    "NATIVE_AI_ZIG_CORE_DYLIB",
+    "TERRANE_ZIG_CORE_DYLIB",
     "RuntimeResourceLocator.repoRootURL()",
-    "native_ai_zig_core_step_json",
-    "native_ai_zig_core_free_output",
+    "terrane_zig_core_step_json",
+    "terrane_zig_core_free_output",
     "core.step app field does not match the channel-derived app id",
     "platform_unsupported",
   ]) {
@@ -1955,7 +1955,7 @@ function checkNativeStatic() {
     "GetProcAddress",
     "core_step_json",
     "core_free",
-    "NATIVE_AI_ZIG_CORE_DLL",
+    "TERRANE_ZIG_CORE_DLL",
     'exeDir / L"zig_core.dll"',
     "core.step app field does not match the channel-derived app id",
     "kCoreStepTimeoutMs = 2000",
@@ -1975,7 +1975,7 @@ function checkNativeStatic() {
   if (!windowsBridge.includes("void WebBridge::HandleJsonAsync") || !windowsBridge.includes("core_.StepAsync(request")) {
     throw new Error("Windows WebBridge must dispatch core.step asynchronously");
   }
-  for (const snippet of ["winhttp", "ole32", "NATIVE_AI_ZIG_CORE_DLL", "copy_if_different"]) {
+  for (const snippet of ["winhttp", "ole32", "TERRANE_ZIG_CORE_DLL", "copy_if_different"]) {
     if (!windowsCmake.includes(snippet)) {
       throw new Error(`Windows native bridge must link ${snippet}`);
     }
@@ -1983,7 +1983,7 @@ function checkNativeStatic() {
   for (const snippet of [
     "RecordProductionGuardAudit",
     "IsForbiddenDevFlag",
-    "--native-ai-dev-control",
+    "--terrane-dev-control",
     "--allow-unsigned-dev",
     "--allow-runtime-mismatch",
     "--control-plane-port",
@@ -2007,8 +2007,8 @@ function checkNativeStatic() {
     }
   }
   for (const snippet of [
-    "NATIVE_AI_WINDOWS_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_WINDOWS_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "DevControlPlaneConfig config",
     "devControl->Start(config",
@@ -2028,7 +2028,7 @@ function checkNativeStatic() {
     "SO_RCVTIMEO",
     "PLATFORM_CONTROL_TOKEN_FILE",
     "FOLDERID_LocalAppData",
-    "NativeAIWebappPlatform",
+    "Terrane",
     "control.token",
     "BCryptGenRandom",
     "Base64Url",
@@ -2178,7 +2178,7 @@ function checkNativeStatic() {
     "unsupported_tool",
     "platform.health",
     "Audit(L\"platform.health\"",
-    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "TERRANE_WINDOWS_CONTROL_READY port=",
     "control_sessions",
     "control_commands",
     "UPDATE control_sessions SET status = 'ended'",
@@ -2207,7 +2207,7 @@ function checkNativeStatic() {
     "X-Platform-Control-Token",
     "control_auth_required",
     "platform.health",
-    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "TERRANE_WINDOWS_CONTROL_READY port=",
   ]) {
     if (!windowsDevControlSourceTest.includes(snippet)) {
       throw new Error(`Windows dev control source test missing ${snippet}`);
@@ -2246,14 +2246,14 @@ function checkNativeStatic() {
     "db.query_app_storage",
     "control_call_bridge",
     "control_core_step",
-    "NATIVE_AI_WINDOWS_CONTROL_READY port=",
+    "TERRANE_WINDOWS_CONTROL_READY port=",
     "requestControlHealth",
     "control_auth_required",
     'body.target, "windows"',
     "control_sessions WHERE target = 'windows' AND token_hash IS NOT NULL",
     "tool = 'platform.health'",
     "--config\", \"Release",
-    "--native-ai-dev-control",
+    "--terrane-dev-control",
     "--allow-runtime-mismatch=1",
     "--control-plane-port=5123",
     "native\\.production_guard",
@@ -2266,7 +2266,7 @@ function checkNativeStatic() {
   const linuxRequired = [
     [linuxHost, "webkit_security_manager_register_uri_scheme_as_secure"],
     [linuxHost, "webkit_user_content_manager_register_script_message_handler_with_reply"],
-    [linuxHost, "script-message-with-reply-received::NativeAIPlatformBridge"],
+    [linuxHost, "script-message-with-reply-received::TerranePlatformBridge"],
     [linuxHost, "jsc_value_to_json"],
     [linuxHost, "webkit_script_message_reply_return_value"],
     [linuxHost, "logical_path_for_runtime_uri"],
@@ -2371,7 +2371,7 @@ function checkNativeStatic() {
   if (linuxDialogs.includes("will be wired") || linuxBridge.includes('json_builder_add_boolean_value(builder, FALSE);')) {
     throw new Error("Linux dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "NATIVE_AI_ZIG_CORE_SO", "core.step app field does not match the channel-derived app id"]) {
+  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "TERRANE_ZIG_CORE_SO", "core.step app field does not match the channel-derived app id"]) {
     if (!linuxCore.includes(snippet)) {
       throw new Error(`Linux Zig core bridge missing ${snippet}`);
     }
@@ -2382,8 +2382,8 @@ function checkNativeStatic() {
     }
   }
   for (const snippet of [
-    "NATIVE_AI_LINUX_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_LINUX_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "#ifndef NDEBUG",
     "dev_control_plane_start(&config",
@@ -2438,7 +2438,7 @@ function checkNativeStatic() {
     "control_sessions",
     "control_commands",
     "platform.health",
-    "NATIVE_AI_LINUX_CONTROL_READY port=",
+    "TERRANE_LINUX_CONTROL_READY port=",
   ]) {
     if (!linuxDevControl.includes(snippet)) {
       throw new Error(`Linux dev control plane missing ${snippet}`);

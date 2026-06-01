@@ -15,7 +15,7 @@ const targetAssertions = [
         contains: ['.linkedLibrary("sqlite3")'],
       },
       {
-        path: "native/ios/Sources/NativeAIHostIOS/PlatformDatabase.swift",
+        path: "native/ios/Sources/TerraneHostIOS/PlatformDatabase.swift",
         contains: [
           "final class PlatformDatabase",
           "sqlite3_open",
@@ -27,7 +27,7 @@ const targetAssertions = [
         ],
       },
       {
-        path: "native/ios/Sources/NativeAIHostIOS/PlatformStorage.swift",
+        path: "native/ios/Sources/TerraneHostIOS/PlatformStorage.swift",
         contains: [
           "import SQLite3",
           "PlatformDatabase(databaseURL: databaseURL)",
@@ -46,7 +46,7 @@ const targetAssertions = [
         contains: ['.linkedLibrary("sqlite3")'],
       },
       {
-        path: "native/macos/Sources/NativeAIHostMac/PlatformDatabase.swift",
+        path: "native/macos/Sources/TerraneHostMac/PlatformDatabase.swift",
         contains: [
           "final class PlatformDatabase",
           "sqlite3_open",
@@ -57,7 +57,7 @@ const targetAssertions = [
         ],
       },
       {
-        path: "native/macos/Sources/NativeAIHostMac/PlatformStorage.swift",
+        path: "native/macos/Sources/TerraneHostMac/PlatformStorage.swift",
         contains: [
           "import SQLite3",
           "PlatformDatabase(databaseURL: databaseURL)",
@@ -76,7 +76,7 @@ const targetAssertions = [
         contains: ['from(repoRoot.resolve("db/sqlite"))', 'into("db/sqlite")'],
       },
       {
-        path: "native/android/app/src/main/java/com/nativeai/platform/PlatformDatabase.kt",
+        path: "native/android/app/src/main/java/com/terrane/platform/PlatformDatabase.kt",
         contains: [
           "class PlatformDatabase",
           'SQLiteOpenHelper(context, "platform.sqlite"',
@@ -87,7 +87,7 @@ const targetAssertions = [
         ],
       },
       {
-        path: "native/android/app/src/main/java/com/nativeai/platform/PlatformStorage.kt",
+        path: "native/android/app/src/main/java/com/terrane/platform/PlatformStorage.kt",
         contains: [
           "import android.database.sqlite.SQLiteDatabase",
           "private val database = PlatformDatabase(context)",

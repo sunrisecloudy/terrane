@@ -48,7 +48,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-contract-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-contract-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const fixturesDir = path.join(repoRoot, "tests", "fixtures", "bridge");
@@ -107,7 +107,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-accessibility-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-accessibility-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "accessibility-gate");
@@ -158,7 +158,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-notebook-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-notebook-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "notebook-crdt");
@@ -300,7 +300,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-reset-confirm-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-reset-confirm-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "reset-confirm");
@@ -353,7 +353,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-stylesheet-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-stylesheet-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "stylesheet-validation");
@@ -419,7 +419,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-script-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-script-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "script-validation");
@@ -463,7 +463,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-inline-style-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-inline-style-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "inline-style-validation");
@@ -515,7 +515,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-platform-artifact-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-platform-artifact-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "platform-artifact-validation");
@@ -545,7 +545,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-server-appid-param-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-appid-param-"));
     try {
       const executablePath = buildServerExecutable(scratch);
       const started = await startServer(executablePath, scratch, "appid-param-validation");
@@ -569,7 +569,7 @@ test(
 
 function buildServerExecutable(scratch) {
   const targetArgs = targetArgsForHost();
-  const executablePath = path.join(scratch, process.platform === "win32" ? "native-ai-server.exe" : "native-ai-server");
+  const executablePath = path.join(scratch, process.platform === "win32" ? "terrane-server.exe" : "terrane-server");
   const zigEnv = {
     ...process.env,
     ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
@@ -584,7 +584,7 @@ function buildServerExecutable(scratch) {
 
   if (process.platform === "darwin") {
     assert.equal(hasCc(), true);
-    const objectPath = path.join(scratch, "native-ai-server.o");
+    const objectPath = path.join(scratch, "terrane-server.o");
     execFileSync(
       "zig",
       ["build-obj", ...zigServerModuleArgs(), ...targetArgs, "-lc", `-femit-bin=${objectPath}`],
@@ -609,8 +609,8 @@ async function startServer(executablePath, scratch, fileName) {
   const child = spawn(executablePath, ["--port", String(port), "--token-file", tokenFile], {
     env: {
       ...process.env,
-      NATIVE_AI_SERVER_DB: dbPath,
-      NATIVE_AI_SERVER_CONTROL_TOKEN: controlToken,
+      TERRANE_SERVER_DB: dbPath,
+      TERRANE_SERVER_CONTROL_TOKEN: controlToken,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

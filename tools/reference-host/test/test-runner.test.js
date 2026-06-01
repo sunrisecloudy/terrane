@@ -83,7 +83,7 @@ test("runtime.run_smoke_tests auto mode falls back when browser is unavailable",
 
 test(
   "runtime.run_smoke_tests browser mode executes every example in a real browser",
-  { skip: process.env.NATIVE_AI_ENABLE_BROWSER_SMOKE_TESTS !== "1" || !BrowserSmokeRunner.isAvailable() },
+  { skip: process.env.TERRANE_ENABLE_BROWSER_SMOKE_TESTS !== "1" || !BrowserSmokeRunner.isAvailable() },
   async () => {
     const host = new ReferenceHost();
     try {

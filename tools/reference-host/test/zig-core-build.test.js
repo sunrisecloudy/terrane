@@ -43,7 +43,7 @@ test(
     timeout: 60_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-zig-core-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-zig-core-"));
     const targetArgs = targetArgsForHost();
     try {
       execFileSync("zig", ["test", ...targetArgs, "-lc", "src/lib.zig", "-fno-emit-bin"], {

@@ -1,7 +1,7 @@
 {
   "name": "ai-native-webview-platform-control",
   "version": "0.1.0",
-  "description": "Control and micro-test the Native AI Webapp Platform from Codex through MCP.",
+  "description": "Control and micro-test the Terrane from Codex through MCP.",
   "author": {
     "name": "Platform Team"
   },

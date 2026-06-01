@@ -13,7 +13,7 @@
 #include <winrt/base.h>
 
 namespace {
-std::unique_ptr<nativeai::WebViewHost> g_host;
+std::unique_ptr<terrane::WebViewHost> g_host;
 
 bool DebugBuildAllowsDevFlags() {
 #ifdef _DEBUG
@@ -25,7 +25,7 @@ bool DebugBuildAllowsDevFlags() {
 
 bool IsForbiddenDevFlag(std::wstring_view argument) {
   constexpr std::wstring_view flags[] = {
-      L"--native-ai-dev-control",
+      L"--terrane-dev-control",
       L"--control-plane-port",
       L"--allow-runtime-mismatch",
       L"--allow-unsigned-dev",
@@ -75,15 +75,15 @@ std::wstring EnvironmentValue(wchar_t const* name) {
 }
 
 std::filesystem::path ProductionGuardDatabasePath() {
-  auto smokeDataHome = EnvironmentValue(L"NATIVE_AI_WINDOWS_SMOKE_DATA_HOME");
+  auto smokeDataHome = EnvironmentValue(L"TERRANE_WINDOWS_SMOKE_DATA_HOME");
   if (!smokeDataHome.empty()) {
-    return std::filesystem::path(smokeDataHome) / L"NativeAIWebappPlatform" / L"platform.sqlite";
+    return std::filesystem::path(smokeDataHome) / L"Terrane" / L"platform.sqlite";
   }
   PWSTR localAppData = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppData)) && localAppData != nullptr) {
     std::filesystem::path path(localAppData);
     CoTaskMemFree(localAppData);
-    return path / L"NativeAIWebappPlatform" / L"platform.sqlite";
+    return path / L"Terrane" / L"platform.sqlite";
   }
   return std::filesystem::current_path() / L"platform.sqlite";
 }
@@ -117,12 +117,12 @@ std::wstring JsonString(std::wstring_view value) {
 }
 
 void BindText(sqlite3_stmt* statement, int index, std::wstring const& value) {
-  auto text = nativeai::WideToUtf8(value);
+  auto text = terrane::WideToUtf8(value);
   sqlite3_bind_text(statement, index, text.c_str(), -1, SQLITE_TRANSIENT);
 }
 
 void RecordProductionGuardAudit(std::wstring const& flag) {
-  nativeai::PlatformDatabase database(ProductionGuardDatabasePath());
+  terrane::PlatformDatabase database(ProductionGuardDatabasePath());
   sqlite3* db = database.handle();
   if (db == nullptr) {
     return;
@@ -189,8 +189,8 @@ bool RejectDevOnlyFlagsIfNeeded() {
     }
   }
   LocalFree(argv);
-  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_DEV_CONTROL") == L"1") {
-    RecordProductionGuardAudit(L"NATIVE_AI_WINDOWS_DEV_CONTROL");
+  if (EnvironmentValue(L"TERRANE_WINDOWS_DEV_CONTROL") == L"1") {
+    RecordProductionGuardAudit(L"TERRANE_WINDOWS_DEV_CONTROL");
     OutputDebugStringW(L"fatal: production build rejects Windows dev control environment enablement\n");
     return true;
   }
@@ -206,7 +206,7 @@ struct DevControlOptions {
 
 DevControlOptions ParseDevControlOptions() {
   DevControlOptions options;
-  if (EnvironmentValue(L"NATIVE_AI_WINDOWS_DEV_CONTROL") == L"1") {
+  if (EnvironmentValue(L"TERRANE_WINDOWS_DEV_CONTROL") == L"1") {
     options.enabled = true;
   }
 
@@ -220,7 +220,7 @@ DevControlOptions ParseDevControlOptions() {
 
   for (int index = 1; index < argc; ++index) {
     std::wstring_view argument(argv[index]);
-    if (argument == L"--native-ai-dev-control" || argument == L"--native-ai-dev-control=1") {
+    if (argument == L"--terrane-dev-control" || argument == L"--terrane-dev-control=1") {
       options.enabled = true;
       continue;
     }
@@ -278,10 +278,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
   winrt::init_apartment(winrt::apartment_type::single_threaded);
 
-  std::unique_ptr<nativeai::DevControlPlane> devControl;
+  std::unique_ptr<terrane::DevControlPlane> devControl;
   if (devControlOptions.enabled) {
 #ifndef _DEBUG
-    RecordProductionGuardAudit(L"NATIVE_AI_WINDOWS_DEV_CONTROL");
+    RecordProductionGuardAudit(L"TERRANE_WINDOWS_DEV_CONTROL");
     OutputDebugStringW(L"fatal: Windows dev control plane is disabled in release builds\n");
     return 1;
 #endif
@@ -290,13 +290,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
   WNDCLASS windowClass{};
   windowClass.lpfnWndProc = WindowProc;
   windowClass.hInstance = instance;
-  windowClass.lpszClassName = L"NativeAIWebappHostWindow";
+  windowClass.lpszClassName = L"TerraneHostWindow";
   RegisterClass(&windowClass);
 
   HWND window = CreateWindowEx(
       0,
       windowClass.lpszClassName,
-      L"Native AI Webapp Platform",
+      L"Terrane",
       WS_OVERLAPPEDWINDOW,
       CW_USEDEFAULT,
       CW_USEDEFAULT,
@@ -308,14 +308,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
       nullptr);
 
   ShowWindow(window, showCommand);
-  g_host = std::make_unique<nativeai::WebViewHost>(window);
+  g_host = std::make_unique<terrane::WebViewHost>(window);
 #ifdef _DEBUG
   if (devControlOptions.enabled) {
-    nativeai::DevControlPlaneConfig config;
+    terrane::DevControlPlaneConfig config;
     config.requestedPort = devControlOptions.port;
     config.databasePath = ProductionGuardDatabasePath();
     std::wstring devControlError;
-    devControl = std::make_unique<nativeai::DevControlPlane>();
+    devControl = std::make_unique<terrane::DevControlPlane>();
     if (!devControl->Start(config, &devControlError)) {
       OutputDebugStringW((L"fatal: " + devControlError + L"\n").c_str());
       g_host.reset();

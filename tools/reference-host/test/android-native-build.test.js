@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const androidDir = path.join(repoRoot, "native", "android");
-const packageName = "com.nativeai.platform";
+const packageName = "com.terrane.platform";
 const activityName = `${packageName}/.MainActivity`;
-const smokeLogTag = "NativeAIPlatformSmoke";
+const smokeLogTag = "TerranePlatformSmoke";
 
 function read(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
@@ -59,11 +59,11 @@ function findFiles(directory, predicate) {
 }
 
 test("Android WebView bridge setup is hardened before runtime load", () => {
-  const activity = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
+  const activity = read("native/android/app/src/main/java/com/terrane/platform/MainActivity.kt");
 
   for (const snippet of [
     "WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)",
-    "Android WebMessageListener support is required for NativeAI runtime bridge",
+    "Android WebMessageListener support is required for Terrane runtime bridge",
     "WebViewCompat.addWebMessageListener",
     "setOf(\"https://appassets.androidplatform.net\")",
     "allowFileAccess = false",
@@ -80,14 +80,14 @@ test("Android WebView bridge setup is hardened before runtime load", () => {
 });
 
 test("Android debug dev control plane is loopback-bound, token-gated, audited, and bridge-routed", () => {
-  const activity = read("native/android/app/src/main/java/com/nativeai/platform/MainActivity.kt");
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
-  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const activity = read("native/android/app/src/main/java/com/terrane/platform/MainActivity.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
 
   for (const snippet of [
     "AndroidDevControlPlane",
     "BuildConfig.DEBUG",
-    "native_ai_control_port",
+    "terrane_control_port",
     "Android dev control plane is disabled in release builds",
     "devControlPlane?.stop()",
   ]) {
@@ -132,7 +132,7 @@ test("Android debug dev control plane is loopback-bound, token-gated, audited, a
     "control_commands",
     "insertWithOnConflict(\"control_sessions\"",
     "database.writableDatabase.insert(\"control_commands\"",
-    "NATIVE_AI_ANDROID_CONTROL_READY port=",
+    "TERRANE_ANDROID_CONTROL_READY port=",
     "Unsupported Android dev control command",
   ]) {
     assert.equal(control.includes(snippet), true, `Android dev control source should contain ${snippet}`);
@@ -159,7 +159,7 @@ test("Android debug dev control plane is loopback-bound, token-gated, audited, a
 });
 
 test("Android debug dev control exposes target and webapp listing controls", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
 
   for (const snippet of [
     "platform.list_targets",
@@ -186,8 +186,8 @@ test("Android debug dev control exposes target and webapp listing controls", () 
 });
 
 test("Android debug dev control exposes storage and basic observability commands", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
-  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
 
   for (const snippet of [
     "runtime.storage_get",
@@ -269,8 +269,8 @@ test("Android debug dev control exposes storage and basic observability commands
 });
 
 test("Android debug dev control registers and consumes DB-backed bridge fault injections", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
-  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
 
   for (const snippet of [
     "runtime.fault_inject",
@@ -323,10 +323,10 @@ test("Android debug dev control registers and consumes DB-backed bridge fault in
 });
 
 test("Android debug dev control registers and consumes DB-backed network and dialog mocks", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
-  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
-  const network = read("native/android/app/src/main/java/com/nativeai/platform/PlatformNetwork.kt");
-  const dialogs = read("native/android/app/src/main/java/com/nativeai/platform/PlatformDialogs.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
+  const network = read("native/android/app/src/main/java/com/terrane/platform/PlatformNetwork.kt");
+  const dialogs = read("native/android/app/src/main/java/com/terrane/platform/PlatformDialogs.kt");
   const migration = read("db/sqlite/003_codex_control.sql");
 
   for (const snippet of [
@@ -420,7 +420,7 @@ test("Android debug dev control registers and consumes DB-backed network and dia
 });
 
 test("Android debug dev control exports DB-backed debug bundles safely", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
   const migrationRuntime = read("db/sqlite/002_runtime_debug.sql");
   const migrationBackup = read("db/sqlite/004_migrations_and_snapshots.sql");
 
@@ -475,7 +475,7 @@ test("Android debug dev control exports DB-backed debug bundles safely", () => {
 });
 
 test("Android debug dev control exports and imports portable backups safely", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
   const migrationBackup = read("db/sqlite/004_migrations_and_snapshots.sql");
 
   for (const snippet of [
@@ -538,7 +538,7 @@ test("Android debug dev control exports and imports portable backups safely", ()
 });
 
 test("Android debug dev control creates, restores, and compares runtime snapshots", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
   const migrationRuntime = read("db/sqlite/002_runtime_debug.sql");
 
   for (const snippet of [
@@ -592,8 +592,8 @@ test("Android debug dev control creates, restores, and compares runtime snapshot
 });
 
 test("Android debug dev control snapshots, replays, and asserts core actions", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
-  const bridge = read("native/android/app/src/main/java/com/nativeai/platform/NativeBridge.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
+  const bridge = read("native/android/app/src/main/java/com/terrane/platform/NativeBridge.kt");
 
   for (const snippet of [
     "runtime.core_snapshot",
@@ -646,7 +646,7 @@ test("Android debug dev control snapshots, replays, and asserts core actions", (
 });
 
 test("Android debug dev control exposes static accessibility controls", () => {
-  const control = read("native/android/app/src/main/java/com/nativeai/platform/AndroidDevControlPlane.kt");
+  const control = read("native/android/app/src/main/java/com/terrane/platform/AndroidDevControlPlane.kt");
 
   for (const snippet of [
     "runtime.accessibility_snapshot",
@@ -713,29 +713,29 @@ test(
     const apkPath = path.join(androidDir, "app", "build", "outputs", "apk", "debug", "app-debug.apk");
     assert.equal(fs.existsSync(apkPath), true);
     assert.equal(
-      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "runtime", "index.html")),
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-assets", "runtime", "index.html")),
       true,
       "runtime-web assets should be synced under the Android /runtime asset path",
     );
     assert.equal(
-      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "webapps", "examples", "notes-lite", "manifest.json")),
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-assets", "webapps", "examples", "notes-lite", "manifest.json")),
       true,
       "generated example apps should be synced into Android assets",
     );
     assert.equal(
-      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "webapps", "examples", "notes-lite", "index.html")),
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-assets", "webapps", "examples", "notes-lite", "index.html")),
       true,
       "generated app HTML should be synced for Android static accessibility controls",
     );
     assert.equal(
-      fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-assets", "db", "sqlite", "001_initial.sql")),
+      fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-assets", "db", "sqlite", "001_initial.sql")),
       true,
       "checked-in SQLite migrations should be synced into Android assets",
     );
 
     for (const abi of ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]) {
       assert.equal(
-        fs.existsSync(path.join(androidDir, "app", "build", "generated", "native-ai-zig-core", "jniLibs", abi, "libzig_core.so")),
+        fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-zig-core", "jniLibs", abi, "libzig_core.so")),
         true,
         `Zig core shared library should be generated for ${abi}`,
       );
@@ -760,14 +760,14 @@ test(
 );
 
 function runOptionalEmulatorSmoke(apkPath) {
-  if (process.env.NATIVE_AI_ANDROID_SMOKE_LAUNCH !== "1") return;
+  if (process.env.TERRANE_ANDROID_SMOKE_LAUNCH !== "1") return;
   assert.equal(commandExists("adb"), true, "adb is required for Android emulator smoke");
   assert.equal(commandExists("emulator"), true, "emulator is required for Android emulator smoke");
 
   let emulatorProcess = null;
-  let serial = process.env.NATIVE_AI_ANDROID_SMOKE_SERIAL || listAdbDevices()[0] || null;
+  let serial = process.env.TERRANE_ANDROID_SMOKE_SERIAL || listAdbDevices()[0] || null;
   if (!serial) {
-    const avd = process.env.NATIVE_AI_ANDROID_SMOKE_AVD || listAvds()[0];
+    const avd = process.env.TERRANE_ANDROID_SMOKE_AVD || listAvds()[0];
     assert.ok(avd, "No Android AVD is available for emulator smoke");
     emulatorProcess = spawn(
       emulatorCommand(),
@@ -790,42 +790,42 @@ function runOptionalEmulatorSmoke(apkPath) {
   try {
     waitForBoot(serial);
     adb(["-s", serial, "install", "-r", apkPath]);
-    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_RUNTIME_LOADED", [
+    launchAndWaitForMarker(serial, "TERRANE_ANDROID_SMOKE_RUNTIME_LOADED", [
       "--ez",
-      "native_ai_smoke_runtime_load",
+      "terrane_smoke_runtime_load",
       "true",
     ]);
 
     const storageKey = `notes-lite:android-smoke-${process.pid}-${Date.now()}`;
     const storageValue = `android-smoke-${process.pid}-${Date.now()}`;
-    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_STORAGE_SET_OK", [
+    launchAndWaitForMarker(serial, "TERRANE_ANDROID_SMOKE_STORAGE_SET_OK", [
       "--es",
-      "native_ai_smoke_storage_action",
+      "terrane_smoke_storage_action",
       "set",
       "--es",
-      "native_ai_smoke_storage_key",
+      "terrane_smoke_storage_key",
       storageKey,
       "--es",
-      "native_ai_smoke_storage_value",
+      "terrane_smoke_storage_value",
       storageValue,
     ]);
     adb(["-s", serial, "shell", "am", "force-stop", packageName]);
-    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_STORAGE_GET_OK", [
+    launchAndWaitForMarker(serial, "TERRANE_ANDROID_SMOKE_STORAGE_GET_OK", [
       "--es",
-      "native_ai_smoke_storage_action",
+      "terrane_smoke_storage_action",
       "get",
       "--es",
-      "native_ai_smoke_storage_key",
+      "terrane_smoke_storage_key",
       storageKey,
       "--es",
-      "native_ai_smoke_storage_value",
+      "terrane_smoke_storage_value",
       storageValue,
     ]);
 
     adb(["-s", serial, "shell", "am", "force-stop", packageName]);
-    launchAndWaitForMarker(serial, "NATIVE_AI_ANDROID_SMOKE_CORE_STEP_OK", [
+    launchAndWaitForMarker(serial, "TERRANE_ANDROID_SMOKE_CORE_STEP_OK", [
       "--ez",
-      "native_ai_smoke_core_step",
+      "terrane_smoke_core_step",
       "true",
     ]);
   } finally {
@@ -855,7 +855,7 @@ function launchAndWaitForMarker(serial, marker, extras) {
     "-n",
     activityName,
     "--ez",
-    "native_ai_smoke_exit_after",
+    "terrane_smoke_exit_after",
     "true",
     ...extras,
   ]);
@@ -867,7 +867,7 @@ function waitForSmokeMarker(serial, marker) {
   let latest = "";
   while (Date.now() < deadline) {
     latest = adb(["-s", serial, "logcat", "-d", "-v", "brief", "-s", smokeLogTag], { allowFailure: true });
-    assert.equal(latest.includes("NATIVE_AI_ANDROID_SMOKE_FAILED"), false, `${latest}\n${coreLog(serial)}`);
+    assert.equal(latest.includes("TERRANE_ANDROID_SMOKE_FAILED"), false, `${latest}\n${coreLog(serial)}`);
     if (latest.includes(marker)) return;
     sleep(500);
   }
@@ -875,7 +875,7 @@ function waitForSmokeMarker(serial, marker) {
 }
 
 function coreLog(serial) {
-  return adb(["-s", serial, "logcat", "-d", "-v", "brief", "-s", "NativeAIPlatformCore"], { allowFailure: true });
+  return adb(["-s", serial, "logcat", "-d", "-v", "brief", "-s", "TerranePlatformCore"], { allowFailure: true });
 }
 
 function waitForAnyDevice() {

@@ -968,7 +968,7 @@
     "description": "Concurrent human edits merge collaborative text, metadata, comments, and movable cell order.",
     "id": "human-human"
   },
-  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "schemaVersion": "terrane-notebook-crdt-fixture-v0.1",
   "sync": {
     "converged": true,
     "replayOrders": [

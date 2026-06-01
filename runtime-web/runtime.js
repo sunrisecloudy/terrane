@@ -723,13 +723,13 @@
 
   function webkitNativeBridgeHandler() {
     const handlers = window.webkit && window.webkit.messageHandlers;
-    const handler = handlers && handlers.NativeAIPlatformBridge;
+    const handler = handlers && handlers.TerranePlatformBridge;
     if (!handler || typeof handler.postMessage !== "function") return null;
     return handler;
   }
 
   function androidNativeBridgeHandler() {
-    const handler = window.NativeAIPlatformBridge;
+    const handler = window.TerranePlatformBridge;
     if (!handler || typeof handler.postMessage !== "function") return null;
     attachAndroidBridgeHandler(handler);
     return {

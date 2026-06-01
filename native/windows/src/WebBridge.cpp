@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-namespace nativeai {
+namespace terrane {
 namespace json = winrt::Windows::Data::Json;
 
 namespace {
@@ -659,4 +659,4 @@ void WebBridge::RecordBridgeCall(
   sqlite3_finalize(statement);
 }
 
-}  // namespace nativeai
+}  // namespace terrane

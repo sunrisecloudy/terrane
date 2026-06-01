@@ -1,7 +1,7 @@
 .{
-    .name = .native_ai_zig_core,
+    .name = .terrane_zig_core,
     .version = "0.1.0",
-    .fingerprint = 0xcabd212875f1bc39,
+    .fingerprint = 0xaa49948b4379b0e4,
     .minimum_zig_version = "0.15.2",
     .paths = .{
         "build.zig",

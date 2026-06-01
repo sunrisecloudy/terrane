@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kLogTag = "NativeAIPlatformCore";
+constexpr const char* kLogTag = "TerranePlatformCore";
 
 struct ZigCoreBuffer {
   uint8_t* ptr;
@@ -72,13 +72,13 @@ bool ensure_loaded_locked() {
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_nativeai_platform_ZigCoreBridge_nativeIsAvailable(JNIEnv*, jobject) {
+Java_com_terrane_platform_ZigCoreBridge_nativeIsAvailable(JNIEnv*, jobject) {
   std::lock_guard<std::mutex> lock(g_core_mutex);
   return ensure_loaded_locked() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_nativeai_platform_ZigCoreBridge_nativeStep(JNIEnv* env, jobject, jstring input_json) {
+Java_com_terrane_platform_ZigCoreBridge_nativeStep(JNIEnv* env, jobject, jstring input_json) {
   if (input_json == nullptr) {
     return nullptr;
   }

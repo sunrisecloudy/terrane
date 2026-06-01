@@ -1,4 +1,4 @@
-# Native AI Webapp Platform — Implementation Spec v0.4
+# Terrane — Implementation Spec v0.4
 
 This package is an implementation-ready specification for a native app platform that can generate and run build-free webapps on the fly, while sharing deterministic core logic through Zig and persisting platform state in a portable SQLite/Postgres-compatible database layer.
 

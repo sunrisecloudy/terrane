@@ -20,7 +20,7 @@ typedef int32_t (*CrdtJsonFn)(
 );
 typedef void (*CrdtFreeFn)(ZigCrdtBuffer buffer);
 
-struct NativeAIZigCrdt {
+struct TerraneZigCrdt {
     void *handle;
     ZigCrdt *crdt;
     CrdtDestroyFn destroy;
@@ -32,11 +32,11 @@ struct NativeAIZigCrdt {
 
 static const char *last_error = NULL;
 
-const char *native_ai_zig_crdt_last_error(void) {
+const char *terrane_zig_crdt_last_error(void) {
     return last_error;
 }
 
-NativeAIZigCrdt *native_ai_zig_crdt_open(const char *path) {
+TerraneZigCrdt *terrane_zig_crdt_open(const char *path) {
     last_error = NULL;
     void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (handle == NULL) {
@@ -63,11 +63,11 @@ NativeAIZigCrdt *native_ai_zig_crdt_open(const char *path) {
         return NULL;
     }
 
-    NativeAIZigCrdt *bridge = (NativeAIZigCrdt *)calloc(1, sizeof(NativeAIZigCrdt));
+    TerraneZigCrdt *bridge = (TerraneZigCrdt *)calloc(1, sizeof(TerraneZigCrdt));
     if (bridge == NULL) {
         destroy(crdt);
         dlclose(handle);
-        last_error = "failed to allocate NativeAIZigCrdt";
+        last_error = "failed to allocate TerraneZigCrdt";
         return NULL;
     }
 
@@ -81,7 +81,7 @@ NativeAIZigCrdt *native_ai_zig_crdt_open(const char *path) {
     return bridge;
 }
 
-void native_ai_zig_crdt_close(NativeAIZigCrdt *bridge) {
+void terrane_zig_crdt_close(TerraneZigCrdt *bridge) {
     if (bridge == NULL) {
         return;
     }
@@ -95,7 +95,7 @@ void native_ai_zig_crdt_close(NativeAIZigCrdt *bridge) {
 }
 
 static int32_t call_crdt_json(
-    NativeAIZigCrdt *bridge,
+    TerraneZigCrdt *bridge,
     CrdtJsonFn function,
     const uint8_t *input_ptr,
     size_t input_len,
@@ -123,8 +123,8 @@ static int32_t call_crdt_json(
     return 0;
 }
 
-int32_t native_ai_zig_crdt_apply_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_apply_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
@@ -133,8 +133,8 @@ int32_t native_ai_zig_crdt_apply_json(
     return call_crdt_json(bridge, bridge != NULL ? bridge->apply_json : NULL, input_ptr, input_len, output_ptr, output_len);
 }
 
-int32_t native_ai_zig_crdt_merge_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_merge_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
@@ -143,8 +143,8 @@ int32_t native_ai_zig_crdt_merge_json(
     return call_crdt_json(bridge, bridge != NULL ? bridge->merge_json : NULL, input_ptr, input_len, output_ptr, output_len);
 }
 
-int32_t native_ai_zig_crdt_materialize_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_materialize_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
@@ -153,8 +153,8 @@ int32_t native_ai_zig_crdt_materialize_json(
     return call_crdt_json(bridge, bridge != NULL ? bridge->materialize_json : NULL, input_ptr, input_len, output_ptr, output_len);
 }
 
-void native_ai_zig_crdt_free_output(
-    NativeAIZigCrdt *bridge,
+void terrane_zig_crdt_free_output(
+    TerraneZigCrdt *bridge,
     uint8_t *output_ptr,
     size_t output_len
 ) {

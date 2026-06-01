@@ -8,42 +8,42 @@
 extern "C" {
 #endif
 
-typedef struct NativeAIZigCrdt NativeAIZigCrdt;
+typedef struct TerraneZigCrdt TerraneZigCrdt;
 
-NativeAIZigCrdt *native_ai_zig_crdt_open(const char *path);
-void native_ai_zig_crdt_close(NativeAIZigCrdt *bridge);
+TerraneZigCrdt *terrane_zig_crdt_open(const char *path);
+void terrane_zig_crdt_close(TerraneZigCrdt *bridge);
 
-int32_t native_ai_zig_crdt_apply_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_apply_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
     size_t *output_len
 );
 
-int32_t native_ai_zig_crdt_merge_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_merge_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
     size_t *output_len
 );
 
-int32_t native_ai_zig_crdt_materialize_json(
-    NativeAIZigCrdt *bridge,
+int32_t terrane_zig_crdt_materialize_json(
+    TerraneZigCrdt *bridge,
     const uint8_t *input_ptr,
     size_t input_len,
     uint8_t **output_ptr,
     size_t *output_len
 );
 
-void native_ai_zig_crdt_free_output(
-    NativeAIZigCrdt *bridge,
+void terrane_zig_crdt_free_output(
+    TerraneZigCrdt *bridge,
     uint8_t *output_ptr,
     size_t output_len
 );
 
-const char *native_ai_zig_crdt_last_error(void);
+const char *terrane_zig_crdt_last_error(void);
 
 #ifdef __cplusplus
 }

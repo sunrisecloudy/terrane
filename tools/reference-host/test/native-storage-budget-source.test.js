@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("native storage bridges enforce maxStorageBytes", () => {
-  const iosStorage = read("native/ios/Sources/NativeAIHostIOS/PlatformStorage.swift");
-  const macosStorage = read("native/macos/Sources/NativeAIHostMac/PlatformStorage.swift");
-  const androidStorage = read("native/android/app/src/main/java/com/nativeai/platform/PlatformStorage.kt");
+  const iosStorage = read("native/ios/Sources/TerraneHostIOS/PlatformStorage.swift");
+  const macosStorage = read("native/macos/Sources/TerraneHostMac/PlatformStorage.swift");
+  const androidStorage = read("native/android/app/src/main/java/com/terrane/platform/PlatformStorage.kt");
   const windowsStorage = read("native/windows/src/PlatformStorage.cpp");
   const windowsStorageHeader = read("native/windows/src/PlatformStorage.h");
   const linuxStorage = read("native/linux/src/platform_storage.c");
@@ -62,7 +62,7 @@ test("native storage bridges enforce maxStorageBytes", () => {
 });
 
 test("macOS install transaction storage failures write failed install reports", () => {
-  const macosControl = read("native/macos/Sources/NativeAIHostMac/DevControlPlane.swift");
+  const macosControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
 
   assert.match(macosControl, /recordInstallStorageFailureReport\(/);
   assert.match(macosControl, /INSERT OR REPLACE INTO app_install_reports/);

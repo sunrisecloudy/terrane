@@ -30,7 +30,7 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsHost, /open-notes-lite-button/);
   assert.match(windowsHost, /RunRuntimeLoadSmoke/);
   assert.match(windowsHost, /windows_smoke_runtime_load_ready/);
-  assert.match(windowsHost, /NATIVE_AI_WINDOWS_SMOKE_RUNTIME_JS_READY/);
+  assert.match(windowsHost, /TERRANE_WINDOWS_SMOKE_RUNTIME_JS_READY/);
   assert.match(windowsHost, /get_BrowserVersionString/);
   assert.match(windowsHost, /WebView2RuntimeMeetsMinimum/);
   assert.match(windowsHost, /WebView2 runtime version 1\.0\.2592 or later is required/);
@@ -43,14 +43,14 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(windowsBridge, /HasOnlyBridgeRequestFields/);
   assert.match(windowsBridge, /Bridge request contains unknown top-level fields/);
   assert.match(windowsBridge, /Bridge request timestamp must be a finite number/);
-  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
-  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK/);
-  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK/);
-  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK/);
-  assert.match(windowsSmoke, /NATIVE_AI_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
+  assert.match(windowsSmoke, /TERRANE_WINDOWS_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
+  assert.match(windowsSmoke, /TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_SET_OK/);
+  assert.match(windowsSmoke, /TERRANE_WINDOWS_SMOKE_BRIDGE_STORAGE_GET_OK/);
+  assert.match(windowsSmoke, /TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(windowsSmoke, /TERRANE_WINDOWS_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
   assert.match(windowsSmoke, /path\.dirname\(binaryPath\)/);
 
-  assert.match(linuxHost, /messageHandlers && window\.webkit\.messageHandlers\.NativeAIPlatformBridge/);
+  assert.match(linuxHost, /messageHandlers && window\.webkit\.messageHandlers\.TerranePlatformBridge/);
   assert.match(linuxHost, /window\.AppRuntime=\{call:call/);
   assert.match(linuxHost, /html_with_app_runtime_bootstrap/);
   assert.match(linuxHost, /html_with_app_runtime_csp/);
@@ -80,11 +80,11 @@ test("Windows and Linux native smoke suites include WebView bridge-message cover
   assert.match(linuxHost, /linux_smoke_fixed_network_denied/);
   assert.match(linuxHost, /runtime-app-storage-get/);
   assert.match(linuxHost, /open-notes-lite-button/);
-  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
-  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK/);
-  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK/);
-  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK/);
-  assert.match(linuxSmoke, /NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
+  assert.match(linuxSmoke, /TERRANE_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK/);
+  assert.match(linuxSmoke, /TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK/);
+  assert.match(linuxSmoke, /TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK/);
+  assert.match(linuxSmoke, /TERRANE_LINUX_SMOKE_BRIDGE_CORE_STEP_OK/);
+  assert.match(linuxSmoke, /TERRANE_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK/);
 });
 
 function read(relativePath) {

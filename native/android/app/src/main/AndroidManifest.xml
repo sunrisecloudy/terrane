@@ -3,7 +3,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="Native AI Webapp Platform"
+        android:label="Terrane"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"

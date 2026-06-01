@@ -1,6 +1,6 @@
 # Codex Master Prompt
 
-Implement the Native AI Webapp Platform v0.1 from this repository specification.
+Implement the Terrane v0.1 from this repository specification.
 
 Hard requirements:
 

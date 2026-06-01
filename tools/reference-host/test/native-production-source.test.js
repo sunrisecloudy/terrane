@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("desktop production guards reject dev-only startup flags outside debug builds", () => {
-  const app = read("native/macos/Sources/NativeAIHostMac/App.swift");
-  const tests = read("native/macos/Tests/NativeAIHostMacTests/NativeHostTests.swift");
+  const app = read("native/macos/Sources/TerraneHostMac/App.swift");
+  const tests = read("native/macos/Tests/TerraneHostMacTests/NativeHostTests.swift");
   const windowsMain = read("native/windows/src/main.cpp");
   const windowsDatabase = read("native/windows/src/PlatformDatabase.cpp");
   const linuxMain = read("native/linux/src/main.c");
@@ -39,8 +39,8 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   assert.match(windowsDatabase, /CREATE TABLE IF NOT EXISTS control_sessions/);
   assert.match(windowsDatabase, /CREATE TABLE IF NOT EXISTS control_commands/);
 
-  assert.match(linuxMain, /native_ai_reject_dev_only_flags_if_needed\(argc, argv\)/);
-  assert.match(linuxMain, /native_ai_application_argv_without_dev_flags\(argc, argv, &application_argc\)/);
+  assert.match(linuxMain, /terrane_reject_dev_only_flags_if_needed\(argc, argv\)/);
+  assert.match(linuxMain, /terrane_application_argv_without_dev_flags\(argc, argv, &application_argc\)/);
   assert.match(linuxMain, /"--control-plane-port"/);
   assert.match(linuxMain, /"--allow-runtime-mismatch"/);
   assert.match(linuxMain, /"--allow-unsigned-dev"/);

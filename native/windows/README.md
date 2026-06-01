@@ -28,9 +28,9 @@ Implemented now:
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound Win32 common file dialogs, including source/static-verified multi-select `dialog.openFile`.
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
-- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `NATIVE_AI_ZIG_CORE_DLL` first, the executable-adjacent packaged DLL next, and repo-local candidate paths as dev fallbacks.
+- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `TERRANE_ZIG_CORE_DLL` first, the executable-adjacent packaged DLL next, and repo-local candidate paths as dev fallbacks.
 - Reports `core.step` in `runtime.capabilities` from the actual Zig DLL load status and returns structured `platform_unsupported` when the DLL is absent.
-- Windows-only release smoke coverage builds the native package, launches it from the staged artifact directory with no `NATIVE_AI_ZIG_CORE_DLL`, and verifies executable-relative runtime/example/SQLite resources plus `zig_core.dll`-backed `core.step`.
+- Windows-only release smoke coverage builds the native package, launches it from the staged artifact directory with no `TERRANE_ZIG_CORE_DLL`, and verifies executable-relative runtime/example/SQLite resources plus `zig_core.dll`-backed `core.step`.
 
 MVP acceptance:
 
@@ -47,9 +47,9 @@ This host must support a dev/test-only control plane for Codex micro-testing.
 
 Implemented now (source/static verified here; runtime smoke is Windows-only):
 
-- Debug builds can enable a loopback-only control listener with `--native-ai-dev-control` or `NATIVE_AI_WINDOWS_DEV_CONTROL=1`.
+- Debug builds can enable a loopback-only control listener with `--terrane-dev-control` or `TERRANE_WINDOWS_DEV_CONTROL=1`.
 - `--control-plane-port` / `--control-plane-port=...` selects the listener port; `0` lets Windows assign a free port.
-- Each launch writes a fresh random token to `%LOCALAPPDATA%\NativeAIWebappPlatform\control.token`, or `PLATFORM_CONTROL_TOKEN_FILE` when set for tests.
+- Each launch writes a fresh random token to `%LOCALAPPDATA%\Terrane\control.token`, or `PLATFORM_CONTROL_TOKEN_FILE` when set for tests.
 - Requests must send `X-Platform-Control-Token`; missing or invalid tokens return `control_auth_required`.
 - `GET /health` returns Windows target health and records accepted/rejected control audit rows in SQLite.
 - Session routes create/end control sessions, create linked runtime sessions when `appId` is supplied, and expose DB-backed snapshot/events/capabilities responses.

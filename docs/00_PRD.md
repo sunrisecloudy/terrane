@@ -1,4 +1,4 @@
-# PRD: Native AI Webapp Platform v0.4
+# PRD: Terrane v0.4
 
 ## 0. Document conventions
 

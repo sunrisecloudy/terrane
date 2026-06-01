@@ -40,7 +40,7 @@ final class ZigCoreBridge: @unchecked Sendable {
         private let bridge: OpaquePointer
 
         init?(path: String) {
-            guard let bridge = path.withCString({ native_ai_zig_core_open($0) }) else {
+            guard let bridge = path.withCString({ terrane_zig_core_open($0) }) else {
                 return nil
             }
             self.path = path
@@ -48,7 +48,7 @@ final class ZigCoreBridge: @unchecked Sendable {
         }
 
         deinit {
-            native_ai_zig_core_close(bridge)
+            terrane_zig_core_close(bridge)
         }
 
         func step(input: Data) throws -> Any {
@@ -56,7 +56,7 @@ final class ZigCoreBridge: @unchecked Sendable {
             var outputLength = 0
             let code = input.withUnsafeBytes { rawBuffer -> Int32 in
                 let inputPointer = rawBuffer.bindMemory(to: UInt8.self).baseAddress
-                return native_ai_zig_core_step_json(
+                return terrane_zig_core_step_json(
                     bridge,
                     inputPointer,
                     input.count,
@@ -72,7 +72,7 @@ final class ZigCoreBridge: @unchecked Sendable {
                 throw ZigCoreError.emptyOutput
             }
             defer {
-                native_ai_zig_core_free_output(bridge, outputPointer, outputLength)
+                terrane_zig_core_free_output(bridge, outputPointer, outputLength)
             }
 
             let outputData = Data(bytes: outputPointer, count: outputLength)
@@ -86,7 +86,7 @@ final class ZigCoreBridge: @unchecked Sendable {
     }
 
     private let library: Library?
-    private let stepQueue = DispatchQueue(label: "native-ai.macos.zig-core-step")
+    private let stepQueue = DispatchQueue(label: "terrane.macos.zig-core-step")
     private let stepTimeoutMilliseconds: Int
     private let testStep: ((Data) throws -> Any)?
 
@@ -238,7 +238,7 @@ final class ZigCoreBridge: @unchecked Sendable {
             paths.append(libraryPathOverride)
         }
 
-        if let overridePath = ProcessInfo.processInfo.environment["NATIVE_AI_ZIG_CORE_DYLIB"],
+        if let overridePath = ProcessInfo.processInfo.environment["TERRANE_ZIG_CORE_DYLIB"],
            !overridePath.isEmpty {
             paths.append(overridePath)
         }

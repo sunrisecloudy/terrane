@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace nativeai {
+namespace terrane {
 namespace {
 
 std::filesystem::path RepoRoot() {
@@ -146,4 +146,4 @@ void PlatformDatabase::RunIntegrityCheck() {
   sqlite3_finalize(statement);
 }
 
-}  // namespace nativeai
+}  // namespace terrane

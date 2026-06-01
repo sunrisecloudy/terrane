@@ -11,7 +11,7 @@
 #include <functional>
 #include <optional>
 
-namespace nativeai {
+namespace terrane {
 
 class WebBridge {
  public:
@@ -56,4 +56,4 @@ class WebBridge {
   ZigCoreBridge core_;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

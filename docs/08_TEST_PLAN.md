@@ -199,7 +199,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local simulator build/package smoke runs with `node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
-- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `NATIVE_AI_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
+- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `TERRANE_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
 
 ### macOS
 
@@ -219,7 +219,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside DEBUG builds.
 - Local build and native SwiftPM tests run with `node --test --no-warnings tools/reference-host/test/macos-native-build.test.js` on macOS hosts.
 - When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
-- Debug app launch smoke runs with `NATIVE_AI_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/macos-native-build.test.js`.
+- Debug app launch smoke runs with `TERRANE_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/macos-native-build.test.js`.
 
 ### Android
 
@@ -233,7 +233,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/reference-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
-- Full emulator smoke runs with `NATIVE_AI_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
+- Full emulator smoke runs with `TERRANE_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
 
 ### Windows
 
@@ -249,7 +249,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
 - Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host, verifies audited rejection of dev-only startup flags, and builds/launches the packaged artifact from outside the repo root with executable-relative runtime/example/SQLite resources plus `zig_core.dll`.
-- Full Windows smoke runs with `NATIVE_AI_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
+- Full Windows smoke runs with `TERRANE_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
 
 ### Linux
 
@@ -264,7 +264,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
 - Local Linux build smoke runs with `node --test --no-warnings tools/reference-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
-- Full Linux smoke runs with `NATIVE_AI_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), `core.step` through `libzig_core.so`, and the debug-only loopback dev control `GET /health` plus session create/snapshot/events/capabilities/command/end routes with token-file auth, accepted/rejected SQLite audit rows, and permission-checked `runtime.call_bridge` / `runtime.core_step` command dispatch.
+- Full Linux smoke runs with `TERRANE_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), `core.step` through `libzig_core.so`, and the debug-only loopback dev control `GET /health` plus session create/snapshot/events/capabilities/command/end routes with token-file auth, accepted/rejected SQLite audit rows, and permission-checked `runtime.call_bridge` / `runtime.core_step` command dispatch.
 
 ### Server
 

@@ -423,7 +423,7 @@ async function measureMetric({ id, warmup, samples, target, run }) {
 }
 
 function prepareBenchmarkPackage({ appId, warmup, samples, lifecycleLoops, throughputCalls }) {
-  const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-perf-package-"));
+  const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-perf-package-"));
   fs.cpSync(path.join(examplesDir, appId), packageDir, { recursive: true });
   const manifestPath = path.join(packageDir, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));

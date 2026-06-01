@@ -919,7 +919,7 @@
     "description": "AI creates a proposal under proposal-only permissions; a human reviewer accepts it into canonical notebook state.",
     "id": "human-ai-proposal"
   },
-  "schemaVersion": "native-ai-notebook-crdt-fixture-v0.1",
+  "schemaVersion": "terrane-notebook-crdt-fixture-v0.1",
   "sync": {
     "proposalPolicy": "ai proposal-only actor cannot mutate canonical cells until a human accepts"
   }

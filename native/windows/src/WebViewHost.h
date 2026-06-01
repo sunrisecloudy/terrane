@@ -12,7 +12,7 @@
 #include <vector>
 #include <wrl.h>
 
-namespace nativeai {
+namespace terrane {
 
 class WebViewHost {
  public:
@@ -94,4 +94,4 @@ class WebViewHost {
   bool smokeRan_ = false;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

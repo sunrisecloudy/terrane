@@ -53,8 +53,8 @@ function linuxNativeSkipReason({ requireZig = false, requireSqliteCli = false } 
 function linuxPackagedNativeSmokeSkipReason() {
   const baseReason = linuxNativeSkipReason({ requireZig: true });
   if (baseReason) return baseReason;
-  if (process.env.NATIVE_AI_LINUX_SMOKE_LAUNCH !== "1") {
-    return "set NATIVE_AI_LINUX_SMOKE_LAUNCH=1 to run packaged Linux native launch smoke";
+  if (process.env.TERRANE_LINUX_SMOKE_LAUNCH !== "1") {
+    return "set TERRANE_LINUX_SMOKE_LAUNCH=1 to run packaged Linux native launch smoke";
   }
   return false;
 }
@@ -66,7 +66,7 @@ test(
     timeout: 180_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-smoke-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-smoke-"));
     try {
       const zigCoreSo = path.join(scratch, "libzig_core.so");
       execFileSync(
@@ -96,7 +96,7 @@ test(
       const buildDir = path.join(scratch, "build");
       execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
       execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
-      const binaryPath = path.join(buildDir, "native-ai-webapp-host");
+      const binaryPath = path.join(buildDir, "terrane-host");
       assert.equal(fs.existsSync(binaryPath), true);
 
       runOptionalSmoke({ binaryPath, scratch, zigCoreSo });
@@ -113,13 +113,13 @@ test(
     timeout: 120_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-production-guard-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-production-guard-"));
     try {
       const buildDir = path.join(scratch, "release-build");
       execFileSync("meson", ["setup", "--buildtype=release", buildDir, linuxDir], { stdio: "ignore" });
       execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
 
-      const binaryPath = path.join(buildDir, "native-ai-webapp-host");
+      const binaryPath = path.join(buildDir, "terrane-host");
       const xdgDataHome = path.join(scratch, "xdg-data");
       const result = spawnSync(binaryPath, ["--allow-unsigned-dev"], {
         cwd: repoRoot,
@@ -131,7 +131,7 @@ test(
       assert.equal(result.status, 1, output);
       assert.match(output, /production build rejects dev-only startup flag --allow-unsigned-dev/);
 
-      const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const dbPath = path.join(xdgDataHome, "Terrane", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "production guard should create the platform audit database");
       const count = execFileSync(
         "sqlite3",
@@ -155,7 +155,7 @@ test(
     timeout: 180_000,
   },
   async () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-dev-control-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-dev-control-"));
     let child = null;
     try {
       const zigCoreSo = path.join(scratch, "libzig_core.so");
@@ -187,19 +187,19 @@ test(
       execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
       execFileSync("meson", ["compile", "-C", buildDir], { stdio: "ignore" });
 
-      const binaryPath = path.join(buildDir, "native-ai-webapp-host");
+      const binaryPath = path.join(buildDir, "terrane-host");
       const xdgDataHome = path.join(scratch, "xdg-data");
       const xdgRuntimeDir = path.join(scratch, "xdg-runtime");
       fs.mkdirSync(xdgRuntimeDir, { recursive: true, mode: 0o700 });
 
-      child = launchHost(binaryPath, ["--native-ai-dev-control", "--control-plane-port=0"], {
+      child = launchHost(binaryPath, ["--terrane-dev-control", "--control-plane-port=0"], {
         ...process.env,
         XDG_DATA_HOME: xdgDataHome,
         XDG_RUNTIME_DIR: xdgRuntimeDir,
-        NATIVE_AI_ZIG_CORE_SO: zigCoreSo,
+        TERRANE_ZIG_CORE_SO: zigCoreSo,
       });
       const ready = await waitForControlReady(child);
-      assert.equal(ready.tokenPath, path.join(xdgRuntimeDir, "native-ai-webapp", "control.token"));
+      assert.equal(ready.tokenPath, path.join(xdgRuntimeDir, "terrane", "control.token"));
 
       const tokenStat = fs.statSync(ready.tokenPath);
       assert.equal(tokenStat.mode & 0o777, 0o600);
@@ -395,7 +395,7 @@ test(
       assert.equal(postInstallSnapshotBody.result.app_install_reports.some((row) => row.report_id === installPackageBody.result.reportId && row.status === "accepted"), true);
       assert.equal(postInstallSnapshotBody.result.runtime_sessions.some((row) => row.session_id === openInstalledPackageBody.result.sessionId && row.active_install_id === installPackageBody.result.installId), true);
 
-      const packageLifecycleDbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const packageLifecycleDbPath = path.join(xdgDataHome, "Terrane", "platform.sqlite");
       const packageLifecycleInstallationCount = execFileSync(
         "sqlite3",
         [
@@ -1333,7 +1333,7 @@ test(
         assert.equal(completed.statusCode, 200, completed.body);
       }
 
-      const dbPath = path.join(xdgDataHome, "NativeAIWebappPlatform", "platform.sqlite");
+      const dbPath = path.join(xdgDataHome, "Terrane", "platform.sqlite");
       assert.equal(fs.existsSync(dbPath), true, "dev control should create the platform audit database");
       const rejectedCount = execFileSync(
         "sqlite3",
@@ -2067,18 +2067,18 @@ test(
     timeout: 240_000,
   },
   () => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-linux-packaged-smoke-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-packaged-smoke-"));
     try {
       const outDir = path.join(scratch, "artifacts");
       const result = packageReleaseArtifacts({ outDir, buildNativeLinux: true });
       const nativeArtifact = result.artifacts.find((artifact) => artifact.id === "native-linux-linux-x86_64");
       assert.notEqual(nativeArtifact, undefined, "release manifest should include the Linux native host artifact");
 
-      const appDir = path.join(outDir, "native-apps", "linux", "linux-x86_64", "NativeAIWebappHost");
-      const binaryPath = path.join(appDir, "native-ai-webapp-host");
+      const appDir = path.join(outDir, "native-apps", "linux", "linux-x86_64", "TerraneHost");
+      const binaryPath = path.join(appDir, "terrane-host");
       const packagedCorePath = path.join(appDir, "libzig_core.so");
       for (const relativePath of [
-        "native-ai-webapp-host",
+        "terrane-host",
         "libzig_core.so",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
@@ -2099,61 +2099,61 @@ test(
 );
 
 function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
-  if (process.env.NATIVE_AI_LINUX_SMOKE_LAUNCH !== "1") return;
+  if (process.env.TERRANE_LINUX_SMOKE_LAUNCH !== "1") return;
   const storageKey = `notes-lite:linux-smoke-${process.pid}-${Date.now()}`;
   const storageValue = `linux-smoke-${process.pid}-${Date.now()}`;
   const baseEnv = {
     ...process.env,
-    NATIVE_AI_ZIG_CORE_SO: zigCoreSo,
-    NATIVE_AI_LINUX_SMOKE_EXIT_AFTER: "1",
+    TERRANE_ZIG_CORE_SO: zigCoreSo,
+    TERRANE_LINUX_SMOKE_EXIT_AFTER: "1",
     XDG_DATA_HOME: path.join(scratch, "xdg-data"),
   };
 
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_RUNTIME_LOADED", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_RUNTIME_LOADED", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "runtime-load",
+    TERRANE_LINUX_SMOKE: "runtime-load",
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "storage-set",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "storage-set",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "storage-get",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "storage-get",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_CORE_STEP_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "core-step",
+    TERRANE_LINUX_SMOKE: "core-step",
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_FIXED_BRIDGE_SURFACE_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "fixed-bridge-surface",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "fixed-bridge-surface",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-storage-set",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "bridge-storage-set",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-storage-get",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "bridge-storage-get",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-core-step",
+    TERRANE_LINUX_SMOKE: "bridge-core-step",
   });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_RUNTIME_APP_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "runtime-app-storage-get",
+    TERRANE_LINUX_SMOKE: "runtime-app-storage-get",
   });
 }
 
@@ -2162,35 +2162,35 @@ function runPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
   const storageValue = `linux-packaged-smoke-${process.pid}-${Date.now()}`;
   const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
   fs.mkdirSync(outsideRepoCwd, { recursive: true });
-  const { NATIVE_AI_ZIG_CORE_SO: _ignoredZigCoreSo, ...smokeEnv } = process.env;
+  const { TERRANE_ZIG_CORE_SO: _ignoredZigCoreSo, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
-    NATIVE_AI_LINUX_SMOKE_EXIT_AFTER: "1",
+    TERRANE_LINUX_SMOKE_EXIT_AFTER: "1",
     XDG_DATA_HOME: path.join(scratch, "packaged-xdg-data"),
   };
 
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_RUNTIME_LOADED", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_RUNTIME_LOADED", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "runtime-load",
+    TERRANE_LINUX_SMOKE: "runtime-load",
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-storage-set",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "bridge-storage-set",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-storage-get",
-    NATIVE_AI_LINUX_SMOKE_STORAGE_KEY: storageKey,
-    NATIVE_AI_LINUX_SMOKE_STORAGE_VALUE: storageValue,
+    TERRANE_LINUX_SMOKE: "bridge-storage-get",
+    TERRANE_LINUX_SMOKE_STORAGE_KEY: storageKey,
+    TERRANE_LINUX_SMOKE_STORAGE_VALUE: storageValue,
   }, { cwd: outsideRepoCwd });
-  runSmoke(binaryPath, "NATIVE_AI_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
+  runSmoke(binaryPath, "TERRANE_LINUX_SMOKE_BRIDGE_CORE_STEP_OK", {
     ...baseEnv,
-    NATIVE_AI_LINUX_SMOKE: "bridge-core-step",
+    TERRANE_LINUX_SMOKE: "bridge-core-step",
   }, { cwd: outsideRepoCwd });
 
-  const dbPath = path.join(baseEnv.XDG_DATA_HOME, "NativeAIWebappPlatform", "platform.sqlite");
+  const dbPath = path.join(baseEnv.XDG_DATA_HOME, "Terrane", "platform.sqlite");
   assert.equal(fs.existsSync(dbPath), true, "packaged smoke should persist the platform database");
   assert.equal(appDir.includes(repoRoot), false, "packaged artifact should live outside the repo root");
 }
@@ -2228,7 +2228,7 @@ function waitForControlReady(child) {
 
     function collect(chunk) {
       output += chunk.toString("utf8");
-      const match = output.match(/NATIVE_AI_LINUX_CONTROL_READY port=(\d+) token_path=([^\s]+)/);
+      const match = output.match(/TERRANE_LINUX_CONTROL_READY port=(\d+) token_path=([^\s]+)/);
       if (!match || settled) return;
       settled = true;
       clearTimeout(timer);
@@ -2333,7 +2333,7 @@ function runSmoke(binaryPath, marker, env, { cwd = repoRoot } = {}) {
 
   const result = spawnSync(command, args, { env, cwd, encoding: "utf8", timeout: 30_000 });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  assert.equal(output.includes("NATIVE_AI_LINUX_SMOKE_FAILED"), false, output);
+  assert.equal(output.includes("TERRANE_LINUX_SMOKE_FAILED"), false, output);
   if (output.includes(marker)) return;
   assert.fail(`Timed out waiting for ${marker}\n${output}`);
 }

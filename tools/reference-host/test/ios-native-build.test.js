@@ -8,14 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const iosDir = path.join(repoRoot, "native", "ios");
-const bundleId = "dev.nativeai.host.ios";
-const smokeLoadedMarker = "NATIVE_AI_IOS_SMOKE_RUNTIME_LOADED";
-const smokeStorageSetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_SET_OK";
-const smokeStorageGetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_GET_OK";
-const smokeStorageResetMarker = "NATIVE_AI_IOS_SMOKE_STORAGE_RESET_OK";
-const smokeCoreStepMarker = "NATIVE_AI_IOS_SMOKE_CORE_STEP_OK";
-const smokeAllExamplesMarker = "NATIVE_AI_IOS_SMOKE_ALL_EXAMPLES_OK";
-const smokeMarkerFile = "native-ai-ios-smoke-runtime-loaded.txt";
+const bundleId = "dev.terrane.host.ios";
+const smokeLoadedMarker = "TERRANE_IOS_SMOKE_RUNTIME_LOADED";
+const smokeStorageSetMarker = "TERRANE_IOS_SMOKE_STORAGE_SET_OK";
+const smokeStorageGetMarker = "TERRANE_IOS_SMOKE_STORAGE_GET_OK";
+const smokeStorageResetMarker = "TERRANE_IOS_SMOKE_STORAGE_RESET_OK";
+const smokeCoreStepMarker = "TERRANE_IOS_SMOKE_CORE_STEP_OK";
+const smokeAllExamplesMarker = "TERRANE_IOS_SMOKE_ALL_EXAMPLES_OK";
+const smokeMarkerFile = "terrane-ios-smoke-runtime-loaded.txt";
 const exampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
 
 function commandWorks(command, args) {
@@ -83,7 +83,7 @@ function buildIOSHost(scratchRoot) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  const binaryPath = path.join(buildScratch, "arm64-apple-ios-simulator", "debug", "NativeAIHostIOS");
+  const binaryPath = path.join(buildScratch, "arm64-apple-ios-simulator", "debug", "TerraneHostIOS");
   return { buildScratch, binaryPath, output };
 }
 
@@ -123,10 +123,10 @@ function buildIOSZigCore(scratchRoot) {
 }
 
 function createSimulatorAppBundle(scratchRoot, binaryPath, zigCoreDylibPath = null) {
-  const appBundle = path.join(scratchRoot, "NativeAIHostIOS.app");
+  const appBundle = path.join(scratchRoot, "TerraneHostIOS.app");
   fs.mkdirSync(appBundle, { recursive: true });
-  fs.copyFileSync(binaryPath, path.join(appBundle, "NativeAIHostIOS"));
-  fs.chmodSync(path.join(appBundle, "NativeAIHostIOS"), 0o755);
+  fs.copyFileSync(binaryPath, path.join(appBundle, "TerraneHostIOS"));
+  fs.chmodSync(path.join(appBundle, "TerraneHostIOS"), 0o755);
   if (zigCoreDylibPath) {
     const bundledCorePath = path.join(appBundle, "libzig_core.dylib");
     fs.copyFileSync(zigCoreDylibPath, bundledCorePath);
@@ -147,11 +147,11 @@ function createSimulatorAppBundle(scratchRoot, binaryPath, zigCoreDylibPath = nu
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleExecutable</key><string>NativeAIHostIOS</string>
+  <key>CFBundleExecutable</key><string>TerraneHostIOS</string>
   <key>CFBundleIdentifier</key><string>${bundleId}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>NativeAIHostIOS</string>
-  <key>CFBundleDisplayName</key><string>NativeAIHostIOS</string>
+  <key>CFBundleName</key><string>TerraneHostIOS</string>
+  <key>CFBundleDisplayName</key><string>TerraneHostIOS</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -178,10 +178,10 @@ function availableIOSDevices() {
 }
 
 function selectIOSDevice() {
-  if (process.env.NATIVE_AI_IOS_SMOKE_DEVICE) {
+  if (process.env.TERRANE_IOS_SMOKE_DEVICE) {
     const devices = availableIOSDevices();
-    return devices.find((device) => device.udid === process.env.NATIVE_AI_IOS_SMOKE_DEVICE) ??
-      { udid: process.env.NATIVE_AI_IOS_SMOKE_DEVICE, state: "Unknown" };
+    return devices.find((device) => device.udid === process.env.TERRANE_IOS_SMOKE_DEVICE) ??
+      { udid: process.env.TERRANE_IOS_SMOKE_DEVICE, state: "Unknown" };
   }
   const devices = availableIOSDevices();
   return devices.find((device) => device.state === "Booted") ??
@@ -276,7 +276,7 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       scratchRoot,
       markerPath,
       expectedMarker: smokeLoadedMarker,
-      launchArgs: ["--native-ai-smoke-runtime-load", "--native-ai-smoke-exit-on-runtime-load"],
+      launchArgs: ["--terrane-smoke-runtime-load", "--terrane-smoke-exit-on-runtime-load"],
     });
 
     const storageKey = `notes-lite:ios-smoke-${process.pid}-${Date.now()}`;
@@ -287,12 +287,12 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       markerPath,
       expectedMarker: smokeStorageSetMarker,
       launchArgs: [
-        "--native-ai-smoke-storage-set",
-        "--native-ai-smoke-storage-key",
+        "--terrane-smoke-storage-set",
+        "--terrane-smoke-storage-key",
         storageKey,
-        "--native-ai-smoke-storage-value",
+        "--terrane-smoke-storage-value",
         storageValue,
-        "--native-ai-smoke-exit-on-runtime-load",
+        "--terrane-smoke-exit-on-runtime-load",
       ],
     });
     launchAndWaitForMarker({
@@ -301,12 +301,12 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       markerPath,
       expectedMarker: smokeStorageGetMarker,
       launchArgs: [
-        "--native-ai-smoke-storage-get",
-        "--native-ai-smoke-storage-key",
+        "--terrane-smoke-storage-get",
+        "--terrane-smoke-storage-key",
         storageKey,
-        "--native-ai-smoke-storage-value",
+        "--terrane-smoke-storage-value",
         storageValue,
-        "--native-ai-smoke-exit-on-runtime-load",
+        "--terrane-smoke-exit-on-runtime-load",
       ],
     });
     launchAndWaitForMarker({
@@ -314,21 +314,21 @@ function launchInSimulator({ scratchRoot, appBundle }) {
       scratchRoot,
       markerPath,
       expectedMarker: smokeStorageResetMarker,
-      launchArgs: ["--native-ai-smoke-storage-reset", "--native-ai-smoke-exit-on-runtime-load"],
+      launchArgs: ["--terrane-smoke-storage-reset", "--terrane-smoke-exit-on-runtime-load"],
     });
     launchAndWaitForMarker({
       device,
       scratchRoot,
       markerPath,
       expectedMarker: smokeCoreStepMarker,
-      launchArgs: ["--native-ai-smoke-core-step", "--native-ai-smoke-exit-on-runtime-load"],
+      launchArgs: ["--terrane-smoke-core-step", "--terrane-smoke-exit-on-runtime-load"],
     });
     launchAndWaitForMarker({
       device,
       scratchRoot,
       markerPath,
       expectedMarker: smokeAllExamplesMarker,
-      launchArgs: ["--native-ai-smoke-all-examples", "--native-ai-smoke-exit-on-runtime-load"],
+      launchArgs: ["--terrane-smoke-all-examples", "--terrane-smoke-exit-on-runtime-load"],
     });
   } finally {
     if (!wasBooted) {
@@ -338,11 +338,11 @@ function launchInSimulator({ scratchRoot, appBundle }) {
 }
 
 test("iOS debug dev control health endpoint is source-wired and token-gated", () => {
-  const control = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "IOSDevControlPlane.swift"), "utf8");
-  const host = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebHostView.swift"), "utf8");
-  const bridge = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "WebBridge.swift"), "utf8");
-  const network = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "PlatformNetwork.swift"), "utf8");
-  const dialogs = fs.readFileSync(path.join(iosDir, "Sources", "NativeAIHostIOS", "PlatformDialogs.swift"), "utf8");
+  const control = fs.readFileSync(path.join(iosDir, "Sources", "TerraneHostIOS", "IOSDevControlPlane.swift"), "utf8");
+  const host = fs.readFileSync(path.join(iosDir, "Sources", "TerraneHostIOS", "WebHostView.swift"), "utf8");
+  const bridge = fs.readFileSync(path.join(iosDir, "Sources", "TerraneHostIOS", "WebBridge.swift"), "utf8");
+  const network = fs.readFileSync(path.join(iosDir, "Sources", "TerraneHostIOS", "PlatformNetwork.swift"), "utf8");
+  const dialogs = fs.readFileSync(path.join(iosDir, "Sources", "TerraneHostIOS", "PlatformDialogs.swift"), "utf8");
 
   for (const snippet of [
     "#if DEBUG && targetEnvironment(simulator)",
@@ -352,19 +352,19 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "import SQLite3",
     "SecRandomCopyBytes",
     "PLATFORM_CONTROL_TOKEN_FILE",
-    "NATIVE_AI_IOS_DEV_CONTROL",
-    "--native-ai-dev-control",
+    "TERRANE_IOS_DEV_CONTROL",
+    "--terrane-dev-control",
     "--control-plane-port",
     "/control/sessions",
     "/control/command",
     "/capabilities",
     "/command",
     ".applicationSupportDirectory",
-    "native-ai-webapp",
+    "terrane",
     "control.token",
     "x-platform-control-token",
     "parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address(\"127.0.0.1\")!), port: listenPort)",
-    "NATIVE_AI_IOS_CONTROL_READY port=",
+    "TERRANE_IOS_CONTROL_READY port=",
     "Control token is required",
     "control_auth_required",
     "request.method == \"GET\" && request.normalizedPath == \"/health\"",
@@ -674,17 +674,17 @@ test(
       ? "iOS simulator build smoke only runs on Darwin hosts"
       : !commandWorks("swift", ["--version"])
         ? "swift is not available"
-        : process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" && !commandWorks("xcrun", ["simctl", "help"])
+        : process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" && !commandWorks("xcrun", ["simctl", "help"])
           ? "simctl is not available"
-          : process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" && !commandWorks("zig", ["version"])
+          : process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" && !commandWorks("zig", ["version"])
             ? "zig is not available"
             : !hasIPhoneSimulatorSdk()
               ? "iPhone simulator SDK is not available"
               : false,
-    timeout: process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" ? 180_000 : 120_000,
+    timeout: process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" ? 180_000 : 120_000,
   },
   () => {
-    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-ios-smoke-"));
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-ios-smoke-"));
     try {
       const build = buildIOSHost(scratchRoot);
       assert.match(build.output, /Build complete!/);
@@ -700,7 +700,7 @@ test(
       assert.match(linkedLibraries, /WebKit\.framework\/WebKit/);
       assert.match(linkedLibraries, /libsqlite3\.dylib/);
 
-      const zigCoreDylibPath = process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1" ? buildIOSZigCore(scratchRoot) : null;
+      const zigCoreDylibPath = process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" ? buildIOSZigCore(scratchRoot) : null;
       const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath, zigCoreDylibPath);
       assert.equal(fs.existsSync(path.join(appBundle, "runtime", "index.html")), true);
       for (const appId of exampleAppIds) {
@@ -713,7 +713,7 @@ test(
         assert.equal(fs.existsSync(path.join(appBundle, "libzig_core.dylib")), true);
       }
 
-      if (process.env.NATIVE_AI_IOS_SMOKE_LAUNCH === "1") {
+      if (process.env.TERRANE_IOS_SMOKE_LAUNCH === "1") {
         launchInSimulator({ scratchRoot, appBundle });
       }
     } finally {

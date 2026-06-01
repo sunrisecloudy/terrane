@@ -99,34 +99,34 @@ artifacts/
     windows/windows-x86_64/zig_core.lib
     linux/linux-x86_64/libzig_core.so
   server/
-    linux-x86_64/native-ai-server
+    linux-x86_64/terrane-server
   runtime-web.zip
   example-webapps.zip
   release-manifest.json
   native-apps/
-    macos/macos-arm64/NativeAIHostMac.app/
+    macos/macos-arm64/TerraneHostMac.app/
       Contents/Resources/runtime/
       Contents/Resources/webapps/examples/
       Contents/Resources/db/sqlite/
-    linux/linux-x86_64/NativeAIWebappHost/
-      native-ai-webapp-host
+    linux/linux-x86_64/TerraneHost/
+      terrane-host
       libzig_core.so
       resources/runtime/
       resources/webapps/examples/
       resources/db/sqlite/
-    windows/windows-x86_64/NativeAIWebappHost/
-      NativeAIWebappHost.exe
+    windows/windows-x86_64/TerraneHost/
+      TerraneHost.exe
       zig_core.dll
       resources/runtime/
       resources/webapps/examples/
       resources/db/sqlite/
 ```
 
-The macOS native app artifact path is `native-apps/macos/macos-arm64/NativeAIHostMac.app` on Apple Silicon CI runners.
+The macOS native app artifact path is `native-apps/macos/macos-arm64/TerraneHostMac.app` on Apple Silicon CI runners.
 
-The Linux native app artifact path is `native-apps/linux/linux-x86_64/NativeAIWebappHost` on the `ubuntu-24.04` release runner.
+The Linux native app artifact path is `native-apps/linux/linux-x86_64/TerraneHost` on the `ubuntu-24.04` release runner.
 
-The Windows native app artifact path is `native-apps/windows/windows-x86_64/NativeAIWebappHost` on the `windows-2022` release runner.
+The Windows native app artifact path is `native-apps/windows/windows-x86_64/TerraneHost` on the `windows-2022` release runner.
 
 The dedicated Linux server artifact job runs:
 
@@ -154,7 +154,7 @@ node --no-warnings tools/package-release.mjs --out artifacts --build-native-wind
 
 The Windows native smoke job also builds the release host and verifies that production/release builds reject `--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev` while writing a `native.production_guard` audit record.
 
-The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition. It also builds the packaged Linux native artifact and launches it from outside the repo root without `NATIVE_AI_ZIG_CORE_SO`, proving runtime resources, example apps, SQLite migrations, and `libzig_core.so` resolve relative to the executable:
+The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition. It also builds the packaged Linux native artifact and launches it from outside the repo root without `TERRANE_ZIG_CORE_SO`, proving runtime resources, example apps, SQLite migrations, and `libzig_core.so` resolve relative to the executable:
 
 ```text
 node --no-warnings tools/run-linux-native-docker.mjs

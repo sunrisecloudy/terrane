@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("macOS core.step enforces timeout without blocking the WebView reply path", () => {
-  const macosBridge = read("native/macos/Sources/NativeAIHostMac/WebBridge.swift");
-  const macosCore = read("native/macos/Sources/NativeAIHostMac/ZigCoreBridge.swift");
-  const macosTests = read("native/macos/Tests/NativeAIHostMacTests/NativeHostTests.swift");
+  const macosBridge = read("native/macos/Sources/TerraneHostMac/WebBridge.swift");
+  const macosCore = read("native/macos/Sources/TerraneHostMac/ZigCoreBridge.swift");
+  const macosTests = read("native/macos/Tests/TerraneHostMacTests/NativeHostTests.swift");
 
   assert.match(macosBridge, /if request\.method == "core\.step" \{/);
   assert.match(macosBridge, /core\.stepAsync\(request\)/);
@@ -51,7 +51,7 @@ test("Windows core.step enforces a structured host timeout around Zig DLL calls"
 test("Linux core.step loader prefers packaged libzig_core beside the executable", () => {
   const linuxCore = read("native/linux/src/zig_core_bridge.c");
 
-  assert.match(linuxCore, /g_getenv\("NATIVE_AI_ZIG_CORE_SO"\)/);
+  assert.match(linuxCore, /g_getenv\("TERRANE_ZIG_CORE_SO"\)/);
   assert.match(linuxCore, /g_file_read_link\("\/proc\/self\/exe"/);
   assert.match(linuxCore, /g_path_get_dirname/);
   assert.match(linuxCore, /g_build_filename\(dir,\s*"libzig_core\.so",\s*NULL\)/);

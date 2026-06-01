@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-namespace nativeai {
+namespace terrane {
 
 class WebViewHost;
 
@@ -34,4 +34,4 @@ class DevControlPlane {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace nativeai
+}  // namespace terrane

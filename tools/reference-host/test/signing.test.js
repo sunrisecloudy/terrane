@@ -39,7 +39,7 @@ test("signPackage emits spec-shaped Ed25519 signature and verifies", () => {
 });
 
 test("reference-host platform signing key persists when a key file is configured", () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "native-ai-keypair-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-keypair-"));
   const keyFile = path.join(tempDir, "platform.key");
   try {
     const first = loadOrCreatePlatformKeypair({ keyFile });
