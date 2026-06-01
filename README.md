@@ -16,6 +16,72 @@ without asking each generated app to become a native project or a bundled web ap
 The short version: AI generates small webapps; Terrane supplies the trusted local
 engine, bridge, storage, policy, tests, and native hosts.
 
+## Use Terrane
+
+Most people should not need to clone submodules, install native SDKs, or build
+the platform before they can try Terrane.
+
+### macOS App Download
+
+The intended user path is a packaged macOS app from GitHub Releases:
+
+1. Open the [latest Terrane release](https://github.com/sunrisecloudy/terrane/releases/latest).
+2. Download the latest macOS artifact, for example `Terrane-macos-arm64.zip`.
+3. Unzip it and open `TerraneHostMac.app`.
+4. Launch one of the bundled apps, such as **Notes Lite**.
+
+The macOS app bundle is expected to include the runtime, bundled example apps,
+SQLite migrations, and Zig core library. Users should not need `git submodule`,
+Zig, Swift, Rust, or Node just to open the app.
+
+Until the first GitHub Release is published, use the local preview below.
+
+### Local Preview
+
+The fastest way to understand Terrane is to run the reference host, open the
+runtime, and launch a bundled generated app. The reference host is the local
+contract implementation that lets you use the runtime without installing every
+native platform toolchain first.
+
+Start here:
+
+```sh
+git clone https://github.com/sunrisecloudy/terrane.git
+cd terrane
+node --no-warnings tools/reference-host/src/server.js --port 7878
+```
+
+Then open [http://127.0.0.1:7878](http://127.0.0.1:7878).
+
+In that first preview session:
+
+1. Choose **Notes Lite** from the app list.
+2. Create, search, edit, and delete a note.
+3. Watch the **Bridge Calls** panel update as the generated app asks Terrane for
+   storage, notification, and log operations.
+4. Try **Task Workbench** or **Core Replay Lab** when you want to see generated
+   UI sending deterministic `core.step` events through the bridge.
+
+If you want state to survive process restarts, run the host with a SQLite file:
+
+```sh
+node --no-warnings tools/reference-host/src/server.js --port 7878 --db-file terrane-dev.sqlite
+```
+
+The mental model for the running app is:
+
+```text
+Generated app package
+  -> runtime-web sandbox
+  -> reference-host bridge
+  -> SQLite storage, policy checks, tests, and Zig core behavior
+```
+
+Terrane is still an active implementation/spec repository, not a stable public
+SDK. Use the first session above to explore the product shape; use
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) to check what is complete,
+partial, or spec-only before depending on a surface.
+
 ## Why Terrane Exists
 
 AI is very good at producing focused app surfaces. It is much less pleasant to let
@@ -82,7 +148,7 @@ public SDK yet, but the major contract surfaces are already present:
 The single source of truth for built vs planned work is
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
-## Quick Start
+## Development Checks
 
 Prerequisites for the broadest local checks:
 
@@ -92,7 +158,8 @@ Prerequisites for the broadest local checks:
 - Docker only for Linux native smoke tests.
 - Platform SDKs only when working on a native target.
 
-Clone submodules first:
+Clone submodules when you need full contributor checks, CRDT fixture generation,
+or anything that touches `external-lib/loro`:
 
 ```sh
 git submodule update --init --recursive
@@ -108,12 +175,6 @@ Run the reference host tests:
 
 ```sh
 node --test --no-warnings tools/reference-host/test/*.test.js
-```
-
-Start the reference host:
-
-```sh
-node --no-warnings tools/reference-host/src/server.js --port 7878
 ```
 
 Start the Zig local server:
