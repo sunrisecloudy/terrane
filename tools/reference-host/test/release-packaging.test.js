@@ -171,6 +171,8 @@ test(
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
       const nativeArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "native-host-app");
       assert.equal(nativeArtifacts.length, 1);
+      const dmgArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "dmg");
+      assert.equal(dmgArtifacts.length, 1);
 
       const [nativeArtifact] = nativeArtifacts;
       assert.match(nativeArtifact.target, /^macos-(arm64|x86_64)$/);
@@ -185,6 +187,15 @@ test(
         assert.equal(nativeArtifact.files.some((file) => file.path === manifestPath && file.sha256.length === 64), true);
         assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
       }
+
+      const [dmgArtifact] = dmgArtifacts;
+      assert.equal(dmgArtifact.id, `native-macos-${nativeArtifact.target}-dmg`);
+      assert.equal(dmgArtifact.target, nativeArtifact.target);
+      assert.equal(dmgArtifact.path, `native-apps/macos/${nativeArtifact.target}/Terrane-${nativeArtifact.target}.dmg`);
+      assert.equal(dmgArtifact.appBundle, nativeArtifact.path);
+      assert.match(dmgArtifact.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(dmgArtifact.bytes > 0, true);
+      assert.equal(fs.existsSync(path.join(outDir, dmgArtifact.path)), true);
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }

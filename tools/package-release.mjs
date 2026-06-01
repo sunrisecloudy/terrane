@@ -15,6 +15,7 @@ const ZIG_CORE_TARGETS = ["ios", "macos", "android", "windows", "linux"];
 const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "terrane-server.exe" : "terrane-server";
 const MACOS_HOST_EXECUTABLE_NAME = "TerraneHostMac";
 const MACOS_HOST_BUNDLE_NAME = "TerraneHostMac.app";
+const MACOS_DMG_VOLUME_NAME = "Terrane";
 const LINUX_HOST_EXECUTABLE_NAME = "terrane-host";
 const LINUX_HOST_APP_DIR_NAME = "TerraneHost";
 const WINDOWS_HOST_EXECUTABLE_NAME = "TerraneHost.exe";
@@ -343,6 +344,12 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
     fs.cpSync(path.join(repoRoot, "db", "sqlite"), path.join(resourcesDir, "db", "sqlite"), { recursive: true });
     buildMacOSZigCoreDylib({ outputPath: path.join(frameworksDir, "libzig_core.dylib"), env });
 
+    const dmgFileName = `Terrane-${targetId}.dmg`;
+    const dmgPath = path.join(artifactDir, dmgFileName);
+    const relativeDmgPath = path.join("native-apps", "macos", targetId, dmgFileName);
+    createMacOSDmg({ appBundleDir, outputPath: dmgPath, volumeName: MACOS_DMG_VOLUME_NAME });
+    const dmgFile = describeFile(dmgPath, relativeDmgPath);
+
     return [
       {
         id: `native-macos-${targetId}`,
@@ -350,6 +357,15 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
         kind: "native-host-app",
         target: targetId,
         files: describeDirectoryFiles(appBundleDir, path.join("native-apps", "macos", targetId, MACOS_HOST_BUNDLE_NAME)),
+      },
+      {
+        id: `native-macos-${targetId}-dmg`,
+        path: dmgFile.path,
+        kind: "dmg",
+        target: targetId,
+        appBundle: path.join("native-apps", "macos", targetId, MACOS_HOST_BUNDLE_NAME),
+        bytes: dmgFile.bytes,
+        sha256: dmgFile.sha256,
       },
     ];
   } finally {
@@ -602,6 +618,22 @@ function buildLinuxZigCoreSo({ outputPath, env }) {
     },
   );
   fs.chmodSync(outputPath, 0o755);
+}
+
+function createMacOSDmg({ appBundleDir, outputPath, volumeName }) {
+  const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-dmg-staging-"));
+  const dmgRoot = path.join(stagingRoot, "dmg-root");
+  try {
+    fs.mkdirSync(dmgRoot, { recursive: true });
+    fs.cpSync(appBundleDir, path.join(dmgRoot, MACOS_HOST_BUNDLE_NAME), { recursive: true });
+    fs.symlinkSync("/Applications", path.join(dmgRoot, "Applications"));
+    fs.rmSync(outputPath, { force: true });
+    execFileSync("hdiutil", ["create", "-volname", volumeName, "-srcfolder", dmgRoot, "-ov", "-format", "UDZO", outputPath], {
+      stdio: "ignore",
+    });
+  } finally {
+    fs.rmSync(stagingRoot, { recursive: true, force: true });
+  }
 }
 
 function resolveWindowsHostExecutable(buildDir, configuration) {

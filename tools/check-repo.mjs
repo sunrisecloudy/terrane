@@ -261,6 +261,7 @@ function checkSecurityLint() {
 
 function checkCiWorkflow() {
   const workflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const releaseWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
   const required = [
     "mlugg/setup-zig@v2",
     "version: 0.15.2",
@@ -317,7 +318,22 @@ function checkCiWorkflow() {
       throw new Error(`CI workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
+  for (const snippet of [
+    "push:",
+    "tags:",
+    "v*",
+    "permissions:",
+    "contents: write",
+    "tools/package-release.mjs --out artifacts --build-native-macos",
+    "artifacts/native-apps/macos/*/Terrane-*.dmg",
+    "gh release upload",
+    "release-manifest.json",
+  ]) {
+    if (!releaseWorkflow.includes(snippet)) {
+      throw new Error(`Release workflow missing ${snippet}`);
+    }
+  }
+  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native-dmg/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
@@ -335,6 +351,7 @@ function checkReleasePackaging() {
     "buildZigCoreArtifacts",
     "buildServerArtifacts",
     "buildMacOSNativeArtifacts",
+    "createMacOSDmg",
     "buildLinuxNativeArtifacts",
     "buildLinuxZigCoreSo",
     "buildWindowsNativeArtifacts",
@@ -353,6 +370,8 @@ function checkReleasePackaging() {
     "zig_core.lib",
     "terrane-server",
     "TerraneHostMac.app",
+    ".dmg",
+    "hdiutil",
     "LINUX_HOST_EXECUTABLE_NAME",
     "LINUX_HOST_APP_DIR_NAME",
     "terrane-host",
@@ -374,6 +393,7 @@ function checkReleasePackaging() {
     "tools/package-release.mjs --out artifacts --build-zig-core --build-server",
     "linux-x86_64/terrane-server",
     "native-apps/macos/macos-arm64/TerraneHostMac.app",
+    "native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg",
     "tools/package-release.mjs --out artifacts --build-native-macos",
     "native-apps/linux/linux-x86_64/TerraneHost",
     "terrane-host",
@@ -395,7 +415,7 @@ function checkReleasePackaging() {
   if (!ignore.includes("artifacts/")) {
     throw new Error(".gitignore must ignore generated release artifacts");
   }
-  for (const snippet of ["run-linux-native-docker", "--build-native-linux", "--build-native-windows", "tools/run-linux-native-docker.mjs", "linux/amd64"]) {
+  for (const snippet of ["package-release", "--build-native-macos", ".dmg", "run-linux-native-docker", "--build-native-linux", "--build-native-windows", "tools/run-linux-native-docker.mjs", "linux/amd64"]) {
     if (!toolsReadme.includes(snippet)) {
       throw new Error(`tools/README missing ${snippet}`);
     }
@@ -416,6 +436,8 @@ function checkReleasePackaging() {
     "buildNativeWindows: true",
     "server-executable",
     "native-host-app",
+    "dmg",
+    "Terrane-",
     "terrane-host",
     "libzig_core.so",
     "native-apps/linux/linux-x86_64/TerraneHost",
@@ -444,7 +466,7 @@ function checkReleasePackaging() {
       throw new Error(`Linux native packaged smoke missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,linux-native-host,windows-native-host,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,macos-dmg,linux-native-host,windows-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

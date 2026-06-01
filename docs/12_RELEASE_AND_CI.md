@@ -84,7 +84,7 @@ The release artifact packager is:
 node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -108,6 +108,7 @@ artifacts/
       Contents/Resources/runtime/
       Contents/Resources/webapps/examples/
       Contents/Resources/db/sqlite/
+    macos/macos-arm64/Terrane-macos-arm64.dmg
     linux/linux-x86_64/TerraneHost/
       terrane-host
       libzig_core.so
@@ -122,7 +123,7 @@ artifacts/
       resources/db/sqlite/
 ```
 
-The macOS native app artifact path is `native-apps/macos/macos-arm64/TerraneHostMac.app` on Apple Silicon CI runners.
+The macOS native app artifact path is `native-apps/macos/macos-arm64/TerraneHostMac.app` on Apple Silicon CI runners. The user-downloadable macOS release asset is `native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg`.
 
 The Linux native app artifact path is `native-apps/linux/linux-x86_64/TerraneHost` on the `ubuntu-24.04` release runner.
 
@@ -139,6 +140,10 @@ The dedicated macOS native artifact job runs on `macos-latest`:
 ```text
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
 ```
+
+The `Release` workflow runs the same macOS packaging command for pushed `v*`
+tags or manual dispatch, uploads the DMG as a workflow artifact, and attaches
+`Terrane-*.dmg` plus `release-manifest.json` to the matching GitHub Release.
 
 The dedicated Linux native artifact job runs on `ubuntu-24.04` after installing GTK4, WebKitGTK, JSON-GLib, SQLite, libsoup, Meson, Ninja, pkg-config, and Zig:
 

@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos-dmg:
+    name: macOS DMG
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Package macOS DMG
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            artifacts/native-apps/macos/*/Terrane-*.dmg
+            artifacts/release-manifest.json
+
+      - name: Attach DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Terrane $RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" artifacts/native-apps/macos/*/Terrane-*.dmg artifacts/release-manifest.json --clobber
