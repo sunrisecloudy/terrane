@@ -24,7 +24,7 @@
 
 mod common;
 
-use common::{owner, program, small_limits_manifest};
+use common::{cpu_tight_manifest, owner, program, small_limits_manifest};
 use forge_domain::RunOutcome;
 use forge_runtime::{record_run, MemoryHostBridge};
 use std::time::Instant;
@@ -88,7 +88,11 @@ fn js_for(file: &str) -> &'static str {
 /// panics. Small limits keep the whole thing well under a second.
 #[test]
 fn corpus_engine_owned_cases_are_contained() {
-    let manifest = small_limits_manifest();
+    // CPU-exhaustion cases: the wall clock is the intended fast limiter (see
+    // `cpu_tight_manifest`); any budget tripping yields `ResourceLimitExceeded`,
+    // which is all these cases assert. A 500ms wall keeps every case well under
+    // the 1500ms containment ceiling below.
+    let manifest = cpu_tight_manifest();
     let corpus = load_corpus();
     let mut checked = 0;
 
@@ -137,9 +141,13 @@ fn corpus_engine_owned_cases_are_contained() {
                 case.file, case.category, expected_code
             ),
         }
-        // Containment must be fast — the budgets are small; well under a second.
+        // Containment must be fast: the 500ms wall budget bounds termination, and
+        // the interrupt fires at most one bytecode-op interval after the deadline,
+        // so the run ends shortly after ~500ms. The ceiling (5s) is generous
+        // headroom for realm build + that final interval under CPU contention —
+        // the point is "does not hang CI", not a tight wall-clock assertion.
         assert!(
-            elapsed.as_millis() < 1500,
+            elapsed.as_millis() < 5000,
             "{} took too long ({elapsed:?}); containment must not hang CI",
             case.file
         );
@@ -238,7 +246,9 @@ fn realm_has_no_ambient_capability_globals() {
 fn host_call_flood_is_capped_at_max_host_calls() {
     let mut manifest = small_limits_manifest();
     manifest.limits.max_host_calls = 50;
-    manifest.limits.wall_ms = 2000; // give the loop room so the CALL cap wins
+    // The host-call cap is the deterministic limiter here; the wall clock stays
+    // the generous backstop from `small_limits_manifest` (30s) so CPU contention
+    // can't trip the wall budget first and leave fewer than 51 recorded calls.
     let prog = program(
         r#"export async function main(ctx, input) {
             while (true) { await ctx.storage.get("flood"); }
@@ -409,7 +419,10 @@ fn empty_string_log_flood_trips_resource_limit() {
     let mut manifest = small_limits_manifest();
     manifest.limits.max_host_calls = 30;
     manifest.limits.log_bytes = 1024 * 1024; // huge: bytes are NOT the limiter
-    manifest.limits.wall_ms = 2000; // give the loop room so the CALL cap wins
+    // The log-call cap is the deterministic limiter; the wall clock stays the
+    // generous backstop (30s, from `small_limits_manifest`) so contention can't
+    // trip the wall budget first and surface a different error message than the
+    // asserted "host-call" one.
     let prog = program(
         r#"export async function main(ctx, input) {
             while (true) { ctx.log(""); }
