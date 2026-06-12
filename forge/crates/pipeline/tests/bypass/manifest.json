@@ -1,0 +1,193 @@
+{
+  "cases": [
+    {
+      "file": "alias_eval.ts",
+      "technique": "alias",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "const e = eval; e(...) reaches eval via alias"
+    },
+    {
+      "file": "alias_function_new.ts",
+      "technique": "alias",
+      "target": "Function",
+      "expect": "rejected",
+      "reason": "const F = Function; new F(...) reaches the Function constructor via alias"
+    },
+    {
+      "file": "alias_global_eval.ts",
+      "technique": "alias",
+      "target": "globalThis.eval",
+      "expect": "rejected",
+      "reason": "let g = globalThis; g.eval(...) reaches eval through a global object alias"
+    },
+    {
+      "file": "comma_eval_spaced.ts",
+      "technique": "comma",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "(0, eval)(...) invokes indirect eval with spaced comma syntax"
+    },
+    {
+      "file": "comma_eval_tight.ts",
+      "technique": "comma",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "(0,eval)(...) invokes indirect eval with tight comma syntax"
+    },
+    {
+      "file": "member_global_eval.ts",
+      "technique": "member",
+      "target": "globalThis.eval",
+      "expect": "rejected",
+      "reason": "globalThis.eval(...) reaches eval through member access"
+    },
+    {
+      "file": "member_window_optional_eval.ts",
+      "technique": "member",
+      "target": "window.eval",
+      "expect": "rejected",
+      "reason": "window.eval?.(...) reaches eval through optional member access"
+    },
+    {
+      "file": "member_global_function.ts",
+      "technique": "member",
+      "target": "globalThis.Function",
+      "expect": "rejected",
+      "reason": "globalThis.Function(...) constructs code from a member reference"
+    },
+    {
+      "file": "computed_global_eval.ts",
+      "technique": "computed",
+      "target": "globalThis[\"eval\"]",
+      "expect": "rejected",
+      "reason": "globalThis[\"eval\"](...) reaches eval through a computed member"
+    },
+    {
+      "file": "computed_global_function.ts",
+      "technique": "computed",
+      "target": "globalThis[\"Function\"]",
+      "expect": "rejected",
+      "reason": "globalThis[\"Function\"](...) reaches Function through a computed member"
+    },
+    {
+      "file": "computed_global_fetch_concat.ts",
+      "technique": "computed",
+      "target": "globalThis[\"fe\" + \"tch\"]",
+      "expect": "rejected",
+      "reason": "globalThis[\"fe\" + \"tch\"](...) reaches raw fetch through constant-foldable computed member"
+    },
+    {
+      "file": "computed_self_process.ts",
+      "technique": "computed",
+      "target": "self[\"process\"]",
+      "expect": "rejected",
+      "reason": "self[\"process\"] reads the forbidden process global through a computed member"
+    },
+    {
+      "file": "global_read_process_env.ts",
+      "technique": "global-read",
+      "target": "process",
+      "expect": "rejected",
+      "reason": "process.env reads the forbidden Node host object"
+    },
+    {
+      "file": "global_read_process_alias.ts",
+      "technique": "global-read",
+      "target": "process",
+      "expect": "rejected",
+      "reason": "const p = process aliases the forbidden Node host object"
+    },
+    {
+      "file": "global_read_require_resolve.ts",
+      "technique": "global-read",
+      "target": "require",
+      "expect": "rejected",
+      "reason": "require.resolve reads the forbidden module loader"
+    },
+    {
+      "file": "global_read_xmlhttprequest.ts",
+      "technique": "global-read",
+      "target": "XMLHttpRequest",
+      "expect": "rejected",
+      "reason": "globalThis.XMLHttpRequest reads the forbidden raw network constructor"
+    },
+    {
+      "file": "dynamic_import_direct.ts",
+      "technique": "dynamic-import",
+      "target": "import",
+      "expect": "rejected",
+      "reason": "import(\"./escape.ts\") performs dynamic module loading"
+    },
+    {
+      "file": "dynamic_import_alias.ts",
+      "technique": "dynamic-import",
+      "target": "import",
+      "expect": "rejected",
+      "reason": "const i = import; i(...) attempts to alias dynamic import and should be rejected or fail validation"
+    },
+    {
+      "file": "proto_object_prototype_assignment.ts",
+      "technique": "proto",
+      "target": "Object.prototype",
+      "expect": "rejected",
+      "reason": "Object.prototype.polluted = 1 mutates every object's prototype"
+    },
+    {
+      "file": "proto_literal_proto_chain_assignment.ts",
+      "technique": "proto",
+      "target": "__proto__",
+      "expect": "rejected",
+      "reason": "({}).__proto__.x = 1 mutates a prototype chain through a nested member"
+    },
+    {
+      "file": "proto_reflect_set_object_prototype.ts",
+      "technique": "proto",
+      "target": "Object.prototype",
+      "expect": "rejected",
+      "reason": "Reflect.set(Object.prototype, ...) mutates the shared object prototype"
+    },
+    {
+      "file": "network_global_fetch.ts",
+      "technique": "member",
+      "target": "globalThis.fetch",
+      "expect": "rejected",
+      "reason": "globalThis.fetch(...) reaches raw network through member access"
+    },
+    {
+      "file": "network_new_global_xmlhttprequest.ts",
+      "technique": "member",
+      "target": "globalThis.XMLHttpRequest",
+      "expect": "rejected",
+      "reason": "new globalThis.XMLHttpRequest() reaches raw network through a member constructor"
+    },
+    {
+      "file": "benign_eval_string.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "the substring eval( is inside a string literal, AST is clean"
+    },
+    {
+      "file": "benign_function_comment.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "the substring Function( is inside a comment, AST is clean"
+    },
+    {
+      "file": "benign_evaluate_property.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "evaluate is an ordinary property name, not eval"
+    },
+    {
+      "file": "benign_process_id.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "process_id is an ordinary local identifier, not process"
+    }
+  ]
+}

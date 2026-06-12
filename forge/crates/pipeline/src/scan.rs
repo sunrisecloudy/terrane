@@ -932,6 +932,44 @@ mod tests {
         assert_rejected("export const v = new globalThis.XMLHttpRequest();", "XMLHttpRequest");
     }
 
+    #[test]
+    fn rejects_multi_hop_alias_chain() {
+        // `const a = eval; const b = a; b('1')` — the alias map flattens hops, so
+        // `b` resolves to `eval`.
+        assert_rejected(
+            "function f() { const a = eval; const b = a; return b('1'); }",
+            "eval",
+        );
+    }
+
+    #[test]
+    fn rejects_aliased_container_computed_member() {
+        // `g['eval'](...)` where `g = globalThis` — computed member off an
+        // *aliased* global container.
+        assert_rejected(
+            "function f() { const g = globalThis as any; return g['eval']('1'); }",
+            "eval",
+        );
+    }
+
+    #[test]
+    fn rejects_aliased_container_chain_member() {
+        // Two-hop container alias: `g = globalThis; h = g; h.eval(...)`.
+        assert_rejected(
+            "function f() { let g = globalThis as any; let h = g; return h.eval('1'); }",
+            "eval",
+        );
+    }
+
+    #[test]
+    fn rejects_self_and_global_container_reads() {
+        // The full set of global containers (`globalThis|window|self|global`) all
+        // gate a forbidden member/computed read.
+        assert_rejected("export const v = self.eval('1');", "eval");
+        assert_rejected("export const v = global.process;", "process");
+        assert_rejected("export const v = (window as Record<string, any>).fetch('x');", "fetch");
+    }
+
     // ---- Review 010 P2: static imports rejected for M0a ----
 
     #[test]
