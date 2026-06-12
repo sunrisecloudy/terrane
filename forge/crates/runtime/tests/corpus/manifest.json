@@ -1,0 +1,137 @@
+{
+  "cases": [
+    {
+      "file": "infinite_loop.ts",
+      "category": "cpu_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "while(true) must trip the interrupt/fuel budget without hanging the host"
+    },
+    {
+      "file": "deep_for_nesting.ts",
+      "category": "cpu_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "nested hot loop must be interrupted by CPU budget"
+    },
+    {
+      "file": "catastrophic_regex.ts",
+      "category": "cpu_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "regex backtracking must not starve the host"
+    },
+    {
+      "file": "unbounded_array_push.ts",
+      "category": "memory_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "allocation growth should hit memory or CPU limits before host pressure escapes"
+    },
+    {
+      "file": "huge_string_concat.ts",
+      "category": "memory_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "string doubling should be contained by memory or CPU limits"
+    },
+    {
+      "file": "deep_object_nesting.ts",
+      "category": "memory_exhaustion",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "object graph growth should stay inside realm limits"
+    },
+    {
+      "file": "direct_recursion.ts",
+      "category": "recursion",
+      "expected_outcome": "runtime_error",
+      "expected_error": "RuntimeError",
+      "notes": "stack overflow should normalize to RuntimeError rather than panic across FFI"
+    },
+    {
+      "file": "mutual_recursion.ts",
+      "category": "recursion",
+      "expected_outcome": "runtime_error",
+      "expected_error": "RuntimeError",
+      "notes": "mutual recursion should normalize to RuntimeError rather than panic across FFI"
+    },
+    {
+      "file": "eval_usage.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "eval is rejected by static policy and disabled at engine level"
+    },
+    {
+      "file": "function_constructor.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "Function constructor is rejected by static policy and disabled at engine level"
+    },
+    {
+      "file": "dynamic_import.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "dynamic import is outside the strict TypeScript applet profile"
+    },
+    {
+      "file": "global_this_tamper.ts",
+      "category": "prototype_or_global_tamper",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "globalThis mutation attempts should be caught before execution"
+    },
+    {
+      "file": "object_prototype_pollution.ts",
+      "category": "prototype_or_global_tamper",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "Object.prototype writes should be rejected before execution"
+    },
+    {
+      "file": "proto_pollution.ts",
+      "category": "prototype_or_global_tamper",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "__proto__ assignment should be rejected before execution"
+    },
+    {
+      "file": "process_access.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "process access is not available to applets and should be policy-scanned"
+    },
+    {
+      "file": "require_access.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "require access is not available to applets and should be policy-scanned"
+    },
+    {
+      "file": "fetch_access.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "raw fetch is forbidden; network must go through ctx.http/ctx.net later"
+    },
+    {
+      "file": "xml_http_request_access.ts",
+      "category": "forbidden_global",
+      "expected_outcome": "rejected_static",
+      "expected_error": "policy_scan_reject",
+      "notes": "XMLHttpRequest is forbidden; network must go through the host capability API"
+    },
+    {
+      "file": "ctx_storage_flood.ts",
+      "category": "host_call_flood",
+      "expected_outcome": "suspended",
+      "expected_error": "ResourceLimitExceeded",
+      "notes": "tight ctx call loop should trip host-call or CPU budget"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 deliverable: forge/crates/runtime/tests/corpus/*.ts, forge/crates/runtime/tests/corpus/manifest.json
@@ -41,3 +41,9 @@ Forbidden globals: `eval("…")`, `new Function("…")`, dynamic `import()`, `gl
 Host-call flood: tight loop hammering a `ctx.*` call.
 
 Mark which cases you believe should be caught *statically* (before run) vs *at runtime* — that distinction drives whether the policy scanner or the engine limits own the defense, and I want both layers tested (CR-13's "two independent layers").
+
+## Result
+
+Delivered 19 hostile TypeScript cases plus `manifest.json` under `forge/crates/runtime/tests/corpus/`.
+
+Coverage includes CPU exhaustion, memory exhaustion, recursion, forbidden globals, prototype/global tampering, raw network globals, and host-call flooding. Manifest entries mark expected ownership between `rejected_static`, `suspended`, and `runtime_error`.

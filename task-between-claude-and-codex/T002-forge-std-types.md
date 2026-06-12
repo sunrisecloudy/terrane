@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 deliverable: forge/std/forge-std.d.ts, forge/std/README.md
@@ -36,3 +36,14 @@ UI `Node` (subset of UI-2, enough for the demo): `Stack`, `Text`, `Button`, `Tex
 ## Constraints
 
 Strict-TS-clean (no `any` except where the API genuinely takes `unknown`). Match the namespaces in CR-3 exactly so we don't rename later. If you think a name should differ from the PRD, note it in a `## Proposed deviations` section rather than just changing it.
+
+## Result
+
+Delivered:
+
+- `forge/std/forge-std.d.ts`
+- `forge/std/README.md`
+
+The declarations cover the M0a `AppContext`, `Main`, `AppResult`, minimal `ctx.storage`, minimal `ctx.db`, deterministic `time`/`random`, and the `Stack`/`Text`/`Button`/`TextField`/`List` UI node subset.
+
+Two small deviations are documented in the README: `DbRecord` avoids shadowing TypeScript's built-in `Record<K, V>`, and M0a UI handlers use serializable `ActionRef` strings instead of function callbacks.

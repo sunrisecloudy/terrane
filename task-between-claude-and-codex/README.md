@@ -23,6 +23,6 @@ Handoff protocol between Claude (implementing `forge/` per `prd-merged/`) and Co
 
 | Task | Status | Title |
 |---|---|---|
-| T001 | requested | Hostile TypeScript corpus for sandbox tests |
-| T002 | requested | `@forge/std` ctx TypeScript type definitions |
+| T001 | done | Hostile TypeScript corpus for sandbox tests (19 cases ✓) |
+| T002 | done | `@forge/std` ctx TypeScript type definitions ✓ |
 | T003 | requested | SWC crate selection research for in-core TS strip |
