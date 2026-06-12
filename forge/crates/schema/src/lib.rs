@@ -2,12 +2,21 @@
 //! additive-only evolution.
 //!
 //! prd-merged/02-data-layer-prd.md §5:
-//! - DL-7  stable `field_id`, never reused (`f0`, `f1`, … per collection);
+//! - DL-7  stable `field_id`, never reused (**per-actor id ranges: actor-id ⊕
+//!   counter**, e.g. `f_<actor>_<seq>`); renames touch only the display name;
 //! - DL-8  additive-only schema changes (add collection/field, widen type,
 //!   deprecate); destructive ops have no API surface;
-//! - DL-9  unknown-field preservation/tolerance;
+//! - DL-9  unknown-field preservation/tolerance (validated by stable id first);
 //! - DL-10 unknown-collection tolerance;
+//! - DL-11 registry versions are CRDT vectors — two offline actors adding a
+//!   first field to the same collection merge to the union *by construction*
+//!   because their minted ids are actor-scoped and therefore distinct;
 //! - DL-12 constraints warn before they enforce.
+//!
+//! Registry/collection/field internals are private (review 005 P2): external
+//! crates read through accessors and mutate only via [`SchemaChange`], so they
+//! cannot bypass the additive-only / id-stability invariants. Deserialized
+//! state is re-validated via [`SchemaRegistry::validated`].
 //!
 //! This crate is pure logic with no I/O: the storage layer persists the
 //! registry as the `schema_registry_doc` CRDT (DL-2), but every compatibility
@@ -27,16 +36,17 @@ mod tests {
     //! Cross-module integration tests that exercise the public surface as a
     //! caller (e.g. the data-layer host) would.
     use super::*;
-    use forge_domain::{CollectionId, LogicalTimestamp, RecordEnvelope, RecordId};
+    use forge_domain::{ActorId, CollectionId, LogicalTimestamp, RecordEnvelope, RecordId};
     use std::collections::BTreeMap;
 
     #[test]
     fn end_to_end_evolution_stays_forward_compatible() {
-        // v1: an `expenses` collection with an int `amount`.
+        // v1: an `expenses` collection with an int `amount` (minted by alice).
         let mut v1 = SchemaRegistry::new();
         v1.apply_change(SchemaChange::AddCollection { name: "expenses".into() }).unwrap();
         v1.apply_change(SchemaChange::AddField {
             collection: "expenses".into(),
+            actor: ActorId::new("alice"),
             name: "amount".into(),
             ty: FieldType::IntNum,
             indexed: true,
@@ -49,12 +59,13 @@ mod tests {
         let mut v2 = v1.clone();
         v2.apply_change(SchemaChange::WidenField {
             collection: "expenses".into(),
-            field_id: "f0".into(),
+            field_id: "f_alice_0".into(),
             to: FieldType::FloatNum,
         })
         .unwrap();
         v2.apply_change(SchemaChange::AddField {
             collection: "expenses".into(),
+            actor: ActorId::new("alice"),
             name: "note".into(),
             ty: FieldType::Text,
             indexed: false,
@@ -63,7 +74,7 @@ mod tests {
         .unwrap();
         v2.apply_change(SchemaChange::DeprecateField {
             collection: "expenses".into(),
-            field_id: "f1".into(),
+            field_id: "f_alice_1".into(),
         })
         .unwrap();
         v2.apply_change(SchemaChange::AddCollection { name: "tags".into() }).unwrap();
@@ -81,6 +92,7 @@ mod tests {
         old.apply_change(SchemaChange::AddCollection { name: "expenses".into() }).unwrap();
         old.apply_change(SchemaChange::AddField {
             collection: "expenses".into(),
+            actor: ActorId::new("alice"),
             name: "amount".into(),
             ty: FieldType::IntNum,
             indexed: false,
