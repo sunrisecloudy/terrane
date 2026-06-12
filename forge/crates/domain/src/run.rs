@@ -10,8 +10,34 @@
 
 use crate::hash::is_canonical_code_hash;
 use crate::ids::{AppletId, RunId};
+use crate::manifest::Capabilities;
 use crate::{AppResult, CoreError};
 use serde::{Deserialize, Serialize};
+
+/// The capability/permission state that was *in effect* when a run was recorded
+/// (prd-merged/01 CR-9, prd-merged/07 SC-8/SC-9; review 009 P1 CR-9 completeness).
+///
+/// A run record must capture the evaluated permission decision, not just the
+/// effects that happened to succeed: a replay has to re-derive the *same*
+/// allow/deny outcome for every host call even if the workspace's grants have
+/// since changed (a grant was revoked, a role downgraded, a budget lowered).
+/// Replaying against today's manifest instead of the recorded snapshot would let
+/// a run that was *denied* at record time silently *succeed* on replay (or vice
+/// versa), which is a determinism + provenance hole. The runtime builds its
+/// replay-mode policy engine from this snapshot so the recorded decision is the
+/// authoritative one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PermissionSnapshot {
+    /// The capability grants (storage/db/ui scopes) evaluated for this run.
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// Whether the actor's role was permitted to run code at all (SC-10).
+    #[serde(default)]
+    pub can_run: bool,
+    /// The host-call budget (`max_host_calls`) in effect for this run (SC-2).
+    #[serde(default)]
+    pub max_host_calls: u64,
+}
 
 /// One recorded host interaction during a run, in call order.
 ///
@@ -54,6 +80,13 @@ pub struct RunRecord {
     /// Captured log lines (bounded by `Limits::log_bytes`).
     #[serde(default)]
     pub logs: Vec<String>,
+    /// The capability/permission state evaluated for this run (review 009 P1
+    /// CR-9). Replay rebuilds its policy decision from this snapshot rather than
+    /// the live manifest, so a run replays with the permissions it was recorded
+    /// under even if the workspace's grants have since changed. Defaulted on
+    /// deserialize so older records (no snapshot) still load.
+    #[serde(default)]
+    pub permissions: PermissionSnapshot,
     /// The run's result, or the error that suspended it.
     pub outcome: RunOutcome,
 }
@@ -109,10 +142,22 @@ impl RunRecord {
             time_start,
             calls,
             logs,
+            permissions: PermissionSnapshot::default(),
             outcome,
         };
         record.validate_code_hash()?;
         Ok(record)
+    }
+
+    /// Attach the evaluated [`PermissionSnapshot`] to a record (review 009 P1
+    /// CR-9). A builder rather than a `new` argument so the validating
+    /// constructor's signature stays stable: a caller builds the record via
+    /// [`new`](Self::new) (which validates the `code_hash`) and then records the
+    /// permission state that was in effect.
+    #[must_use]
+    pub fn with_permissions(mut self, permissions: PermissionSnapshot) -> Self {
+        self.permissions = permissions;
+        self
     }
 
     /// Reject a record whose `code_hash` is not the canonical `sha256:` form
@@ -157,6 +202,7 @@ impl RunRecord {
             "random_seed": self.random_seed,
             "time_start": self.time_start,
             "calls": self.calls,
+            "permissions": self.permissions,
             "outcome": self.outcome,
         });
         // serde_json::Value serializes object keys in sorted order, so this is
@@ -219,6 +265,7 @@ mod tests {
                 },
             ],
             logs: vec!["hello".into()],
+            permissions: PermissionSnapshot::default(),
             outcome: RunOutcome::Completed {
                 result: AppResult { ok: true, value: serde_json::json!("Hello world") },
             },
@@ -381,6 +428,48 @@ mod tests {
             .assert_replay_of(&replay)
             .expect_err("non-canonical provenance must not be blessed as a replay");
         assert_eq!(err.code(), "ValidationError");
+    }
+
+    /// Review 009 P1 (CR-9): the permission snapshot round-trips through serde
+    /// and `with_permissions` records it without disturbing the validated
+    /// `code_hash`.
+    #[test]
+    fn permission_snapshot_roundtrips_and_attaches() {
+        let snap = PermissionSnapshot {
+            capabilities: Capabilities::default(),
+            can_run: true,
+            max_host_calls: 1234,
+        };
+        let (rid, aid, ch, input, seed, t0, calls, logs, outcome) =
+            new_args("run_1", crate::hash::code_hash("body"));
+        let r = RunRecord::new(rid, aid, ch, input, seed, t0, calls, logs, outcome)
+            .unwrap()
+            .with_permissions(snap.clone());
+        assert_eq!(r.permissions, snap);
+        assert!(r.validate_code_hash().is_ok());
+        let back: RunRecord = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.permissions, snap);
+    }
+
+    /// A record with no recorded snapshot still deserializes (the field defaults),
+    /// so older records remain loadable.
+    #[test]
+    fn missing_permission_snapshot_defaults_on_deserialize() {
+        let mut json = serde_json::to_value(sample("run_1")).unwrap();
+        json.as_object_mut().unwrap().remove("permissions");
+        let back: RunRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(back.permissions, PermissionSnapshot::default());
+    }
+
+    /// The permission snapshot is part of the replay fingerprint: two otherwise
+    /// identical runs recorded under different permissions are NOT
+    /// replay-identical (review 009 P1).
+    #[test]
+    fn differing_permission_snapshot_changes_fingerprint() {
+        let a = sample("run_1");
+        let mut b = sample("run_2");
+        b.permissions.max_host_calls = a.permissions.max_host_calls + 1;
+        assert!(!a.replays_identically(&b));
     }
 
     /// `assert_replay_of` surfaces a genuine trace divergence as a

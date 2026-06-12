@@ -139,6 +139,25 @@ impl RunRecorder {
         self.mode
     }
 
+    /// In replay mode, verify the run consumed **every** recorded call (review
+    /// 009 P2). A replay that stops short — e.g. the live program took a
+    /// different branch and issued fewer calls than were recorded — leaves
+    /// recorded calls unconsumed; that is a determinism divergence even though no
+    /// individual call mismatched. The extra-call-past-the-end direction is
+    /// already caught in [`consume`](Self::consume); this closes the
+    /// fewer-calls-than-recorded direction. No-op in record mode.
+    pub fn assert_fully_consumed(&self) -> Result<()> {
+        if self.mode == Mode::Replay && self.cursor < self.recorded.len() {
+            let remaining = self.recorded.len() - self.cursor;
+            let next = &self.recorded[self.cursor];
+            return Err(CoreError::RuntimeError(format!(
+                "determinism divergence: replay ended with {remaining} recorded call(s) unconsumed (next recorded: #{} {})",
+                next.seq, next.method
+            )));
+        }
+        Ok(())
+    }
+
     /// The trace produced by this run (call order is significant).
     pub fn into_calls(self) -> Vec<RecordedCall> {
         self.produced
@@ -212,6 +231,40 @@ impl RunRecorder {
                 Ok(response)
             }
             Mode::Replay => self.consume(method, args),
+        }
+    }
+
+    /// Record (or replay) a host-call attempt that was **denied** by policy
+    /// before any live effect ran (review 009 P1 CR-9). Denials used to vanish
+    /// from the trace because the policy check returned before
+    /// [`host_call`](Self::host_call); this records the attempt as a deterministic
+    /// error response so the denial is part of the replayable record.
+    ///
+    /// The recorded `response` is `{"denied": <CoreError JSON>}`. In replay mode
+    /// the call is consumed like any other (method/args must match) and the error
+    /// is reconstructed from the recorded response, so replay reproduces the exact
+    /// denial without consulting the live policy/bridge.
+    pub fn record_denial(
+        &mut self,
+        method: &str,
+        args: serde_json::Value,
+        error: &CoreError,
+    ) -> Result<()> {
+        let response = serde_json::json!({ "denied": error });
+        match self.mode {
+            Mode::Record => {
+                let seq = self.next_seq();
+                self.produced.push(RecordedCall {
+                    seq,
+                    method: method.to_string(),
+                    args,
+                    response,
+                });
+                Ok(())
+            }
+            // In replay the recorded denial must line up at the cursor; consuming
+            // it advances past the recorded entry and validates method/args.
+            Mode::Replay => self.consume(method, args).map(|_| ()),
         }
     }
 

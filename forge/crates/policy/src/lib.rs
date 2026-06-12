@@ -19,7 +19,9 @@
 //! clean (no `std::time`/`std::fs`). The runtime crate owns real CPU/memory
 //! limits; policy owns role/capability decisions and the call-count limit.
 
-use forge_domain::{ActorContext, Capabilities, CoreError, Manifest, Result, Role};
+use forge_domain::{
+    ActorContext, Capabilities, CoreError, Manifest, PermissionSnapshot, Result, Role,
+};
 use serde::{Deserialize, Serialize};
 
 /// A concrete `ctx.*` host call the runtime is about to perform.
@@ -122,6 +124,34 @@ impl PolicyEngine {
             revoked: [false; 5],
             max_host_calls: manifest.limits.max_host_calls,
             host_calls: 0,
+        }
+    }
+
+    /// Build an engine from a recorded [`PermissionSnapshot`] (review 009 P1
+    /// CR-9). Replay must re-derive the permission decision the run was recorded
+    /// under — *not* whatever the live manifest grants now — so a denied call
+    /// stays denied (and an allowed call stays allowed) even if grants/role/budget
+    /// have since changed. The runtime builds its replay-mode engine from the
+    /// record's snapshot, making the recorded decision authoritative.
+    pub fn from_snapshot(snapshot: &PermissionSnapshot) -> Self {
+        PolicyEngine {
+            capabilities: snapshot.capabilities.clone(),
+            can_run: snapshot.can_run,
+            revoked: [false; 5],
+            max_host_calls: snapshot.max_host_calls,
+            host_calls: 0,
+        }
+    }
+
+    /// Capture the engine's evaluated permission state as a [`PermissionSnapshot`]
+    /// for the run record (review 009 P1 CR-9). Reflects the *current* grants,
+    /// role-can-run, and host-call budget (revocations applied so far are not part
+    /// of the static snapshot; M0a has no mid-run revocation on the spine path).
+    pub fn snapshot(&self) -> PermissionSnapshot {
+        PermissionSnapshot {
+            capabilities: self.capabilities.clone(),
+            can_run: self.can_run,
+            max_host_calls: self.max_host_calls,
         }
     }
 
@@ -670,6 +700,58 @@ mod tests {
         assert!(s.contains("\"op\":\"write\""), "{s}");
         let back: HostCall = serde_json::from_str(&s).unwrap();
         assert_eq!(c, back);
+    }
+
+    // --- Permission snapshot (review 009 P1 CR-9) ---------------------------
+
+    #[test]
+    fn snapshot_captures_evaluated_permission_state() {
+        let e = engine(caps(&["app/*"], &["app/*"], &["tasks"], &[], true), owner());
+        let snap = e.snapshot();
+        assert!(snap.can_run);
+        assert_eq!(snap.max_host_calls, 10_000);
+        assert_eq!(snap.capabilities.storage.read, vec!["app/*".to_string()]);
+    }
+
+    #[test]
+    fn from_snapshot_reproduces_the_recorded_decision() {
+        // Record-time engine grants app/* and permits running.
+        let recorded = engine(caps(&["app/*"], &["app/*"], &[], &[], true), owner()).snapshot();
+        // Replay engine built from the snapshot honors the SAME grants, even
+        // though no manifest/actor is consulted.
+        let mut replay = PolicyEngine::from_snapshot(&recorded);
+        assert!(replay
+            .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .is_ok());
+        assert_eq!(
+            replay
+                .check(&HostCall::Storage { op: Access::Read, key: "secret/x".into() })
+                .unwrap_err()
+                .code(),
+            "PermissionDenied"
+        );
+    }
+
+    #[test]
+    fn from_snapshot_uses_recorded_grants_not_live_ones() {
+        // A run recorded under a DENY snapshot (no storage grant) replays as a
+        // denial regardless of how generous a current manifest would be.
+        let recorded =
+            engine(caps(&[], &[], &["tasks"], &["tasks"], true), owner()).snapshot();
+        let mut replay = PolicyEngine::from_snapshot(&recorded);
+        let err = replay
+            .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .unwrap_err();
+        // Storage was never declared in the snapshot → CapabilityRequired.
+        assert_eq!(err.code(), "CapabilityRequired");
+    }
+
+    #[test]
+    fn snapshot_roundtrips_through_from_snapshot() {
+        let original = engine(caps(&["app/*"], &[], &["tasks"], &["tasks"], false), owner());
+        let snap = original.snapshot();
+        let rebuilt = PolicyEngine::from_snapshot(&snap);
+        assert_eq!(rebuilt.snapshot(), snap);
     }
 
     #[test]

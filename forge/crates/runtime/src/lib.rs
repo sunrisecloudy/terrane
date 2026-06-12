@@ -64,17 +64,17 @@ impl Program {
         }
     }
 
-    /// A stable, platform-independent content hash of the executed code, used as
-    /// the run record's `code_hash` (provenance + replay key). This is a
-    /// non-cryptographic FNV-1a digest — sufficient to detect that a replay is
-    /// running different code, without pulling in a crypto dependency at M0a.
+    /// The canonical content hash of the executed code, used as the run record's
+    /// `code_hash` (provenance + replay key).
+    ///
+    /// This delegates to [`forge_domain::code_hash`] — the **single** algorithm
+    /// (`"sha256:" + lowercase-hex`) the whole spine agrees on — so a runtime run
+    /// trace records exactly the hash forge-pipeline computed over the transpiled
+    /// JS (reviews 012 P2 / 013 P1 / 014 P1). The runtime no longer emits its old
+    /// `fnv1a64:` digest, which the pipeline could never reproduce; a record now
+    /// carries a hash that passes `RunRecord::validate_code_hash`.
     pub fn code_hash(&self) -> String {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in self.source.as_bytes() {
-            hash ^= *b as u64;
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("fnv1a64:{hash:016x}")
+        forge_domain::code_hash(&self.source)
     }
 }
 
@@ -128,6 +128,22 @@ mod tests {
         let c = Program::new("app", "export async function main(){ return 1; }");
         assert_eq!(a.code_hash(), b.code_hash());
         assert_ne!(a.code_hash(), c.code_hash());
-        assert!(a.code_hash().starts_with("fnv1a64:"));
+    }
+
+    /// Reviews 012/013/014: the runtime emits the canonical `sha256:` hash (the
+    /// single spine algorithm), never its old `fnv1a64:` digest, and the result
+    /// is accepted by the domain's canonical-hash predicate.
+    #[test]
+    fn code_hash_is_canonical_sha256_not_fnv1a64() {
+        let p = Program::new("app", "export async function main(){}");
+        let h = p.code_hash();
+        assert!(h.starts_with("sha256:"), "must be canonical sha256: got {h}");
+        assert!(!h.starts_with("fnv1a64:"), "must not emit fnv1a64: got {h}");
+        assert!(
+            forge_domain::is_canonical_code_hash(&h),
+            "runtime code_hash must satisfy the domain canonical predicate: {h}"
+        );
+        // It is byte-identical to what forge-pipeline computes over the same JS.
+        assert_eq!(h, forge_domain::code_hash("export async function main(){}"));
     }
 }

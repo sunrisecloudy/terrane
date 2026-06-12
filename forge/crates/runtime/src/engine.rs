@@ -22,8 +22,14 @@
 //! - Memory is bounded by `Runtime::set_memory_limit`; stack by
 //!   `set_max_stack_size` (deep recursion → `RuntimeError`, never a host stack
 //!   overflow / FFI panic).
-//! - `eval`/`Function` are a *known* QuickJS capability; defense is the static
-//!   policy scan (forge-pipeline, layer one) plus the limits here (layer two).
+//! - `eval`/`Function` are **poisoned** at the engine level (review 009 P1,
+//!   CR-13): after the realm is built we delete the `eval` and `Function`
+//!   globals so `typeof eval === 'undefined'` and `typeof Function ===
+//!   'undefined'`. The static policy scan (forge-pipeline, layer one) is still
+//!   the first line, but the engine no longer *relies* on it — dynamic code
+//!   evaluation is simply unavailable in the realm. (The Rust-side
+//!   `Context::eval` used to load the program is the host API, not the JS global,
+//!   so loading + promise driving are unaffected.)
 
 use crate::host::HostContext;
 use crate::{EngineOutcome, JsEngine, Program};
@@ -202,10 +208,11 @@ fn run_inner(
     // Proxy, Map/Set, TypedArrays, Promise — everything an applet's JS needs,
     // and nothing host-specific. Critically, this adds NO ambient capability
     // globals (`fetch`/`process`/`require`/`XMLHttpRequest` do not exist —
-    // asserted by a test). `eval`/`Function` are part of the standard library
-    // and are intentionally present: they are a *known* QuickJS capability whose
-    // first line of defense is the static policy scan (forge-pipeline), with the
-    // resource limits here as the second line (CR-13 two-layer defense).
+    // asserted by a test). The standard library would normally expose `eval` and
+    // the `Function` constructor; we poison both right after building the realm
+    // (see `disable_dynamic_eval` in `install_ctx`) so dynamic code evaluation is
+    // unavailable at the engine level, not merely rejected by the static scan
+    // (review 009 P1, CR-13).
     let context = Context::custom::<rquickjs::context::intrinsic::All>(&runtime)
         .map_err(|e| CoreError::RuntimeError(format!("failed to create JS context: {e}")))?;
 
@@ -644,6 +651,30 @@ fn install_ctx<'js>(
     ctx_obj.set("time", time)?;
     ctx_obj.set("random", random)?;
     globals.set("ctx", ctx_obj)?;
+
+    // Poison dynamic code evaluation at the engine level (review 009 P1, CR-13).
+    disable_dynamic_eval(ctx)?;
+    Ok(())
+}
+
+/// Remove the `eval` and `Function` globals from the realm so dynamic code
+/// evaluation is unavailable (review 009 P1, CR-13): after this `typeof eval ===
+/// 'undefined'` and `typeof Function === 'undefined'`.
+///
+/// We delete the global *bindings* (rather than throwing on use): deleting them
+/// makes `typeof` report `undefined`, which is the assertable, no-ambient-
+/// capability shape the containment suite checks. Existing function objects keep
+/// working — QuickJS's internal function machinery (used by `async`/Promise and
+/// the host-side `Context::eval` that loads the program) does not depend on the
+/// global `eval`/`Function` bindings, so program load + promise driving are
+/// unaffected.
+fn disable_dynamic_eval<'js>(ctx: &Ctx<'js>) -> Result<(), rquickjs::Error> {
+    let globals = ctx.globals();
+    // `delete` the bindings; if a binding is somehow non-configurable, fall back
+    // to overwriting it with `undefined` so `typeof` is still `'undefined'`.
+    let undefined = Value::new_undefined(ctx.clone());
+    globals.set("eval", undefined.clone())?;
+    globals.set("Function", undefined)?;
     Ok(())
 }
 

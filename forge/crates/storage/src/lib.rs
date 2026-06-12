@@ -637,6 +637,7 @@ mod tests {
                 },
             ],
             logs: vec!["hello".into()],
+            permissions: forge_domain::PermissionSnapshot::default(),
             outcome: RunOutcome::Completed {
                 result: AppResult { ok: true, value: serde_json::json!("Hello world") },
             },

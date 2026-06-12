@@ -61,14 +61,14 @@
       "category": "forbidden_global",
       "expected_outcome": "rejected_static",
       "expected_error": "policy_scan_reject",
-      "notes": "eval is rejected by static policy and disabled at engine level"
+      "notes": "eval is rejected by the static policy scan (layer one); independently, the engine POISONS the eval global so typeof eval === 'undefined' and calling it is a RuntimeError, never dynamic execution (review 009 P1, CR-13)"
     },
     {
       "file": "function_constructor.ts",
       "category": "forbidden_global",
       "expected_outcome": "rejected_static",
       "expected_error": "policy_scan_reject",
-      "notes": "Function constructor is rejected by static policy and disabled at engine level"
+      "notes": "the Function constructor is rejected by the static policy scan (layer one); independently, the engine POISONS the Function global so typeof Function === 'undefined' and `new Function(...)` is a RuntimeError, never dynamic execution (review 009 P1, CR-13)"
     },
     {
       "file": "dynamic_import.ts",

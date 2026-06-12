@@ -6,7 +6,7 @@
 mod common;
 
 use common::{owner, program, spine_manifest};
-use forge_domain::RunOutcome;
+use forge_domain::{RecordedCall, RunOutcome};
 use forge_runtime::{record_run, replay, MemoryHostBridge, NullBridge};
 
 /// A program exercising the clock, RNG, and a storage write: record it, then
@@ -186,4 +186,219 @@ fn failed_run_replays_identically() {
     let mut null = NullBridge::new();
     let replayed = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
     assert!(original.replays_identically(&replayed));
+}
+
+/// Reviews 012/013/014: the runtime records the canonical `sha256:` provenance
+/// hash and never the old `fnv1a64:` form; the recorded hash passes the domain's
+/// canonical-hash validator, so a record this engine emits can never carry a
+/// divergent provenance string.
+#[test]
+fn runtime_emits_canonical_hash_never_fnv1a64() {
+    let prog =
+        program("export async function main(ctx, input) { return { ok: true, value: 1 }; }");
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(rec.code_hash.starts_with("sha256:"), "got {}", rec.code_hash);
+    assert!(!rec.code_hash.starts_with("fnv1a64:"));
+    assert!(forge_domain::is_canonical_code_hash(&rec.code_hash));
+    // The record validates (RunRecord::new validated it at construction).
+    assert!(rec.validate_code_hash().is_ok());
+}
+
+/// Reviews 012/013/014 (the teeth): replay REFUSES a record whose `code_hash` is
+/// the old non-canonical `fnv1a64:` form — even before comparing it to the
+/// program — so a forged/legacy record cannot be replayed as if valid.
+#[test]
+fn replay_rejects_a_record_with_fnv1a64_code_hash() {
+    let prog =
+        program("export async function main(ctx, input) { return { ok: true, value: 1 }; }");
+    let mut bridge = MemoryHostBridge::new();
+    let mut original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    // Forge a non-canonical provenance string onto the record.
+    original.code_hash = "fnv1a64:0123456789abcdef".into();
+    let mut null = NullBridge::new();
+    let err = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap_err();
+    assert_eq!(err.code(), "ValidationError", "non-canonical hash must be rejected: {err}");
+}
+
+/// Review 012 P2: the derived `run_id` is built from the digest *body*, not the
+/// `alg:` prefix. Under `sha256:` the id reads from the hash digest, so it never
+/// contains the literal `"sha256"` algorithm tag (the bug the old
+/// `trim_start_matches("fnv1a64:")` left once the algorithm changed).
+#[test]
+fn run_id_is_digest_based_and_algorithm_agnostic() {
+    let prog =
+        program("export async function main(ctx, input) { return { ok: true, value: 1 }; }");
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        7,
+        3,
+        &mut bridge,
+    )
+    .unwrap();
+    let id = rec.run_id.to_string();
+    // The id embeds the first 8 hex chars of the sha256 digest body.
+    let digest = rec.code_hash.strip_prefix("sha256:").unwrap();
+    assert!(
+        id.contains(&digest[..8]),
+        "run_id {id} must embed the digest prefix {}",
+        &digest[..8]
+    );
+    // It must NOT have leaked the algorithm tag into the id.
+    assert!(!id.contains("sha256"), "run_id must be digest-based, not contain the alg tag: {id}");
+    assert!(id.starts_with("run_"));
+}
+
+/// Review 009 P2: replay must FAIL if not every recorded call is consumed.
+/// Appending one extra recorded call to an otherwise valid trace makes the
+/// replay end with a leftover recorded call → `RuntimeError` divergence.
+#[test]
+fn replay_fails_when_recorded_calls_are_left_unconsumed() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const t = ctx.time.now();
+            return { ok: true, value: t };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let mut original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(original.is_completed());
+    let next_seq = original.calls.len() as u64;
+    // Append one EXTRA recorded call the live run will never issue.
+    original.calls.push(RecordedCall {
+        seq: next_seq,
+        method: "time.now".into(),
+        args: serde_json::Value::Null,
+        response: serde_json::json!(999),
+    });
+
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    match replayed.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "RuntimeError");
+            assert!(error.to_string().contains("unconsumed"), "{error}");
+        }
+        other => panic!("expected unconsumed-calls divergence, got {other:?}"),
+    }
+}
+
+/// Review 009 P1 (CR-9): a denied host call is recorded as a deterministic
+/// denial and replays identically. The program attempts a write outside its
+/// grant; the denial is now in the trace (not vanished), so record→replay is
+/// byte-identical.
+#[test]
+fn denied_host_call_is_recorded_and_replays_identically() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.storage.set("secret/x", 1); // outside grant -> PermissionDenied
+            return { ok: true, value: null };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    // The denied attempt is recorded (it used to vanish before recorder.host_call).
+    assert_eq!(original.calls.len(), 1, "the denied call must be recorded");
+    assert_eq!(original.calls[0].method, "storage.set");
+    assert!(
+        original.calls[0].response.get("denied").is_some(),
+        "denial response must capture the error: {:?}",
+        original.calls[0].response
+    );
+
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    assert!(original.replays_identically(&replayed));
+}
+
+/// Review 009 P1 (CR-9): replay uses the RECORDED permission snapshot, not the
+/// live manifest. A run recorded WITHOUT a `secret/*` grant (the write is denied)
+/// must still replay as a denial even when replayed under a manifest that DOES
+/// grant `secret/*` — the recorded decision is authoritative.
+#[test]
+fn replay_uses_recorded_permission_snapshot_not_current_grants() {
+    use forge_domain::StorageGrant;
+
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.storage.set("secret/x", 1);
+            return { ok: true, value: "wrote" };
+        }"#,
+    );
+
+    // Record under the default spine manifest: secret/* is NOT granted → denied.
+    let mut bridge = MemoryHostBridge::new();
+    let original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(matches!(original.outcome, RunOutcome::Failed { .. }));
+    // Sanity: the snapshot we recorded does NOT grant secret/*.
+    assert!(!original.permissions.capabilities.storage.write.iter().any(|s| s == "secret/*"));
+
+    // Now replay under a MORE PERMISSIVE manifest that DOES grant secret/*.
+    let mut permissive = spine_manifest();
+    permissive.capabilities.storage = StorageGrant {
+        read: vec!["*".into()],
+        write: vec!["*".into()],
+    };
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &permissive, &owner(), &mut null).unwrap();
+
+    // The replay must reproduce the RECORDED denial, not succeed under the new
+    // grant — and it must be byte-identical to the original.
+    assert!(
+        original.replays_identically(&replayed),
+        "replay must honor the recorded snapshot, not the live (permissive) manifest"
+    );
+    match replayed.outcome {
+        RunOutcome::Failed { error } => assert_eq!(error.code(), "PermissionDenied"),
+        other => panic!("replay should reproduce the recorded denial, got {other:?}"),
+    }
 }

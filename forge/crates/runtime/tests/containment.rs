@@ -262,23 +262,32 @@ fn host_call_flood_is_capped_at_max_host_calls() {
         }
         other => panic!("expected host-call limit, got {other:?}"),
     }
-    // Exactly `max_host_calls` calls were recorded before the cap tripped.
-    assert_eq!(rec.calls.len(), 50);
+    // Exactly `max_host_calls` calls succeeded, then the (n+1)th was DENIED by the
+    // budget gate and that denial is now recorded too (review 009 P1 CR-9), so the
+    // trace holds 50 successful calls + 1 recorded denial = 51 entries.
+    assert_eq!(rec.calls.len(), 51);
+    let denied = rec.calls.last().unwrap();
+    assert_eq!(denied.method, "storage.get");
+    assert!(
+        denied.response.get("denied").is_some(),
+        "the over-budget attempt must be recorded as a denial: {:?}",
+        denied.response
+    );
 }
 
-/// The `eval` static-scan case is the pipeline scanner's responsibility, but if
-/// such code reached the engine it must not escape containment. We assert the
-/// stronger property the engine guarantees regardless of the scanner: even with
-/// `eval` available (a known QuickJS capability, CR-13), the realm still has no
-/// ambient host capability, so `eval` cannot reach `fetch`/`process`/etc.
+/// Review 009 P1 / CR-13: `eval` and `Function` are poisoned at the engine
+/// level. After realm build `typeof eval === 'undefined'` and `typeof Function
+/// === 'undefined'`, so dynamic code evaluation is unavailable regardless of the
+/// static scan. This is the stronger engine guarantee that does not depend on
+/// the pipeline scanner running.
 #[test]
-fn eval_cannot_reach_ambient_capability_even_if_unscanned() {
+fn eval_and_function_globals_are_poisoned() {
     let prog = program(
         r#"export async function main(ctx, input) {
-            // eval is intentionally present (layer-2 defense relies on the static
-            // scan to reject it); prove it still yields no ambient capability.
-            const probe = eval("typeof fetch + ',' + typeof process + ',' + typeof require");
-            return { ok: true, value: probe };
+            return { ok: true, value: {
+                eval: typeof eval,
+                Function: typeof Function,
+            } };
         }"#,
     );
     let mut bridge = MemoryHostBridge::new();
@@ -294,12 +303,66 @@ fn eval_cannot_reach_ambient_capability_even_if_unscanned() {
     .unwrap();
     match rec.outcome {
         RunOutcome::Completed { result } => {
+            assert_eq!(result.value["eval"], serde_json::json!("undefined"), "eval must be poisoned");
             assert_eq!(
-                result.value,
-                serde_json::json!("undefined,undefined,undefined")
+                result.value["Function"],
+                serde_json::json!("undefined"),
+                "Function constructor must be poisoned"
             );
         }
-        other => panic!("eval probe should complete without escaping, got {other:?}"),
+        other => panic!("typeof probe should complete, got {other:?}"),
+    }
+}
+
+/// Calling the (now poisoned) `eval` is a plain runtime error — `undefined` is
+/// not callable — never a path to dynamic code execution. The corpus
+/// `eval_usage` case (`return eval("1 + 1")`) lands here at the engine level.
+#[test]
+fn calling_poisoned_eval_is_a_runtime_error_not_execution() {
+    let prog = program(
+        r#"export async function main(ctx, input) { return eval("1 + 1"); }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &small_limits_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match rec.outcome {
+        RunOutcome::Failed { error } => assert_eq!(error.code(), "RuntimeError"),
+        other => panic!("calling poisoned eval must fail, not execute: {other:?}"),
+    }
+}
+
+/// The corpus `function_constructor` case (`new Function(...)`) also fails at the
+/// engine level now that `Function` is poisoned — `new undefined(...)` throws.
+#[test]
+fn new_function_constructor_is_a_runtime_error() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const make = new Function("return 1");
+            return make();
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &small_limits_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match rec.outcome {
+        RunOutcome::Failed { error } => assert_eq!(error.code(), "RuntimeError"),
+        other => panic!("new Function(...) must fail, not execute: {other:?}"),
     }
 }
 
@@ -334,6 +397,41 @@ fn storage_byte_budget_is_enforced() {
             assert!(error.to_string().contains("storage byte"), "{error}");
         }
         other => panic!("expected storage byte budget suspension, got {other:?}"),
+    }
+}
+
+/// Review 009 P2: a flood of *empty-string* `ctx.log("")` calls trips
+/// `ResourceLimitExceeded` via the `max_host_calls` cap even though it adds zero
+/// bytes — the log-byte budget alone can never stop it, so log calls are counted
+/// against the host-call budget.
+#[test]
+fn empty_string_log_flood_trips_resource_limit() {
+    let mut manifest = small_limits_manifest();
+    manifest.limits.max_host_calls = 30;
+    manifest.limits.log_bytes = 1024 * 1024; // huge: bytes are NOT the limiter
+    manifest.limits.wall_ms = 2000; // give the loop room so the CALL cap wins
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            while (true) { ctx.log(""); }
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &manifest,
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match rec.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "ResourceLimitExceeded");
+            assert!(error.to_string().contains("host-call"), "{error}");
+        }
+        other => panic!("expected ctx.log flood to trip host-call limit, got {other:?}"),
     }
 }
 
