@@ -505,7 +505,15 @@ impl Store {
 
     /// Persist a full `RunRecord` as JSON for `runtime.replay`. Re-saving the
     /// same `run_id` overwrites (idempotent record-and-replace).
+    ///
+    /// The record's `code_hash` is its provenance + replay key, so it is
+    /// validated against the canonical `sha256:` form before it is allowed to
+    /// land in the substrate (prd-merged/01 CR-9; review 013/014). A record
+    /// carrying a divergent string (the runtime's old `fnv1a64:…`, an uppercase
+    /// digest, a truncated body) is rejected with a `ValidationError` here,
+    /// rather than persisting a row the pipeline could never reproduce.
     pub fn save_run(&self, run: &RunRecord) -> Result<()> {
+        run.validate_code_hash()?;
         let json = serde_json::to_string(run).map_err(|e| map_json("save_run", e))?;
         self.conn
             .execute(
@@ -522,6 +530,12 @@ impl Store {
     }
 
     /// Load a `RunRecord` by id, reconstructed from its stored JSON.
+    ///
+    /// The provenance contract is re-checked on read: a corrupted or legacy row
+    /// (e.g. a `fnv1a64:…` `code_hash` written before this guard existed, or a
+    /// digest mangled in the file) surfaces a `ValidationError` instead of
+    /// silently handing back a record the pipeline can never reproduce
+    /// (prd-merged/01 CR-9; review 013/014).
     pub fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>> {
         let json: Option<String> = self
             .conn
@@ -534,7 +548,9 @@ impl Store {
             .map_err(map_sql)?;
         match json {
             Some(s) => {
-                let run = serde_json::from_str(&s).map_err(|e| map_json("load_run", e))?;
+                let run: RunRecord =
+                    serde_json::from_str(&s).map_err(|e| map_json("load_run", e))?;
+                run.validate_code_hash()?;
                 Ok(Some(run))
             }
             None => Ok(None),
@@ -618,7 +634,10 @@ mod tests {
         RunRecord {
             run_id: RunId::new(run_id),
             applet_id: AppletId::new("app_notes"),
-            code_hash: "sha256:abc".into(),
+            // Canonical sha256: of a stand-in body, so the sample is a
+            // contract-valid record (its code_hash passes validate_code_hash,
+            // which save_run/load_run now enforce — review 013/014).
+            code_hash: forge_domain::code_hash("sample-body"),
             input: serde_json::json!({"name": "world"}),
             random_seed: 42,
             time_start: 1000,
@@ -931,6 +950,57 @@ mod tests {
     fn load_run_missing_is_none() {
         let s = store();
         assert_eq!(s.load_run("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn save_run_rejects_noncanonical_code_hash() {
+        // Provenance contract (review 013/014): a record carrying a divergent
+        // code_hash (the runtime's old fnv1a64: form) must be refused on save
+        // rather than persisting a row the pipeline can never reproduce.
+        let s = store();
+        let mut run = sample_run("run_bad");
+        run.code_hash = "fnv1a64:0123456789abcdef".into();
+        let err = s.save_run(&run).unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        // Nothing was persisted: the rejected record never reached the table.
+        let n: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "rejected record must not land in the runs table");
+    }
+
+    #[test]
+    fn load_run_rejects_corrupted_legacy_code_hash() {
+        // A legacy/corrupted row (written before this guard, or mangled in the
+        // file) must surface a ValidationError on read, not a silent bad record
+        // (review 013/014). Inject the bad row directly, bypassing save_run's
+        // guard, to model the on-disk legacy/corruption case.
+        let s = store();
+        let mut run = sample_run("run_legacy");
+        run.code_hash = "fnv1a64:deadbeef".into();
+        let json = serde_json::to_string(&run).unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO runs (run_id, applet_id, record_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params!["run_legacy", "app_notes", json, 0i64],
+            )
+            .unwrap();
+        let err = s.load_run("run_legacy").unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    #[test]
+    fn save_run_load_run_validates_canonical_roundtrip() {
+        // A round-tripped canonical record loads and re-validates cleanly.
+        let s = store();
+        let run = sample_run("run_ok");
+        assert!(run.validate_code_hash().is_ok(), "sample must be canonical");
+        s.save_run(&run).unwrap();
+        let back = s.load_run("run_ok").unwrap().unwrap();
+        assert_eq!(back, run);
+        assert!(back.validate_code_hash().is_ok());
     }
 
     #[test]
