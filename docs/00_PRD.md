@@ -1,5 +1,7 @@
 # PRD: Terrane v0.4
 
+> **⚠️ SUPERSEDED (2026-06-12):** This v0.4 spec line is legacy/prototype reference only. The normative product direction is the v1 merged PRD pack at [`prd-merged/`](../prd-merged/README.md) — see [`docs/00_V1_PIVOT.md`](00_V1_PIVOT.md) for the supersession decision.
+
 ## 0. Document conventions
 
 - Each requirement is tagged with the milestone in which it first becomes load-bearing: **[v0.1]**, **[v0.2]**, **[v0.3]**, **[v0.4]**.
