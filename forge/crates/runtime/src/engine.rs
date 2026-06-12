@@ -22,14 +22,19 @@
 //! - Memory is bounded by `Runtime::set_memory_limit`; stack by
 //!   `set_max_stack_size` (deep recursion → `RuntimeError`, never a host stack
 //!   overflow / FFI panic).
-//! - `eval`/`Function` are **poisoned** at the engine level (review 009 P1,
-//!   CR-13): after the realm is built we delete the `eval` and `Function`
-//!   globals so `typeof eval === 'undefined'` and `typeof Function ===
-//!   'undefined'`. The static policy scan (forge-pipeline, layer one) is still
-//!   the first line, but the engine no longer *relies* on it — dynamic code
-//!   evaluation is simply unavailable in the realm. (The Rust-side
-//!   `Context::eval` used to load the program is the host API, not the JS global,
-//!   so loading + promise driving are unaffected.)
+//! - Dynamic code evaluation is **poisoned** at the engine level (review 009 P1
+//!   / 019 P1, CR-13): after the realm is built we (1) overwrite the
+//!   `constructor` on every function-kind prototype with `undefined` so the
+//!   `Function` constructor is unreachable through the prototype chain
+//!   (`(() => {}).constructor` etc. are `undefined`, closing the bypass review
+//!   019 found), and (2) null the `eval`/`Function` globals so `typeof eval ===
+//!   'undefined'` and `typeof Function === 'undefined'`. The static policy scan
+//!   (forge-pipeline, layer one) is still the first line, but the engine no
+//!   longer *relies* on it — dynamic code evaluation is simply unavailable in the
+//!   realm. (The Rust-side `Context::eval` used to load the program is `JS_Eval`,
+//!   not the JS global, so loading + promise driving are unaffected. We keep the
+//!   QuickJS `Eval` intrinsic precisely because `JS_Eval` shares its hook; see
+//!   `disable_dynamic_eval`.)
 
 use crate::host::HostContext;
 use crate::{EngineOutcome, JsEngine, Program};
@@ -657,21 +662,71 @@ fn install_ctx<'js>(
     Ok(())
 }
 
-/// Remove the `eval` and `Function` globals from the realm so dynamic code
-/// evaluation is unavailable (review 009 P1, CR-13): after this `typeof eval ===
-/// 'undefined'` and `typeof Function === 'undefined'`.
+/// Poison dynamic code evaluation in the realm (review 009 P1 / 019 P1, CR-13).
 ///
-/// We delete the global *bindings* (rather than throwing on use): deleting them
-/// makes `typeof` report `undefined`, which is the assertable, no-ambient-
-/// capability shape the containment suite checks. Existing function objects keep
-/// working — QuickJS's internal function machinery (used by `async`/Promise and
-/// the host-side `Context::eval` that loads the program) does not depend on the
-/// global `eval`/`Function` bindings, so program load + promise driving are
-/// unaffected.
+/// Nulling only `globalThis.eval` and `globalThis.Function` is **not** enough:
+/// the `Function` constructor is reachable through any function object's
+/// prototype chain — `(() => {}).constructor`, `(function(){}).constructor`,
+/// `(async function(){}).constructor`, `(function*(){}).constructor`,
+/// `(async function*(){}).constructor` all yield a live constructor that
+/// compiles a string into runnable code. Review 019 confirmed `(() =>
+/// {}).constructor('return 1+1')()` returned `2` against the global-only
+/// version, so dynamic evaluation was still reachable.
+///
+/// We cannot simply drop the QuickJS `Eval` intrinsic at realm construction:
+/// the host-side `Context::eval` we use to *load* the program is `JS_Eval`,
+/// which requires the same `eval_internal` hook the intrinsic installs — dropping
+/// it would make program load fail with "eval is not supported". Instead we keep
+/// the intrinsic (so `Context::eval` and `async`/Promise machinery work) and:
+///
+/// 1. Walk each function-kind prototype (`Function.prototype` and the
+///    Async/Generator/AsyncGenerator function prototypes, reached via literals
+///    so we never touch the global `Function`) and overwrite its `constructor`
+///    with `undefined`. After this, `(<any function>).constructor` is
+///    `undefined` — not callable — so the constructor chain cannot reach
+///    `js_function_constructor` (which internally does an indirect `eval`).
+/// 2. Null the `eval` and `Function` globals so `typeof eval === 'undefined'`
+///    and `typeof Function === 'undefined'` (the assertable no-ambient-capability
+///    shape).
+///
+/// QuickJS's internal function machinery (used by the host `Context::eval` that
+/// loads the program, and by `async`/Promise) does not route through these JS
+/// bindings, so program load + promise driving stay unaffected.
 fn disable_dynamic_eval<'js>(ctx: &Ctx<'js>) -> Result<(), rquickjs::Error> {
+    // Poison the constructor reachable through every function-kind prototype.
+    // Done in JS so we walk real prototype objects (including async/generator
+    // kinds) without naming the global `Function`. `Reflect.getPrototypeOf` of a
+    // function literal gives us each `*.prototype`; we redefine its `constructor`
+    // to `undefined` as a non-writable, non-configurable property so it cannot be
+    // restored or reassigned. Wrapped in try/catch per prototype so a missing
+    // kind (e.g. if an intrinsic is absent) is non-fatal.
+    const POISON_CONSTRUCTOR_CHAIN: &str = r#"
+        (function () {
+            "use strict";
+            var protos = [
+                Reflect.getPrototypeOf(function () {}),
+                Reflect.getPrototypeOf(function* () {}),
+                Reflect.getPrototypeOf(async function () {}),
+                Reflect.getPrototypeOf(async function* () {})
+            ];
+            for (var i = 0; i < protos.length; i++) {
+                var p = protos[i];
+                if (!p) { continue; }
+                try {
+                    Object.defineProperty(p, "constructor", {
+                        value: undefined,
+                        writable: false,
+                        enumerable: false,
+                        configurable: false
+                    });
+                } catch (e) { /* already non-configurable: best effort */ }
+            }
+        })();
+    "#;
+    ctx.eval::<(), _>(POISON_CONSTRUCTOR_CHAIN)?;
+
+    // Null the global bindings so `typeof eval`/`typeof Function` === 'undefined'.
     let globals = ctx.globals();
-    // `delete` the bindings; if a binding is somehow non-configurable, fall back
-    // to overwriting it with `undefined` so `typeof` is still `'undefined'`.
     let undefined = Value::new_undefined(ctx.clone());
     globals.set("eval", undefined.clone())?;
     globals.set("Function", undefined)?;

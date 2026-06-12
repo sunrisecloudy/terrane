@@ -376,6 +376,86 @@ fn new_function_constructor_is_a_runtime_error() {
     }
 }
 
+/// Review 019 P1 / CR-13: the `Function` constructor must not be reachable
+/// through any function object's prototype chain. Nulling only the globals left
+/// `(() => {}).constructor`, `(function(){}).constructor`, `(async
+/// function(){}).constructor`, `(function*(){}).constructor` and `(async
+/// function*(){}).constructor` all pointing at a live constructor. After the
+/// fix, every such `constructor` is `undefined` for all function kinds.
+#[test]
+fn function_constructor_chain_is_poisoned_for_all_kinds() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            return { ok: true, value: {
+                arrow:          typeof (() => {}).constructor,
+                normal:         typeof (function () {}).constructor,
+                async_fn:       typeof (async function () {}).constructor,
+                generator:      typeof (function* () {}).constructor,
+                async_gen:      typeof (async function* () {}).constructor,
+            } };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &small_limits_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match rec.outcome {
+        RunOutcome::Completed { result } => {
+            for key in ["arrow", "normal", "async_fn", "generator", "async_gen"] {
+                assert_eq!(
+                    result.value[key],
+                    serde_json::json!("undefined"),
+                    "{key} .constructor must be poisoned (review 019 P1)"
+                );
+            }
+        }
+        other => panic!("constructor-chain probe should complete, got {other:?}"),
+    }
+}
+
+/// Review 019 P1 / CR-13: the exact constructor-chain bypass the reviewer
+/// confirmed against the global-only version — `(() => {}).constructor('return
+/// 1+1')()` returned `2` — must now FAIL rather than execute dynamically. With
+/// `constructor` poisoned to `undefined`, the call is `undefined('return 1+1')`,
+/// which is a plain `RuntimeError`, never dynamic code execution.
+#[test]
+fn function_constructor_chain_bypass_does_not_execute() {
+    for src in [
+        // The reviewer's exact repro plus the other function kinds.
+        r#"export async function main(ctx, input) { return (() => {}).constructor("return 1+1")(); }"#,
+        r#"export async function main(ctx, input) { return (function () {}).constructor("return 1+1")(); }"#,
+        r#"export async function main(ctx, input) { return (async function () {}).constructor("return 1+1")(); }"#,
+    ] {
+        let prog = program(src);
+        let mut bridge = MemoryHostBridge::new();
+        let rec = record_run(
+            &prog,
+            &small_limits_manifest(),
+            &owner(),
+            &serde_json::json!({}),
+            1,
+            0,
+            &mut bridge,
+        )
+        .unwrap();
+        match rec.outcome {
+            RunOutcome::Failed { error } => assert_eq!(
+                error.code(),
+                "RuntimeError",
+                "constructor-chain bypass must fail, not execute: {src}"
+            ),
+            other => panic!("constructor-chain bypass must NOT execute ({src}): {other:?}"),
+        }
+    }
+}
+
 /// The storage byte budget (CR-5) suspends a run that writes more than
 /// `storage_bytes` total, independent of the host-call count.
 #[test]

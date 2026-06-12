@@ -61,14 +61,14 @@
       "category": "forbidden_global",
       "expected_outcome": "rejected_static",
       "expected_error": "policy_scan_reject",
-      "notes": "eval is rejected by the static policy scan (layer one); independently, the engine POISONS the eval global so typeof eval === 'undefined' and calling it is a RuntimeError, never dynamic execution (review 009 P1, CR-13)"
+      "notes": "eval is rejected by the static policy scan (layer one); independently, the engine POISONS dynamic evaluation so typeof eval === 'undefined' and calling it is a RuntimeError, with the Function-constructor prototype chain poisoned too so eval cannot be re-reached via `(() => {}).constructor`, never dynamic execution (review 009 P1 / 019 P1, CR-13)"
     },
     {
       "file": "function_constructor.ts",
       "category": "forbidden_global",
       "expected_outcome": "rejected_static",
       "expected_error": "policy_scan_reject",
-      "notes": "the Function constructor is rejected by the static policy scan (layer one); independently, the engine POISONS the Function global so typeof Function === 'undefined' and `new Function(...)` is a RuntimeError, never dynamic execution (review 009 P1, CR-13)"
+      "notes": "the Function constructor is rejected by the static policy scan (layer one); independently, the engine POISONS dynamic evaluation so typeof Function === 'undefined' AND every function-kind prototype's `constructor` is undefined, so `new Function(...)` and the constructor-chain bypass `(() => {}).constructor('return 1')()` are both a RuntimeError, never dynamic execution (review 009 P1 / 019 P1, CR-13)"
     },
     {
       "file": "dynamic_import.ts",
