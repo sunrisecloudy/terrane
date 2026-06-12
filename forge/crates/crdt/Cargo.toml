@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+forge-domain.workspace = true
 loro = "1.13.1"
 serde.workspace = true
 serde_json.workspace = true

@@ -361,6 +361,7 @@ dependencies = [
 name = "forge-crdt"
 version = "0.1.0"
 dependencies = [
+ "forge-domain",
  "loro",
  "serde",
  "serde_json",
