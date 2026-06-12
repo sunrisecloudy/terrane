@@ -1,1 +1,133 @@
-//! forge-runtime: see prd-merged/01-core-runtime-prd.md §2
+//! forge-runtime: the sandbox. prd-merged/01-core-runtime-prd.md §2.
+//!
+//! This crate is the heart of the M0a spine:
+//!   *transpiled JS → QuickJS realm with ZERO ambient capability → a
+//!   capability-checked `ctx` host bridge → enforced resource limits →
+//!   deterministic record/replay.*
+//!
+//! Design (prd-merged/01 CR-1..CR-13, prd-merged/07 SC-1/SC-2):
+//!   * [`JsEngine`] — the engine trait. Target-independent so a QuickJS-WASM
+//!     backend can slot in at M0a-exit without restructuring.
+//!   * [`QuickJsEngine`] — the native rquickjs implementation
+//!     (`#[cfg(not(target_arch = "wasm32"))]`). rquickjs ships native C and does
+//!     not build for `wasm32-unknown-unknown`, so it is gated out there
+//!     (Cargo.toml `target.'cfg(not(target_arch = "wasm32"))'`).
+//!   * [`HostBridge`] — the effect seam (storage/db/ui/log); effects are
+//!     **injected**, never imported (CR-1). `time`/`random` are deterministic
+//!     seams owned by the recorder, not bridge methods (CR-11).
+//!   * [`RunRecorder`] — the deterministic record/replay engine (CR-8/CR-11).
+//!   * [`HostContext`] — the single hub where policy + recorder + budgets meet.
+//!
+//! Two-layer defense (CR-13): the **static policy scan** (forge-pipeline) is the
+//! first line against `eval`/`Function`/forbidden globals; this engine is the
+//! second line — the realm exposes no host globals beyond `ctx` + standard JS
+//! (no `fetch`/`process`/`require`), and resource limits contain anything that
+//! does run. See the corpus integration test for the ownership split.
+
+mod bridge;
+mod host;
+mod recorder;
+
+pub use bridge::{HostBridge, MemoryHostBridge, NullBridge};
+pub use host::HostContext;
+pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
+
+use forge_domain::{AppResult, CoreError};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod engine;
+#[cfg(not(target_arch = "wasm32"))]
+mod runner;
+#[cfg(not(target_arch = "wasm32"))]
+pub use engine::QuickJsEngine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use runner::{record_run, replay, run_once};
+
+/// A unit of executable code handed to the engine: the transpiled JS plus the
+/// applet identity used for provenance in the run record.
+///
+/// In the spine, `forge-pipeline` produces this from TypeScript via SWC; the
+/// runtime treats `source` as opaque JS and never re-parses TypeScript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// The applet this code belongs to.
+    pub applet_id: forge_domain::AppletId,
+    /// Transpiled JavaScript exporting `async function main(ctx, input)`.
+    pub source: String,
+}
+
+impl Program {
+    pub fn new(applet_id: impl Into<forge_domain::AppletId>, source: impl Into<String>) -> Self {
+        Program {
+            applet_id: applet_id.into(),
+            source: source.into(),
+        }
+    }
+
+    /// A stable, platform-independent content hash of the executed code, used as
+    /// the run record's `code_hash` (provenance + replay key). This is a
+    /// non-cryptographic FNV-1a digest — sufficient to detect that a replay is
+    /// running different code, without pulling in a crypto dependency at M0a.
+    pub fn code_hash(&self) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in self.source.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("fnv1a64:{hash:016x}")
+    }
+}
+
+/// What an engine run produced: the script's `AppResult` (or the `CoreError`
+/// that suspended/failed it) plus the captured log lines.
+///
+/// This is the engine-level outcome before it is folded into a
+/// [`forge_domain::RunRecord`]; the record/replay API surfaces below build the
+/// full record from it plus the recorder's trace.
+#[derive(Debug, Clone)]
+pub struct EngineOutcome {
+    /// `Ok(result)` when `main` returned; `Err(e)` when a limit/policy/runtime
+    /// error suspended the run.
+    pub result: Result<AppResult, CoreError>,
+    /// Log lines captured during the run (bounded by `Limits::log_bytes`).
+    pub logs: Vec<String>,
+}
+
+/// The pluggable JS execution engine (prd-merged/01 CR-2).
+///
+/// Implementors run a [`Program`] in a zero-ambient-capability realm, forwarding
+/// every `ctx.*` call through the supplied [`HostContext`] (which enforces
+/// policy, recording, and per-call budgets). The trait is intentionally narrow
+/// and target-independent so alternative backends (QuickJS-WASM, a future
+/// engine) are drop-in.
+pub trait JsEngine {
+    /// Run `program`, driving its `main(ctx, input)` to completion under
+    /// `limits`. The `host` hub carries the policy engine, recorder, bridge, and
+    /// budgets; `input` is passed to `main` as its second argument.
+    ///
+    /// Returns an [`EngineOutcome`]. Resource-limit and runtime errors are
+    /// returned as `outcome.result = Err(..)`, never as a panic across the FFI
+    /// boundary (prd-merged/01 CR-A4).
+    fn run(
+        &self,
+        program: &Program,
+        input: &serde_json::Value,
+        host: &mut HostContext<'_>,
+        limits: &forge_domain::Limits,
+    ) -> EngineOutcome;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_hash_is_stable_and_content_sensitive() {
+        let a = Program::new("app", "export async function main(){}");
+        let b = Program::new("app", "export async function main(){}");
+        let c = Program::new("app", "export async function main(){ return 1; }");
+        assert_eq!(a.code_hash(), b.code_hash());
+        assert_ne!(a.code_hash(), c.code_hash());
+        assert!(a.code_hash().starts_with("fnv1a64:"));
+    }
+}

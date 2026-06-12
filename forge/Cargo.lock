@@ -399,6 +399,9 @@ dependencies = [
 name = "forge-runtime"
 version = "0.1.0"
 dependencies = [
+ "forge-domain",
+ "forge-policy",
+ "forge-storage",
  "rquickjs",
  "serde",
  "serde_json",
