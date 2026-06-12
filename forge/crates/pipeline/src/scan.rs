@@ -12,9 +12,17 @@
 //! (`globalThis.eval`, `globalThis["eval"]`, `self["process"]`, `window.eval`),
 //! or a plain *read* of a dangerous global (`process.env`, `require.resolve`).
 //! The hardened scanner resolves simple `const`/`let` aliases of the forbidden
-//! identifiers, unwraps comma/paren/optional-chain wrappers, and treats reads of
-//! the dangerous globals (as bare identifiers, members, or computed members) as
-//! forbidden — not just their call sites.
+//! identifiers — established by a declarator (`const e = eval`) *or* by a later
+//! assignment (`let e; e = eval`) — unwraps comma/paren/optional-chain wrappers,
+//! folds constant string and substitution-free template computed keys
+//! (`globalThis[`eval`]`), treats a destructured key off a global container
+//! (`const { eval: e } = globalThis`) as a read, and flags a forbidden global
+//! captured in *value position* (object value, array element, call argument,
+//! assignment RHS) where it would otherwise dodge the call-site check
+//! (`const o = { run: eval }; o.run(...)`). In short, reaching a dangerous
+//! global as a bare identifier, member, computed member, destructured key, or
+//! captured value — not just at a call site — is forbidden (review 010 +
+//! follow-up).
 //!
 //! The forbidden set (each names a *construct* and a *reason*):
 //!   - `eval` (call / alias / member / computed) — arbitrary code evaluation.
@@ -226,14 +234,36 @@ fn member_prop_name(prop: &MemberProp) -> Option<String> {
     }
 }
 
-/// Best-effort constant-fold of a string-valued expression: a string literal or
-/// a `"a" + "b"` chain of string literals. Returns `None` for anything dynamic.
+/// The statically-known name of a `PropName` (object-pattern / object-literal
+/// key): a bare ident, a string/number literal, or a constant-foldable computed
+/// key. `None` for anything dynamic.
+fn prop_name_key(key: &swc_core::ecma::ast::PropName) -> Option<String> {
+    use swc_core::ecma::ast::PropName;
+    match key {
+        PropName::Ident(id) => Some(id.sym.as_str().to_string()),
+        PropName::Str(s) => s.value.as_str().map(|v| v.to_string()),
+        PropName::Computed(c) => const_string(&c.expr),
+        PropName::Num(_) | PropName::BigInt(_) => None,
+    }
+}
+
+/// Best-effort constant-fold of a string-valued expression: a string literal, a
+/// substitution-free template literal (`` `eval` ``), or a `"a" + "b"` chain of
+/// such literals. Returns `None` for anything dynamic.
 fn const_string(e: &Expr) -> Option<String> {
     use swc_core::ecma::ast::{BinaryOp, Lit};
     match unwrap_expr(e) {
         // `Str.value` is WTF-8; a non-UTF-8 literal can't spell a forbidden
         // identifier, so fold it to `None` rather than forcing a lossy string.
         Expr::Lit(Lit::Str(s)) => s.value.as_str().map(|v| v.to_string()),
+        // A template literal with no `${...}` substitutions is just a constant
+        // string (`globalThis[`eval`]` resolves to `eval`). One with any
+        // substitution is dynamic and folds to `None`.
+        Expr::Tpl(t) if t.exprs.is_empty() && t.quasis.len() == 1 => t.quasis[0]
+            .cooked
+            .as_ref()
+            .and_then(|c| c.as_str())
+            .map(|v| v.to_string()),
         Expr::Bin(b) if b.op == BinaryOp::Add => {
             let l = const_string(&b.left)?;
             let r = const_string(&b.right)?;
@@ -257,18 +287,39 @@ fn resolve_ident<'a>(e: &'a Expr, aliases: &'a HashMap<String, String>) -> Optio
 #[derive(Default)]
 struct AliasCollector(HashMap<String, String>);
 
+impl AliasCollector {
+    /// Record `bind = <rhs-ident>` as an alias iff the RHS resolves (possibly via
+    /// an already-known alias) to a forbidden global or a global container.
+    fn record(&mut self, bind: &str, rhs_init: &Expr) {
+        if let Some(rhs) = base_ident(rhs_init) {
+            // Flatten one hop through an already-known alias.
+            let resolved = self.0.get(rhs).cloned().unwrap_or_else(|| rhs.to_string());
+            if forbidden_global(&resolved).is_some() || is_global_container(&resolved) {
+                self.0.insert(bind.to_string(), resolved);
+            }
+        }
+    }
+}
+
 impl Visit for AliasCollector {
     fn visit_var_declarator(&mut self, d: &swc_core::ecma::ast::VarDeclarator) {
         if let (Pat::Ident(bind), Some(init)) = (&d.name, &d.init) {
-            if let Some(rhs) = base_ident(init) {
-                // Flatten one hop through an already-known alias.
-                let resolved = self.0.get(rhs).cloned().unwrap_or_else(|| rhs.to_string());
-                if forbidden_global(&resolved).is_some() || is_global_container(&resolved) {
-                    self.0.insert(bind.id.sym.as_str().to_string(), resolved);
-                }
-            }
+            self.record(bind.id.sym.as_str(), init);
         }
         d.visit_children_with(self);
+    }
+
+    fn visit_assign_expr(&mut self, n: &swc_core::ecma::ast::AssignExpr) {
+        // Alias via *assignment* rather than declarator: `let e; e = eval; e(...)`
+        // (review 010 follow-up gap b). Only a plain `=` to a bare identifier
+        // target establishes an alias.
+        use swc_core::ecma::ast::AssignOp;
+        if n.op == AssignOp::Assign {
+            if let AssignTarget::Simple(SimpleAssignTarget::Ident(bind)) = &n.left {
+                self.record(bind.id.sym.as_str(), &n.right);
+            }
+        }
+        n.visit_children_with(self);
     }
 }
 
@@ -366,6 +417,19 @@ impl ScanVisitor {
         }
     }
 
+    /// Flag any forbidden global reached as a *value* (not an immediate call):
+    /// an object property value (`{ run: eval }`), an array element (`[eval]`),
+    /// a call argument (`doThing(eval)`), or an assignment RHS (`x = eval`).
+    /// Capturing a forbidden global by value lets it escape this scanner's
+    /// call-site checks (`o.run('1')`, `arr.map(f => f('1'))`), so the *read* is
+    /// the boundary we enforce (review 010 follow-up gap a — matches the module
+    /// doc's "reads ... as forbidden, not just their call sites" intent).
+    fn inspect_value_read(&mut self, e: &Expr) {
+        if let Some(name) = base_ident(e) {
+            self.check_forbidden_ref(name, false);
+        }
+    }
+
     /// If `e` resolves (through aliases) to a forbidden global that is NOT a
     /// locally-bound benign variable, flag it. `via_member` is true when the
     /// reference is a member/computed read of a *global container*, in which
@@ -388,6 +452,34 @@ impl ScanVisitor {
             return;
         }
         self.push_global(&resolved);
+    }
+
+    /// Flag a destructure of a forbidden key off a *global container*:
+    /// `const { eval: e } = globalThis` / `const { Function } = window`
+    /// (review 010 follow-up gap c). The init must resolve (through aliases) to a
+    /// global container; each object-pattern key that names a forbidden global is
+    /// a forbidden read, regardless of the local binding name it lands in.
+    fn inspect_destructure_from_global(&mut self, pat: &Pat, init: &Expr) {
+        use swc_core::ecma::ast::ObjectPatProp;
+        let Pat::Object(obj) = pat else { return };
+        // The thing being destructured must be a global container (possibly an
+        // alias). Anything else (`const { eval } = someUserObject`) is benign.
+        match resolve_ident(init, &self.aliases) {
+            Some(name) if is_global_container(&name) => {}
+            _ => return,
+        }
+        for prop in &obj.props {
+            // The *key* is the property name read off the global, not the local
+            // binding it is renamed to (`{ eval: e }` reads `eval`).
+            let key = match prop {
+                ObjectPatProp::KeyValue(kv) => prop_name_key(&kv.key),
+                ObjectPatProp::Assign(a) => Some(a.key.id.sym.as_str().to_string()),
+                ObjectPatProp::Rest(_) => None,
+            };
+            if let Some(k) = key {
+                self.push_global(&k);
+            }
+        }
     }
 
     /// Inspect a member expression for forbidden access — both the "dangerous
@@ -502,6 +594,11 @@ impl Visit for ScanVisitor {
             Callee::Expr(e) => self.inspect_callee_expr(e),
             Callee::Super(_) => {}
         }
+        // A forbidden global passed *as an argument* (`doThing(eval)`) escapes by
+        // value (gap a).
+        for arg in &n.args {
+            self.inspect_value_read(&arg.expr);
+        }
         n.visit_children_with(self);
     }
 
@@ -509,6 +606,9 @@ impl Visit for ScanVisitor {
         // `window.eval?.("1")` parses as an optional call; its callee carries
         // the dangerous member.
         self.inspect_callee_expr(&n.callee);
+        for arg in &n.args {
+            self.inspect_value_read(&arg.expr);
+        }
         n.visit_children_with(self);
     }
 
@@ -533,6 +633,12 @@ impl Visit for ScanVisitor {
         if let Expr::Member(m) = callee {
             self.inspect_member_read(m);
         }
+        // `new Ctor(eval)` — forbidden global passed by value as an argument.
+        if let Some(args) = &n.args {
+            for arg in args {
+                self.inspect_value_read(&arg.expr);
+            }
+        }
         n.visit_children_with(self);
     }
 
@@ -551,6 +657,9 @@ impl Visit for ScanVisitor {
 
     fn visit_assign_expr(&mut self, n: &swc_core::ecma::ast::AssignExpr) {
         self.inspect_assign_target(&n.left);
+        // `x = eval;` / `e = process;` — capturing a forbidden global on an
+        // assignment RHS is a read of that global (gap a / alias-by-assignment).
+        self.inspect_value_read(&n.right);
         n.visit_children_with(self);
     }
 
@@ -562,8 +671,35 @@ impl Visit for ScanVisitor {
             if let Some(name) = base_ident(init) {
                 self.check_forbidden_ref(name, false);
             }
+            // A destructured forbidden property off a global container
+            // (`const { eval: e } = globalThis`) is a forbidden read (gap c).
+            self.inspect_destructure_from_global(&d.name, init);
         }
         d.visit_children_with(self);
+    }
+
+    fn visit_object_lit(&mut self, n: &swc_core::ecma::ast::ObjectLit) {
+        // `{ run: eval }` — forbidden global captured as an object property value.
+        use swc_core::ecma::ast::{Prop, PropOrSpread};
+        for prop in &n.props {
+            match prop {
+                PropOrSpread::Prop(p) => {
+                    if let Prop::KeyValue(kv) = &**p {
+                        self.inspect_value_read(&kv.value);
+                    }
+                }
+                PropOrSpread::Spread(s) => self.inspect_value_read(&s.expr),
+            }
+        }
+        n.visit_children_with(self);
+    }
+
+    fn visit_array_lit(&mut self, n: &swc_core::ecma::ast::ArrayLit) {
+        // `[eval]` — forbidden global captured as an array element.
+        for el in n.elems.iter().flatten() {
+            self.inspect_value_read(&el.expr);
+        }
+        n.visit_children_with(self);
     }
 }
 
@@ -968,6 +1104,101 @@ mod tests {
         assert_rejected("export const v = self.eval('1');", "eval");
         assert_rejected("export const v = global.process;", "process");
         assert_rejected("export const v = (window as Record<string, any>).fetch('x');", "fetch");
+    }
+
+    // ---- Review 010 follow-up: value-position reads, assignment aliases,
+    //      destructured global keys, template-literal computed keys ----
+
+    #[test]
+    fn rejects_destructured_forbidden_off_global_container() {
+        // gap c: `const { eval: e } = globalThis` reads `eval` off the global.
+        assert_rejected(
+            "const { eval: e } = globalThis as Record<string, any>; export const v = e('1');",
+            "eval",
+        );
+        // The destructured *key* is the read we flag (a `Function` finding); the
+        // `new F(...)` call site need not also resolve to know it's forbidden.
+        assert_rejected(
+            "const { Function: F } = globalThis as Record<string, any>; export const v = new F('return 1');",
+            "Function constructor",
+        );
+        // Shorthand destructure (`const { process } = self`) reads the key too.
+        assert_rejected(
+            "const { process } = self as Record<string, any>; export const v = process;",
+            "process",
+        );
+    }
+
+    #[test]
+    fn destructure_off_user_object_is_allowed() {
+        // The container must be a *global*; a plain user object is benign even if
+        // a key happens to be named `eval`.
+        let src = "const h = { eval: (x: number) => x + 1 }; const { eval: run } = h; export const v = run(41);";
+        let findings = policy_scan(src).unwrap();
+        assert!(findings.is_empty(), "false positive: {findings:?}");
+        assert!(enforce_policy(src).is_ok());
+    }
+
+    #[test]
+    fn rejects_forbidden_global_in_value_position() {
+        // gap a: a forbidden global captured by value (object value, array
+        // element, call argument, assignment RHS) escapes the call-site check.
+        assert_rejected("const o = { run: eval }; export const v = o.run('1');", "eval");
+        assert_rejected("const fns = [eval]; export const v = fns.map(f => f('1'));", "eval");
+        assert_rejected(
+            "function doThing(f: (s: string) => unknown){ return f('1'); } export const v = doThing(eval);",
+            "eval",
+        );
+        assert_rejected(
+            "function f(){ let e: any; e = eval; return e('1'); }",
+            "eval",
+        );
+    }
+
+    #[test]
+    fn value_position_capture_of_benign_local_is_allowed() {
+        // A benign local in value position must not trip the new check.
+        let src = "const evaluate = (x: number) => x + 1; const o = { run: evaluate }; const fns = [evaluate]; export const v = o.run(1) + fns[0](2);";
+        let findings = policy_scan(src).unwrap();
+        assert!(findings.is_empty(), "false positive: {findings:?}");
+        assert!(enforce_policy(src).is_ok());
+    }
+
+    #[test]
+    fn rejects_alias_via_assignment() {
+        // gap b: `let e; e = eval; e('1')` — alias established by AssignExpr.
+        assert_rejected(
+            "function f(){ let e: any; e = eval; return e('1'); }",
+            "eval",
+        );
+        // The alias also resolves a container assigned by `=`.
+        assert_rejected(
+            "function f(){ let g: any; g = globalThis; return g.eval('1'); }",
+            "eval",
+        );
+    }
+
+    #[test]
+    fn rejects_template_literal_computed_key() {
+        // gap d: a substitution-free template key folds to a constant string.
+        assert_rejected(
+            "export const v = (globalThis as Record<string, any>)[`eval`]('1');",
+            "eval",
+        );
+        assert_rejected(
+            "export const v = (globalThis as Record<string, any>)[`fe` + `tch`]('https://x');",
+            "fetch",
+        );
+    }
+
+    #[test]
+    fn template_key_with_substitution_is_not_folded() {
+        // A template with a `${...}` substitution is dynamic; the key cannot be
+        // statically resolved to `eval`, so the computed read is not flagged.
+        // (Defence-in-depth still applies at the runtime realm.)
+        let src = "function f(x: string){ const o: Record<string, unknown> = {}; return o[`pre${x}`]; } export const v = f;";
+        let findings = policy_scan(src).unwrap();
+        assert!(findings.is_empty(), "unexpected: {findings:?}");
     }
 
     // ---- Review 010 P2: static imports rejected for M0a ----

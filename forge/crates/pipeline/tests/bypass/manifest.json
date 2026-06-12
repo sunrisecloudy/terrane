@@ -162,11 +162,74 @@
       "reason": "new globalThis.XMLHttpRequest() reaches raw network through a member constructor"
     },
     {
+      "file": "destructure_global_eval.ts",
+      "technique": "destructure",
+      "target": "globalThis.eval",
+      "expect": "rejected",
+      "reason": "const { eval: e } = globalThis pulls eval off the global container by destructuring"
+    },
+    {
+      "file": "destructure_global_function.ts",
+      "technique": "destructure",
+      "target": "globalThis.Function",
+      "expect": "rejected",
+      "reason": "const { Function: F } = globalThis pulls the Function constructor off the global container by destructuring"
+    },
+    {
+      "file": "value_object_eval.ts",
+      "technique": "value-read",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "const o = { run: eval } captures eval as an object property value, then calls it via o.run(...)"
+    },
+    {
+      "file": "value_array_eval.ts",
+      "technique": "value-read",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "[eval].map(f => f(...)) captures eval as an array element to escape the call-site check"
+    },
+    {
+      "file": "value_callarg_eval.ts",
+      "technique": "value-read",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "doThing(eval) passes eval by value as a call argument"
+    },
+    {
+      "file": "assign_alias_eval.ts",
+      "technique": "alias",
+      "target": "eval",
+      "expect": "rejected",
+      "reason": "let e; e = eval; e(...) aliases eval through an assignment rather than a declarator"
+    },
+    {
+      "file": "computed_global_template_eval.ts",
+      "technique": "computed",
+      "target": "globalThis[`eval`]",
+      "expect": "rejected",
+      "reason": "globalThis[`eval`](...) reaches eval through a substitution-free template-literal computed key"
+    },
+    {
       "file": "benign_eval_string.ts",
       "technique": "benign",
       "target": "none",
       "expect": "allowed",
       "reason": "the substring eval( is inside a string literal, AST is clean"
+    },
+    {
+      "file": "benign_destructure_user_object.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "destructuring an `eval` key off a plain user object (not a global container) is benign"
+    },
+    {
+      "file": "benign_value_capture.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "capturing benign locals as object values / array elements / call args must not trip the value-position check"
     },
     {
       "file": "benign_function_comment.ts",

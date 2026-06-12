@@ -2,13 +2,17 @@
 //!
 //! The fixtures in `tests/bypass/` encode adversarial spellings that reach a
 //! forbidden capability *without* writing it directly — aliasing/data-flow
-//! (`const e = eval; e(...)`), comma/indirect eval (`(0, eval)(...)`), member
-//! and computed reads off a global container (`globalThis["eval"]`,
-//! `self["process"]`), dangerous-global *reads* (`process.env`,
-//! `require.resolve`), dynamic `import(...)`, and prototype tamper — plus benign
-//! controls that look dangerous to a naive text grep but are clean to an AST
-//! (`"eval("` in a string, `// Function(` in a comment, an `evaluate` property,
-//! a `process_id` local).
+//! (`const e = eval; e(...)`), alias-by-assignment (`let e; e = eval; e(...)`),
+//! comma/indirect eval (`(0, eval)(...)`), member and computed reads off a
+//! global container (`globalThis["eval"]`, `globalThis[`eval`]`,
+//! `self["process"]`), destructured keys off a global container
+//! (`const { eval: e } = globalThis`), value-position captures that dodge the
+//! call-site check (`{ run: eval }`, `[eval].map(...)`, `doThing(eval)`),
+//! dangerous-global *reads* (`process.env`, `require.resolve`), dynamic
+//! `import(...)`, and prototype tamper — plus benign controls that look
+//! dangerous to a naive text grep but are clean to an AST (`"eval("` in a
+//! string, `// Function(` in a comment, an `evaluate` property, a `process_id`
+//! local, an `eval` key on a plain user object).
 //!
 //! Contract enforced here:
 //!   * every `expect: "rejected"` case MUST be stopped by
@@ -110,8 +114,8 @@ fn every_rejected_bypass_is_stopped_before_execution() {
 
     // Guard against the corpus silently shrinking out from under this test.
     assert!(
-        checked >= 23,
-        "expected at least 23 rejected bypass cases, saw {checked}"
+        checked >= 30,
+        "expected at least 30 rejected bypass cases, saw {checked}"
     );
 }
 
@@ -145,7 +149,7 @@ fn every_allowed_bypass_control_passes_clean() {
     }
 
     assert!(
-        checked >= 4,
-        "expected at least 4 benign bypass controls, saw {checked}"
+        checked >= 6,
+        "expected at least 6 benign bypass controls, saw {checked}"
     );
 }
