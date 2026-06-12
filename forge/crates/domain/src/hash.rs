@@ -9,10 +9,32 @@
 //! the pipeline emitting `sha256:` while the runtime recorded a divergent
 //! `fnv1a64:`).
 //!
+//! [`is_canonical_code_hash`] gives that contract *teeth*: it is the shared
+//! predicate every recorder/replayer uses to reject a `code_hash` that is not
+//! the canonical `sha256:` form, so a crate that fails to adopt [`code_hash`]
+//! (e.g. one still emitting `fnv1a64:…`) is caught instead of silently storing
+//! a divergent provenance string. [`RunRecord::validate_code_hash`] wires the
+//! predicate into the run-record boundary.
+//!
+//! [`RunRecord::validate_code_hash`]: crate::run::RunRecord::validate_code_hash
+//!
 //! `sha2` is pure-Rust with no I/O, so this module keeps forge-domain
 //! `wasm32-unknown-unknown`-clean.
 
 use sha2::{Digest, Sha256};
+
+/// The one canonical algorithm tag every `code_hash` must carry.
+///
+/// A `RunRecord.code_hash` (and any pipeline-emitted `Program.code_hash`) is
+/// *only* well-formed if it starts with this literal prefix. Review 010 P1
+/// flagged the divergence where the runtime recorded `fnv1a64:` while the
+/// pipeline promised `sha256:`; exposing the prefix as a single constant lets
+/// every crate assert against the *same* tag instead of hard-coding the string.
+pub const CODE_HASH_PREFIX: &str = "sha256:";
+
+/// Length of the hex body of a canonical hash: a SHA-256 digest is 32 bytes,
+/// two lowercase-hex chars each.
+pub const CODE_HASH_HEX_LEN: usize = 64;
 
 /// Canonical content hash: `"sha256:" + lowercase-hex(sha256(code))`.
 ///
@@ -25,9 +47,9 @@ use sha2::{Digest, Sha256};
 /// (recorded on the run) must use, so provenance is preserved end-to-end.
 pub fn code_hash(code: &str) -> String {
     let digest = Sha256::digest(code.as_bytes());
-    // 7 chars for "sha256:" + two hex chars per digest byte (32 bytes -> 64).
-    let mut out = String::with_capacity(7 + digest.len() * 2);
-    out.push_str("sha256:");
+    // prefix + two hex chars per digest byte (32 bytes -> 64).
+    let mut out = String::with_capacity(CODE_HASH_PREFIX.len() + digest.len() * 2);
+    out.push_str(CODE_HASH_PREFIX);
     for byte in digest {
         // Lowercase hex, two chars per byte — deterministic and platform-stable.
         // `unwrap` is on a constant 0..=15 nibble, never a real-path failure.
@@ -35,6 +57,24 @@ pub fn code_hash(code: &str) -> String {
         out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
     }
     out
+}
+
+/// True iff `s` is shaped like a value produced by [`code_hash`]: the literal
+/// [`CODE_HASH_PREFIX`] followed by exactly [`CODE_HASH_HEX_LEN`] lowercase-hex
+/// chars.
+///
+/// This is the contract teeth review 010 P1 was missing. Before this, the
+/// canonical [`code_hash`] was a free function any crate could quietly *not*
+/// adopt — the runtime kept recording `fnv1a64:` and nothing failed. Now any
+/// recorder/replayer can reject a `code_hash` that is not the canonical
+/// `sha256:` form (e.g. `fnv1a64:…`, an uppercase digest, or a truncated body)
+/// instead of silently storing a divergent provenance string.
+pub fn is_canonical_code_hash(s: &str) -> bool {
+    let Some(hex) = s.strip_prefix(CODE_HASH_PREFIX) else {
+        return false;
+    };
+    hex.len() == CODE_HASH_HEX_LEN
+        && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[cfg(test)]
@@ -93,6 +133,54 @@ mod tests {
         assert_eq!(
             code_hash("hello"),
             "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    /// Every value `code_hash` produces is accepted by the canonical validator.
+    #[test]
+    fn code_hash_output_is_always_canonical() {
+        for input in ["", "hello", "main()", "a longer applet body\nwith newlines"] {
+            assert!(
+                is_canonical_code_hash(&code_hash(input)),
+                "code_hash({input:?}) must satisfy is_canonical_code_hash"
+            );
+        }
+    }
+
+    /// Regression for review 010 P1: the exact divergent form the runtime
+    /// recorded (`fnv1a64:…`) is rejected, so a recorder that fails to adopt the
+    /// canonical hash can be caught instead of silently storing it.
+    #[test]
+    fn fnv1a64_prefixed_hash_is_not_canonical() {
+        assert!(!is_canonical_code_hash("fnv1a64:0123456789abcdef"));
+    }
+
+    /// Malformed canonical hashes are rejected: wrong prefix, no prefix,
+    /// uppercase hex, short/long body, and non-hex characters.
+    #[test]
+    fn malformed_code_hashes_are_rejected() {
+        let zeros = "0".repeat(CODE_HASH_HEX_LEN);
+        // Wrong / missing prefix.
+        assert!(!is_canonical_code_hash(&zeros), "no prefix");
+        assert!(!is_canonical_code_hash(&format!("md5:{zeros}")), "wrong algo prefix");
+        // Uppercase hex is not lowercase-canonical.
+        assert!(
+            !is_canonical_code_hash(&format!("{CODE_HASH_PREFIX}{}", "A".repeat(CODE_HASH_HEX_LEN))),
+            "uppercase hex"
+        );
+        // Body length must be exactly CODE_HASH_HEX_LEN.
+        assert!(
+            !is_canonical_code_hash(&format!("{CODE_HASH_PREFIX}{}", "0".repeat(CODE_HASH_HEX_LEN - 1))),
+            "short body"
+        );
+        assert!(
+            !is_canonical_code_hash(&format!("{CODE_HASH_PREFIX}{}", "0".repeat(CODE_HASH_HEX_LEN + 1))),
+            "long body"
+        );
+        // Non-hex character in an otherwise correctly sized body.
+        assert!(
+            !is_canonical_code_hash(&format!("{CODE_HASH_PREFIX}g{}", "0".repeat(CODE_HASH_HEX_LEN - 1))),
+            "non-hex char"
         );
     }
 }

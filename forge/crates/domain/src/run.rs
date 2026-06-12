@@ -8,6 +8,7 @@
 //!
 //! This is the jewel's last link: "... → deterministic replay, all offline."
 
+use crate::hash::is_canonical_code_hash;
 use crate::ids::{AppletId, RunId};
 use crate::{AppResult, CoreError};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,28 @@ impl RunRecord {
         matches!(self.outcome, RunOutcome::Completed { .. })
     }
 
+    /// Reject a record whose `code_hash` is not the canonical `sha256:` form
+    /// (prd-merged/01 CR-9, CR-14; review 010 P1).
+    ///
+    /// The `code_hash` is the run's provenance + replay key, so it must be the
+    /// single algorithm every crate agrees on
+    /// ([`code_hash`](crate::hash::code_hash)). This guard gives that contract
+    /// teeth at the record boundary: a recorder that stores a divergent string
+    /// (the runtime's old `fnv1a64:…`, an uppercase digest, a truncated body)
+    /// fails here instead of silently shipping a hash the pipeline can never
+    /// reproduce. Recording and replay paths call this before trusting the
+    /// record's provenance.
+    pub fn validate_code_hash(&self) -> crate::Result<()> {
+        if is_canonical_code_hash(&self.code_hash) {
+            Ok(())
+        } else {
+            Err(CoreError::ValidationError(format!(
+                "run record code_hash is not canonical sha256: {:?}",
+                self.code_hash
+            )))
+        }
+    }
+
     /// A stable fingerprint of the *observable* run: code, inputs, seeds, the
     /// ordered call/response trace, and outcome. Two runs with equal
     /// fingerprints are replay-identical. Used by the conformance/replay tests
@@ -108,7 +131,9 @@ mod tests {
         RunRecord {
             run_id: RunId::new(run_id),
             applet_id: AppletId::new("app_notes"),
-            code_hash: "sha256:abc".into(),
+            // Canonical sha256: of a stand-in body, so the sample is a
+            // contract-valid record (its code_hash passes validate_code_hash).
+            code_hash: crate::hash::code_hash("sample-body"),
             input: serde_json::json!({"name": "world"}),
             random_seed: 42,
             time_start: 1000,
@@ -166,5 +191,32 @@ mod tests {
         let r = sample("run_1");
         let s = serde_json::to_string(&r.outcome).unwrap();
         assert!(s.contains("\"status\":\"completed\""), "{s}");
+    }
+
+    /// A record carrying a canonical `sha256:` provenance hash validates.
+    #[test]
+    fn canonical_code_hash_validates() {
+        let r = sample("run_1");
+        assert!(r.validate_code_hash().is_ok(), "sample uses a canonical sha256: hash");
+    }
+
+    /// Regression for review 010 P1: a record carrying the runtime's old
+    /// `fnv1a64:` provenance string (the exact divergence the review flagged)
+    /// is rejected at the record boundary instead of replaying as if valid.
+    #[test]
+    fn fnv1a64_code_hash_is_rejected_by_record() {
+        let mut r = sample("run_1");
+        r.code_hash = "fnv1a64:0123456789abcdef".into();
+        let err = r.validate_code_hash().expect_err("non-canonical hash must be rejected");
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    /// A short/garbage `code_hash` (e.g. the prior placeholder `sha256:abc`)
+    /// also fails: the body must be exactly 64 lowercase-hex chars.
+    #[test]
+    fn malformed_code_hash_is_rejected_by_record() {
+        let mut r = sample("run_1");
+        r.code_hash = "sha256:abc".into();
+        assert!(r.validate_code_hash().is_err());
     }
 }
