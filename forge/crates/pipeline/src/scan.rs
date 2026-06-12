@@ -24,6 +24,15 @@
 //! captured value — not just at a call site — is forbidden (review 010 +
 //! follow-up).
 //!
+//! Shadowing is *scope-aware* (review 016 P1). A benign local legitimately named
+//! like a global (`let process = 1`, `function f(fetch) {...}`) suppresses the
+//! global-read finding only for references in that binding's own scope or an
+//! enclosing one — tracked with a scope stack the visitor pushes/pops as it
+//! descends. A binding that exists only inside *another* function never
+//! suppresses a forbidden reference elsewhere, so
+//! `fetch("x"); function f(fetch){}` is still rejected for the top-level
+//! `fetch(...)`.
+//!
 //! The forbidden set (each names a *construct* and a *reason*):
 //!   - `eval` (call / alias / member / computed) — arbitrary code evaluation.
 //!   - `Function` (call / `new` / alias / member / computed) — code from strings.
@@ -121,16 +130,22 @@ pub fn policy_scan(ts_or_js: &str) -> Result<Vec<ScanFinding>> {
     let mut aliases = AliasCollector::default();
     module.visit_with(&mut aliases);
 
-    // Pass 2: collect the set of locally-bound names so a benign local variable
-    // legitimately named like a global (e.g. `let process = 1`) is not flagged
-    // as the host object.
-    let mut bindings = BindingCollector::default();
-    module.visit_with(&mut bindings);
+    // Pass 2: collect the names bound at *module (top-level) scope* so a benign
+    // top-level variable legitimately named like a global (`let process = 1` at
+    // module scope) is not flagged as the host object — while a binding that only
+    // exists inside *some other* function scope does NOT suppress a real
+    // top-level reference (review 016 P1: cross-scope shadowing must not be a
+    // bypass). Per-function bindings are pushed/popped on a scope stack by the
+    // visitor itself as it descends, so suppression is scope-aware.
+    let module_scope = collect_module_scope_bindings(&module);
 
     let mut visitor = ScanVisitor {
         findings: Vec::new(),
         aliases: aliases.0,
-        local_bindings: bindings.0,
+        // Scope stack: index 0 is the module scope; each function/arrow/method
+        // pushes its own frame. A bare-identifier reference is suppressed only if
+        // a frame currently on the stack binds the name.
+        scopes: vec![module_scope],
     };
     module.visit_with(&mut visitor);
 
@@ -323,87 +338,150 @@ impl Visit for AliasCollector {
     }
 }
 
-/// Collects every locally-bound identifier name (var/let/const declarators,
-/// function/class names, parameters, catch bindings). Used so a benign local
-/// `let process = 1` is not mistaken for the host `process` global.
-#[derive(Default)]
-struct BindingCollector(HashSet<String>);
-
-impl BindingCollector {
-    fn add_pat(&mut self, p: &Pat) {
-        match p {
-            Pat::Ident(b) => {
-                self.0.insert(b.id.sym.as_str().to_string());
-            }
-            Pat::Array(a) => {
-                for el in a.elems.iter().flatten() {
-                    self.add_pat(el);
-                }
-            }
-            Pat::Object(o) => {
-                use swc_core::ecma::ast::ObjectPatProp;
-                for prop in &o.props {
-                    match prop {
-                        ObjectPatProp::KeyValue(kv) => self.add_pat(&kv.value),
-                        ObjectPatProp::Assign(a) => {
-                            self.0.insert(a.key.id.sym.as_str().to_string());
-                        }
-                        ObjectPatProp::Rest(r) => self.add_pat(&r.arg),
-                    }
-                }
-            }
-            Pat::Assign(a) => self.add_pat(&a.left),
-            Pat::Rest(r) => self.add_pat(&r.arg),
-            Pat::Expr(_) | Pat::Invalid(_) => {}
+/// Add every identifier bound by a binding pattern (`Pat`) to `out`. Covers
+/// simple idents, array/object destructuring (including renames, defaults and
+/// rest) so a benign local `let process = 1` or `const { process } = x` is seen.
+fn add_pat_bindings(p: &Pat, out: &mut HashSet<String>) {
+    match p {
+        Pat::Ident(b) => {
+            out.insert(b.id.sym.as_str().to_string());
         }
+        Pat::Array(a) => {
+            for el in a.elems.iter().flatten() {
+                add_pat_bindings(el, out);
+            }
+        }
+        Pat::Object(o) => {
+            use swc_core::ecma::ast::ObjectPatProp;
+            for prop in &o.props {
+                match prop {
+                    ObjectPatProp::KeyValue(kv) => add_pat_bindings(&kv.value, out),
+                    ObjectPatProp::Assign(a) => {
+                        out.insert(a.key.id.sym.as_str().to_string());
+                    }
+                    ObjectPatProp::Rest(r) => add_pat_bindings(&r.arg, out),
+                }
+            }
+        }
+        Pat::Assign(a) => add_pat_bindings(&a.left, out),
+        Pat::Rest(r) => add_pat_bindings(&r.arg, out),
+        Pat::Expr(_) | Pat::Invalid(_) => {}
     }
 }
 
-impl Visit for BindingCollector {
+/// Collects the identifiers bound *within a single (function/module) scope* —
+/// `var`/`let`/`const` declarators, nested function/class declaration *names*,
+/// and `catch` bindings — WITHOUT descending into nested function bodies (which
+/// open their own scope). This is what makes suppression scope-aware: a binding
+/// that only exists inside one function must not suppress a forbidden reference
+/// in a *different* scope (review 016 P1).
+///
+/// Note: a nested function/class *declaration name* and a `catch` binding are
+/// hoisted into / visible from the enclosing scope, so they are collected here;
+/// the nested function's *parameters and body* belong to that function's own
+/// scope and are deliberately not visited.
+#[derive(Default)]
+struct ScopeBindingCollector(HashSet<String>);
+
+impl Visit for ScopeBindingCollector {
     fn visit_var_declarator(&mut self, d: &swc_core::ecma::ast::VarDeclarator) {
-        self.add_pat(&d.name);
+        add_pat_bindings(&d.name, &mut self.0);
+        // Recurse into the initializer so a `var` hoisted out of a nested block
+        // (`{ var x = 1 }`) is still seen — but `visit_*` for nested functions is
+        // overridden below to NOT descend, keeping us within this scope.
         d.visit_children_with(self);
     }
     fn visit_fn_decl(&mut self, f: &swc_core::ecma::ast::FnDecl) {
+        // The function's *name* is bound in this scope; its body/params are not.
         self.0.insert(f.ident.sym.as_str().to_string());
-        for p in &f.function.params {
-            self.add_pat(&p.pat);
-        }
-        f.visit_children_with(self);
     }
     fn visit_class_decl(&mut self, c: &swc_core::ecma::ast::ClassDecl) {
         self.0.insert(c.ident.sym.as_str().to_string());
-        c.visit_children_with(self);
-    }
-    fn visit_arrow_expr(&mut self, a: &swc_core::ecma::ast::ArrowExpr) {
-        for p in &a.params {
-            self.add_pat(p);
-        }
-        a.visit_children_with(self);
-    }
-    fn visit_function(&mut self, f: &swc_core::ecma::ast::Function) {
-        for p in &f.params {
-            self.add_pat(&p.pat);
-        }
-        f.visit_children_with(self);
     }
     fn visit_catch_clause(&mut self, c: &swc_core::ecma::ast::CatchClause) {
         if let Some(p) = &c.param {
-            self.add_pat(p);
+            add_pat_bindings(p, &mut self.0);
         }
-        c.visit_children_with(self);
+        // Visit the catch body (same scope) but the override on nested functions
+        // stops descent there.
+        c.body.visit_children_with(self);
     }
+    // Do NOT descend into nested function/arrow/method bodies: they open their
+    // own scope, collected separately when the visitor enters them.
+    fn visit_function(&mut self, _f: &swc_core::ecma::ast::Function) {}
+    fn visit_arrow_expr(&mut self, _a: &swc_core::ecma::ast::ArrowExpr) {}
+}
+
+/// Names bound at module (top-level) scope: declarators, top-level function /
+/// class names, plus the *parameters* of nothing (a module has none). Used as
+/// the root scope frame.
+fn collect_module_scope_bindings(module: &swc_core::ecma::ast::Module) -> HashSet<String> {
+    let mut c = ScopeBindingCollector::default();
+    for item in &module.body {
+        item.visit_with(&mut c);
+    }
+    c.0
+}
+
+/// Names bound by a function/method scope: its own parameters plus everything
+/// its body binds (stopping at nested functions). `collect_fn_scope_bindings`
+/// is used when the visitor enters a `Function`; `collect_arrow_scope_bindings`
+/// for an arrow.
+fn collect_fn_scope_bindings(f: &swc_core::ecma::ast::Function) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for p in &f.params {
+        add_pat_bindings(&p.pat, &mut out);
+    }
+    if let Some(body) = &f.body {
+        let mut c = ScopeBindingCollector(out);
+        for stmt in &body.stmts {
+            stmt.visit_with(&mut c);
+        }
+        return c.0;
+    }
+    out
+}
+
+/// Names bound by an arrow scope: its parameters plus, for a block-body arrow,
+/// everything the block binds (stopping at nested functions). An
+/// expression-body arrow binds only its parameters.
+fn collect_arrow_scope_bindings(a: &swc_core::ecma::ast::ArrowExpr) -> HashSet<String> {
+    use swc_core::ecma::ast::BlockStmtOrExpr;
+    let mut out = HashSet::new();
+    for p in &a.params {
+        add_pat_bindings(p, &mut out);
+    }
+    if let BlockStmtOrExpr::BlockStmt(body) = &*a.body {
+        let mut c = ScopeBindingCollector(out);
+        for stmt in &body.stmts {
+            stmt.visit_with(&mut c);
+        }
+        return c.0;
+    }
+    out
 }
 
 struct ScanVisitor {
     findings: Vec<ScanFinding>,
     /// alias-name -> resolved forbidden/container name.
     aliases: HashMap<String, String>,
-    /// every locally-bound identifier name in the module.
-    local_bindings: HashSet<String>,
+    /// Scope stack of locally-bound names. Index 0 is the module scope; each
+    /// function/arrow/method pushes its own frame on entry and pops it on exit.
+    /// A bare-identifier reference is the host global only if NO enclosing scope
+    /// binds that name (review 016 P1: a binding in an unrelated scope must not
+    /// suppress a real reference elsewhere).
+    scopes: Vec<HashSet<String>>,
 }
 
 impl ScanVisitor {
+    /// True if any scope currently on the stack (module scope + enclosing
+    /// functions/arrows) binds `name` — i.e. the reference resolves to a local,
+    /// not the host global. A binding inside a *sibling* or *nested* scope is not
+    /// on the stack at the reference site and therefore does not suppress.
+    fn in_scope(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains(name))
+    }
+
     fn push(&mut self, construct: &str, reason: &str) {
         let f = ScanFinding::new(construct, reason);
         if !self.findings.contains(&f) {
@@ -445,10 +523,13 @@ impl ScanVisitor {
         if forbidden_global(&resolved).is_none() {
             return;
         }
-        // A bare identifier that is shadowed by a real local binding (e.g.
-        // `let process = 1`) is the local, not the host global — unless we
-        // reached it as a property of a global container.
-        if !via_global_container && self.local_bindings.contains(name) {
+        // A bare identifier that is shadowed by a real local binding *in an
+        // enclosing scope* (e.g. `let process = 1` in this function or at module
+        // scope) is the local, not the host global — unless we reached it as a
+        // property of a global container. A binding that lives only in some other
+        // (sibling/nested) scope is NOT on the stack here, so it cannot suppress
+        // this reference (review 016 P1).
+        if !via_global_container && self.in_scope(name) {
             return;
         }
         self.push_global(&resolved);
@@ -584,6 +665,24 @@ impl ScanVisitor {
 }
 
 impl Visit for ScanVisitor {
+    // --- scope management (review 016 P1) ---
+    // Entering a function/arrow opens a new lexical scope. We push that scope's
+    // bindings (params + body-local declarations, not descending into further
+    // nested functions) so references *inside* the function see them, then pop on
+    // exit so a sibling/outer reference does not (a binding in one function must
+    // never suppress a forbidden reference in another).
+    fn visit_function(&mut self, f: &swc_core::ecma::ast::Function) {
+        self.scopes.push(collect_fn_scope_bindings(f));
+        f.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    fn visit_arrow_expr(&mut self, a: &swc_core::ecma::ast::ArrowExpr) {
+        self.scopes.push(collect_arrow_scope_bindings(a));
+        a.visit_children_with(self);
+        self.scopes.pop();
+    }
+
     fn visit_call_expr(&mut self, n: &swc_core::ecma::ast::CallExpr) {
         match &n.callee {
             // Dynamic `import(...)`.
@@ -623,7 +722,7 @@ impl Visit for ScanVisitor {
                     "new Function",
                     "constructing code from strings is forbidden",
                 ),
-                "XMLHttpRequest" if !self.local_bindings.contains(name) => self.push(
+                "XMLHttpRequest" if !self.in_scope(name) => self.push(
                     "XMLHttpRequest",
                     "raw network is forbidden; use the ctx.* host API",
                 ),
@@ -1293,6 +1392,86 @@ mod tests {
         // A user-defined function named `fetchData` must not match `fetch`.
         let findings = constructs("function fetchData() { return 1; } export const x = fetchData();");
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    // ---- Review 016 P1: cross-scope shadowing must NOT suppress a real
+    //      forbidden reference in another scope (scope-aware binding) ----
+
+    #[test]
+    fn cross_scope_shadow_does_not_suppress_forbidden_ref() {
+        // The reviewer's exact repro: a parameter named like a global inside ONE
+        // function used to land in a module-wide binding set and suppress a real
+        // top-level forbidden reference. Each of these must now be REJECTED.
+        assert_rejected(
+            r#"export const leak = fetch("https://x"); function shadow(fetch) { return fetch; }"#,
+            "fetch",
+        );
+        assert_rejected(
+            "export const leak = process.env; function f(process){ return process; }",
+            "process",
+        );
+        assert_rejected(
+            r#"export const leak = require("fs"); function f(require){ return require; }"#,
+            "require",
+        );
+        // Also a local *declaration* (not a param) in a sibling function must not
+        // suppress a top-level reference.
+        assert_rejected(
+            "export const leak = fetch('https://x'); function other(){ const fetch = 1; return fetch; }",
+            "fetch",
+        );
+        // A `new XMLHttpRequest()` at module scope is not suppressed by a sibling
+        // function binding `XMLHttpRequest`.
+        assert_rejected(
+            "export const leak = new XMLHttpRequest(); function g(XMLHttpRequest){ return XMLHttpRequest; }",
+            "XMLHttpRequest",
+        );
+    }
+
+    #[test]
+    fn nested_scope_shadow_does_not_suppress_outer_forbidden_ref() {
+        // A binding in a NESTED function must not suppress a forbidden reference
+        // in the ENCLOSING scope (the nested scope is not on the stack there).
+        assert_rejected(
+            "export function outer(){ const leak = process.env; function inner(process){ return process; } return inner; }",
+            "process",
+        );
+    }
+
+    #[test]
+    fn same_scope_shadow_still_suppresses_benign_local() {
+        // The legitimate case must keep passing: when the binding and the use are
+        // in the SAME (or an enclosing) scope, the name is the local, not the
+        // host global.
+        for src in [
+            // param shadows within its own function body
+            "export function f(process){ return process.id; }",
+            // local declaration shadows within its own block
+            "function run(){ let fetch = (x: string) => x; return fetch('a'); } export const v = run();",
+            // shadow at the use site reaches the enclosing-scope binding
+            "function outer(){ const process = { id: 1 }; function inner(){ return process.id; } return inner(); } export const v = outer();",
+            // arrow-param shadow
+            "export const g = (fetch: (s: string) => string) => fetch('a');",
+            // var hoisted out of a nested block is function-scoped and shadows
+            // within the whole function body.
+            "function run(){ if (true) { var process = { id: 1 }; } return process.id; } export const v = run();",
+            // a method parameter shadows within the method scope.
+            "class C { m(fetch: (s: string) => string){ return fetch('a'); } } export const v = new C();",
+        ] {
+            let findings = policy_scan(src).unwrap();
+            assert!(findings.is_empty(), "false positive on {src:?}: {findings:?}");
+            assert!(enforce_policy(src).is_ok(), "false rejection on {src:?}");
+        }
+    }
+
+    #[test]
+    fn method_scope_shadow_does_not_suppress_outer_forbidden_ref() {
+        // A class method parameter named like a global must not suppress a real
+        // top-level forbidden reference (the method opens its own scope).
+        assert_rejected(
+            "export const leak = fetch('https://x'); class C { m(fetch: unknown){ return fetch; } }",
+            "fetch",
+        );
     }
 
     #[test]

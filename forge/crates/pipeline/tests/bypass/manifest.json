@@ -251,6 +251,34 @@
       "target": "none",
       "expect": "allowed",
       "reason": "process_id is an ordinary local identifier, not process"
+    },
+    {
+      "file": "shadow_cross_scope_fetch.ts",
+      "technique": "cross-scope-shadow",
+      "target": "fetch",
+      "expect": "rejected",
+      "reason": "a parameter named fetch in a sibling function must not suppress a real top-level fetch(...) raw-network call (review 016 P1)"
+    },
+    {
+      "file": "shadow_cross_scope_process.ts",
+      "technique": "cross-scope-shadow",
+      "target": "process",
+      "expect": "rejected",
+      "reason": "a parameter named process in a sibling function must not suppress a real top-level process.env read (review 016 P1)"
+    },
+    {
+      "file": "shadow_cross_scope_require.ts",
+      "technique": "cross-scope-shadow",
+      "target": "require",
+      "expect": "rejected",
+      "reason": "a local named require in a sibling function must not suppress a real top-level require(...) module escape (review 016 P1)"
+    },
+    {
+      "file": "benign_same_scope_shadow.ts",
+      "technique": "benign",
+      "target": "none",
+      "expect": "allowed",
+      "reason": "a parameter/local named like a global, used in the SAME or an enclosing scope, is the local and must keep passing (review 016 P1 control)"
     }
   ]
 }
