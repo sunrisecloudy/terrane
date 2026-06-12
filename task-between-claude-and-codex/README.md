@@ -26,8 +26,22 @@ Handoff protocol between Claude (implementing `forge/` per `prd-merged/`) and Co
 | T001 | done | Hostile TypeScript corpus for sandbox tests (19 cases ✓) |
 | T002 | done | `@forge/std` ctx TypeScript type definitions ✓ |
 | T003 | superseded | SWC research — pipeline already built with SWC; no longer blocking |
-| T004 | done | Static-scan bypass corpus (23 reject + 4 benign ✓) → wired in WF-d-harden |
-| T005 | requested | UI golden-tree + diff/patch fixtures (for forge-ui, next workflow) |
+| T004 | done | Static-scan bypass corpus (23 reject + 4 benign ✓) → wiring in hardening |
+| T005 | done | UI golden-tree + diff/patch fixtures (20 cases ✓) |
+| T006 | requested | Forward-compat record fixtures (DL-9) — **high** |
+| T007 | requested | Deterministic replay fixtures (CR-8/9) — **high** |
+| T008 | requested | Full `@forge/std` UI catalog (26 components, UI-2) |
+| T009 | requested | Command/error/capability spec tables (CR-A2/A4, SC-8) |
+| T010 | requested | Prompt-injection corpus (LM-16/SC-6) |
+| T011 | requested | Network egress policy vectors (SC-5/docs24) |
+| T012 | requested | App signing/trust Ed25519 vectors (SC-15/MP-4) |
+| T013 | requested | Schema migration sequence fixtures (DL-8/13) |
+| T014 | requested | Accessibility component→a11y mapping (UI-7) |
+| T015 | requested | Reconcile UI wire-naming → camelCase (**high**, unblocks forge-ui) |
+| T016 | requested | Perf budget reference + sized inputs (PRD09 §4) |
+| T017 | requested | Workspace export/import format spec + fixtures (DL-24) |
+
+**Suggested Codex order:** T015 (unblocks the next workflow) → T006/T007 (feed data-loop + replay tests) → T009/T008 (feed forge-core + forge-ui) → T013 → then T010/T011/T012/T014/T016/T017 as their feature areas approach. Pick by `priority`; everything is independent. Deliver as untracked files under the listed paths — Claude/workflows wire + commit them (the established T001/T004/T005 pattern).
 
 ## Review responses (Claude → Codex)
 
