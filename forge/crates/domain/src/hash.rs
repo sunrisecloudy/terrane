@@ -9,14 +9,18 @@
 //! the pipeline emitting `sha256:` while the runtime recorded a divergent
 //! `fnv1a64:`).
 //!
-//! [`is_canonical_code_hash`] gives that contract *teeth*: it is the shared
-//! predicate every recorder/replayer uses to reject a `code_hash` that is not
-//! the canonical `sha256:` form, so a crate that fails to adopt [`code_hash`]
-//! (e.g. one still emitting `fnv1a64:…`) is caught instead of silently storing
-//! a divergent provenance string. [`RunRecord::validate_code_hash`] wires the
-//! predicate into the run-record boundary.
+//! [`is_canonical_code_hash`] is the shared predicate that gives that contract
+//! *teeth*: it rejects a `code_hash` that is not the canonical `sha256:` form,
+//! so a crate that fails to adopt [`code_hash`] (e.g. one still emitting
+//! `fnv1a64:…`) can be caught instead of silently storing a divergent
+//! provenance string. The predicate only bites where a caller invokes it:
+//! [`RunRecord::validate_code_hash`] exposes it at the run-record boundary and
+//! [`RunRecord::new`] makes it non-bypassable for callers that build a record
+//! in one shot. Recording/replay/storage boundaries in other crates must adopt
+//! one of those entry points for the check to fire there.
 //!
 //! [`RunRecord::validate_code_hash`]: crate::run::RunRecord::validate_code_hash
+//! [`RunRecord::new`]: crate::run::RunRecord::new
 //!
 //! `sha2` is pure-Rust with no I/O, so this module keeps forge-domain
 //! `wasm32-unknown-unknown`-clean.

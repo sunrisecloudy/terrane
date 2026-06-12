@@ -73,8 +73,50 @@ impl RunRecord {
         matches!(self.outcome, RunOutcome::Completed { .. })
     }
 
+    /// Build a [`RunRecord`] whose `code_hash` is **validated at construction**,
+    /// so a record that exists is a record whose provenance is canonical
+    /// (prd-merged/01 CR-9, CR-14; review 010 P1, review 013 P1).
+    ///
+    /// This is the contract's *teeth*. Until now `validate_code_hash` was an
+    /// opt-in method a recorder could simply forget to call (review 013 P1), and
+    /// the only way to make a record was the struct literal — which happily
+    /// accepts the runtime's old `fnv1a64:…` string. Routing record creation
+    /// through this constructor makes the canonical-hash check non-bypassable:
+    /// the recorder hands in the pieces and gets back either a valid record or a
+    /// `ValidationError`, never a record carrying a divergent provenance hash.
+    ///
+    /// Callers that build a record field-by-field (e.g. a recorder that fills
+    /// `calls`/`logs` incrementally) should finish by calling
+    /// [`validate_code_hash`](Self::validate_code_hash) before trusting it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        run_id: RunId,
+        applet_id: AppletId,
+        code_hash: String,
+        input: serde_json::Value,
+        random_seed: u64,
+        time_start: u64,
+        calls: Vec<RecordedCall>,
+        logs: Vec<String>,
+        outcome: RunOutcome,
+    ) -> crate::Result<Self> {
+        let record = RunRecord {
+            run_id,
+            applet_id,
+            code_hash,
+            input,
+            random_seed,
+            time_start,
+            calls,
+            logs,
+            outcome,
+        };
+        record.validate_code_hash()?;
+        Ok(record)
+    }
+
     /// Reject a record whose `code_hash` is not the canonical `sha256:` form
-    /// (prd-merged/01 CR-9, CR-14; review 010 P1).
+    /// (prd-merged/01 CR-9, CR-14; review 010 P1, review 013 P1/P2).
     ///
     /// The `code_hash` is the run's provenance + replay key, so it must be the
     /// single algorithm every crate agrees on
@@ -82,8 +124,13 @@ impl RunRecord {
     /// teeth at the record boundary: a recorder that stores a divergent string
     /// (the runtime's old `fnv1a64:…`, an uppercase digest, a truncated body)
     /// fails here instead of silently shipping a hash the pipeline can never
-    /// reproduce. Recording and replay paths call this before trusting the
-    /// record's provenance.
+    /// reproduce.
+    ///
+    /// This is the building block for that enforcement, not the enforcement
+    /// itself: it only takes effect where a caller actually invokes it.
+    /// [`RunRecord::new`](Self::new) calls it for callers that build a record in
+    /// one shot; recording/replay/storage boundaries in other crates must adopt
+    /// `new` (or call this method) for a non-canonical record to be rejected.
     pub fn validate_code_hash(&self) -> crate::Result<()> {
         if is_canonical_code_hash(&self.code_hash) {
             Ok(())
@@ -120,6 +167,26 @@ impl RunRecord {
     /// True iff `other` is a replay-identical run of `self`.
     pub fn replays_identically(&self, other: &RunRecord) -> bool {
         self.replay_fingerprint() == other.replay_fingerprint()
+    }
+
+    /// Strict replay check: both records must carry a *canonical* `code_hash`
+    /// and be replay-identical (review 010 P1, review 013 P1).
+    ///
+    /// `replays_identically` only compares fingerprints, so two records that
+    /// happen to share a divergent provenance string (e.g. both `fnv1a64:…`)
+    /// would "match" while neither is reproducible by the pipeline. This helper
+    /// closes that hole: it refuses to bless a replay whose provenance is not
+    /// the single canonical algorithm, then asserts byte-identical traces.
+    pub fn assert_replay_of(&self, other: &RunRecord) -> crate::Result<()> {
+        self.validate_code_hash()?;
+        other.validate_code_hash()?;
+        if self.replays_identically(other) {
+            Ok(())
+        } else {
+            Err(CoreError::RuntimeError(
+                "replay diverged from recorded run (trace fingerprints differ)".to_string(),
+            ))
+        }
     }
 }
 
@@ -218,5 +285,114 @@ mod tests {
         let mut r = sample("run_1");
         r.code_hash = "sha256:abc".into();
         assert!(r.validate_code_hash().is_err());
+    }
+
+    /// Helper: the field tuple a constructor call needs, derived from `sample`
+    /// so the two stay in lockstep.
+    fn new_args(
+        run_id: &str,
+        code_hash: String,
+    ) -> (
+        RunId,
+        AppletId,
+        String,
+        serde_json::Value,
+        u64,
+        u64,
+        Vec<RecordedCall>,
+        Vec<String>,
+        RunOutcome,
+    ) {
+        let s = sample(run_id);
+        (
+            s.run_id,
+            s.applet_id,
+            code_hash,
+            s.input,
+            s.random_seed,
+            s.time_start,
+            s.calls,
+            s.logs,
+            s.outcome,
+        )
+    }
+
+    /// Review 013 P1: `RunRecord::new` validates the `code_hash` at
+    /// construction, so a canonical hash yields a record and that record is
+    /// already contract-valid.
+    #[test]
+    fn new_accepts_canonical_code_hash() {
+        let (rid, aid, ch, input, seed, t0, calls, logs, outcome) =
+            new_args("run_1", crate::hash::code_hash("body"));
+        let r = RunRecord::new(rid, aid, ch, input, seed, t0, calls, logs, outcome)
+            .expect("canonical hash must build a record");
+        assert!(r.validate_code_hash().is_ok());
+    }
+
+    /// Review 013 P1 (the teeth): `RunRecord::new` refuses to build a record
+    /// from the runtime's old `fnv1a64:` provenance string. This is the
+    /// non-bypassable path — a recorder cannot mint a divergent record by
+    /// "forgetting" to validate, because construction itself fails.
+    #[test]
+    fn new_rejects_fnv1a64_code_hash() {
+        let (rid, aid, ch, input, seed, t0, calls, logs, outcome) =
+            new_args("run_1", "fnv1a64:0123456789abcdef".into());
+        let err = RunRecord::new(rid, aid, ch, input, seed, t0, calls, logs, outcome)
+            .expect_err("non-canonical hash must not construct a record");
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    /// A record built by `new` is byte-identical to the equivalent struct
+    /// literal, so adopting the constructor changes provenance enforcement
+    /// only, never the recorded data.
+    #[test]
+    fn new_matches_struct_literal() {
+        let literal = sample("run_1");
+        let (rid, aid, ch, input, seed, t0, calls, logs, outcome) =
+            new_args("run_1", literal.code_hash.clone());
+        let built = RunRecord::new(rid, aid, ch, input, seed, t0, calls, logs, outcome).unwrap();
+        assert_eq!(literal, built);
+    }
+
+    /// `assert_replay_of` blesses a replay only when both records carry a
+    /// canonical hash and the traces match.
+    #[test]
+    fn assert_replay_of_accepts_canonical_identical_runs() {
+        let original = sample("run_1");
+        let replay = sample("run_2");
+        assert!(original.assert_replay_of(&replay).is_ok());
+    }
+
+    /// Review 010 P1 / 013 P1: `assert_replay_of` refuses to bless a replay
+    /// whose provenance is the divergent `fnv1a64:` form even when the two
+    /// fingerprints match — `replays_identically` alone would wrongly say yes.
+    #[test]
+    fn assert_replay_of_rejects_matching_but_non_canonical_provenance() {
+        let mut original = sample("run_1");
+        let mut replay = sample("run_2");
+        original.code_hash = "fnv1a64:0123456789abcdef".into();
+        replay.code_hash = "fnv1a64:0123456789abcdef".into();
+        // The escape hatch the strict check closes: bare fingerprint equality.
+        assert!(
+            original.replays_identically(&replay),
+            "precondition: divergent-but-equal hashes fool replays_identically"
+        );
+        let err = original
+            .assert_replay_of(&replay)
+            .expect_err("non-canonical provenance must not be blessed as a replay");
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    /// `assert_replay_of` surfaces a genuine trace divergence as a
+    /// `RuntimeError` (not a silent `false`).
+    #[test]
+    fn assert_replay_of_rejects_divergent_trace() {
+        let original = sample("run_1");
+        let mut diverged = sample("run_2");
+        diverged.calls[0].response = serde_json::json!(9999);
+        let err = original
+            .assert_replay_of(&diverged)
+            .expect_err("a divergent trace must be a replay error");
+        assert_eq!(err.code(), "RuntimeError");
     }
 }
