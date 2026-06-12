@@ -1,10 +1,34 @@
 # Codex working agreements
 
-## Project intent
+> **⚠️ ACTIVE WORK IS v1 (2026-06-12).** The product has pivoted. The normative
+> spec for all new work is **`prd-merged/`** (see `docs/00_V1_PIVOT.md`). The v1
+> implementation lives in **`forge/`** (a Rust workspace). The v0.4 sections
+> below describe the **legacy prototype** (Zig core, native WebView hosts,
+> build-free HTML/CSS/JS apps) and apply **only** when working on those legacy
+> paths — they do NOT govern `forge/`. In particular, the "no TypeScript / no
+> build step" rule is a v0.4 rule for legacy webapp packages; v1 makes
+> TypeScript applets (with an offline in-core SWC transpile) the core product.
 
-This repository implements a native WebView platform for AI-generated build-free webapps with Zig core logic. The PRD lives at `docs/00_PRD.md`. Specs are normative; READMEs are not.
+## v1 working agreement (`forge/`, normative)
 
-## Hard rules
+- Spec of record: `prd-merged/00-master-prd.md` + sub-PRDs 01–09; decisions in
+  `prd-merged/DECISIONS.md`. Active milestone: **M0a executable spine** —
+  `TS → SWC → QuickJS → Rust capability ctx → SQLite write → UI tree patch → deterministic replay`, all offline.
+- Workspace: `forge/` (Rust). Crate map: `prd-merged/01-core-runtime-prd.md` §2.
+- Per crate: `cargo test -p forge-<crate>` green and `cargo clippy -p forge-<crate> -- -D warnings` clean before commit.
+- Reuse `forge-domain` types (CoreError, ids, RecordEnvelope, Manifest, RunRecord); don't redefine them.
+- Keep pure-logic crates (domain, schema, policy, ui, pipeline core) `wasm32`-clean; native-only deps (rusqlite, rquickjs) are target-gated behind `cfg(not(target_arch = "wasm32"))`.
+- Return `CoreError`; no panic/`unwrap` on real paths (tests may `unwrap`).
+- Never `git add -A` and never commit `forge/target/` (gitignored). Commit per crate.
+- Collaboration handoffs (Claude ⇄ Codex): `task-between-claude-and-codex/`; commit reviews to `review/`.
+
+---
+
+## Project intent (v0.4 legacy prototype)
+
+The v0.4 line of this repository implements a native WebView platform for AI-generated build-free webapps with Zig core logic. The legacy PRD lives at `docs/00_PRD.md` (superseded; see banner above). Specs are normative; READMEs are not.
+
+## Hard rules (v0.4 legacy paths only — see banner)
 
 ### Generated apps
 

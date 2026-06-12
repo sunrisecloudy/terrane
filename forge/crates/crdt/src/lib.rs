@@ -89,26 +89,36 @@ impl RecordsDoc {
         self.doc.peer_id()
     }
 
-    /// Insert or replace a record's fields.
+    /// Insert or update the given fields of a record, **never deleting** fields
+    /// the caller omitted. This is the default read-modify-write path.
     ///
-    /// `fields` must be a JSON object (the record envelope's field map). Each
+    /// `fields` must be a JSON object (a subset of the record's field map). Each
     /// key/value is written into a per-record sub-map so individual scalar
-    /// fields merge independently as LWW registers (prd-merged/02 DL-3). Keys
-    /// absent from `fields` are removed so the stored record mirrors the input.
-    pub fn set_record(&self, record_id: &str, fields: &serde_json::Value) -> Result<()> {
-        let obj = fields.as_object().ok_or_else(|| {
-            CoreError::ValidationError(format!(
-                "record {record_id} fields must be a JSON object, got {fields}"
-            ))
-        })?;
+    /// fields merge independently as LWW registers (prd-merged/02 DL-3).
+    ///
+    /// Preserving omitted fields is **normative** (prd-merged/02 DL-9): a stale
+    /// or older client doing a partial update must not strip fields — including
+    /// `unknown_fields` — that it did not supply. Mirrors the domain envelope's
+    /// `RecordEnvelope::merge_known` (review 004).
+    pub fn patch_record_fields(&self, record_id: &str, fields: &serde_json::Value) -> Result<()> {
+        let obj = self.as_field_object(record_id, fields)?;
+        let sub = self.record_submap(record_id)?;
+        for (k, v) in obj {
+            sub.insert(k, LoroValue::from(v.clone())).map_err(sync_err)?;
+        }
+        Ok(())
+    }
 
-        let root = self.doc.get_map(self.map_name.as_str());
-        let sub = root
-            .get_or_create_container(record_id, loro::LoroMap::new())
-            .map_err(sync_err)?;
-
-        // Remove keys that are no longer present so set_record is a full
-        // replace of the record's field set (read-modify-write friendly).
+    /// Replace a record's field set with exactly `fields`, deleting any field
+    /// the caller omitted.
+    ///
+    /// This carries explicit deletion semantics and must only be used when the
+    /// caller genuinely intends to remove the omitted fields (e.g. a deliberate
+    /// field-deprecation/delete op) — NOT for ordinary read-modify-write, which
+    /// should use [`patch_record_fields`] to honor DL-9 (review 004).
+    pub fn replace_record_fields(&self, record_id: &str, fields: &serde_json::Value) -> Result<()> {
+        let obj = self.as_field_object(record_id, fields)?;
+        let sub = self.record_submap(record_id)?;
         let existing: Vec<String> = sub.keys().map(|k| k.to_string()).collect();
         for k in existing {
             if !obj.contains_key(&k) {
@@ -119,6 +129,24 @@ impl RecordsDoc {
             sub.insert(k, LoroValue::from(v.clone())).map_err(sync_err)?;
         }
         Ok(())
+    }
+
+    fn as_field_object<'a>(
+        &self,
+        record_id: &str,
+        fields: &'a serde_json::Value,
+    ) -> Result<&'a serde_json::Map<String, serde_json::Value>> {
+        fields.as_object().ok_or_else(|| {
+            CoreError::ValidationError(format!(
+                "record {record_id} fields must be a JSON object, got {fields}"
+            ))
+        })
+    }
+
+    fn record_submap(&self, record_id: &str) -> Result<loro::LoroMap> {
+        let root = self.doc.get_map(self.map_name.as_str());
+        root.get_or_create_container(record_id, loro::LoroMap::new())
+            .map_err(sync_err)
     }
 
     /// Read a record's materialized fields, or `None` if it was never written.
@@ -255,7 +283,7 @@ mod tests {
     #[test]
     fn set_get_list_a_record() {
         let doc = RecordsDoc::new(1).unwrap();
-        doc.set_record("rec_1", &json!({"title": "Ship MVP", "done": false})).unwrap();
+        doc.replace_record_fields("rec_1", &json!({"title": "Ship MVP", "done": false})).unwrap();
         doc.commit();
 
         let got = doc.get_record("rec_1").unwrap();
@@ -267,31 +295,50 @@ mod tests {
     #[test]
     fn list_record_ids_is_sorted_and_covers_all() {
         let doc = RecordsDoc::new(1).unwrap();
-        doc.set_record("rec_b", &json!({"x": 1})).unwrap();
-        doc.set_record("rec_a", &json!({"x": 2})).unwrap();
-        doc.set_record("rec_c", &json!({"x": 3})).unwrap();
+        doc.replace_record_fields("rec_b", &json!({"x": 1})).unwrap();
+        doc.replace_record_fields("rec_a", &json!({"x": 2})).unwrap();
+        doc.replace_record_fields("rec_c", &json!({"x": 3})).unwrap();
         doc.commit();
         assert_eq!(doc.list_record_ids(), vec!["rec_a", "rec_b", "rec_c"]);
     }
 
     #[test]
-    fn set_record_overwrites_and_removes_dropped_fields() {
+    fn replace_record_fields_removes_dropped_fields() {
         let doc = RecordsDoc::new(1).unwrap();
-        doc.set_record("rec_1", &json!({"title": "A", "tag": "x"})).unwrap();
+        doc.replace_record_fields("rec_1", &json!({"title": "A", "tag": "x"})).unwrap();
         doc.commit();
         // Rewrite without `tag` -> tag must disappear, title updated.
-        doc.set_record("rec_1", &json!({"title": "B"})).unwrap();
+        doc.replace_record_fields("rec_1", &json!({"title": "B"})).unwrap();
         doc.commit();
         assert_eq!(doc.get_record("rec_1").unwrap(), json!({"title": "B"}));
     }
 
     #[test]
-    fn set_record_rejects_non_object_fields() {
+    fn patch_record_fields_preserves_omitted_fields() {
+        // DL-9 (review 004): a partial update from a stale/older client must NOT
+        // strip fields it did not supply — including fields it doesn't understand.
         let doc = RecordsDoc::new(1).unwrap();
-        let err = doc.set_record("rec_1", &json!([1, 2, 3])).unwrap_err();
+        doc.replace_record_fields("rec_1", &json!({"title": "A", "tag": "x", "f_future": {"n": 1}}))
+            .unwrap();
+        doc.commit();
+        // Patch only `title`; `tag` and the unknown `f_future` must survive.
+        doc.patch_record_fields("rec_1", &json!({"title": "B"})).unwrap();
+        doc.commit();
+        assert_eq!(
+            doc.get_record("rec_1").unwrap(),
+            json!({"title": "B", "tag": "x", "f_future": {"n": 1}}),
+            "patch must preserve omitted/unknown fields (DL-9)"
+        );
+    }
+
+    #[test]
+    fn record_fields_must_be_object() {
+        let doc = RecordsDoc::new(1).unwrap();
+        // Both write paths reject non-object field maps.
+        let err = doc.replace_record_fields("rec_1", &json!([1, 2, 3])).unwrap_err();
         assert_eq!(err.code(), "ValidationError");
-        // A scalar is likewise rejected.
-        assert_eq!(doc.set_record("rec_1", &json!(42)).unwrap_err().code(), "ValidationError");
+        assert_eq!(doc.replace_record_fields("rec_1", &json!(42)).unwrap_err().code(), "ValidationError");
+        assert_eq!(doc.patch_record_fields("rec_1", &json!("str")).unwrap_err().code(), "ValidationError");
     }
 
     #[test]
@@ -303,7 +350,7 @@ mod tests {
             "tags": ["a", "b"],
             "count": 3
         });
-        doc.set_record("rec_1", &fields).unwrap();
+        doc.replace_record_fields("rec_1", &fields).unwrap();
         doc.commit();
         assert_eq!(doc.get_record("rec_1").unwrap(), fields);
     }
@@ -313,8 +360,8 @@ mod tests {
     #[test]
     fn snapshot_export_import_roundtrip_preserves_state() {
         let src = RecordsDoc::new(1).unwrap();
-        src.set_record("rec_1", &json!({"title": "Hello"})).unwrap();
-        src.set_record("rec_2", &json!({"title": "World"})).unwrap();
+        src.replace_record_fields("rec_1", &json!({"title": "Hello"})).unwrap();
+        src.replace_record_fields("rec_2", &json!({"title": "World"})).unwrap();
         src.commit();
         let snap = src.export_snapshot().unwrap();
 
@@ -330,7 +377,7 @@ mod tests {
     #[test]
     fn importing_same_snapshot_twice_is_idempotent() {
         let src = RecordsDoc::new(1).unwrap();
-        src.set_record("rec_1", &json!({"title": "Hello"})).unwrap();
+        src.replace_record_fields("rec_1", &json!({"title": "Hello"})).unwrap();
         src.commit();
         let snap = src.export_snapshot().unwrap();
 
@@ -355,9 +402,9 @@ mod tests {
         let mut a = RecordsDoc::new(1).unwrap();
         let mut b = RecordsDoc::new(2).unwrap();
 
-        a.set_record("rec_a", &json!({"owner": "alice"})).unwrap();
+        a.replace_record_fields("rec_a", &json!({"owner": "alice"})).unwrap();
         a.commit();
-        b.set_record("rec_b", &json!({"owner": "bob"})).unwrap();
+        b.replace_record_fields("rec_b", &json!({"owner": "bob"})).unwrap();
         b.commit();
 
         merge(&mut a, &mut b).unwrap();
@@ -377,16 +424,16 @@ mod tests {
         let mut b = RecordsDoc::new(2).unwrap();
 
         // Seed both with the same record so they share the key, then diverge.
-        a.set_record("rec_1", &json!({"title": "seed"})).unwrap();
+        a.replace_record_fields("rec_1", &json!({"title": "seed"})).unwrap();
         a.commit();
         let seed = a.export_snapshot().unwrap();
         b.import(&seed).unwrap();
         b.commit();
 
         // Concurrent conflicting writes to the SAME scalar field.
-        a.set_record("rec_1", &json!({"title": "from-alice"})).unwrap();
+        a.replace_record_fields("rec_1", &json!({"title": "from-alice"})).unwrap();
         a.commit();
-        b.set_record("rec_1", &json!({"title": "from-bob"})).unwrap();
+        b.replace_record_fields("rec_1", &json!({"title": "from-bob"})).unwrap();
         b.commit();
 
         merge(&mut a, &mut b).unwrap();
@@ -404,6 +451,38 @@ mod tests {
         assert_eq!(a.materialized(), b.materialized());
     }
 
+    // --- Convergence: concurrent patches to DIFFERENT fields of the SAME record ---
+
+    #[test]
+    fn concurrent_patches_to_different_fields_of_same_record_keep_both() {
+        // The exact case the old delete-missing-field behavior would corrupt
+        // (review 004 [P2]): both peers start from {title, tag}; A patches title,
+        // B patches tag; after merge BOTH fields survive on both peers.
+        let mut a = RecordsDoc::new(1).unwrap();
+        let mut b = RecordsDoc::new(2).unwrap();
+
+        a.replace_record_fields("rec_1", &json!({"title": "seed", "tag": "seed"})).unwrap();
+        a.commit();
+        let seed = a.export_snapshot().unwrap();
+        b.import(&seed).unwrap();
+        b.commit();
+
+        // Concurrent partial updates to DIFFERENT fields via the upsert path.
+        a.patch_record_fields("rec_1", &json!({"title": "from-alice"})).unwrap();
+        a.commit();
+        b.patch_record_fields("rec_1", &json!({"tag": "from-bob"})).unwrap();
+        b.commit();
+
+        merge(&mut a, &mut b).unwrap();
+
+        assert_eq!(a.materialized(), b.materialized(), "peers must converge");
+        assert_eq!(
+            a.get_record("rec_1").unwrap(),
+            json!({"title": "from-alice", "tag": "from-bob"}),
+            "both independently-patched fields must survive (DL-3/DL-9)"
+        );
+    }
+
     #[test]
     fn same_scalar_winner_is_stable_regardless_of_merge_order() {
         // Run the same conflict twice with the two merge directions and assert
@@ -411,14 +490,14 @@ mod tests {
         fn run() -> String {
             let mut a = RecordsDoc::new(1).unwrap();
             let mut b = RecordsDoc::new(2).unwrap();
-            a.set_record("rec_1", &json!({"title": "seed"})).unwrap();
+            a.replace_record_fields("rec_1", &json!({"title": "seed"})).unwrap();
             a.commit();
             let seed = a.export_snapshot().unwrap();
             b.import(&seed).unwrap();
             b.commit();
-            a.set_record("rec_1", &json!({"title": "from-alice"})).unwrap();
+            a.replace_record_fields("rec_1", &json!({"title": "from-alice"})).unwrap();
             a.commit();
-            b.set_record("rec_1", &json!({"title": "from-bob"})).unwrap();
+            b.replace_record_fields("rec_1", &json!({"title": "from-bob"})).unwrap();
             b.commit();
             merge(&mut a, &mut b).unwrap();
             a.get_record("rec_1").unwrap()["title"].as_str().unwrap().to_string()
@@ -430,9 +509,9 @@ mod tests {
     fn merge_is_idempotent_when_repeated() {
         let mut a = RecordsDoc::new(1).unwrap();
         let mut b = RecordsDoc::new(2).unwrap();
-        a.set_record("rec_a", &json!({"v": 1})).unwrap();
+        a.replace_record_fields("rec_a", &json!({"v": 1})).unwrap();
         a.commit();
-        b.set_record("rec_b", &json!({"v": 2})).unwrap();
+        b.replace_record_fields("rec_b", &json!({"v": 2})).unwrap();
         b.commit();
         merge(&mut a, &mut b).unwrap();
         let after_first = a.materialized();
@@ -517,7 +596,7 @@ mod tests {
             d.export_snapshot().unwrap().len()
         }
         let r = RecordsDoc::new(1).unwrap();
-        r.set_record("x", &json!({"a": 1})).unwrap();
+        r.replace_record_fields("x", &json!({"a": 1})).unwrap();
         r.commit();
         let t = TextDoc::new(2).unwrap();
         t.replace_all("abc").unwrap();

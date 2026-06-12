@@ -378,6 +378,13 @@ impl Store {
     // --- CRDT blobs (DL-4 chunks, DL-19 snapshots) -----------------------
 
     /// Append a CRDT op chunk for `doc_id`.
+    ///
+    /// `crdt_chunks` is the append-only rebuild/sync source of truth (DL-6), so
+    /// a `(doc_id, chunk_id)` is **immutable** once written: re-writing the same
+    /// chunk with identical `(format, payload)` is an idempotent no-op
+    /// (sync-safe — the same op chunk may arrive twice), but re-writing an
+    /// existing chunk id with *different* content is rejected with
+    /// `StorageError` rather than silently rewriting history (review 003).
     pub fn put_chunk(
         &self,
         doc_id: &str,
@@ -385,18 +392,42 @@ impl Store {
         format: &str,
         payload: &[u8],
     ) -> Result<()> {
+        if let Some(existing) = self.get_chunk(doc_id, chunk_id)? {
+            if existing.format == format && existing.payload == payload {
+                return Ok(()); // idempotent: identical chunk re-write
+            }
+            return Err(CoreError::StorageError(format!(
+                "crdt chunk ({doc_id}, {chunk_id}) is append-only and already exists \
+                 with different content; refusing to rewrite history"
+            )));
+        }
         self.conn
             .execute(
                 "INSERT INTO crdt_chunks (doc_id, chunk_id, format, payload, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(doc_id, chunk_id) DO UPDATE SET
-                     format = excluded.format,
-                     payload = excluded.payload,
-                     created_at = excluded.created_at",
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![doc_id, chunk_id, format, payload, now_ms()],
             )
             .map_err(map_sql)?;
         Ok(())
+    }
+
+    /// Read a single chunk by `(doc_id, chunk_id)`, if present.
+    pub fn get_chunk(&self, doc_id: &str, chunk_id: &str) -> Result<Option<ChunkRow>> {
+        self.conn
+            .query_row(
+                "SELECT chunk_id, format, payload FROM crdt_chunks
+                  WHERE doc_id = ?1 AND chunk_id = ?2",
+                params![doc_id, chunk_id],
+                |row| {
+                    Ok(ChunkRow {
+                        chunk_id: row.get(0)?,
+                        format: row.get(1)?,
+                        payload: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(map_sql)
     }
 
     /// Read all chunks for `doc_id`, ordered by `(created_at, chunk_id)`.
@@ -836,6 +867,27 @@ mod tests {
         assert_eq!(chunks[1].payload, b"bbb");
         assert_eq!(s.get_chunks("doc2").unwrap().len(), 1);
         assert!(s.get_chunks("missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn put_chunk_is_append_only_immutable() {
+        // Append-only history (review 003): an identical re-write is an
+        // idempotent no-op, but a conflicting re-write of the same chunk id is
+        // refused with StorageError instead of silently rewriting history.
+        let s = store();
+        s.put_chunk("doc1", "c1", "loro", b"aaa").unwrap();
+
+        // Idempotent: same content re-written is fine and does not duplicate.
+        s.put_chunk("doc1", "c1", "loro", b"aaa").unwrap();
+        assert_eq!(s.get_chunks("doc1").unwrap().len(), 1);
+
+        // Conflicting payload for an existing chunk id -> StorageError.
+        let err = s.put_chunk("doc1", "c1", "loro", b"DIFFERENT").unwrap_err();
+        assert_eq!(err.code(), "StorageError");
+
+        // History is unchanged: the original chunk still has its payload.
+        let got = s.get_chunk("doc1", "c1").unwrap().unwrap();
+        assert_eq!(got.payload, b"aaa");
     }
 
     #[test]
