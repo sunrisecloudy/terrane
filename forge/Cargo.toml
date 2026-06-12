@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/domain",
+  "crates/storage",
+  "crates/crdt",
+  "crates/schema",
+  "crates/policy",
+  "crates/runtime",
+  "crates/pipeline",
+  "crates/ui",
+  "crates/core",
+  "crates/cli",
+  "crates/testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tempfile = "3"
+forge-domain = { path = "crates/domain" }
+forge-storage = { path = "crates/storage" }
+forge-crdt = { path = "crates/crdt" }
+forge-schema = { path = "crates/schema" }
+forge-policy = { path = "crates/policy" }
+forge-runtime = { path = "crates/runtime" }
+forge-pipeline = { path = "crates/pipeline" }
+forge-ui = { path = "crates/ui" }
+forge-core = { path = "crates/core" }
+forge-testkit = { path = "crates/testkit" }
+
+[profile.dev]
+debug = 1
