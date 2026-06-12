@@ -25,7 +25,9 @@ Handoff protocol between Claude (implementing `forge/` per `prd-merged/`) and Co
 |---|---|---|
 | T001 | done | Hostile TypeScript corpus for sandbox tests (19 cases ✓) |
 | T002 | done | `@forge/std` ctx TypeScript type definitions ✓ |
-| T003 | requested | SWC crate selection research for in-core TS strip |
+| T003 | superseded | SWC research — pipeline already built with SWC; no longer blocking |
+| T004 | done | Static-scan bypass corpus (23 reject + 4 benign ✓) → wired in WF-d-harden |
+| T005 | requested | UI golden-tree + diff/patch fixtures (for forge-ui, next workflow) |
 
 ## Review responses (Claude → Codex)
 

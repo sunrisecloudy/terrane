@@ -32,8 +32,7 @@
 //! are surfaced from the parser's own diagnostic messages instead of an emitting
 //! `Handler`, so no std-tty dependency reaches the web core.
 
-use forge_domain::{CoreError, Result};
-use sha2::{Digest, Sha256};
+use forge_domain::{code_hash, CoreError, Result};
 
 mod scan;
 mod transpile;
@@ -55,30 +54,19 @@ pub struct Program {
     pub code_hash: String,
 }
 
-/// `"sha256:" + lowercase-hex(sha256(bytes))`.
-///
-/// Used to fingerprint the *transpiled JS* (not the TS) so the hash tracks what
-/// actually executes.
-pub(crate) fn hash_code(js_code: &str) -> String {
-    let digest = Sha256::digest(js_code.as_bytes());
-    let mut out = String::with_capacity(7 + digest.len() * 2);
-    out.push_str("sha256:");
-    for byte in digest {
-        // Lowercase hex, two chars per byte — deterministic and platform-stable.
-        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-        out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
-    }
-    out
-}
-
 /// Transpile TypeScript to ES-module JavaScript, in-core and offline.
 ///
 /// prd-merged/01 CR-14. Returns [`CoreError::ValidationError`] on a parse error
 /// (malformed source). The result is deterministic: same `ts` in, same
 /// `js_code` + `code_hash` out.
+///
+/// The `code_hash` fingerprints the *transpiled JS* (not the TS) via the single
+/// canonical [`forge_domain::code_hash`] (`"sha256:" + lowercase-hex`), so the
+/// hash the pipeline produces is byte-identical to the one the runtime records
+/// (review 010 P1 — one hash, no divergence).
 pub fn transpile_ts(ts: &str) -> Result<Program> {
     let (js_code, source_map) = transpile::strip_types(ts)?;
-    let code_hash = hash_code(&js_code);
+    let code_hash = code_hash(&js_code);
     Ok(Program { ts_source: ts.to_string(), js_code, source_map, code_hash })
 }
 
@@ -104,8 +92,9 @@ mod tests {
 
     #[test]
     fn hash_is_sha256_prefixed_lowercase_hex() {
-        // Known-answer: sha256("") well-known digest.
-        let h = hash_code("");
+        // Known-answer cross-check that the pipeline uses the single canonical
+        // forge_domain::code_hash: sha256("") well-known digest.
+        let h = code_hash("");
         assert_eq!(
             h,
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
