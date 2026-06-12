@@ -8,3 +8,6 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Pure-Rust sha2 (no I/O) backs the canonical `code_hash` single source of
+# truth (review 010 P1). wasm32-unknown-unknown-clean.
+sha2 = "0.10"
