@@ -179,8 +179,10 @@ mod tests {
 
     #[test]
     fn zero_fuel_is_rejected() {
-        let mut l = Limits::default();
-        l.fuel = 0;
+        let l = Limits {
+            fuel: 0,
+            ..Default::default()
+        };
         assert_eq!(l.validate().unwrap_err().code(), "ValidationError");
     }
 
