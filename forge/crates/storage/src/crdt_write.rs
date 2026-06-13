@@ -683,7 +683,11 @@ fn leaf_collection(m: &Mutation) -> Result<String> {
 
 /// The collection name encoded in a `collection/<name>` doc id, or `None` if the
 /// doc id is not a records-collection doc.
-fn collection_of_doc(doc_id: &str) -> Option<&str> {
+///
+/// Public so the sync seam (and the SS-7 authorization gate above it) can derive
+/// the target collection of an incoming chunk straight from its `doc_id` without
+/// re-parsing the prefix, mirroring [`collection_doc_id`].
+pub fn collection_of_doc(doc_id: &str) -> Option<&str> {
     doc_id.strip_prefix("collection/")
 }
 

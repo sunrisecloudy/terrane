@@ -44,7 +44,7 @@
 
 use forge_crdt::RecordsDoc;
 use forge_domain::Result;
-use forge_storage::{IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
+use forge_storage::{collection_of_doc, IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -62,6 +62,12 @@ pub struct SyncReport {
     pub chunks_b_to_a: usize,
     /// Distinct `doc_id`s in the union of the two stores that were considered.
     pub docs_synced: usize,
+    /// Chunks REJECTED by the SS-7 apply-time authorization gate before import:
+    /// `b`'s rejections of `a`'s chunks plus `a`'s rejections of `b`'s chunks.
+    /// Zero for the unauthorized in-process [`sync_stores`] seam; non-zero only
+    /// when a receiver's trusted membership denied an incoming op (the chunk was
+    /// SKIPPED, the projection left unchanged, a `permission_denied` surfaced).
+    pub chunks_denied: usize,
 }
 
 impl SyncReport {
@@ -80,6 +86,54 @@ struct ExchangedChunk {
     format: String,
     /// The opaque immutable Loro update bytes.
     payload: Vec<u8>,
+    /// The **origin store's** local `chunk-NNNN` id for this chunk. Discarded for
+    /// the network-safe content id, but kept here so the staging step can join the
+    /// chunk back to the origin's oplog row (`doc_id#local_id`) to recover the op
+    /// kind + touched record ids — the SS-7 authorization envelope metadata.
+    local_id: String,
+}
+
+/// The semantic envelope describing the logical op a chunk carries, derived at the
+/// SS-7 apply boundary (`forge/spec/sync-rbac.md`). It carries NO opaque CRDT
+/// bytes — only `(resource_type, op, collection, record_ids)`, the metadata the
+/// receiver must inspect *before* importing the chunk to decide authorization.
+///
+/// `collection` is always recoverable from the chunk's `doc_id` (`collection/<n>`).
+/// `op` and `record_ids` are recovered from the **origin** store's oplog row for
+/// the chunk (the origin authored the write locally and recorded its `kind` +
+/// touched record ids). When a chunk is a foreign re-import on the origin (its
+/// oplog row is `record.remote_import`, carrying no record kind), the envelope
+/// falls back to a generic record write so the receiver still gates it as a write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOpEnvelope {
+    /// Always `record` in M0b (schema docs are not chunk-synced yet); kept explicit
+    /// so the authorizer's resource dispatch matches `forge/spec/sync-rbac.md`.
+    pub resource_type: SyncResource,
+    /// The logical op the chunk authored: insert / patch / delete (or a generic
+    /// write when the origin oplog row does not name a record op).
+    pub op: SyncRecordOp,
+    /// The target collection, from the chunk's `doc_id` (`collection/<name>`).
+    pub collection: String,
+    /// The record ids the chunk touched, from the origin oplog payload (may be
+    /// empty when unknown — the collection-level grant check still applies).
+    pub record_ids: Vec<String>,
+}
+
+/// The resource an incoming chunk targets. M0b chunk sync only carries records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncResource {
+    Record,
+}
+
+/// The record op an incoming chunk authored, recovered from the origin oplog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncRecordOp {
+    Insert,
+    Patch,
+    Delete,
+    /// The origin oplog did not name a specific record op (e.g. a transact group
+    /// or a foreign re-import). Still a record WRITE for authorization purposes.
+    Write,
 }
 
 /// The content-addressed exchanged id for a chunk's `(format, payload)`:
@@ -116,34 +170,119 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
         let id = exchanged_chunk_id(&row.format, &row.payload);
         out.insert(
             id.clone(),
-            ExchangedChunk { id, format: row.format, payload: row.payload },
+            ExchangedChunk {
+                id,
+                format: row.format,
+                payload: row.payload,
+                local_id: row.chunk_id,
+            },
         );
     }
     Ok(out)
 }
 
+/// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
+/// `(kind, record_ids)` it recorded for that chunk. Used to recover the SS-7
+/// authorization envelope for each chunk staged FROM this store. A local write
+/// records `record.insert|patch|delete|transact` plus the touched record ids; a
+/// foreign re-import records `record.remote_import` with no record ids.
+fn oplog_index(store: &Store) -> Result<BTreeMap<String, (String, Vec<String>)>> {
+    let mut out = BTreeMap::new();
+    for op in store.list_ops()? {
+        let record_ids = serde_json::from_slice::<serde_json::Value>(&op.payload)
+            .ok()
+            .and_then(|v| {
+                v.get("record_ids").and_then(|r| r.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default();
+        out.insert(op.op_id, (op.kind, record_ids));
+    }
+    Ok(out)
+}
+
+/// Build the [`SyncOpEnvelope`] for one chunk staged from `from`: the collection
+/// from its `doc_id`, the op + touched record ids from `from`'s oplog row keyed
+/// `doc_id#local_chunk_id`. A chunk whose doc id is not a records collection, or
+/// whose oplog row is missing/foreign, yields a generic record [`Write`] envelope
+/// so the receiver still gates it as a write (never silently allowed).
+fn envelope_for_chunk(
+    doc_id: &str,
+    local_id: &str,
+    oplog: &BTreeMap<String, (String, Vec<String>)>,
+) -> SyncOpEnvelope {
+    let collection = collection_of_doc(doc_id).unwrap_or(doc_id).to_string();
+    let op_id = format!("{doc_id}#{local_id}");
+    let (op, record_ids) = match oplog.get(&op_id) {
+        Some((kind, ids)) => (op_from_kind(kind), ids.clone()),
+        None => (SyncRecordOp::Write, Vec::new()),
+    };
+    SyncOpEnvelope {
+        resource_type: SyncResource::Record,
+        op,
+        collection,
+        record_ids,
+    }
+}
+
+/// Map an oplog `kind` string to the record op the authorizer gates. Anything that
+/// is not a recognized single-record op (transact group, remote re-import) maps to
+/// the generic [`Write`](SyncRecordOp::Write) so it is still authorized as a write.
+fn op_from_kind(kind: &str) -> SyncRecordOp {
+    match kind {
+        "record.insert" => SyncRecordOp::Insert,
+        "record.patch" => SyncRecordOp::Patch,
+        "record.delete" => SyncRecordOp::Delete,
+        _ => SyncRecordOp::Write,
+    }
+}
+
+/// One missing chunk staged for a receiving store, paired with the SS-7
+/// authorization [`SyncOpEnvelope`] describing the op it carries. The
+/// content-addressed [`RemoteChunk`] is the apply unit; the envelope is the
+/// metadata the receiver authorizes BEFORE importing it. The envelope travels
+/// *alongside* the chunk and is NOT mixed into the content-addressed `chunk_id`,
+/// so convergence and the network-safe chunk identity are untouched.
+#[derive(Debug, Clone)]
+pub struct StagedChunk {
+    /// The content-addressed chunk ready for [`Store::apply_remote_chunks`].
+    pub chunk: RemoteChunk,
+    /// The op envelope the receiver must authorize before importing `chunk`.
+    pub envelope: SyncOpEnvelope,
+}
+
 /// Collect the chunks `from` holds for `doc_id` that `into` lacks — one direction,
-/// one doc — as [`RemoteChunk`]s ready for an atomic apply. Does NOT mutate `into`;
-/// the caller stages every doc's missing chunks and applies them in ONE transaction
-/// per receiving store (review 088 #1).
+/// one doc — as [`StagedChunk`]s (content-addressed [`RemoteChunk`] + SS-7
+/// [`SyncOpEnvelope`]) ready for an authorized atomic apply. Does NOT mutate
+/// `into`; the caller stages every doc's missing chunks and applies the authorized
+/// ones in ONE transaction per receiving store (review 088 #1).
 ///
 /// Each chunk is keyed by its **content-addressed** exchanged id (not the origin's
 /// local id), so the append-only apply guard is never tripped by two peers'
 /// colliding `chunk-NNNN` sequences: a chunk `into` already has (same content id) is
-/// an idempotent no-op, and a chunk with new content lands under a fresh id.
-fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Vec<RemoteChunk>> {
+/// an idempotent no-op, and a chunk with new content lands under a fresh id. The
+/// envelope is recovered from `from`'s oplog by the chunk's *origin-local* id (kept
+/// in [`ExchangedChunk`]), so the op kind + touched records reach the apply gate.
+fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Vec<StagedChunk>> {
     let have = frontier_for_doc(into, doc_id)?;
     let theirs = frontier_for_doc(from, doc_id)?;
+    let oplog = oplog_index(from)?;
     let mut out = Vec::new();
     for (id, chunk) in &theirs {
         if have.contains_key(id) {
             continue; // frontier already covers this chunk — nothing to send
         }
-        out.push(RemoteChunk {
-            doc_id: doc_id.to_string(),
-            chunk_id: chunk.id.clone(),
-            format: chunk.format.clone(),
-            payload: chunk.payload.clone(),
+        out.push(StagedChunk {
+            chunk: RemoteChunk {
+                doc_id: doc_id.to_string(),
+                chunk_id: chunk.id.clone(),
+                format: chunk.format.clone(),
+                payload: chunk.payload.clone(),
+            },
+            envelope: envelope_for_chunk(doc_id, &chunk.local_id, &oplog),
         });
     }
     Ok(out)
@@ -182,7 +321,11 @@ pub fn pull(into: &mut Store, from: &Store, into_indexes: &IndexManager) -> Resu
     // leaving committed chunks under a stale projection.
     let mut staged: Vec<RemoteChunk> = Vec::new();
     for doc_id in &doc_ids {
-        staged.extend(missing_chunks_for_doc(into, from, doc_id)?);
+        staged.extend(
+            missing_chunks_for_doc(into, from, doc_id)?
+                .into_iter()
+                .map(|s| s.chunk),
+        );
     }
     into.apply_remote_chunks(&staged, &source, into_indexes)
 }
@@ -234,6 +377,40 @@ pub fn sync_stores(
     b: &mut Store,
     b_indexes: &IndexManager,
 ) -> Result<SyncReport> {
+    // Both in-process peers are assumed already authorized (the M0b local CI seam):
+    // an always-allow gate that imports every staged chunk. The SS-7 enforced path
+    // is `sync_stores_authorized`, used by `WorkspaceCore::sync_with`.
+    sync_stores_authorized(a, a_indexes, b, b_indexes, |_src, _env| true)
+}
+
+/// The SS-7 authorized bidirectional sync: like [`sync_stores`], but each staged
+/// chunk is passed to `authorize` BEFORE it is imported into the receiving store.
+/// `authorize(source, envelope)` returns `true` to import the chunk and `false`
+/// to REJECT it (`forge/spec/sync-rbac.md` apply-time decision): a rejected chunk
+/// is SKIPPED — never handed to [`Store::apply_remote_chunks`] — so the receiver's
+/// CRDT history and projection are left unchanged for that op. `source` is the
+/// `peer:<id>` id of the chunk's origin (the session actor the receiver resolves
+/// trusted membership for); `envelope` is the op metadata the receiver inspects.
+///
+/// The authorizer is the caller's seam to resolve trusted membership, call
+/// `authorize_remote_op`, write the audit record (allow AND deny), and surface a
+/// `permission_denied`. This crate only enforces the *mechanism*: a denied chunk
+/// is filtered out of the batch handed to the atomic per-store apply, so the
+/// import never runs for it. The returned [`SyncReport::chunks_denied`] counts the
+/// rejections across both directions.
+///
+/// Staging, the pre-exchange-frontier symmetry, the per-store [`IndexManager`]
+/// (review 084 #1), and the one-transaction atomic apply (review 088) are all
+/// identical to [`sync_stores`] — authorization runs strictly between staging and
+/// the import, so an allowed sync converges byte-identically to the unauthorized
+/// path while a denied op is simply absent from the applied batch.
+pub fn sync_stores_authorized(
+    a: &mut Store,
+    a_indexes: &IndexManager,
+    b: &mut Store,
+    b_indexes: &IndexManager,
+    mut authorize: impl FnMut(&str, &SyncOpEnvelope) -> bool,
+) -> Result<SyncReport> {
     let doc_ids = union_doc_ids(a, b)?;
     // Each peer tags the chunks it RECEIVES with the other peer's source id, so the
     // imported oplog rows are attributable (DL-4 remote parity).
@@ -243,25 +420,56 @@ pub fn sync_stores(
     // Stage BOTH directions against the pre-exchange frontiers (reading only) before
     // mutating either store, so the two diffs are symmetric and neither sees the
     // other's just-applied chunks.
-    let mut to_b: Vec<RemoteChunk> = Vec::new(); // a's chunks b lacks
-    let mut to_a: Vec<RemoteChunk> = Vec::new(); // b's chunks a lacks
+    let mut to_b: Vec<StagedChunk> = Vec::new(); // a's chunks b lacks
+    let mut to_a: Vec<StagedChunk> = Vec::new(); // b's chunks a lacks
     for doc_id in &doc_ids {
         to_b.extend(missing_chunks_for_doc(b, a, doc_id)?);
         to_a.extend(missing_chunks_for_doc(a, b, doc_id)?);
     }
 
+    // SS-7 gate: authorize each staged op BEFORE import. A denied chunk is dropped
+    // from the batch, so `apply_remote_chunks` never imports it — the receiver's
+    // history + projection stay unchanged for that op (`forge/spec/sync-rbac.md`).
+    // `b` receives `a`'s chunks (source `a_source`); `a` receives `b`'s (source
+    // `b_source`).
+    let mut denied = 0usize;
+    let allowed_to_b = filter_authorized(to_b, &a_source, &mut authorize, &mut denied);
+    let allowed_to_a = filter_authorized(to_a, &b_source, &mut authorize, &mut denied);
+
     // Apply each direction atomically into the RECEIVING store, each against its OWN
     // index manager (review 084 #1) so asymmetric indexes stay correct and the
     // result is independent of which store is `a` vs `b`. The returned count is the
     // number of chunks NEWLY imported (idempotent re-imports add nothing).
-    let chunks_a_to_b = b.apply_remote_chunks(&to_b, &a_source, b_indexes)?;
-    let chunks_b_to_a = a.apply_remote_chunks(&to_a, &b_source, a_indexes)?;
+    let chunks_a_to_b = b.apply_remote_chunks(&allowed_to_b, &a_source, b_indexes)?;
+    let chunks_b_to_a = a.apply_remote_chunks(&allowed_to_a, &b_source, a_indexes)?;
 
     Ok(SyncReport {
         chunks_a_to_b,
         chunks_b_to_a,
         docs_synced: doc_ids.len(),
+        chunks_denied: denied,
     })
+}
+
+/// Partition one direction's staged chunks by the authorization decision: return
+/// the [`RemoteChunk`]s `authorize` allowed (ready for the atomic apply) and bump
+/// `denied` for every rejection. A rejected chunk is simply excluded, so it never
+/// reaches the receiving store's import.
+fn filter_authorized(
+    staged: Vec<StagedChunk>,
+    source: &str,
+    authorize: &mut impl FnMut(&str, &SyncOpEnvelope) -> bool,
+    denied: &mut usize,
+) -> Vec<RemoteChunk> {
+    let mut allowed = Vec::with_capacity(staged.len());
+    for StagedChunk { chunk, envelope } in staged {
+        if authorize(source, &envelope) {
+            allowed.push(chunk);
+        } else {
+            *denied += 1;
+        }
+    }
+    allowed
 }
 
 /// Rebuild a fresh [`RecordsDoc`] from a store's persisted chunks for one

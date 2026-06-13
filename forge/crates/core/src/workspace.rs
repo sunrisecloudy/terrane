@@ -21,6 +21,10 @@
 
 use crate::bridge::StorageHostBridge;
 use crate::event::EventSink;
+use crate::sync_rbac::{
+    authorize_remote_op, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuthDecision,
+    TrustedMembership,
+};
 use forge_domain::{
     AppletId, CoreCommand, CoreError, CoreResponse, Manifest, Result, Role, RunId, RunRecord,
 };
@@ -48,6 +52,15 @@ const RUN_COUNTER_KEY: &str = "run_counter";
 /// table (actor id → readable collections). Persisted so a scoped grant survives
 /// reopening the workspace file instead of fail-opening to read-all (review 050).
 const DB_READ_GRANTS_KEY: &str = "db_read_grants";
+
+/// The KV key (within [`META_NS`]) holding the persisted SS-7 sync membership
+/// table: the receiver's TRUSTED role + collection grants for each remote sync
+/// peer, keyed by the peer's sync source id (`peer:<loro_id>`). This is the
+/// authoritative authorization source for applying a remote op (`forge/spec/
+/// sync-rbac.md` "Trust boundary"), mirroring the persisted `db.read` grant table
+/// (review 050): a seeded membership survives reopening the workspace file instead
+/// of fail-opening to "no membership = allow".
+const SYNC_MEMBERSHIP_KEY: &str = "sync_membership";
 
 /// The KV key (within [`META_NS`]) holding the persisted [`SchemaRegistry`]
 /// (serialized JSON). The dynamic schema is workspace state (DL-7/DL-8): a
@@ -159,6 +172,18 @@ pub struct WorkspaceCore {
     /// finding 1). An actor with NO entry falls back to its role-derived read
     /// scope, so the existing owner-permits-all spine is unaffected.
     db_read_grants: std::collections::BTreeMap<String, Vec<String>>,
+    /// SS-7 sync membership table: the receiver's TRUSTED role + collection grants
+    /// for each remote sync peer, keyed by the peer's sync **source id**
+    /// (`peer:<loro_id>` — the authenticated session identity that reaches the apply
+    /// boundary in-process). This is the SOURCE OF TRUTH for authorizing an
+    /// incoming remote op (`forge/spec/sync-rbac.md`): the gate in
+    /// [`sync_with`](WorkspaceCore::sync_with) resolves the row for the chunk's
+    /// origin peer and calls [`authorize_remote_op`], never trusting the message.
+    /// Mirrors `db_read_grants` (review 048/050): set only through the trusted
+    /// [`set_peer_membership`](WorkspaceCore::set_peer_membership) seam and persisted
+    /// to the workspace file so a seeded membership survives reopen. A peer with NO
+    /// entry is UNKNOWN and every op it sends is denied (fail-closed).
+    sync_membership: std::collections::BTreeMap<String, TrustedMembership>,
     /// Factory for the `ctx.net.fetch` [`HttpClient`](forge_runtime::HttpClient)
     /// (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`). Each `runtime.run` builds a
     /// fresh client from this factory and hands it to the run's
@@ -215,6 +240,7 @@ impl WorkspaceCore {
     /// entry point loads identical state.
     fn from_store(store: Store, workspace_id: impl Into<String>) -> Result<Self> {
         let db_read_grants = load_db_read_grants(&store)?;
+        let sync_membership = load_sync_membership(&store)?;
         let registry = load_schema_registry(&store)?;
         let indexes = rebuild_indexes_from_registry(&store, &registry)?;
         Ok(WorkspaceCore {
@@ -224,6 +250,7 @@ impl WorkspaceCore {
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
             db_read_grants,
+            sync_membership,
             // Fail-closed default: no live network. A host/shell opts in by
             // calling `set_http_client_factory` (review: keep the network seam
             // injectable so CI/the demo never reach the network).
@@ -300,6 +327,42 @@ impl WorkspaceCore {
         Ok(())
     }
 
+    /// Seed/replace the TRUSTED SS-7 membership row for a remote sync `peer`
+    /// (workspace membership provisioning). `peer` is the peer's sync **source id**
+    /// — `peer:<loro_id>`, the form the apply boundary sees (see
+    /// [`source_id_for`]). `membership` is the role + collection grants the
+    /// receiver trusts for that peer.
+    ///
+    /// This is the ONLY way the sync authorization table is set: the apply-time
+    /// gate in [`sync_with`](WorkspaceCore::sync_with) reads it from here, never
+    /// from the incoming message, so a peer cannot widen its own grants by claiming
+    /// a role (`forge/spec/sync-rbac.md` "Trust boundary"; mirrors `grant_db_read`,
+    /// review 048/050). The table is **persisted** to the workspace file, so a
+    /// seeded membership survives `open(...)`. A peer with NO row is unknown and
+    /// every op it sends is denied.
+    ///
+    /// Convenience: pass the remote peer's
+    /// [`crdt_peer_id`](forge_storage::Store::crdt_peer_id) via [`source_id_for`]
+    /// to build the key, e.g. `set_peer_membership(source_id_for(other_loro_id), m)`.
+    pub fn set_peer_membership(
+        &mut self,
+        peer: impl Into<String>,
+        membership: TrustedMembership,
+    ) -> Result<()> {
+        self.sync_membership.insert(peer.into(), membership);
+        let bytes = serde_json::to_vec(&self.sync_membership)
+            .map_err(|e| CoreError::StorageError(format!("serialize sync membership: {e}")))?;
+        self.store
+            .kv_set(META_NS, SYNC_MEMBERSHIP_KEY, &bytes, "application/json")?;
+        Ok(())
+    }
+
+    /// The trusted SS-7 membership row seeded for sync `peer` (`peer:<loro_id>`),
+    /// if any. Read-only access for tests / diagnostics.
+    pub fn peer_membership(&self, peer: &str) -> Option<&TrustedMembership> {
+        self.sync_membership.get(peer)
+    }
+
     /// The event sink (observability): all `run.*` / `ui.patch` events land here.
     pub fn events(&self) -> &EventSink {
         &self.events
@@ -369,11 +432,56 @@ impl WorkspaceCore {
         // indexes it does have and leaving them stale. Per-store managers keep both
         // projections materialized from canonical chunks with each store's own
         // indexes intact (DL-6).
-        forge_sync::sync_stores(
-            &mut self.store,
-            &self.indexes,
-            &mut other.store,
-            &other.indexes,
+        //
+        // SS-7: every incoming op is authorized against the RECEIVER's trusted
+        // membership table BEFORE its chunk is imported (`forge/spec/sync-rbac.md`).
+        // The exchange is symmetric, so each direction has a distinct receiver:
+        //   - `self.store` RECEIVES `other`'s chunks (source `peer:<other_loro>`),
+        //     authorized against `self.sync_membership`;
+        //   - `other.store` RECEIVES `self`'s chunks (source `peer:<self_loro>`),
+        //     authorized against `other.sync_membership`.
+        // A denied op's chunk is SKIPPED before [`forge_sync`] hands the batch to
+        // the atomic per-store import, so the receiver's CRDT history + projection
+        // are unchanged; an audit denial is recorded and a `permission_denied` is
+        // surfaced via the receiver's event sink + the report's `chunks_denied`.
+        //
+        // Disjoint-borrow the fields so the authorize closure can hold the two
+        // membership tables + event sinks while `forge_sync` holds the two stores.
+        let self_source = source_id_for(self.store.crdt_peer_id());
+        let other_source = source_id_for(other.store.crdt_peer_id());
+
+        let WorkspaceCore {
+            store: self_store,
+            indexes: self_indexes,
+            events: self_events,
+            sync_membership: self_membership,
+            ..
+        } = self;
+        let WorkspaceCore {
+            store: other_store,
+            indexes: other_indexes,
+            events: other_events,
+            sync_membership: other_membership,
+            ..
+        } = other;
+
+        forge_sync::sync_stores_authorized(
+            self_store,
+            self_indexes,
+            other_store,
+            other_indexes,
+            |source, envelope| {
+                // `source` is the chunk's ORIGIN peer; the RECEIVER is the other
+                // side. Authorize each direction against the receiver's table.
+                if source == self_source {
+                    // From self → received by `other`.
+                    authorize_incoming_op(other_membership, other_events, source, envelope)
+                } else {
+                    // From other → received by `self`.
+                    debug_assert_eq!(source, other_source);
+                    authorize_incoming_op(self_membership, self_events, source, envelope)
+                }
+            },
         )
     }
 
@@ -1392,6 +1500,135 @@ impl WorkspaceCore {
     /// audit record is silently replaced via a `run_id` collision.
     fn next_run_counter(&mut self) -> Result<u64> {
         self.store.next_counter(META_NS, RUN_COUNTER_KEY)
+    }
+}
+
+/// The sync **source id** for a Loro peer id — the form
+/// [`forge_sync`](forge_sync::sync_stores_authorized) tags an incoming chunk with
+/// and the key into the [`set_peer_membership`](WorkspaceCore::set_peer_membership)
+/// table: `peer:<loro_id>`. Kept in lockstep with `forge_sync`'s internal
+/// `remote_source_id` so a seeded membership matches the source the gate sees.
+pub fn source_id_for(loro_peer_id: u64) -> String {
+    format!("peer:{loro_peer_id}")
+}
+
+/// The SS-7 apply-time authorization gate for ONE incoming remote op, run by
+/// [`WorkspaceCore::sync_with`] for each staged chunk BEFORE it is imported
+/// (`forge/spec/sync-rbac.md` "Apply-time decision order"). Resolves the
+/// receiver's TRUSTED membership row for the chunk's origin `source`, calls
+/// [`authorize_remote_op`], records an audit row on the receiver's `events` sink
+/// (allow AND deny), and returns `true` to import the chunk / `false` to skip it.
+///
+/// A `source` with NO membership row is UNKNOWN: the op is denied fail-closed (the
+/// receiver never seeded trust for that peer), an audit denial is written, and the
+/// chunk is skipped. This mirrors the command boundary's trusted-grant model
+/// (review 048/050): authorization comes only from the receiver-side table.
+fn authorize_incoming_op(
+    membership: &std::collections::BTreeMap<String, TrustedMembership>,
+    events: &mut EventSink,
+    source: &str,
+    envelope: &forge_sync::SyncOpEnvelope,
+) -> bool {
+    let env = remote_op_envelope_from_sync(envelope);
+    match membership.get(source) {
+        Some(trusted) => {
+            // The trusted row is authoritative. In-process M0b carries no separate
+            // session claim, so `claim = None` (a claim could only narrow, never
+            // widen, the decision — `forge/spec/sync-rbac.md`).
+            let decision = authorize_remote_op(trusted, None, &env);
+            emit_sync_audit(events, source, &decision);
+            decision.is_allow()
+        }
+        None => {
+            // Unknown peer: fail closed. Surface a permission_denied audit naming
+            // the missing trust so the skip is observable.
+            events.emit(
+                None,
+                "sync.permission_denied",
+                serde_json::json!({
+                    "decision": "deny",
+                    "source": source,
+                    "collection": envelope.collection,
+                    "reason": "no trusted membership for sync peer",
+                }),
+            );
+            false
+        }
+    }
+}
+
+/// Translate the [`forge_sync`] op envelope (recovered at the apply boundary from
+/// the origin's oplog + the chunk's `doc_id`) into the pure-decision
+/// [`RemoteOpEnvelope`] the authorizer consumes. M0b chunk sync carries only
+/// record ops; the record id (when the origin named exactly one) is threaded
+/// through for the audit record.
+fn remote_op_envelope_from_sync(env: &forge_sync::SyncOpEnvelope) -> RemoteOpEnvelope {
+    let op = match env.op {
+        forge_sync::SyncRecordOp::Insert => RemoteOp::Insert,
+        forge_sync::SyncRecordOp::Patch => RemoteOp::Patch,
+        forge_sync::SyncRecordOp::Delete => RemoteOp::Delete,
+        // A transact group / foreign re-import is still a record write; gate it as
+        // an insert (the most permissive write op shares the same role + grant
+        // checks, so the collection-level decision is identical).
+        forge_sync::SyncRecordOp::Write => RemoteOp::Insert,
+    };
+    let resource_type = match env.resource_type {
+        forge_sync::SyncResource::Record => ResourceType::Record,
+    };
+    RemoteOpEnvelope {
+        resource_type,
+        op,
+        collection: Some(env.collection.clone()),
+        // A single-record op names exactly one record; a multi-record group leaves
+        // this `None` (the collection grant still gates it).
+        record_id: match env.record_ids.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        },
+        schema_id: None,
+        schema_version: None,
+    }
+}
+
+/// Record one SS-7 authorization decision (allow or deny) on the receiver's event
+/// sink as an audit row (`forge/spec/sync-rbac.md`: actor id, op, resource,
+/// collection, trusted role + grants, reason). Denials are emitted as
+/// `sync.permission_denied`; allows as `sync.authorized` so the audit trail is
+/// complete (SC-12). `source` is the authenticated origin peer id.
+fn emit_sync_audit(events: &mut EventSink, source: &str, decision: &SyncAuthDecision) {
+    let audit = decision.audit();
+    let kind = if decision.is_allow() {
+        "sync.authorized"
+    } else {
+        "sync.permission_denied"
+    };
+    events.emit(
+        None,
+        kind,
+        serde_json::json!({
+            "action": audit.action,
+            "decision": audit.decision,
+            "source": source,
+            "actor_id": audit.actor_id,
+            "collection": audit.collection,
+            "trusted_role": format!("{:?}", audit.trusted_role),
+            "trusted_db_write": audit.trusted_db_write,
+            "reason": audit.reason,
+        }),
+    );
+}
+
+/// Load the persisted SS-7 sync membership table from the workspace file (mirrors
+/// [`load_db_read_grants`]). Absent / empty → an empty table; with no row a peer is
+/// unknown and the apply gate denies it (fail-closed).
+fn load_sync_membership(
+    store: &Store,
+) -> Result<std::collections::BTreeMap<String, TrustedMembership>> {
+    match store.kv_get(META_NS, SYNC_MEMBERSHIP_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::StorageError(format!("deserialize sync membership: {e}"))
+        }),
+        None => Ok(std::collections::BTreeMap::new()),
     }
 }
 

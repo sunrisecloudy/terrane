@@ -16,7 +16,7 @@
 //!    one-directional catch-up, and an empty-peer catch-up.
 
 use super::*;
-use forge_storage::{CreateIndexKind, IndexManager, Mutation, Store};
+use forge_storage::{collection_doc_id, CreateIndexKind, IndexManager, Mutation, Store};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -342,6 +342,55 @@ fn second_sync_moves_no_chunks() {
 
     let second = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
     assert_eq!(second.total_chunks_moved(), 0, "second sync must be a no-op");
+}
+
+#[test]
+fn authorized_gate_skips_denied_chunks_and_carries_allowed_with_envelope() {
+    // The SS-7 mechanism at the sync seam: each staged op is authorized BEFORE
+    // import. A `false` decision drops the chunk (nothing lands in the receiver);
+    // a `true` decision imports it. The envelope handed to the gate carries the op
+    // + collection recovered from the ORIGIN oplog / doc id.
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    // a authors a `tasks` insert and a `notes` insert.
+    a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "x"}), 1), &idx)
+        .unwrap();
+    a.apply_mutation_crdt(&insert("notes", "n1", json!({"body": "y"}), 2), &idx)
+        .unwrap();
+
+    // Authorize only the `tasks` collection; deny `notes`. Capture the envelopes
+    // the gate observed to assert the op + collection were recovered.
+    let mut seen: Vec<(String, SyncRecordOp, String)> = Vec::new();
+    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |source, env| {
+        seen.push((source.to_string(), env.op, env.collection.clone()));
+        env.collection == "tasks"
+    })
+    .unwrap();
+
+    // One denial (notes), one import (tasks).
+    assert_eq!(report.chunks_denied, 1, "the notes op was denied");
+    assert_eq!(report.chunks_a_to_b, 1, "only the tasks op imported into b");
+
+    // b got the tasks record and NOT the notes record (the denied chunk was
+    // skipped before import — the receiver's history is unchanged for it).
+    assert_eq!(
+        b.get_record("tasks", "t1").unwrap().unwrap().fields["title"],
+        json!("x")
+    );
+    assert!(b.get_record("notes", "n1").unwrap().is_none(), "notes op skipped");
+    assert!(
+        b.get_chunks(&collection_doc_id("notes")).unwrap().is_empty(),
+        "no notes chunk landed in b"
+    );
+
+    // The gate saw both ops as inserts from a's source, with the right collections.
+    seen.sort_by(|l, r| l.2.cmp(&r.2));
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].1, SyncRecordOp::Insert);
+    assert_eq!(seen[0].2, "notes");
+    assert_eq!(seen[1].2, "tasks");
+    assert!(seen.iter().all(|(s, _, _)| s == "peer:11"));
 }
 
 #[test]

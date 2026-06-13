@@ -9,10 +9,21 @@
 //! records merge; the shared record carries both peers' fields). A second sync
 //! is a no-op.
 
-use forge_core::WorkspaceCore;
-use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, WorkspaceId};
+use forge_core::{source_id_for, TrustedMembership, WorkspaceCore};
+use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, Role, WorkspaceId};
 use forge_storage::{IndexManager, Mutation};
 use serde_json::{json, Value};
+
+/// An owner membership row (wildcard write) the SS-7 apply gate trusts for a peer.
+fn owner_membership(actor: &str) -> TrustedMembership {
+    TrustedMembership {
+        actor_id: actor.into(),
+        role: Role::Owner,
+        db_read: vec!["*".into()],
+        db_write: vec!["*".into()],
+        schema_write: true,
+    }
+}
 
 /// An owner command (owner permits the `query.execute` read; no db.read grant
 /// needed for the role-derived read-all fallback).
@@ -76,6 +87,16 @@ fn two_cores_converge_through_sync_with() {
     let mut peer_b = WorkspaceCore::in_memory("ws-b").unwrap();
     peer_a.store_mut().set_crdt_peer_id(101);
     peer_b.store_mut().set_crdt_peer_id(202);
+
+    // SS-7: each peer seeds the OTHER as a trusted owner (wildcard write) in its
+    // receiver-side membership table, keyed by the other's sync source id. Without
+    // a trusted row the apply gate fail-closes and denies every incoming op.
+    peer_a
+        .set_peer_membership(source_id_for(202), owner_membership("actor-b"))
+        .unwrap();
+    peer_b
+        .set_peer_membership(source_id_for(101), owner_membership("actor-a"))
+        .unwrap();
 
     // A SHARED baseline record both peers start from: write it on A, sync it to
     // the (empty) B, so both hold the same baseline CRDT history before they

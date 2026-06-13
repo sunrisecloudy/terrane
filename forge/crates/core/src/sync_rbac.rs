@@ -23,7 +23,7 @@ use forge_domain::Role;
 /// session actor. This is the SOURCE OF TRUTH for authorization — it is resolved
 /// from the local membership table, never from the incoming message
 /// (`forge/spec/sync-rbac.md` "Trust boundary").
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrustedMembership {
     /// Authenticated peer actor for the session.
     pub actor_id: String,
