@@ -25,8 +25,11 @@ use forge_domain::{
     AppletId, CoreCommand, CoreError, CoreResponse, Manifest, Result, Role, RunId, RunRecord,
 };
 use forge_runtime::{record_run, replay, NullBridge, Program as RuntimeProgram};
-use forge_schema::SchemaRegistry;
-use forge_storage::{ExportOptions, IndexManager, RunLogPolicy, Store, EXPORT_FORMAT_VERSION};
+use forge_schema::{CollectionDef, FieldDef, FieldType, SchemaChange, SchemaRegistry};
+use forge_storage::{
+    CreateIndexKind, ExportOptions, IndexDef, IndexManager, IndexState, RunLogPolicy, Store,
+    EXPORT_FORMAT_VERSION,
+};
 
 /// Reserved KV namespace prefix for core-owned metadata (applet manifests +
 /// compiled programs + workspace meta). Applet `ctx.storage` namespaces are
@@ -44,6 +47,14 @@ const RUN_COUNTER_KEY: &str = "run_counter";
 /// table (actor id → readable collections). Persisted so a scoped grant survives
 /// reopening the workspace file instead of fail-opening to read-all (review 050).
 const DB_READ_GRANTS_KEY: &str = "db_read_grants";
+
+/// The KV key (within [`META_NS`]) holding the persisted [`SchemaRegistry`]
+/// (serialized JSON). The dynamic schema is workspace state (DL-7/DL-8): a
+/// collection/field defined via `schema.apply_change` must survive reopening the
+/// workspace file, so the registry is loaded on [`WorkspaceCore::open`] /
+/// [`in_memory`](WorkspaceCore::in_memory) the same way the `db.read` grant table
+/// is (it mirrors [`load_db_read_grants`]).
+const SCHEMA_REGISTRY_KEY: &str = "schema_registry";
 
 /// The compiled, installed form of an applet: its manifest plus the transpiled
 /// JS the runtime executes and the canonical `code_hash` the pipeline produced.
@@ -63,7 +74,19 @@ struct InstalledApplet {
 /// inside the runtime's `record_run`/`replay`.
 pub struct WorkspaceCore {
     store: Store,
+    /// The dynamic schema registry (DL-7/DL-8). Loaded from `__forge/meta`
+    /// (`schema_registry`) on open so a defined collection/field survives reopen,
+    /// and re-persisted after every accepted `schema.apply_change` (mirrors the
+    /// `db.read` grant table). The schema crate owns every additive/compatibility
+    /// rule; this facade only exposes + persists it.
     registry: SchemaRegistry,
+    /// The dynamic-index manager (DL-5). In-memory metadata that decides physical
+    /// index DDL and planner eligibility; the physical structures live in the
+    /// SQLite file. Reconstructed on open from the registry's `indexed` fields
+    /// (DL-8 → DL-5: a field marked `indexed` owns a storage index), so a
+    /// `schema.apply_change` that minted an indexed field keeps that index after
+    /// reopen.
+    indexes: IndexManager,
     events: EventSink,
     workspace_id: String,
     /// Trusted `db.read` grant table: actor id → the collections that actor may
@@ -81,23 +104,29 @@ impl WorkspaceCore {
     /// semantics; the single portable SQLite file, DECISIONS E1).
     pub fn open(path: impl AsRef<std::path::Path>, workspace_id: impl Into<String>) -> Result<Self> {
         let store = Store::open(path)?;
-        let db_read_grants = load_db_read_grants(&store)?;
-        Ok(WorkspaceCore {
-            store,
-            registry: SchemaRegistry::new(),
-            events: EventSink::new(),
-            workspace_id: workspace_id.into(),
-            db_read_grants,
-        })
+        Self::from_store(store, workspace_id)
     }
 
     /// Open an in-memory workspace (tests/scratch).
     pub fn in_memory(workspace_id: impl Into<String>) -> Result<Self> {
         let store = Store::open_in_memory()?;
+        Self::from_store(store, workspace_id)
+    }
+
+    /// Build a [`WorkspaceCore`] over an already-opened [`Store`], loading the
+    /// persisted workspace state from the file: the `db.read` grant table (review
+    /// 050) and the dynamic [`SchemaRegistry`] (DL-7/DL-8), then reconstructing the
+    /// dynamic-index manager from the registry's `indexed` fields (DL-8 → DL-5).
+    /// Shared by [`open`](Self::open) / [`in_memory`](Self::in_memory) so every
+    /// entry point loads identical state.
+    fn from_store(store: Store, workspace_id: impl Into<String>) -> Result<Self> {
         let db_read_grants = load_db_read_grants(&store)?;
+        let registry = load_schema_registry(&store)?;
+        let indexes = rebuild_indexes_from_registry(&store, &registry)?;
         Ok(WorkspaceCore {
             store,
-            registry: SchemaRegistry::new(),
+            registry,
+            indexes,
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
             db_read_grants,
@@ -144,6 +173,12 @@ impl WorkspaceCore {
         &self.registry
     }
 
+    /// The dynamic-index manager backing the registry's `indexed` fields (DL-5).
+    /// Read-only access for tests / the index-aware query planner.
+    pub fn indexes(&self) -> &IndexManager {
+        &self.indexes
+    }
+
     /// Borrow the underlying store (read-only access for tests / queries).
     pub fn store(&self) -> &Store {
         &self.store
@@ -183,6 +218,9 @@ impl WorkspaceCore {
             "runtime.run" => self.cmd_runtime_run(&cmd),
             "runtime.replay" => self.cmd_runtime_replay(&cmd),
             "query.execute" => self.cmd_query_execute(&cmd),
+            "schema.apply_change" => self.cmd_schema_apply_change(&cmd),
+            "schema.validate_compatibility" => self.cmd_schema_validate_compatibility(&cmd),
+            "schema.rebuild_indexes" => self.cmd_schema_rebuild_indexes(&cmd),
             "workspace.export" => self.cmd_workspace_export(&cmd),
             "workspace.import" => self.cmd_workspace_import(&cmd),
             other => Err(CoreError::ValidationError(format!(
@@ -567,6 +605,202 @@ impl WorkspaceCore {
         Ok(serde_json::json!({ "collection": collection, "rows": rows }))
     }
 
+    // ------------------------------------------------------- schema.* (DL-7/8)
+
+    /// `schema.apply_change` — apply one additive [`SchemaChange`] to the dynamic
+    /// registry, persist the new registry, and return the new collection/registry
+    /// summary (CR-A2; `forge/spec/commands.md`: Owner/Maintainer, DL-8).
+    ///
+    /// Payload: `{ change }` — a serialized [`SchemaChange`] (the `op`-tagged
+    /// snake_case shape the schema crate defines). The schema crate is the
+    /// authority: it mints stable actor-scoped field ids (DL-7), enforces
+    /// additive-only evolution, and **rejects** a destructive/incompatible change
+    /// with [`CoreError::SchemaCompatibilityError`] (e.g. re-adding a collection,
+    /// duplicate field name, narrowing a type) — we surface that verbatim and the
+    /// registry is left unchanged (we only persist on success).
+    ///
+    /// DL-8 → DL-5: when an `add_field` marks the field `indexed`, we CREATE the
+    /// corresponding storage index over the field's freshly minted **stable**
+    /// `field_id` ([`Store::create_index`]) so the dynamic index follows the
+    /// schema. A `Text` field gets an FTS5 shadow table; any other type gets a
+    /// JSON1 expression (`Value`) index.
+    fn cmd_schema_apply_change(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
+        let change: SchemaChange = take_field(cmd, "change")?;
+
+        // Apply to a COPY first so a rejected change leaves the live registry (and
+        // therefore the persisted state) untouched. The schema crate returns the
+        // SchemaCompatibilityError for destructive/incompatible changes.
+        let mut next = self.registry.clone();
+        next.apply_change(change.clone())?;
+
+        // The change was accepted. Persist the evolved registry BEFORE touching
+        // indexes, so the durable schema and the in-memory one never diverge.
+        self.persist_registry(&next)?;
+        self.registry = next;
+
+        // DL-8 → DL-5: a newly added `indexed` field gets its storage index built
+        // over the stable field id the schema crate just minted.
+        let mut created_index: Option<String> = None;
+        if let SchemaChange::AddField { collection, indexed: true, .. } = &change {
+            if let Some((field_id, kind)) = self.indexed_field_to_create(collection) {
+                let id = self.store.create_index(
+                    &mut self.indexes,
+                    collection,
+                    &field_id,
+                    kind,
+                )?;
+                created_index = Some(id);
+            }
+        }
+
+        self.events.emit(
+            None,
+            "schema.changed",
+            serde_json::json!({ "workspace_id": self.workspace_id, "op": change_op(&change) }),
+        );
+
+        Ok(serde_json::json!({
+            "op": change_op(&change),
+            "registry": registry_summary(&self.registry),
+            "created_index": created_index,
+        }))
+    }
+
+    /// `schema.validate_compatibility` — prove the CURRENT registry is a
+    /// forward-compatible, additive-only evolution of a baseline (CR-A2;
+    /// `forge/spec/commands.md`: Owner/Maintainer/Editor/Auditor, DL-8).
+    ///
+    /// Payload: `{ against? }` — an optional baseline [`SchemaRegistry`] (the
+    /// serialized form) the current registry must be a forward evolution of. When
+    /// omitted the baseline is the empty registry (every registry is trivially a
+    /// compatible evolution of empty), so the command doubles as a structural
+    /// self-check. The supplied baseline is re-validated
+    /// ([`SchemaRegistry::validated`]) so a hand-built/tampered baseline can't
+    /// smuggle in a future-colliding id.
+    ///
+    /// Returns `{ ok, warnings }`. `ok: false` carries the
+    /// [`CoreError::SchemaCompatibilityError`] message as the single warning rather
+    /// than failing the command, so a UI can show the incompatibility without the
+    /// request itself erroring (the destructive *apply* path is the one that hard-
+    /// rejects).
+    fn cmd_schema_validate_compatibility(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
+        let baseline = match cmd.payload.get("against") {
+            None | Some(serde_json::Value::Null) => SchemaRegistry::new(),
+            Some(v) => {
+                let parsed: SchemaRegistry = serde_json::from_value(v.clone()).map_err(|e| {
+                    CoreError::ValidationError(format!(
+                        "schema.validate_compatibility `against` is malformed: {e}"
+                    ))
+                })?;
+                // Re-validate the untrusted baseline before comparing against it.
+                parsed.validated()?
+            }
+        };
+        match self.registry.validate_compatibility(&baseline) {
+            Ok(()) => Ok(serde_json::json!({ "ok": true, "warnings": [] })),
+            Err(e) => Ok(serde_json::json!({ "ok": false, "warnings": [e.to_string()] })),
+        }
+    }
+
+    /// `schema.rebuild_indexes` — rebuild the storage indexes for the registry's
+    /// `indexed` fields purely from canonical `records` (CR-A2;
+    /// `forge/spec/commands.md`: Owner/Maintainer, DL-5/DL-6).
+    ///
+    /// Payload: `{ collection?, index_ids? }` — optional filters that narrow the
+    /// rebuild to one collection and/or a set of index ids; absent → rebuild every
+    /// registered index. The registry is the source of truth for *which* fields
+    /// are indexed, so we first (re)register a definition for each `indexed` field
+    /// (DL-8 → DL-5), then drop+recreate each selected physical structure from
+    /// canonical records via [`Store::build_indexes`] (DL-6 rebuild-source-of-
+    /// truth: never reads prior index pages / FTS rows).
+    fn cmd_schema_rebuild_indexes(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
+        let collection_filter = match cmd.payload.get("collection") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(other) => {
+                return Err(CoreError::ValidationError(format!(
+                    "schema.rebuild_indexes `collection` must be a string, got {other}"
+                )))
+            }
+        };
+        let index_id_filter = parse_index_ids(cmd)?;
+
+        // Re-register a definition for every `indexed` field so the manager
+        // reflects the current registry (idempotent: create_index replaces same-
+        // kind defs). Building from canonical records means the physical structure
+        // is correct even if records predate the index (DL-6).
+        let rebuilt = self.rebuild_registry_indexes(
+            collection_filter.as_deref(),
+            index_id_filter.as_deref(),
+        )?;
+
+        Ok(serde_json::json!({
+            "rebuilt": rebuilt,
+            "rebuilt_count": rebuilt.len(),
+        }))
+    }
+
+    /// (Re)build the storage indexes the registry declares (its `indexed` fields),
+    /// optionally narrowed to one `collection` and/or a set of `index_ids`.
+    /// Returns the ids of the indexes that were (re)built, in stable order. Each
+    /// index is created from canonical records (DL-6), so a field indexed after
+    /// rows already exist is populated correctly.
+    fn rebuild_registry_indexes(
+        &mut self,
+        collection_filter: Option<&str>,
+        index_id_filter: Option<&[String]>,
+    ) -> Result<Vec<String>> {
+        let mut rebuilt = Vec::new();
+        for (collection, field_id, kind) in indexed_fields(&self.registry) {
+            if let Some(want) = collection_filter {
+                if collection != want {
+                    continue;
+                }
+            }
+            // Compute the deterministic index id for the id_filter check WITHOUT
+            // creating it first (so a filtered-out index is never built). The
+            // public IndexDef constructor derives the same canonical name
+            // Store::create_index will use, and also validates the identifiers.
+            if let Some(ids) = index_id_filter {
+                let index_id =
+                    IndexDef::new(collection.clone(), field_id.clone(), kind.into(), IndexState::Active)?
+                        .index_id;
+                if !ids.iter().any(|w| w == &index_id) {
+                    continue;
+                }
+            }
+            // create_index drops + recreates the physical structure from canonical
+            // records and (re)registers the Active definition — the DL-6 rebuild.
+            let id = self.store.create_index(&mut self.indexes, &collection, &field_id, kind)?;
+            rebuilt.push(id);
+        }
+        Ok(rebuilt)
+    }
+
+    /// The `(field_id, kind)` for the LAST field of `collection` — the one a just-
+    /// applied `add_field` minted — when it is marked `indexed`. The schema crate
+    /// pushes a new field to the end of the collection's field list, so the last
+    /// field is the freshly added one. Returns `None` if the collection/field is
+    /// unexpectedly absent (a guard; the apply already succeeded).
+    fn indexed_field_to_create(&self, collection: &str) -> Option<(String, CreateIndexKind)> {
+        let col = self.registry.collection(collection)?;
+        let field = col.fields().last()?;
+        if !field.indexed() {
+            return None;
+        }
+        Some((field.field_id().to_string(), index_kind_for(field)))
+    }
+
+    /// Persist the registry to the workspace file (`__forge/meta` /
+    /// `schema_registry`) as serialized JSON, mirroring the `db.read` grant
+    /// persistence. So a defined schema survives reopen (DL-7/DL-8).
+    fn persist_registry(&self, registry: &SchemaRegistry) -> Result<()> {
+        let bytes = serde_json::to_vec(registry)
+            .map_err(|e| CoreError::StorageError(format!("serialize schema registry: {e}")))?;
+        self.store
+            .kv_set(META_NS, SCHEMA_REGISTRY_KEY, &bytes, "application/json")
+    }
+
     // -------------------------------------------------- workspace export/import
 
     /// `workspace.export` — write this workspace's **portable single-file bundle**
@@ -610,6 +844,7 @@ impl WorkspaceCore {
             "meta": ["export_format_version", "forge_storage_schema_version", "workspace_id"],
             "applet_manifests_and_programs": applets.len(),
             "db_read_grants": !self.db_read_grants.is_empty(),
+            "schema_registry": self.store.kv_get(META_NS, SCHEMA_REGISTRY_KEY)?.is_some(),
             "run_counter": self.store.kv_get(META_NS, RUN_COUNTER_KEY)?.is_some(),
             "records_projection": true,
             "crdt_chunks_and_snapshots": true,
@@ -735,6 +970,11 @@ impl WorkspaceCore {
         let indexes = IndexManager::new();
         self.store.import_workspace_in_place(&bundle, &indexes)?;
         self.db_read_grants = load_db_read_grants(&self.store)?;
+        // The dynamic schema travelled in the portable kv: reload the registry and
+        // reconstruct the indexes from its `indexed` fields so the imported
+        // workspace's schema + indexes are immediately in force (DL-7/DL-8/DL-5).
+        self.registry = load_schema_registry(&self.store)?;
+        self.indexes = rebuild_indexes_from_registry(&self.store, &self.registry)?;
         Ok(())
     }
 
@@ -749,14 +989,10 @@ impl WorkspaceCore {
         let bundle = open_bundle(path)?;
         let indexes = IndexManager::new();
         let store = Store::import_workspace_in_memory(&bundle, &indexes)?;
-        let db_read_grants = load_db_read_grants(&store)?;
-        Ok(WorkspaceCore {
-            store,
-            registry: SchemaRegistry::new(),
-            events: EventSink::new(),
-            workspace_id: workspace_id.into(),
-            db_read_grants,
-        })
+        // The schema registry travels in the portable `__forge/meta` kv, so the
+        // imported workspace loads its registry + reconstructs its indexes exactly
+        // like a normal open (DL-7/DL-8 schema is workspace state, DL-24 portable).
+        Self::from_store(store, workspace_id)
     }
 
     /// True iff this workspace holds **no importable state at all** — the
@@ -931,6 +1167,142 @@ fn load_db_read_grants(
             CoreError::StorageError(format!("deserialize db.read grants: {e}"))
         }),
         None => Ok(std::collections::BTreeMap::new()),
+    }
+}
+
+/// Load the persisted [`SchemaRegistry`] from the workspace file (DL-7/DL-8).
+/// Absent → an empty registry (the M0a default for a fresh workspace). A present
+/// registry is re-validated via [`SchemaRegistry::validated`] so a tampered/
+/// corrupt persisted registry surfaces a [`CoreError::SchemaCompatibilityError`]
+/// instead of silently loading a structurally-invalid schema. Mirrors
+/// [`load_db_read_grants`].
+fn load_schema_registry(store: &Store) -> Result<SchemaRegistry> {
+    match store.kv_get(META_NS, SCHEMA_REGISTRY_KEY)? {
+        Some(bytes) => {
+            let registry: SchemaRegistry = serde_json::from_slice(&bytes).map_err(|e| {
+                CoreError::StorageError(format!("deserialize schema registry: {e}"))
+            })?;
+            registry.validated()
+        }
+        None => Ok(SchemaRegistry::new()),
+    }
+}
+
+/// Reconstruct the dynamic-index manager from the registry's `indexed` fields
+/// (DL-8 → DL-5). For each non-deprecated `indexed` field, (re)create the storage
+/// index from canonical `records`; the expression-index DDL is `IF NOT EXISTS`
+/// and SQLite keeps it in the file across reopen, so this re-registers the
+/// in-memory definition and re-derives FTS shadow rows. Called on every open so a
+/// schema-defined index is a live planner candidate without an explicit rebuild.
+fn rebuild_indexes_from_registry(
+    store: &Store,
+    registry: &SchemaRegistry,
+) -> Result<IndexManager> {
+    let mut indexes = IndexManager::new();
+    for (collection, field_id, kind) in indexed_fields(registry) {
+        store.create_index(&mut indexes, &collection, &field_id, kind)?;
+    }
+    Ok(indexes)
+}
+
+/// Every `(collection, field_id, kind)` the registry declares as `indexed`,
+/// skipping deprecated fields (a hidden field's index is not maintained). The
+/// kind is derived from the field type ([`index_kind_for`]). Stable iteration
+/// order (registry collections are a `BTreeMap`, fields are declaration-ordered).
+fn indexed_fields(registry: &SchemaRegistry) -> Vec<(String, String, CreateIndexKind)> {
+    let mut out = Vec::new();
+    for (name, col) in registry.collections() {
+        out.extend(collection_indexed_fields(name, col));
+    }
+    out
+}
+
+/// The `indexed` (non-deprecated) fields of one collection as
+/// `(collection, field_id, kind)`.
+fn collection_indexed_fields(
+    name: &str,
+    col: &CollectionDef,
+) -> Vec<(String, String, CreateIndexKind)> {
+    col.fields()
+        .iter()
+        .filter(|f| f.indexed() && !f.deprecated())
+        .map(|f| (name.to_string(), f.field_id().to_string(), index_kind_for(f)))
+        .collect()
+}
+
+/// The dynamic-index kind for a field (DL-5): a `Text` field gets a full-text
+/// (`Fts`) shadow table; every other type gets an equality/range/order (`Value`)
+/// expression index. The nullable wrapper is peeled so `Nullable(Text)` is still
+/// full-text.
+fn index_kind_for(field: &FieldDef) -> CreateIndexKind {
+    match field.ty().inner() {
+        FieldType::Text => CreateIndexKind::Fts,
+        _ => CreateIndexKind::Value,
+    }
+}
+
+/// The serde `op` tag for a [`SchemaChange`] (for the response/event payload).
+fn change_op(change: &SchemaChange) -> &'static str {
+    match change {
+        SchemaChange::AddCollection { .. } => "add_collection",
+        SchemaChange::AddField { .. } => "add_field",
+        SchemaChange::RenameField { .. } => "rename_field",
+        SchemaChange::WidenField { .. } => "widen_field",
+        SchemaChange::DeprecateField { .. } => "deprecate_field",
+        SchemaChange::EnforceRequired { .. } => "enforce_required",
+    }
+}
+
+/// A compact JSON summary of the registry for the `schema.apply_change` response:
+/// each collection with its fields' stable ids, names, types, and flags. Lets a
+/// shell confirm the minted ids / evolved state without re-reading the persisted
+/// registry.
+fn registry_summary(registry: &SchemaRegistry) -> serde_json::Value {
+    let collections: serde_json::Map<String, serde_json::Value> = registry
+        .collections()
+        .map(|(name, col)| {
+            let fields: Vec<serde_json::Value> = col
+                .fields()
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "field_id": f.field_id(),
+                        "name": f.name(),
+                        "ty": f.ty(),
+                        "indexed": f.indexed(),
+                        "deprecated": f.deprecated(),
+                        "required": f.required(),
+                        "enforced": f.enforced(),
+                    })
+                })
+                .collect();
+            (name.to_string(), serde_json::json!({ "fields": fields }))
+        })
+        .collect();
+    serde_json::json!({ "collections": collections })
+}
+
+/// Parse the optional `index_ids` filter for `schema.rebuild_indexes`: an array
+/// of index-id strings, or absent for "all". A present-but-malformed value is a
+/// `ValidationError`.
+fn parse_index_ids(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
+    match cmd.payload.get("index_ids") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for entry in arr {
+                let s = entry.as_str().ok_or_else(|| {
+                    CoreError::ValidationError(
+                        "schema.rebuild_indexes `index_ids` entries must be strings".into(),
+                    )
+                })?;
+                out.push(s.to_string());
+            }
+            Ok(Some(out))
+        }
+        Some(other) => Err(CoreError::ValidationError(format!(
+            "schema.rebuild_indexes `index_ids` must be an array of strings, got {other}"
+        ))),
     }
 }
 
@@ -1126,6 +1498,18 @@ fn authorize(cmd: &CoreCommand) -> Result<()> {
             Role::Viewer,
             Role::Auditor,
         ]),
+        // Schema evolution (commands.md: schema.apply_change → Owner, Maintainer;
+        // DL-8). An additive schema change mutates workspace state, so it is a
+        // maintainer+ operation — a Viewer/Editor/Auditor cannot apply one.
+        "schema.apply_change" => Some(&[Role::Owner, Role::Maintainer]),
+        // Validating compatibility is a read-only check (commands.md:
+        // schema.validate_compatibility → Owner, Maintainer, Editor, Auditor).
+        "schema.validate_compatibility" => {
+            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Auditor])
+        }
+        // Rebuilding indexes is a maintenance op (commands.md:
+        // schema.rebuild_indexes → Owner, Maintainer; DL-5).
+        "schema.rebuild_indexes" => Some(&[Role::Owner, Role::Maintainer]),
         // Exporting the portable workspace bundle (DL-24, commands.md:
         // workspace.export → Owner, Maintainer, Auditor). The Auditor may take a
         // backup/debug bundle (including run logs by policy) without otherwise
