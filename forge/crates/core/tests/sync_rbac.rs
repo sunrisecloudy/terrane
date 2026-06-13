@@ -1,5 +1,5 @@
 //! Data-driven conformance over the SS-7 sync-RBAC vectors
-//! (`forge/fixtures/sync-rbac/`, manifest `count = 10`).
+//! (`forge/fixtures/sync-rbac/`, manifest `count = 13`).
 //!
 //! Each fixture pins one incoming remote op plus the receiver's expected
 //! decision and audit record. The test parses `trusted_peer` / `incoming_claim`
@@ -99,7 +99,7 @@ fn parse_envelope(incoming: &Value) -> RemoteOpEnvelope {
     }
 }
 
-/// All 10 vectors (manifest.json is excluded). The harness loads every file in
+/// All 13 vectors (manifest.json is excluded). The harness loads every file in
 /// the directory and asserts the count, so a renamed/dropped fixture fails.
 #[test]
 fn sync_rbac_vectors_match_expected_decision_and_audit() {
@@ -177,5 +177,5 @@ fn sync_rbac_vectors_match_expected_decision_and_audit() {
         ran += 1;
     }
 
-    assert_eq!(ran, 10, "expected exactly 10 sync-rbac vectors, ran {ran}");
+    assert_eq!(ran, 13, "expected exactly 13 sync-rbac vectors, ran {ran}");
 }

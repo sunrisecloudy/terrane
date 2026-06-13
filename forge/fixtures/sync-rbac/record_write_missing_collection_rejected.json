@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "case": "record_write_missing_collection_rejected",
+  "coverage": ["SS-7", "SC-9", "SC-10", "SC-11", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-owner-2",
+    "role": "owner",
+    "db_read": ["*"],
+    "db_write": ["*"],
+    "schema_write": true
+  },
+  "incoming_claim": {
+    "actor_id": "actor-owner-2",
+    "role": "owner",
+    "db_read": ["*"],
+    "db_write": ["*"],
+    "schema_write": true
+  },
+  "incoming": {
+    "frame": "live_update",
+    "doc_id": "collection/tasks",
+    "metadata": {
+      "resource_type": "record",
+      "op": "insert",
+      "record_id": "task-300",
+      "schema_version": 1
+    },
+    "record_op": {
+      "op": "insert",
+      "id": "task-300",
+      "fields": {
+        "title": "malformed envelope with no collection"
+      }
+    }
+  },
+  "expect": {
+    "decision": "permission_denied",
+    "error_frame": "permission_denied",
+    "audit": {
+      "action": "sync.record.insert",
+      "decision": "deny",
+      "reason_contains": "missing collection in envelope metadata"
+    },
+    "apply": {
+      "import_chunk": false,
+      "rebuild_projection": false
+    }
+  },
+  "assertions": [
+    "required envelope metadata is validated before any grant check",
+    "even an owner with wildcard db.write is denied a record op naming no collection (the apply path/audit must carry a concrete resource identity)"
+  ]
+}

@@ -5,7 +5,7 @@
   "prd": ["SS-7", "SS-9", "SC-9", "SC-10", "SC-11", "SC-12"],
   "scope": "Semantic validation vectors for authorizing remote sync apply before CRDT import.",
   "trusted_authority": "receiving_workspace_membership",
-  "count": 10,
+  "count": 13,
   "cases": [
     {
       "case": "editor_granted_collection_insert_applied",
@@ -55,6 +55,21 @@
     {
       "case": "role_claim_exceeds_trusted_grant_rejected",
       "file": "role_claim_exceeds_trusted_grant_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "record_write_with_schema_write_claim_rejected",
+      "file": "record_write_with_schema_write_claim_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "record_write_missing_collection_rejected",
+      "file": "record_write_missing_collection_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "schema_change_missing_version_rejected",
+      "file": "schema_change_missing_version_rejected.json",
       "expect": "permission_denied"
     }
   ]

@@ -239,12 +239,32 @@ pub fn authorize_remote_op(
                 "incoming db.read claim exceeds trusted membership ({extra})"
             ));
         }
-        // NOTE: a `schema_write` claim that exceeds the trusted row is NOT a
-        // standalone rejection. The trusted `schema_write = false` denial
-        // surfaces naturally through the schema role/grant check below
-        // (`forge/spec/sync-rbac.md`: "incoming schema_write claim is ignored
-        // because trusted_peer.schema_write is false"). Rejecting it here would
-        // mask the role-based reason the contract pins.
+        // A `schema_write` claim beyond the trusted row is a self-escalation of
+        // the schema-maintenance grant (`forge/spec/sync-rbac.md` lines 28/50:
+        // incoming claims may narrow but must never widen trusted grants). It is
+        // rejected here for NON-schema-change ops, closing the gap where an editor
+        // with `db.write=["tasks"]` smuggles `schema_write: true` into a record
+        // write and slips past the schema-grant check (which only runs for schema
+        // ops). For an actual `schema_change` op the trusted schema role/grant
+        // check below denies with the contract-pinned reason
+        // ("<role> lacks trusted schema_write"), so the escalation guard defers to
+        // it and does not mask that reason.
+        if claim.schema_write && !trusted.schema_write && env.op != RemoteOp::SchemaChange {
+            return deny(
+                "incoming schema_write claim exceeds trusted membership".to_string(),
+            );
+        }
+    }
+
+    // (a.5) Validate the envelope metadata BEFORE any grant check
+    // (`forge/spec/sync-rbac.md` line 52: "Validate envelope metadata before CRDT
+    // import: document id, resource type, operation, collection, record id or
+    // schema id, and schema version"). A malformed envelope (missing collection /
+    // record id for a record op, missing schema id / version for a schema op, or
+    // a resource/op type mismatch) is denied fail-closed so the apply path/audit
+    // always names a concrete resource identity (SS-7 resource gate).
+    if let Some(reason) = envelope_defect(env) {
+        return deny(reason);
     }
 
     // From here on, only the TRUSTED membership row decides.
@@ -322,6 +342,62 @@ pub fn authorize_remote_op(
         (resource, op) => deny(format!(
             "unsupported remote op {op:?} for resource {resource:?}"
         )),
+    }
+}
+
+/// Validate the required envelope metadata for the op's resource type
+/// (`forge/spec/sync-rbac.md` line 52). Returns `Some(reason)` for a malformed
+/// envelope that must be denied fail-closed, or `None` when the metadata is
+/// well-formed enough to make a resource-scoped decision.
+///
+/// Checks, in order:
+/// - resource/op consistency (a record op must carry a `Record` resource and a
+///   schema change must carry a `Schema` resource);
+/// - record ops name a non-empty `collection` and `record_id`;
+/// - schema changes name a non-empty `schema_id` and a `schema_version`.
+fn envelope_defect(env: &RemoteOpEnvelope) -> Option<String> {
+    let is_empty = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").is_empty();
+    match (env.resource_type, env.op) {
+        // Record writes / reads must target a concrete collection + record.
+        (ResourceType::Record, op) if op.is_record_write() => {
+            if is_empty(&env.collection) {
+                return Some("record op missing collection in envelope metadata".to_string());
+            }
+            if is_empty(&env.record_id) {
+                return Some("record op missing record id in envelope metadata".to_string());
+            }
+            None
+        }
+        // A schema change carried as a record resource (or vice versa) is an
+        // inconsistent envelope — reject before any grant check.
+        (ResourceType::Record, RemoteOp::SchemaChange) => {
+            Some("schema_change op with record resource_type in envelope".to_string())
+        }
+        (ResourceType::Schema, op) if op.is_record_write() => {
+            Some("record op with schema resource_type in envelope".to_string())
+        }
+        // Schema changes must name a schema id and a target version.
+        (ResourceType::Schema, RemoteOp::SchemaChange) => {
+            if is_empty(&env.schema_id) {
+                return Some("schema change missing schema id in envelope metadata".to_string());
+            }
+            if env.schema_version.is_none() {
+                return Some(
+                    "schema change missing schema version in envelope metadata".to_string(),
+                );
+            }
+            None
+        }
+        // Read catch-up names a collection so the db.read grant can be checked.
+        (_, RemoteOp::Read) => {
+            if is_empty(&env.collection) {
+                return Some("read op missing collection in envelope metadata".to_string());
+            }
+            None
+        }
+        // Any other resource/op pairing is unsupported and handled by the match
+        // arm below; no extra metadata defect to report here.
+        _ => None,
     }
 }
 
@@ -435,6 +511,113 @@ mod tests {
         let env = record_env(RemoteOp::Insert, "tasks");
         let d = authorize_remote_op(&trusted, None, &env);
         assert!(!d.is_allow());
+    }
+
+    #[test]
+    fn schema_write_claim_on_record_write_rejected_as_escalation() {
+        // An editor trusted to write `tasks` but WITHOUT schema_write smuggles a
+        // `schema_write: true` claim into a record insert. The schema-grant check
+        // only runs for schema ops, so without the up-front self-escalation guard
+        // this record write would be allowed. It must be denied instead.
+        let trusted = member(Role::Editor, &["tasks"], false);
+        let claim = IncomingClaim {
+            actor_id: "actor-1".to_string(),
+            role: Role::Editor,
+            db_read: vec!["tasks".to_string()],
+            db_write: vec!["tasks".to_string()],
+            schema_write: true,
+        };
+        let env = record_env(RemoteOp::Insert, "tasks");
+        let d = authorize_remote_op(&trusted, Some(&claim), &env);
+        assert!(!d.is_allow());
+        assert!(
+            d.reason().contains("schema_write claim exceeds trusted membership"),
+            "reason: {}",
+            d.reason()
+        );
+    }
+
+    #[test]
+    fn record_write_missing_collection_denied_fail_closed() {
+        let trusted = member(Role::Owner, &["*"], true);
+        let env = RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::Insert,
+            collection: None,
+            record_id: Some("rec-1".to_string()),
+            schema_id: None,
+            schema_version: Some(1),
+        };
+        // Even an owner with wildcard db.write is denied when the envelope names
+        // no collection: the apply path/audit must have a concrete resource.
+        let d = authorize_remote_op(&trusted, None, &env);
+        assert!(!d.is_allow());
+        assert!(d.reason().contains("missing collection"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn record_write_missing_record_id_denied_fail_closed() {
+        let trusted = member(Role::Owner, &["*"], true);
+        let env = RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::Insert,
+            collection: Some("tasks".to_string()),
+            record_id: None,
+            schema_id: None,
+            schema_version: Some(1),
+        };
+        let d = authorize_remote_op(&trusted, None, &env);
+        assert!(!d.is_allow());
+        assert!(d.reason().contains("missing record id"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn schema_change_missing_schema_id_or_version_denied() {
+        let trusted = member(Role::Maintainer, &["*"], true);
+        let no_id = RemoteOpEnvelope {
+            resource_type: ResourceType::Schema,
+            op: RemoteOp::SchemaChange,
+            collection: None,
+            record_id: None,
+            schema_id: None,
+            schema_version: Some(2),
+        };
+        let d = authorize_remote_op(&trusted, None, &no_id);
+        assert!(!d.is_allow());
+        assert!(d.reason().contains("missing schema id"), "reason: {}", d.reason());
+
+        let no_version = RemoteOpEnvelope {
+            resource_type: ResourceType::Schema,
+            op: RemoteOp::SchemaChange,
+            collection: None,
+            record_id: None,
+            schema_id: Some("tasks".to_string()),
+            schema_version: None,
+        };
+        let d = authorize_remote_op(&trusted, None, &no_version);
+        assert!(!d.is_allow());
+        assert!(d.reason().contains("missing schema version"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn resource_op_type_mismatch_denied() {
+        let trusted = member(Role::Owner, &["*"], true);
+        // schema_change carried as a record resource.
+        let mismatch = RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::SchemaChange,
+            collection: Some("tasks".to_string()),
+            record_id: None,
+            schema_id: Some("tasks".to_string()),
+            schema_version: Some(2),
+        };
+        let d = authorize_remote_op(&trusted, None, &mismatch);
+        assert!(!d.is_allow());
+        assert!(
+            d.reason().contains("record resource_type"),
+            "reason: {}",
+            d.reason()
+        );
     }
 
     #[test]
