@@ -31,7 +31,10 @@ mod recorder;
 
 pub use bridge::{HostBridge, MemoryHostBridge, NullBridge};
 pub use host::HostContext;
-pub use net::{HttpClient, MockHttpClient, NetRequest, NetResponse};
+pub use net::{
+    resolve_secret_headers, HttpClient, InMemorySecretStore, MockHttpClient, NetHeaderValue,
+    NetRequest, NetResponse, SecretStore,
+};
 pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
 
 use forge_domain::{AppResult, CoreError};

@@ -268,6 +268,25 @@ impl RunRecorder {
         }
     }
 
+    /// Redact the **last produced** call's recorded response into a
+    /// denial-shaped entry (review 074 #2 + SC-13 trace-safety). Used when a
+    /// `net.fetch` response was captured by [`host_call`](Self::host_call) but the
+    /// response-leg policy then **denied** it: the rejected response body must not
+    /// persist in the trace, and (for a secret-bearing request) no resolved secret
+    /// must leak through a recorded response. The call's `args` (which hold only
+    /// the request's `secret_ref`, never a value) are left untouched, so the
+    /// secret_ref still appears in the trace while the response becomes
+    /// `{"denied": <CoreError JSON>}` — identical in shape to a call-gate denial.
+    ///
+    /// No-op if there is no produced call yet. In replay mode the recorded entry
+    /// is already denial-shaped (it was recorded redacted), so calling this again
+    /// just rewrites it to the same denial shape — idempotent.
+    pub fn redact_last_response(&mut self, error: &CoreError) {
+        if let Some(last) = self.produced.last_mut() {
+            last.response = serde_json::json!({ "denied": error });
+        }
+    }
+
     /// Replay-mode core: validate the live call against the recording at the
     /// cursor, serve the recorded response, and advance.
     fn consume(&mut self, method: &str, args: serde_json::Value) -> Result<serde_json::Value> {

@@ -12,7 +12,7 @@
 //! and from `serde_json::Value` and calls in here.
 
 use crate::bridge::HostBridge;
-use crate::net::{NetRequest, NetResponse};
+use crate::net::{resolve_secret_headers, NetHeaderValue, NetRequest, NetResponse};
 use crate::recorder::RunRecorder;
 use forge_domain::{ActorContext, CoreError, Limits, Manifest, NetGrant, PermissionSnapshot, Result};
 use forge_policy::{Access, HostCall, NetPolicy, PolicyEngine};
@@ -350,7 +350,14 @@ impl<'b> HostContext<'b> {
     ///      replay the recorded response is **served** and no live call is made —
     ///      live network is forbidden unless a recorded response is being served.
     pub fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
-        let args = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
+        // The args RECORDED into the trace are trace-safe (SC-13): a `secret_ref`
+        // header is kept verbatim (it carries only the non-sensitive name), but a
+        // *literal* value on a secret-like header (Authorization/Cookie/…) is
+        // redacted to a placeholder, so even a request the applet wrote with a
+        // plaintext secret as a literal — which the policy denies — cannot persist
+        // that plaintext in the RunRecord. The request handed to the bridge below
+        // is the ORIGINAL (unredacted) one; only the recorded copy is redacted.
+        let args = trace_safe_args(&request);
 
         // 1. Role gate (SC-10): record the denial so it is replayable, then fail.
         if !self.policy.snapshot().can_run {
@@ -359,6 +366,24 @@ impl<'b> HostContext<'b> {
             );
             self.recorder.record_denial("net.fetch", args, &err)?;
             return Err(err);
+        }
+
+        // 1b. Secret-exfil guard (SC-13 / spec/secrets.md): M0a permits a
+        //     `secret_ref` ONLY in a header value. A secret_ref smuggled into the
+        //     request BODY is a secret-exfil pattern — reject it as a
+        //     ValidationError before any policy/budget/bridge work, and never send.
+        //     This is recorded as the run's denial so it is replayable. (The body
+        //     is opaque to the runtime, so this is a textual scan for the
+        //     `secret_ref` marker; a literal body that happens to contain the
+        //     marker is treated conservatively as exfil — fail-closed.)
+        if let Some(body) = &request.body {
+            if body_contains_secret_ref(body) {
+                let err = CoreError::ValidationError(
+                    "ctx.net.fetch denied: a secret_ref may only appear in a header value, not the request body (SC-13 secret-exfil guard)".to_string(),
+                );
+                self.recorder.record_denial("net.fetch", args, &err)?;
+                return Err(err);
+            }
         }
 
         // 2. Egress call gate (SC-5 / CR-4): request-side gates only, decided
@@ -385,12 +410,28 @@ impl<'b> HostContext<'b> {
             )));
         }
 
-        // 4. Record/replay (CR-8): record mode captures the bridge's response;
-        //    replay serves the recorded JSON and never touches the live bridge.
+        // 4. Record/replay (CR-8) + secret injection (SC-13). The `args` recorded
+        //    into the trace are the request AS THE APPLET BUILT IT — every
+        //    secret-bearing header still carries only its `{ secret_ref }`, never a
+        //    resolved value. INSIDE the closure (record mode only) the host
+        //    resolves each secret_ref against the bridge's secret store and hands
+        //    the RESOLVED, literal-only request to the client. So:
+        //      * the client/bridge sees the real header value;
+        //      * the RECORDING (`args`) keeps only the secret_ref;
+        //      * replay serves the recorded response and never resolves a secret
+        //        (the closure does not run), so replay needs no secret store.
+        //    The secret-header/destination allowlist gate already ran at step 2
+        //    (the policy permits a secret_ref header only where the matched rule
+        //    lists it in `allow_secret_headers`); an unknown/revoked secret name is
+        //    a fail-closed `RuntimeError` here and no request is sent.
         let bridge = &mut *self.bridge;
         let req = request.clone();
         let response_json = self.recorder.host_call("net.fetch", args, || {
-            let resp = bridge.net_fetch(req)?;
+            // Resolve secret_ref headers to plaintext only now, at the HTTP edge,
+            // into a fresh literal-only request the client receives. `req` (the
+            // recorded shape) is untouched, so the trace keeps the secret_ref.
+            let injected = resolve_secret_headers(&req, bridge.secret_store())?;
+            let resp = bridge.net_fetch(injected)?;
             serde_json::to_value(&resp).map_err(|e| {
                 CoreError::RuntimeError(format!("net.fetch response serialize failed: {e}"))
             })
@@ -415,8 +456,18 @@ impl<'b> HostContext<'b> {
         //    response is policy-bound too: a tampered/oversized/rebinding recording
         //    is denied identically on replay), and is fail-closed — a violating
         //    response surfaces as the run's `CoreError` and never reaches the applet.
+        //
+        //    TRACE-SAFETY (review 074 #2 / SC-13): on a response-leg DENIAL the
+        //    response captured by `host_call` is REDACTED into a denial-shaped
+        //    trace entry, so a rejected response body — and any value that a
+        //    secret-bearing request might otherwise expose downstream — never
+        //    persists in the RunRecord. The call's recorded `args` still carry only
+        //    the request's `secret_ref` (never a resolved value).
         let response_policy_request = to_response_policy_request(&request, &response);
-        NetPolicy::new(&self.net_allowlist).check(&response_policy_request)?;
+        if let Err(net_err) = NetPolicy::new(&self.net_allowlist).check(&response_policy_request) {
+            self.recorder.redact_last_response(&net_err);
+            return Err(net_err);
+        }
 
         Ok(response)
     }
@@ -489,14 +540,91 @@ fn to_policy_request(request: &NetRequest) -> forge_policy::NetRequest {
         body_bytes: request.body.as_ref().map(|b| b.len() as u64),
         timeout_ms: request.timeout_ms,
         request_content_type: request.content_type.clone(),
-        // Literal request headers; the policy denies a secret-like header carrying
-        // a literal value, so passing them through enforces SC-5 at the call gate.
+        // Request headers projected onto the policy's header model: a literal
+        // string maps to `HeaderValue::Literal` (the policy denies a secret-like
+        // header carrying a literal value); a `{ secret_ref }` maps to
+        // `HeaderValue::Secret`, which the policy permits ONLY when the matched
+        // rule lists that header name in `allow_secret_headers`. So both the
+        // literal-secret deny and the secret_ref allowlist gate run at the call
+        // gate, before any secret is resolved or any request is sent (SC-13).
         headers: request
             .headers
             .iter()
-            .map(|(k, v)| (k.clone(), HeaderValue::Literal(v.clone())))
+            .map(|(k, v)| {
+                let pv = match v {
+                    NetHeaderValue::Literal(s) => HeaderValue::Literal(s.clone()),
+                    NetHeaderValue::Secret { secret_ref } => {
+                        HeaderValue::Secret { secret_ref: secret_ref.clone() }
+                    }
+                };
+                (k.clone(), pv)
+            })
             .collect(),
         ..Default::default()
+    }
+}
+
+/// Header names treated as secret-bearing for trace redaction. Mirrors the
+/// policy's secret-header set (`policy/net.rs`); a *literal* value on one of
+/// these must never be persisted into the trace, even on a denied request.
+fn is_secret_header_name(name: &str) -> bool {
+    const SECRET_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+    let lower = name.to_ascii_lowercase();
+    SECRET_HEADERS.contains(&lower.as_str())
+}
+
+/// Build the **trace-safe** recorded args for a `net.fetch` (SC-13). Starting
+/// from the serialized request, every header whose value is a *literal* on a
+/// secret-like header name is replaced with `"<redacted>"`, so a plaintext
+/// secret the applet wrote as a literal never enters the RunRecord (even when the
+/// request is denied and recorded as a denial). A `{ "secret_ref": "name" }`
+/// header is left untouched — it carries only the non-sensitive ref, which the
+/// trace is *required* to keep for replay/diagnostics. Non-header fields are
+/// unchanged. This is purely the recorded shape; the bridge still receives the
+/// original request and resolves/injects real values at the HTTP edge.
+fn trace_safe_args(request: &NetRequest) -> serde_json::Value {
+    let mut value = serde_json::to_value(request).unwrap_or(serde_json::Value::Null);
+    if let Some(headers) = value
+        .get_mut("headers")
+        .and_then(|h| h.as_object_mut())
+    {
+        for (name, hv) in headers.iter_mut() {
+            // Only redact a LITERAL (a JSON string) on a secret-like header; a
+            // secret_ref object stays so the trace keeps the ref.
+            if hv.is_string() && is_secret_header_name(name) {
+                *hv = serde_json::Value::String("<redacted>".to_string());
+            }
+        }
+    }
+    value
+}
+
+/// Whether a request body smuggles a secret reference (SC-13 exfil guard). M0a
+/// only permits a `secret_ref` in a header value; one in the body is a
+/// secret-exfil pattern and the request must be rejected before it is sent.
+///
+/// The body is opaque to the runtime (an already-serialized string), so this is
+/// a conservative textual check: if the body parses as JSON and contains a
+/// `secret_ref` object key anywhere, it is exfil; if it does not parse as JSON
+/// but still contains the literal `"secret_ref"` token, it is treated as exfil
+/// too (fail-closed). A benign body without the marker passes.
+fn body_contains_secret_ref(body: &str) -> bool {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        if json_has_secret_ref_key(&value) {
+            return true;
+        }
+    }
+    body.contains("\"secret_ref\"")
+}
+
+/// Recursively scan a JSON value for an object that has a `secret_ref` key.
+fn json_has_secret_ref_key(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.contains_key("secret_ref") || map.values().any(json_has_secret_ref_key)
+        }
+        serde_json::Value::Array(items) => items.iter().any(json_has_secret_ref_key),
+        _ => false,
     }
 }
 
@@ -1069,5 +1197,274 @@ mod tests {
             .net_fetch(req("https://api.example.com/public/b"))
             .unwrap_err();
         assert_eq!(err.code(), "ResourceLimitExceeded");
+    }
+
+    // --- SC-13: ctx.secrets header injection ---------------------------------
+
+    use crate::net::{InMemorySecretStore, NetHeaderValue};
+
+    /// A GET rule that allows a `secret_ref` into the named header.
+    fn secret_rule(url: &str, header: &str) -> NetRule {
+        NetRule {
+            method: "GET".into(),
+            url: url.into(),
+            allow_secret_headers: vec![header.into()],
+            ..Default::default()
+        }
+    }
+
+    /// A GET request carrying a `secret_ref` in `header`.
+    fn secret_req(url: &str, header: &str, secret_ref: &str) -> NetRequest {
+        let mut r = req(url);
+        r.headers.insert(
+            header.into(),
+            NetHeaderValue::Secret { secret_ref: secret_ref.into() },
+        );
+        r
+    }
+
+    /// An allowlisted secret header is injected: a capturing client sees the
+    /// RESOLVED value, but the RunRecord trace + the applet's returned response
+    /// carry only the secret_ref, never the plaintext (SC-13).
+    #[test]
+    fn secret_header_is_injected_into_client_but_not_trace_or_return() {
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let secrets = InMemorySecretStore::new().with_secret("tok", "Bearer SECRET-XYZ");
+        let mut bridge = MemoryHostBridge::with_http_and_secrets(
+            Box::new(MockHttpClient::canned()),
+            secrets,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let resp = host
+            .net_fetch(secret_req(
+                "https://api.example.com/private/me",
+                "Authorization",
+                "tok",
+            ))
+            .unwrap();
+
+        // The applet's returned response carries no secret value.
+        let resp_json = serde_json::to_string(&resp).unwrap();
+        assert!(!resp_json.contains("SECRET-XYZ"), "applet return leaked the secret: {resp_json}");
+
+        // The RECORDED trace keeps only the secret_ref — never the value.
+        let (recorder, logs) = host.finish();
+        let calls = recorder.into_calls();
+
+        // The CLIENT received the resolved literal header value (injection happened
+        // at the HTTP edge). Read after `finish()` releases the &mut bridge borrow.
+        assert_eq!(bridge.net_requests.len(), 1);
+        let sent = &bridge.net_requests[0];
+        assert_eq!(
+            sent.headers.get("Authorization").and_then(|h| h.as_literal()),
+            Some("Bearer SECRET-XYZ"),
+            "client must receive the RESOLVED secret value"
+        );
+
+        let trace = serde_json::to_string(&calls).unwrap();
+        assert!(trace.contains("secret_ref"), "trace must keep the secret_ref: {trace}");
+        assert!(trace.contains("\"tok\""), "trace must keep the ref name: {trace}");
+        assert!(!trace.contains("SECRET-XYZ"), "trace leaked the secret value: {trace}");
+        // And no log line carries it either.
+        assert!(!logs.join("\n").contains("SECRET-XYZ"), "logs leaked the secret");
+    }
+
+    /// A secret_ref on a header the matched rule does NOT allowlist is denied at
+    /// the call gate; nothing reaches the client and no value is resolved.
+    #[test]
+    fn secret_header_not_allowlisted_is_denied_before_send() {
+        // Rule allowlists "Authorization" but the request uses "X-Api-Key".
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let secrets = InMemorySecretStore::new().with_secret("tok", "Bearer SECRET-XYZ");
+        let mut bridge = MemoryHostBridge::with_http_and_secrets(
+            Box::new(MockHttpClient::canned()),
+            secrets,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(secret_req(
+                "https://api.example.com/private/me",
+                "X-Api-Key",
+                "tok",
+            ))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        let (recorder, _logs) = host.finish();
+        let trace = serde_json::to_string(&recorder.into_calls()).unwrap();
+        assert!(!trace.contains("SECRET-XYZ"), "trace leaked the secret value: {trace}");
+        assert!(bridge.net_requests.is_empty(), "denied secret header must not send");
+    }
+
+    /// An allowlisted header whose secret NAME is unknown to the store is a
+    /// fail-closed RuntimeError; nothing is sent and the value never exists.
+    #[test]
+    fn unknown_secret_name_is_runtime_error_and_sends_nothing() {
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        // The store is EMPTY: the named secret cannot be resolved.
+        let mut bridge = MemoryHostBridge::with_http_and_secrets(
+            Box::new(MockHttpClient::canned()),
+            InMemorySecretStore::new(),
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(secret_req(
+                "https://api.example.com/private/me",
+                "Authorization",
+                "missing",
+            ))
+            .unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
+        assert!(err.to_string().contains("missing"), "error names the ref: {err}");
+        drop(host); // release the &mut bridge borrow before reading the bridge
+        assert!(
+            bridge.net_requests.is_empty(),
+            "an unresolvable secret must not reach the client"
+        );
+    }
+
+    /// A `secret_ref` smuggled into the request BODY is rejected as a
+    /// ValidationError (secret-exfil guard) before any policy/bridge work.
+    #[test]
+    fn secret_ref_in_body_is_rejected() {
+        let manifest = manifest_with_net(
+            NetGrant(vec![NetRule {
+                method: "POST".into(),
+                url: "https://api.example.com/report".into(),
+                ..Default::default()
+            }]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let request = NetRequest {
+            method: "POST".into(),
+            url: "https://api.example.com/report".into(),
+            body: Some(r#"{"token":{"secret_ref":"tok"}}"#.into()),
+            ..Default::default()
+        };
+        let err = host.net_fetch(request).unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        drop(host); // release the &mut bridge borrow before reading the bridge
+        assert!(bridge.net_requests.is_empty(), "a body secret_ref must not send");
+    }
+
+    /// A *literal* value on a secret-like header is denied by policy AND redacted
+    /// from the recorded trace, so the plaintext never persists even on a denial.
+    #[test]
+    fn literal_secret_header_is_redacted_from_the_trace() {
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let mut request = req("https://api.example.com/private/me");
+        request.headers.insert(
+            "Authorization".into(),
+            NetHeaderValue::Literal("Bearer LITERAL-LEAK".into()),
+        );
+        let err = host.net_fetch(request).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        let (recorder, _logs) = host.finish();
+        let trace = serde_json::to_string(&recorder.into_calls()).unwrap();
+        assert!(!trace.contains("LITERAL-LEAK"), "literal secret leaked into trace: {trace}");
+        assert!(trace.contains("<redacted>"), "secret-like literal must be redacted: {trace}");
+    }
+
+    /// A response-leg denial (e.g. a redirect to an unallowlisted host) after a
+    /// secret was injected must NOT persist the rejected response body or the
+    /// secret value; the recorded entry is redacted to a denial (review 074 #2).
+    #[test]
+    fn response_leg_denial_after_injection_is_trace_safe() {
+        use crate::net::NetResponse;
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let secrets = InMemorySecretStore::new().with_secret("tok", "Bearer SECRET-XYZ");
+        // The transport followed a redirect to an UNALLOWLISTED host and returns a
+        // body that must not be recorded once the response-leg policy denies.
+        let transport = NetResponse {
+            status: 200,
+            body: Some("REJECTED-BODY".into()),
+            content_type: Some("application/json".into()),
+            final_url: Some("https://evil.example/collect".into()),
+            redirect_chain: vec![
+                "https://api.example.com/private/redirect".into(),
+                "https://evil.example/collect".into(),
+            ],
+            ..Default::default()
+        };
+        let mut bridge = MemoryHostBridge::with_http_and_secrets(
+            Box::new(MockHttpClient::new(transport)),
+            secrets,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(secret_req(
+                "https://api.example.com/private/redirect",
+                "Authorization",
+                "tok",
+            ))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        let (recorder, _logs) = host.finish();
+        let trace = serde_json::to_string(&recorder.into_calls()).unwrap();
+        // The secret_ref survives (the request was recorded) but neither the
+        // resolved value nor the rejected response body persists.
+        assert!(trace.contains("secret_ref"), "trace must keep the secret_ref: {trace}");
+        assert!(!trace.contains("SECRET-XYZ"), "trace leaked the secret value: {trace}");
+        assert!(!trace.contains("REJECTED-BODY"), "trace persisted the rejected body: {trace}");
     }
 }

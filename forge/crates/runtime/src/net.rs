@@ -25,21 +25,68 @@ use forge_domain::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// A request header value the applet supplies: either a plain literal string or
+/// a **secret reference** the host resolves at the HTTP edge (prd-merged/07
+/// SC-13/SC-12, CR-3). The applet only ever writes the `secret_ref` *name*; it
+/// never receives the resolved plaintext value (SC-13).
+///
+/// The JSON shape mirrors [`forge_policy::HeaderValue`] exactly so a header value
+/// round-trips through the JS boundary, the policy gate, and the recorded trace:
+///   * a literal is a bare string: `"Accept": "application/json"`;
+///   * a secret ref is an object: `"Authorization": { "secret_ref": "name" }`.
+///
+/// Untagged so `serde` picks the variant by shape. The `Secret` arm is listed
+/// first so an object with a `secret_ref` key is never mis-parsed as a literal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NetHeaderValue {
+    /// A secret reference resolved by the host at the HTTP edge, e.g.
+    /// `{ "secret_ref": "secret_weather" }`. The resolved value is **never**
+    /// readable by applet JS, recorded in the trace, logged, or synced (SC-13).
+    Secret {
+        /// The name of the secret to resolve from the host's secret store.
+        secret_ref: String,
+    },
+    /// A plain literal header value, e.g. `"Bearer abc"` or `"application/json"`.
+    Literal(String),
+}
+
+impl NetHeaderValue {
+    /// The literal string if this is a [`Literal`](Self::Literal), else `None`.
+    /// A secret ref carries no readable value here (SC-13: the name is not the
+    /// secret).
+    pub fn as_literal(&self) -> Option<&str> {
+        match self {
+            NetHeaderValue::Literal(s) => Some(s.as_str()),
+            NetHeaderValue::Secret { .. } => None,
+        }
+    }
+}
+
 /// A `ctx.net.fetch` request as the runtime hands it to an [`HttpClient`].
 ///
 /// A plain serde struct (method/url/headers/body) so it round-trips through the
 /// JS boundary and the recorded trace. `body` is an opaque string (the applet's
 /// already-serialized payload); the runtime does not interpret it.
+///
+/// A header value is either a literal string or a `{ "secret_ref": "name" }`
+/// object ([`NetHeaderValue`]). The request the applet builds (and the request
+/// the recorder captures into the trace) carries the **secret_ref** — the
+/// resolved secret value is injected by the host only inside the `net_fetch`
+/// closure, into the request handed to the [`HttpClient`], so the trace keeps
+/// only the ref and never the plaintext (SC-13 trace-safety).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct NetRequest {
     /// HTTP method, e.g. `GET`, `POST`.
     pub method: String,
     /// Absolute request URL (`scheme://host[:port]/path`).
     pub url: String,
-    /// Request headers (literal values). Secret-bearing headers are gated by the
-    /// policy before a request ever reaches a client.
+    /// Request headers. Each value is a literal string or a `secret_ref` object
+    /// ([`NetHeaderValue`]). A secret-bearing header is gated by the policy
+    /// (`allow_secret_headers` + the destination rule) before a request ever
+    /// reaches a client, and its resolved value is injected only at the HTTP edge.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, NetHeaderValue>,
     /// Optional request body, opaque to the runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -214,6 +261,112 @@ impl HttpClient for MockHttpClient {
     }
 }
 
+/// The host's secret store: resolves a secret **by name** to its plaintext value
+/// at the HTTP edge (prd-merged/07 SC-13/SC-12, CR-3). Applet JS never calls this
+/// — it only ever names a secret in a `{ "secret_ref": "name" }` header — and the
+/// resolved value is never readable by the applet, recorded, logged, or synced.
+///
+/// This trait is **wasm-clean** by design: it has no I/O dependency. The real
+/// OS-keychain-backed implementation lives host-side (a shell, out of this
+/// crate's scope); this crate ships only the in-memory test backend
+/// [`InMemorySecretStore`]. A missing name resolves to `None`, which the host
+/// turns into the run's `CoreError` (the request is never sent).
+pub trait SecretStore {
+    /// Resolve `name` to its secret value, or `None` if the name is unknown /
+    /// revoked. Implementors must never panic and never leak the value anywhere
+    /// but this return (no logging, no trace).
+    fn resolve(&self, name: &str) -> Option<String>;
+}
+
+/// A trivial in-memory [`SecretStore`] for tests and as the fail-closed default
+/// (empty ⇒ every name is unknown ⇒ a secret_ref header is denied). The real
+/// OS-keychain backend is host-side and out of this crate's scope.
+///
+/// `Debug` is **redacted**: it prints only the secret *names*, never the values,
+/// so a `{:?}` on a bridge/store can never leak plaintext into a log (SC-13).
+#[derive(Clone, Default)]
+pub struct InMemorySecretStore {
+    secrets: BTreeMap<String, String>,
+}
+
+impl InMemorySecretStore {
+    /// An empty store: every name is unknown (the fail-closed default).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a store from `(name, value)` pairs (test convenience).
+    pub fn from_pairs<I, K, V>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        InMemorySecretStore {
+            secrets: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+
+    /// Insert/replace a secret (test convenience). Returns `self` for chaining.
+    pub fn with_secret(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.secrets.insert(name.into(), value.into());
+        self
+    }
+}
+
+impl SecretStore for InMemorySecretStore {
+    fn resolve(&self, name: &str) -> Option<String> {
+        self.secrets.get(name).cloned()
+    }
+}
+
+// Redacted Debug: never print secret VALUES, only the set of names. A `{:?}` on
+// a store/bridge that holds it must not be able to leak plaintext (SC-13).
+impl std::fmt::Debug for InMemorySecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemorySecretStore")
+            .field("names", &self.secrets.keys().collect::<Vec<_>>())
+            .field("values", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Resolve every `secret_ref` header in `request` to its plaintext value using
+/// `store`, returning a **new** request whose headers are all literal — ready to
+/// hand to the [`HttpClient`]. The input `request` (which the recorder captured)
+/// is left untouched, so the trace keeps the `secret_ref` and never the resolved
+/// value (SC-13 trace-safety).
+///
+/// This runs **after** the policy has already gated each secret header against
+/// the destination rule's `allow_secret_headers` (so reaching here means the
+/// header/destination pair is allowlisted). An unknown/revoked name is a flat
+/// `RuntimeError` and the request is never sent — fail-closed.
+///
+/// Literal headers pass through unchanged. The function performs no networking
+/// and no logging; the resolved value exists only on the returned request, which
+/// the caller hands straight to the client and then drops.
+pub fn resolve_secret_headers(
+    request: &NetRequest,
+    store: &dyn SecretStore,
+) -> Result<NetRequest> {
+    let mut resolved = request.clone();
+    for (name, value) in resolved.headers.iter_mut() {
+        if let NetHeaderValue::Secret { secret_ref } = value {
+            let plaintext = store.resolve(secret_ref).ok_or_else(|| {
+                // Name the SECRET REF (a non-sensitive identifier), never a value.
+                CoreError::RuntimeError(format!(
+                    "ctx.net.fetch denied: secret {secret_ref:?} for header {name:?} is not resolvable (unknown or revoked); no request was sent"
+                ))
+            })?;
+            *value = NetHeaderValue::Literal(plaintext);
+        }
+    }
+    Ok(resolved)
+}
+
 /// Build the canonical "live network forbidden" error for a deterministic run
 /// whose client refuses to perform a live request (CR-8). Used by bridges that
 /// have no client wired (e.g. the replay [`NullBridge`](crate::NullBridge)).
@@ -332,5 +485,91 @@ mod tests {
     #[test]
     fn live_network_forbidden_is_runtime_error() {
         assert_eq!(live_network_forbidden("GET").code(), "RuntimeError");
+    }
+
+    // --- SC-13: SecretStore + secret-header resolver -------------------------
+
+    #[test]
+    fn in_memory_secret_store_resolves_known_and_misses_unknown() {
+        let store = InMemorySecretStore::from_pairs([("a", "alpha"), ("b", "beta")]);
+        assert_eq!(store.resolve("a").as_deref(), Some("alpha"));
+        assert_eq!(store.resolve("b").as_deref(), Some("beta"));
+        assert_eq!(store.resolve("missing"), None);
+        // The empty default resolves nothing (fail-closed).
+        assert_eq!(InMemorySecretStore::new().resolve("a"), None);
+    }
+
+    #[test]
+    fn in_memory_secret_store_debug_redacts_values() {
+        // SC-13: a `{:?}` on the store must print names but NEVER the values.
+        let store = InMemorySecretStore::new().with_secret("api_key", "super-secret-value");
+        let dbg = format!("{store:?}");
+        assert!(dbg.contains("api_key"), "names are visible: {dbg}");
+        assert!(!dbg.contains("super-secret-value"), "values must be redacted: {dbg}");
+        assert!(dbg.contains("<redacted>"), "redaction marker present: {dbg}");
+    }
+
+    #[test]
+    fn resolve_secret_headers_injects_value_and_leaves_input_untouched() {
+        let store = InMemorySecretStore::new().with_secret("tok", "Bearer XYZ");
+        let mut request = NetRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/x".into(),
+            ..Default::default()
+        };
+        request
+            .headers
+            .insert("Authorization".into(), NetHeaderValue::Secret { secret_ref: "tok".into() });
+        request
+            .headers
+            .insert("Accept".into(), NetHeaderValue::Literal("application/json".into()));
+
+        let resolved = resolve_secret_headers(&request, &store).unwrap();
+        // The RESOLVED request carries the literal value; the literal header is
+        // unchanged.
+        assert_eq!(
+            resolved.headers.get("Authorization").and_then(|h| h.as_literal()),
+            Some("Bearer XYZ")
+        );
+        assert_eq!(
+            resolved.headers.get("Accept").and_then(|h| h.as_literal()),
+            Some("application/json")
+        );
+        // The INPUT request still holds the secret_ref (the recorder keeps this).
+        assert!(matches!(
+            request.headers.get("Authorization"),
+            Some(NetHeaderValue::Secret { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_secret_headers_errors_on_unknown_secret() {
+        let store = InMemorySecretStore::new(); // empty
+        let mut request = NetRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/x".into(),
+            ..Default::default()
+        };
+        request
+            .headers
+            .insert("Authorization".into(), NetHeaderValue::Secret { secret_ref: "nope".into() });
+        let err = resolve_secret_headers(&request, &store).unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
+        assert!(err.to_string().contains("nope"), "error names the ref: {err}");
+        // The error message must not contain any resolved value (there is none).
+    }
+
+    #[test]
+    fn net_header_value_serde_picks_secret_vs_literal_by_shape() {
+        // A bare string → Literal; an object with `secret_ref` → Secret.
+        let lit: NetHeaderValue = serde_json::from_str(r#""application/json""#).unwrap();
+        assert_eq!(lit, NetHeaderValue::Literal("application/json".into()));
+        let sec: NetHeaderValue = serde_json::from_str(r#"{"secret_ref":"k"}"#).unwrap();
+        assert_eq!(sec, NetHeaderValue::Secret { secret_ref: "k".into() });
+        // Round-trips canonically.
+        assert_eq!(serde_json::to_string(&sec).unwrap(), r#"{"secret_ref":"k"}"#);
+        assert_eq!(serde_json::to_string(&lit).unwrap(), r#""application/json""#);
+        // The secret_ref name is NOT readable as a literal value.
+        assert_eq!(sec.as_literal(), None);
     }
 }

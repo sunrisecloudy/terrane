@@ -13,7 +13,10 @@
 //! bridge methods: those are deterministic seams owned by the recorder
 //! (prd-merged/01 CR-11), not host effects.
 
-use crate::net::{live_network_forbidden, HttpClient, MockHttpClient, NetRequest, NetResponse};
+use crate::net::{
+    live_network_forbidden, HttpClient, InMemorySecretStore, MockHttpClient, NetRequest,
+    NetResponse, SecretStore,
+};
 use forge_domain::Result;
 use std::collections::BTreeMap;
 
@@ -77,6 +80,29 @@ pub trait HostBridge {
     fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
         Err(live_network_forbidden(&request.method))
     }
+
+    /// The secret store the host resolves `secret_ref` headers against, at the
+    /// HTTP edge, inside the `net_fetch` recording closure (prd-merged/07 SC-13).
+    /// The runtime calls this ONLY to inject a resolved value into the outgoing
+    /// request handed to [`net_fetch`](Self::net_fetch); the value never reaches
+    /// the recorded trace, the applet, or any log.
+    ///
+    /// The **default** is the shared empty store: every secret name is unknown, so
+    /// a secret_ref header fails closed (`RuntimeError`, no request sent). A bridge
+    /// that holds real secrets (e.g. forge-core's `StorageHostBridge`) overrides
+    /// this to return its injected store.
+    fn secret_store(&self) -> &dyn SecretStore {
+        empty_secret_store()
+    }
+}
+
+/// The process-wide empty [`SecretStore`] backing the [`HostBridge::secret_store`]
+/// default: every name resolves to `None`, so any secret_ref header fails closed.
+/// Shared so the default needs no allocation and returns a stable reference.
+fn empty_secret_store() -> &'static InMemorySecretStore {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<InMemorySecretStore> = OnceLock::new();
+    EMPTY.get_or_init(InMemorySecretStore::new)
 }
 
 /// An in-memory [`HostBridge`] for tests and replay sandboxes: storage in a
@@ -101,6 +127,11 @@ pub struct MemoryHostBridge {
     /// Every net request this bridge sent this run, in order (test convenience;
     /// proves a denied fetch never reached the client — the vec stays empty).
     pub net_requests: Vec<NetRequest>,
+    /// The secret store the host resolves `secret_ref` headers against at the
+    /// HTTP edge (SC-13). Defaults to an EMPTY [`InMemorySecretStore`] so a
+    /// secret_ref fails closed unless the test injects secrets via
+    /// [`with_secret_store`](Self::with_secret_store).
+    secret_store: InMemorySecretStore,
 }
 
 // Hand-rolled `Debug` because `Box<dyn HttpClient>` is not `Debug`.
@@ -136,6 +167,27 @@ impl MemoryHostBridge {
             http: client,
             ..Self::default()
         }
+    }
+
+    /// Build a bridge with both an injected [`HttpClient`] and an injected
+    /// [`InMemorySecretStore`] (SC-13 secret injection). The host resolves
+    /// `secret_ref` headers against `secrets` only inside the `net_fetch` closure,
+    /// into the request handed to `client` — the trace keeps the secret_ref.
+    pub fn with_http_and_secrets(
+        client: Box<dyn HttpClient>,
+        secrets: InMemorySecretStore,
+    ) -> Self {
+        MemoryHostBridge {
+            http: client,
+            secret_store: secrets,
+            ..Self::default()
+        }
+    }
+
+    /// Replace this bridge's secret store (builder style, test convenience).
+    pub fn with_secret_store(mut self, secrets: InMemorySecretStore) -> Self {
+        self.secret_store = secrets;
+        self
     }
 
     /// The most recently rendered UI tree, if any (test convenience).
@@ -259,9 +311,17 @@ impl HostBridge for MemoryHostBridge {
     fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
         // Record the request for test assertions, then forward to the injected
         // (mock by default) client. No live network: the default client returns a
-        // canned response, so a record-mode run is itself reproducible.
+        // canned response, so a record-mode run is itself reproducible. NOTE: by
+        // the time the host calls this, any secret_ref header has ALREADY been
+        // resolved to its literal value (the runtime injects at the HTTP edge), so
+        // a capturing mock client / `net_requests` observes the real header — while
+        // the recorded trace still holds only the secret_ref.
         self.net_requests.push(request.clone());
         self.http.send(request)
+    }
+
+    fn secret_store(&self) -> &dyn SecretStore {
+        &self.secret_store
     }
 }
 
