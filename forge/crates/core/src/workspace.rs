@@ -97,7 +97,24 @@ pub struct WorkspaceCore {
     /// finding 1). An actor with NO entry falls back to its role-derived read
     /// scope, so the existing owner-permits-all spine is unaffected.
     db_read_grants: std::collections::BTreeMap<String, Vec<String>>,
+    /// Factory for the `ctx.net.fetch` [`HttpClient`](forge_runtime::HttpClient)
+    /// (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`). Each `runtime.run` builds a
+    /// fresh client from this factory and hands it to the run's
+    /// [`StorageHostBridge`]. The default factory yields a
+    /// [`NoNetworkClient`](crate::bridge::NoNetworkClient) — so CI, the demo, and
+    /// any caller that does not opt in are network-free and fail closed
+    /// (`PlatformUnavailable`). A host/shell injects a real client via
+    /// [`set_http_client_factory`](WorkspaceCore::set_http_client_factory); tests
+    /// inject a mock. A factory (rather than one shared client) is used because an
+    /// [`HttpClient`](forge_runtime::HttpClient) trait object is not `Clone`, and
+    /// each run needs its own bridge-owned client.
+    http_client_factory: HttpClientFactory,
 }
+
+/// A factory that produces a fresh `ctx.net.fetch`
+/// [`HttpClient`](forge_runtime::HttpClient) per run. See
+/// [`WorkspaceCore::set_http_client_factory`].
+type HttpClientFactory = Box<dyn Fn() -> Box<dyn forge_runtime::HttpClient>>;
 
 impl WorkspaceCore {
     /// Open (or create) a file-backed workspace at `path` (`workspace.open`
@@ -130,7 +147,31 @@ impl WorkspaceCore {
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
             db_read_grants,
+            // Fail-closed default: no live network. A host/shell opts in by
+            // calling `set_http_client_factory` (review: keep the network seam
+            // injectable so CI/the demo never reach the network).
+            http_client_factory: Box::new(|| Box::new(crate::bridge::NoNetworkClient)),
         })
+    }
+
+    /// Inject the factory that builds the `ctx.net.fetch`
+    /// [`HttpClient`](forge_runtime::HttpClient) for each `runtime.run`
+    /// (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`). A host/shell wires its real
+    /// (out-of-crate) client here; tests inject a mock. Until this is called the
+    /// workspace uses [`NoNetworkClient`](crate::bridge::NoNetworkClient), which
+    /// refuses every request with `PlatformUnavailable` — so CI/the demo, which
+    /// never set this, stay network-free.
+    ///
+    /// The factory is invoked once per run so each run's bridge owns its own
+    /// client (an [`HttpClient`](forge_runtime::HttpClient) trait object is not
+    /// `Clone`). The egress decision is still the runtime's: the injected client is
+    /// consulted only for an *allowed*, *record-mode* fetch (replay serves the
+    /// recording; a denied fetch never reaches the client).
+    pub fn set_http_client_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn forge_runtime::HttpClient> + 'static,
+    ) {
+        self.http_client_factory = Box::new(factory);
     }
 
     /// Configure the TRUSTED `db.read` grant scope for `actor` (workspace
@@ -399,10 +440,23 @@ impl WorkspaceCore {
         // reserved even if the run itself fails.
         let invocation = self.next_run_counter()?;
 
+        // Build this run's `ctx.net.fetch` client from the injected factory BEFORE
+        // borrowing the store mutably for the bridge (the factory closure borrows
+        // `&self`; the bridge borrows `&mut self.store`). Default = NoNetworkClient
+        // (fail-closed, no live network) unless a host/shell injected a real client
+        // via `set_http_client_factory`.
+        let http_client = (self.http_client_factory)();
+
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
-        // each ctx.* call against the manifest policy BEFORE the bridge runs.
-        let mut bridge = StorageHostBridge::new(&mut self.store, applet_id.as_str());
+        // each ctx.* call against the manifest policy BEFORE the bridge runs —
+        // including the SC-5 net egress check, so a denied ctx.net.fetch never
+        // reaches the injected client.
+        let mut bridge = StorageHostBridge::with_http_client(
+            &mut self.store,
+            applet_id.as_str(),
+            http_client,
+        );
         let mut run = record_run(
             &program,
             &installed.manifest,

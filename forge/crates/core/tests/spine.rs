@@ -1704,3 +1704,294 @@ fn workspace_import_refuses_a_grants_only_non_empty_target() {
         "a refused import must not populate the target"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 9. ctx.net.fetch (prd-merged/07 SC-5/SC-8, prd-merged/01 CR-3 net namespace):
+//    the applet-facing network egress capability reaches the StorageHostBridge's
+//    INJECTED HttpClient — but only AFTER the runtime's HostContext has run the
+//    SC-5 NetPolicy against the applet's manifest `net` allowlist, and the
+//    response is RECORDED so replay is byte-identical (CR-8: no live network on
+//    replay; the recording is served). The actual HTTP is behind an injectable
+//    trait, so these tests inject a MOCK client and NEVER touch the live network.
+//    The denied case proves an ungranted domain surfaces as the run's
+//    CapabilityRequired outcome with the mock never called.
+// ---------------------------------------------------------------------------
+
+use forge_runtime::{HttpClient, NetRequest, NetResponse};
+use std::sync::{Arc, Mutex};
+
+/// A network-free [`HttpClient`] test double that (a) records every request it
+/// receives (so a test can assert the *policy-approved* request reached it) and
+/// (b) returns a canned JSON response. NO live network: this is exactly the
+/// injectable seam that keeps CI/the demo offline.
+#[derive(Clone)]
+struct RecordingMockClient {
+    seen: Arc<Mutex<Vec<NetRequest>>>,
+    response: NetResponse,
+}
+
+impl RecordingMockClient {
+    fn new(response: NetResponse) -> Self {
+        RecordingMockClient { seen: Arc::new(Mutex::new(Vec::new())), response }
+    }
+}
+
+impl HttpClient for RecordingMockClient {
+    fn send(&self, request: NetRequest) -> forge_domain::Result<NetResponse> {
+        self.seen.lock().unwrap().push(request);
+        Ok(self.response.clone())
+    }
+}
+
+/// Manifest granting `net` egress to `https://api.example.com/*` (GET), plus ui.
+/// No db/storage grants — this applet only fetches and renders.
+fn net_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "net": [
+                { "method": "GET", "url": "https://api.example.com/*",
+                  "response_content_types": ["application/json"] }
+            ]
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+/// An applet that `ctx.net.fetch`-es a weather endpoint and renders the parsed
+/// body. Deterministic: it reads no seams; its trace depends only on the recorded
+/// fetch response.
+const NET_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        const resp = await ctx.net.fetch({
+            method: "GET",
+            url: "https://api.example.com/weather"
+        });
+        const parsed = JSON.parse(resp.body);
+        await ctx.ui.render({
+            type: "Stack", direction: "v",
+            children: [
+                { type: "Text", text: "Weather" },
+                { type: "Text", text: "temp: " + parsed.temp }
+            ]
+        });
+        return { ok: true, value: { status: resp.status, temp: parsed.temp } };
+    }
+"#;
+
+#[test]
+fn net_fetch_runs_through_injected_client_records_and_replays_identically() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // Inject a recording mock as the network seam (the host/shell injection
+    // point). The factory builds a fresh client per run; we keep a handle to the
+    // shared `seen` log so we can assert the policy-approved request reached it.
+    let canned = NetResponse {
+        status: 200,
+        body: Some(r#"{"temp":21}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    };
+    let mock = RecordingMockClient::new(canned);
+    let seen = mock.seen.clone();
+    core.set_http_client_factory(move || Box::new(mock.clone()));
+
+    install_demo(&mut core, NET_TS, net_manifest());
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {} }),
+    ));
+    assert!(resp.ok, "net run must succeed: {:?}", resp.error);
+    assert_eq!(resp.payload["ok"], serde_json::json!(true), "run outcome must complete");
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+
+    // The mock was called EXACTLY ONCE, with the policy-approved request (the
+    // host/scheme/path the manifest allowlisted, method GET).
+    let approved = seen.lock().unwrap();
+    assert_eq!(approved.len(), 1, "exactly one allowed fetch reached the client");
+    assert_eq!(approved[0].method, "GET");
+    assert_eq!(approved[0].url, "https://api.example.com/weather");
+    drop(approved);
+
+    // The parsed body flowed back into the AppResult.
+    assert_eq!(resp.payload["result"]["value"]["status"], serde_json::json!(200));
+    assert_eq!(resp.payload["result"]["value"]["temp"], serde_json::json!(21));
+
+    // The fetch is in the recorded host-call trace (CR-8).
+    assert!(
+        resp.payload["host_call_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "net.fetch"),
+        "the run records net.fetch: {}",
+        resp.payload["host_call_methods"]
+    );
+
+    // The RunRecord captured the net.fetch response.
+    let rec = core.store().load_run(&run_id).unwrap().unwrap();
+    let net_call = rec
+        .calls
+        .iter()
+        .find(|c| c.method == "net.fetch")
+        .expect("net.fetch must be recorded");
+    assert_eq!(net_call.response["status"], serde_json::json!(200));
+    assert_eq!(net_call.response["body"], serde_json::json!(r#"{"temp":21}"#));
+
+    // Replay is byte-identical AND serves the RECORDED response — it never touches
+    // the live client (the replay path uses a NullBridge; no live network, CR-8).
+    let before = seen.lock().unwrap().len();
+    let replay = core.handle(cmd(
+        "runtime.replay",
+        None,
+        serde_json::json!({ "run_id": run_id }),
+    ));
+    assert!(replay.ok, "net run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before,
+        "replay must serve the recorded response, NOT re-call the live client"
+    );
+}
+
+#[test]
+fn net_fetch_to_ungranted_domain_is_denied_and_never_reaches_the_client() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // Inject a recording mock; a denied fetch must NEVER reach it.
+    let mock = RecordingMockClient::new(NetResponse {
+        status: 200,
+        body: Some(r#"{"temp":21}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    });
+    let seen = mock.seen.clone();
+    core.set_http_client_factory(move || Box::new(mock.clone()));
+
+    // Manifest with NO net grant at all → the egress policy maps the fetch to
+    // CapabilityRequired (the applet never requested the `net` capability).
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    install_demo(&mut core, NET_TS, manifest);
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {} }),
+    ));
+    // The run command completes (the denial is recorded), but the RUN outcome is a
+    // failure: the applet's ctx.net.fetch threw the policy denial.
+    assert!(resp.ok, "the run command itself completes (records the denial)");
+    assert_eq!(resp.payload["ok"], serde_json::json!(false), "run outcome must be a denial");
+    let result_str = resp.payload["result"].to_string();
+    assert!(
+        result_str.contains("CapabilityRequired"),
+        "an absent net grant surfaces CapabilityRequired: {result_str}"
+    );
+
+    // The mock was NEVER called — the egress policy denied the fetch before it
+    // could reach the injected client.
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a denied fetch must not reach the injected HttpClient"
+    );
+    assert_eq!(core.events().events_of_kind("run.failed").count(), 1);
+}
+
+#[test]
+fn net_fetch_to_non_allowlisted_path_is_permission_denied() {
+    // A non-empty net grant that does NOT cover the requested host → the egress
+    // policy denies with PermissionDenied (distinct from the empty-grant
+    // CapabilityRequired case), and the mock is never called.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let mock = RecordingMockClient::new(NetResponse {
+        status: 200,
+        body: Some(r#"{"temp":21}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    });
+    let seen = mock.seen.clone();
+    core.set_http_client_factory(move || Box::new(mock.clone()));
+
+    // Grants net to a DIFFERENT host than the applet fetches.
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "net": [ { "method": "GET", "url": "https://other.example.com/*" } ]
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    install_demo(&mut core, NET_TS, manifest);
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {} }),
+    ));
+    assert!(resp.ok, "the run command itself completes (records the denial)");
+    assert_eq!(resp.payload["ok"], serde_json::json!(false));
+    let result_str = resp.payload["result"].to_string();
+    assert!(
+        result_str.contains("PermissionDenied"),
+        "a non-matching net rule surfaces PermissionDenied: {result_str}"
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a denied fetch must not reach the injected HttpClient"
+    );
+}
+
+#[test]
+fn net_fetch_with_no_injected_client_fails_closed_platform_unavailable() {
+    // The DEFAULT (no `set_http_client_factory`) is the fail-closed NoNetworkClient:
+    // an allowed fetch with no client wired surfaces PlatformUnavailable rather than
+    // reaching the network. This is the CI/demo posture (no client is ever injected
+    // there). The fetch is policy-ALLOWED here (the manifest grants the host), so the
+    // denial proves the *bridge*'s default client refused, not the egress policy.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, NET_TS, net_manifest());
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {} }),
+    ));
+    assert!(resp.ok, "the run command itself completes");
+    assert_eq!(resp.payload["ok"], serde_json::json!(false), "no client wired → run fails");
+    let result_str = resp.payload["result"].to_string();
+    assert!(
+        result_str.contains("PlatformUnavailable")
+            && result_str.contains("no network client configured"),
+        "the default bridge client refuses with PlatformUnavailable: {result_str}"
+    );
+}

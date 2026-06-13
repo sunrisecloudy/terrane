@@ -26,6 +26,6 @@ mod bridge;
 mod event;
 mod workspace;
 
-pub use bridge::{StorageHostBridge, UiRender};
+pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender};
 pub use event::EventSink;
 pub use workspace::WorkspaceCore;

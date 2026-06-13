@@ -28,7 +28,7 @@
 //!     emit a `ui.patch` `CoreEvent` per render — the **UI tree patch** link.
 
 use forge_domain::{CoreError, LogicalTimestamp, Result};
-use forge_runtime::HostBridge;
+use forge_runtime::{HostBridge, HttpClient, NetRequest, NetResponse};
 use forge_storage::{AggregateResult, IndexManager, Mutation, Query, QueryResult, Store};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -68,6 +68,31 @@ impl From<AggregateResult> for AggregateJson {
 struct GroupJson {
     key: serde_json::Value,
     aggregate: AggregateJson,
+}
+
+/// The default [`HttpClient`] for a [`StorageHostBridge`]: it performs **no**
+/// network and refuses every request with `PlatformUnavailable` (prd-merged/01
+/// CR-3 `PlatformUnavailable`).
+///
+/// This is the fail-closed default so CI, the demo, and any caller that does not
+/// explicitly opt into networking never makes — and never *can* make — a live
+/// request: a real client is wired only by a host/shell via
+/// [`StorageHostBridge::with_http_client`] (tests inject a mock). The bridge's
+/// [`net_fetch`](StorageHostBridge::net_fetch) is itself reached only in record
+/// mode and only **after** the runtime's [`HostContext`] has run the SC-5
+/// [`NetPolicy`](forge_policy::NetPolicy) egress check — so a denied fetch never
+/// reaches this client at all; this stub governs the *allowed-but-no-client* case
+/// (prd-merged/01 CR-8: live network is forbidden unless a recorded response is
+/// being served).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoNetworkClient;
+
+impl HttpClient for NoNetworkClient {
+    fn send(&self, _request: NetRequest) -> Result<NetResponse> {
+        Err(CoreError::PlatformUnavailable(
+            "no network client configured".to_string(),
+        ))
+    }
 }
 
 /// A single UI render captured during a run: the full tree the applet rendered,
@@ -112,11 +137,33 @@ pub struct StorageHostBridge<'a> {
     pub ui_renders: Vec<UiRender>,
     /// Every log line captured this run.
     pub logs: Vec<String>,
+    /// The injectable HTTP client backing `ctx.net.fetch` (prd-merged/07 SC-5,
+    /// prd-merged/01 CR-3 `net`). The bridge performs no networking itself; it
+    /// delegates to this seam *after* the runtime's [`HostContext`] has run the
+    /// [`NetPolicy`](forge_policy::NetPolicy) egress check. The default is
+    /// [`NoNetworkClient`] (refuses every request with `PlatformUnavailable`) so
+    /// CI/the demo never reach the network; a host/shell injects a real client via
+    /// [`with_http_client`](Self::with_http_client) and tests inject a mock.
+    http: Box<dyn HttpClient>,
 }
 
 impl<'a> StorageHostBridge<'a> {
-    /// Build a bridge over `store`, scoped to `applet_id`.
+    /// Build a bridge over `store`, scoped to `applet_id`, with the fail-closed
+    /// [`NoNetworkClient`] as the `ctx.net.fetch` seam (no live network unless a
+    /// real client is injected via [`with_http_client`](Self::with_http_client)).
     pub fn new(store: &'a mut Store, applet_id: &str) -> Self {
+        Self::with_http_client(store, applet_id, Box::new(NoNetworkClient))
+    }
+
+    /// Build a bridge with an explicit injected [`HttpClient`] for `ctx.net.fetch`
+    /// (a host/shell wires a real client here; tests inject a mock). Everything
+    /// else matches [`new`](Self::new). Keeping the client injectable is what keeps
+    /// CI/the demo network-free: nothing in this crate constructs a live client.
+    pub fn with_http_client(
+        store: &'a mut Store,
+        applet_id: &str,
+        http: Box<dyn HttpClient>,
+    ) -> Self {
         StorageHostBridge {
             store,
             applet_ns: format!("applet/{applet_id}"),
@@ -126,6 +173,7 @@ impl<'a> StorageHostBridge<'a> {
             prev_ui: None,
             ui_renders: Vec::new(),
             logs: Vec::new(),
+            http,
         }
     }
 
@@ -306,6 +354,28 @@ impl HostBridge for StorageHostBridge<'_> {
         self.logs.push(line.to_string());
         Ok(())
     }
+
+    /// `ctx.net.fetch(request)` — perform the request through the injected
+    /// [`HttpClient`] (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`).
+    ///
+    /// This method is reached **only in record mode** and **only after** the
+    /// runtime's [`HostContext`](forge_runtime::HostContext) has run the SC-5
+    /// [`NetPolicy`](forge_policy::NetPolicy) egress check against the running
+    /// applet's manifest `net` allowlist and the host-call budget — a denied fetch
+    /// (empty allowlist → `CapabilityRequired`; host/scheme/path/method/size/
+    /// timeout/content-type/secret-header/private-IP violation → `PermissionDenied`)
+    /// never reaches here. On **replay** the recorder serves the recorded response
+    /// and this method is never called (CR-8: no live network unless a recorded
+    /// response is being served).
+    ///
+    /// The bridge performs no networking itself: it delegates to the injected
+    /// client. The default [`NoNetworkClient`] refuses with `PlatformUnavailable`
+    /// ("no network client configured") so an allowed fetch with no client wired
+    /// fails closed rather than reaching the network — which is exactly the
+    /// CI/demo path (they install no `net` capability and inject no client).
+    fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
+        self.http.send(request)
+    }
 }
 
 #[cfg(test)]
@@ -407,5 +477,55 @@ mod tests {
         b.ui_render(serde_json::json!({ "type": "FutureWidget", "x": 1 })).unwrap();
         assert_eq!(b.ui_renders.len(), 1);
         assert!(b.ui_renders[0].tree.to_string().contains("FutureWidget"));
+    }
+
+    // --- ctx.net.fetch: injectable HttpClient (SC-5 / CR-3 / CR-8) -----------
+
+    use forge_runtime::{HttpClient, MockHttpClient, NetRequest, NetResponse};
+
+    fn get_req(url: &str) -> NetRequest {
+        NetRequest { method: "GET".into(), url: url.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn net_fetch_default_client_fails_closed_platform_unavailable() {
+        // The default bridge wires NoNetworkClient: an (already-policy-approved)
+        // fetch with no client configured fails closed, never reaching a socket.
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        let err = b
+            .net_fetch(get_req("https://api.example.com/x"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PlatformUnavailable");
+        assert!(err.to_string().contains("no network client configured"), "{err}");
+    }
+
+    #[test]
+    fn no_network_client_refuses_directly() {
+        // The stub itself is the fail-closed default (CR-8: no live network).
+        let err = NoNetworkClient.send(get_req("https://api.example.com/x")).unwrap_err();
+        assert_eq!(err.code(), "PlatformUnavailable");
+    }
+
+    #[test]
+    fn net_fetch_delegates_to_an_injected_client() {
+        // An injected client (here a canned mock) is consulted by net_fetch and its
+        // response is returned verbatim — the seam that lets a host/shell wire real
+        // HTTP and a test wire a mock, with no networking in the bridge itself.
+        let mut s = store();
+        let canned = NetResponse {
+            status: 200,
+            body: Some(r#"{"ok":true}"#.into()),
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        let mut b = StorageHostBridge::with_http_client(
+            &mut s,
+            "app1",
+            Box::new(MockHttpClient::new(canned)),
+        );
+        let resp = b.net_fetch(get_req("https://api.example.com/weather")).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.as_deref(), Some(r#"{"ok":true}"#));
     }
 }
