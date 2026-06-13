@@ -7,6 +7,7 @@ members = [
   "crates/schema",
   "crates/policy",
   "crates/secrets",
+  "crates/signing",
   "crates/runtime",
   "crates/pipeline",
   "crates/ui",
@@ -32,6 +33,7 @@ forge-crdt = { path = "crates/crdt" }
 forge-schema = { path = "crates/schema" }
 forge-policy = { path = "crates/policy" }
 forge-secrets = { path = "crates/secrets" }
+forge-signing = { path = "crates/signing" }
 forge-runtime = { path = "crates/runtime" }
 forge-pipeline = { path = "crates/pipeline" }
 forge-ui = { path = "crates/ui" }
