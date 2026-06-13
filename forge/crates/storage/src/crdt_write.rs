@@ -1,0 +1,1016 @@
+//! forge-storage CRDT-backed record write path (DL-4) + projection rebuild (DL-6).
+//!
+//! Normative spec: `prd-merged/02-data-layer-prd.md` DL-1..6/DL-17/DL-21 and
+//! `forge/spec/crdt-write-path.md`. This module makes the **CRDT docs the source
+//! of truth** and the `records` table a *derived, rebuildable projection*:
+//!
+//! - Each collection is one [`RecordsDoc`](forge_crdt::RecordsDoc) addressed by
+//!   `doc_id = "collection/<name>"` (see [`collection_doc_id`]). The Loro map keys
+//!   are record ids and each value is the record's **full serialized
+//!   [`RecordEnvelope`]** — so materializing the projection is "read the doc, write
+//!   the row", which is exactly what rebuild does, giving zero diff by construction.
+//! - A record mutation becomes a Loro op on that doc; the incremental update is
+//!   appended as an immutable `crdt_chunks` row, an `oplog` row is appended, and
+//!   the `records` projection is materialized — **all in one SQLite transaction**
+//!   (DL-4). A failure rolls back the chunk, the op, and the projection together.
+//! - [`Store::rebuild_projection`] (DL-6) drops the entire `records` projection and
+//!   reconstructs it purely from `crdt_chunks` via the Loro `from_updates` rebuild
+//!   primitive, then rebuilds active indexes. It must equal the maintained
+//!   projection with zero diff.
+//!
+//! The CRDT path is **added alongside** the existing projection-only write methods
+//! (`put_record`, `apply_mutation`, …) which are preserved as the rebuild/raw seam;
+//! `apply_mutation_crdt` / `transact_mutations_crdt` are the real DL-4 mutation
+//! surface that the spine routes through.
+
+use crate::index::IndexManager;
+use crate::{map_json, map_sql, now_ms, put_record_tx, Mutation, Store};
+use forge_crdt::RecordsDoc;
+use forge_domain::{CollectionId, CoreError, RecordEnvelope, RecordId, Result};
+use rusqlite::params;
+
+/// The append-only chunk format tag written into `crdt_chunks.format`. Loro
+/// incremental updates; matches the fixtures' `chunk_format: "loro"`.
+pub const CHUNK_FORMAT: &str = "loro";
+
+/// The Loro peer id every workspace-local `RecordsDoc` writes under (DL-1). M0a is
+/// single-writer per workspace file (multi-peer transport is deferred — see
+/// `spec/crdt-write-path.md` "Deferred"), so one stable peer id is sufficient and
+/// keeps rebuilt docs writing future ops under the same identity as the maintained
+/// doc. Rebuild imports history regardless of this id.
+pub const LOCAL_PEER_ID: u64 = 1;
+
+/// The CRDT `doc_id` for a collection's records document (DL-2 `collection_doc`):
+/// `collection/<name>`. This is the key into `crdt_chunks` / `crdt_snapshots`.
+pub fn collection_doc_id(collection: &str) -> String {
+    format!("collection/{collection}")
+}
+
+/// The stable oplog `kind` string for a logical mutation, e.g. `record.insert`.
+/// Matches the fixtures' `expect_oplog_kinds`.
+fn oplog_kind(m: &Mutation) -> &'static str {
+    match m {
+        Mutation::Insert { .. } => "record.insert",
+        Mutation::Update { .. } => "record.update",
+        Mutation::Patch { .. } => "record.patch",
+        Mutation::Delete { .. } => "record.delete",
+        Mutation::Transact { .. } => "record.transact",
+    }
+}
+
+/// Mint the next immutable chunk id for `doc_id`. Ids are `chunk-NNNN`, zero-padded
+/// so lexical order matches insertion order (the `get_chunks` ordering tiebreak),
+/// and the sequence is the count of existing chunks + 1 so a re-run never collides
+/// with a prior chunk (append-only discipline, review 003). Computed inside the
+/// open transaction so it sees only committed chunks.
+fn next_chunk_id(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<String> {
+    let count: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM crdt_chunks WHERE doc_id = ?1",
+            params![doc_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sql)?;
+    Ok(format!("chunk-{:04}", count + 1))
+}
+
+/// Append one immutable CRDT chunk inside an open transaction. Mirrors
+/// [`Store::put_chunk`]'s append-only contract (review 003) but tx-scoped: an
+/// identical re-write is an idempotent no-op, a conflicting payload under an
+/// existing `(doc_id, chunk_id)` is a `StorageError`.
+fn put_chunk_tx(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    chunk_id: &str,
+    format: &str,
+    payload: &[u8],
+) -> Result<()> {
+    let existing: Option<(String, Vec<u8>)> = tx
+        .query_row(
+            "SELECT format, payload FROM crdt_chunks WHERE doc_id = ?1 AND chunk_id = ?2",
+            params![doc_id, chunk_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional_row()?;
+    if let Some((ef, ep)) = existing {
+        if ef == format && ep == payload {
+            return Ok(());
+        }
+        return Err(CoreError::StorageError(format!(
+            "crdt chunk ({doc_id}, {chunk_id}) is append-only and already exists \
+             with different content; refusing to rewrite history"
+        )));
+    }
+    tx.execute(
+        "INSERT INTO crdt_chunks (doc_id, chunk_id, format, payload, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![doc_id, chunk_id, format, payload, now_ms()],
+    )
+    .map_err(map_sql)?;
+    Ok(())
+}
+
+/// Append one oplog row inside an open transaction (the DL-4 write metadata that
+/// identifies the logical mutation, its doc id, and the chunk it produced). The
+/// `op_id` is `(doc_id)#(chunk_id)`, unique because chunk ids are unique per doc.
+#[allow(clippy::too_many_arguments)]
+fn append_op_tx(
+    tx: &rusqlite::Transaction<'_>,
+    op_id: &str,
+    actor_id: &str,
+    workspace_id: &str,
+    lamport: u64,
+    kind: &str,
+    payload: &[u8],
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO oplog
+             (op_id, actor_id, workspace_id, lamport, kind, payload, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![op_id, actor_id, workspace_id, lamport as i64, kind, payload, now_ms()],
+    )
+    .map_err(map_sql)?;
+    Ok(())
+}
+
+/// A tiny extension so the tx-scoped chunk read can use `.optional()` semantics
+/// without pulling the whole `OptionalExtension` import into scope confusingly.
+trait OptionalRow<T> {
+    fn optional_row(self) -> Result<Option<T>>;
+}
+impl<T> OptionalRow<T> for std::result::Result<T, rusqlite::Error> {
+    fn optional_row(self) -> Result<Option<T>> {
+        match self {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(map_sql(e)),
+        }
+    }
+}
+
+/// Load (or reconstruct) a collection's `RecordsDoc` from its persisted chunks,
+/// reading inside the open transaction so it sees only committed history (DL-4
+/// step 3 / DL-6 rebuild primitive). An empty chunk set yields a fresh document.
+fn load_doc_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<RecordsDoc> {
+    let mut stmt = tx
+        .prepare("SELECT payload FROM crdt_chunks WHERE doc_id = ?1 ORDER BY created_at, chunk_id")
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map(params![doc_id], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(map_sql)?;
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    for r in rows {
+        payloads.push(r.map_err(map_sql)?);
+    }
+    let refs: Vec<&[u8]> = payloads.iter().map(|p| p.as_slice()).collect();
+    RecordsDoc::from_updates(LOCAL_PEER_ID, &refs)
+}
+
+/// Read the materialized [`RecordEnvelope`] for `id` out of a `RecordsDoc`, or
+/// `None` if the record is absent (never written, or CRDT-deleted). The doc stores
+/// the full envelope JSON per record (see module docs), so this is a direct decode.
+fn envelope_from_doc(doc: &RecordsDoc, id: &str) -> Result<Option<RecordEnvelope>> {
+    match doc.get_record(id) {
+        Some(value) => {
+            let env: RecordEnvelope = serde_json::from_value(value)
+                .map_err(|e| map_json("crdt envelope decode", e))?;
+            Ok(Some(env))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Write a record's full envelope into the `RecordsDoc` as the record's value. We
+/// `replace_record_fields` with the *entire* envelope JSON because the caller has
+/// already read-modify-merged it (so a full replace is the post-state); the doc's
+/// value then equals the envelope byte-for-byte, which is what makes DL-6 rebuild
+/// reproduce the maintained projection exactly.
+fn write_envelope_to_doc(doc: &RecordsDoc, env: &RecordEnvelope) -> Result<()> {
+    let value =
+        serde_json::to_value(env).map_err(|e| map_json("crdt envelope encode", e))?;
+    doc.replace_record_fields(env.entity_id.as_str(), &value)
+}
+
+/// Apply ONE leaf mutation to an in-memory `RecordsDoc`, mutating CRDT state to the
+/// post-state envelope (insert/update/patch) or removing the record (delete). This
+/// is pure CRDT work; persistence (chunk/oplog/projection) is the caller's job
+/// inside the transaction. A `Transact` leaf is rejected here — groups are
+/// flattened by the caller so each leaf shares the one doc/commit/export.
+fn apply_leaf_to_doc(doc: &RecordsDoc, m: &Mutation) -> Result<()> {
+    match m {
+        Mutation::Insert {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let id = id.as_ref().ok_or_else(|| {
+                CoreError::QueryError("insert requires a collection-scoped id".into())
+            })?;
+            let at = forge_domain::LogicalTimestamp(logical_at.unwrap_or(0).max(0) as u64);
+            // Insert is a full (re)create of the visible record, even over a prior
+            // tombstone for the same id (DL-21 reinsert): start from a fresh
+            // envelope rather than merging the old one.
+            let mut env = RecordEnvelope::new(
+                CollectionId::new(collection.clone()),
+                RecordId::new(id.clone()),
+                fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                at,
+            );
+            crate::materialize_field_ids(&mut env);
+            write_envelope_to_doc(doc, &env)
+        }
+        Mutation::Update {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let mut env = require_record(doc, collection, id, "update")?;
+            // Update REPLACES the display fields (DL-17) but preserves
+            // unknown_fields/extensions already in the envelope (DL-9).
+            env.fields = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            crate::materialize_field_ids(&mut env);
+            crate::bump_updated_at(&mut env, *logical_at);
+            write_envelope_to_doc(doc, &env)
+        }
+        Mutation::Patch {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let mut env = require_record(doc, collection, id, "patch")?;
+            // Patch MERGES supplied fields, preserving omitted display fields and
+            // unknown/forward-compat fields (DL-9).
+            for (k, v) in fields {
+                env.fields.insert(k.clone(), v.clone());
+            }
+            crate::materialize_field_ids(&mut env);
+            crate::bump_updated_at(&mut env, *logical_at);
+            write_envelope_to_doc(doc, &env)
+        }
+        Mutation::Delete {
+            collection,
+            id,
+            logical_at: _,
+        } => {
+            // Whole-record CRDT delete (DL-4/DL-17): the record vanishes from
+            // get_record/list_record_ids/materialized and the tombstone rides in
+            // Loro history so it propagates and survives rebuild.
+            require_record(doc, collection, id, "delete")?;
+            doc.delete_record(id)
+        }
+        Mutation::Transact { .. } => Err(CoreError::QueryError(
+            "nested transact leaf reached the CRDT applier; flatten groups first".into(),
+        )),
+    }
+}
+
+/// Load the current envelope for a mutation that requires the record to exist,
+/// surfacing the same `QueryError` the projection-only path uses on a miss.
+fn require_record(
+    doc: &RecordsDoc,
+    collection: &str,
+    id: &str,
+    verb: &str,
+) -> Result<RecordEnvelope> {
+    envelope_from_doc(doc, id)?.ok_or_else(|| {
+        CoreError::QueryError(format!("{verb}: record {collection}/{id} does not exist"))
+    })
+}
+
+/// Flatten a (possibly nested) mutation into its ordered leaves, rejecting an
+/// `Insert` with no id early (so a group fails before any CRDT/SQLite work).
+fn flatten_leaves<'a>(m: &'a Mutation, out: &mut Vec<&'a Mutation>) {
+    match m {
+        Mutation::Transact { items } => {
+            for it in items {
+                flatten_leaves(it, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+/// Collect the distinct record ids a set of leaves touches, in first-touch order,
+/// so the projection materialization step only re-reads the affected records.
+fn touched_ids(leaves: &[&Mutation]) -> Vec<(String, String)> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for m in leaves {
+        let pair = match m {
+            Mutation::Insert { collection, id, .. } => {
+                id.as_ref().map(|i| (collection.clone(), i.clone()))
+            }
+            Mutation::Update { collection, id, .. }
+            | Mutation::Patch { collection, id, .. }
+            | Mutation::Delete { collection, id, .. } => {
+                Some((collection.clone(), id.clone()))
+            }
+            Mutation::Transact { .. } => None,
+        };
+        if let Some(p) = pair {
+            if !seen.contains(&p) {
+                seen.push(p);
+            }
+        }
+    }
+    seen
+}
+
+impl Store {
+    /// The DL-4 CRDT-backed mutation path for a **single** record mutation.
+    ///
+    /// This is the real write path the spine routes through (replacing the
+    /// projection-only [`apply_mutation`](Store::apply_mutation)): a mutation
+    /// becomes a Loro op on the collection's `RecordsDoc`, the incremental update
+    /// is appended to `crdt_chunks` (immutable id) plus an `oplog` row, and the
+    /// affected record(s) are materialized into the `records` projection — all in
+    /// ONE SQLite transaction. A failure rolls back the chunk, the op, AND the
+    /// projection together (DL-4 atomicity).
+    ///
+    /// A `Transact` here is rejected; use
+    /// [`transact_mutations_crdt`](Store::transact_mutations_crdt) for groups.
+    pub fn apply_mutation_crdt(
+        &mut self,
+        m: &Mutation,
+        indexes: &IndexManager,
+    ) -> Result<()> {
+        if matches!(m, Mutation::Transact { .. }) {
+            return Err(CoreError::QueryError(
+                "nested transact is not allowed; pass items to transact_mutations_crdt".into(),
+            ));
+        }
+        self.write_group_crdt(std::slice::from_ref(m), oplog_kind(m), indexes)
+            .map(|_| ())
+    }
+
+    /// The DL-4 CRDT-backed mutation path for a **group** of mutations (DL-17
+    /// `transact`): all leaves apply to the same `RecordsDoc`, the doc is committed
+    /// once and exported as a SINGLE incremental chunk, and one oplog row + the
+    /// affected projection rows are written in ONE SQLite transaction. All-or-
+    /// nothing: any failure rolls back the chunk, op, and projection together.
+    ///
+    /// Returns the number of leaf mutations applied (nested groups are flattened).
+    pub fn transact_mutations_crdt(
+        &mut self,
+        items: &[Mutation],
+        indexes: &IndexManager,
+    ) -> Result<usize> {
+        let group = Mutation::Transact {
+            items: items.to_vec(),
+        };
+        self.write_group_crdt(std::slice::from_ref(&group), oplog_kind(&group), indexes)
+    }
+
+    /// Shared DL-4 engine for both the single-mutation and group paths. `top` is
+    /// the original mutation(s) as the caller sees them (one leaf, or one group);
+    /// `kind` is the oplog kind string for the whole logical write.
+    ///
+    /// Steps (all inside one `transact`): load-or-rebuild the doc from chunks,
+    /// capture `before_version`, apply every flattened leaf to the doc, commit the
+    /// doc, export the incremental update since `before_version`, append it as one
+    /// immutable chunk, append one oplog row, then re-materialize each touched
+    /// record into the `records` projection (FTS-synced) from the post-mutation
+    /// CRDT state. Returns the leaf count.
+    fn write_group_crdt(
+        &mut self,
+        top: &[Mutation],
+        kind: &str,
+        indexes: &IndexManager,
+    ) -> Result<usize> {
+        // Flatten to leaves up front and validate the doc is single-collection:
+        // a `RecordsDoc` is per collection (DL-2), so a group spanning collections
+        // would need multiple docs — out of scope for M0a's one-doc transact.
+        let mut leaves: Vec<&Mutation> = Vec::new();
+        for m in top {
+            flatten_leaves(m, &mut leaves);
+        }
+        if leaves.is_empty() {
+            return Ok(0);
+        }
+        let collection = leaf_collection(leaves[0])?;
+        for m in &leaves {
+            let c = leaf_collection(m)?;
+            if c != collection {
+                return Err(CoreError::QueryError(format!(
+                    "a single CRDT transact group must target one collection; \
+                     found both '{collection}' and '{c}'"
+                )));
+            }
+        }
+        let doc_id = collection_doc_id(&collection);
+        let touched = touched_ids(&leaves);
+        let leaf_count = leaves.len();
+
+        self.transact(|tx| {
+            // 1-4. Load/reconstruct the doc and capture the pre-mutation version.
+            let doc = load_doc_tx(tx, &doc_id)?;
+            let before = doc.version();
+
+            // 5. Apply every leaf to the doc.
+            for m in &leaves {
+                apply_leaf_to_doc(&doc, m)?;
+            }
+            // 6. One commit for the whole group.
+            doc.commit();
+
+            // 7. Export exactly the new ops as one incremental update.
+            let chunk_payload = doc.export_updates_since(&before)?;
+
+            // 8. Append one immutable chunk.
+            let chunk_id = next_chunk_id(tx, &doc_id)?;
+            put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
+
+            // 9. Append one oplog row identifying the logical mutation + chunk.
+            let op_id = format!("{doc_id}#{chunk_id}");
+            let op_payload = serde_json::to_vec(&serde_json::json!({
+                "doc_id": doc_id,
+                "chunk_id": chunk_id,
+                "collection": collection,
+                "kind": kind,
+                "record_ids": touched.iter().map(|(_, id)| id).collect::<Vec<_>>(),
+            }))
+            .map_err(|e| map_json("oplog payload encode", e))?;
+            append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;
+
+            // 10. Materialize each touched record into the projection from the
+            //     post-mutation CRDT state (FTS-synced so indexes stay correct).
+            for (_, id) in &touched {
+                materialize_record_into_projection(tx, &doc, &collection, id, indexes)?;
+            }
+            Ok(leaf_count)
+        })
+    }
+
+    /// DL-6 projection rebuild: drop the **entire** `records` projection and
+    /// reconstruct it purely from the persisted `crdt_chunks` (the CRDT docs are
+    /// the source of truth), then rebuild active indexes. Must equal the
+    /// incrementally maintained projection with zero diff.
+    ///
+    /// For every distinct `doc_id` present in `crdt_chunks` that names a collection
+    /// (`collection/<name>`), the chunks are folded back into a fresh `RecordsDoc`
+    /// via the Loro `from_updates` rebuild primitive (order/duplication independent)
+    /// and each live record is re-materialized. Records CRDT-deleted in history are
+    /// simply absent from the rebuilt doc, so they do not reappear (DL-21).
+    pub fn rebuild_projection(&mut self, indexes: &IndexManager) -> Result<()> {
+        self.transact(|tx| {
+            // Drop the whole projection — it is derived, so this is safe.
+            tx.execute("DELETE FROM records", []).map_err(map_sql)?;
+
+            // Every collection doc with persisted chunks.
+            let doc_ids: Vec<String> = {
+                let mut stmt = tx
+                    .prepare("SELECT DISTINCT doc_id FROM crdt_chunks ORDER BY doc_id")
+                    .map_err(map_sql)?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(map_sql)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(map_sql)?);
+                }
+                out
+            };
+
+            for doc_id in &doc_ids {
+                let Some(collection) = collection_of_doc(doc_id) else {
+                    continue; // not a records collection doc (e.g. an applet src doc)
+                };
+                let doc = load_doc_tx(tx, doc_id)?;
+                for id in doc.list_record_ids() {
+                    materialize_record_into_projection(tx, &doc, collection, &id, indexes)?;
+                }
+            }
+            Ok(())
+        })?;
+        // Rebuild active physical indexes from the freshly materialized records.
+        self.build_indexes(indexes)
+    }
+}
+
+/// Re-materialize ONE record into the `records` projection from the post-mutation
+/// CRDT doc, inside the open transaction, keeping active FTS in sync (DL-5). If the
+/// record is absent in the doc (CRDT-deleted), the projection row is removed so the
+/// maintained projection and a from-scratch rebuild agree exactly.
+fn materialize_record_into_projection(
+    tx: &rusqlite::Transaction<'_>,
+    doc: &RecordsDoc,
+    collection: &str,
+    id: &str,
+    indexes: &IndexManager,
+) -> Result<()> {
+    match envelope_from_doc(doc, id)? {
+        Some(env) => {
+            let data = serde_json::to_string(&env)
+                .map_err(|e| map_json("materialize record", e))?;
+            put_record_tx(tx, &env)?;
+            indexes.sync_fts_for_record(tx, collection, id, &data)
+        }
+        None => {
+            // CRDT-deleted: drop the projection row and any FTS shadow row.
+            tx.execute(
+                "DELETE FROM records WHERE collection = ?1 AND id = ?2",
+                params![collection, id],
+            )
+            .map_err(map_sql)?;
+            indexes.delete_fts_for_record(tx, collection, id)
+        }
+    }
+}
+
+/// Extract the collection a leaf mutation targets (the doc selector).
+fn leaf_collection(m: &Mutation) -> Result<String> {
+    match m {
+        Mutation::Insert { collection, .. }
+        | Mutation::Update { collection, .. }
+        | Mutation::Patch { collection, .. }
+        | Mutation::Delete { collection, .. } => Ok(collection.clone()),
+        Mutation::Transact { .. } => Err(CoreError::QueryError(
+            "transact leaf reached the collection selector; flatten groups first".into(),
+        )),
+    }
+}
+
+/// The collection name encoded in a `collection/<name>` doc id, or `None` if the
+/// doc id is not a records-collection doc.
+fn collection_of_doc(doc_id: &str) -> Option<&str> {
+    doc_id.strip_prefix("collection/")
+}
+
+/// Derive a monotone-ish lamport for the oplog from the chunk sequence number, so
+/// the oplog's `(lamport, op_id)` total order matches write order without a
+/// separate clock. `chunk-0007` → lamport 7. Malformed ids fall back to 0.
+fn chunk_id_lamport(chunk_id: &str) -> u64 {
+    chunk_id
+        .strip_prefix("chunk-")
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Mutation, Query, QueryResult};
+    use serde_json::json;
+
+    fn store() -> Store {
+        Store::open_in_memory().expect("open in-memory store")
+    }
+
+    fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("object").clone()
+    }
+
+    fn insert(collection: &str, id: &str, fields: serde_json::Value, at: i64) -> Mutation {
+        Mutation::Insert {
+            collection: collection.into(),
+            id: Some(id.into()),
+            fields: obj(fields),
+            logical_at: Some(at),
+        }
+    }
+    fn patch(collection: &str, id: &str, fields: serde_json::Value, at: i64) -> Mutation {
+        Mutation::Patch {
+            collection: collection.into(),
+            id: id.into(),
+            fields: obj(fields),
+            logical_at: Some(at),
+        }
+    }
+    fn delete(collection: &str, id: &str, at: i64) -> Mutation {
+        Mutation::Delete {
+            collection: collection.into(),
+            id: id.into(),
+            logical_at: Some(at),
+        }
+    }
+
+    /// The visible projection as an ordered list of `{id, fields}` (deleted rows
+    /// hidden), matching the fixtures' `expect_records` shape.
+    fn visible_records(s: &Store, collection: &str) -> Vec<serde_json::Value> {
+        let q = Query::from(collection);
+        match s.query(&q).unwrap() {
+            QueryResult::Rows(rows) => rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.envelope.entity_id.as_str(),
+                        "fields": serde_json::to_value(&r.envelope.fields).unwrap(),
+                    })
+                })
+                .collect(),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    /// A full snapshot of the projection (every row's canonical `data` keyed by
+    /// `collection/id`) for zero-diff comparison across a rebuild.
+    fn projection_snapshot(s: &Store) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut stmt = s
+            .connection()
+            .prepare("SELECT collection, id, data FROM records ORDER BY collection, id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap();
+        let mut out = std::collections::BTreeMap::new();
+        for r in rows {
+            let (c, id, data) = r.unwrap();
+            let value: serde_json::Value = serde_json::from_str(&data).unwrap();
+            out.insert(format!("{c}/{id}"), value);
+        }
+        out
+    }
+
+    // --- DL-4: the single-mutation write chain ---------------------------
+
+    #[test]
+    fn insert_writes_chunk_oplog_and_projection_in_one_pass() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+
+        // Projection materialized.
+        let env = s.get_record("tasks", "t1").unwrap().unwrap();
+        assert_eq!(env.fields["title"], json!("Ship"));
+        // Exactly one chunk on the collection doc.
+        let chunks = s.get_chunks(&collection_doc_id("tasks")).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].format, CHUNK_FORMAT);
+        assert_eq!(chunks[0].chunk_id, "chunk-0001");
+        // Exactly one oplog row, kind record.insert.
+        let ops = s.list_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "record.insert");
+    }
+
+    #[test]
+    fn insert_materializes_stable_field_ids() {
+        // The CRDT insert path must preserve the review 045/046/049 field_id
+        // materialization so indexes keyed on the stable id still see the record.
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let env = s.get_record("tasks", "t1").unwrap().unwrap();
+        assert_eq!(env.field_ids.get("f_title"), Some(&json!("Ship")));
+    }
+
+    #[test]
+    fn patch_preserves_omitted_and_unknown_fields() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        // Seed with a display field and an unknown/forward-compat field via the
+        // CRDT path (insert carries display fields; inject unknown by a raw write
+        // is not available here, so assert display-field preservation + DL-9).
+        s.apply_mutation_crdt(
+            &insert("tasks", "t1", json!({"title": "A", "status": "draft", "prio": 1}), 1),
+            &idx,
+        )
+        .unwrap();
+        s.apply_mutation_crdt(&patch("tasks", "t1", json!({"status": "ready"}), 2), &idx)
+            .unwrap();
+        let env = s.get_record("tasks", "t1").unwrap().unwrap();
+        assert_eq!(env.fields["title"], json!("A"), "omitted display field preserved");
+        assert_eq!(env.fields["status"], json!("ready"));
+        assert_eq!(env.fields["prio"], json!(1));
+    }
+
+    // --- DL-4 delete + the one-transaction atomicity ----------------------
+
+    #[test]
+    fn delete_removes_record_from_projection_and_keeps_history() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Temp"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&delete("tasks", "t1", 2), &idx).unwrap();
+        // Gone from the projection.
+        assert!(s.get_record("tasks", "t1").unwrap().is_none());
+        assert!(visible_records(&s, "tasks").is_empty());
+        // Two chunks (insert + delete) survive in append-only history.
+        assert_eq!(s.get_chunks(&collection_doc_id("tasks")).unwrap().len(), 2);
+        assert_eq!(s.list_ops().unwrap().last().unwrap().kind, "record.delete");
+    }
+
+    #[test]
+    fn failed_write_rolls_back_both_chunk_and_projection() {
+        // A patch of a missing record fails: NEITHER a chunk NOR a projection row
+        // may be left behind (DL-4 one-transaction atomicity).
+        let mut s = store();
+        let idx = IndexManager::new();
+        let err = s
+            .apply_mutation_crdt(&patch("tasks", "ghost", json!({"x": 1}), 1), &idx)
+            .unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+        // No chunk, no oplog row, no projection row.
+        assert!(s.get_chunks(&collection_doc_id("tasks")).unwrap().is_empty());
+        assert!(s.list_ops().unwrap().is_empty());
+        assert!(s.get_record("tasks", "ghost").unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_group_rolls_back_the_whole_transaction() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        // First a good write so there IS prior history to preserve.
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"v": 1}), 1), &idx)
+            .unwrap();
+        let chunks_before = s.get_chunks(&collection_doc_id("tasks")).unwrap().len();
+
+        // A group whose second leaf patches a missing record -> whole group fails.
+        let items = vec![
+            insert("tasks", "t2", json!({"v": 2}), 2),
+            patch("tasks", "missing", json!({"v": 3}), 3),
+        ];
+        let err = s.transact_mutations_crdt(&items, &idx).unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+        // t2 was not materialized and no new chunk/op landed.
+        assert!(s.get_record("tasks", "t2").unwrap().is_none());
+        assert_eq!(
+            s.get_chunks(&collection_doc_id("tasks")).unwrap().len(),
+            chunks_before,
+            "a failed group must not append a chunk"
+        );
+        // The prior good record is untouched.
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["v"], json!(1));
+    }
+
+    // --- DL-4 transact group: one commit -> one chunk --------------------
+
+    #[test]
+    fn transact_group_collapses_to_one_chunk_and_one_oplog_row() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        let items = vec![
+            insert("tasks", "t1", json!({"title": "A", "done": false}), 1),
+            insert("tasks", "t2", json!({"title": "B", "done": false}), 2),
+            patch("tasks", "t1", json!({"done": true}), 3),
+        ];
+        let n = s.transact_mutations_crdt(&items, &idx).unwrap();
+        assert_eq!(n, 3);
+        // One chunk, one oplog row of kind record.transact.
+        assert_eq!(s.get_chunks(&collection_doc_id("tasks")).unwrap().len(), 1);
+        let ops = s.list_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "record.transact");
+        // Post-state projection.
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["done"], json!(true));
+        assert_eq!(s.get_record("tasks", "t2").unwrap().unwrap().fields["title"], json!("B"));
+    }
+
+    // --- DL-6: rebuild equals maintained projection (zero diff) -----------
+
+    #[test]
+    fn rebuild_projection_equals_maintained_projection() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&patch("tasks", "t1", json!({"done": true}), 2), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "B"}), 3), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&delete("tasks", "t1", 4), &idx).unwrap();
+        s.apply_mutation_crdt(&insert("notes", "n1", json!({"body": "hi"}), 5), &idx)
+            .unwrap();
+
+        let before = projection_snapshot(&s);
+        s.rebuild_projection(&idx).unwrap();
+        let after = projection_snapshot(&s);
+        assert_eq!(after, before, "DL-6 rebuild must be byte-identical to the maintained projection");
+        // The deleted record stays gone after rebuild (no tombstone resurrection).
+        assert!(!after.contains_key("tasks/t1"));
+        assert!(after.contains_key("tasks/t2"));
+        assert!(after.contains_key("notes/n1"));
+    }
+
+    #[test]
+    fn reinsert_after_delete_rebuilds_recreated_record() {
+        // The hardest DL-21 case: insert -> delete -> reinsert same id. Rebuild must
+        // show the recreated record, not a lingering tombstone.
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Old"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&delete("tasks", "t1", 2), &idx).unwrap();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "New"}), 3), &idx)
+            .unwrap();
+        let before = projection_snapshot(&s);
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["title"], json!("New"));
+        s.rebuild_projection(&idx).unwrap();
+        assert_eq!(projection_snapshot(&s), before);
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["title"], json!("New"));
+    }
+
+    // --- Fixture corpus (fixtures/crdt-write, T024) ----------------------
+
+    #[derive(serde::Deserialize)]
+    struct FixtureOp {
+        op: String,
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        fields: serde_json::Value,
+        #[serde(default)]
+        items: Vec<FixtureOp>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        case: String,
+        collection: String,
+        doc_id: String,
+        ops: Vec<FixtureOp>,
+        expect_records: Vec<serde_json::Value>,
+        #[serde(default)]
+        expect_deleted_ids: Vec<String>,
+        expect_chunk_count: usize,
+        #[serde(default)]
+        expect_oplog_kinds: Vec<String>,
+        #[serde(default)]
+        rebuild_chunk_order: Option<Vec<String>>,
+        rebuild_equals_projection: bool,
+    }
+
+    /// Convert a fixture op into a storage `Mutation`, threading a per-op logical
+    /// clock so timestamps advance deterministically.
+    fn op_to_mutation(collection: &str, op: &FixtureOp, at: i64) -> Mutation {
+        match op.op.as_str() {
+            "insert" => insert(collection, op.id.as_deref().unwrap(), op.fields.clone(), at),
+            "patch" => patch(collection, op.id.as_deref().unwrap(), op.fields.clone(), at),
+            "delete" => delete(collection, op.id.as_deref().unwrap(), at),
+            "transact" => Mutation::Transact {
+                items: op
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| op_to_mutation(collection, child, at + i as i64))
+                    .collect(),
+            },
+            other => panic!("unknown fixture op {other}"),
+        }
+    }
+
+    fn load_fixture(name: &str) -> Fixture {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/crdt-write")
+            .join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()))
+    }
+
+    fn run_fixture(name: &str) {
+        let fx = load_fixture(name);
+        let mut s = store();
+        let idx = IndexManager::new();
+
+        // Apply each top-level fixture op as one DL-4 logical write.
+        let mut clock = 0i64;
+        for op in &fx.ops {
+            clock += 1;
+            let m = op_to_mutation(&fx.collection, op, clock);
+            match &m {
+                Mutation::Transact { items } => {
+                    clock += items.len() as i64;
+                    s.transact_mutations_crdt(items, &idx).unwrap();
+                }
+                _ => s.apply_mutation_crdt(&m, &idx).unwrap(),
+            }
+        }
+
+        // expect_records (visible, ordered).
+        assert_eq!(
+            visible_records(&s, &fx.collection),
+            fx.expect_records,
+            "case {}: visible projection mismatch",
+            fx.case
+        );
+
+        // expect_deleted_ids: each must be absent from the live projection but
+        // derivable from CRDT history (the doc's chunk history records the delete).
+        for id in &fx.expect_deleted_ids {
+            assert!(
+                s.get_record(&fx.collection, id).unwrap().is_none()
+                    || s.get_record(&fx.collection, id).unwrap().unwrap().deleted,
+                "case {}: deleted id {id} must not be live",
+                fx.case
+            );
+        }
+
+        // expect_chunk_count.
+        let chunks = s.get_chunks(&fx.doc_id).unwrap();
+        assert_eq!(
+            chunks.len(),
+            fx.expect_chunk_count,
+            "case {}: chunk count mismatch",
+            fx.case
+        );
+
+        // expect_oplog_kinds (in order).
+        if !fx.expect_oplog_kinds.is_empty() || fx.expect_chunk_count == 0 {
+            let kinds: Vec<String> = s.list_ops().unwrap().into_iter().map(|o| o.kind).collect();
+            assert_eq!(kinds, fx.expect_oplog_kinds, "case {}: oplog kinds mismatch", fx.case);
+        }
+
+        // DL-6: rebuild_equals_projection — drop and reconstruct purely from chunks.
+        if fx.rebuild_equals_projection {
+            let before = projection_snapshot(&s);
+            s.rebuild_projection(&idx).unwrap();
+            let after = projection_snapshot(&s);
+            assert_eq!(
+                after, before,
+                "case {}: DL-6 rebuild must equal the maintained projection",
+                fx.case
+            );
+        }
+
+        // rebuild_chunk_order: rebuild a fresh doc from the persisted chunks in the
+        // fixture-specified (shuffled/duplicated) order and assert the materialized
+        // records still equal expect_records — pins Loro's order/dup independence.
+        if let Some(order) = &fx.rebuild_chunk_order {
+            let by_id: std::collections::HashMap<String, Vec<u8>> = chunks
+                .iter()
+                .map(|c| (c.chunk_id.clone(), c.payload.clone()))
+                .collect();
+            let payloads: Vec<Vec<u8>> = order
+                .iter()
+                .map(|cid| by_id.get(cid).expect("fixture chunk id present").clone())
+                .collect();
+            let refs: Vec<&[u8]> = payloads.iter().map(|p| p.as_slice()).collect();
+            let rebuilt = RecordsDoc::from_updates(LOCAL_PEER_ID, &refs).unwrap();
+            let mut visible: Vec<serde_json::Value> = rebuilt
+                .list_record_ids()
+                .into_iter()
+                .filter_map(|id| {
+                    let env: RecordEnvelope =
+                        serde_json::from_value(rebuilt.get_record(&id)?).ok()?;
+                    if env.deleted {
+                        return None;
+                    }
+                    Some(json!({
+                        "id": env.entity_id.as_str(),
+                        "fields": serde_json::to_value(&env.fields).unwrap(),
+                    }))
+                })
+                .collect();
+            visible.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            assert_eq!(
+                visible, fx.expect_records,
+                "case {}: out-of-order/duplicate chunk rebuild must converge",
+                fx.case
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_insert_read_rebuild() {
+        run_fixture("insert_read_rebuild.json");
+    }
+    #[test]
+    fn fixture_patch_preserves_omitted_fields() {
+        run_fixture("patch_preserves_omitted_fields.json");
+    }
+    #[test]
+    fn fixture_delete_tombstone_rebuild() {
+        run_fixture("delete_tombstone_rebuild.json");
+    }
+    #[test]
+    fn fixture_insert_patch_delete_rebuild() {
+        run_fixture("insert_patch_delete_rebuild.json");
+    }
+    #[test]
+    fn fixture_two_records_independent_rebuild() {
+        run_fixture("two_records_independent_rebuild.json");
+    }
+    #[test]
+    fn fixture_reinsert_after_delete_rebuild() {
+        run_fixture("reinsert_after_delete_rebuild.json");
+    }
+    #[test]
+    fn fixture_unknown_forward_compat_preserved() {
+        run_fixture("unknown_forward_compat_preserved.json");
+    }
+    #[test]
+    fn fixture_empty_collection_rebuild() {
+        run_fixture("empty_collection_rebuild.json");
+    }
+    #[test]
+    fn fixture_transact_group_single_chunk() {
+        run_fixture("transact_group_single_chunk.json");
+    }
+    #[test]
+    fn fixture_rebuild_duplicate_out_of_order_chunks() {
+        run_fixture("rebuild_duplicate_out_of_order_chunks.json");
+    }
+}

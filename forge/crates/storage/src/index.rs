@@ -504,6 +504,34 @@ impl IndexManager {
         Ok(())
     }
 
+    /// Drop any active FTS shadow rows for a record that no longer exists in the
+    /// projection (e.g. a CRDT whole-record delete during DL-4 materialize / DL-6
+    /// rebuild). Idempotent: deletes zero or one row per active FTS index. Unlike
+    /// [`sync_fts_for_record`](Self::sync_fts_for_record) this needs no record data
+    /// because the record is gone — it only removes the stale search row.
+    pub fn delete_fts_for_record(
+        &self,
+        conn: &Connection,
+        collection: &str,
+        record_id: &str,
+    ) -> Result<()> {
+        for def in self.defs.values() {
+            if def.collection != collection
+                || def.kind != IndexKind::Fts5
+                || !def.state.is_usable()
+            {
+                continue;
+            }
+            let delete = format!(
+                "DELETE FROM {} WHERE record_id = ?1",
+                quote_ident(&def.index_id)
+            );
+            conn.execute(&delete, rusqlite::params![record_id])
+                .map_err(|e| CoreError::StorageError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Apply the physical DDL for every **active** definition. Expression index
     /// DDL is `IF NOT EXISTS`, so this is idempotent; FTS5 tables are populated
     /// from canonical `records` via [`rebuild_active`]. Non-active definitions

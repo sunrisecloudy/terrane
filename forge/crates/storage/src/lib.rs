@@ -33,6 +33,9 @@ pub use query::{
 pub mod index;
 pub use index::{CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexState};
 
+pub mod crdt_write;
+pub use crdt_write::{collection_doc_id, CHUNK_FORMAT, LOCAL_PEER_ID};
+
 /// The M0a physical schema (prd-merged/02 §4 subset). Created on open if
 /// absent. Tables that exist in the full spec but are unused by the spine are
 /// deliberately omitted; the columns present match the spec names so the file

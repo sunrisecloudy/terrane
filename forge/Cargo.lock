@@ -589,6 +589,7 @@ dependencies = [
 name = "forge-storage"
 version = "0.1.0"
 dependencies = [
+ "forge-crdt",
  "forge-domain",
  "rusqlite",
  "serde",
