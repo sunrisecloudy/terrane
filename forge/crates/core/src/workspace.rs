@@ -716,18 +716,24 @@ impl WorkspaceCore {
         }))
     }
 
-    /// Import a bundle file into THIS workspace in place: open the bundle (itself a
-    /// self-describing workspace file), copy its syncable state into a fresh store
-    /// and rebuild the projection from the imported chunks (DL-6), then swap that
-    /// store in and reload the portable grant table so an imported scoped grant is
-    /// in effect immediately. A fresh [`IndexManager`] is sufficient — indexes are
-    /// physical structures rebuilt from canonical records, not part of the portable
-    /// contract yet.
+    /// Import a bundle file into THIS workspace **in place**: open the bundle
+    /// (itself a self-describing workspace file), copy its syncable state into the
+    /// store `self` already holds and rebuild the projection from the imported
+    /// chunks (DL-6), then reload the portable grant table so an imported scoped
+    /// grant is in effect immediately. A fresh [`IndexManager`] is sufficient —
+    /// indexes are physical structures rebuilt from canonical records, not part of
+    /// the portable contract yet.
+    ///
+    /// Review 062 P1 #1: the import writes into `self.store` via
+    /// [`Store::import_workspace_in_place`], so when this workspace is **file-backed**
+    /// the imported tables are committed to the SAME file on disk and survive a
+    /// drop + reopen of that path. The prior implementation imported into a separate
+    /// in-memory store and swapped `self.store` to it, which reported success but
+    /// lost everything on reopen of the original (still-empty) target file.
     fn import_from_file_in_place(&mut self, path: &str) -> Result<()> {
         let bundle = open_bundle(path)?;
         let indexes = IndexManager::new();
-        let imported = Store::import_workspace_in_memory(&bundle, &indexes)?;
-        self.store = imported;
+        self.store.import_workspace_in_place(&bundle, &indexes)?;
         self.db_read_grants = load_db_read_grants(&self.store)?;
         Ok(())
     }
@@ -753,14 +759,21 @@ impl WorkspaceCore {
         })
     }
 
-    /// True iff this workspace holds no syncable state yet (no records, no applet
-    /// meta, no oplog) — the precondition for [`cmd_workspace_import`]. Used so an
-    /// import never silently merges into a populated workspace.
+    /// True iff this workspace holds **no importable state at all** — the
+    /// precondition for [`cmd_workspace_import`], so an import never silently merges
+    /// into (or shadows) a populated workspace.
+    ///
+    /// Review 062 P1 #2: this delegates to the storage-level
+    /// [`Store::is_empty_target`], which checks EVERY table/namespace a bundle would
+    /// populate — the records projection, the CRDT source of truth
+    /// (`crdt_chunks`/`crdt_snapshots`) + `oplog`, the policy-gated `runs`/`run_logs`,
+    /// and every **portable** `kv` row (applet manifests/programs, the persisted
+    /// `db.read` grant table, the `run_counter`). The prior check only looked at
+    /// projected records, `applet/` meta, and the oplog, so a grants-only or
+    /// kv-only workspace passed the "fresh" check and could have its state silently
+    /// overwritten on import.
     fn is_empty_workspace(&self) -> Result<bool> {
-        let no_records = self.list_collections()?.is_empty();
-        let no_applets = self.store.kv_list(META_NS, "applet/")?.is_empty();
-        let no_ops = self.store.list_ops()?.is_empty();
-        Ok(no_records && no_applets && no_ops)
+        self.store.is_empty_target()
     }
 
     /// The distinct collection names present in the records projection, ordered.

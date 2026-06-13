@@ -1564,3 +1564,143 @@ fn export_import_rbac_is_gated_per_commands_spec() {
     ));
     assert!(owner_import.ok, "Owner must be permitted to import: {:?}", owner_import.error);
 }
+
+/// Review 062 P1 #1: `workspace.import` into a FILE-BACKED workspace must PERSIST
+/// to the target file. The import is committed to the SAME SQLite file the
+/// workspace already holds, so after dropping the handle and reopening the same
+/// path the imported applet (manifest + compiled program), record, and the
+/// portable `db.read` grant table are all still present. The pre-fix code
+/// imported into a separate in-memory store and swapped it in, so a reopen of the
+/// original file saw an empty workspace — import reported success but lost
+/// everything on exit.
+#[test]
+fn workspace_import_persists_into_a_file_backed_workspace_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+    let target = dir.path().join("imported.forge");
+
+    // --- Source A (file-backed): install + run (a record), provision a grant,
+    //     then export the portable bundle. -----------------------------------
+    let src_path = dir.path().join("source.forge");
+    {
+        let mut a = WorkspaceCore::open(&src_path, "ws_a").unwrap();
+        install_demo(&mut a, DEMO_TS, demo_manifest());
+        let run = a.handle(cmd(
+            "runtime.run",
+            Some("app_demo"),
+            serde_json::json!({ "input": { "title": "Persisted note" } }),
+        ));
+        assert!(run.ok, "source run must succeed: {:?}", run.error);
+        // A portable workspace-config grant that must survive the round-trip.
+        a.grant_db_read("auditor", ["tasks"]).unwrap();
+        let export = a.handle(cmd(
+            "workspace.export",
+            None,
+            serde_json::json!({ "path": bundle.to_str().unwrap() }),
+        ));
+        assert!(export.ok, "export must succeed: {:?}", export.error);
+    }
+
+    // --- Import the bundle into a FRESH FILE-BACKED workspace B, then DROP B. -
+    {
+        let mut b = WorkspaceCore::open(&target, "ws_b").unwrap();
+        let import = b.handle(cmd(
+            "workspace.import",
+            None,
+            serde_json::json!({ "path": bundle.to_str().unwrap() }),
+        ));
+        assert!(import.ok, "file-backed import must succeed: {:?}", import.error);
+        assert_eq!(import.payload["records"], serde_json::json!(1), "one record reconstructed");
+        assert_eq!(import.payload["imported_applets"], serde_json::json!(["applet/app_demo"]));
+        // Visible in this handle before drop.
+        assert_eq!(b.store().list_records("tasks").unwrap().len(), 1);
+        // The dropped handle releases the SQLite connection on the target file.
+    }
+
+    // --- REOPEN the SAME path: every imported piece survived to disk. --------
+    let mut reopened = WorkspaceCore::open(&target, "ws_b").unwrap();
+
+    // (a) The imported RECORD persisted (re-derived from the imported CRDT chunks).
+    let rec = reopened
+        .store()
+        .get_record("tasks", "tasks/1")
+        .unwrap()
+        .expect("the imported record must survive drop + reopen of the file");
+    assert_eq!(rec.fields["title"], serde_json::json!("Persisted note"));
+    assert_eq!(reopened.store().list_records("tasks").unwrap().len(), 1);
+
+    // (b) The imported APPLET (manifest + compiled program) persisted: the
+    //     reopened workspace can RUN it, writing a 2nd record.
+    let run_b = reopened.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "title": "After reopen" } }),
+    ));
+    assert!(run_b.ok, "the imported applet must run after reopen: {:?}", run_b.error);
+    assert_eq!(
+        reopened.store().list_records("tasks").unwrap().len(),
+        2,
+        "the persisted applet wrote a new record after reopen"
+    );
+
+    // (c) The portable `db.read` GRANT table persisted: the scoped `auditor` is
+    //     still confined to `tasks` after the import was written to disk and
+    //     reopened (an ungranted collection stays denied, no fail-open).
+    let denied = reopened.handle(cmd_as(
+        actor(Role::Auditor),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "secrets" }),
+    ));
+    assert!(
+        !denied.ok,
+        "the imported db.read grant must persist: `secrets` stays denied for the scoped auditor"
+    );
+    assert_eq!(denied.error.unwrap().code(), "CapabilityRequired");
+    let granted = reopened.handle(cmd_as(
+        actor(Role::Auditor),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks" }),
+    ));
+    assert!(granted.ok, "the granted collection stays readable after reopen: {:?}", granted.error);
+}
+
+/// Review 062 P1 #2: the fresh-target precondition uses the storage-level
+/// `is_empty_target` (every importable table/namespace), so a workspace that is
+/// "empty" only in its records projection but already carries portable state —
+/// here a `db.read` GRANTS-only workspace — is correctly NOT fresh and the import
+/// is refused. The pre-fix records/applet/oplog-only check let a grants-only
+/// target pass and silently shadowed the existing grant table.
+#[test]
+fn workspace_import_refuses_a_grants_only_non_empty_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+
+    // Source A: a run + export so we have a real bundle to attempt to import.
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "X" } })));
+    assert!(a
+        .handle(cmd("workspace.export", None, serde_json::json!({ "path": bundle.to_str().unwrap() })))
+        .ok);
+
+    // Target B holds ONLY a db.read grant (no records, no applet meta, no oplog):
+    // empty by the OLD check, but it carries portable kv state.
+    let mut b = WorkspaceCore::in_memory("ws_b").unwrap();
+    b.grant_db_read("dev", ["tasks"]).unwrap();
+
+    let import = b.handle(cmd(
+        "workspace.import",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(!import.ok, "import must refuse a grants-only (non-empty) target, not silently overwrite it");
+    assert_eq!(import.error.unwrap().code(), "ValidationError");
+
+    // And the pre-existing grant is untouched (the refused import wrote nothing).
+    assert!(
+        b.store().list_records("tasks").unwrap().is_empty(),
+        "a refused import must not populate the target"
+    );
+}
