@@ -13,7 +13,7 @@
 //!   publisher and re-evaluate.
 
 use crate::preimage::{
-    content_hash, manifest_hash, package_preimage, permissions_hash, policy_hash,
+    content_hash, file_digest, manifest_hash, package_preimage, permissions_hash, policy_hash,
 };
 use crate::verify::verify_signature;
 use crate::Package;
@@ -133,6 +133,18 @@ fn check_integrity(pkg: &Package) -> Result<(), TrustError> {
     let pkg_hash = |reason: &str| TrustError::new(FailureLayer::PackageHash, reason);
     let from_core = |e: CoreError| TrustError::new(FailureLayer::PackageHash, e.to_string());
 
+    // Every recorded per-file digest must actually hash its content (review
+    // 079 #1). MP-4 carries `files[{path, hash}]`; a package whose bytes are
+    // intact but whose `files[].sha256` metadata was tampered to a bogus value
+    // must not verify as trusted — downstream install/audit code reads that
+    // metadata, so a trusted package must not carry a lying digest.
+    for f in &pkg.files {
+        if file_digest(&f.content) != f.sha256 {
+            return Err(pkg_hash(
+                "a file's recorded sha256 does not match its content digest",
+            ));
+        }
+    }
     if content_hash(&pkg.files) != pkg.hashes.content_hash {
         return Err(pkg_hash(
             "file content no longer matches the signed contentHash",
@@ -175,10 +187,23 @@ fn check_policy(publisher: &str, signed_at: &str, trust: &PublisherTrust) -> Res
         ));
     }
     if let Some(valid_until) = &trust.valid_until {
-        // The fixtures use fixed-width RFC3339 Zulu timestamps, so a byte-wise
-        // compare matches a chronological compare. Reject when the signature was
-        // made at/after the trust expiry.
-        if signed_at >= valid_until.as_str() {
+        // Compare both timestamps as instants normalized to UTC (review 079 #3):
+        // RFC3339 permits numeric offsets, so a raw lexicographic compare would
+        // mis-order `…23:30:00Z` vs `…00:00:00+01:00`. Reject when the signature
+        // was made at/after the trust expiry.
+        let signed = parse_rfc3339(signed_at).map_err(|e| {
+            TrustError::new(
+                FailureLayer::Policy,
+                format!("manifest.signedAt is not a valid RFC3339 instant: {e}"),
+            )
+        })?;
+        let expiry = parse_rfc3339(valid_until).map_err(|e| {
+            TrustError::new(
+                FailureLayer::Policy,
+                format!("publisher trust valid_until is not a valid RFC3339 instant: {e}"),
+            )
+        })?;
+        if signed >= expiry {
             return Err(TrustError::new(
                 FailureLayer::Policy,
                 format!("publisher trust expired at {valid_until} before signedAt {signed_at}"),
@@ -186,6 +211,133 @@ fn check_policy(publisher: &str, signed_at: &str, trust: &PublisherTrust) -> Res
         }
     }
     Ok(())
+}
+
+/// A normalized instant: UTC seconds since a fixed (year-0 proleptic) epoch plus
+/// nanoseconds. Only used for ordering, so the epoch is arbitrary as long as it
+/// is consistent. `Ord` derives lexicographically over `(seconds, nanos)`, which
+/// is the correct chronological order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Instant {
+    seconds: i64,
+    nanos: u32,
+}
+
+/// Parse an RFC3339 date-time into a UTC-normalized [`Instant`], applying any
+/// numeric offset (`Z`, `+hh:mm`, `-hh:mm`). Pure integer arithmetic — no chrono,
+/// so the crate stays `wasm32-unknown-unknown`-clean. Rejects malformed input
+/// with a typed reason rather than panicking.
+///
+/// Accepts `YYYY-MM-DDThh:mm:ss[.fraction](Z|±hh:mm)`. The `T` separator may be
+/// upper or lower case (RFC3339 §5.6). Leap seconds (`ss == 60`) are accepted and
+/// clamped to `59` for ordering purposes.
+fn parse_rfc3339(s: &str) -> Result<Instant, String> {
+    let bytes = s.as_bytes();
+    // Minimum: `YYYY-MM-DDThh:mm:ssZ` = 20 chars.
+    if bytes.len() < 20 {
+        return Err(format!("{s:?} is too short"));
+    }
+    let num = |range: std::ops::Range<usize>| -> Result<i64, String> {
+        s.get(range.clone())
+            .and_then(|t| t.parse::<i64>().ok())
+            .ok_or_else(|| format!("{s:?} has a non-numeric field at {range:?}"))
+    };
+    let sep = |idx: usize, ch: u8| -> Result<(), String> {
+        if bytes.get(idx) == Some(&ch) {
+            Ok(())
+        } else {
+            Err(format!("{s:?} is missing {:?} at position {idx}", ch as char))
+        }
+    };
+
+    sep(4, b'-')?;
+    sep(7, b'-')?;
+    if !matches!(bytes.get(10), Some(b'T') | Some(b't')) {
+        return Err(format!("{s:?} is missing the date/time 'T' separator"));
+    }
+    sep(13, b':')?;
+    sep(16, b':')?;
+
+    let year = num(0..4)?;
+    let month = num(5..7)?;
+    let day = num(8..10)?;
+    let hour = num(11..13)?;
+    let minute = num(14..16)?;
+    let mut second = num(17..19)?;
+
+    if !(1..=12).contains(&month) {
+        return Err(format!("{s:?} month {month} out of range"));
+    }
+    if !(1..=31).contains(&day) {
+        return Err(format!("{s:?} day {day} out of range"));
+    }
+    if hour > 23 {
+        return Err(format!("{s:?} hour {hour} out of range"));
+    }
+    if minute > 59 {
+        return Err(format!("{s:?} minute {minute} out of range"));
+    }
+    if second == 60 {
+        second = 59; // leap second: clamp for ordering
+    } else if second > 59 {
+        return Err(format!("{s:?} second {second} out of range"));
+    }
+
+    // Optional fractional seconds after `ss`, then the offset.
+    let mut idx = 19;
+    let mut nanos: u32 = 0;
+    if bytes.get(idx) == Some(&b'.') {
+        idx += 1;
+        let start = idx;
+        while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
+            idx += 1;
+        }
+        if idx == start {
+            return Err(format!("{s:?} has a '.' with no fractional digits"));
+        }
+        // Take up to 9 digits (nanosecond precision); pad to 9.
+        let frac = &s[start..idx];
+        let take = frac.len().min(9);
+        let mut scaled: u64 = frac[..take].parse().map_err(|_| format!("{s:?} bad fraction"))?;
+        for _ in take..9 {
+            scaled *= 10;
+        }
+        nanos = scaled as u32;
+    }
+
+    // Offset: `Z`/`z` (UTC) or `±hh:mm`.
+    let offset_minutes: i64 = match bytes.get(idx) {
+        Some(b'Z') | Some(b'z') => 0,
+        Some(sign @ (b'+' | b'-')) => {
+            let oh = num(idx + 1..idx + 3)?;
+            sep(idx + 3, b':')?;
+            let om = num(idx + 4..idx + 6)?;
+            if oh > 23 || om > 59 {
+                return Err(format!("{s:?} offset out of range"));
+            }
+            let mag = oh * 60 + om;
+            if *sign == b'-' {
+                -mag
+            } else {
+                mag
+            }
+        }
+        _ => return Err(format!("{s:?} is missing a 'Z' or numeric UTC offset")),
+    };
+
+    // Days since a proleptic year-0 epoch (Howard Hinnant's days_from_civil).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+
+    let mut seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    // Convert local-offset time to UTC by subtracting the offset.
+    seconds -= offset_minutes * 60;
+
+    Ok(Instant { seconds, nanos })
 }
 
 /// Read a required manifest string, attributing a missing field to the
@@ -323,6 +475,71 @@ mod tests {
         assert_eq!(err.layer, FailureLayer::Policy);
         // signedAt before the expiry -> ok
         assert!(check_policy("p", "2024-06-13T00:00:00Z", &trust).is_ok());
+    }
+
+    #[test]
+    fn expiry_compares_instants_across_offsets_not_raw_strings() {
+        // review 079 #3: `2026-06-12T23:30:00Z` is chronologically BEFORE
+        // `2026-06-13T00:00:00+01:00` (which is 2026-06-12T23:00:00Z), so the
+        // signature is AFTER the expiry and must be rejected — even though the
+        // raw strings compare the other way (`2026-06-12…` < `2026-06-13…`).
+        let trust = PublisherTrust {
+            publisher: "p".into(),
+            trusted: true,
+            valid_until: Some("2026-06-13T00:00:00+01:00".into()),
+        };
+        let err = check_policy("p", "2026-06-12T23:30:00Z", &trust).unwrap_err();
+        assert_eq!(err.layer, FailureLayer::Policy);
+        assert!(err.reason.contains("expired"));
+
+        // And a signature comfortably before that same expiry is accepted.
+        assert!(check_policy("p", "2026-06-12T22:00:00Z", &trust).is_ok());
+    }
+
+    #[test]
+    fn malformed_timestamps_are_rejected_at_the_policy_layer() {
+        let trust = PublisherTrust {
+            publisher: "p".into(),
+            trusted: true,
+            valid_until: Some("2026-13-99T99:99:99Z".into()),
+        };
+        let err = check_policy("p", "2026-06-13T00:00:00Z", &trust).unwrap_err();
+        assert_eq!(err.layer, FailureLayer::Policy);
+
+        let trust_ok = PublisherTrust {
+            publisher: "p".into(),
+            trusted: true,
+            valid_until: Some("2030-01-01T00:00:00Z".into()),
+        };
+        let err = check_policy("p", "not-a-timestamp", &trust_ok).unwrap_err();
+        assert_eq!(err.layer, FailureLayer::Policy);
+        assert!(err.reason.contains("signedAt"));
+    }
+
+    #[test]
+    fn rfc3339_parser_normalizes_offsets_and_fractions() {
+        // Same instant, three spellings, must compare equal.
+        let z = parse_rfc3339("2026-06-13T00:00:00Z").unwrap();
+        let plus = parse_rfc3339("2026-06-13T01:00:00+01:00").unwrap();
+        let minus = parse_rfc3339("2026-06-12T23:00:00-01:00").unwrap();
+        assert_eq!(z, plus);
+        assert_eq!(z, minus);
+
+        // Fractional seconds order within the same second.
+        let a = parse_rfc3339("2026-06-13T00:00:00.100Z").unwrap();
+        let b = parse_rfc3339("2026-06-13T00:00:00.200Z").unwrap();
+        assert!(a < b);
+        assert!(z < a);
+
+        // Lowercase `t`/`z` separators are accepted (RFC3339 §5.6).
+        assert_eq!(parse_rfc3339("2026-06-13t00:00:00z").unwrap(), z);
+
+        // Leap second clamps rather than erroring.
+        assert!(parse_rfc3339("2026-06-30T23:59:60Z").is_ok());
+
+        // Garbage is rejected.
+        assert!(parse_rfc3339("2026/06/13 00:00:00").is_err());
+        assert!(parse_rfc3339("").is_err());
     }
 
     #[test]

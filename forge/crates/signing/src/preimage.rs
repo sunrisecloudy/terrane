@@ -137,6 +137,15 @@ pub fn policy_hash(manifest: &Value) -> SigResult<String> {
     ))
 }
 
+/// The canonical per-file digest: `sha256:` + lowercase-hex over the verbatim
+/// file `content`. This is the value a publisher records in
+/// [`PackageFile::sha256`] (prd-merged/08 MP-4 `files[{path, hash}]`); the
+/// verifier recomputes it both to fold into [`content_hash`] and to confirm the
+/// recorded per-file digest does not lie (review 079 #1).
+pub fn file_digest(content: &str) -> String {
+    sha256_hex_prefixed(content.as_bytes())
+}
+
 /// `contentHash` — `sha256:` over the sorted file-digest list. For each file,
 /// in ascending `path` order, the running buffer gets:
 ///
@@ -150,7 +159,7 @@ pub fn policy_hash(manifest: &Value) -> SigResult<String> {
 pub fn content_hash(files: &[PackageFile]) -> String {
     let mut entries: Vec<(&str, String)> = files
         .iter()
-        .map(|f| (f.path.as_str(), sha256_hex_prefixed(f.content.as_bytes())))
+        .map(|f| (f.path.as_str(), file_digest(&f.content)))
         .collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
 

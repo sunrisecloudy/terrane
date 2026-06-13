@@ -68,8 +68,8 @@ mod trust;
 mod verify;
 
 pub use preimage::{
-    canonical_json, content_hash, manifest_hash, package_preimage, permissions_hash, policy_hash,
-    Package, PackageFile, PackageHashes, SIG_DOMAIN_TAG,
+    canonical_json, content_hash, file_digest, manifest_hash, package_preimage, permissions_hash,
+    policy_hash, Package, PackageFile, PackageHashes, SIG_DOMAIN_TAG,
 };
 pub use trust::{verify_package, FailureLayer, PublisherTrust, TrustError, TrustOutcome};
 pub use verify::{verify_signature, ALGORITHM_LABEL};

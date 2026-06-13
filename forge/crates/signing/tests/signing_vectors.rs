@@ -239,6 +239,40 @@ fn content_tamper_keeps_a_valid_signature_yet_fails_integrity() {
 }
 
 #[test]
+fn a_lying_per_file_sha256_is_rejected_at_the_package_hash_layer() {
+    // review 079 #1: MP-4 carries `files[{path, hash}]`. A package whose file
+    // *bytes* are intact (so contentHash + the signature still match) but whose
+    // recorded per-file `sha256` was tampered to a bogus value must NOT verify
+    // as trusted — downstream code reads that metadata. The signature is still
+    // valid over the (unchanged) recorded-hash preimage, yet verify_package must
+    // reject at the integrity (package_hash) layer.
+    let mut case = load_case(&fixtures_dir().join("valid_signature.json"));
+    // Sanity: it is a valid package as-is.
+    assert_eq!(
+        verify_package(&case.package, &case.signature, &case.public_key_pem, None),
+        TrustOutcome::Trusted
+    );
+
+    // Tamper ONLY the recorded per-file digest, leaving content + aggregate
+    // hashes + signature untouched.
+    case.package.files[0].sha256 = "sha256:deadbeef".into();
+
+    // The crypto layer is still fine (the signature is over the recorded hashes).
+    let preimage = package_preimage(&case.package).expect("preimage");
+    verify_signature(&preimage, &case.signature, &case.public_key_pem)
+        .expect("recorded-hash preimage still verifies");
+
+    // But the full package check catches the lying digest at package_hash.
+    let outcome = verify_package(&case.package, &case.signature, &case.public_key_pem, None);
+    assert_eq!(outcome.failure_layer(), Some(FailureLayer::PackageHash));
+    assert!(outcome
+        .into_result()
+        .unwrap_err()
+        .to_string()
+        .contains("recorded sha256"));
+}
+
+#[test]
 fn unsigned_manifest_helpers_round_trip_canonical_json() {
     // canonical_json of a fixture manifest is stable key-sorted with no spaces.
     let case = load_case(&fixtures_dir().join("valid_signature.json"));
