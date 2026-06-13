@@ -1,0 +1,16 @@
+{
+  "case": "wildcard_path_allowed",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/public/nested/today"
+  },
+  "expect": "allow",
+  "reason": "path glob stays within allowed prefix",
+  "requires_runtime_dns": false
+}

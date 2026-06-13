@@ -1,0 +1,16 @@
+{
+  "kind": "roundtrip",
+  "tree": {
+    "type": "List",
+    "items": [
+      {
+        "type": "Text",
+        "text": "Buy milk"
+      },
+      {
+        "type": "Text",
+        "text": "Ship demo"
+      }
+    ]
+  }
+}

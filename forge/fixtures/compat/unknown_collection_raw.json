@@ -1,0 +1,29 @@
+{
+  "envelope_version": 1,
+  "entity_id": "rec_future_invoice_001",
+  "collection": "future_invoices",
+  "fields": {
+    "number": "INV-9001",
+    "total_cents": 129900,
+    "currency": "USD"
+  },
+  "field_ids": {
+    "f_number_001": "INV-9001",
+    "f_total_cents_001": 129900,
+    "f_currency_001": "USD"
+  },
+  "unknown_fields": {
+    "f_future_payment_terms_002": {
+      "type": "enum",
+      "value": "net_30"
+    }
+  },
+  "extensions": {
+    "raw_collection": {
+      "expected_behavior": "store_and_query_without_applet"
+    }
+  },
+  "created_at": 15,
+  "updated_at": 16,
+  "deleted": false
+}

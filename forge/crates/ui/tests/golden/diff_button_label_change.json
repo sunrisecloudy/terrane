@@ -1,0 +1,35 @@
+{
+  "kind": "diff",
+  "old": {
+    "type": "Stack",
+    "direction": "h",
+    "children": [
+      {
+        "type": "Button",
+        "label": "Save draft",
+        "onTap": "doc.save"
+      }
+    ]
+  },
+  "new": {
+    "type": "Stack",
+    "direction": "h",
+    "children": [
+      {
+        "type": "Button",
+        "label": "Save",
+        "onTap": "doc.save"
+      }
+    ]
+  },
+  "expect_patches": [
+    {
+      "op": "update_prop",
+      "path": [
+        0
+      ],
+      "key": "label",
+      "value": "Save"
+    }
+  ]
+}

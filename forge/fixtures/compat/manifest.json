@@ -1,0 +1,139 @@
+{
+  "suite": "record-envelope-forward-compat",
+  "version": 1,
+  "record_type": "RecordEnvelope",
+  "source": [
+    "prd-merged/02-data-layer-prd.md DL-7..DL-14",
+    "prd-merged/09-roadmap-quality-gates-prd.md section 3",
+    "forge/crates/domain/src/record.rs"
+  ],
+  "cases": [
+    {
+      "file": "current_version_full.json",
+      "invariant": "roundtrip_identical",
+      "must_keep_keys": [
+        "fields",
+        "field_ids"
+      ],
+      "note": "current envelope v1 with display fields and stable field ids"
+    },
+    {
+      "file": "future_unknown_fields.json",
+      "invariant": "preserve_on_patch",
+      "patch": {
+        "title": "edited"
+      },
+      "must_keep_keys": [
+        "f_future_003",
+        "f_future_004"
+      ],
+      "note": "patching a known field must not drop unknown stable field ids (DL-9)"
+    },
+    {
+      "file": "unknown_collection_raw.json",
+      "invariant": "raw_queryable",
+      "must_keep_keys": [
+        "collection",
+        "fields",
+        "field_ids",
+        "unknown_fields"
+      ],
+      "note": "unknown collection must remain storable and raw-queryable (DL-10)"
+    },
+    {
+      "file": "extensions_reserved_slot.json",
+      "invariant": "roundtrip_identical",
+      "must_keep_keys": [
+        "lenses",
+        "capability_warnings",
+        "source_client"
+      ],
+      "note": "DL-13 reserved extension slot must survive verbatim"
+    },
+    {
+      "file": "higher_envelope_version.json",
+      "invariant": "limited_mode",
+      "must_keep_keys": [
+        "envelope_version",
+        "min_client_features",
+        "limited_mode",
+        "f_future_confidence_009"
+      ],
+      "note": "higher envelope versions open in limited mode without data loss (DL-14)"
+    },
+    {
+      "file": "renamed_field_same_id.json",
+      "invariant": "roundtrip_identical",
+      "must_keep_keys": [
+        "f_title_001"
+      ],
+      "note": "display-name rename preserves the stable field id (DL-7)"
+    },
+    {
+      "file": "empty_fields_with_field_ids.json",
+      "invariant": "roundtrip_identical",
+      "must_keep_keys": [
+        "f_metric_value_001",
+        "f_metric_unit_001",
+        "f_collected_by_001"
+      ],
+      "note": "field_ids remain authoritative when display-name fields are unavailable"
+    },
+    {
+      "file": "deleted_tombstone.json",
+      "invariant": "preserve_on_patch",
+      "patch": {
+        "title": "edited tombstone metadata"
+      },
+      "must_keep_keys": [
+        "deleted",
+        "f_future_delete_reason_003",
+        "purge_policy_preview"
+      ],
+      "note": "tombstone metadata and unknown future delete data must survive (DL-21)"
+    },
+    {
+      "file": "deprecated_field_retained.json",
+      "invariant": "preserve_on_patch",
+      "patch": {
+        "title": "edited while deprecated field remains"
+      },
+      "must_keep_keys": [
+        "f_status_legacy_001",
+        "deprecated_fields",
+        "f_future_replacement_status_004"
+      ],
+      "note": "deprecated data is retained; destructive schema changes are not exposed (DL-8)"
+    },
+    {
+      "file": "limited_mode_min_feature.json",
+      "invariant": "limited_mode",
+      "must_keep_keys": [
+        "min_client_features",
+        "capability_warning"
+      ],
+      "note": "unsupported minimum features surface as limited-mode warnings, not data loss"
+    },
+    {
+      "file": "nested_unknown_values.json",
+      "invariant": "preserve_on_patch",
+      "patch": {
+        "status": "reviewed"
+      },
+      "must_keep_keys": [
+        "f_future_nested_010"
+      ],
+      "note": "nested object/array unknown values must be preserved exactly"
+    },
+    {
+      "file": "unknown_collection_future_schema.json",
+      "invariant": "raw_queryable",
+      "must_keep_keys": [
+        "collection",
+        "future_schema",
+        "f_future_formula_011"
+      ],
+      "note": "future collection plus future schema metadata remains raw-queryable"
+    }
+  ]
+}

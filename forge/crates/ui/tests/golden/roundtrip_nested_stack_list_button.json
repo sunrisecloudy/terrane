@@ -1,0 +1,32 @@
+{
+  "kind": "roundtrip",
+  "tree": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "text": "Inbox"
+      },
+      {
+        "type": "List",
+        "items": [
+          {
+            "type": "Text",
+            "text": "Review PR"
+          },
+          {
+            "type": "Button",
+            "label": "Archive",
+            "onTap": "message.archive"
+          }
+        ]
+      },
+      {
+        "type": "Button",
+        "label": "Compose",
+        "onTap": "message.compose"
+      }
+    ]
+  }
+}

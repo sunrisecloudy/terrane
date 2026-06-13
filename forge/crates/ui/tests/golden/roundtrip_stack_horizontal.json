@@ -1,0 +1,18 @@
+{
+  "kind": "roundtrip",
+  "tree": {
+    "type": "Stack",
+    "direction": "h",
+    "children": [
+      {
+        "type": "Text",
+        "text": "Total"
+      },
+      {
+        "type": "Button",
+        "label": "Pay",
+        "onTap": "invoice.pay"
+      }
+    ]
+  }
+}

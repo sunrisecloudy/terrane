@@ -1,0 +1,16 @@
+{
+  "case": "loopback_ipv6_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "http://[::1]/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "http://[::1]/status"
+  },
+  "expect": "deny",
+  "reason": "IPv6 loopback blocked by default",
+  "requires_runtime_dns": false
+}

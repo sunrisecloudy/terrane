@@ -1,0 +1,18 @@
+{
+  "case": "timeout_over_budget_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*",
+      "timeout_ms": 1000
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/public/slow",
+    "timeout_ms": 5000
+  },
+  "expect": "deny",
+  "reason": "request timeout exceeds policy timeout",
+  "requires_runtime_dns": false
+}

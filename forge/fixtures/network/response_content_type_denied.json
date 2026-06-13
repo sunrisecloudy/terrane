@@ -1,0 +1,22 @@
+{
+  "case": "response_content_type_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*",
+      "max_response_bytes": 1048576,
+      "timeout_ms": 2000,
+      "response_content_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/public/weather",
+    "response_content_type": "text/html"
+  },
+  "expect": "deny",
+  "reason": "response content-type not allowlisted",
+  "requires_runtime_dns": false
+}

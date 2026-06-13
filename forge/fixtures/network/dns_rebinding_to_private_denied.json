@@ -1,0 +1,25 @@
+{
+  "case": "dns_rebinding_to_private_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*",
+      "max_response_bytes": 1048576,
+      "timeout_ms": 2000,
+      "response_content_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/public/weather",
+    "dns_answers": [
+      "203.0.113.20",
+      "10.0.0.7"
+    ]
+  },
+  "expect": "deny",
+  "reason": "DNS pin/recheck detects private answer",
+  "requires_runtime_dns": true
+}

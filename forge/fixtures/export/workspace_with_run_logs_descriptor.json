@@ -1,0 +1,68 @@
+{
+  "case": "workspace_with_run_logs_descriptor",
+  "export_format_version": 1,
+  "include_run_logs": true,
+  "expected_tables": {
+    "meta": {
+      "rows": [
+        [
+          "export_format_version",
+          "1"
+        ],
+        [
+          "workspace_id",
+          "ws_runs"
+        ]
+      ]
+    },
+    "kv": {
+      "live_rows": 0,
+      "tombstones": 0,
+      "namespaces": []
+    },
+    "oplog": {
+      "rows": 1,
+      "ordered_by": [
+        "lamport",
+        "op_id"
+      ]
+    },
+    "crdt_chunks": {
+      "rows": 0,
+      "doc_ids": []
+    },
+    "crdt_snapshots": {
+      "rows": 0,
+      "doc_ids": []
+    },
+    "records": {
+      "collections": {
+        "tasks": 1
+      }
+    },
+    "runs": {
+      "included": true,
+      "rows": 1,
+      "ordered_by": [
+        "created_at",
+        "run_id"
+      ]
+    },
+    "run_logs": {
+      "included": true,
+      "rows": 3,
+      "ordered_by": [
+        "run_id",
+        "seq"
+      ]
+    }
+  },
+  "policy": {
+    "run_log_export": "allowed_for_debug_bundle"
+  },
+  "reimport_assertions": [
+    "load_run returns same RunRecord JSON",
+    "run_logs preserve seq order",
+    "records projection unchanged by log inclusion"
+  ]
+}

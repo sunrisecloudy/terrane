@@ -1,0 +1,1 @@
+{"calls":[{"args":null,"method":"time.now","response":9000,"seq":0},{"args":null,"method":"time.now","response":9001,"seq":1}],"code_hash":"sha256:93027846d33bcc5c0cf1f0fa29e887057f1f6863b23deac4eec79c6e4f8bc800","input":{},"outcome":{"result":{"ok":true,"value":{"delta":1,"first":9000,"second":9001}},"status":"completed"},"random_seed":1,"time_start":9000}

@@ -1,0 +1,1 @@
+{"calls":[],"code_hash":"sha256:f8beebc2354de2ba61e1e2f913aa5dbc6a1ca0613dd08e7594ac668676ff2f97","input":{"maxOps":1000},"outcome":{"error":{"detail":"cpu budget exceeded after 1000 ops","kind":"ResourceLimitExceeded"},"status":"failed"},"random_seed":0,"time_start":0}

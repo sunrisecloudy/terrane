@@ -1,0 +1,22 @@
+{
+  "run_id": "run_limit_001",
+  "applet_id": "applet_limit_failure",
+  "code_hash": "sha256:f8beebc2354de2ba61e1e2f913aa5dbc6a1ca0613dd08e7594ac668676ff2f97",
+  "input": {
+    "maxOps": 1000
+  },
+  "random_seed": 0,
+  "time_start": 0,
+  "calls": [],
+  "logs": [
+    "spin",
+    "spin"
+  ],
+  "outcome": {
+    "status": "failed",
+    "error": {
+      "kind": "ResourceLimitExceeded",
+      "detail": "cpu budget exceeded after 1000 ops"
+    }
+  }
+}

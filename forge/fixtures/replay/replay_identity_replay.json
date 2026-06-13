@@ -1,0 +1,23 @@
+{
+  "run_id": "run_identity_replay",
+  "applet_id": "applet_identity",
+  "code_hash": "sha256:f7a718a85f97ebfc4c3eba6a02093848089a6e3b57b6d61a569636fccdf8e071",
+  "input": {
+    "echo": "same trace"
+  },
+  "random_seed": 1234,
+  "time_start": 555,
+  "calls": [],
+  "logs": [
+    "original invocation"
+  ],
+  "outcome": {
+    "status": "completed",
+    "result": {
+      "ok": true,
+      "value": {
+        "echo": "same trace"
+      }
+    }
+  }
+}

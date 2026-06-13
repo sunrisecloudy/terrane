@@ -1,0 +1,23 @@
+{
+  "kind": "roundtrip",
+  "tree": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "text": "Create contact"
+      },
+      {
+        "type": "TextField",
+        "value": "",
+        "onChange": "contact.name.changed"
+      },
+      {
+        "type": "Button",
+        "label": "Create",
+        "onTap": "contact.create"
+      }
+    ]
+  }
+}

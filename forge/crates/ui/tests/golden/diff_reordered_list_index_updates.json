@@ -1,0 +1,45 @@
+{
+  "kind": "diff",
+  "old": {
+    "type": "List",
+    "items": [
+      {
+        "type": "Text",
+        "text": "Alpha"
+      },
+      {
+        "type": "Text",
+        "text": "Beta"
+      }
+    ]
+  },
+  "new": {
+    "type": "List",
+    "items": [
+      {
+        "type": "Text",
+        "text": "Beta"
+      },
+      {
+        "type": "Text",
+        "text": "Alpha"
+      }
+    ]
+  },
+  "expect_patches": [
+    {
+      "op": "update_text",
+      "path": [
+        0
+      ],
+      "value": "Beta"
+    },
+    {
+      "op": "update_text",
+      "path": [
+        1
+      ],
+      "value": "Alpha"
+    }
+  ]
+}

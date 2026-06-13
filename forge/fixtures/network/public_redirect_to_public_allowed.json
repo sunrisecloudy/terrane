@@ -1,0 +1,24 @@
+{
+  "case": "public_redirect_to_public_allowed",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*"
+    },
+    {
+      "method": "GET",
+      "url": "https://cdn.example.com/public/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/public/asset",
+    "redirect_chain": [
+      "https://api.example.com/public/asset",
+      "https://cdn.example.com/public/asset"
+    ]
+  },
+  "expect": "allow",
+  "reason": "every redirect hop is allowlisted and public",
+  "requires_runtime_dns": true
+}

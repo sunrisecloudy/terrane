@@ -1,0 +1,104 @@
+{
+  "suite": "schema-migration-fixtures",
+  "prd": [
+    "DL-7",
+    "DL-8",
+    "DL-12",
+    "DL-13"
+  ],
+  "schema_change_shape": "serde tag op with snake_case names from forge-schema",
+  "count": 14,
+  "current_enum": [
+    "add_collection",
+    "add_field",
+    "widen_field",
+    "deprecate_field",
+    "enforce_required"
+  ],
+  "cases": [
+    {
+      "case": "add_collection_and_fields_ok",
+      "expect": "ok",
+      "file": "add_collection_and_fields_ok.json",
+      "planned": false
+    },
+    {
+      "case": "widen_int_to_float_ok",
+      "expect": "ok",
+      "file": "widen_int_to_float_ok.json",
+      "planned": false
+    },
+    {
+      "case": "widen_text_to_scalar_ok",
+      "expect": "ok",
+      "file": "widen_text_to_scalar_ok.json",
+      "planned": false
+    },
+    {
+      "case": "widen_to_nullable_ok",
+      "expect": "ok",
+      "file": "widen_to_nullable_ok.json",
+      "planned": false
+    },
+    {
+      "case": "deprecate_field_ok",
+      "expect": "ok",
+      "file": "deprecate_field_ok.json",
+      "planned": false
+    },
+    {
+      "case": "enforce_required_after_warn_ok",
+      "expect": "ok",
+      "file": "enforce_required_after_warn_ok.json",
+      "planned": false
+    },
+    {
+      "case": "readd_collection_rejected",
+      "expect": "rejected",
+      "file": "readd_collection_rejected.json",
+      "planned": false
+    },
+    {
+      "case": "duplicate_field_name_rejected",
+      "expect": "rejected",
+      "file": "duplicate_field_name_rejected.json",
+      "planned": false
+    },
+    {
+      "case": "narrow_float_to_int_rejected",
+      "expect": "rejected",
+      "file": "narrow_float_to_int_rejected.json",
+      "planned": false
+    },
+    {
+      "case": "remove_field_not_expressible_rejected",
+      "expect": "rejected",
+      "file": "remove_field_not_expressible_rejected.json",
+      "planned": false
+    },
+    {
+      "case": "rename_field_not_expressible_planned",
+      "expect": "rejected",
+      "file": "rename_field_not_expressible_planned.json",
+      "planned": false
+    },
+    {
+      "case": "add_index_not_expressible_planned",
+      "expect": "rejected",
+      "file": "add_index_not_expressible_planned.json",
+      "planned": false
+    },
+    {
+      "case": "enforce_missing_field_rejected",
+      "expect": "rejected",
+      "file": "enforce_missing_field_rejected.json",
+      "planned": false
+    },
+    {
+      "case": "actor_scoped_union_planned",
+      "expect": "ok",
+      "file": "actor_scoped_union_planned.json",
+      "planned": true
+    }
+  ]
+}

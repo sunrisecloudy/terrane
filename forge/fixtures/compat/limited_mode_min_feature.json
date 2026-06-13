@@ -1,0 +1,26 @@
+{
+  "envelope_version": 1,
+  "entity_id": "rec_task_min_feature_001",
+  "collection": "tasks",
+  "fields": {
+    "title": "Requires warning-mode open",
+    "status": "blocked"
+  },
+  "field_ids": {
+    "f_title_001": "Requires warning-mode open",
+    "f_status_001": "blocked"
+  },
+  "unknown_fields": {},
+  "extensions": {
+    "min_client_features": [
+      "query-joins-v2"
+    ],
+    "capability_warning": {
+      "feature": "query-joins-v2",
+      "fallback": "open current record, disable unsupported derived views"
+    }
+  },
+  "created_at": 90,
+  "updated_at": 91,
+  "deleted": false
+}

@@ -1,0 +1,14 @@
+{
+  "suite": "perf-budget-fixtures",
+  "files": [
+    "one_file_applet.json",
+    "ten_file_applet.json",
+    "hundred_file_applet.json",
+    "records_100k_generator.json"
+  ],
+  "prd": [
+    "PRD09 section 4",
+    "CR-5",
+    "CR-14"
+  ]
+}

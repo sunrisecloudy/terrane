@@ -1,0 +1,68 @@
+{
+  "case": "invalid_file_content_hash_mismatch",
+  "package": {
+    "manifest": {
+      "appId": "app.notes",
+      "appVersion": "1.0.0",
+      "dataVersion": "1",
+      "runtimeVersion": "forge-m0a",
+      "trustLevel": "signed-test",
+      "keyId": "test-ed25519-2026-06",
+      "publisher": "test-publisher",
+      "permissions": [
+        "storage.read:notes/*",
+        "storage.write:notes/*",
+        "db.read:notes",
+        "db.write:notes",
+        "ui.render"
+      ],
+      "resourceBudget": {
+        "wall_ms": 3000,
+        "memory_bytes": 67108864
+      },
+      "networkPolicy": {
+        "allow": []
+      },
+      "capabilities": {
+        "storage": {
+          "read": [
+            "notes/*"
+          ],
+          "write": [
+            "notes/*"
+          ]
+        },
+        "db": {
+          "read": [
+            "notes"
+          ],
+          "write": [
+            "notes"
+          ]
+        },
+        "ui": true
+      },
+      "signedAt": "2026-06-13T00:00:00Z"
+    },
+    "files": [
+      {
+        "path": "src/main.ts",
+        "content": "export async function main(ctx) { return { ok: false }; }\n",
+        "sha256": "sha256:652a7c480da0cf33584e8210bf826bb02230d0965a843a926e40493e86e63891"
+      }
+    ],
+    "hashes": {
+      "manifestHash": "sha256:37a8edfc2c682e33aec811dac577a4fc20490ef087eab60663071b089abd5f1c",
+      "contentHash": "sha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6",
+      "permissionsHash": "sha256:e5c1e51014c9440151539f7d172180d61ba35ad25b086f7dbd258948cd6e0aa1",
+      "policyHash": "sha256:2db54efc565f3a45d032e9792f783f8ed93819c09d250d5b335952c9a020266c"
+    }
+  },
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+  "signature": "ed25519:uwfp2JYYx4946G0XXmDSRnc75GHzPLOlVPLTsg72uqfeD5mGb/uMSmJgjJ+xCyip9igArg+lgqJE1fsZ7hCvAQ==",
+  "signed_payload": "terrane/sig/v1\napp.notes\n1.0.0\n1\nforge-m0a\nsigned-test\ntest-ed25519-2026-06\nsha256:37a8edfc2c682e33aec811dac577a4fc20490ef087eab60663071b089abd5f1c\nsha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6\nsha256:e5c1e51014c9440151539f7d172180d61ba35ad25b086f7dbd258948cd6e0aa1\nsha256:2db54efc565f3a45d032e9792f783f8ed93819c09d250d5b335952c9a020266c\n2026-06-13T00:00:00Z",
+  "signed_payload_utf8_hex": "74657272616e652f7369672f76310a6170702e6e6f7465730a312e302e300a310a666f7267652d6d30610a7369676e65642d746573740a746573742d656432353531392d323032362d30360a7368613235363a333761386564666332633638326533336165633831316461633537376134666332303439306566303837656162363036363330373162303839616264356631630a7368613235363a386138383335393239656563353866356633636333663362636635376435376261396462356234366566626662386565623938346330363633616362613366360a7368613235363a653563316535313031346339343430313531353339663764313732313830643631626133356164323562303836663764626432353839343863643665306161310a7368613235363a326462353465666335363566336134356430333265393739326637383366386564393338313963303964323530643562333335393532633961303230323636630a323032362d30362d31335430303a30303a30305a",
+  "expect": "invalid",
+  "failure_layer": "package_hash",
+  "reason": "file content no longer matches per-file sha256 and contentHash"
+}

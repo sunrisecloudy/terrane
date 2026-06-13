@@ -1,0 +1,21 @@
+{
+  "case": "path_outside_glob_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*",
+      "max_response_bytes": 1048576,
+      "timeout_ms": 2000,
+      "response_content_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/admin/users"
+  },
+  "expect": "deny",
+  "reason": "path outside allowlist glob",
+  "requires_runtime_dns": false
+}

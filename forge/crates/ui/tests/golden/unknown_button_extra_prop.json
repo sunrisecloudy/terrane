@@ -1,0 +1,10 @@
+{
+  "kind": "unknown",
+  "tree": {
+    "type": "Button",
+    "label": "Sparkle",
+    "onTap": "sparkle.run",
+    "sparkle": true
+  },
+  "must_not_error": true
+}

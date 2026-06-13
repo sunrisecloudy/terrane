@@ -1,0 +1,52 @@
+{
+  "case": "add_collection_and_fields_ok",
+  "changes": [
+    {
+      "op": "add_collection",
+      "name": "tasks"
+    },
+    {
+      "op": "add_field",
+      "collection": "tasks",
+      "name": "title",
+      "ty": "text",
+      "indexed": true,
+      "required": true
+    },
+    {
+      "op": "add_field",
+      "collection": "tasks",
+      "name": "done",
+      "ty": "bool"
+    }
+  ],
+  "expect": "ok",
+  "final": {
+    "collections": {
+      "tasks": {
+        "next_field_seq": 2,
+        "fields": [
+          {
+            "field_id": "f0",
+            "name": "title",
+            "ty": "text",
+            "indexed": true,
+            "required": true,
+            "enforced": false
+          },
+          {
+            "field_id": "f1",
+            "name": "done",
+            "ty": "bool",
+            "indexed": false,
+            "required": false,
+            "enforced": false
+          }
+        ]
+      }
+    }
+  },
+  "warnings": [
+    "required field starts in warning mode per DL-12"
+  ]
+}

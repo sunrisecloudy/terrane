@@ -1,0 +1,27 @@
+{
+  "run_id": "run_random_001",
+  "applet_id": "applet_seeded_random",
+  "code_hash": "sha256:41cc4226ccb8cfff338132ef47720cddf4ce1bea00ae6a0dd28efa33d15554a4",
+  "input": {},
+  "random_seed": 48879,
+  "time_start": 10,
+  "calls": [
+    {
+      "seq": 0,
+      "method": "random.next",
+      "args": null,
+      "response": 0.28149653637029604
+    }
+  ],
+  "logs": [],
+  "outcome": {
+    "status": "completed",
+    "result": {
+      "ok": true,
+      "value": {
+        "seeded": 0.28149653637029604,
+        "bucket": "low"
+      }
+    }
+  }
+}

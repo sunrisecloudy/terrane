@@ -1,0 +1,13 @@
+{
+  "suite": "workspace-export-format-fixtures",
+  "prd": [
+    "DL-24",
+    "DL-6"
+  ],
+  "format": "single-sqlite-file-descriptor",
+  "cases": [
+    "tiny_workspace_descriptor.json",
+    "workspace_with_run_logs_descriptor.json",
+    "redacted_secrets_descriptor.json"
+  ]
+}

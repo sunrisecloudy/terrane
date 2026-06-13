@@ -1,0 +1,16 @@
+{
+  "case": "loopback_ipv4_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:8080/status"
+  },
+  "expect": "deny",
+  "reason": "loopback blocked by default",
+  "requires_runtime_dns": false
+}

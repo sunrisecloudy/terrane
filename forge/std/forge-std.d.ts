@@ -101,7 +101,7 @@ declare module "@forge/std" {
 
   export interface StackNode extends BaseNode {
     type: "Stack";
-    direction?: "horizontal" | "vertical";
+    direction?: "h" | "v";
     gap?: "none" | "xs" | "sm" | "md" | "lg";
     children: Node[];
   }

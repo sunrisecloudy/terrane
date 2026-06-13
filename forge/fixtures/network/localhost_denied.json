@@ -1,0 +1,16 @@
+{
+  "case": "localhost_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "http://localhost/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "http://localhost/status"
+  },
+  "expect": "deny",
+  "reason": "localhost blocked by default",
+  "requires_runtime_dns": false
+}

@@ -1,0 +1,35 @@
+{
+  "envelope_version": 3,
+  "entity_id": "rec_task_v3_001",
+  "collection": "tasks",
+  "fields": {
+    "title": "Open in limited mode",
+    "status": "open"
+  },
+  "field_ids": {
+    "f_title_001": "Open in limited mode",
+    "f_status_001": "open"
+  },
+  "unknown_fields": {
+    "f_future_confidence_009": {
+      "type": "decimal",
+      "value": "0.9842"
+    }
+  },
+  "extensions": {
+    "min_client_features": [
+      "record-envelope-v3",
+      "schema-lenses-v1"
+    ],
+    "limited_mode": {
+      "reason": "current client understands envelope v1 only",
+      "allowed_operations": [
+        "read",
+        "raw_export"
+      ]
+    }
+  },
+  "created_at": 60,
+  "updated_at": 65,
+  "deleted": false
+}

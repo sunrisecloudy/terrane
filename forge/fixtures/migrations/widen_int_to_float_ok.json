@@ -1,0 +1,35 @@
+{
+  "case": "widen_int_to_float_ok",
+  "changes": [
+    {
+      "op": "add_collection",
+      "name": "expenses"
+    },
+    {
+      "op": "add_field",
+      "collection": "expenses",
+      "name": "amount",
+      "ty": "int_num"
+    },
+    {
+      "op": "widen_field",
+      "collection": "expenses",
+      "field_id": "f0",
+      "to": "float_num"
+    }
+  ],
+  "expect": "ok",
+  "final": {
+    "collections": {
+      "expenses": {
+        "fields": [
+          {
+            "field_id": "f0",
+            "name": "amount",
+            "ty": "float_num"
+          }
+        ]
+      }
+    }
+  }
+}

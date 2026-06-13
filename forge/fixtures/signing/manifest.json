@@ -1,0 +1,94 @@
+{
+  "suite": "signing-trust-vectors",
+  "prd": [
+    "SC-15",
+    "MP-4"
+  ],
+  "canonical_bytes": "docs/17 terrane/sig/v1 newline payload: appId, appVersion, dataVersion, runtimeVersion, trustLevel, keyId, manifestHash, contentHash, permissionsHash, policyHash, signedAt; no trailing newline",
+  "cases": [
+    {
+      "case": "valid_signature",
+      "expect": "valid",
+      "failure_layer": null,
+      "file": "valid_signature.json"
+    },
+    {
+      "case": "valid_multi_file_package",
+      "expect": "valid",
+      "failure_layer": null,
+      "file": "valid_multi_file_package.json"
+    },
+    {
+      "case": "invalid_wrong_key",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_wrong_key.json"
+    },
+    {
+      "case": "invalid_signature_over_different_bytes",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_signature_over_different_bytes.json"
+    },
+    {
+      "case": "invalid_file_content_hash_mismatch",
+      "expect": "invalid",
+      "failure_layer": "package_hash",
+      "file": "invalid_file_content_hash_mismatch.json"
+    },
+    {
+      "case": "invalid_manifest_tampered",
+      "expect": "invalid",
+      "failure_layer": "package_hash",
+      "file": "invalid_manifest_tampered.json"
+    },
+    {
+      "case": "invalid_truncated_signature",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_truncated_signature.json"
+    },
+    {
+      "case": "invalid_garbage_signature",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_garbage_signature.json"
+    },
+    {
+      "case": "invalid_wrong_algorithm_label",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_wrong_algorithm_label.json"
+    },
+    {
+      "case": "invalid_unknown_publisher",
+      "expect": "invalid",
+      "failure_layer": "policy",
+      "file": "invalid_unknown_publisher.json"
+    },
+    {
+      "case": "invalid_expired_publisher",
+      "expect": "invalid",
+      "failure_layer": "policy",
+      "file": "invalid_expired_publisher.json"
+    },
+    {
+      "case": "invalid_policy_hash_mismatch",
+      "expect": "invalid",
+      "failure_layer": "package_hash",
+      "file": "invalid_policy_hash_mismatch.json"
+    },
+    {
+      "case": "invalid_permissions_hash_mismatch",
+      "expect": "invalid",
+      "failure_layer": "package_hash",
+      "file": "invalid_permissions_hash_mismatch.json"
+    },
+    {
+      "case": "invalid_public_key_mismatch",
+      "expect": "invalid",
+      "failure_layer": "crypto",
+      "file": "invalid_public_key_mismatch.json"
+    }
+  ]
+}

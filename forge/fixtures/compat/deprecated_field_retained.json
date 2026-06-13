@@ -1,0 +1,30 @@
+{
+  "envelope_version": 1,
+  "entity_id": "rec_task_deprecated_001",
+  "collection": "tasks",
+  "fields": {
+    "title": "Keep old data readable",
+    "legacy_status": "waiting"
+  },
+  "field_ids": {
+    "f_title_001": "Keep old data readable",
+    "f_status_legacy_001": "waiting"
+  },
+  "unknown_fields": {
+    "f_future_replacement_status_004": {
+      "display_name": "workflow_state",
+      "value": "blocked"
+    }
+  },
+  "extensions": {
+    "schema_features": {
+      "deprecated_fields": [
+        "f_status_legacy_001"
+      ],
+      "mode": "warning"
+    }
+  },
+  "created_at": 70,
+  "updated_at": 76,
+  "deleted": false
+}

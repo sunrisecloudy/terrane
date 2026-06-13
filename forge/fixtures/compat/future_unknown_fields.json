@@ -1,0 +1,34 @@
+{
+  "envelope_version": 1,
+  "entity_id": "rec_task_future_fields_001",
+  "collection": "tasks",
+  "fields": {
+    "title": "Preserve future field ids",
+    "status": "open"
+  },
+  "field_ids": {
+    "f_title_001": "Preserve future field ids",
+    "f_status_001": "open"
+  },
+  "unknown_fields": {
+    "f_future_003": {
+      "type": "rich_text",
+      "value": {
+        "ops": [
+          {
+            "insert": "future note"
+          }
+        ]
+      }
+    },
+    "f_future_004": {
+      "type": "relation",
+      "target_collection": "milestones",
+      "target_id": "rec_milestone_900"
+    }
+  },
+  "extensions": {},
+  "created_at": 13,
+  "updated_at": 14,
+  "deleted": false
+}

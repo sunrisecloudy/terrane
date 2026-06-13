@@ -1,0 +1,21 @@
+{
+  "case": "scheme_downgrade_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/public/*",
+      "max_response_bytes": 1048576,
+      "timeout_ms": 2000,
+      "response_content_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "http://api.example.com/public/weather"
+  },
+  "expect": "deny",
+  "reason": "http does not satisfy https allowlist",
+  "requires_runtime_dns": false
+}

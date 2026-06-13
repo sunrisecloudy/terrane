@@ -1,0 +1,30 @@
+{
+  "envelope_version": 1,
+  "entity_id": "rec_task_current_001",
+  "collection": "tasks",
+  "fields": {
+    "title": "Ship M0a spine",
+    "status": "open",
+    "priority": 2,
+    "tags": [
+      "m0a",
+      "offline"
+    ],
+    "estimate_hours": 4.5
+  },
+  "field_ids": {
+    "f_title_001": "Ship M0a spine",
+    "f_status_001": "open",
+    "f_priority_001": 2,
+    "f_tags_001": [
+      "m0a",
+      "offline"
+    ],
+    "f_estimate_hours_001": 4.5
+  },
+  "unknown_fields": {},
+  "extensions": {},
+  "created_at": 10,
+  "updated_at": 12,
+  "deleted": false
+}

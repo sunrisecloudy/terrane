@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "fingerprint_ordering": "Matches RunRecord::replay_fingerprint: serde_json::json! object serialized with Value::to_string(); object keys are expected to be sorted recursively by serde_json's default Map.",
+  "cases": [
+    {
+      "file": "minimal_completed.json",
+      "expect": "valid",
+      "fingerprint_file": "minimal_completed.fingerprint.txt",
+      "description": "One time.now seam, one storage.set host call, completed result."
+    },
+    {
+      "file": "spine_db_ui.json",
+      "expect": "valid",
+      "fingerprint_file": "spine_db_ui.fingerprint.txt",
+      "description": "Spine demo shape: db.insert followed by ui.render."
+    },
+    {
+      "file": "seeded_random.json",
+      "expect": "valid",
+      "fingerprint_file": "seeded_random.fingerprint.txt",
+      "description": "Seeded random.next seam using SplitMix64 seed 48879."
+    },
+    {
+      "file": "failed_resource_limit.json",
+      "expect": "valid",
+      "fingerprint_file": "failed_resource_limit.fingerprint.txt",
+      "description": "Failed run with ResourceLimitExceeded outcome."
+    },
+    {
+      "file": "replay_identity_original.json",
+      "expect": "valid",
+      "fingerprint_file": "replay_identity_original.fingerprint.txt",
+      "identity_group": "same_fingerprint_different_run_id",
+      "description": "Original run for replay identity comparison."
+    },
+    {
+      "file": "replay_identity_replay.json",
+      "expect": "valid",
+      "fingerprint_file": "replay_identity_replay.fingerprint.txt",
+      "identity_group": "same_fingerprint_different_run_id",
+      "description": "Replay run: identical observable trace with a different run_id."
+    },
+    {
+      "file": "storage_get_null.json",
+      "expect": "valid",
+      "fingerprint_file": "storage_get_null.fingerprint.txt",
+      "description": "storage.get read returning null for a missing key."
+    },
+    {
+      "file": "time_ticks.json",
+      "expect": "valid",
+      "fingerprint_file": "time_ticks.fingerprint.txt",
+      "description": "Two deterministic time.now calls proving logical clock ordering."
+    },
+    {
+      "file": "bad_fnv_hash.json",
+      "expect": "invalid",
+      "reason": "non-canonical code_hash"
+    },
+    {
+      "file": "tampered_response.json",
+      "expect": "invalid",
+      "fingerprint_file": "tampered_response.expected.fingerprint.txt",
+      "reason": "computed replay fingerprint must differ from the expected untampered fingerprint"
+    }
+  ]
+}

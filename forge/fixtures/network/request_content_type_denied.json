@@ -1,0 +1,20 @@
+{
+  "case": "request_content_type_denied",
+  "allowlist": [
+    {
+      "method": "POST",
+      "url": "https://api.example.com/forms/*",
+      "request_content_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "request": {
+    "method": "POST",
+    "url": "https://api.example.com/forms/submit",
+    "request_content_type": "text/plain"
+  },
+  "expect": "deny",
+  "reason": "request content-type not allowlisted",
+  "requires_runtime_dns": false
+}

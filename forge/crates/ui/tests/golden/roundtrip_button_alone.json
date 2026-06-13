@@ -1,0 +1,8 @@
+{
+  "kind": "roundtrip",
+  "tree": {
+    "type": "Button",
+    "label": "Save",
+    "onTap": "save.current"
+  }
+}

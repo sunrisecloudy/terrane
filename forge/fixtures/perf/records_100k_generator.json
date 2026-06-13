@@ -1,0 +1,35 @@
+{
+  "case": "records_100k_generator",
+  "collection": "events",
+  "count": 100000,
+  "deterministic_seed": "forge-perf-100k-v1",
+  "fields": {
+    "id": "evt_${i}",
+    "actor_id": "actor_${i % 100}",
+    "kind": "kind_${i % 12}",
+    "created_day": "2026-01-${(i % 28)+1}",
+    "amount": "i % 10000",
+    "indexed": [
+      "actor_id",
+      "kind",
+      "created_day"
+    ]
+  },
+  "target_queries": [
+    {
+      "name": "by_actor",
+      "filter": {
+        "actor_id": "actor_42"
+      },
+      "expect_rows": 1000
+    },
+    {
+      "name": "by_kind_day",
+      "filter": {
+        "kind": "kind_3",
+        "created_day": "2026-01-04"
+      },
+      "expect_rows": "deterministic subset"
+    }
+  ]
+}

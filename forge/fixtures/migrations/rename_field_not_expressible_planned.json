@@ -1,0 +1,14 @@
+{
+  "case": "rename_field_not_expressible_planned",
+  "changes": [
+    {
+      "op": "rename_field",
+      "collection": "tasks",
+      "field_id": "f0",
+      "name": "new_title"
+    }
+  ],
+  "expect": "rejected",
+  "error_kind": "unknown_op",
+  "reason": "DL-7 permits name-only rename but current SchemaChange enum has no RenameField variant"
+}

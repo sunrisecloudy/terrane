@@ -1,0 +1,32 @@
+{
+  "kind": "diff",
+  "old": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "text": "Draft"
+      }
+    ]
+  },
+  "new": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "text": "Published"
+      }
+    ]
+  },
+  "expect_patches": [
+    {
+      "op": "update_text",
+      "path": [
+        0
+      ],
+      "value": "Published"
+    }
+  ]
+}

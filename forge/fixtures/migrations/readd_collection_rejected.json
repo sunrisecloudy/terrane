@@ -1,0 +1,16 @@
+{
+  "case": "readd_collection_rejected",
+  "changes": [
+    {
+      "op": "add_collection",
+      "name": "tasks"
+    },
+    {
+      "op": "add_collection",
+      "name": "tasks"
+    }
+  ],
+  "expect": "rejected",
+  "error_kind": "SchemaCompatibilityError",
+  "reason": "re-adding would reset field sequence and is not additive"
+}
