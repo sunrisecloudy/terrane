@@ -61,6 +61,14 @@ pub struct WorkspaceCore {
     registry: SchemaRegistry,
     events: EventSink,
     workspace_id: String,
+    /// Trusted `db.read` grant table: actor id → the collections that actor may
+    /// read (`"*"` = read-all). This is the SOURCE OF TRUTH for the
+    /// collection-scoped `db.read` capability and is set only through the trusted
+    /// [`grant_db_read`](WorkspaceCore::grant_db_read) seam (workspace
+    /// configuration / membership), never from a request payload (review 048
+    /// finding 1). An actor with NO entry falls back to its role-derived read
+    /// scope, so the existing owner-permits-all spine is unaffected.
+    db_read_grants: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl WorkspaceCore {
@@ -72,6 +80,7 @@ impl WorkspaceCore {
             registry: SchemaRegistry::new(),
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
+            db_read_grants: std::collections::BTreeMap::new(),
         })
     }
 
@@ -82,7 +91,20 @@ impl WorkspaceCore {
             registry: SchemaRegistry::new(),
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
+            db_read_grants: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Configure the TRUSTED `db.read` grant scope for `actor` (workspace
+    /// membership / capability provisioning). `scope` is the list of collections
+    /// the actor may read; `"*"` grants read-all. This is the only way a caller's
+    /// `db.read` scope is set — `query.execute` reads it from here, never from the
+    /// request payload, so a shell cannot widen its own read scope by editing the
+    /// command body (review 048 finding 1). Passing an empty `scope` provisions an
+    /// actor that holds the `db.read` role but is granted NO collection.
+    pub fn grant_db_read(&mut self, actor: impl Into<String>, scope: impl IntoIterator<Item = impl Into<String>>) {
+        self.db_read_grants
+            .insert(actor.into(), scope.into_iter().map(Into::into).collect());
     }
 
     /// The event sink (observability): all `run.*` / `ui.patch` events land here.
@@ -502,8 +524,12 @@ impl WorkspaceCore {
                 CoreError::ValidationError("query.execute requires `collection`".into())
             })?;
         // Capability gate (CR-A3 / DL-15): role first, then the collection-scoped
-        // db.read grant. Denied before any projection is read.
-        require_db_read(cmd, collection)?;
+        // db.read grant. The grant scope is read from the workspace's TRUSTED grant
+        // table (keyed by the actor), never from the request payload (review 048
+        // finding 1), so a caller cannot widen its own read scope. Denied before
+        // any projection is read.
+        let trusted_scope = self.db_read_grants.get(cmd.actor.actor.as_str()).cloned();
+        require_db_read(cmd, collection, trusted_scope.as_deref())?;
         let records = self.store.list_records(collection)?;
         let rows: Vec<serde_json::Value> = records
             .into_iter()
@@ -821,29 +847,36 @@ fn role_has_db_read(role: Role) -> bool {
 }
 
 /// Collection-scoped `db.read` capability gate for `query.execute` (review
-/// 036/038 finding 1; `forge/spec/commands.md:21` "Role plus db.read capability"
-/// + `forge/spec/capabilities.md:23` `resource: collection:<name>`).
+/// 036/038/048 finding 1; `forge/spec/commands.md:21` "Role plus db.read
+/// capability" + `forge/spec/capabilities.md:23` `resource: collection:<name>`).
 ///
 /// Two independent checks, both required:
 ///
 ///   1. **Role** — the actor's role must carry `db.read` ([`role_has_db_read`]).
 ///      A `Runner` (execution-only) fails here with `PermissionDenied`.
 ///   2. **Scope** — the target `collection` must be within the caller's granted
-///      `db.read` scope. The scope is `payload.grants.db.read` (the grant shape
-///      the `reject_ungranted_collection` fixture pins): an array of granted
-///      collection names, where `"*"` is a read-all wildcard. A collection
-///      *outside* the granted scope is `CapabilityRequired` with a message naming
-///      `db.read collection:<name>` — so a role that cleared check 1 is still
-///      denied when it was not granted that specific collection (this is what
-///      makes the capability layer load-bearing rather than redundant with the
-///      role gate).
+///      `db.read` scope. `trusted_scope` is the workspace-side grant for this
+///      actor (`Some(&["tasks"])`, `Some(&["*"])` for read-all, or `Some(&[])` for
+///      "no collection granted"), resolved by the caller from the TRUSTED grant
+///      table — **never** from the request payload (review 048 finding 1). A
+///      collection outside the granted scope is `CapabilityRequired` with a
+///      message naming `db.read collection:<name>`, so a role that cleared check 1
+///      is still denied when it was not granted that specific collection (this is
+///      what makes the capability layer load-bearing rather than redundant with
+///      the role gate, AND unforgeable from the command body).
 ///
-/// Back-compat: when the payload carries **no** explicit `grants.db.read`, the
-/// granted scope defaults to the actor's role-derived read scope (read-all for a
-/// `db.read`-capable role), so a caller that already passed the role gate and did
-/// not narrow its grant keeps working. A caller that *does* supply a scope is
-/// held to it exactly, regardless of role.
-fn require_db_read(cmd: &CoreCommand, collection: &str) -> Result<()> {
+/// Back-compat: when the actor has **no** trusted grant entry (`None`), the scope
+/// defaults to the role-derived read scope (read-all for a `db.read`-capable
+/// role), so the existing owner-permits-all spine — which provisions no grants —
+/// keeps working. To exercise a narrowed scope, configure it through
+/// [`WorkspaceCore::grant_db_read`].
+///
+/// Defense in depth: a request payload that smuggles its own `grants.db.read`
+/// scope is treated as untrusted input. It can only ever *narrow* (it cannot
+/// widen the trusted grant), and a payload grant that tries to exceed the trusted
+/// scope is rejected as a `PermissionDenied` self-escalation attempt rather than
+/// silently honored.
+fn require_db_read(cmd: &CoreCommand, collection: &str, trusted_scope: Option<&[String]>) -> Result<()> {
     // Layer 1: role.
     if !role_has_db_read(cmd.actor.role) {
         return Err(CoreError::PermissionDenied(format!(
@@ -851,23 +884,58 @@ fn require_db_read(cmd: &CoreCommand, collection: &str) -> Result<()> {
             cmd.actor.role
         )));
     }
-    // Layer 2: collection-scoped grant.
-    match db_read_scope(cmd)? {
-        // No explicit scope supplied → role-derived read-all (back-compat).
+
+    // A payload-supplied `grants.db.read` is untrusted: validate its shape and
+    // ensure it does not attempt to exceed the trusted grant. It is NEVER the
+    // authorization source.
+    reject_payload_self_escalation(cmd, trusted_scope)?;
+
+    // Layer 2: collection-scoped grant, evaluated against the TRUSTED scope only.
+    match trusted_scope {
+        // No trusted grant entry → role-derived read-all (back-compat).
         None => Ok(()),
-        Some(scope) if scope_grants(&scope, collection) => Ok(()),
+        Some(scope) if scope_grants(scope, collection) => Ok(()),
         Some(_) => Err(CoreError::CapabilityRequired(format!(
             "db.read collection:{collection} is not within the caller's granted db.read scope (forge/spec/capabilities.md: db.read is collection-scoped)"
         ))),
     }
 }
 
-/// Parse the caller's granted `db.read` scope from `payload.grants.db.read`, if
-/// present. `Ok(None)` means no scope was supplied (role-derived read-all
-/// applies); `Ok(Some(scopes))` is the explicit list of granted collection names
-/// (`"*"` = read-all). A malformed `grants` shape is a `ValidationError` rather
-/// than a silently-ignored grant (which would be a capability bypass).
-fn db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
+/// Reject a request whose payload `grants.db.read` tries to grant the caller MORE
+/// than its trusted scope (a self-escalation). The payload grant is never used to
+/// authorize; this only refuses an attempt to widen access through the command
+/// body, and validates the grant shape. A payload that is absent, malformed, or a
+/// subset of the trusted scope passes (the trusted scope still decides access).
+fn reject_payload_self_escalation(cmd: &CoreCommand, trusted_scope: Option<&[String]>) -> Result<()> {
+    let payload_scope = match payload_db_read_scope(cmd)? {
+        None => return Ok(()),
+        Some(scope) => scope,
+    };
+    // With no trusted entry the actor is role-derived read-all, so any payload
+    // scope is a (redundant) narrowing — nothing to escalate past.
+    let Some(trusted) = trusted_scope else {
+        return Ok(());
+    };
+    // Read-all trusted scope can never be exceeded.
+    if trusted.iter().any(|s| s == "*") {
+        return Ok(());
+    }
+    // Any payload entry not covered by the trusted scope is an escalation attempt.
+    for entry in &payload_scope {
+        if !scope_grants(trusted, entry) {
+            return Err(CoreError::PermissionDenied(format!(
+                "query.execute payload requested db.read collection:{entry} beyond the actor's trusted grant; the db.read scope is set by the workspace, not the request (review 048)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Parse a payload-supplied `db.read` scope from `payload.grants.db.read`, if
+/// present. `Ok(None)` means no scope was supplied; `Ok(Some(scopes))` is the
+/// (untrusted) list of collection names (`"*"` = read-all). A malformed `grants`
+/// shape is a `ValidationError` rather than a silently-ignored grant.
+fn payload_db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
     let grants = match cmd.payload.get("grants") {
         None => return Ok(None),
         Some(g) => g,

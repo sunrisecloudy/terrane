@@ -450,6 +450,13 @@ fn query_execute_requires_db_read_capability() {
 /// the target collection is denied with `CapabilityRequired` — proving the
 /// capability layer is load-bearing and distinct from the role gate (which the
 /// owner passes). The fixture pins the exact grant shape and error.
+///
+/// Review 048 finding 1: the grant scope is the TRUSTED, workspace-side grant
+/// (provisioned via `grant_db_read`), NOT the request payload. The request below
+/// carries NO `grants` field at all, and the denial still fires — so the boundary
+/// is trusted, not caller-supplied. The companion test
+/// [`query_execute_db_read_scope_is_not_forgeable_from_payload`] proves a payload
+/// cannot self-grant past the trusted scope.
 #[test]
 fn query_execute_enforces_collection_scoped_db_read_grant() {
     let fx = load_query_fixture("reject_ungranted_collection.json");
@@ -461,14 +468,17 @@ fn query_execute_enforces_collection_scoped_db_read_grant() {
     let expect_msg = fx["expect_error"]["message_contains"].as_str().unwrap().to_string();
 
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    // Provision the fixture's grant trustedly: the owner actor id is "dev".
+    core.grant_db_read("dev", ["tasks"]);
 
     // An Owner (clears the role gate) querying a collection OUTSIDE the granted
-    // db.read scope is denied by the capability layer, before any scan.
+    // db.read scope is denied by the capability layer, before any scan — and the
+    // request carries NO grants payload, so the scope came from the trusted table.
     let denied = core.handle(cmd_as(
         owner(),
         "query.execute",
         None,
-        serde_json::json!({ "collection": target, "grants": grants }),
+        serde_json::json!({ "collection": target }),
     ));
     assert!(!denied.ok, "an out-of-scope db.read must be denied even for an Owner");
     let err = denied.error.expect("must carry an error");
@@ -478,15 +488,68 @@ fn query_execute_enforces_collection_scoped_db_read_grant() {
         "error must name the ungranted scope {expect_msg:?}: {err}"
     );
 
-    // The SAME owner, querying a collection that IS within the granted scope,
+    // The SAME owner, querying a collection that IS within the trusted scope,
     // succeeds — so the gate denies the out-of-scope capability, not the command.
     let in_scope = core.handle(cmd_as(
         owner(),
         "query.execute",
         None,
-        serde_json::json!({ "collection": "tasks", "grants": grants }),
+        serde_json::json!({ "collection": "tasks" }),
     ));
     assert!(in_scope.ok, "an in-scope db.read must be permitted: {:?}", in_scope.error);
+}
+
+/// Review 048 finding 1: the `db.read` scope must NOT be forgeable from the
+/// request body. An actor trusted to read only `tasks` cannot reach an ungranted
+/// collection by (a) omitting `grants`, or (b) self-expanding `grants` to `["*"]`
+/// / the target collection in the payload. The trusted table is the only source
+/// of truth; a payload that tries to widen access is rejected, never honored.
+#[test]
+fn query_execute_db_read_scope_is_not_forgeable_from_payload() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    // Owner ("dev") is trusted to read ONLY `tasks`.
+    core.grant_db_read("dev", ["tasks"]);
+
+    // (a) Omitting grants does not fall back to read-all: `secrets` stays denied.
+    let omitted = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "secrets" }),
+    ));
+    assert!(!omitted.ok, "omitting grants must not grant read-all");
+    assert_eq!(omitted.error.unwrap().code(), "CapabilityRequired");
+
+    // (b) Self-expanding grants in the payload to the read-all wildcard is an
+    // escalation attempt: rejected, not silently honored.
+    let widened_star = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "secrets", "grants": {"db": {"read": ["*"]}} }),
+    ));
+    assert!(!widened_star.ok, "a payload `*` cannot widen the trusted scope");
+    assert_eq!(widened_star.error.unwrap().code(), "PermissionDenied");
+
+    // (b') Self-expanding to name the target collection directly is also rejected.
+    let widened_named = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "secrets", "grants": {"db": {"read": ["secrets"]}} }),
+    ));
+    assert!(!widened_named.ok, "a payload self-grant cannot widen the trusted scope");
+    assert_eq!(widened_named.error.unwrap().code(), "PermissionDenied");
+
+    // A payload grant that merely RESTATES the trusted scope (a redundant narrow)
+    // is harmless: the in-scope `tasks` query still succeeds.
+    let restated = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks", "grants": {"db": {"read": ["tasks"]}} }),
+    ));
+    assert!(restated.ok, "a redundant in-scope payload grant must not break the query: {:?}", restated.error);
 }
 
 // ---------------------------------------------------------------------------
