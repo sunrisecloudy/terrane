@@ -22,6 +22,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod query;
+
+pub use query::{
+    compile_select, AggregateResult, CompiledSelect, Dir, Filter, GroupResult, Mutation, Op,
+    OrderBy, Predicate, Query, QueryResult, QueryRow,
+};
+
 /// The M0a physical schema (prd-merged/02 §4 subset). Created on open if
 /// absent. Tables that exist in the full spec but are unused by the spine are
 /// deliberately omitted; the columns present match the spec names so the file
@@ -381,6 +388,226 @@ impl Store {
         Ok(out)
     }
 
+    // --- Query engine (DL-15/16) -----------------------------------------
+
+    /// Run a compiled [`Query`] against the `records` projection (DL-15).
+    ///
+    /// The AST is compiled to a **parameterized** SELECT over JSON1
+    /// (`json_extract`); record values are bound, never interpolated (DL-16, no
+    /// raw-SQL surface). Filtering happens in SQL; ordering, limit/offset, and
+    /// aggregation are finalized in Rust so the spec's platform-stable total
+    /// order and null-handling rules hold exactly (`query-dsl.md` §Result).
+    ///
+    /// Returns rows, a single aggregate, or grouped aggregates depending on the
+    /// query shape.
+    pub fn query(&self, q: &Query) -> Result<QueryResult> {
+        let matched = self.scan_matched(q)?;
+
+        // Group-by: bucket by the (display) group field, then aggregate each
+        // bucket. Group keys are emitted in ascending spec order.
+        if let Some(group_field) = &q.group_by {
+            let agg = q.aggregate.clone().unwrap_or(query::Aggregate {
+                count: true,
+                sum: None,
+                avg: None,
+                min: None,
+                max: None,
+            });
+            let mut buckets: Vec<(serde_json::Value, Vec<&RecordEnvelope>)> = Vec::new();
+            for env in &matched {
+                let key = env
+                    .fields
+                    .get(group_field)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                match buckets.iter_mut().find(|(k, _)| k == &key) {
+                    Some((_, v)) => v.push(env),
+                    None => buckets.push((key, vec![env])),
+                }
+            }
+            buckets.sort_by(|a, b| query::cmp_json_pub(&a.0, &b.0));
+            let groups = buckets
+                .into_iter()
+                .map(|(key, rows)| GroupResult {
+                    key,
+                    aggregate: query::compute_aggregate(&rows, &agg),
+                })
+                .collect();
+            return Ok(QueryResult::Groups(groups));
+        }
+
+        // Bare aggregate over the matched set.
+        if let Some(agg) = &q.aggregate {
+            let refs: Vec<&RecordEnvelope> = matched.iter().collect();
+            return Ok(QueryResult::Aggregate(query::compute_aggregate(&refs, agg)));
+        }
+
+        // Row result: wrap, then order/offset/limit in Rust.
+        let rows: Vec<QueryRow> = matched
+            .into_iter()
+            .map(|env| QueryRow {
+                id: env.entity_id.as_str().to_string(),
+                envelope: env,
+            })
+            .collect();
+        Ok(QueryResult::Rows(query::finalize_rows(rows, q)))
+    }
+
+    /// Execute the compiled filter and return the matched envelopes (unordered).
+    /// Shared by the row, aggregate, and group-by paths.
+    fn scan_matched(&self, q: &Query) -> Result<Vec<RecordEnvelope>> {
+        let compiled = compile_select(q)?;
+        let mut stmt = self.conn.prepare(&compiled.sql).map_err(map_sql)?;
+        let bound = to_sql_params(&compiled.params)?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|b| b as &dyn rusqlite::ToSql).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| row.get::<_, String>(1))
+            .map_err(map_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            let json = r.map_err(map_sql)?;
+            out.push(serde_json::from_str(&json).map_err(|e| map_json("query", e))?);
+        }
+        Ok(out)
+    }
+
+    // --- Mutations (DL-17) -----------------------------------------------
+
+    /// Replace a record's known display fields (DL-17 `update`). Fields the
+    /// caller does not mention are dropped from `fields`, but `field_ids`,
+    /// `unknown_fields`, and `extensions` are preserved (DL-9). A missing record
+    /// is a `QueryError`. `logical_at`, when given, advances `updated_at`.
+    pub fn update_record(
+        &self,
+        collection: &str,
+        id: &str,
+        fields: &serde_json::Map<String, serde_json::Value>,
+        logical_at: Option<i64>,
+    ) -> Result<RecordEnvelope> {
+        let mut env = self.get_record(collection, id)?.ok_or_else(|| {
+            CoreError::QueryError(format!("update: record {collection}/{id} does not exist"))
+        })?;
+        env.fields = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        bump_updated_at(&mut env, logical_at);
+        self.put_record(&env)?;
+        Ok(env)
+    }
+
+    /// Merge the supplied fields into a record (DL-17 `patch`), preserving fields
+    /// the caller omits. A missing record is a `QueryError`. `logical_at`, when
+    /// given, advances `updated_at`.
+    pub fn patch_record(
+        &self,
+        collection: &str,
+        id: &str,
+        fields: &serde_json::Map<String, serde_json::Value>,
+        logical_at: Option<i64>,
+    ) -> Result<RecordEnvelope> {
+        let mut env = self.get_record(collection, id)?.ok_or_else(|| {
+            CoreError::QueryError(format!("patch: record {collection}/{id} does not exist"))
+        })?;
+        for (k, v) in fields {
+            env.fields.insert(k.clone(), v.clone());
+        }
+        bump_updated_at(&mut env, logical_at);
+        self.put_record(&env)?;
+        Ok(env)
+    }
+
+    /// Tombstone a record (DL-17 `delete`, DL-21 sync-correct soft delete). The
+    /// row is retained with `deleted = true` so the delete syncs; query hides it
+    /// unless `includeDeleted`. A missing record is a `QueryError`.
+    pub fn delete_record(
+        &self,
+        collection: &str,
+        id: &str,
+        logical_at: Option<i64>,
+    ) -> Result<RecordEnvelope> {
+        let mut env = self.get_record(collection, id)?.ok_or_else(|| {
+            CoreError::QueryError(format!("delete: record {collection}/{id} does not exist"))
+        })?;
+        env.deleted = true;
+        bump_updated_at(&mut env, logical_at);
+        self.put_record(&env)?;
+        Ok(env)
+    }
+
+    /// Apply a single [`Mutation`] outside a group (its own statement). Insert
+    /// builds a fresh envelope (caller id required for an addressable row);
+    /// update/patch/delete reuse the typed methods. A nested `transact` here is
+    /// rejected — use [`transact_mutations`](Self::transact_mutations) for groups.
+    pub fn apply_mutation(&self, m: &Mutation) -> Result<()> {
+        match m {
+            Mutation::Insert {
+                collection,
+                id,
+                fields,
+                logical_at,
+            } => {
+                let id = id.as_ref().ok_or_else(|| {
+                    CoreError::QueryError("insert requires a collection-scoped id".into())
+                })?;
+                let at = forge_domain::LogicalTimestamp(logical_at.unwrap_or(0).max(0) as u64);
+                let env = RecordEnvelope::new(
+                    forge_domain::CollectionId::new(collection.clone()),
+                    forge_domain::RecordId::new(id.clone()),
+                    fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    at,
+                );
+                self.put_record(&env)?;
+                Ok(())
+            }
+            Mutation::Update {
+                collection,
+                id,
+                fields,
+                logical_at,
+            } => {
+                self.update_record(collection, id, fields, *logical_at)?;
+                Ok(())
+            }
+            Mutation::Patch {
+                collection,
+                id,
+                fields,
+                logical_at,
+            } => {
+                self.patch_record(collection, id, fields, *logical_at)?;
+                Ok(())
+            }
+            Mutation::Delete {
+                collection,
+                id,
+                logical_at,
+            } => {
+                self.delete_record(collection, id, *logical_at)?;
+                Ok(())
+            }
+            Mutation::Transact { .. } => Err(CoreError::QueryError(
+                "nested transact is not allowed; pass items to transact_mutations".into(),
+            )),
+        }
+    }
+
+    /// Apply a group of mutations as one local SQLite transaction (DL-17
+    /// `transact`): all-or-nothing. A failure rolls back the whole group, so the
+    /// projection is left byte-for-byte unchanged (reuses [`transact`](Self::transact)).
+    ///
+    /// Returns the number of leaf mutations applied. Items may themselves be a
+    /// `transact` group; nested items are flattened into the same transaction.
+    pub fn transact_mutations(&mut self, items: &[Mutation]) -> Result<usize> {
+        // Borrow-checker: run inside one transaction by routing each leaf through
+        // a tx-scoped applier.
+        self.transact(|tx| {
+            let mut count = 0usize;
+            for m in items {
+                count += apply_mutation_tx(tx, m)?;
+            }
+            Ok(count)
+        })
+    }
+
     // --- Oplog (append-only substrate, DL-4) -----------------------------
 
     /// Append one op to the oplog. `op_id` is the primary key; appending the
@@ -632,6 +859,173 @@ fn escape_like(prefix: &str) -> String {
         }
     }
     out
+}
+
+/// Bind a JSON scalar as a SQLite value for a parameterized predicate. Numbers
+/// bind as INTEGER/REAL (so JSON1 numeric comparisons line up), booleans as the
+/// JSON1 `0`/`1` integers `json_extract` returns, strings as TEXT, and null as
+/// SQL NULL. Arrays/objects are never bound (the planner rejects them upstream).
+fn json_to_sql(value: &serde_json::Value) -> Result<rusqlite::types::Value> {
+    use rusqlite::types::Value as V;
+    let out = match value {
+        serde_json::Value::Null => V::Null,
+        serde_json::Value::Bool(b) => V::Integer(i64::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                V::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                V::Real(f)
+            } else {
+                // u64 outside i64 range: store as text to avoid lossy coercion.
+                V::Text(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => V::Text(s.clone()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            return Err(CoreError::QueryError(
+                "cannot bind a non-scalar value as a SQL parameter".into(),
+            ))
+        }
+    };
+    Ok(out)
+}
+
+/// Convert the planner's ordered JSON bind list into rusqlite values.
+fn to_sql_params(values: &[serde_json::Value]) -> Result<Vec<rusqlite::types::Value>> {
+    values.iter().map(json_to_sql).collect()
+}
+
+/// Advance a record's `updated_at` to `logical_at` when supplied (never
+/// backwards), leaving it untouched otherwise.
+fn bump_updated_at(env: &mut RecordEnvelope, logical_at: Option<i64>) {
+    if let Some(at) = logical_at {
+        let ts = forge_domain::LogicalTimestamp(at.max(0) as u64);
+        if ts > env.updated_at {
+            env.updated_at = ts;
+        }
+    }
+}
+
+// --- Transaction-scoped record helpers (for grouped mutations) -------------
+
+/// Read a record inside an open transaction.
+fn get_record_tx(
+    tx: &rusqlite::Transaction<'_>,
+    collection: &str,
+    id: &str,
+) -> Result<Option<RecordEnvelope>> {
+    let data: Option<String> = tx
+        .query_row(
+            "SELECT data FROM records WHERE collection = ?1 AND id = ?2",
+            params![collection, id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sql)?;
+    match data {
+        Some(json) => Ok(Some(
+            serde_json::from_str(&json).map_err(|e| map_json("get_record_tx", e))?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// Upsert a record inside an open transaction.
+fn put_record_tx(tx: &rusqlite::Transaction<'_>, env: &RecordEnvelope) -> Result<()> {
+    let data = serde_json::to_string(env).map_err(|e| map_json("put_record_tx", e))?;
+    tx.execute(
+        "INSERT INTO records (collection, id, data, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(collection, id) DO UPDATE SET
+             data = excluded.data,
+             updated_at = excluded.updated_at",
+        params![
+            env.collection.as_str(),
+            env.entity_id.as_str(),
+            data,
+            now_ms()
+        ],
+    )
+    .map_err(map_sql)?;
+    Ok(())
+}
+
+/// Apply one mutation inside an open transaction, returning the number of leaf
+/// mutations applied (so a nested `transact` counts each contained leaf). Every
+/// projection write goes through the transaction, so a later failure rolls the
+/// whole group back (DL-17 atomic-local).
+fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usize> {
+    match m {
+        Mutation::Insert {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let id = id.as_ref().ok_or_else(|| {
+                CoreError::QueryError("insert requires a collection-scoped id".into())
+            })?;
+            let at = forge_domain::LogicalTimestamp(logical_at.unwrap_or(0).max(0) as u64);
+            let env = RecordEnvelope::new(
+                forge_domain::CollectionId::new(collection.clone()),
+                forge_domain::RecordId::new(id.clone()),
+                fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                at,
+            );
+            put_record_tx(tx, &env)?;
+            Ok(1)
+        }
+        Mutation::Update {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let mut env = get_record_tx(tx, collection, id)?.ok_or_else(|| {
+                CoreError::QueryError(format!("update: record {collection}/{id} does not exist"))
+            })?;
+            env.fields = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            bump_updated_at(&mut env, *logical_at);
+            put_record_tx(tx, &env)?;
+            Ok(1)
+        }
+        Mutation::Patch {
+            collection,
+            id,
+            fields,
+            logical_at,
+        } => {
+            let mut env = get_record_tx(tx, collection, id)?.ok_or_else(|| {
+                CoreError::QueryError(format!("patch: record {collection}/{id} does not exist"))
+            })?;
+            for (k, v) in fields {
+                env.fields.insert(k.clone(), v.clone());
+            }
+            bump_updated_at(&mut env, *logical_at);
+            put_record_tx(tx, &env)?;
+            Ok(1)
+        }
+        Mutation::Delete {
+            collection,
+            id,
+            logical_at,
+        } => {
+            let mut env = get_record_tx(tx, collection, id)?.ok_or_else(|| {
+                CoreError::QueryError(format!("delete: record {collection}/{id} does not exist"))
+            })?;
+            env.deleted = true;
+            bump_updated_at(&mut env, *logical_at);
+            put_record_tx(tx, &env)?;
+            Ok(1)
+        }
+        Mutation::Transact { items } => {
+            let mut count = 0usize;
+            for item in items {
+                count += apply_mutation_tx(tx, item)?;
+            }
+            Ok(count)
+        }
+    }
 }
 
 /// A row read back from the oplog.
@@ -1208,5 +1602,321 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_lowercase(), "wal", "DL-23 requires WAL on disk");
+    }
+
+    // --- Query engine (DL-15) --------------------------------------------
+
+    fn seed_tasks(s: &Store) {
+        // Three tasks with display fields; prio numeric, status/title text.
+        let mut a = sample_record("tasks", "tasks/1", "alpha");
+        a.fields.insert("status".into(), serde_json::json!("todo"));
+        a.fields.insert("prio".into(), serde_json::json!(1));
+        let mut b = sample_record("tasks", "tasks/2", "beta");
+        b.fields.insert("status".into(), serde_json::json!("done"));
+        b.fields.insert("prio".into(), serde_json::json!(2));
+        let mut c = sample_record("tasks", "tasks/3", "gamma");
+        c.fields.insert("status".into(), serde_json::json!("todo"));
+        c.fields.insert("prio".into(), serde_json::json!(3));
+        s.put_record(&a).unwrap();
+        s.put_record(&b).unwrap();
+        s.put_record(&c).unwrap();
+    }
+
+    fn plan(v: serde_json::Value) -> Query {
+        Query::from_fixture_value(&v).expect("parse plan")
+    }
+
+    #[test]
+    fn query_eq_filters_and_orders() {
+        let s = store();
+        seed_tasks(&s);
+        let q = plan(serde_json::json!({
+            "from": "tasks", "where": ["status", "=", "todo"], "orderBy": ["prio", "asc"]
+        }));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["tasks/1", "tasks/3"]);
+    }
+
+    #[test]
+    fn query_ne_excludes_match_and_treats_missing_as_differing() {
+        let s = store();
+        seed_tasks(&s);
+        // A record without `status` at all: ne('done') should still include it
+        // (missing differs from 'done').
+        let mut d = sample_record("tasks", "tasks/4", "delta");
+        d.fields.remove("status"); // sample_record only sets title anyway
+        s.put_record(&d).unwrap();
+        let q = plan(serde_json::json!({"from": "tasks", "where": ["status", "!=", "done"]}));
+        let ids = s.query(&q).unwrap().ids();
+        assert!(ids.contains(&"tasks/1".to_string()));
+        assert!(ids.contains(&"tasks/3".to_string()));
+        assert!(ids.contains(&"tasks/4".to_string()), "missing field differs from a value");
+        assert!(!ids.contains(&"tasks/2".to_string()), "status=done excluded");
+    }
+
+    #[test]
+    fn query_range_excludes_missing_and_non_numeric() {
+        let s = store();
+        seed_tasks(&s);
+        // tasks/5 has a non-numeric prio; a range filter must not coerce it in.
+        let mut e = sample_record("tasks", "tasks/5", "eps");
+        e.fields.insert("prio".into(), serde_json::json!("99"));
+        s.put_record(&e).unwrap();
+        let q = plan(serde_json::json!({"from": "tasks", "where": ["prio", ">=", 2]}));
+        let ids = s.query(&q).unwrap().ids();
+        assert_eq!(ids, vec!["tasks/2", "tasks/3"], "string prio not coerced into range");
+    }
+
+    #[test]
+    fn query_in_and_like() {
+        let s = store();
+        seed_tasks(&s);
+        let q_in = plan(serde_json::json!({"from": "tasks", "where": ["status", "in", ["todo"]]}));
+        assert_eq!(s.query(&q_in).unwrap().ids(), vec!["tasks/1", "tasks/3"]);
+
+        let q_like = plan(serde_json::json!({"from": "tasks", "where": ["title", "like", "%a"]}));
+        // alpha, beta, gamma all end in 'a'.
+        assert_eq!(s.query(&q_like).unwrap().ids(), vec!["tasks/1", "tasks/2", "tasks/3"]);
+    }
+
+    #[test]
+    fn query_like_escapes_metacharacters() {
+        let s = store();
+        let mut a = sample_record("notes", "n1", "a%b");
+        a.fields.insert("title".into(), serde_json::json!("a%b"));
+        let mut b = sample_record("notes", "n2", "axb");
+        b.fields.insert("title".into(), serde_json::json!("axb"));
+        s.put_record(&a).unwrap();
+        s.put_record(&b).unwrap();
+        // Pattern 'a\%b' (escaped) must match only the literal 'a%b'.
+        let q = plan(serde_json::json!({"from": "notes", "where": ["title", "like", "a\\%b"]}));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["n1"]);
+    }
+
+    #[test]
+    fn query_like_is_ascii_case_insensitive() {
+        let s = store();
+        let mut a = sample_record("notes", "n1", "Plan");
+        a.fields.insert("title".into(), serde_json::json!("Plan"));
+        s.put_record(&a).unwrap();
+        let q = plan(serde_json::json!({"from": "notes", "where": ["title", "like", "plan"]}));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["n1"], "LIKE folds ASCII case");
+    }
+
+    #[test]
+    fn query_eq_null_matches_missing_field() {
+        let s = store();
+        let mut a = sample_record("tasks", "tasks/1", "a"); // no `assignee`
+        a.fields.remove("assignee");
+        let mut b = sample_record("tasks", "tasks/2", "b");
+        b.fields.insert("assignee".into(), serde_json::json!("ada"));
+        s.put_record(&a).unwrap();
+        s.put_record(&b).unwrap();
+        let q = plan(serde_json::json!({"from": "tasks", "where": ["assignee", "=", null]}));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["tasks/1"], "missing reads as null for eq(null)");
+        let q2 = plan(serde_json::json!({"from": "tasks", "where": ["assignee", "!=", null]}));
+        assert_eq!(s.query(&q2).unwrap().ids(), vec!["tasks/2"]);
+    }
+
+    #[test]
+    fn query_hides_tombstoned_unless_include_deleted() {
+        let s = store();
+        seed_tasks(&s);
+        s.delete_record("tasks", "tasks/2", Some(9)).unwrap();
+        let q = plan(serde_json::json!({"from": "tasks", "orderBy": ["prio", "asc"]}));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["tasks/1", "tasks/3"]);
+        let q_all = plan(serde_json::json!({
+            "from": "tasks", "orderBy": ["prio", "asc"], "includeDeleted": true
+        }));
+        assert_eq!(s.query(&q_all).unwrap().ids(), vec!["tasks/1", "tasks/2", "tasks/3"]);
+    }
+
+    #[test]
+    fn query_count_and_group_by() {
+        let s = store();
+        seed_tasks(&s);
+        let q = plan(serde_json::json!({
+            "from": "tasks", "where": ["status", "=", "todo"], "aggregate": {"op": "count"}
+        }));
+        match s.query(&q).unwrap() {
+            QueryResult::Aggregate(a) => assert_eq!(a.count, Some(2)),
+            other => panic!("expected aggregate, got {other:?}"),
+        }
+        let qg = plan(serde_json::json!({
+            "from": "tasks", "groupBy": "status", "aggregate": {"sum": "prio"}
+        }));
+        match s.query(&qg).unwrap() {
+            QueryResult::Groups(g) => {
+                assert_eq!(g.len(), 2);
+                // Keys ascending: done, todo.
+                assert_eq!(g[0].key, serde_json::json!("done"));
+                assert_eq!(g[0].aggregate.sum, Some(2.0));
+                assert_eq!(g[1].key, serde_json::json!("todo"));
+                assert_eq!(g[1].aggregate.sum, Some(4.0)); // 1 + 3
+            }
+            other => panic!("expected groups, got {other:?}"),
+        }
+    }
+
+    // --- Mutations (DL-17) -----------------------------------------------
+
+    #[test]
+    fn insert_patch_delete_sequence_post_state() {
+        let s = store();
+        // insert
+        let ins = Mutation::Insert {
+            collection: "tasks".into(),
+            id: Some("task_001".into()),
+            fields: serde_json::json!({"title": "Draft", "status": "draft", "prio": 1})
+                .as_object()
+                .unwrap()
+                .clone(),
+            logical_at: Some(1),
+        };
+        s.apply_mutation(&ins).unwrap();
+        let after_insert = s.get_record("tasks", "task_001").unwrap().unwrap();
+        assert_eq!(after_insert.fields["status"], serde_json::json!("draft"));
+        assert!(!after_insert.deleted);
+
+        // patch merges (status+prio change, title preserved)
+        let patched = s
+            .patch_record(
+                "tasks",
+                "task_001",
+                serde_json::json!({"status": "open", "prio": 2})
+                    .as_object()
+                    .unwrap(),
+                Some(2),
+            )
+            .unwrap();
+        assert_eq!(patched.fields["status"], serde_json::json!("open"));
+        assert_eq!(patched.fields["prio"], serde_json::json!(2));
+        assert_eq!(patched.fields["title"], serde_json::json!("Draft"), "omitted field preserved");
+        assert_eq!(patched.updated_at, forge_domain::LogicalTimestamp(2));
+
+        // delete tombstones, retains fields
+        let deleted = s.delete_record("tasks", "task_001", Some(3)).unwrap();
+        assert!(deleted.deleted);
+        assert_eq!(deleted.fields["status"], serde_json::json!("open"));
+        assert_eq!(deleted.updated_at, forge_domain::LogicalTimestamp(3));
+        assert_eq!(deleted.created_at, forge_domain::LogicalTimestamp(1), "created_at preserved");
+
+        // hidden from a normal query, retained in the table
+        let q = Query::from("tasks");
+        assert!(s.query(&q).unwrap().ids().is_empty());
+        assert!(s.get_record("tasks", "task_001").unwrap().is_some());
+    }
+
+    #[test]
+    fn update_replaces_known_fields_but_preserves_unknown() {
+        let s = store();
+        let mut rec = sample_record("tasks", "t1", "old");
+        rec.fields.insert("status".into(), serde_json::json!("todo"));
+        rec.unknown_fields.insert("f_future".into(), serde_json::json!({"x": 1}));
+        s.put_record(&rec).unwrap();
+        // update only sets title; status is dropped from display fields, but
+        // unknown_fields must survive (DL-9).
+        let updated = s
+            .update_record(
+                "tasks",
+                "t1",
+                serde_json::json!({"title": "new"}).as_object().unwrap(),
+                Some(5),
+            )
+            .unwrap();
+        assert_eq!(updated.fields.get("title"), Some(&serde_json::json!("new")));
+        assert_eq!(updated.fields.get("status"), None, "update replaces display fields");
+        assert_eq!(updated.unknown_fields["f_future"], serde_json::json!({"x": 1}));
+    }
+
+    #[test]
+    fn patch_of_missing_record_is_query_error() {
+        let s = store();
+        let empty = serde_json::Map::new();
+        let err = s.patch_record("tasks", "nope", &empty, None).unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+    }
+
+    #[test]
+    fn transact_group_is_atomic_and_visible() {
+        let mut s = store();
+        let mut seed = sample_record("tasks", "tasks/1", "Existing");
+        seed.fields.insert("done".into(), serde_json::json!(false));
+        s.put_record(&seed).unwrap();
+
+        let items = vec![
+            Mutation::Insert {
+                collection: "tasks".into(),
+                id: Some("tasks/2".into()),
+                fields: serde_json::json!({"title": "New", "done": false})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                logical_at: None,
+            },
+            Mutation::Patch {
+                collection: "tasks".into(),
+                id: "tasks/1".into(),
+                fields: serde_json::json!({"done": true}).as_object().unwrap().clone(),
+                logical_at: None,
+            },
+        ];
+        let n = s.transact_mutations(&items).unwrap();
+        assert_eq!(n, 2);
+        let q = Query::from("tasks");
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["tasks/1", "tasks/2"]);
+        assert_eq!(
+            s.get_record("tasks", "tasks/1").unwrap().unwrap().fields["done"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn transact_group_rolls_back_on_failure() {
+        let mut s = store();
+        // The group inserts tasks/2 then patches a missing record -> the whole
+        // group must roll back, so tasks/2 is NOT visible afterward.
+        let items = vec![
+            Mutation::Insert {
+                collection: "tasks".into(),
+                id: Some("tasks/2".into()),
+                fields: serde_json::Map::new(),
+                logical_at: None,
+            },
+            Mutation::Patch {
+                collection: "tasks".into(),
+                id: "missing".into(),
+                fields: serde_json::Map::new(),
+                logical_at: None,
+            },
+        ];
+        let err = s.transact_mutations(&items).unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+        assert!(
+            s.get_record("tasks", "tasks/2").unwrap().is_none(),
+            "rolled-back insert must not persist"
+        );
+    }
+
+    #[test]
+    fn nested_transact_flattens_into_one_transaction() {
+        let mut s = store();
+        let items = vec![Mutation::Transact {
+            items: vec![
+                Mutation::Insert {
+                    collection: "tasks".into(),
+                    id: Some("a".into()),
+                    fields: serde_json::Map::new(),
+                    logical_at: None,
+                },
+                Mutation::Insert {
+                    collection: "tasks".into(),
+                    id: Some("b".into()),
+                    fields: serde_json::Map::new(),
+                    logical_at: None,
+                },
+            ],
+        }];
+        assert_eq!(s.transact_mutations(&items).unwrap(), 2);
+        assert_eq!(s.list_records("tasks").unwrap().len(), 2);
     }
 }
