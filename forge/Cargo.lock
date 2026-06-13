@@ -596,6 +596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-secrets"
+version = "0.1.0"
+dependencies = [
+ "forge-domain",
+ "forge-policy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-storage"
 version = "0.1.0"
 dependencies = [
