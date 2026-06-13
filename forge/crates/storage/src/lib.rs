@@ -1171,6 +1171,31 @@ impl Store {
         Ok(out)
     }
 
+    /// List every distinct `doc_id` that has at least one persisted chunk, sorted.
+    ///
+    /// This is the union/iteration primitive the in-process sync seam needs
+    /// (prd-merged/03 SS-1/SS-2): a peer advertises a frontier *per `doc_id`*, so
+    /// the sync runner walks the union of doc ids across two stores. It is the
+    /// public form of the `SELECT DISTINCT doc_id` the DL-6
+    /// [`rebuild_projection`](Self::rebuild_projection) already does internally —
+    /// exposed so the sync crate (and any future transport) can enumerate docs
+    /// without reaching the raw connection. Includes non-collection docs (e.g. a
+    /// future `src/<file>` text doc); callers filter by prefix as needed.
+    pub fn list_doc_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT doc_id FROM crdt_chunks ORDER BY doc_id")
+            .map_err(map_sql)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(map_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(map_sql)?);
+        }
+        Ok(out)
+    }
+
     /// Store a CRDT snapshot for `doc_id`.
     pub fn put_snapshot(
         &self,
@@ -1929,6 +1954,23 @@ mod tests {
         assert_eq!(chunks[1].payload, b"bbb");
         assert_eq!(s.get_chunks("doc2").unwrap().len(), 1);
         assert!(s.get_chunks("missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_doc_ids_returns_distinct_sorted_docs() {
+        // The sync seam's per-doc frontier walk (SS-1/SS-2) needs the union of
+        // doc ids that hold chunks: distinct, sorted, and empty when there are
+        // none.
+        let s = store();
+        assert!(s.list_doc_ids().unwrap().is_empty());
+        s.put_chunk("collection/notes", "c1", "loro", b"n").unwrap();
+        s.put_chunk("collection/tasks", "c1", "loro", b"a").unwrap();
+        s.put_chunk("collection/tasks", "c2", "loro", b"b").unwrap();
+        assert_eq!(
+            s.list_doc_ids().unwrap(),
+            vec!["collection/notes".to_string(), "collection/tasks".to_string()],
+            "doc ids are distinct and sorted regardless of chunk count"
+        );
     }
 
     #[test]
