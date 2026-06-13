@@ -154,6 +154,14 @@ pub enum GateDecision {
 /// implementation can scope decisions per capability category (e.g. "this run
 /// profile forbids `db` writes" or "platform has no clipboard").
 pub trait DecisionContext: std::fmt::Debug {
+    /// Clone this context behind the trait object so a [`PolicyEngine`] clone
+    /// preserves the **exact** gate behavior (review 023 P2). `PolicyEngine`
+    /// holds the context as `Box<dyn DecisionContext>`, which is not `Clone`;
+    /// without this hook a clone would have to substitute a different context
+    /// and could become *more permissive* (a fail-open bug). Implementors that
+    /// derive `Clone` get this for free via [`clone_decision_context`].
+    fn clone_box(&self) -> Box<dyn DecisionContext>;
+
     /// **Gate: workspace policy permits capability** (SC-10).
     ///
     /// The workspace admin policy can forbid a capability category outright,
@@ -180,6 +188,15 @@ pub trait DecisionContext: std::fmt::Debug {
     }
 }
 
+/// Box-clone a [`DecisionContext`] implementor that is `Clone`. Implementors
+/// can satisfy [`DecisionContext::clone_box`] with a one-liner:
+/// `fn clone_box(&self) -> Box<dyn DecisionContext> { clone_decision_context(self) }`.
+pub fn clone_decision_context<C: DecisionContext + Clone + 'static>(
+    ctx: &C,
+) -> Box<dyn DecisionContext> {
+    Box::new(ctx.clone())
+}
+
 /// The M0a permissive [`DecisionContext`]: every non-capability SC-10 gate
 /// allows. This is the **single, explicit** place the workspace-policy,
 /// run-profile, and platform-permission gates are short-circuited until M0b
@@ -187,7 +204,11 @@ pub trait DecisionContext: std::fmt::Debug {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AllowAll;
 
-impl DecisionContext for AllowAll {}
+impl DecisionContext for AllowAll {
+    fn clone_box(&self) -> Box<dyn DecisionContext> {
+        clone_decision_context(self)
+    }
+}
 
 /// The **manifest + resource capability subcheck** of SC-10 (review 006 P1).
 ///
@@ -327,13 +348,16 @@ pub struct PolicyEngine {
 
 impl Clone for PolicyEngine {
     fn clone(&self) -> Self {
-        // `DecisionContext` is a trait object so the engine can't derive Clone;
-        // M0a only ever uses the stateless `AllowAll` stub, so cloning the
-        // engine re-installs a fresh permissive context. (Replay/snapshot paths
-        // never depend on a custom context surviving a clone.)
+        // `DecisionContext` is a trait object so the engine can't derive Clone.
+        // Cloning MUST preserve the exact decision context (review 023 P2):
+        // re-installing a bare `AllowAll` here would make a clone of a
+        // context-scoped engine *more permissive* than the original — a
+        // fail-OPEN permission bypass once M0b passes real workspace/run-profile/
+        // platform gates through `with_context`. `clone_box` carries the real
+        // context across, so the clone makes identical decisions to the original.
         PolicyEngine {
             capability: self.capability.clone(),
-            context: Box::new(AllowAll),
+            context: self.context.clone_box(),
             can_run: self.can_run,
             max_host_calls: self.max_host_calls,
             host_calls: self.host_calls,
@@ -425,6 +449,45 @@ impl PolicyEngine {
         self.host_calls
     }
 
+    /// Evaluate **only** the non-capability SC-10 [`DecisionContext`] gates
+    /// (workspace policy / run profile / platform permission) for `call`,
+    /// without touching the role gate, the host-call budget, or the
+    /// capability/resource subcheck.
+    ///
+    /// ## Why this is public: the replayable-denial seam (review 023 P1)
+    ///
+    /// A [`PermissionSnapshot`] captures only `capabilities` / `can_run` /
+    /// `max_host_calls` — it does **not** capture the context-gate outcome.
+    /// Replay rebuilds policy with the permissive [`AllowAll`] context
+    /// ([`from_snapshot`](Self::from_snapshot)), so a call that a *real* context
+    /// denied at record time would be **allowed** on replay. That is a fail-open
+    /// hole: the recorder writes a `{"denied": ...}` entry for the original
+    /// denial, but a replay that re-allows the call would then consume that
+    /// denied entry as if it were a normal response (corrupting the trace).
+    ///
+    /// To keep the denial deterministic without bloating the snapshot, the
+    /// **runtime** must, in record mode and *before* the live-allowed path runs,
+    /// call this method and — if it returns `Err` — record that denial through
+    /// the same `record_denial` channel as a manifest-scope denial, then
+    /// propagate the error (exactly the shape of `HostContext::check_or_record_denial`
+    /// in `forge/crates/runtime/src/host.rs`). On replay the recorded denial is
+    /// consumed and its error reconstructed at the cursor, so a context-only
+    /// denial replays identically to a manifest-scope denial. This method is the
+    /// policy-side surface the runtime needs so the seam is **not** silently
+    /// fail-open; the recording/replay wiring itself is a runtime-crate concern.
+    ///
+    /// Note: [`check`](Self::check) already runs these same gates inline, so a
+    /// caller that records via `check_or_record_denial` around `check` is
+    /// already covered — this method exists for callers that need the context
+    /// decision in isolation (e.g. to snapshot it explicitly).
+    pub fn check_context_gates(&self, call: &HostCall) -> Result<()> {
+        let cat = Self::category_of(call);
+        gate(self.context.workspace_policy(cat), "workspace policy", cat)?;
+        gate(self.context.run_profile(cat), "run profile", cat)?;
+        gate(self.context.platform_permission(cat), "platform permission", cat)?;
+        Ok(())
+    }
+
     /// The capability category a `call` belongs to.
     pub fn category_of(call: &HostCall) -> Category {
         match call {
@@ -472,10 +535,10 @@ impl PolicyEngine {
 
         // 3. Non-capability SC-10 gates (review 006 P1): workspace policy, run
         //    profile, platform permission. M0a stubs allow, but a real context
-        //    can deny any of them fail-closed here.
-        gate(self.context.workspace_policy(cat), "workspace policy", cat)?;
-        gate(self.context.run_profile(cat), "run profile", cat)?;
-        gate(self.context.platform_permission(cat), "platform permission", cat)?;
+        //    can deny any of them fail-closed here. Same evaluation the runtime
+        //    can call in isolation via `check_context_gates` to record a
+        //    context-only denial deterministically (review 023 P1).
+        self.check_context_gates(call)?;
 
         // 4. Capability subcheck (SC-8/CR-4): manifest grant + resource match,
         //    including the revocable seam allowances.
@@ -898,13 +961,16 @@ mod tests {
 
     /// A context that denies one named gate for a given category, allowing the
     /// rest — used to prove each missing SC-10 gate has a fail-closed seam.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct DenyGate {
         which: &'static str,
         category: Category,
     }
 
     impl DecisionContext for DenyGate {
+        fn clone_box(&self) -> Box<dyn DecisionContext> {
+            clone_decision_context(self)
+        }
         fn workspace_policy(&self, category: Category) -> GateDecision {
             self.maybe_deny("workspace_policy", category)
         }
@@ -979,6 +1045,114 @@ mod tests {
         .unwrap();
         assert!(e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_err());
         assert_eq!(e.host_calls(), 0, "a gate denial must not be counted");
+    }
+
+    // --- Clone preserves the decision context (review 023 P2) ---------------
+
+    #[test]
+    fn clone_of_context_scoped_engine_preserves_denials() {
+        // A clone of a context-scoped engine MUST make identical decisions: if
+        // the original denies via a non-AllowAll DecisionContext, so must the
+        // clone. Cloning must NOT silently fall back to AllowAll (fail-open).
+        let ctx = Box::new(DenyGate { which: "workspace_policy", category: Category::Storage });
+        let original = engine_with(ctx, caps(&["app/*"], &[], &[], &[], true));
+
+        let mut clone = original.clone();
+        let call = HostCall::Storage { op: Access::Read, key: "app/x".into() };
+
+        // The original denies this call; the clone must deny it the SAME way.
+        let err = clone.check(&call).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(
+            err.to_string().contains("workspace policy"),
+            "clone must surface the context denial, not AllowAll-permit: {err}"
+        );
+
+        // And a call the context allows still passes through the rest of the
+        // gates on the clone (the context survived, it didn't widen access).
+        assert!(clone
+            .check(&HostCall::Storage { op: Access::Read, key: "secret/x".into() })
+            .is_err()); // outside grant → still denied, never AllowAll-broadened
+    }
+
+    #[test]
+    fn clone_matches_original_decision_on_every_call() {
+        // Pin down "a cloned engine must make identical decisions to the
+        // original" across allow + deny outcomes.
+        let ctx = Box::new(DenyGate { which: "run_profile", category: Category::Db });
+        let mut original = engine_with(ctx, caps(&[], &[], &["tasks"], &["tasks"], true));
+        let mut clone = original.clone();
+
+        let denied = HostCall::Db { op: Access::Write, collection: "tasks".into() };
+        let allowed = HostCall::Storage { op: Access::Read, key: "app/x".into() };
+
+        // run_profile denies the Db category for both engines.
+        assert_eq!(
+            original.check(&denied).unwrap_err().code(),
+            clone.check(&denied).unwrap_err().code()
+        );
+        // Storage (no manifest grant here) is denied identically by both, and
+        // never AllowAll-permitted on the clone.
+        assert_eq!(
+            original.check(&allowed).unwrap_err().code(),
+            clone.check(&allowed).unwrap_err().code()
+        );
+    }
+
+    // --- Context-gate denial is recordable like a manifest denial (review 023 P1)
+
+    #[test]
+    fn check_context_gates_isolates_the_context_decision() {
+        // The runtime needs the context-gate outcome in isolation so it can
+        // record a context-only denial through the same channel as a
+        // manifest-scope denial. `check_context_gates` exposes exactly that:
+        // it runs ONLY the DecisionContext gates, no role/budget/capability.
+        let ctx = Box::new(DenyGate { which: "platform_permission", category: Category::Ui });
+        let e = engine_with(ctx, caps(&[], &[], &[], &[], true));
+
+        // Ui is denied by the platform-permission gate...
+        let err = e.check_context_gates(&HostCall::Ui).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("platform permission"), "{err}");
+
+        // ...while a different category (Storage) passes the context gates,
+        // even though its manifest/resource subcheck would later deny it. This
+        // proves the method reports the CONTEXT decision only.
+        assert!(e
+            .check_context_gates(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .is_ok());
+    }
+
+    #[test]
+    fn check_context_gates_allows_under_allow_all() {
+        // Under the M0a permissive context every category passes the context
+        // gates, so the recordable-denial seam is inert until a real context is
+        // wired (no spurious denials recorded on the AllowAll path).
+        let e = engine(caps(&["app/*"], &[], &[], &[], true), owner());
+        for call in [
+            HostCall::Storage { op: Access::Read, key: "app/x".into() },
+            HostCall::Db { op: Access::Read, collection: "tasks".into() },
+            HostCall::Ui,
+            HostCall::Time,
+            HostCall::Random,
+        ] {
+            assert!(e.check_context_gates(&call).is_ok(), "AllowAll passes {call:?}");
+        }
+    }
+
+    #[test]
+    fn check_context_gates_matches_inline_gate_decision_in_check() {
+        // `check` runs the same context gates inline; the isolated method must
+        // agree with the inline path so the runtime can record the exact denial
+        // that `check` would otherwise produce.
+        let ctx = Box::new(DenyGate { which: "workspace_policy", category: Category::Storage });
+        let mut e = engine_with(ctx, caps(&["app/*"], &[], &[], &[], true));
+        let call = HostCall::Storage { op: Access::Read, key: "app/x".into() };
+
+        let isolated = e.check_context_gates(&call).unwrap_err();
+        let inline = e.check(&call).unwrap_err();
+        assert_eq!(isolated.code(), inline.code());
+        assert_eq!(isolated.to_string(), inline.to_string());
     }
 
     // --- Roles (SC-10 / SC-11) ----------------------------------------------
