@@ -476,10 +476,11 @@ impl WorkspaceCore {
         // any state is touched, and BIND it to the actual install sources so a
         // valid signature can only bless the exact code being installed (review
         // 080 #1). The signed package's MANIFEST/policy is also bound to the
-        // top-level `manifest` that is stored and enforced (review 082 #1): a
-        // signed install must enforce the SIGNED capability boundary, not a
-        // broader one. `Unsigned` when the install carries no signature.
-        let trust = verify_install_signature(cmd, &manifest, sources)?;
+        // top-level `manifest` that is stored and enforced (review 082 #1 / 083):
+        // a signed install must enforce the SIGNED capability boundary — the same
+        // app id, every resource limit, the full net rule, and the entrypoint —
+        // not a broader one. `Unsigned` when the install carries no signature.
+        let trust = verify_install_signature(cmd, &applet_id, &manifest, sources)?;
 
         // Compile every source so a forbidden construct in ANY file rejects the
         // whole install (CR-13: the static policy scan is layer one). Capture
@@ -1952,6 +1953,7 @@ fn scope_grants(scope: &[String], collection: &str) -> bool {
 /// integrity only, the M0a "verify when present, surface the result" default.
 fn verify_install_signature(
     cmd: &CoreCommand,
+    applet_id: &AppletId,
     manifest: &Manifest,
     sources: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<InstallTrust> {
@@ -1995,12 +1997,15 @@ fn verify_install_signature(
             bind_signature_to_sources(&package, sources)?;
 
             // BIND the signed package's manifest/policy to the top-level
-            // `manifest` that is stored and enforced (review 082 #1): the
+            // `manifest` that is stored and enforced (review 082 #1 / 083): the
             // runtime must enforce EXACTLY the capability boundary + resource
             // limits the publisher signed, not a broader one. A signed install
-            // whose top-level manifest grants more (or a different app id /
-            // entrypoint / limits) than the signed package manifest is rejected.
-            bind_signature_to_manifest(&package, manifest)?;
+            // whose top-level manifest grants more — a different app id, a wider
+            // resource limit, a looser net rule, or a different entrypoint — than
+            // the signed package manifest is rejected. The requested `applet_id`
+            // is bound to the signed `appId` so a valid signature for one app
+            // identity cannot bless a different local applet id (review 083 #1).
+            bind_signature_to_manifest(&package, applet_id, manifest, sources)?;
 
             // Record the verified publisher identity for later trust reporting.
             let publisher = manifest_string(&package.manifest, "publisher");
@@ -2090,20 +2095,38 @@ fn bind_signature_to_sources(
 /// This crate cannot *derive* a forge-domain [`Manifest`] from the signed package
 /// manifest: the signed shape (prd-merged/08 MP-4 — `appId`, `permissions[]`,
 /// `capabilities.{storage,db}.{read,write}`, `capabilities.ui`, `networkPolicy`,
-/// `resourceBudget{wall_ms, memory_bytes}`) carries no `entrypoint`, `min_api`,
-/// or the four other `limits` fields the runtime enforces, so a clean conversion
-/// is impossible. Instead we take option (b) — **reject on mismatch**: the
-/// policy-bearing fields the publisher signed must match the install manifest
-/// EXACTLY. A mismatch is surfaced like any other signature failure (a
-/// `ValidationError`), so the install is rejected and nothing is stored.
+/// `resourceBudget`) carries no `min_api`, so a clean conversion is impossible.
+/// Instead we take option (b) — **reject on mismatch**: the policy-bearing fields
+/// the publisher signed must match the install manifest EXACTLY. A mismatch is
+/// surfaced like any other signature failure (a `ValidationError`), so the
+/// install is rejected and nothing is stored.
 ///
-/// The compared dimensions are exactly the runtime-enforced policy surface:
+/// The compared dimensions are exactly the runtime-enforced policy surface (review
+/// 083 widened this from the prior partial surface):
+///   - `appId` vs the requested `applet_id` — a valid signature for one app
+///     identity must not bless a DIFFERENT local applet id (review 083 #1);
 ///   - `capabilities.storage.read` / `.write` (as a set);
 ///   - `capabilities.db.read` / `.write` (as a set);
 ///   - `capabilities.ui` (bool — signed `true`/absent is permissive in M0a);
-///   - `networkPolicy.allow` vs the install manifest's `net` grant (host/method);
-///   - `resourceBudget.wall_ms` / `.memory_bytes` vs the install `limits`.
-fn bind_signature_to_manifest(package: &Package, install: &Manifest) -> Result<()> {
+///   - the WHOLE normalized net rule (method, url, `max_response_bytes`,
+///     `max_body_bytes`, `timeout_ms`, request/response content types,
+///     `allow_secret_headers`) — a signed install must not loosen a cap or add a
+///     secret header (review 083 #3);
+///   - EVERY enforced resource limit — `wall_ms`, `memory_bytes`, `fuel`,
+///     `max_host_calls`, `storage_bytes`, `log_bytes`. A limit the signed
+///     `resourceBudget` declares must equal the install's; a limit the signed
+///     budget OMITS must equal the runtime default, so a signed install cannot
+///     widen an unstated budget (review 083 #2);
+///   - the runnable `entrypoint`. For a single-file signed package the entrypoint
+///     must be that one file; a signed MULTI-FILE package is rejected because the
+///     signed manifest does not (yet) carry an entrypoint to pin which file runs
+///     (review 083 #4).
+fn bind_signature_to_manifest(
+    package: &Package,
+    applet_id: &AppletId,
+    install: &Manifest,
+    sources: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
     let reject = |reason: String| -> Result<()> {
         Err(CoreError::ValidationError(format!(
             "install manifest does not match the signed package manifest: {reason}"
@@ -2112,6 +2135,24 @@ fn bind_signature_to_manifest(package: &Package, install: &Manifest) -> Result<(
 
     let signed = &package.manifest;
     let signed_caps = signed.get("capabilities");
+
+    // --- app identity: the signed appId must equal the installed applet id ----
+    // (review 083 #1). The signed preimage binds `appId`, so a valid signature
+    // for one app identity cannot be attached to a different local applet id and
+    // still report Signed — provenance and upgrade identity stay bound.
+    let signed_app_id = signed.get("appId").and_then(serde_json::Value::as_str);
+    match signed_app_id {
+        Some(id) if id == applet_id.as_str() => {}
+        Some(id) => {
+            return reject(format!(
+                "appId {id:?} differs from the installed applet id {:?}",
+                applet_id.as_str()
+            ));
+        }
+        None => {
+            return reject("signed package manifest is missing `appId`".into());
+        }
+    }
 
     // --- storage scopes (read/write), compared as order-independent sets ------
     for action in ["read", "write"] {
@@ -2163,43 +2204,85 @@ fn bind_signature_to_manifest(package: &Package, install: &Manifest) -> Result<(
         ));
     }
 
-    // --- network egress: the signed allowlist's (method, host/url) set must
-    //     equal the install net grant's. The signed shape is
-    //     `networkPolicy.allow[]`; the install shape is `capabilities.net[]`.
-    let signed_net = signed_net_set(signed);
-    let install_net: std::collections::BTreeSet<(String, String)> = install
+    // --- network egress: the WHOLE normalized net rule set must match (review
+    //     083 #3). The signed shape is `networkPolicy.allow[]`; the install shape
+    //     is `capabilities.net[]`. Both are normalized to the SAME [`NetRule`]
+    //     type and compared as order-independent sets, so a signed install that
+    //     keeps the same (method, url) but loosens a cap (`max_response_bytes`,
+    //     `max_body_bytes`, `timeout_ms`), changes a content-type constraint, or
+    //     ADDS an `allow_secret_headers` entry no longer passes — every SC-5
+    //     constraint the runtime enforces is bound, not just routing.
+    let signed_net = signed_net_rules(signed)?;
+    let install_net: std::collections::BTreeSet<NormalizedNetRule> = install
         .capabilities
         .net
         .rules()
         .iter()
-        .map(|r| (r.method.to_ascii_uppercase(), r.url.clone()))
+        .map(NormalizedNetRule::from_rule)
         .collect();
     if signed_net != install_net {
         return reject(format!(
             "network egress grant {:?} differs from the signed {:?}",
-            sorted_pairs(&install_net),
-            sorted_pairs(&signed_net)
+            sorted_net_rules(&install_net),
+            sorted_net_rules(&signed_net)
         ));
     }
 
-    // --- resource limits the signed manifest declares (wall_ms, memory_bytes) -
+    // --- resource limits: EVERY enforced limit must match (review 083 #2). The
+    //     runtime enforces wall_ms, memory_bytes, fuel, max_host_calls,
+    //     storage_bytes, and log_bytes from the stored top-level manifest, so a
+    //     signed install must not widen ANY of them. A limit the signed
+    //     `resourceBudget` declares must equal the install's value; a limit the
+    //     signed budget OMITS is bound to the runtime DEFAULT, so a signed install
+    //     cannot silently widen an unstated budget. The runtime-enforced default
+    //     is the single source of truth ([`forge_domain::Limits::default`]).
     let budget = signed.get("resourceBudget");
-    if let Some(wall) = budget.and_then(|b| b.get("wall_ms")).and_then(serde_json::Value::as_u64) {
-        if wall != install.limits.wall_ms {
+    let defaults = forge_domain::Limits::default();
+    let limit_checks: [(&str, u64, u64); 6] = [
+        ("wall_ms", install.limits.wall_ms, defaults.wall_ms),
+        ("memory_bytes", install.limits.memory_bytes, defaults.memory_bytes),
+        ("fuel", install.limits.fuel, defaults.fuel),
+        ("max_host_calls", install.limits.max_host_calls, defaults.max_host_calls),
+        ("storage_bytes", install.limits.storage_bytes, defaults.storage_bytes),
+        ("log_bytes", install.limits.log_bytes, defaults.log_bytes),
+    ];
+    for (name, install_value, default_value) in limit_checks {
+        // The signed expectation: the value the signed budget declared, or the
+        // runtime default when the signed budget omits this limit.
+        let signed_value = budget
+            .and_then(|b| b.get(name))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(default_value);
+        if install_value != signed_value {
             return reject(format!(
-                "limits.wall_ms {} differs from the signed {wall}",
-                install.limits.wall_ms
+                "limits.{name} {install_value} differs from the signed {signed_value}"
             ));
         }
     }
-    if let Some(mem) = budget
-        .and_then(|b| b.get("memory_bytes"))
-        .and_then(serde_json::Value::as_u64)
-    {
-        if mem != install.limits.memory_bytes {
+
+    // --- entrypoint: the runnable entrypoint must be bound to the signed package
+    //     (review 083 #4). The signed manifest does not (yet) carry an entrypoint
+    //     field, so a signed MULTI-FILE package cannot pin which file runs — the
+    //     install path would otherwise let a caller choose any signed file as the
+    //     entrypoint. A single-file signed package is unambiguous: the one signed
+    //     file IS the entrypoint, so the install's `entrypoint` must equal that
+    //     file's path. Reject multi-file signed installs until the signed manifest
+    //     can represent the entrypoint.
+    if package.files.len() > 1 {
+        return reject(format!(
+            "signed multi-file packages are not installable yet: the signed manifest \
+             carries no entrypoint to bind which of the {} files runs",
+            package.files.len()
+        ));
+    }
+    // bind_signature_to_sources (run before this) already proved `sources` equals
+    // the signed files, so for a single-file package the lone source key is the
+    // signed entrypoint path. Bind the install's chosen entrypoint to it.
+    if let Some(signed_entry) = sources.keys().next() {
+        if install.entrypoint != *signed_entry {
             return reject(format!(
-                "limits.memory_bytes {} differs from the signed {mem}",
-                install.limits.memory_bytes
+                "entrypoint {:?} differs from the signed file {signed_entry:?}",
+                install.entrypoint
             ));
         }
     }
@@ -2224,30 +2307,75 @@ fn signed_string_set<'a>(
         .unwrap_or_default()
 }
 
-/// The signed network egress allowlist as a `(METHOD, url)` set. The signed shape
-/// is `networkPolicy.allow[]`; each entry's `method` (defaulting to `GET`,
-/// upper-cased to match the install grant's case-insensitive method) and `url`
-/// form the comparison key.
-fn signed_net_set(signed: &serde_json::Value) -> std::collections::BTreeSet<(String, String)> {
-    signed
+/// The full, normalized form of one network egress rule — every SC-5 constraint
+/// the runtime enforces (review 083 #3), not just routing. Both a signed
+/// `networkPolicy.allow[]` entry and an install `capabilities.net[]`
+/// [`NetRule`](forge_domain::NetRule) normalize to this so they compare
+/// order-independently as set elements: method is upper-cased (the policy engine
+/// matches case-insensitively), and the content-type / secret-header lists are
+/// sorted so declaration order does not matter. A difference in ANY field — a
+/// looser cap, an added/changed content type, or a newly allowed secret header —
+/// makes two rules unequal, so the bind rejects it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NormalizedNetRule {
+    method: String,
+    url: String,
+    max_response_bytes: Option<u64>,
+    max_body_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+    request_content_types: Vec<String>,
+    response_content_types: Vec<String>,
+    allow_secret_headers: Vec<String>,
+}
+
+impl NormalizedNetRule {
+    /// Normalize an install manifest [`NetRule`](forge_domain::NetRule).
+    fn from_rule(rule: &forge_domain::NetRule) -> Self {
+        let sorted = |v: &[String]| -> Vec<String> {
+            let mut out: Vec<String> = v.to_vec();
+            out.sort();
+            out
+        };
+        NormalizedNetRule {
+            method: rule.method.to_ascii_uppercase(),
+            url: rule.url.clone(),
+            max_response_bytes: rule.max_response_bytes,
+            max_body_bytes: rule.max_body_bytes,
+            timeout_ms: rule.timeout_ms,
+            request_content_types: sorted(&rule.request_content_types),
+            response_content_types: sorted(&rule.response_content_types),
+            allow_secret_headers: sorted(&rule.allow_secret_headers),
+        }
+    }
+}
+
+/// The signed network egress allowlist (`networkPolicy.allow[]`) as a set of fully
+/// normalized [`NormalizedNetRule`]s. Each signed entry is deserialized through
+/// the SAME [`NetRule`](forge_domain::NetRule) type the install manifest uses, so
+/// the signed and install sides normalize identically and a missing/extra
+/// constraint is caught. A malformed allow entry is a typed rejection, never a
+/// panic.
+fn signed_net_rules(
+    signed: &serde_json::Value,
+) -> Result<std::collections::BTreeSet<NormalizedNetRule>> {
+    let allow = match signed
         .get("networkPolicy")
         .and_then(|n| n.get("allow"))
         .and_then(serde_json::Value::as_array)
-        .map(|allow| {
-            allow
-                .iter()
-                .filter_map(|rule| {
-                    let url = rule.get("url").and_then(serde_json::Value::as_str)?;
-                    let method = rule
-                        .get("method")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("GET")
-                        .to_ascii_uppercase();
-                    Some((method, url.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    {
+        Some(a) => a,
+        None => return Ok(std::collections::BTreeSet::new()),
+    };
+    let mut out = std::collections::BTreeSet::new();
+    for entry in allow {
+        let rule: forge_domain::NetRule = serde_json::from_value(entry.clone()).map_err(|e| {
+            CoreError::ValidationError(format!(
+                "signed package manifest networkPolicy.allow entry is malformed: {e}"
+            ))
+        })?;
+        out.insert(NormalizedNetRule::from_rule(&rule));
+    }
+    Ok(out)
 }
 
 /// A sorted `Vec` view of a `&str` set, for a stable, readable rejection message.
@@ -2255,9 +2383,25 @@ fn sorted_vec(set: &std::collections::BTreeSet<&str>) -> Vec<String> {
     set.iter().map(|s| s.to_string()).collect()
 }
 
-/// A sorted `Vec` view of a `(method, url)` set, for a stable rejection message.
-fn sorted_pairs(set: &std::collections::BTreeSet<(String, String)>) -> Vec<String> {
-    set.iter().map(|(m, u)| format!("{m} {u}")).collect()
+/// A sorted, readable `Vec` view of a normalized net-rule set, for a stable
+/// rejection message that surfaces the full rule (caps + secret headers), not
+/// just routing.
+fn sorted_net_rules(set: &std::collections::BTreeSet<NormalizedNetRule>) -> Vec<String> {
+    set.iter()
+        .map(|r| {
+            format!(
+                "{} {} resp<={:?} body<={:?} timeout<={:?} req_ct={:?} resp_ct={:?} secret_hdrs={:?}",
+                r.method,
+                r.url,
+                r.max_response_bytes,
+                r.max_body_bytes,
+                r.timeout_ms,
+                r.request_content_types,
+                r.response_content_types,
+                r.allow_secret_headers,
+            )
+        })
+        .collect()
 }
 
 /// Read an optional `manifest.<key>` string out of a signed package's manifest

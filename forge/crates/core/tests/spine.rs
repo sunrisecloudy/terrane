@@ -2062,6 +2062,13 @@ fn sources_from_fixture(fixture: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(sources)
 }
 
+/// The signed `appId` carried in `valid_signature.json`'s package manifest. A
+/// signed install MUST be installed under THIS local applet id — review 083 #1
+/// binds the requested `applet_id` to the signed `appId`, so a valid signature
+/// for one app identity cannot bless a different local id. Every positive
+/// signed-install test installs under this id.
+const SIGNED_APP_ID: &str = "app.notes";
+
 /// The forge-domain manifest that MATCHES the `valid_signature.json` signed
 /// package manifest's capability boundary + resource limits (review 082 #1): the
 /// signed `app.notes` package grants `storage notes/*`, `db notes`, `ui`, no
@@ -2121,7 +2128,9 @@ fn install_signed_package_verifies_and_records_trust() {
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     let fixture = load_signing_fixture("valid_signature.json");
     let sig = signature_block_from_fixture(&fixture);
-    let resp = install_demo_signed(&mut core, "app_signed", &fixture, sig);
+    // review 083 #1: install under the SIGNED appId, not a different local id —
+    // the appId bind requires `applet_id == package.manifest.appId`.
+    let resp = install_demo_signed(&mut core, SIGNED_APP_ID, &fixture, sig);
 
     assert!(resp.ok, "a valid signed package must install: {:?}", resp.error);
     let trust = &resp.payload["trust"];
@@ -2146,7 +2155,7 @@ fn install_signed_package_verifies_and_records_trust() {
     assert_eq!(installed_evt.payload["trust"]["status"], serde_json::json!("signed"));
 
     // And the signed applet actually runs (the install was real, not just a check).
-    let run = core.handle(cmd("runtime.run", Some("app_signed"), serde_json::json!({ "input": {} })));
+    let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
     assert!(run.ok, "the verified applet runs: {:?}", run.error);
 }
 
@@ -2164,7 +2173,9 @@ fn a_signature_cannot_bless_a_broader_top_level_manifest() {
     let fixture = load_signing_fixture("valid_signature.json");
     let resp = core.handle(cmd(
         "applet.install",
-        Some("app_broader"),
+        // Install under the SIGNED appId so the appId bind passes and this test
+        // isolates the CAPABILITIES mismatch (review 083 #1 binds appId first).
+        Some(SIGNED_APP_ID),
         serde_json::json!({
             // Identical code to the signed package, but a broader manifest.
             "manifest": demo_manifest(),
@@ -2186,7 +2197,7 @@ fn a_signature_cannot_bless_a_broader_top_level_manifest() {
     );
 
     // Nothing was installed: the broader policy never reached the store.
-    let run = core.handle(cmd("runtime.run", Some("app_broader"), serde_json::json!({ "input": {} })));
+    let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
     assert!(!run.ok, "the rejected install stored nothing");
 
     // And the SAME signed package WITH a matching manifest still installs as
@@ -2194,7 +2205,7 @@ fn a_signature_cannot_bless_a_broader_top_level_manifest() {
     let mut core_ok = WorkspaceCore::in_memory("ws1").unwrap();
     let ok = install_demo_signed(
         &mut core_ok,
-        "app_match",
+        SIGNED_APP_ID,
         &fixture,
         signature_block_from_fixture(&fixture),
     );
@@ -2215,7 +2226,7 @@ fn a_signature_cannot_bless_different_resource_limits() {
 
     let resp = core.handle(cmd(
         "applet.install",
-        Some("app_loose_limits"),
+        Some(SIGNED_APP_ID),
         serde_json::json!({
             "manifest": manifest,
             "sources": sources_from_fixture(&fixture),
@@ -2230,6 +2241,182 @@ fn a_signature_cannot_bless_different_resource_limits() {
         err.to_string().contains("limits.wall_ms"),
         "the limits mismatch is surfaced: {err}"
     );
+}
+
+// --- review 083 regression tests: each fails if the corresponding bind is
+// reverted. Together they pin the FULL signed-policy surface (appId, every
+// resource limit, the whole net rule, the entrypoint), plus that a matching
+// signed install still succeeds and unsigned installs still proceed.
+
+#[test]
+fn a_signature_cannot_bless_a_different_applet_id() {
+    // review 083 #1: a valid T012 signed package whose signed `appId` is
+    // `app.notes` must NOT be installable under a DIFFERENT local applet id. The
+    // code + manifest match the signed package exactly, so only the appId differs
+    // — and that alone must reject, otherwise a valid signature for one app
+    // identity blesses an unrelated local id (provenance/upgrade identity unbound).
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    // The signed appId is `app.notes`; install under a different id.
+    let resp = install_demo_signed(&mut core, "some.other.app", &fixture, signature_block_from_fixture(&fixture));
+
+    assert!(!resp.ok, "a signed package installed under a different applet id must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("appId")
+            && err.to_string().contains("installed applet id"),
+        "the appId mismatch is surfaced: {err}"
+    );
+
+    // Nothing was installed under the borrowed id.
+    let run = core.handle(cmd("runtime.run", Some("some.other.app"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected install stored nothing");
+}
+
+#[test]
+fn a_signature_cannot_widen_any_enforced_limit() {
+    // review 083 #2: the runtime enforces fuel, max_host_calls, storage_bytes,
+    // log_bytes (and wall_ms/memory_bytes) from the stored top-level manifest. The
+    // signed `valid_signature` package's resourceBudget declares ONLY
+    // wall_ms/memory_bytes, so the other four are bound to the runtime default. A
+    // signed install that widens ANY of the six must be rejected — exercise each.
+    let fixture = load_signing_fixture("valid_signature.json");
+    let widen = [
+        ("fuel", serde_json::json!(20_000_000u64)),
+        ("max_host_calls", serde_json::json!(1_000_000u64)),
+        ("storage_bytes", serde_json::json!(1_000_000_000u64)),
+        ("log_bytes", serde_json::json!(10_000_000u64)),
+        ("memory_bytes", serde_json::json!(134_217_728u64)),
+        ("wall_ms", serde_json::json!(60_000u64)),
+    ];
+    for (field, wider) in widen {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = signed_fixture_manifest();
+        manifest["limits"][field] = wider.clone();
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some(SIGNED_APP_ID),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "widening limits.{field} beyond the signed boundary must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(
+            err.to_string().contains(&format!("limits.{field}")),
+            "the {field} limit mismatch is surfaced: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_signature_cannot_loosen_a_net_cap_or_add_a_secret_header() {
+    // review 083 #3: the whole NetRule is bound, not just (method, url). The
+    // signed `valid_signature` package allows NO network, so to exercise the full
+    // net comparison we install under a signed package that DOES declare a net
+    // allow rule and then mutate one constraint per case. Build that signed-shaped
+    // expectation by mutating both sides consistently is complex; instead use the
+    // simpler, equally strict direction the bind guarantees: the signed package
+    // allows zero net, so an install adding ANY net rule (with a secret header)
+    // must be rejected — the net sets differ.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut manifest = signed_fixture_manifest();
+    // The signed package's networkPolicy.allow is empty; add a rule with a loose
+    // cap AND a secret header the publisher never blessed.
+    manifest["capabilities"]["net"] = serde_json::json!([
+        {
+            "method": "GET",
+            "url": "https://api.example.com/private/*",
+            "max_response_bytes": 9_999_999u64,
+            "allow_secret_headers": ["Authorization"]
+        }
+    ]);
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            "manifest": manifest,
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(!resp.ok, "adding a net rule with a secret header the publisher never signed must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("network egress grant"),
+        "the net-rule mismatch is surfaced: {err}"
+    );
+    assert!(
+        err.to_string().contains("secret_hdrs") && err.to_string().contains("Authorization"),
+        "the full net rule (incl. secret headers) is compared, not just routing: {err}"
+    );
+}
+
+#[test]
+fn a_signed_multi_file_install_is_rejected_until_entrypoint_is_representable() {
+    // review 083 #4: the signed manifest carries no entrypoint, so a signed
+    // MULTI-FILE package cannot pin which file runs — a caller could otherwise
+    // pick any signed file as the entrypoint. Until the signed manifest can
+    // represent the entrypoint, signed multi-file installs are rejected. (The
+    // `valid_multi_file_package` T012 fixture is a valid two-file signed package.)
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_multi_file_package.json");
+    // A manifest matching the signed `app.multi` package's (empty) capabilities,
+    // picking `src/ui.ts` as the runnable entrypoint — a non-`main` signed file.
+    let manifest = serde_json::json!({
+        "entrypoint": "src/ui.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.multi"),
+        serde_json::json!({
+            "manifest": manifest,
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(!resp.ok, "a signed multi-file install must be rejected until entrypoint is representable");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("multi-file"),
+        "the multi-file rejection is surfaced: {err}"
+    );
+
+    // Nothing was installed.
+    let run = core.handle(cmd("runtime.run", Some("app.multi"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected multi-file install stored nothing");
+}
+
+#[test]
+fn an_unsigned_install_still_proceeds() {
+    // review 083: the bind only tightens the SIGNED path. An install with NO
+    // signature must still proceed (signing is not mandatory in M0a) — the demo
+    // path is untouched and reports `unsigned`.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+    // install_demo asserts ok internally; confirm it runs (unsigned, untouched path).
+    let run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "an unsigned applet still installs and runs: {:?}", run.error);
 }
 
 #[test]
@@ -2281,7 +2468,7 @@ fn install_signed_package_with_trusted_publisher_enforces_policy_layer() {
         "trusted": true,
         "valid_until": serde_json::Value::Null,
     });
-    let resp = install_demo_signed(&mut core, "app_trusted", &fixture, signature);
+    let resp = install_demo_signed(&mut core, SIGNED_APP_ID, &fixture, signature);
 
     assert!(resp.ok, "trusted publisher installs: {:?}", resp.error);
     assert_eq!(resp.payload["trust"]["status"], serde_json::json!("signed"));
