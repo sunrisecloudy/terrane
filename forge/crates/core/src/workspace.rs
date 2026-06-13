@@ -339,11 +339,20 @@ impl WorkspaceCore {
         // unchanged, so each still replays identically to itself).
         run.run_id = unique_run_id(&run.code_hash, invocation);
 
-        // Pin the replay artifact: persist the EXACT compiled program this run
-        // executed, keyed by code_hash, so a later applet.install/upgrade that
-        // overwrites applet/<id> cannot strand this run — replay reconstructs the
-        // program from what was recorded, not from whatever is installed now
-        // (review 031 finding 3 / CR-9 version-pinned replay).
+        // Pin the replay artifact PER RUN: persist the EXACT compiled program +
+        // manifest this run executed, keyed by `run_id`, so replay reconstructs
+        // the program AND the manifest (engine limits/capabilities) from what this
+        // run actually used — never from whatever is installed now (review 031
+        // finding 3 / review 036 finding 2; CR-9 version-pinned replay).
+        //
+        // Review 036 finding 2: the prior pin was keyed by `code_hash` alone, so
+        // reinstalling the SAME JS under a different manifest (tighter `limits`,
+        // changed legacy caps) overwrote `program/<code_hash>` and stranded older
+        // runs' context — replay then used the new manifest's engine limits. The
+        // per-run key is unique to this execution, so no reinstall (same code or
+        // not) can overwrite it. The content-addressed `program/<code_hash>` pin
+        // is kept as a fallback for legacy runs recorded before per-run pinning.
+        self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
 
         // Persist the deterministic run record (replay source, CR-9). save_run
@@ -407,31 +416,37 @@ impl WorkspaceCore {
             .load_run(&run_id)?
             .ok_or_else(|| CoreError::ValidationError(format!("run {run_id} not found")))?;
 
-        // Version-pinned replay (review 031 finding 3): reconstruct the program
-        // from the artifact recorded for THIS run's code_hash, not the currently
-        // installed applet. A reinstall/upgrade bumps applet/<id> to new code, but
-        // the old run still replays against the exact bytes it executed. Fall back
-        // to the installed applet only for legacy runs predating program pinning
-        // (and only if it still matches the recorded code_hash).
-        let pinned = self.load_program(&original.code_hash)?;
-        let replay_artifact = match pinned {
+        // Version-pinned replay (review 031 finding 3, review 036 finding 2):
+        // reconstruct the program + manifest from the artifact recorded for THIS
+        // execution, not the currently installed applet. Resolution order:
+        //   1. the PER-RUN pin (`program/run/<run_id>`) — unique to this run, so a
+        //      reinstall under a different manifest cannot overwrite or alter it
+        //      (the review 036 finding 2 case);
+        //   2. the content-addressed `program/<code_hash>` pin — covers runs
+        //      recorded before per-run pinning existed;
+        //   3. the currently installed applet — last-resort legacy fallback, and
+        //      only if its code_hash still matches the recorded one.
+        let replay_artifact = match self.load_run_program(&run_id)? {
             Some(p) => p,
-            None => {
-                let installed =
-                    self.load_applet(original.applet_id.as_str())?.ok_or_else(|| {
-                        CoreError::ValidationError(format!(
-                            "no recorded program for run {run_id} (code_hash {}) and applet {} is not installed; cannot replay",
-                            original.code_hash, original.applet_id
-                        ))
-                    })?;
-                if installed.code_hash != original.code_hash {
-                    return Err(CoreError::ValidationError(format!(
-                        "no recorded program for run {run_id}; installed applet {} is a different version (code_hash {} != recorded {}); cannot replay",
-                        original.applet_id, installed.code_hash, original.code_hash
-                    )));
+            None => match self.load_program(&original.code_hash)? {
+                Some(p) => p,
+                None => {
+                    let installed =
+                        self.load_applet(original.applet_id.as_str())?.ok_or_else(|| {
+                            CoreError::ValidationError(format!(
+                                "no recorded program for run {run_id} (code_hash {}) and applet {} is not installed; cannot replay",
+                                original.code_hash, original.applet_id
+                            ))
+                        })?;
+                    if installed.code_hash != original.code_hash {
+                        return Err(CoreError::ValidationError(format!(
+                            "no recorded program for run {run_id}; installed applet {} is a different version (code_hash {} != recorded {}); cannot replay",
+                            original.applet_id, installed.code_hash, original.code_hash
+                        )));
+                    }
+                    installed
                 }
-                installed
-            }
+            },
         };
         let installed = replay_artifact;
 
@@ -459,6 +474,16 @@ impl WorkspaceCore {
 
     /// `query.execute` — list every record in `collection` from the projection
     /// (CR-A2, DL-15 subset). Payload: `{ collection }`.
+    ///
+    /// `forge/spec/commands.md:21` requires **"Role plus db.read capability"**:
+    /// the command-level [`authorize`] role gate is necessary but not sufficient
+    /// (review 036 finding 1). Before any records are listed, the actor must
+    /// actually hold the `db.read` capability — modeled in M0a as a role-derived
+    /// capability (see [`role_has_db_read`]). This is a distinct layer from the
+    /// role allowlist: a role reachable at the command level but lacking `db.read`
+    /// (e.g. a `Runner`, which is execution-only) is denied here before
+    /// `list_records` touches state, mirroring the per-`ctx.*` `db.read` gate the
+    /// runtime enforces for applet reads.
     fn cmd_query_execute(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
         let collection = cmd
             .payload
@@ -467,6 +492,10 @@ impl WorkspaceCore {
             .ok_or_else(|| {
                 CoreError::ValidationError("query.execute requires `collection`".into())
             })?;
+        // Capability gate (CR-A3 / DL-15): the actor must hold `db.read` before
+        // any projection is read. Denied with PermissionDenied, not silently
+        // listing the collection.
+        require_db_read(cmd, collection)?;
         let records = self.store.list_records(collection)?;
         let rows: Vec<serde_json::Value> = records
             .into_iter()
@@ -532,28 +561,47 @@ impl WorkspaceCore {
         }
     }
 
+    /// Persist the exact compiled program + manifest a run executed, keyed by the
+    /// run's unique `run_id` (review 036 finding 2). Unlike the content-addressed
+    /// [`store_program`], this key is unique to the execution, so reinstalling the
+    /// same JS under a different manifest (tighter limits / changed caps) cannot
+    /// overwrite an older run's pinned context.
+    fn store_run_program(&mut self, run_id: &str, installed: &InstalledApplet) -> Result<()> {
+        let bytes = serde_json::to_vec(installed).map_err(|e| {
+            CoreError::StorageError(format!("run program serialize failed: {e}"))
+        })?;
+        self.store
+            .kv_set(META_NS, &run_program_key(run_id), &bytes, "application/json")
+    }
+
+    /// Load the per-run pinned program for `run_id`, if one was recorded (runs
+    /// recorded before per-run pinning have none → fall back to the code_hash pin).
+    fn load_run_program(&self, run_id: &str) -> Result<Option<InstalledApplet>> {
+        match self.store.kv_get(META_NS, &run_program_key(run_id))? {
+            Some(bytes) => {
+                let installed = serde_json::from_slice(&bytes).map_err(|e| {
+                    CoreError::StorageError(format!("run program deserialize failed: {e}"))
+                })?;
+                Ok(Some(installed))
+            }
+            None => Ok(None),
+        }
+    }
+
     // -------------------------------------------------- per-execution counter
 
-    /// Read-bump-write the persisted workspace run counter, returning the value
-    /// assigned to this invocation. Monotone across the workspace's lifetime
-    /// (persisted in meta), so each `runtime.run` mints a distinct `run_id`
-    /// even for an identical applet+input pair (review 031 finding 2).
+    /// Atomically read-bump-write the persisted workspace run counter, returning
+    /// the value assigned to this invocation. Monotone across the workspace's
+    /// lifetime (persisted in meta), so each `runtime.run` mints a distinct
+    /// `run_id` even for an identical applet+input pair (review 031 finding 2).
+    ///
+    /// Review 036 finding 3: the read+bump+write run inside ONE SQLite transaction
+    /// ([`Store::next_counter`]), so the reservation is atomic. Two `WorkspaceCore`
+    /// instances over the same file can no longer reserve the same invocation
+    /// number — the second transaction observes the first's committed value — so no
+    /// audit record is silently replaced via a `run_id` collision.
     fn next_run_counter(&mut self) -> Result<u64> {
-        let current = match self.store.kv_get(META_NS, RUN_COUNTER_KEY)? {
-            Some(bytes) => {
-                let s = std::str::from_utf8(&bytes).map_err(|e| {
-                    CoreError::StorageError(format!("run counter is not utf-8: {e}"))
-                })?;
-                s.parse::<u64>().map_err(|e| {
-                    CoreError::StorageError(format!("run counter is malformed: {e}"))
-                })?
-            }
-            None => 0,
-        };
-        let next = current + 1;
-        self.store
-            .kv_set(META_NS, RUN_COUNTER_KEY, next.to_string().as_bytes(), "text/plain")?;
-        Ok(next)
+        self.store.next_counter(META_NS, RUN_COUNTER_KEY)
     }
 }
 
@@ -565,8 +613,18 @@ fn applet_key(applet_id: &str) -> String {
 /// KV key for a pinned replay program within [`META_NS`], keyed by `code_hash`.
 /// Content-addressed, so the same code reinstalled under a new applet version
 /// still maps to the one program every run that hashed to it can replay against.
+/// Kept as a fallback for runs recorded before per-run pinning (review 036
+/// finding 2): it does NOT capture the manifest a specific run used, so a
+/// same-code reinstall under a different manifest overwrites it.
 fn program_key(code_hash: &str) -> String {
     format!("program/{code_hash}")
+}
+
+/// KV key for the PER-RUN pinned replay program within [`META_NS`], keyed by the
+/// unique `run_id` (review 036 finding 2). Unique per execution, so no reinstall
+/// can overwrite the program + manifest an older run replays against.
+fn run_program_key(run_id: &str) -> String {
+    format!("program/run/{run_id}")
 }
 
 /// Read the optional explicit `(random_seed, time_start)` seam override from a
@@ -694,6 +752,37 @@ fn authorize(cmd: &CoreCommand) -> Result<()> {
             cmd.name
         ))),
         _ => Ok(()),
+    }
+}
+
+/// True iff `role` carries the `db.read` capability at the command level.
+///
+/// `forge/spec/commands.md` lists the data-read membership roles (the same set
+/// that may `workspace.open` / `file.history` / read projections): Owner,
+/// Maintainer, Editor, Viewer, Auditor. The execution-only `Runner` and the
+/// code-review `Reviewer` are NOT data readers, so they lack `db.read` even
+/// though `Runner` may `runtime.run`. This mirrors the manifest `db.read` grant
+/// the runtime enforces per `ctx.db.*` call, lifted to the workspace command.
+fn role_has_db_read(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Owner | Role::Maintainer | Role::Editor | Role::Viewer | Role::Auditor
+    )
+}
+
+/// Command-level `db.read` capability gate for `query.execute` (review 036
+/// finding 1, `forge/spec/commands.md:21` "Role plus db.read capability"). The
+/// role allowlist in [`authorize`] is a separate, necessary layer; this enforces
+/// the *capability* before the projection is read, so an actor whose role lacks
+/// `db.read` is denied here rather than handed the records.
+fn require_db_read(cmd: &CoreCommand, collection: &str) -> Result<()> {
+    if role_has_db_read(cmd.actor.role) {
+        Ok(())
+    } else {
+        Err(CoreError::PermissionDenied(format!(
+            "actor role {:?} lacks the db.read capability required to query {collection:?} (forge/spec/commands.md: query.execute = Role plus db.read)",
+            cmd.actor.role
+        )))
     }
 }
 

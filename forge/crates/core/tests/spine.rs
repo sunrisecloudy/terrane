@@ -391,6 +391,42 @@ fn query_execute_lists_written_records() {
     assert!(titles.contains(&"A") && titles.contains(&"B"));
 }
 
+/// Review 036 finding 1 (`forge/spec/commands.md:21` "Role plus db.read
+/// capability"): a role that lacks `db.read` cannot read the records projection,
+/// even though the command-level role gate is necessary. A `Runner` is
+/// execution-only — it may `runtime.run` but is NOT a data reader — so its
+/// `query.execute` is denied with `PermissionDenied` BEFORE any records are
+/// listed. A `db.read`-capable role (Viewer) on the same workspace succeeds, so
+/// the gate denies the capability, not the command.
+#[test]
+fn query_execute_requires_db_read_capability() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+    // Seed a record so a successful query would actually return rows (proving the
+    // denial is the capability gate, not an empty projection).
+    core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "X" } })));
+
+    // A Runner can run code but lacks db.read → query.execute is denied.
+    let denied = core.handle(cmd_as(
+        actor(Role::Runner),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks" }),
+    ));
+    assert!(!denied.ok, "a Runner lacks db.read and must not query");
+    assert_eq!(denied.error.unwrap().code(), "PermissionDenied");
+
+    // A Viewer holds db.read → the same query on the same workspace succeeds.
+    let ok = core.handle(cmd_as(
+        actor(Role::Viewer),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks" }),
+    ));
+    assert!(ok.ok, "Viewer holds db.read and must be permitted: {:?}", ok.error);
+    assert_eq!(ok.payload["rows"].as_array().unwrap().len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // workspace.create / workspace.open smoke.
 // ---------------------------------------------------------------------------
@@ -723,4 +759,75 @@ fn replay_uses_recorded_program_not_reinstalled_version() {
     let v1_rec = core.store().load_run(&v1_run_id).unwrap().unwrap();
     assert_eq!(v1_rec.code_hash, v1_code_hash);
     assert_ne!(v1_rec.code_hash, v2_hash);
+}
+
+// ---------------------------------------------------------------------------
+// 7b. version-pinned replay across a SAME-CODE manifest revision (review 036
+//     finding 2): the code_hash-keyed pin is not enough — reinstalling the SAME
+//     JS under a different manifest (here, crippled engine `fuel`) used to
+//     overwrite program/<code_hash> and strand the old run, which then replayed
+//     under the new tighter limits. The PER-RUN pin captures the exact manifest
+//     this run used, so the old run still replays identically.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replay_uses_recorded_manifest_after_same_code_reinstall_with_tighter_limits() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // An applet that emits a log line (~50 bytes) and renders UI. It completes
+    // under a generous `log_bytes` ceiling but trips a tight one — a deterministic,
+    // build-independent manifest-sensitive outcome (unlike wall/cpu timing).
+    let ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            ctx.log("pinned-manifest replay regression log line padding padding");
+            await ctx.ui.render({ type: "Text", text: "pinned" });
+            return { ok: true, value: 1 };
+        }
+    "#;
+
+    // Generous manifest: the run records cleanly under it.
+    let generous = demo_manifest();
+    install_demo(&mut core, ts, generous);
+    let run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "run under the generous manifest must succeed: {:?}", run.error);
+    assert_eq!(run.payload["ok"], serde_json::json!(true), "the original run must COMPLETE under the generous manifest");
+    let run_id = run.payload["run_id"].as_str().unwrap().to_string();
+    let code_hash = run.payload["code_hash"].as_str().unwrap().to_string();
+
+    // Reinstall the SAME JS (so the code_hash is identical) under a manifest whose
+    // `log_bytes` ceiling is crippled to 1 — too small for the applet's log line,
+    // so a run under THIS manifest deterministically trips ResourceLimitExceeded.
+    let mut crippled = demo_manifest();
+    crippled["limits"]["log_bytes"] = serde_json::json!(1);
+    install_demo(&mut core, ts, crippled);
+    // Same code → same code_hash, so the OLD code_hash-keyed pin was overwritten.
+    let reinstalled_hash = forge_pipeline::compile(ts).unwrap().code_hash;
+    assert_eq!(reinstalled_hash, code_hash, "reinstall is the same code (same code_hash)");
+
+    // A fresh run under the crippled manifest indeed fails on the log-bytes budget
+    // — proving the new manifest is genuinely tighter. (The command succeeds; the
+    // RUN outcome is the failure, reported in the payload.)
+    let crippled_run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(crippled_run.ok, "the run command itself must succeed: {:?}", crippled_run.error);
+    assert_eq!(
+        crippled_run.payload["ok"],
+        serde_json::json!(false),
+        "a fresh run under the crippled manifest must FAIL on the resource budget"
+    );
+    assert_eq!(
+        crippled_run.payload["result"]["error"]["kind"],
+        serde_json::json!("ResourceLimitExceeded"),
+        "the crippled run must fail on the tighter log-bytes budget"
+    );
+
+    // Replaying the ORIGINAL run must still succeed and be byte-identical: it
+    // replays against the per-run-pinned generous manifest, not the crippled one
+    // that overwrote the code_hash-keyed pin.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(
+        replay.ok,
+        "old run must replay against its pinned (generous) manifest after a same-code tighter reinstall: {:?}",
+        replay.error
+    );
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
 }
