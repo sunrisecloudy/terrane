@@ -18,7 +18,7 @@
 //! connection path never `unwrap`s on external input.
 
 use forge_domain::{CoreError, RecordEnvelope, Result, RunRecord};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -110,9 +110,52 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 "#;
 
+/// How long a contended write waits for the SQLite writer lock before giving up
+/// (review 038 finding 3). Bounds the block when two file-backed handles contend.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Max attempts for an atomic counter reservation that hits `SQLITE_BUSY` even
+/// after the busy-timeout window (review 038 finding 3). Each retry re-runs the
+/// whole `BEGIN IMMEDIATE` reservation, so the loser of a race observes the
+/// winner's committed value rather than surfacing `database is locked`.
+const COUNTER_BUSY_RETRIES: u32 = 8;
+
 /// Map any `rusqlite` failure to a stable, displayable `CoreError`.
 fn map_sql(e: rusqlite::Error) -> CoreError {
     CoreError::StorageError(e.to_string())
+}
+
+/// True iff a `rusqlite` error is a transient SQLite lock contention
+/// (`SQLITE_BUSY` / `SQLITE_LOCKED`), which a serialized retry can resolve — as
+/// opposed to a permanent failure (corruption, constraint, misuse) that must
+/// surface. Used by [`Store::next_counter`]'s bounded retry loop.
+fn is_busy(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode;
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if matches!(err.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
+/// Outcome of one `BEGIN IMMEDIATE` counter reservation: either a retryable
+/// lock-contention (`Busy`, carrying the raw error so the caller can surface it
+/// after exhausting retries) or a permanent failure (`Fatal`, already mapped).
+enum CounterError {
+    Busy(rusqlite::Error),
+    Fatal(CoreError),
+}
+
+impl CounterError {
+    /// Classify a raw `rusqlite` error from the BEGIN/commit boundary: a
+    /// `SQLITE_BUSY`/`SQLITE_LOCKED` is retryable, everything else is fatal.
+    fn from_sql(e: rusqlite::Error) -> Self {
+        if is_busy(&e) {
+            CounterError::Busy(e)
+        } else {
+            CounterError::Fatal(map_sql(e))
+        }
+    }
 }
 
 /// Map a serde_json (de)serialization failure on the storage path.
@@ -168,6 +211,13 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL").map_err(map_sql)?;
         conn.pragma_update(None, "synchronous", "NORMAL").map_err(map_sql)?;
         conn.pragma_update(None, "foreign_keys", "ON").map_err(map_sql)?;
+        // Two file-backed handles can contend for the single SQLite writer lock
+        // (e.g. two `WorkspaceCore` instances minting run ids concurrently). Wait
+        // for the lock for a bounded window instead of instantly surfacing
+        // `database is locked`, so a contended `BEGIN IMMEDIATE` blocks-then-wins
+        // rather than failing (review 038 finding 3). `next_counter` also retries
+        // on `SQLITE_BUSY` for the (rare) case the timeout still elapses.
+        conn.busy_timeout(BUSY_TIMEOUT).map_err(map_sql)?;
         conn.execute_batch(SCHEMA).map_err(map_sql)?;
         Ok(Store { conn })
     }
@@ -262,20 +312,62 @@ impl Store {
     /// key)` in the KV table, returning the value assigned to this reservation
     /// (the first reservation yields `1`).
     ///
-    /// The read-bump-write happens inside a single SQLite transaction
-    /// ([`transact`](Self::transact)), so concurrent reservations cannot collide:
-    /// SQLite serializes the transactions' writes, and a later transaction reads
-    /// the earlier committed value. This is the atomic primitive the core uses to
-    /// mint a unique per-execution `run_id` even when two `WorkspaceCore` handles
-    /// share the same file (review 036 finding 3) — without that atomicity a
-    /// separate read-then-write could hand the same number to two runs, and the
-    /// `run_id`-keyed `save_run` would silently overwrite one audit record.
+    /// The read-bump-write runs inside a single **`BEGIN IMMEDIATE`** SQLite
+    /// transaction, so the writer lock is taken at `BEGIN` — before the `SELECT` —
+    /// rather than being upgraded lazily at the first write. With the default
+    /// `DEFERRED` transaction two file-backed handles could both `SELECT` the same
+    /// snapshot and then race to upgrade to a write lock; the loser surfaced
+    /// `database is locked`/`StorageError` (or, worse on some builds, overwrote the
+    /// winner) instead of observing the committed value (review 038 finding 3).
+    /// `IMMEDIATE` serializes the two reservations: the second transaction cannot
+    /// even read until the first commits, so it reads the first's value and bumps
+    /// past it. The `busy_timeout` set on open blocks-then-acquires when the lock
+    /// is held; the [`COUNTER_BUSY_RETRIES`] loop below re-runs the whole
+    /// reservation in the rare event the timeout still elapses under `SQLITE_BUSY`.
+    ///
+    /// This is the atomic primitive the core uses to mint a unique per-execution
+    /// `run_id` even when two `WorkspaceCore` handles share the same file (review
+    /// 036/038): without it a separate read-then-write could hand the same number
+    /// to two runs, and the `run_id`-keyed `save_run` would silently overwrite one
+    /// audit record.
     ///
     /// The value column stores the counter as utf-8 decimal text (matching
     /// [`kv_set`](Self::kv_set)'s `text/plain` content type); a non-utf-8 or
     /// non-integer existing value is a `StorageError` rather than a silent reset.
     pub fn next_counter(&mut self, namespace: &str, key: &str) -> Result<u64> {
-        self.transact(|tx| {
+        let mut attempt = 0u32;
+        loop {
+            match self.next_counter_immediate(namespace, key) {
+                Ok(next) => return Ok(next),
+                // Transient lock contention that outlasted the busy-timeout: the
+                // whole IMMEDIATE reservation only commits on success, so re-run
+                // it. The loser thus observes the winner's committed value rather
+                // than failing with `database is locked`.
+                Err(CounterError::Busy(_)) if attempt < COUNTER_BUSY_RETRIES => {
+                    attempt += 1;
+                }
+                Err(CounterError::Busy(e)) => return Err(map_sql(e)),
+                Err(CounterError::Fatal(err)) => return Err(err),
+            }
+        }
+    }
+
+    /// One `BEGIN IMMEDIATE` counter reservation (see [`next_counter`](Self::next_counter)).
+    /// Distinguishes a transient `SQLITE_BUSY` (retryable) from a permanent error
+    /// (surface). Any error rolls the transaction back.
+    fn next_counter_immediate(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> std::result::Result<u64, CounterError> {
+        // Take the writer lock at BEGIN, not lazily at first write: with IMMEDIATE
+        // a second contending handle blocks here (busy_timeout) instead of reading
+        // a stale snapshot it could later fail to upgrade.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(CounterError::from_sql)?;
+        let result = (|| -> Result<u64> {
             let current: u64 = tx
                 .query_row(
                     "SELECT value FROM kv WHERE namespace = ?1 AND key = ?2 AND tombstone = 0",
@@ -305,7 +397,18 @@ impl Store {
             )
             .map_err(map_sql)?;
             Ok(next)
-        })
+        })();
+        match result {
+            Ok(next) => tx.commit().map(|()| next).map_err(CounterError::from_sql),
+            Err(err) => {
+                // Dropping the tx rolls back; rollback explicitly to surface any
+                // rollback failure. The inner body's errors are already mapped
+                // CoreErrors (with the lock taken at BEGIN, the SELECT/write never
+                // hit SQLITE_BUSY), so they are always fatal here.
+                let _ = tx.rollback();
+                Err(CounterError::Fatal(err))
+            }
+        }
     }
 
     /// List live keys in `namespace` whose key starts with `prefix`, sorted.
@@ -1610,6 +1713,64 @@ mod tests {
         s.kv_set("__forge/meta", "run_counter", b"not-a-number", "text/plain").unwrap();
         let err = s.next_counter("__forge/meta", "run_counter").unwrap_err();
         assert_eq!(err.code(), "StorageError", "{err}");
+    }
+
+    /// Review 038 finding 3: two *separate* file-backed `Store` handles (the
+    /// two-`WorkspaceCore` race) bumping the SAME counter concurrently must each
+    /// receive a DISTINCT value — never a collision and never a spurious
+    /// `database is locked`. With the old `DEFERRED` SELECT-then-upsert both
+    /// connections could read the same snapshot; `BEGIN IMMEDIATE` + busy-timeout
+    /// + retry serializes them so every reservation is unique and contiguous.
+    #[test]
+    fn next_counter_two_file_handles_never_collide_or_lock() {
+        use std::collections::BTreeSet;
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.db");
+        // Create the file/schema once up front so both threads open an existing DB.
+        Store::open(&path).unwrap();
+
+        const PER_THREAD: u64 = 50;
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                // A genuinely independent handle (its own SQLite connection),
+                // exactly the two-`WorkspaceCore::open()` scenario.
+                let mut s = Store::open(&path).unwrap();
+                barrier.wait(); // maximize the contention window
+                let mut got = Vec::with_capacity(PER_THREAD as usize);
+                for _ in 0..PER_THREAD {
+                    got.push(
+                        s.next_counter("__forge/meta", "run_counter")
+                            .expect("a contended reservation must not surface a lock error"),
+                    );
+                }
+                got
+            }));
+        }
+
+        let mut all = Vec::new();
+        for h in handles {
+            all.extend(h.join().expect("counter thread panicked"));
+        }
+
+        // Every reservation across BOTH handles is unique (no collision → no
+        // silently-overwritten run record).
+        let unique: BTreeSet<u64> = all.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            all.len(),
+            "two file handles must never reserve the same counter value"
+        );
+        // The set is exactly 1..=(2*PER_THREAD): no gaps and no duplicates, so the
+        // two interleavings were serialized, not lost.
+        let total = 2 * PER_THREAD;
+        let expected: BTreeSet<u64> = (1..=total).collect();
+        assert_eq!(unique, expected, "reservations must be contiguous 1..=2N");
     }
 
     // --- Records projection ----------------------------------------------
