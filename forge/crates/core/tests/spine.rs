@@ -2359,6 +2359,157 @@ fn a_signature_cannot_loosen_a_net_cap_or_add_a_secret_header() {
     );
 }
 
+/// The install manifest that EXACTLY matches the `bind_net_rule`
+/// signed package: empty storage/db, `ui`, and ONE net rule
+/// (`GET https://api.example.com/v1/*`, `max_response_bytes: 1000`). The four
+/// limits the signed budget omits keep the M0a defaults.
+fn net_rule_fixture_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "net": [
+                { "method": "GET", "url": "https://api.example.com/v1/*", "max_response_bytes": 1000 }
+            ]
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+#[test]
+fn a_signed_net_rule_install_that_matches_the_signed_cap_succeeds() {
+    // review 086 #2 positive baseline: the `bind_net_rule` signed
+    // package allows EXACTLY one net rule. An install carrying that same rule with
+    // the SAME cap must install as Signed — this proves the fixture is genuinely
+    // installable, so the rejection in the sibling test is the cap mismatch, not a
+    // broken fixture.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("bind_net_rule.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.netnotes"),
+        serde_json::json!({
+            "manifest": net_rule_fixture_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+    assert!(resp.ok, "a net-rule install matching the signed cap must install: {:?}", resp.error);
+    let trust = resp.payload["trust"]["status"].clone();
+    assert_eq!(trust, serde_json::json!("signed"), "it must record Signed trust");
+}
+
+#[test]
+fn a_signature_with_a_net_rule_cannot_be_widened_to_a_larger_cap() {
+    // review 086 #2 (pins review 083 #3): the prior net regression test only
+    // exercised the EMPTY-allow direction, so a binder that compared just
+    // (method, url) would still pass it. Here the signed package allows ONE rule
+    // with `max_response_bytes: 1000`; install the SAME method/url but WIDEN the
+    // cap (and, separately, add an unblessed secret header). Both must be rejected
+    // because the FULL normalized NetRule — not just routing — is bound.
+    let fixture = load_signing_fixture("bind_net_rule.json");
+
+    // (a) a wider response-byte cap than the signed rule blessed.
+    {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = net_rule_fixture_manifest();
+        manifest["capabilities"]["net"][0]["max_response_bytes"] = serde_json::json!(1_000_000u64);
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some("app.netnotes"),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "widening max_response_bytes past the signed cap must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(
+            err.to_string().contains("network egress grant"),
+            "the net-rule mismatch is surfaced: {err}"
+        );
+    }
+
+    // (b) the same routing, but an extra secret header the publisher never signed.
+    {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = net_rule_fixture_manifest();
+        manifest["capabilities"]["net"][0]["allow_secret_headers"] =
+            serde_json::json!(["Authorization"]);
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some("app.netnotes"),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "adding an unblessed secret header to a signed net rule must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(
+            err.to_string().contains("secret_hdrs") && err.to_string().contains("Authorization"),
+            "the full net rule (incl. secret headers) is compared, not just routing: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_signed_package_with_an_unsupported_budget_field_is_refused() {
+    // review 086 #1: the signed manifest is hashed/signed WHOLE, so a package can
+    // carry a future, tighter constraint this core does not understand. The
+    // `bind_unknown_budget_field` fixture is validly signed but its
+    // `resourceBudget` declares `network_bytes`, a limit this core cannot enforce.
+    // Installing it as Signed would silently DROP that constraint, so the bind must
+    // fail closed (prd-merged/08 §08:24) rather than report Signed. Crypto and
+    // integrity pass (the signature is valid over the whole manifest); the refusal
+    // is a compat/permission decision, not a tamper detection.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("bind_unknown_budget_field.json");
+    // A manifest that matches the signed (today-only) shape; the gap is purely the
+    // unknown signed budget key, which has no install-side representation.
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.future"),
+        serde_json::json!({
+            "manifest": manifest,
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+    assert!(!resp.ok, "a signed package declaring an unsupported budget limit must be refused");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("resourceBudget") && err.to_string().contains("network_bytes"),
+        "the refusal names the unsupported resourceBudget field: {err}"
+    );
+}
+
 #[test]
 fn a_signed_multi_file_install_is_rejected_until_entrypoint_is_representable() {
     // review 083 #4: the signed manifest carries no entrypoint, so a signed

@@ -2165,6 +2165,23 @@ fn bind_signature_to_manifest(
         }
     }
 
+    // --- fail closed on UNKNOWN signed policy fields (review 086 #1) -----------
+    //     The signed manifest is hashed and signed WHOLE, but the bind below
+    //     narrows it through today-only shapes: capability sub-objects, each
+    //     `networkPolicy.allow[]` rule, and `resourceBudget` are interpreted
+    //     key-by-key, and the runtime `NetRule` tolerates unknown fields for
+    //     forward-compat (see `forge_domain::NetRule`). That tolerance is fine
+    //     for the runtime, but on the SIGNED-INSTALL path it is a hole: a signed
+    //     package could carry a FUTURE, tighter constraint this core does not
+    //     understand (a new net field, a new `resourceBudget` limit such as
+    //     `network_bytes`/`output_bytes`, a new capability namespace) and we
+    //     would silently install it as Signed WITHOUT enforcing that constraint.
+    //     prd-merged/08 §08:24 is fail-closed: clients REFUSE packages that
+    //     declare features they do not support. So here — scoped to the signed
+    //     bind, NOT the global runtime tolerance — reject the install whenever a
+    //     signed policy sub-object contains a key this core cannot enforce.
+    reject_unknown_signed_policy_fields(signed, signed_caps)?;
+
     // --- storage scopes (read/write), compared as order-independent sets ------
     for action in ["read", "write"] {
         let signed_scope = signed_string_set(signed_caps, "storage", action);
@@ -2316,6 +2333,119 @@ fn signed_string_set<'a>(
         .and_then(serde_json::Value::as_array)
         .map(|arr| arr.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default()
+}
+
+/// Fail closed when a SIGNED package's policy carries a key this core cannot
+/// enforce (review 086 #1).
+///
+/// The signed manifest is hashed/signed whole, but `bind_signature_to_manifest`
+/// narrows it through today-only shapes — so an unknown key in a policy
+/// sub-object would otherwise be dropped on the floor and the package would
+/// install as Signed without that (possibly tighter) constraint being enforced.
+/// This rejects, scoped to the signed-install bind path only, leaving the
+/// runtime [`NetRule`](forge_domain::NetRule) forward-compat tolerance intact
+/// for unsigned/already-installed manifests.
+///
+/// The known-key sets are the exact shapes the rest of this bind interprets:
+///   - `capabilities`: `storage`, `db`, `ui`, `net` (and `storage`/`db` each
+///     carry only `read`/`write`);
+///   - each `networkPolicy.allow[]` rule: the [`NetRule`](forge_domain::NetRule)
+///     fields the policy engine enforces;
+///   - `resourceBudget`: the six enforced limit keys.
+///
+/// A non-object where an object is expected, or any extra key, is a typed
+/// rejection (never a panic).
+fn reject_unknown_signed_policy_fields(
+    signed: &serde_json::Value,
+    signed_caps: Option<&serde_json::Value>,
+) -> Result<()> {
+    // The SC-5 constraints a `NetRule` carries — kept in lockstep with
+    // `forge_domain::NetRule` so a NEW signed net field forces an update here
+    // (and thus a deliberate enforcement decision) rather than silently passing.
+    const NET_RULE_KEYS: &[&str] = &[
+        "method",
+        "url",
+        "max_response_bytes",
+        "max_body_bytes",
+        "timeout_ms",
+        "request_content_types",
+        "response_content_types",
+        "allow_secret_headers",
+    ];
+    // The resource limits this core actually enforces (mirrors the six-limit
+    // bind below and `forge_domain::Limits`).
+    const BUDGET_KEYS: &[&str] = &[
+        "wall_ms",
+        "fuel",
+        "memory_bytes",
+        "max_host_calls",
+        "storage_bytes",
+        "log_bytes",
+    ];
+
+    let unknown = |where_: &str, key: &str| -> Result<()> {
+        Err(CoreError::ValidationError(format!(
+            "install manifest does not match the signed package manifest: the signed \
+             package declares an unsupported {where_} field {key:?} this core cannot \
+             enforce; refusing to install it as Signed (review 086 #1)"
+        )))
+    };
+    // Reject when `value` (when present) is an object carrying a key outside
+    // `known`; a present-but-non-object policy field is also a rejection because
+    // the bind cannot interpret it.
+    let check_object = |where_: &str,
+                        value: Option<&serde_json::Value>,
+                        known: &[&str]|
+     -> Result<()> {
+        let value = match value {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        let obj = value.as_object().ok_or_else(|| {
+            CoreError::ValidationError(format!(
+                "install manifest does not match the signed package manifest: the signed \
+                 package's {where_} is not an object (review 086 #1)"
+            ))
+        })?;
+        for key in obj.keys() {
+            if !known.contains(&key.as_str()) {
+                return unknown(where_, key);
+            }
+        }
+        Ok(())
+    };
+
+    // capabilities.* — only the namespaces this core maps are allowed.
+    check_object(
+        "capabilities",
+        signed_caps,
+        &["storage", "db", "ui", "net"],
+    )?;
+    if let Some(caps) = signed_caps {
+        for ns in ["storage", "db"] {
+            check_object(
+                &format!("capabilities.{ns}"),
+                caps.get(ns),
+                &["read", "write"],
+            )?;
+        }
+    }
+
+    // networkPolicy.allow[] — each rule must carry only known NetRule fields.
+    if let Some(allow) = signed
+        .get("networkPolicy")
+        .and_then(|n| n.get("allow"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for rule in allow {
+            check_object("networkPolicy.allow[]", Some(rule), NET_RULE_KEYS)?;
+        }
+    }
+
+    // resourceBudget — only the six enforced limits may appear.
+    check_object("resourceBudget", signed.get("resourceBudget"), BUDGET_KEYS)?;
+
+    Ok(())
 }
 
 /// The full, normalized form of one network egress rule — every SC-5 constraint

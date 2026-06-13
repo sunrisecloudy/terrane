@@ -1,0 +1,68 @@
+{
+  "case": "bind_net_rule",
+  "expect": "valid",
+  "failure_layer": null,
+  "package": {
+    "files": [
+      {
+        "content": "export async function main(ctx) { return { ok: true }; }\n",
+        "path": "src/main.ts",
+        "sha256": "sha256:652a7c480da0cf33584e8210bf826bb02230d0965a843a926e40493e86e63891"
+      }
+    ],
+    "hashes": {
+      "contentHash": "sha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6",
+      "manifestHash": "sha256:ae0b1d4506d7c079facf4da6a69d25c837acf531ee559e83c7f7ed668467672d",
+      "permissionsHash": "sha256:65ff02c455d22619d2b7dfb6c10c15a4eeebb1816ee389e8fef248f545be5aee",
+      "policyHash": "sha256:b82b7d0c2555a40eac9bf92425a2dc0ecc63f6cb900f13659fa514fd88ff01c1"
+    },
+    "manifest": {
+      "appId": "app.netnotes",
+      "appVersion": "1.0.0",
+      "capabilities": {
+        "db": {
+          "read": [],
+          "write": []
+        },
+        "net": [
+          {
+            "max_response_bytes": 1000,
+            "method": "GET",
+            "url": "https://api.example.com/v1/*"
+          }
+        ],
+        "storage": {
+          "read": [],
+          "write": []
+        },
+        "ui": true
+      },
+      "dataVersion": "1",
+      "keyId": "test-ed25519-2026-06",
+      "networkPolicy": {
+        "allow": [
+          {
+            "max_response_bytes": 1000,
+            "method": "GET",
+            "url": "https://api.example.com/v1/*"
+          }
+        ]
+      },
+      "permissions": [
+        "net.fetch:https://api.example.com/*"
+      ],
+      "publisher": "test-publisher",
+      "resourceBudget": {
+        "memory_bytes": 67108864,
+        "wall_ms": 3000
+      },
+      "runtimeVersion": "forge-m0a",
+      "signedAt": "2026-06-13T00:00:00Z",
+      "trustLevel": "signed-test"
+    }
+  },
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+  "reason": "valid Ed25519 signature over canonical payload, with one net allow rule",
+  "signature": "ed25519:jcCmr+dmf8xszLrQ9m6Bm+T8SGZhh0A+lsJApbBvXOUqnE+TYAHcCQnEv8T6oA5s1KnxtmKAgtoBTf3szxhoCg==",
+  "signed_payload": "terrane/sig/v1\napp.netnotes\n1.0.0\n1\nforge-m0a\nsigned-test\ntest-ed25519-2026-06\nsha256:ae0b1d4506d7c079facf4da6a69d25c837acf531ee559e83c7f7ed668467672d\nsha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6\nsha256:65ff02c455d22619d2b7dfb6c10c15a4eeebb1816ee389e8fef248f545be5aee\nsha256:b82b7d0c2555a40eac9bf92425a2dc0ecc63f6cb900f13659fa514fd88ff01c1\n2026-06-13T00:00:00Z"
+}
