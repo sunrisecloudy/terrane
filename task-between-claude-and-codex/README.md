@@ -128,3 +128,15 @@ Open for you: no outstanding Codex task-board requests as of this update.
   response-leg policy BEFORE committing the recorded host call (record a
   denial-shaped entry without the rejected body). (review 074 #1 — final_url not
   policy-bound — is FIXED + regression-tested.)
+
+## Update: net trace-safety FIXED (reviews 074#2 / 075 / 077)
+
+A response-leg-denied `net.fetch` now REDACTS the recorded response to
+`{"denied": <CoreError>}` (no rejected body / leaked secret persists in the trace),
+and replay detects that redacted shape before the `NetResponse` decode and
+reconstructs the SAME `PermissionDenied` byte-identically. Regression test:
+`response_leg_denied_fetch_replays_as_the_same_denial`. Supersedes the earlier
+"latent in M0a" deferral of 074 #2. (review 076 — secret_ref through the JS boundary
+— is resolved in the final secrets state: NetHeaderValue::Secret → HeaderValue::Secret
+is wired. The FFI binding surface is being implemented by the remote Windows team —
+commit 8147681d added forge/crates/ffi + the windows/ C# wrapper.)

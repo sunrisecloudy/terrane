@@ -291,3 +291,63 @@ fn viewer_role_cannot_fetch() {
     }
     assert!(bridge.net_requests.is_empty());
 }
+
+/// Review 077: a `net.fetch` denied on the RESPONSE leg (here a redirect to a
+/// private IP) has its recorded response REDACTED to `{"denied": ...}` (074 #2 /
+/// SC-13 trace-safety). Replay must reconstruct the SAME denial, byte-identical —
+/// NOT a `RuntimeError` from decoding the redacted entry as a `NetResponse`.
+#[test]
+fn response_leg_denied_fetch_replays_as_the_same_denial() {
+    let prog = fetch_applet();
+    // The mock follows a redirect from the allowlisted URL to a private host.
+    let mut bridge = MemoryHostBridge::with_http_client(Box::new(MockHttpClient::with_redirects(
+        vec![
+            "https://api.example.com/public/weather".into(),
+            "https://10.0.0.5/public/weather".into(),
+        ],
+    )));
+    let original = record_run(
+        &prog,
+        &net_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        42,
+        1000,
+        &mut bridge,
+    )
+    .unwrap();
+
+    // Record: the run failed with a permission denial (redirect to private).
+    match &original.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "PermissionDenied", "record denial: {error}")
+        }
+        other => panic!("expected a response-leg denial on record, got {other:?}"),
+    }
+    // The recorded net.fetch response is REDACTED — no rejected body in the trace.
+    let net_call = original
+        .calls
+        .iter()
+        .find(|c| c.method == "net.fetch")
+        .expect("net.fetch must be recorded");
+    assert!(
+        net_call.response.get("denied").is_some(),
+        "the denied response must be redacted in the trace: {:?}",
+        net_call.response
+    );
+
+    // Replay against a NullBridge: must reconstruct the SAME PermissionDenied and
+    // be byte-identical — not a RuntimeError decode failure (review 077).
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &net_manifest(), &owner(), &mut null).unwrap();
+    match &replayed.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "PermissionDenied", "replay must reconstruct the denial: {error}")
+        }
+        other => panic!("replay must fail with the same denial, got {other:?}"),
+    }
+    assert!(
+        original.replays_identically(&replayed),
+        "a response-leg-denied net.fetch must replay byte-identically"
+    );
+}

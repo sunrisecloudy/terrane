@@ -436,6 +436,24 @@ impl<'b> HostContext<'b> {
                 CoreError::RuntimeError(format!("net.fetch response serialize failed: {e}"))
             })
         })?;
+        // On REPLAY the recorder serves the recorded response. A response-leg
+        // denial was REDACTED into `{"denied": <CoreError>}` (step 5 below /
+        // `redact_last_response`), so the recorded entry for a denied fetch is that
+        // shape — NOT a `NetResponse`. Reconstruct the original denial here and
+        // surface it, so replay reports the SAME error byte-identically instead of
+        // failing to decode the redacted entry as a `NetResponse` (review 077). A
+        // real recorded response is a full `NetResponse` (always carries `status`),
+        // so a lone `"denied"` key is unambiguously the redaction shape.
+        if let Some(denied) = response_json.get("denied") {
+            if response_json.as_object().is_some_and(|o| o.len() == 1) {
+                let err: CoreError = serde_json::from_value(denied.clone()).map_err(|e| {
+                    CoreError::RuntimeError(format!(
+                        "net.fetch recorded denial decode failed: {e}"
+                    ))
+                })?;
+                return Err(err);
+            }
+        }
         let response = serde_json::from_value::<NetResponse>(response_json).map_err(|e| {
             CoreError::RuntimeError(format!("net.fetch response decode failed: {e}"))
         })?;
