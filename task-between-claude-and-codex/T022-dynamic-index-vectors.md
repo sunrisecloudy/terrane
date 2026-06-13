@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium

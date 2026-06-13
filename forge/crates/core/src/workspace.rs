@@ -690,9 +690,14 @@ fn derive_seeds(code_hash: &str, input: &serde_json::Value) -> (u64, u64) {
     let input_repr = input.to_string();
     let random_seed = fnv1a64(code_hash.as_bytes()) ^ fnv1a64(input_repr.as_bytes());
     // A second, independent fold (salted) for the time seam so the two seeds are
-    // not trivially correlated.
-    let time_start = fnv1a64(input_repr.as_bytes()).wrapping_mul(0x100000001b3)
-        ^ fnv1a64(code_hash.as_bytes());
+    // not trivially correlated. Mask the sign bit so the value always fits `i64`:
+    // the logical clock stores time as `i64` (LogicalClock::new casts), so a
+    // derived seed above `i64::MAX` would wrap negative and disagree with the
+    // recorded seam (review 037/039 finding 2 — same bound as the explicit
+    // `time_start` override, applied to the derived path too).
+    let time_start = (fnv1a64(input_repr.as_bytes()).wrapping_mul(0x100000001b3)
+        ^ fnv1a64(code_hash.as_bytes()))
+        & (i64::MAX as u64);
     (random_seed, time_start)
 }
 
