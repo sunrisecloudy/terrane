@@ -69,7 +69,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 | Area | Status | docs source | prd-merged | forge/ |
 |---|---|---|---|---|
 | In-process CRDT chunk-diff sync (both-direction, content-addressed frontier) | done | 34 | SS-1/SS-2 | crates/sync |
-| Sync convergence fixtures (11 canonical scenarios, idempotence proofs) | done | 34 | SS-2 | forge/fixtures/sync/ |
+| Sync convergence fixtures (10 canonical scenarios, idempotence proofs) | done | 34 | SS-2 | forge/fixtures/sync/ |
 | Sync protocol spec | done | — | SS-1/SS-2 | forge/spec/sync-protocol.md |
 
 ## Done — FFI / platform binding
