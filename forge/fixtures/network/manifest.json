@@ -5,7 +5,7 @@
     "SC-10",
     "SC-13"
   ],
-  "count": 24,
+  "count": 25,
   "runtime_dns_required": [
     "redirect_to_private_denied",
     "dns_rebinding_to_private_denied",
@@ -155,6 +155,12 @@
       "expect": "allow",
       "requires_runtime_dns": true,
       "file": "public_redirect_to_public_allowed.json"
+    },
+    {
+      "case": "redirect_to_unallowlisted_public_denied",
+      "expect": "deny",
+      "requires_runtime_dns": false,
+      "file": "redirect_to_unallowlisted_public_denied.json"
     }
   ]
 }

@@ -23,10 +23,13 @@
 //! URL/host/IP text only. True DNS pinning — resolving a hostname and rejecting
 //! a private *answer* — is a **runtime** concern: the resolver runs host-side,
 //! not in this crate. We document that boundary explicitly:
-//!   - a redirect chain whose hops are *literal* private IPs **is** caught here
-//!     (every hop is re-checked, SC-5 "redirect targets are checked the same
-//!     way"); a redirect to a private *hostname* that only resolves privately is
-//!     a runtime concern;
+//!   - every redirect hop is re-checked the same way as the original request
+//!     (SC-5 "redirect targets are checked the same way"): each hop URL must
+//!     pass the private-network deny **and** independently satisfy an allow
+//!     rule's request-side constraints (scheme/host/path/method + header/secret),
+//!     so a hop to a public-but-unallowlisted origin/path is denied. A redirect
+//!     chain whose hops are *literal* private IPs is caught here; a redirect to a
+//!     private *hostname* that only resolves privately is a runtime concern;
 //!   - `dns_answers` carrying a private literal IP **is** caught here as a
 //!     best-effort literal check, but the authoritative DNS-pin/recheck is a
 //!     runtime concern.
@@ -128,11 +131,18 @@ impl<'a> NetPolicy<'a> {
     ///   - `Err(PermissionDenied)` if the allowlist is non-empty but the request
     ///     is blocked: a private/loopback target, a scheme/host/path/method
     ///     mismatch, a size/timeout/content-type violation, a wildcard-host rule
-    ///     (rejected), or a disallowed secret header.
+    ///     (rejected), a disallowed secret header, or a **redirect hop** that is
+    ///     not itself covered by an allow rule.
     ///
     /// Order: the **private-network deny** runs first on the request host and
     /// every redirect hop / DNS answer, so a private target is refused even if a
-    /// rule literally names it. Then the per-rule match runs.
+    /// rule literally names it. Then the original request is matched against the
+    /// full rule set (request side plus response-side caps). Finally, SC-5
+    /// requires redirects to be re-checked: **every** redirect hop URL must
+    /// independently satisfy an allow rule's request-side constraints
+    /// (scheme/host/path/method, plus header/secret constraints), so a hop to a
+    /// public-but-unallowlisted origin or path is denied even though the original
+    /// request was allowed.
     pub fn check(&self, request: &NetRequest) -> Result<()> {
         // Empty allowlist ⇒ no net capability declared at all ⇒ CapabilityRequired,
         // distinct from "declared rules but none cover this request" below.
@@ -152,12 +162,8 @@ impl<'a> NetPolicy<'a> {
         // every literal DNS answer must not be a private/loopback/metadata
         // literal or the `localhost` hostname — denied before any allow rule.
         deny_private_target(&target.host)?;
-        for hop in &request.redirect_chain {
-            let hop_url = ParsedUrl::parse(hop).map_err(|e| {
-                CoreError::PermissionDenied(format!(
-                    "net.fetch denied: invalid redirect target {hop:?}: {e}"
-                ))
-            })?;
+        let hops = self.parse_redirect_hops(request)?;
+        for hop_url in &hops {
             deny_private_target(&hop_url.host)?;
         }
         for answer in &request.dns_answers {
@@ -181,12 +187,57 @@ impl<'a> NetPolicy<'a> {
             }
         }
 
-        // Find the first rule that matches host+scheme+method+path. If none
-        // matches we collect why and surface a PermissionDenied (the capability
-        // IS declared, this request just isn't covered).
+        // The original request must match a rule on the full constraint set
+        // (request side + response-side size/content-type caps). Find the first
+        // rule that grants it; if none does, surface why (the capability IS
+        // declared, this request just isn't covered).
+        self.match_full_request(request, &target)?;
+
+        // SC-5: redirects are re-checked the same way. Every redirect hop URL
+        // must independently satisfy an allow rule's request-side constraints
+        // (scheme/host/path/method + header/secret constraints), not merely the
+        // private-IP check above. A hop to a public-but-unallowlisted origin or
+        // path is denied even though the original request was allowed. Response-
+        // side caps (max_response_bytes / response_content_types) are evaluated
+        // once against the final response on the original request, so the per-hop
+        // re-check only covers the request side. (docs/24: "redirects to a
+        // disallowed origin are rejected".)
+        for (idx, hop_url) in hops.iter().enumerate() {
+            self.match_request_side(request, hop_url).map_err(|reason| {
+                CoreError::PermissionDenied(format!(
+                    "net.fetch denied: redirect hop {} {:?} is not covered by any net rule (redirects are re-checked, SC-5): {reason}",
+                    idx,
+                    request.redirect_chain[idx],
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Parse every redirect-chain hop into a [`ParsedUrl`], failing closed on a
+    /// malformed hop URL. Order is preserved (origin first, final hop last).
+    fn parse_redirect_hops(&self, request: &NetRequest) -> Result<Vec<ParsedUrl>> {
+        request
+            .redirect_chain
+            .iter()
+            .map(|hop| {
+                ParsedUrl::parse(hop).map_err(|e| {
+                    CoreError::PermissionDenied(format!(
+                        "net.fetch denied: invalid redirect target {hop:?}: {e}"
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// Run the **full** rule match (request side + response-side caps) for the
+    /// original request against `target`. `Ok` if some rule grants it; otherwise
+    /// the first rule's denial reason (or a generic "no rule covers" message).
+    fn match_full_request(&self, request: &NetRequest, target: &ParsedUrl) -> Result<()> {
         let mut last_reason: Option<CoreError> = None;
         for rule in self.allowlist.rules() {
-            match self.rule_matches(rule, request, &target) {
+            match self.rule_matches(rule, request, target) {
                 Ok(()) => return Ok(()),
                 Err(reason) => last_reason = Some(reason),
             }
@@ -199,10 +250,67 @@ impl<'a> NetPolicy<'a> {
         }))
     }
 
-    /// Check a single rule against the request. `Ok` if this rule fully grants
-    /// the request; `Err` names the first constraint this rule fails (used as
-    /// the denial reason when no rule matches).
+    /// Run only the **request-side** constraints (scheme/host/path/method +
+    /// header/secret constraints) for `target` against the allowlist, ignoring
+    /// response-side caps. Used to re-check each redirect hop. `Ok` if some rule
+    /// grants the hop; otherwise the first rule's denial reason.
+    fn match_request_side(&self, request: &NetRequest, target: &ParsedUrl) -> Result<()> {
+        let mut last_reason: Option<CoreError> = None;
+        for rule in self.allowlist.rules() {
+            match self.rule_matches_request_side(rule, request, target) {
+                Ok(()) => return Ok(()),
+                Err(reason) => last_reason = Some(reason),
+            }
+        }
+        Err(last_reason.unwrap_or_else(|| {
+            CoreError::PermissionDenied(format!(
+                "net.fetch denied: no net rule covers host {:?} path {:?}",
+                target.host, target.path
+            ))
+        }))
+    }
+
+    /// Check a single rule against the original request. `Ok` if this rule fully
+    /// grants the request (request side **and** response-side caps); `Err` names
+    /// the first constraint this rule fails (used as the denial reason when no
+    /// rule matches).
     fn rule_matches(&self, rule: &NetRule, request: &NetRequest, target: &ParsedUrl) -> Result<()> {
+        // Request side first (scheme/host/path/method + body/timeout/request
+        // content-type + secret headers). This is the subset re-checked per hop.
+        self.rule_matches_request_side(rule, request, target)?;
+
+        // Response-side caps only apply to the final response of the original
+        // request, so they are NOT part of the per-hop re-check.
+        if let (Some(max), Some(actual)) = (rule.max_response_bytes, request.response_bytes) {
+            if actual > max {
+                return Err(CoreError::PermissionDenied(format!(
+                    "net.fetch denied: response {actual} bytes exceeds max_response_bytes {max}"
+                )));
+            }
+        }
+        if !rule.response_content_types.is_empty() {
+            content_type_allowed(
+                "response",
+                request.response_content_type.as_deref(),
+                &rule.response_content_types,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Check a single rule's **request-side** constraints against `target`:
+    /// scheme/host/path/method, request body size, timeout budget, request
+    /// content-type, and secret-bearing headers. This is exactly the subset that
+    /// SC-5 requires re-running against every redirect hop, so it is factored out
+    /// from the response-side caps. `Ok` if this rule grants the request side;
+    /// `Err` names the first failing constraint.
+    fn rule_matches_request_side(
+        &self,
+        rule: &NetRule,
+        request: &NetRequest,
+        target: &ParsedUrl,
+    ) -> Result<()> {
         let pattern = ParsedUrl::parse(&rule.url).map_err(|e| {
             CoreError::PermissionDenied(format!(
                 "net.fetch denied: malformed net rule url {:?}: {e}",
@@ -253,18 +361,11 @@ impl<'a> NetPolicy<'a> {
             )));
         }
 
-        // SC-5 size caps.
+        // SC-5 request body size cap.
         if let (Some(max), Some(actual)) = (rule.max_body_bytes, request.body_bytes) {
             if actual > max {
                 return Err(CoreError::PermissionDenied(format!(
                     "net.fetch denied: request body {actual} bytes exceeds max_body_bytes {max}"
-                )));
-            }
-        }
-        if let (Some(max), Some(actual)) = (rule.max_response_bytes, request.response_bytes) {
-            if actual > max {
-                return Err(CoreError::PermissionDenied(format!(
-                    "net.fetch denied: response {actual} bytes exceeds max_response_bytes {max}"
                 )));
             }
         }
@@ -278,19 +379,13 @@ impl<'a> NetPolicy<'a> {
             }
         }
 
-        // SC-5 content-type constraints (only enforced when the rule lists any).
+        // SC-5 request content-type constraint (only enforced when the rule
+        // lists any).
         if !rule.request_content_types.is_empty() {
             content_type_allowed(
                 "request",
                 request.request_content_type.as_deref(),
                 &rule.request_content_types,
-            )?;
-        }
-        if !rule.response_content_types.is_empty() {
-            content_type_allowed(
-                "response",
-                request.response_content_type.as_deref(),
-                &rule.response_content_types,
             )?;
         }
 
@@ -450,5 +545,75 @@ mod tests {
             HeaderValue::Secret { secret_ref: "s".into() },
         );
         assert!(check_net(&g, &r).is_ok());
+    }
+
+    // --- SC-5 redirect re-check (review 069 P1) ------------------------------
+
+    #[test]
+    fn public_redirect_every_hop_allowlisted_is_allowed() {
+        // T011 public_redirect_to_public_allowed: both hops are allowlisted.
+        let g = grant(vec![
+            rule("GET", "https://api.example.com/public/*"),
+            rule("GET", "https://cdn.example.com/public/*"),
+        ]);
+        let mut r = req("GET", "https://api.example.com/public/asset");
+        r.redirect_chain = vec![
+            "https://api.example.com/public/asset".into(),
+            "https://cdn.example.com/public/asset".into(),
+        ];
+        assert!(check_net(&g, &r).is_ok());
+    }
+
+    #[test]
+    fn redirect_hop_to_private_is_denied() {
+        // T011 redirect_to_private_denied: final hop is a loopback literal.
+        let g = grant(vec![rule("GET", "https://api.example.com/public/*")]);
+        let mut r = req("GET", "https://api.example.com/public/redirect");
+        r.redirect_chain = vec![
+            "https://api.example.com/public/redirect".into(),
+            "http://127.0.0.1/admin".into(),
+        ];
+        let err = check_net(&g, &r).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("private"), "{err}");
+    }
+
+    #[test]
+    fn redirect_hop_to_public_but_unallowlisted_origin_is_denied() {
+        // The decisive new case: the redirect target is public (not private) but
+        // its origin is NOT in the allowlist. Pre-fix this passed because only the
+        // original URL was rule-checked; SC-5 requires every hop re-checked.
+        let g = grant(vec![rule("GET", "https://api.example.com/public/*")]);
+        let mut r = req("GET", "https://api.example.com/public/asset");
+        r.redirect_chain = vec![
+            "https://api.example.com/public/asset".into(),
+            "https://evil.example.net/public/asset".into(),
+        ];
+        let err = check_net(&g, &r).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("redirect hop"), "{err}");
+    }
+
+    #[test]
+    fn redirect_hop_to_unallowlisted_path_on_allowlisted_host_is_denied() {
+        // Same allowlisted host, but the hop path escapes the allowed glob.
+        let g = grant(vec![rule("GET", "https://api.example.com/public/*")]);
+        let mut r = req("GET", "https://api.example.com/public/asset");
+        r.redirect_chain = vec![
+            "https://api.example.com/public/asset".into(),
+            "https://api.example.com/admin/secret".into(),
+        ];
+        let err = check_net(&g, &r).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("redirect hop"), "{err}");
+    }
+
+    #[test]
+    fn malformed_redirect_hop_fails_closed() {
+        let g = grant(vec![rule("GET", "https://api.example.com/public/*")]);
+        let mut r = req("GET", "https://api.example.com/public/asset");
+        r.redirect_chain = vec!["not-a-url".into()];
+        let err = check_net(&g, &r).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
     }
 }
