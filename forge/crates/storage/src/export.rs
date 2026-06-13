@@ -1,0 +1,1085 @@
+//! Workspace export / import — the DL-24 portable single-file workspace.
+//!
+//! Normative spec: `prd-merged/02-data-layer-prd.md` DL-24 and
+//! `forge/spec/workspace-export-format.md`. A workspace exports as a single
+//! **portable SQLite file** containing the *syncable* state — the CRDT
+//! chunks/snapshots (the source of truth), the oplog, schema/index definitions
+//! that are persisted, the records projection, portable `kv` (applet
+//! manifests/programs/schema, NOT secrets or device-local keys), and — per a
+//! policy flag — the run records + run logs. Re-importing into a **fresh**
+//! `Store` and rebuilding the projection from the imported CRDT chunks (DL-6
+//! [`Store::rebuild_projection`](crate::Store::rebuild_projection)) reproduces a
+//! **byte-identical records projection**.
+//!
+//! ## Container & format
+//!
+//! The export artifact is itself a self-describing SQLite workspace file (the
+//! spec's "fresh Store written table-by-table"). [`Store::export_workspace`]
+//! writes a brand-new `Store` and copies the syncable tables into it **in a
+//! fully deterministic order** (table order fixed below; rows ordered by their
+//! primary key / the spec's ordering columns), so two exports of the same
+//! workspace are byte-identical. A format-version header lives in the bundle's
+//! `meta` table:
+//!
+//! - `export_format_version` — the open-format version ([`EXPORT_FORMAT_VERSION`]).
+//! - `forge_storage_schema_version` — the physical schema version
+//!   ([`STORAGE_SCHEMA_VERSION`]).
+//!
+//! [`Store::import_workspace`] opens the bundle read-only, validates the format
+//! version (an unknown version is a clean [`CoreError::StorageError`], never a
+//! silent reinterpretation), copies every syncable table into a fresh target
+//! `Store`, then calls `rebuild_projection` so the `records` table is
+//! reconstructed purely from the imported `crdt_chunks`.
+//!
+//! ## What is exported (included)
+//!
+//! | Table          | Included | Ordering (deterministic)            |
+//! |----------------|----------|-------------------------------------|
+//! | meta           | yes      | key                                  |
+//! | kv             | portable | namespace, key (secrets/device excluded) |
+//! | oplog          | yes      | lamport, op_id                       |
+//! | crdt_chunks    | yes      | doc_id, created_at, chunk_id         |
+//! | crdt_snapshots | yes      | doc_id, created_at, snapshot_id      |
+//! | records        | yes      | collection, id (re-derived on import)|
+//! | runs           | policy   | created_at, run_id                   |
+//! | run_logs       | policy   | run_id, seq                          |
+//!
+//! ## What is NEVER exported (excluded)
+//!
+//! Local-only / secret state is **never** written to the bundle (DL-24): the
+//! `kv` namespaces matching [`is_local_only_namespace`] — secrets, provider
+//! credentials, and device-local settings/window state — are filtered out at
+//! export, and an exclusion guard test pins this. The reserved `__forge/meta`
+//! namespace IS portable: it carries applet manifests/programs/schema pointers
+//! and the workspace run counter, which are workspace state rather than secrets.
+//! (When secret *references* need to travel they would ride as redacted refs;
+//! M0a persists no secret rows, so there is nothing to redact yet — the guard is
+//! the forward-compatible enforcement point.)
+//!
+//! ## Re-import invariant
+//!
+//! After import + rebuild, the target's `records` projection compares **equal**
+//! to the source's under the deterministic `(collection, id)` ordering, live
+//! `kv` values + tombstones match, indexes rebuild from canonical records, and
+//! (when policy includes them) `runs`/`run_logs` round-trip with their order
+//! preserved. This leverages DL-6: records are *derived*, so the CRDT chunks are
+//! the portable source and the projection is reconstructed, not trusted.
+
+use crate::index::IndexManager;
+use crate::{map_sql, Store};
+use forge_domain::{CoreError, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::path::Path;
+
+/// The open-format version written to / required from a bundle's `meta` table
+/// (`export_format_version`). Bumped only on an incompatible bundle-layout
+/// change; an importer refuses a version it does not understand rather than
+/// silently reinterpreting unknown data (spec §Versioning).
+pub const EXPORT_FORMAT_VERSION: i64 = 1;
+
+/// The physical storage schema version recorded alongside the open-format
+/// version (`forge_storage_schema_version`). Lets a future importer migrate an
+/// older physical layout explicitly.
+pub const STORAGE_SCHEMA_VERSION: i64 = 1;
+
+/// Policy for whether run records + logs travel in the bundle (spec: run logs
+/// are policy-dependent and default-excluded for privacy; include them only for
+/// an explicit debug/backup bundle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunLogPolicy {
+    /// Default: omit `runs` and `run_logs` from the bundle (privacy).
+    Exclude,
+    /// Debug/backup bundle: include `runs` and `run_logs` (ordered).
+    Include,
+}
+
+/// Options controlling what an export contains.
+#[derive(Debug, Clone)]
+pub struct ExportOptions {
+    /// The workspace identifier stamped into the bundle's `meta` (so an import
+    /// can carry the source identity). Empty is allowed (anonymous bundle).
+    pub workspace_id: String,
+    /// Whether run records + logs are included (default: excluded).
+    pub run_logs: RunLogPolicy,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        ExportOptions {
+            workspace_id: String::new(),
+            run_logs: RunLogPolicy::Exclude,
+        }
+    }
+}
+
+impl ExportOptions {
+    /// A bundle stamped with `workspace_id`, run logs excluded (the default).
+    pub fn new(workspace_id: impl Into<String>) -> Self {
+        ExportOptions {
+            workspace_id: workspace_id.into(),
+            run_logs: RunLogPolicy::Exclude,
+        }
+    }
+
+    /// Include run records + logs (debug/backup bundle).
+    pub fn with_run_logs(mut self) -> Self {
+        self.run_logs = RunLogPolicy::Include;
+        self
+    }
+}
+
+/// True iff a `kv` namespace holds **local-only / secret** data that must NEVER
+/// be exported (DL-24): secrets, provider credentials, and device-local settings
+/// / window state. The reserved `__forge/meta` namespace is explicitly portable
+/// (applet manifests/programs + run counter), so it is excluded from this guard.
+///
+/// The match is by reserved namespace prefix so an applet cannot accidentally
+/// (or maliciously) smuggle a secret out by choosing a clever key — the whole
+/// namespace is dropped. Applet `ctx.storage` namespaces are `applet/<id>` and
+/// are portable workspace data, so they are not matched here.
+pub fn is_local_only_namespace(namespace: &str) -> bool {
+    const LOCAL_ONLY_PREFIXES: &[&str] = &[
+        "secret/",
+        "secrets/",
+        "provider/",     // provider credentials / tokens
+        "credentials/",
+        "device/",       // device-local settings
+        "__device/",
+        "local/",        // local window state / transient UI
+        "__local/",
+    ];
+    // Exact reserved buckets (no trailing key) and prefix buckets.
+    const LOCAL_ONLY_EXACT: &[&str] = &["secrets", "device", "local"];
+    LOCAL_ONLY_EXACT.contains(&namespace)
+        || LOCAL_ONLY_PREFIXES.iter().any(|p| namespace.starts_with(p))
+}
+
+impl Store {
+    /// Export this workspace's syncable state into a brand-new portable SQLite
+    /// **bundle file** at `bundle_path` (DL-24). The bundle is a self-describing
+    /// `Store` written table-by-table in a fully deterministic order, so two
+    /// exports of the same workspace produce byte-identical files.
+    ///
+    /// Included: `meta` (with the format-version header), portable `kv`
+    /// (secrets / device-local namespaces excluded — see
+    /// [`is_local_only_namespace`]), `oplog`, `crdt_chunks` + `crdt_snapshots`
+    /// (the CRDT source of truth), the `records` projection, and — when
+    /// `options.run_logs` is [`RunLogPolicy::Include`] — `runs` + `run_logs`.
+    ///
+    /// The `records` projection is copied for inspectability, but on import it is
+    /// re-derived from the imported chunks via `rebuild_projection`, so the CRDT
+    /// chunks are the authoritative portable source (DL-6).
+    pub fn export_workspace(
+        &self,
+        bundle_path: impl AsRef<Path>,
+        options: &ExportOptions,
+    ) -> Result<()> {
+        // Refuse to clobber an existing file: an export writes a brand-new
+        // bundle, and silently overwriting one would be a surprising data loss.
+        let path = bundle_path.as_ref();
+        if path.exists() {
+            return Err(CoreError::StorageError(format!(
+                "export target {} already exists; refusing to overwrite",
+                path.display()
+            )));
+        }
+        // A fresh Store creates the canonical M0a schema, so the bundle is a
+        // valid, inspectable workspace file in its own right.
+        let bundle = Store::open(path)?;
+        self.write_bundle(&bundle, options)
+    }
+
+    /// Export into an **in-memory** bundle store (tests / piping). Same
+    /// deterministic contents as the file path; the caller owns the returned
+    /// `Store` (e.g. to serialize it, or to import straight back).
+    pub fn export_workspace_in_memory(&self, options: &ExportOptions) -> Result<Store> {
+        let bundle = Store::open_in_memory()?;
+        self.write_bundle(&bundle, options)?;
+        Ok(bundle)
+    }
+
+    /// Copy every syncable table from `self` into the fresh `bundle`, in a fixed
+    /// deterministic order. Shared by the file and in-memory export entry points.
+    fn write_bundle(&self, bundle: &Store, options: &ExportOptions) -> Result<()> {
+        // Order is FIXED so re-export is byte-stable: header → kv → oplog →
+        // chunks → snapshots → records → (runs/run_logs by policy).
+        write_meta_header(&bundle.conn, options)?;
+        copy_kv(&self.conn, &bundle.conn)?;
+        copy_oplog(&self.conn, &bundle.conn)?;
+        copy_crdt_chunks(&self.conn, &bundle.conn)?;
+        copy_crdt_snapshots(&self.conn, &bundle.conn)?;
+        copy_records(&self.conn, &bundle.conn)?;
+        if options.run_logs == RunLogPolicy::Include {
+            copy_runs(&self.conn, &bundle.conn)?;
+            copy_run_logs(&self.conn, &bundle.conn)?;
+        }
+        Ok(())
+    }
+
+    /// Import a portable bundle file into a **fresh** target `Store` at
+    /// `target_path` (DL-24). Validates the bundle's `export_format_version`
+    /// (an unknown version is a clean error, not a silent reinterpretation),
+    /// copies every syncable table into the new store, then rebuilds the
+    /// `records` projection from the imported `crdt_chunks` via
+    /// [`rebuild_projection`](Store::rebuild_projection) so the result equals the
+    /// source workspace's projection byte-for-byte (the DL-24 invariant). Active
+    /// indexes in `indexes` are rebuilt from the canonical records as part of the
+    /// rebuild.
+    ///
+    /// The target file must not already exist (importing into a populated
+    /// workspace is out of scope — a bundle reconstructs a *fresh* workspace).
+    pub fn import_workspace(
+        bundle_path: impl AsRef<Path>,
+        target_path: impl AsRef<Path>,
+        indexes: &IndexManager,
+    ) -> Result<Store> {
+        let target = target_path.as_ref();
+        if target.exists() {
+            return Err(CoreError::StorageError(format!(
+                "import target {} already exists; import requires a fresh workspace",
+                target.display()
+            )));
+        }
+        let bundle = open_bundle_readonly(bundle_path.as_ref())?;
+        let mut target = Store::open(target)?;
+        target.load_from_bundle(&bundle, indexes)?;
+        Ok(target)
+    }
+
+    /// Import a bundle `Store` (e.g. one produced by
+    /// [`export_workspace_in_memory`](Store::export_workspace_in_memory)) into a
+    /// fresh in-memory target, rebuilding the projection. The validation +
+    /// table-copy + rebuild are identical to the file path.
+    pub fn import_workspace_in_memory(bundle: &Store, indexes: &IndexManager) -> Result<Store> {
+        validate_bundle_version(&bundle.conn)?;
+        let mut target = Store::open_in_memory()?;
+        target.load_from_bundle(&bundle.conn, indexes)?;
+        Ok(target)
+    }
+
+    /// Copy every syncable table from an (already version-validated) bundle
+    /// connection into this fresh store, then rebuild the projection from the
+    /// imported chunks. Mirrors the export order so the two paths stay in lockstep.
+    fn load_from_bundle(&mut self, bundle: &Connection, indexes: &IndexManager) -> Result<()> {
+        copy_kv(bundle, &self.conn)?;
+        copy_oplog(bundle, &self.conn)?;
+        copy_crdt_chunks(bundle, &self.conn)?;
+        copy_crdt_snapshots(bundle, &self.conn)?;
+        // The bundle's `records` rows are advisory; the import re-derives the
+        // projection from the authoritative `crdt_chunks` (DL-6), so we do NOT
+        // copy `records` here — rebuild produces them.
+        copy_runs(bundle, &self.conn)?;
+        copy_run_logs(bundle, &self.conn)?;
+        // DL-6: reconstruct the records projection purely from imported chunks.
+        // This is the byte-identical-projection invariant: records are derived.
+        self.rebuild_projection(indexes)
+    }
+}
+
+/// Open a bundle file **read-only** and validate its format version before any
+/// copy. Read-only mirrors the spec ("opens the database read-only first").
+fn open_bundle_readonly(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        return Err(CoreError::StorageError(format!(
+            "import bundle {} does not exist",
+            path.display()
+        )));
+    }
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(map_sql)?;
+    validate_bundle_version(&conn)?;
+    Ok(conn)
+}
+
+/// Read and validate the bundle's `export_format_version` from its `meta` table.
+/// A missing header or a version this build does not understand is a clean
+/// [`CoreError::StorageError`] (spec §Versioning: importers must not silently
+/// reinterpret unknown versions).
+fn validate_bundle_version(bundle: &Connection) -> Result<()> {
+    let raw: Option<Vec<u8>> = bundle
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'export_format_version'",
+            [],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()
+        .map_err(map_sql)?
+        .flatten();
+    let bytes = raw.ok_or_else(|| {
+        CoreError::StorageError(
+            "bundle is missing its export_format_version header; not a forge workspace export".into(),
+        )
+    })?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
+        CoreError::StorageError(format!("export_format_version is not utf-8: {e}"))
+    })?;
+    let version: i64 = text.parse().map_err(|e| {
+        CoreError::StorageError(format!("export_format_version is malformed: {e}"))
+    })?;
+    if version != EXPORT_FORMAT_VERSION {
+        return Err(CoreError::StorageError(format!(
+            "unsupported export_format_version {version}; this build understands {EXPORT_FORMAT_VERSION} \
+             (migrate the bundle with a matching forge version)"
+        )));
+    }
+    Ok(())
+}
+
+/// Write the bundle's `meta` header rows (format version + workspace id) in a
+/// fixed key order. Values are stored as utf-8 text bytes, matching how the
+/// fixtures model `meta` rows (`[key, value]` strings).
+fn write_meta_header(bundle: &Connection, options: &ExportOptions) -> Result<()> {
+    // Deterministic key order. `set_meta` is a plain upsert into the bundle's
+    // already-created `meta` table.
+    set_meta(bundle, "export_format_version", &EXPORT_FORMAT_VERSION.to_string())?;
+    set_meta(
+        bundle,
+        "forge_storage_schema_version",
+        &STORAGE_SCHEMA_VERSION.to_string(),
+    )?;
+    set_meta(bundle, "workspace_id", &options.workspace_id)?;
+    Ok(())
+}
+
+/// Upsert one `meta` row (utf-8 text value).
+fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value, updated_at) VALUES (?1, ?2, 0)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value.as_bytes()],
+    )
+    .map_err(map_sql)?;
+    Ok(())
+}
+
+/// Copy the portable `kv` rows from `src` to `dst`, ordered by `(namespace,
+/// key)` and **excluding** local-only / secret namespaces
+/// ([`is_local_only_namespace`]). Tombstones are retained (a deleted key must
+/// round-trip as deleted, DL-21), so the bundle carries the full sync-correct kv
+/// shape minus secrets.
+fn copy_kv(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT namespace, key, value, content_type, logical_version, updated_at, tombstone
+               FROM kv ORDER BY namespace, key",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (namespace, key, value, content_type, logical_version, updated_at, tombstone) =
+            r.map_err(map_sql)?;
+        // EXCLUSION GUARD: a secret / device-local namespace is never written
+        // to the bundle (DL-24). This is the single chokepoint the guard test
+        // pins.
+        if is_local_only_namespace(&namespace) {
+            continue;
+        }
+        dst.execute(
+            "INSERT INTO kv
+                 (namespace, key, value, content_type, logical_version, updated_at, tombstone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![namespace, key, value, content_type, logical_version, updated_at, tombstone],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy `oplog` ordered by `(lamport, op_id)` — the spec's deterministic replay
+/// order — preserving every column.
+fn copy_oplog(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT op_id, actor_id, workspace_id, lamport, kind, payload, created_at
+               FROM oplog ORDER BY lamport, op_id",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<Vec<u8>>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (op_id, actor_id, workspace_id, lamport, kind, payload, created_at) =
+            r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO oplog
+                 (op_id, actor_id, workspace_id, lamport, kind, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![op_id, actor_id, workspace_id, lamport, kind, payload, created_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy `crdt_chunks` — the append-only CRDT source of truth (DL-6) — ordered by
+/// `(doc_id, created_at, chunk_id)`, preserving `created_at` so the import's
+/// chunk replay order matches the source exactly.
+fn copy_crdt_chunks(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT doc_id, chunk_id, format, payload, created_at
+               FROM crdt_chunks ORDER BY doc_id, created_at, chunk_id",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (doc_id, chunk_id, format, payload, created_at) = r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO crdt_chunks (doc_id, chunk_id, format, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![doc_id, chunk_id, format, payload, created_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy `crdt_snapshots` (the snapshot accelerator) ordered by `(doc_id,
+/// created_at, snapshot_id)`. Snapshots are not the sole source of truth, but
+/// they round-trip so the bundle is a complete workspace.
+fn copy_crdt_snapshots(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT doc_id, snapshot_id, format, payload, frontier, created_at
+               FROM crdt_snapshots ORDER BY doc_id, created_at, snapshot_id",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (doc_id, snapshot_id, format, payload, frontier, created_at) = r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO crdt_snapshots
+                 (doc_id, snapshot_id, format, payload, frontier, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![doc_id, snapshot_id, format, payload, frontier, created_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy the `records` projection ordered by `(collection, id)`. Used only by the
+/// export path (for an inspectable, byte-stable bundle); import re-derives this
+/// table from `crdt_chunks` so it is never trusted as input.
+fn copy_records(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT collection, id, data, updated_at FROM records ORDER BY collection, id",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (collection, id, data, updated_at) = r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO records (collection, id, data, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params![collection, id, data, updated_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy `runs` ordered by `(created_at, run_id)` (policy-gated). Each row's
+/// `record_json` is the full `RunRecord`; the validate-on-read in
+/// [`Store::load_run`](crate::Store::load_run) still guards provenance after import.
+fn copy_runs(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT run_id, applet_id, record_json, created_at FROM runs ORDER BY created_at, run_id",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (run_id, applet_id, record_json, created_at) = r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO runs (run_id, applet_id, record_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![run_id, applet_id, record_json, created_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Copy `run_logs` ordered by `(run_id, seq)` (policy-gated), preserving log
+/// sequence order.
+fn copy_run_logs(src: &Connection, dst: &Connection) -> Result<()> {
+    let mut stmt = src
+        .prepare(
+            "SELECT run_id, seq, level, event_type, payload, created_at
+               FROM run_logs ORDER BY run_id, seq",
+        )
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(map_sql)?;
+    for r in rows {
+        let (run_id, seq, level, event_type, payload, created_at) = r.map_err(map_sql)?;
+        dst.execute(
+            "INSERT INTO run_logs (run_id, seq, level, event_type, payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![run_id, seq, level, event_type, payload, created_at],
+        )
+        .map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+/// Read a bundle's `meta` value as utf-8 text (helper for callers / tests that
+/// want to inspect the header without reaching SQLite). Returns `None` for a
+/// missing key. A non-utf-8 value is a `StorageError` rather than lossy bytes.
+pub fn bundle_meta(bundle: &Store, key: &str) -> Result<Option<String>> {
+    let raw: Option<Vec<u8>> = bundle
+        .conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()
+        .map_err(map_sql)?
+        .flatten();
+    match raw {
+        Some(bytes) => {
+            let s = std::str::from_utf8(&bytes).map_err(|e| {
+                CoreError::StorageError(format!("bundle meta {key} is not utf-8: {e}"))
+            })?;
+            Ok(Some(s.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::{CreateIndexKind, IndexManager};
+    use crate::Mutation;
+    use forge_domain::{AppResult, AppletId, RunId, RunOutcome, RunRecord};
+    use serde_json::json;
+
+    // --- builders ---------------------------------------------------------
+
+    fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("object").clone()
+    }
+
+    fn insert(collection: &str, id: &str, fields: serde_json::Value, at: i64) -> Mutation {
+        Mutation::Insert {
+            collection: collection.into(),
+            id: Some(id.into()),
+            fields: obj(fields),
+            logical_at: Some(at),
+        }
+    }
+
+    fn patch(collection: &str, id: &str, fields: serde_json::Value, at: i64) -> Mutation {
+        Mutation::Patch {
+            collection: collection.into(),
+            id: id.into(),
+            fields: obj(fields),
+            logical_at: Some(at),
+        }
+    }
+
+    fn delete(collection: &str, id: &str, at: i64) -> Mutation {
+        Mutation::Delete {
+            collection: collection.into(),
+            id: id.into(),
+            logical_at: Some(at),
+        }
+    }
+
+    /// A workspace built through the real DL-4 CRDT mutation path so that the
+    /// projection is CRDT-backed (chunks exist for rebuild on import). Returns
+    /// the source store and the index manager whose active index must survive a
+    /// round-trip.
+    fn source_workspace() -> (Store, IndexManager) {
+        let mut s = Store::open_in_memory().unwrap();
+        let mut idx = IndexManager::new();
+        // Records via the CRDT write path (chunks + oplog + projection).
+        s.apply_mutation_crdt(&insert("notes", "n1", json!({"title": "Alpha", "body": "offline first"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&insert("notes", "n2", json!({"title": "Beta", "body": "sync later"}), 2), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&patch("notes", "n1", json!({"pinned": true}), 3), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 4), &idx)
+            .unwrap();
+        // A record that is deleted in CRDT history (must not resurrect on import).
+        s.apply_mutation_crdt(&insert("tasks", "t9", json!({"title": "Temp"}), 5), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&delete("tasks", "t9", 6), &idx).unwrap();
+
+        // An active value index over a stable field id (rebuilt on import).
+        s.create_index(&mut idx, "notes", "f_title", CreateIndexKind::Value)
+            .unwrap();
+
+        // Portable kv: an applet manifest stand-in + ctx.storage namespace + the
+        // workspace run counter (all portable workspace state).
+        s.kv_set("__forge/meta", "applet/notes", b"{\"manifest\":true}", "application/json")
+            .unwrap();
+        s.kv_set("applet/notes", "draft", b"hello", "text/plain").unwrap();
+        s.next_counter("__forge/meta", "run_counter").unwrap();
+
+        // Local-only / secret kv that must NEVER be exported.
+        s.kv_set("secret/weather", "api_key", b"sk-DO-NOT-EXPORT", "text/plain").unwrap();
+        s.kv_set("provider/openai", "token", b"tok-secret", "text/plain").unwrap();
+        s.kv_set("device/window", "geometry", b"{\"w\":800}", "application/json").unwrap();
+        s.kv_set("local/ui", "scroll", b"42", "text/plain").unwrap();
+
+        (s, idx)
+    }
+
+    fn sample_run(run_id: &str) -> RunRecord {
+        RunRecord {
+            run_id: RunId::new(run_id),
+            applet_id: AppletId::new("app_notes"),
+            code_hash: forge_domain::code_hash("body"),
+            input: json!({"x": 1}),
+            random_seed: 7,
+            time_start: 1000,
+            calls: vec![],
+            logs: vec!["hello".into()],
+            permissions: forge_domain::PermissionSnapshot::default(),
+            outcome: RunOutcome::Completed {
+                result: AppResult { ok: true, value: json!("ok") },
+            },
+        }
+    }
+
+    /// The full projection keyed by `collection/id` → canonical data, ordered, for
+    /// a byte-for-byte source/target comparison (the DL-24 invariant).
+    fn projection_snapshot(s: &Store) -> std::collections::BTreeMap<String, String> {
+        let mut stmt = s
+            .connection()
+            .prepare("SELECT collection, id, data FROM records ORDER BY collection, id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap();
+        let mut out = std::collections::BTreeMap::new();
+        for r in rows {
+            let (c, id, data) = r.unwrap();
+            out.insert(format!("{c}/{id}"), data);
+        }
+        out
+    }
+
+    /// The complete bundle file as bytes, for byte-identical re-export checks.
+    fn read_file(path: &std::path::Path) -> Vec<u8> {
+        std::fs::read(path).unwrap()
+    }
+
+    // --- DL-24 core invariant: export -> import -> equal projection -------
+
+    #[test]
+    fn import_reproduces_the_source_projection_byte_for_byte() {
+        let (src, idx) = source_workspace();
+        let before = projection_snapshot(&src);
+
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
+
+        // The imported projection — re-derived from the imported chunks — equals
+        // the source projection exactly.
+        assert_eq!(projection_snapshot(&target), before, "DL-24 byte-identical projection");
+
+        // Query results match (same live rows, deleted record stays gone).
+        assert_eq!(target.list_records("notes").unwrap().len(), 2);
+        assert_eq!(target.list_records("tasks").unwrap().len(), 1);
+        assert!(target.get_record("tasks", "t9").unwrap().is_none(), "deleted record not resurrected");
+        // The patched field survived.
+        assert_eq!(target.get_record("notes", "n1").unwrap().unwrap().fields["pinned"], json!(true));
+    }
+
+    #[test]
+    fn import_rebuilds_the_active_index_from_canonical_records() {
+        // The active value index must serve a query against the imported store,
+        // proving indexes were rebuilt from canonical records (not copied raw).
+        let (src, idx) = source_workspace();
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
+
+        let q = crate::Query::from_fixture_value(&json!({
+            "from": "notes",
+            "where": [{"field_id": "f_title", "op": "eq", "value": "Alpha"}]
+        }))
+        .unwrap();
+        let planned = target.query_planned(&q, &idx).unwrap();
+        assert!(planned.uses_index, "the imported store's active index must serve the query");
+        assert_eq!(planned.index_id.as_deref(), Some("idx_records_notes_f_title"));
+    }
+
+    #[test]
+    fn kv_live_values_and_tombstones_round_trip() {
+        let (src, idx) = source_workspace();
+        // Tombstone a key so the export carries the deletion.
+        src.kv_delete("applet/notes", "draft").unwrap();
+
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
+
+        // Portable kv round-trips; the tombstoned key is hidden but its row exists.
+        assert_eq!(
+            target.kv_get("__forge/meta", "applet/notes").unwrap().as_deref(),
+            Some(&b"{\"manifest\":true}"[..])
+        );
+        assert_eq!(target.kv_get("applet/notes", "draft").unwrap(), None, "tombstone hides the value");
+        let tomb: i64 = target
+            .connection()
+            .query_row(
+                "SELECT tombstone FROM kv WHERE namespace='applet/notes' AND key='draft'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tomb, 1, "the tombstone row round-trips");
+        // The run counter is portable workspace state.
+        assert_eq!(
+            target.kv_get("__forge/meta", "run_counter").unwrap().as_deref(),
+            Some(&b"1"[..])
+        );
+    }
+
+    // --- DL-24 exclusion guard: secrets / device-local NEVER exported -----
+
+    #[test]
+    fn secrets_and_device_local_kv_are_never_exported() {
+        let (src, idx) = source_workspace();
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+
+        // Not in the bundle file at all.
+        for (ns, key) in [
+            ("secret/weather", "api_key"),
+            ("provider/openai", "token"),
+            ("device/window", "geometry"),
+            ("local/ui", "scroll"),
+        ] {
+            let present: i64 = bundle
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM kv WHERE namespace=?1 AND key=?2",
+                    params![ns, key],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 0, "secret/device-local {ns}/{key} must NOT be in the bundle");
+        }
+
+        // And not in the imported workspace.
+        let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
+        assert_eq!(target.kv_get("secret/weather", "api_key").unwrap(), None);
+        assert_eq!(target.kv_get("provider/openai", "token").unwrap(), None);
+        assert_eq!(target.kv_get("device/window", "geometry").unwrap(), None);
+        assert_eq!(target.kv_get("local/ui", "scroll").unwrap(), None);
+    }
+
+    #[test]
+    fn local_only_namespace_policy_is_precise() {
+        // Secret / device / local buckets are excluded...
+        assert!(is_local_only_namespace("secret/weather"));
+        assert!(is_local_only_namespace("secrets"));
+        assert!(is_local_only_namespace("provider/openai"));
+        assert!(is_local_only_namespace("credentials/aws"));
+        assert!(is_local_only_namespace("device/window"));
+        assert!(is_local_only_namespace("local/ui"));
+        // ...but portable workspace namespaces are NOT excluded.
+        assert!(!is_local_only_namespace("__forge/meta"), "applet manifests/programs are portable");
+        assert!(!is_local_only_namespace("applet/notes"), "applet ctx.storage is portable");
+        assert!(!is_local_only_namespace("localized"), "prefix must be a bucket boundary, not a substring");
+    }
+
+    // --- DL-24 deterministic re-export: byte-identical --------------------
+
+    #[test]
+    fn re_export_of_the_same_workspace_is_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, _idx) = source_workspace();
+
+        let a = dir.path().join("a.forgews");
+        let b = dir.path().join("b.forgews");
+        src.export_workspace(&a, &ExportOptions::new("ws_demo")).unwrap();
+        src.export_workspace(&b, &ExportOptions::new("ws_demo")).unwrap();
+
+        // Two exports of the same workspace produce byte-identical bundle files.
+        assert_eq!(read_file(&a), read_file(&b), "re-export must be byte-stable");
+    }
+
+    #[test]
+    fn export_refuses_to_overwrite_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, _idx) = source_workspace();
+        let p = dir.path().join("ws.forgews");
+        src.export_workspace(&p, &ExportOptions::new("ws_demo")).unwrap();
+        let err = src.export_workspace(&p, &ExportOptions::new("ws_demo")).unwrap_err();
+        assert_eq!(err.code(), "StorageError");
+    }
+
+    #[test]
+    fn import_round_trips_through_real_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, idx) = source_workspace();
+        let before = projection_snapshot(&src);
+
+        let bundle = dir.path().join("ws.forgews");
+        src.export_workspace(&bundle, &ExportOptions::new("ws_demo")).unwrap();
+
+        let target_path = dir.path().join("restored.db");
+        let target = Store::import_workspace(&bundle, &target_path, &idx).unwrap();
+        assert_eq!(projection_snapshot(&target), before, "file round-trip preserves the projection");
+    }
+
+    // --- run-log policy ---------------------------------------------------
+
+    #[test]
+    fn run_logs_excluded_by_default_included_on_request() {
+        let (src, idx) = source_workspace();
+        // Seed a run + run_logs.
+        src.save_run(&sample_run("run_1")).unwrap();
+        src.connection()
+            .execute(
+                "INSERT INTO run_logs (run_id, seq, level, event_type, payload, created_at)
+                 VALUES ('run_1', 0, 'info', 'log', ?1, 0), ('run_1', 1, 'info', 'log', ?2, 0)",
+                params![b"a".as_slice(), b"b".as_slice()],
+            )
+            .unwrap();
+
+        // Default policy: runs / run_logs are NOT exported.
+        let excluded = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        let target_x = Store::import_workspace_in_memory(&excluded, &idx).unwrap();
+        assert!(target_x.load_run("run_1").unwrap().is_none(), "runs excluded by default");
+        let log_count_x: i64 = target_x
+            .connection()
+            .query_row("SELECT COUNT(*) FROM run_logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(log_count_x, 0, "run_logs excluded by default");
+
+        // Include policy: runs + run_logs round-trip, log order preserved.
+        let included = src
+            .export_workspace_in_memory(&ExportOptions::new("ws").with_run_logs())
+            .unwrap();
+        let target_i = Store::import_workspace_in_memory(&included, &idx).unwrap();
+        assert_eq!(target_i.load_run("run_1").unwrap().unwrap().run_id.as_str(), "run_1");
+        let seqs: Vec<i64> = {
+            let mut stmt = target_i
+                .connection()
+                .prepare("SELECT seq FROM run_logs WHERE run_id='run_1' ORDER BY seq")
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(seqs, vec![0, 1], "run_logs preserve seq order");
+    }
+
+    // --- version handling -------------------------------------------------
+
+    #[test]
+    fn bundle_carries_the_format_version_header() {
+        let (src, _idx) = source_workspace();
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        assert_eq!(
+            bundle_meta(&bundle, "export_format_version").unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            bundle_meta(&bundle, "forge_storage_schema_version").unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(bundle_meta(&bundle, "workspace_id").unwrap().as_deref(), Some("ws_demo"));
+    }
+
+    #[test]
+    fn version_mismatch_is_a_clean_error() {
+        let (src, idx) = source_workspace();
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        // Tamper the header to a future version.
+        bundle
+            .connection()
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'export_format_version'",
+                params![b"999".as_slice()],
+            )
+            .unwrap();
+        let err = Store::import_workspace_in_memory(&bundle, &idx)
+            .err()
+            .expect("import must reject an unsupported version");
+        assert_eq!(err.code(), "StorageError");
+        assert!(format!("{err}").contains("999"), "the error names the unsupported version: {err}");
+    }
+
+    #[test]
+    fn missing_version_header_is_rejected() {
+        // A SQLite file that is not a forge bundle (no header row) is refused.
+        let idx = IndexManager::new();
+        let not_a_bundle = Store::open_in_memory().unwrap();
+        let err = Store::import_workspace_in_memory(&not_a_bundle, &idx)
+            .err()
+            .expect("a file with no header is not a bundle");
+        assert_eq!(err.code(), "StorageError");
+    }
+
+    #[test]
+    fn import_refuses_a_non_fresh_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, idx) = source_workspace();
+        let bundle = dir.path().join("ws.forgews");
+        src.export_workspace(&bundle, &ExportOptions::new("ws")).unwrap();
+        let target_path = dir.path().join("exists.db");
+        // Pre-create the target file.
+        Store::open(&target_path).unwrap();
+        let err = Store::import_workspace(&bundle, &target_path, &idx)
+            .err()
+            .expect("import must refuse a pre-existing target");
+        assert_eq!(err.code(), "StorageError");
+    }
+
+    // --- fixtures/export descriptors (T017) ------------------------------
+
+    /// The export fixture descriptors pin the expected bundle shape: format
+    /// version, included/excluded tables, run-log policy, deterministic ordering,
+    /// and the `missing_required_for_ga` sections. We parse them and assert our
+    /// implementation's constants + policy agree with the canonical descriptors.
+    #[derive(serde::Deserialize)]
+    struct TinyDescriptor {
+        export_format_version: i64,
+        include_run_logs: bool,
+        missing_required_for_ga: Vec<String>,
+    }
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/export")
+            .join(name)
+    }
+
+    fn load_fixture<T: serde::de::DeserializeOwned>(name: &str) -> T {
+        let text = std::fs::read_to_string(fixture_path(name))
+            .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse fixture {name}: {e}"))
+    }
+
+    #[test]
+    fn tiny_fixture_agrees_with_our_format_version_and_policy() {
+        let fx: TinyDescriptor = load_fixture("tiny_workspace_descriptor.json");
+        assert_eq!(fx.export_format_version, EXPORT_FORMAT_VERSION, "fixture pins our format version");
+        // Default policy excludes run logs, matching the tiny fixture.
+        assert!(!fx.include_run_logs);
+        assert_eq!(ExportOptions::default().run_logs, RunLogPolicy::Exclude);
+        // The GA-missing sections are not yet persisted tables in M0a storage, so
+        // they are legitimately absent from the bundle (documented in the spec).
+        assert!(fx.missing_required_for_ga.contains(&"rbac_config".to_string()));
+        assert!(fx.missing_required_for_ga.contains(&"index_defs".to_string()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RunLogsDescriptor {
+        include_run_logs: bool,
+    }
+
+    #[test]
+    fn run_logs_fixture_describes_the_include_policy() {
+        let fx: RunLogsDescriptor = load_fixture("workspace_with_run_logs_descriptor.json");
+        assert!(fx.include_run_logs, "the debug-bundle fixture opts into run logs");
+        // Our include policy maps to the same flag.
+        assert_eq!(
+            ExportOptions::new("ws").with_run_logs().run_logs,
+            RunLogPolicy::Include
+        );
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RedactedDescriptor {
+        expected_exclusions: Vec<String>,
+    }
+
+    #[test]
+    fn redacted_fixture_exclusions_match_our_guard() {
+        let fx: RedactedDescriptor = load_fixture("redacted_secrets_descriptor.json");
+        // The fixture's excluded kinds (secret plaintext, provider tokens, local
+        // window state) all map to namespaces our guard refuses to export.
+        assert!(fx.expected_exclusions.iter().any(|e| e == "secret_plaintext"));
+        assert!(is_local_only_namespace("secret/anything"));
+        assert!(is_local_only_namespace("provider/anything"));
+        assert!(is_local_only_namespace("local/window"));
+    }
+}
