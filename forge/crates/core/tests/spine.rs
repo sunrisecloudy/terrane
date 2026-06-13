@@ -2062,8 +2062,41 @@ fn sources_from_fixture(fixture: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(sources)
 }
 
+/// The forge-domain manifest that MATCHES the `valid_signature.json` signed
+/// package manifest's capability boundary + resource limits (review 082 #1): the
+/// signed `app.notes` package grants `storage notes/*`, `db notes`, `ui`, no
+/// network, and a `{wall_ms: 3000, memory_bytes: 67108864}` budget. A signed
+/// install must enforce EXACTLY this boundary, so the positive signed-install
+/// tests ship this manifest (not `demo_manifest()`, whose broader `storage app/*`
+/// / `db tasks` grants the signed package never blessed — the gap review 082
+/// exposed). The four limits the signed manifest does not declare keep the M0a
+/// defaults; only `wall_ms`/`memory_bytes` are bound.
+fn signed_fixture_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": ["notes/*"], "write": ["notes/*"] },
+            "db": { "read": ["notes"], "write": ["notes"] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000,
+            "fuel": 10000000,
+            "memory_bytes": 67108864,
+            "max_host_calls": 10000,
+            "storage_bytes": 10485760,
+            "log_bytes": 262144
+        }
+    })
+}
+
 /// Install an applet WITH an attached signature block (from a fixture), shipping
-/// the SIGNED files as the install sources so the signature binds to the payload.
+/// the SIGNED files as the install sources AND a manifest that matches the signed
+/// package's capability boundary, so both binds (sources — review 080 #1, and
+/// manifest/policy — review 082 #1) are satisfied and the install records
+/// `Signed`.
 fn install_demo_signed(
     core: &mut WorkspaceCore,
     applet_id: &str,
@@ -2074,7 +2107,7 @@ fn install_demo_signed(
         "applet.install",
         Some(applet_id),
         serde_json::json!({
-            "manifest": demo_manifest(),
+            "manifest": signed_fixture_manifest(),
             "sources": sources_from_fixture(fixture),
             "signature": signature,
         }),
@@ -2115,6 +2148,88 @@ fn install_signed_package_verifies_and_records_trust() {
     // And the signed applet actually runs (the install was real, not just a check).
     let run = core.handle(cmd("runtime.run", Some("app_signed"), serde_json::json!({ "input": {} })));
     assert!(run.ok, "the verified applet runs: {:?}", run.error);
+}
+
+#[test]
+fn a_signature_cannot_bless_a_broader_top_level_manifest() {
+    // review 082 #1: a valid T012 signed package whose CODE is identical to the
+    // install sources, but whose top-level `manifest` grants BROADER capabilities
+    // than the signed package manifest, must be REJECTED — not installed as
+    // `Signed` under a policy the publisher never blessed. The signed
+    // `valid_signature` package grants `storage notes/*` + `db notes`; here the
+    // install ships the broader `demo_manifest()` (`storage app/*` + `db tasks`).
+    // The sources bind passes (identical files), so this exercises the NEW
+    // manifest/policy bind, which rejects before anything is stored.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app_broader"),
+        serde_json::json!({
+            // Identical code to the signed package, but a broader manifest.
+            "manifest": demo_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(
+        !resp.ok,
+        "a signed install whose manifest grants more than the signed package must be rejected"
+    );
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string()
+            .contains("install manifest does not match the signed package manifest"),
+        "the manifest/policy mismatch is surfaced: {err}"
+    );
+
+    // Nothing was installed: the broader policy never reached the store.
+    let run = core.handle(cmd("runtime.run", Some("app_broader"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected install stored nothing");
+
+    // And the SAME signed package WITH a matching manifest still installs as
+    // Signed — proving the bind rejects only the mismatch, not signed installs.
+    let mut core_ok = WorkspaceCore::in_memory("ws1").unwrap();
+    let ok = install_demo_signed(
+        &mut core_ok,
+        "app_match",
+        &fixture,
+        signature_block_from_fixture(&fixture),
+    );
+    assert!(ok.ok, "a matching signed install still succeeds: {:?}", ok.error);
+    assert_eq!(ok.payload["trust"]["status"], serde_json::json!("signed"));
+}
+
+#[test]
+fn a_signature_cannot_bless_different_resource_limits() {
+    // review 082 #1, limits dimension: identical code, identical capabilities,
+    // but a top-level `wall_ms` that differs from the signed package's
+    // `resourceBudget.wall_ms` (3000) must be rejected — a publisher's signed
+    // resource boundary cannot be widened at install.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut manifest = signed_fixture_manifest();
+    manifest["limits"]["wall_ms"] = serde_json::json!(60000); // signed is 3000
+
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app_loose_limits"),
+        serde_json::json!({
+            "manifest": manifest,
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(!resp.ok, "a wider resource budget than the signed one must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("limits.wall_ms"),
+        "the limits mismatch is surfaced: {err}"
+    );
 }
 
 #[test]

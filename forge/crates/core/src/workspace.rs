@@ -445,8 +445,11 @@ impl WorkspaceCore {
         // SC-15 / MP-4: verify the package signature when one is carried, BEFORE
         // any state is touched, and BIND it to the actual install sources so a
         // valid signature can only bless the exact code being installed (review
-        // 080 #1). `Unsigned` when the install carries no signature.
-        let trust = verify_install_signature(cmd, sources)?;
+        // 080 #1). The signed package's MANIFEST/policy is also bound to the
+        // top-level `manifest` that is stored and enforced (review 082 #1): a
+        // signed install must enforce the SIGNED capability boundary, not a
+        // broader one. `Unsigned` when the install carries no signature.
+        let trust = verify_install_signature(cmd, &manifest, sources)?;
 
         // Compile every source so a forbidden construct in ANY file rejects the
         // whole install (CR-13: the static policy scan is layer one). Capture
@@ -1906,6 +1909,11 @@ fn scope_grants(scope: &[String], collection: &str) -> bool {
 ///   - the verified package is then BOUND to `sources` via
 ///     [`bind_signature_to_sources`] so the signature only blesses the code
 ///     actually being installed (review 080 #1);
+///   - the signed package's MANIFEST is BOUND to the top-level `manifest` that is
+///     stored and enforced via [`bind_signature_to_manifest`] (review 082 #1), so
+///     a valid signature over code cannot be installed under a BROADER runtime
+///     policy (extra capabilities / different app id, entrypoint, or limits) than
+///     the publisher signed — the runtime enforces exactly the signed boundary;
 ///   - on success the verified publisher / key id (+ whether the policy layer was
 ///     enforced) is returned as [`InstallTrust::Signed`].
 ///
@@ -1914,6 +1922,7 @@ fn scope_grants(scope: &[String], collection: &str) -> bool {
 /// integrity only, the M0a "verify when present, surface the result" default.
 fn verify_install_signature(
     cmd: &CoreCommand,
+    manifest: &Manifest,
     sources: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<InstallTrust> {
     let signature = match cmd.payload.get("signature") {
@@ -1954,6 +1963,14 @@ fn verify_install_signature(
             // attach any valid signed package to arbitrary top-level code and still
             // be reported as `Signed`.
             bind_signature_to_sources(&package, sources)?;
+
+            // BIND the signed package's manifest/policy to the top-level
+            // `manifest` that is stored and enforced (review 082 #1): the
+            // runtime must enforce EXACTLY the capability boundary + resource
+            // limits the publisher signed, not a broader one. A signed install
+            // whose top-level manifest grants more (or a different app id /
+            // entrypoint / limits) than the signed package manifest is rejected.
+            bind_signature_to_manifest(&package, manifest)?;
 
             // Record the verified publisher identity for later trust reporting.
             let publisher = manifest_string(&package.manifest, "publisher");
@@ -2026,6 +2043,191 @@ fn bind_signature_to_sources(
         }
     }
     Ok(())
+}
+
+/// Confirm the top-level install `manifest` enforces EXACTLY the capability
+/// boundary + resource limits the publisher signed (review 082 #1).
+///
+/// [`bind_signature_to_sources`] binds the signed *code* to the install sources,
+/// but `cmd_applet_install` stores and enforces a SEPARATE top-level
+/// [`Manifest`] (its `capabilities`/`limits` are what the runtime's policy engine
+/// checks every `ctx.*` call against). Without this bind, a valid signature over
+/// code could be installed as `Signed` under a BROADER policy than the publisher
+/// signed — e.g. `storage app/*` + `db tasks` where the publisher only signed
+/// `storage notes/*` + `db notes` — so the runtime would enforce a capability
+/// boundary the publisher never blessed.
+///
+/// This crate cannot *derive* a forge-domain [`Manifest`] from the signed package
+/// manifest: the signed shape (prd-merged/08 MP-4 — `appId`, `permissions[]`,
+/// `capabilities.{storage,db}.{read,write}`, `capabilities.ui`, `networkPolicy`,
+/// `resourceBudget{wall_ms, memory_bytes}`) carries no `entrypoint`, `min_api`,
+/// or the four other `limits` fields the runtime enforces, so a clean conversion
+/// is impossible. Instead we take option (b) — **reject on mismatch**: the
+/// policy-bearing fields the publisher signed must match the install manifest
+/// EXACTLY. A mismatch is surfaced like any other signature failure (a
+/// `ValidationError`), so the install is rejected and nothing is stored.
+///
+/// The compared dimensions are exactly the runtime-enforced policy surface:
+///   - `capabilities.storage.read` / `.write` (as a set);
+///   - `capabilities.db.read` / `.write` (as a set);
+///   - `capabilities.ui` (bool — signed `true`/absent is permissive in M0a);
+///   - `networkPolicy.allow` vs the install manifest's `net` grant (host/method);
+///   - `resourceBudget.wall_ms` / `.memory_bytes` vs the install `limits`.
+fn bind_signature_to_manifest(package: &Package, install: &Manifest) -> Result<()> {
+    let reject = |reason: String| -> Result<()> {
+        Err(CoreError::ValidationError(format!(
+            "install manifest does not match the signed package manifest: {reason}"
+        )))
+    };
+
+    let signed = &package.manifest;
+    let signed_caps = signed.get("capabilities");
+
+    // --- storage scopes (read/write), compared as order-independent sets ------
+    for action in ["read", "write"] {
+        let signed_scope = signed_string_set(signed_caps, "storage", action);
+        let install_scope: std::collections::BTreeSet<&str> = match action {
+            "read" => install.capabilities.storage.read.iter(),
+            _ => install.capabilities.storage.write.iter(),
+        }
+        .map(String::as_str)
+        .collect();
+        if signed_scope != install_scope {
+            return reject(format!(
+                "storage.{action} grant {:?} differs from the signed {:?}",
+                sorted_vec(&install_scope),
+                sorted_vec(&signed_scope)
+            ));
+        }
+    }
+
+    // --- db scopes (read/write), compared as order-independent sets -----------
+    for action in ["read", "write"] {
+        let signed_scope = signed_string_set(signed_caps, "db", action);
+        let install_scope: std::collections::BTreeSet<&str> = match action {
+            "read" => install.capabilities.db.read.iter(),
+            _ => install.capabilities.db.write.iter(),
+        }
+        .map(String::as_str)
+        .collect();
+        if signed_scope != install_scope {
+            return reject(format!(
+                "db.{action} grant {:?} differs from the signed {:?}",
+                sorted_vec(&install_scope),
+                sorted_vec(&signed_scope)
+            ));
+        }
+    }
+
+    // --- ui: a signed `ui: false` must not be installed as `ui: true` ---------
+    // (absent signed `ui` is treated as granted, matching the M0a manifest
+    // default where an absent `capabilities.ui` grants UI).
+    let signed_ui = signed_caps
+        .and_then(|c| c.get("ui"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if signed_ui != install.capabilities.ui {
+        return reject(format!(
+            "ui grant {} differs from the signed {signed_ui}",
+            install.capabilities.ui
+        ));
+    }
+
+    // --- network egress: the signed allowlist's (method, host/url) set must
+    //     equal the install net grant's. The signed shape is
+    //     `networkPolicy.allow[]`; the install shape is `capabilities.net[]`.
+    let signed_net = signed_net_set(signed);
+    let install_net: std::collections::BTreeSet<(String, String)> = install
+        .capabilities
+        .net
+        .rules()
+        .iter()
+        .map(|r| (r.method.to_ascii_uppercase(), r.url.clone()))
+        .collect();
+    if signed_net != install_net {
+        return reject(format!(
+            "network egress grant {:?} differs from the signed {:?}",
+            sorted_pairs(&install_net),
+            sorted_pairs(&signed_net)
+        ));
+    }
+
+    // --- resource limits the signed manifest declares (wall_ms, memory_bytes) -
+    let budget = signed.get("resourceBudget");
+    if let Some(wall) = budget.and_then(|b| b.get("wall_ms")).and_then(serde_json::Value::as_u64) {
+        if wall != install.limits.wall_ms {
+            return reject(format!(
+                "limits.wall_ms {} differs from the signed {wall}",
+                install.limits.wall_ms
+            ));
+        }
+    }
+    if let Some(mem) = budget
+        .and_then(|b| b.get("memory_bytes"))
+        .and_then(serde_json::Value::as_u64)
+    {
+        if mem != install.limits.memory_bytes {
+            return reject(format!(
+                "limits.memory_bytes {} differs from the signed {mem}",
+                install.limits.memory_bytes
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// The set of strings under `manifest.capabilities.<ns>.<action>` (e.g.
+/// `capabilities.storage.read`), or the empty set when the namespace/action is
+/// absent. Used to compare a signed package's capability scopes against the
+/// install manifest's order-independently.
+fn signed_string_set<'a>(
+    capabilities: Option<&'a serde_json::Value>,
+    namespace: &str,
+    action: &str,
+) -> std::collections::BTreeSet<&'a str> {
+    capabilities
+        .and_then(|c| c.get(namespace))
+        .and_then(|ns| ns.get(action))
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| arr.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// The signed network egress allowlist as a `(METHOD, url)` set. The signed shape
+/// is `networkPolicy.allow[]`; each entry's `method` (defaulting to `GET`,
+/// upper-cased to match the install grant's case-insensitive method) and `url`
+/// form the comparison key.
+fn signed_net_set(signed: &serde_json::Value) -> std::collections::BTreeSet<(String, String)> {
+    signed
+        .get("networkPolicy")
+        .and_then(|n| n.get("allow"))
+        .and_then(serde_json::Value::as_array)
+        .map(|allow| {
+            allow
+                .iter()
+                .filter_map(|rule| {
+                    let url = rule.get("url").and_then(serde_json::Value::as_str)?;
+                    let method = rule
+                        .get("method")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("GET")
+                        .to_ascii_uppercase();
+                    Some((method, url.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A sorted `Vec` view of a `&str` set, for a stable, readable rejection message.
+fn sorted_vec(set: &std::collections::BTreeSet<&str>) -> Vec<String> {
+    set.iter().map(|s| s.to_string()).collect()
+}
+
+/// A sorted `Vec` view of a `(method, url)` set, for a stable rejection message.
+fn sorted_pairs(set: &std::collections::BTreeSet<(String, String)>) -> Vec<String> {
+    set.iter().map(|(m, u)| format!("{m} {u}")).collect()
 }
 
 /// Read an optional `manifest.<key>` string out of a signed package's manifest
