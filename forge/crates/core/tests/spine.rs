@@ -1310,3 +1310,257 @@ fn db_insert_through_spine_writes_crdt_chunk_oplog_and_rebuildable_projection() 
     assert!(replay.ok, "the CRDT-backed run must replay: {:?}", replay.error);
     assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// 10. workspace.export / workspace.import (DL-24): a workspace exports as a
+//     single portable file; re-importing into a FRESH workspace reproduces the
+//     records byte-for-byte AND carries the applet (manifest + compiled program)
+//     so the imported workspace can RUN it. The DL-24 portable-workspace promise,
+//     end to end through the command facade.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn export_import_round_trips_records_and_the_runnable_applet() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+
+    // --- Workspace A: install the demo applet + run it (writes a record). ----
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    let run_a = a.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "title": "Portable note" } }),
+    ));
+    assert!(run_a.ok, "source run must succeed: {:?}", run_a.error);
+    assert_eq!(a.store().list_records("tasks").unwrap().len(), 1);
+    let src_record = a.store().get_record("tasks", "tasks/1").unwrap().unwrap();
+
+    // --- Export A to the portable single-file bundle. ------------------------
+    let export = a.handle(cmd(
+        "workspace.export",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(export.ok, "export must succeed: {:?}", export.error);
+    assert_eq!(export.payload["export_format_version"], serde_json::json!(1));
+    // The report names what travelled (the applet manifest+program) and that
+    // run logs were excluded by default (privacy).
+    assert_eq!(
+        export.payload["included"]["applet_manifests_and_programs"],
+        serde_json::json!(1),
+        "the applet manifest + program travel so the import can run it"
+    );
+    assert_eq!(export.payload["include_run_logs"], serde_json::json!(false));
+    assert!(bundle.exists(), "the bundle file was written");
+
+    // --- Import into a FRESH workspace B (the typed constructor API). --------
+    let mut b = WorkspaceCore::import_from_file(&bundle, "ws_b").unwrap();
+
+    // (a) B has the SAME record (re-derived from the imported CRDT chunks, DL-6).
+    let dst_record = b
+        .store()
+        .get_record("tasks", "tasks/1")
+        .unwrap()
+        .expect("imported workspace must have the source record");
+    assert_eq!(dst_record, src_record, "DL-24: the record round-trips byte-for-byte");
+    // Queryable through the facade too.
+    let q = b.handle(cmd("query.execute", None, serde_json::json!({ "collection": "tasks" })));
+    assert!(q.ok, "{:?}", q.error);
+    let rows = q.payload["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["fields"]["title"], serde_json::json!("Portable note"));
+
+    // (b) B can RUN the imported applet (its manifest + compiled program travelled
+    //     in the portable __forge/meta namespace) — a fresh insert lands a 2nd row.
+    let run_b = b.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "title": "Second note" } }),
+    ));
+    assert!(run_b.ok, "the imported applet must run in B: {:?}", run_b.error);
+    assert_eq!(run_b.payload["ok"], serde_json::json!(true), "imported applet run completes");
+    assert_eq!(
+        b.store().list_records("tasks").unwrap().len(),
+        2,
+        "the imported applet wrote a new record into B"
+    );
+
+    // (c) The run recorded in B replays byte-identically (the imported applet's
+    //     code_hash provenance survived the round-trip).
+    let run_b_id = run_b.payload["run_id"].as_str().unwrap().to_string();
+    let replay_b = b.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_b_id })));
+    assert!(replay_b.ok, "imported-applet run must replay: {:?}", replay_b.error);
+    assert_eq!(replay_b.payload["replays_identically"], serde_json::json!(true));
+}
+
+/// The `workspace.import` COMMAND imports a bundle into THIS fresh workspace in
+/// place (the facade path, distinct from the `import_from_file` constructor),
+/// reports what was reconstructed, and refuses to import over a populated
+/// workspace.
+#[test]
+fn workspace_import_command_loads_into_this_fresh_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+
+    // Source: a run that writes one record, then export.
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "X" } })));
+    let export = a.handle(cmd("workspace.export", None, serde_json::json!({ "path": bundle.to_str().unwrap() })));
+    assert!(export.ok, "{:?}", export.error);
+
+    // Import into a fresh workspace via the COMMAND (in place).
+    let mut b = WorkspaceCore::in_memory("ws_b").unwrap();
+    let import = b.handle(cmd("workspace.import", None, serde_json::json!({ "path": bundle.to_str().unwrap() })));
+    assert!(import.ok, "import command must succeed: {:?}", import.error);
+    assert_eq!(import.payload["records"], serde_json::json!(1), "one record reconstructed");
+    assert_eq!(import.payload["collections"], serde_json::json!(["tasks"]));
+    assert_eq!(import.payload["imported_applets"], serde_json::json!(["applet/app_demo"]));
+    // A workspace.imported event was emitted.
+    assert_eq!(b.events().events_of_kind("workspace.imported").count(), 1);
+
+    // The record is present + queryable in B.
+    assert_eq!(b.store().list_records("tasks").unwrap().len(), 1);
+
+    // Re-importing into the NOW-populated workspace is refused (no silent merge).
+    let again = b.handle(cmd("workspace.import", None, serde_json::json!({ "path": bundle.to_str().unwrap() })));
+    assert!(!again.ok, "import must refuse a populated workspace");
+    assert_eq!(again.error.unwrap().code(), "ValidationError");
+}
+
+/// DL-24 deterministic export: two exports of the same workspace produce
+/// byte-identical bundle files (stable table + row ordering through the facade).
+#[test]
+fn workspace_export_is_byte_deterministic() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "Det" } })));
+
+    let p1 = dir.path().join("a.forgews");
+    let p2 = dir.path().join("b.forgews");
+    assert!(a.handle(cmd("workspace.export", None, serde_json::json!({ "path": p1.to_str().unwrap() }))).ok);
+    assert!(a.handle(cmd("workspace.export", None, serde_json::json!({ "path": p2.to_str().unwrap() }))).ok);
+    assert_eq!(
+        std::fs::read(&p1).unwrap(),
+        std::fs::read(&p2).unwrap(),
+        "two exports of the same workspace must be byte-identical"
+    );
+}
+
+/// DL-24 run-log policy: run logs (the `runs` table) are EXCLUDED by default and
+/// INCLUDED only with `include_run_logs: true` (a debug/backup bundle).
+#[test]
+fn export_run_logs_are_excluded_by_default_included_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    let run = a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "Logged" } })));
+    let run_id = run.payload["run_id"].as_str().unwrap().to_string();
+
+    // Default export: runs excluded → the imported workspace cannot load the run.
+    let excluded_bundle = dir.path().join("excluded.forgews");
+    assert!(a.handle(cmd("workspace.export", None, serde_json::json!({ "path": excluded_bundle.to_str().unwrap() }))).ok);
+    let b = WorkspaceCore::import_from_file(&excluded_bundle, "ws_b").unwrap();
+    assert!(b.store().load_run(&run_id).unwrap().is_none(), "runs excluded by default");
+
+    // Debug bundle: include_run_logs → the run round-trips.
+    let included_bundle = dir.path().join("included.forgews");
+    let export = a.handle(cmd(
+        "workspace.export",
+        None,
+        serde_json::json!({ "path": included_bundle.to_str().unwrap(), "include_run_logs": true }),
+    ));
+    assert!(export.ok, "{:?}", export.error);
+    assert_eq!(export.payload["include_run_logs"], serde_json::json!(true));
+    let c = WorkspaceCore::import_from_file(&included_bundle, "ws_c").unwrap();
+    assert_eq!(
+        c.store().load_run(&run_id).unwrap().expect("run must round-trip in a debug bundle").run_id.as_str(),
+        run_id
+    );
+}
+
+/// DL-24 exclusion guard at the facade: a secret KV value (a `secret/` namespace)
+/// is NEVER written to the export bundle, so it never reaches the imported
+/// workspace. Local-only/secret data does not travel with the portable file.
+#[test]
+fn export_never_carries_secret_kv_to_the_imported_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "S" } })));
+    // Plant a secret directly in the store (a provider token / api key bucket).
+    a.store_mut()
+        .kv_set("secret/weather", "api_key", b"sk-DO-NOT-EXPORT", "text/plain")
+        .unwrap();
+    // And a portable applet ctx.storage value that SHOULD travel, as a control.
+    a.store_mut()
+        .kv_set("applet/app_demo", "draft", b"keep-me", "text/plain")
+        .unwrap();
+
+    assert!(a.handle(cmd("workspace.export", None, serde_json::json!({ "path": bundle.to_str().unwrap() }))).ok);
+    let b = WorkspaceCore::import_from_file(&bundle, "ws_b").unwrap();
+
+    // The secret did NOT travel; the portable applet value DID.
+    assert_eq!(b.store().kv_get("secret/weather", "api_key").unwrap(), None, "secrets are never exported");
+    assert_eq!(
+        b.store().kv_get("applet/app_demo", "draft").unwrap().as_deref(),
+        Some(&b"keep-me"[..]),
+        "portable applet ctx.storage travels with the bundle"
+    );
+}
+
+/// Command-level RBAC (CR-A3, forge/spec/commands.md): export is Owner /
+/// Maintainer / Auditor; import is Owner only. A read-only Viewer cannot export,
+/// and a non-Owner cannot import.
+#[test]
+fn export_import_rbac_is_gated_per_commands_spec() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("ws.forgews");
+
+    let mut a = WorkspaceCore::in_memory("ws_a").unwrap();
+    install_demo(&mut a, DEMO_TS, demo_manifest());
+    a.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "R" } })));
+
+    // A Viewer cannot export (not in Owner/Maintainer/Auditor).
+    let viewer_export = a.handle(cmd_as(
+        actor(Role::Viewer),
+        "workspace.export",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(!viewer_export.ok, "Viewer must not export");
+    assert_eq!(viewer_export.error.unwrap().code(), "PermissionDenied");
+    assert!(!bundle.exists(), "a denied export writes no bundle");
+
+    // An Auditor CAN export (a backup/debug bundle).
+    let auditor_export = a.handle(cmd_as(
+        actor(Role::Auditor),
+        "workspace.export",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(auditor_export.ok, "Auditor must be permitted to export: {:?}", auditor_export.error);
+
+    // A Maintainer cannot import (import is Owner-only per commands.md).
+    let mut b = WorkspaceCore::in_memory("ws_b").unwrap();
+    let maint_import = b.handle(cmd_as(
+        actor(Role::Maintainer),
+        "workspace.import",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(!maint_import.ok, "import is Owner-only");
+    assert_eq!(maint_import.error.unwrap().code(), "PermissionDenied");
+
+    // The Owner can import.
+    let owner_import = b.handle(cmd(
+        "workspace.import",
+        None,
+        serde_json::json!({ "path": bundle.to_str().unwrap() }),
+    ));
+    assert!(owner_import.ok, "Owner must be permitted to import: {:?}", owner_import.error);
+}
