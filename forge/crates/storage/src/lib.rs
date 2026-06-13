@@ -197,6 +197,17 @@ fn now_ms() -> i64 {
 /// A handle to the workspace SQLite store.
 pub struct Store {
     conn: Connection,
+    /// The Loro peer id this store's CRDT write path mints ops under (DL-1).
+    ///
+    /// Defaults to [`LOCAL_PEER_ID`] — M0a is single-writer per workspace file,
+    /// so one stable id is sufficient. The in-process sync seam (SS-1/SS-2,
+    /// `forge-sync`) needs two stores to write under **distinct** peer ids so
+    /// concurrent same-scalar edits converge to one Loro-determined LWW winner
+    /// instead of reusing a peer id across concurrent writers (which Loro
+    /// forbids). [`set_crdt_peer_id`](Store::set_crdt_peer_id) sets it; the
+    /// rebuild path imports history regardless of this id (it only governs the
+    /// identity of *future* ops).
+    crdt_peer_id: u64,
 }
 
 impl Store {
@@ -228,7 +239,36 @@ impl Store {
         // on `SQLITE_BUSY` for the (rare) case the timeout still elapses.
         conn.busy_timeout(BUSY_TIMEOUT).map_err(map_sql)?;
         conn.execute_batch(SCHEMA).map_err(map_sql)?;
-        Ok(Store { conn })
+        Ok(Store {
+            conn,
+            crdt_peer_id: LOCAL_PEER_ID,
+        })
+    }
+
+    /// Set the Loro peer id this store's CRDT write path mints ops under (DL-1),
+    /// returning `self` for builder-style use.
+    ///
+    /// The default is [`LOCAL_PEER_ID`]; a single-writer workspace never needs to
+    /// change it. The in-process sync seam (`forge-sync`, SS-1/SS-2) opens two
+    /// stores with **distinct** peer ids so that concurrent edits to the *same*
+    /// scalar field converge to one deterministic Loro LWW winner on both peers
+    /// (Loro breaks the tie by peer id, and forbids reusing a peer id across
+    /// concurrent writers). Setting it only affects the identity of *future* ops;
+    /// imported history (rebuild/sync) is unaffected.
+    pub fn with_crdt_peer_id(mut self, peer_id: u64) -> Self {
+        self.crdt_peer_id = peer_id;
+        self
+    }
+
+    /// Set the Loro peer id this store mints CRDT ops under in place (see
+    /// [`with_crdt_peer_id`](Store::with_crdt_peer_id) for the rationale).
+    pub fn set_crdt_peer_id(&mut self, peer_id: u64) {
+        self.crdt_peer_id = peer_id;
+    }
+
+    /// The Loro peer id this store mints CRDT ops under (DL-1).
+    pub fn crdt_peer_id(&self) -> u64 {
+        self.crdt_peer_id
     }
 
     /// Borrow the underlying connection (advanced/raw use, e.g. the rebuild

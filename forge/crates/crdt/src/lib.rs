@@ -131,6 +131,68 @@ impl RecordsDoc {
         Ok(())
     }
 
+    /// Write a record's **full envelope** with nested-object values mapped onto
+    /// nested Loro map *containers* (one register per leaf key), not onto a single
+    /// flattened register — the load-bearing choice for multi-peer field merge
+    /// (prd-merged/02 DL-3/DL-9, SS-1/SS-2).
+    ///
+    /// `envelope` is the complete record envelope JSON the storage write path has
+    /// already read-modify-merged (so it is the intended post-state). Each
+    /// top-level key is written into the per-record submap; a key whose value is a
+    /// JSON **object** (e.g. `fields`, `field_ids`) is written into a nested
+    /// `LoroMap` container so that each *individual* sub-field is its own LWW
+    /// register. Concurrent writers touching DIFFERENT sub-fields of the same
+    /// record therefore both survive a merge (the spec's "different scalar fields
+    /// of the same record both survive"), instead of colliding on one
+    /// whole-`fields` register where one writer's edit would clobber the other's.
+    ///
+    /// Omitted keys are deleted (replace semantics) so a single writer's `update`
+    /// that drops a field still drops it; because a writer only ever deletes keys
+    /// it knew about, a concurrent peer's *new* key is never deleted, so the merge
+    /// keeps both. The materialized value (`get_record`) is byte-identical to the
+    /// envelope JSON, so DL-6 projection rebuild still reproduces the envelope
+    /// exactly.
+    pub fn write_record_envelope(
+        &self,
+        record_id: &str,
+        envelope: &serde_json::Value,
+    ) -> Result<()> {
+        let obj = self.as_field_object(record_id, envelope)?;
+        let sub = self.record_submap(record_id)?;
+        Self::reconcile_map(&sub, obj)
+    }
+
+    /// Reconcile a Loro map container to exactly `obj`: delete keys absent from
+    /// `obj`, then for each entry either recurse into a nested container (object
+    /// value) or write a scalar register. Recursing per-key is what makes
+    /// different sub-fields independent LWW registers (see
+    /// [`write_record_envelope`]).
+    fn reconcile_map(
+        map: &loro::LoroMap,
+        obj: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let existing: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+        for k in existing {
+            if !obj.contains_key(&k) {
+                map.delete(&k).map_err(sync_err)?;
+            }
+        }
+        for (k, v) in obj {
+            match v {
+                serde_json::Value::Object(child) => {
+                    let child_map = map
+                        .get_or_create_container(k, loro::LoroMap::new())
+                        .map_err(sync_err)?;
+                    Self::reconcile_map(&child_map, child)?;
+                }
+                scalar => {
+                    map.insert(k, LoroValue::from(scalar.clone())).map_err(sync_err)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn as_field_object<'a>(
         &self,
         record_id: &str,

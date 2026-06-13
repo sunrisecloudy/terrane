@@ -151,7 +151,7 @@ impl<T> OptionalRow<T> for std::result::Result<T, rusqlite::Error> {
 /// Load (or reconstruct) a collection's `RecordsDoc` from its persisted chunks,
 /// reading inside the open transaction so it sees only committed history (DL-4
 /// step 3 / DL-6 rebuild primitive). An empty chunk set yields a fresh document.
-fn load_doc_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<RecordsDoc> {
+fn load_doc_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str, peer_id: u64) -> Result<RecordsDoc> {
     let mut stmt = tx
         .prepare("SELECT payload FROM crdt_chunks WHERE doc_id = ?1 ORDER BY created_at, chunk_id")
         .map_err(map_sql)?;
@@ -163,7 +163,10 @@ fn load_doc_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<RecordsDo
         payloads.push(r.map_err(map_sql)?);
     }
     let refs: Vec<&[u8]> = payloads.iter().map(|p| p.as_slice()).collect();
-    RecordsDoc::from_updates(LOCAL_PEER_ID, &refs)
+    // The peer id governs the identity of FUTURE ops written under this loaded
+    // doc — distinct per store so two synced peers' concurrent same-scalar edits
+    // converge to one Loro LWW winner (SS-1/SS-2). Imported history is unaffected.
+    RecordsDoc::from_updates(peer_id, &refs)
 }
 
 /// Read the materialized [`RecordEnvelope`] for `id` out of a `RecordsDoc`, or
@@ -188,7 +191,13 @@ fn envelope_from_doc(doc: &RecordsDoc, id: &str) -> Result<Option<RecordEnvelope
 fn write_envelope_to_doc(doc: &RecordsDoc, env: &RecordEnvelope) -> Result<()> {
     let value =
         serde_json::to_value(env).map_err(|e| map_json("crdt envelope encode", e))?;
-    doc.replace_record_fields(env.entity_id.as_str(), &value)
+    // Write the envelope with its nested-object values (`fields`, `field_ids`)
+    // mapped onto nested Loro map *containers* — one register per leaf field — so
+    // two peers concurrently editing DIFFERENT fields of the same record both
+    // survive the merge (SS-1/SS-2, DL-3/DL-9). A flat whole-`fields` register
+    // would collide and lose one writer's edit. The materialized value still
+    // equals the envelope byte-for-byte, so DL-6 rebuild is unaffected.
+    doc.write_record_envelope(env.entity_id.as_str(), &value)
 }
 
 /// Apply ONE leaf mutation to an in-memory `RecordsDoc`, mutating CRDT state to the
@@ -402,10 +411,11 @@ impl Store {
         let doc_id = collection_doc_id(&collection);
         let touched = touched_ids(&leaves);
         let leaf_count = leaves.len();
+        let peer_id = self.crdt_peer_id();
 
         self.transact(|tx| {
             // 1-4. Load/reconstruct the doc and capture the pre-mutation version.
-            let doc = load_doc_tx(tx, &doc_id)?;
+            let doc = load_doc_tx(tx, &doc_id, peer_id)?;
             let before = doc.version();
 
             // 5. Apply every leaf to the doc.
@@ -454,6 +464,7 @@ impl Store {
     /// and each live record is re-materialized. Records CRDT-deleted in history are
     /// simply absent from the rebuilt doc, so they do not reappear (DL-21).
     pub fn rebuild_projection(&mut self, indexes: &IndexManager) -> Result<()> {
+        let peer_id = self.crdt_peer_id();
         self.transact(|tx| {
             // Drop the whole projection — it is derived, so this is safe.
             tx.execute("DELETE FROM records", []).map_err(map_sql)?;
@@ -477,7 +488,7 @@ impl Store {
                 let Some(collection) = collection_of_doc(doc_id) else {
                     continue; // not a records collection doc (e.g. an applet src doc)
                 };
-                let doc = load_doc_tx(tx, doc_id)?;
+                let doc = load_doc_tx(tx, doc_id, peer_id)?;
                 for id in doc.list_record_ids() {
                     materialize_record_into_projection(tx, &doc, collection, &id, indexes)?;
                 }
