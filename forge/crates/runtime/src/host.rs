@@ -399,16 +399,22 @@ impl<'b> HostContext<'b> {
             CoreError::RuntimeError(format!("net.fetch response decode failed: {e}"))
         })?;
 
-        // 5. Response-leg egress check (SC-5 response caps): the call-gate check
-        //    above could only see the *request* — `max_response_bytes` and
-        //    `response_content_types` cannot be evaluated until the response is in
-        //    hand. Re-run the SAME `NetPolicy` against the populated response
-        //    size/content-type (against the same matched rule) before the body is
-        //    served to the applet. This re-check runs on **both** record and replay
-        //    (the recorded response is policy-bound too: a tampered/oversized
-        //    recording is denied identically on replay), and is fail-closed —
-        //    an over-cap or wrong-content-type response surfaces as the run's
-        //    `CoreError` and the body never reaches the applet.
+        // 5. Response-leg egress check (SC-5 response caps + redirect/DNS facts):
+        //    the call-gate check above could only see the *request* — the response
+        //    size/content-type, the redirect hops actually followed, and the
+        //    resolved DNS answers do not exist until the fetch returns. Re-run the
+        //    SAME `NetPolicy` against the populated response (size/content-type +
+        //    `redirect_chain` + `dns_answers` reported by the client) before the
+        //    body is served to the applet, so:
+        //      * an over-cap / wrong-content-type response is denied;
+        //      * a redirect to a private IP or an unallowlisted public host is
+        //        denied (every hop is re-checked against the request-side gates);
+        //      * a host that resolves to a private literal address (DNS rebinding)
+        //        is denied.
+        //    This re-check runs on **both** record and replay (the recorded
+        //    response is policy-bound too: a tampered/oversized/rebinding recording
+        //    is denied identically on replay), and is fail-closed — a violating
+        //    response surfaces as the run's `CoreError` and never reaches the applet.
         let response_policy_request = to_response_policy_request(&request, &response);
         NetPolicy::new(&self.net_allowlist).check(&response_policy_request)?;
 
@@ -518,13 +524,23 @@ fn request_phase_allowlist(full: &NetGrant) -> NetGrant {
 }
 
 /// Project the request **plus the real response** onto a [`forge_policy::NetRequest`]
-/// for the **response-leg** egress check (SC-5 response caps). This is the call-gate
-/// projection ([`to_policy_request`]) with the now-known
-/// `response_bytes`/`response_content_type` populated from the [`NetResponse`], so a
-/// second [`NetPolicy`] check matches the **same** allowlist rule (host/scheme/path/
-/// method must still match) and additionally enforces `max_response_bytes` and
-/// `response_content_types`. Reusing the same projection keeps the rule selection
-/// identical to the call gate; only the response constraints are added.
+/// for the **response-leg** egress check (SC-5 response caps + redirect/DNS facts).
+/// This is the call-gate projection ([`to_policy_request`]) with the now-known
+/// facts populated from the [`NetResponse`], so a second [`NetPolicy`] check matches
+/// the **same** allowlist rule (host/scheme/path/method must still match) and
+/// additionally enforces:
+///   * `max_response_bytes` / `response_content_types` against the real body size
+///     and content-type;
+///   * the SC-5 redirect re-check against the `redirect_chain` the client actually
+///     followed — every hop must independently satisfy a rule's request-side gates,
+///     so a redirect to a private IP or an unallowlisted public host is denied;
+///   * the SC-5 private-network deny against the `dns_answers` the host resolved —
+///     a host resolving to a private literal address (DNS rebinding) is denied.
+///
+/// These redirect/DNS facts exist only on the response (they are products of the
+/// transport, not the request), so they can only be checked here on the response
+/// leg, never at the call gate. Reusing the same projection keeps the rule
+/// selection identical to the call gate; only the response-derived facts are added.
 fn to_response_policy_request(
     request: &NetRequest,
     response: &NetResponse,
@@ -532,6 +548,8 @@ fn to_response_policy_request(
     forge_policy::NetRequest {
         response_bytes: Some(response.body_bytes()),
         response_content_type: response.content_type.clone(),
+        redirect_chain: response.redirect_chain.clone(),
+        dns_answers: response.dns_answers.clone(),
         ..to_policy_request(request)
     }
 }
@@ -795,6 +813,189 @@ mod tests {
         let err = host.net_fetch(req("https://evil.example.com/public/x")).unwrap_err();
         assert_eq!(err.code(), "PermissionDenied");
         assert!(bridge.net_requests.is_empty(), "denied request must not reach the client");
+    }
+
+    // --- Response-leg SC-5 redirect / DNS facts (review 070 P1 #2) -----------
+
+    /// A redirect whose every hop (origin + final) is allowlisted is allowed: the
+    /// client reports the chain on the response and the response-leg check
+    /// re-validates each hop, all of which pass.
+    #[test]
+    fn net_fetch_redirect_through_allowlisted_hop_is_allowed() {
+        use crate::net::MockHttpClient;
+        let manifest = manifest_with_net(
+            NetGrant(vec![
+                get_rule("https://api.example.com/public/*"),
+                get_rule("https://cdn.example.com/public/*"),
+            ]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        // The mock simulates a 302 chain api -> cdn, both allowlisted.
+        let mut bridge = MemoryHostBridge::with_http_client(Box::new(MockHttpClient::with_redirects(
+            vec![
+                "https://api.example.com/public/asset".into(),
+                "https://cdn.example.com/public/asset".into(),
+            ],
+        )));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let resp = host
+            .net_fetch(req("https://api.example.com/public/asset"))
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.redirect_chain.len(), 2);
+    }
+
+    /// A redirect whose final hop is a private IP is denied AFTER the fetch: the
+    /// hop is on the response (not the request), so the call gate could not catch
+    /// it; the response-leg check denies it and the body never reaches the applet.
+    #[test]
+    fn net_fetch_redirect_to_private_ip_is_denied_after_fetch() {
+        use crate::net::MockHttpClient;
+        let manifest = manifest_with_net(
+            NetGrant(vec![get_rule("https://api.example.com/public/*")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::with_http_client(Box::new(MockHttpClient::with_redirects(
+            vec![
+                "https://api.example.com/public/redirect".into(),
+                "http://127.0.0.1/admin".into(),
+            ],
+        )));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/redirect"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("private"), "{err}");
+    }
+
+    /// A redirect to a public-but-unallowlisted host is denied after the fetch:
+    /// the hop is not private, but its origin is not in the allowlist, so the
+    /// per-hop re-check on the response leg denies it (SC-5 redirect re-check).
+    #[test]
+    fn net_fetch_redirect_to_unallowlisted_public_host_is_denied_after_fetch() {
+        use crate::net::MockHttpClient;
+        let manifest = manifest_with_net(
+            NetGrant(vec![get_rule("https://api.example.com/public/*")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::with_http_client(Box::new(MockHttpClient::with_redirects(
+            vec![
+                "https://api.example.com/public/asset".into(),
+                "https://evil.example.net/public/asset".into(),
+            ],
+        )));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/asset"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("redirect hop"), "{err}");
+    }
+
+    /// A host that resolves (dns_answers) to a private IP is denied after the
+    /// fetch (DNS rebinding): the request URL host is public, so the call gate
+    /// allowed it, but the resolved literal address is private and the
+    /// response-leg check denies it before the body reaches the applet.
+    #[test]
+    fn net_fetch_dns_rebinding_to_private_is_denied_after_fetch() {
+        use crate::net::MockHttpClient;
+        let manifest = manifest_with_net(
+            NetGrant(vec![get_rule("https://api.example.com/public/*")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        // Public request host, but it resolves to a loopback literal.
+        let mut bridge = MemoryHostBridge::with_http_client(Box::new(
+            MockHttpClient::with_dns_answers(vec!["127.0.0.1".into()]),
+        ));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/weather"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("private"), "{err}");
+        assert!(err.to_string().contains("DNS answer"), "{err}");
+    }
+
+    /// The allowed redirect case records byte-identically and replays unchanged:
+    /// record the run, then replay the recorded trace through a NullBridge (no
+    /// live network) and assert the served response is identical (redirect/DNS
+    /// facts ride on the recording too).
+    #[test]
+    fn net_fetch_allowed_redirect_replays_byte_identical() {
+        use crate::bridge::NullBridge;
+        use crate::net::MockHttpClient;
+
+        let manifest = manifest_with_net(
+            NetGrant(vec![
+                get_rule("https://api.example.com/public/*"),
+                get_rule("https://cdn.example.com/public/*"),
+            ]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let request = req("https://api.example.com/public/asset");
+
+        // Record.
+        let mut rec_bridge = MemoryHostBridge::with_http_client(Box::new(
+            MockHttpClient::with_redirects(vec![
+                "https://api.example.com/public/asset".into(),
+                "https://cdn.example.com/public/asset".into(),
+            ]),
+        ));
+        let mut rec_host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut rec_bridge,
+        )
+        .unwrap();
+        let recorded_resp = rec_host.net_fetch(request.clone()).unwrap();
+        let (recorder, _logs) = rec_host.finish();
+        let calls = recorder.into_calls();
+        assert_eq!(calls.len(), 1);
+
+        // Replay the recorded trace; NullBridge proves no live network is touched
+        // and the response-leg policy check still passes for the allowed chain.
+        let mut replay_bridge = NullBridge::new();
+        let mut replay_host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::replaying(1, 0, calls),
+            &mut replay_bridge,
+        )
+        .unwrap();
+        let replayed_resp = replay_host.net_fetch(request).unwrap();
+        assert_eq!(recorded_resp, replayed_resp);
+        assert_eq!(replayed_resp.redirect_chain.len(), 2);
     }
 
     /// `net.fetch` counts against the host-call flood cap (SC-2): the (n+1)th
