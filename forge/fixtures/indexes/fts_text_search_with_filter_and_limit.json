@@ -1,7 +1,7 @@
 {
   "case": "fts_text_search_with_filter_and_limit",
   "vectorVersion": 1,
-  "description": "Full-text query composes with the normal pipeline: the FTS5 MATCH set is filtered by a where-clause and bounded by limit, preserving FTS rank order. The top FTS-rank match (note_1) is tag=personal, so the tag=data filter DROPS it and the result is the next-rank data note (note_4) — this makes the where-clause load-bearing: ignoring it would wrongly return note_1. Pins that text_search is not a bypass (DL-15).",
+  "description": "Full-text query composes with the normal pipeline: the FTS5 MATCH set is filtered by a where-clause and bounded by limit, preserving FTS rank order. The top FTS-rank match (note_1) is tag=personal, so the tag=data filter DROPS it and the result is the next-rank data note (note_4) — this makes the where-clause load-bearing: ignoring it would wrongly return note_1. Pins that text_search is not a bypass (DL-15). The where-clause filters the UNINDEXED `tag` field, so the planner ALSO emits a planner.full_scan(no_index) warning for that branch even while uses_index stays true for the FTS match (review 045/046 finding 2; dynamic-indexes.md:139).",
   "schema": {
     "collections": {
       "notes": {
@@ -136,7 +136,16 @@
     "uses_index": true,
     "index_id": "fts_records_notes_f_alice_0",
     "index_kind": "fts5",
-    "warnings": [],
+    "warnings": [
+      {
+        "code": "planner.full_scan",
+        "collection": "notes",
+        "field_name": "tag",
+        "reason": "no_index",
+        "estimated_rows": 4,
+        "note": "review 045/046 finding 2: text_search is not a bypass. The FTS MATCH serves the search (uses_index stays true), but the where-clause filters the UNINDEXED display field `tag` (f_alice_1 is indexed:false), so that branch still scans records. dynamic-indexes.md:139 requires a planner.full_scan warning for the uncovered predicate."
+      }
+    ],
     "result_rows": [
       {
         "entity_id": "note_4",

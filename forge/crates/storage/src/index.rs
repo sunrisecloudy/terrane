@@ -628,9 +628,18 @@ impl IndexManager {
     /// for `(collection, field_id)`, of the matching kind, in the `Active`
     /// state, and the operator is index-serviceable.
     pub fn plan(&self, query: &Query, estimated_rows: i64) -> IndexPlan {
-        // Text search takes the FTS path.
+        // Text search takes the FTS path for the *match source*, but its `where`
+        // filter and sort still scan `records` unless covered by an active index.
+        // Evaluate that coverage too and fold any uncovered predicate/sort into the
+        // FTS plan's warnings, so a text search over an indexed field combined with
+        // a filter on an UNINDEXED field still surfaces `planner.full_scan` (review
+        // 045/046 finding 2; `dynamic-indexes.md:139`). The FTS `uses_index` /
+        // `index_id` decision is unchanged.
         if let Some(ts) = &query.text_search {
-            return self.plan_text_search(&query.from, &ts.field, estimated_rows);
+            let mut plan = self.plan_text_search(&query.from, &ts.field, estimated_rows);
+            let coverage = self.predicate_sort_coverage(query, estimated_rows);
+            plan.warnings.extend(coverage.warnings);
+            return plan;
         }
 
         // Full coverage (review 041/042 finding 6/5): EVERY relevant predicate
@@ -638,58 +647,12 @@ impl IndexManager {
         // claim `uses_index` / suppress the full-scan warning. A single uncovered
         // branch (e.g. `indexed = x OR unindexed = y`) means part of the query
         // still scans, so we report it.
-        let mut leaves = Vec::new();
-        if let Some(filter) = &query.filter {
-            collect_leaves(filter, &mut leaves);
-        }
-
-        let mut warnings = Vec::new();
-        let mut covered_index_id: Option<(String, IndexKind)> = None;
-        let mut relevant = false;
-
-        for (field, op) in &leaves {
-            relevant = true;
-            match self.predicate_coverage(&query.from, field, *op) {
-                Ok((index_id, kind)) => {
-                    covered_index_id.get_or_insert((index_id, kind));
-                }
-                Err(reason) => {
-                    warnings.push(PlannerWarning::full_scan(
-                        &query.from,
-                        field,
-                        reason,
-                        Some(estimated_rows),
-                    ));
-                }
-            }
-        }
-
-        // The sort key participates in coverage too. `id`/`entity_id` sorts use
-        // the primary key and never need a dynamic index (no warning). Any other
-        // order key must be covered by an active expression index.
-        if let Some(ob) = &query.order_by {
-            if !is_entity_id_order(&ob.field) {
-                relevant = true;
-                match self.predicate_coverage(&query.from, &ob.field, Op::Eq) {
-                    Ok((index_id, kind)) => {
-                        covered_index_id.get_or_insert((index_id, kind));
-                    }
-                    Err(reason) => {
-                        warnings.push(PlannerWarning::full_scan(
-                            &query.from,
-                            &ob.field,
-                            reason,
-                            Some(estimated_rows),
-                        ));
-                    }
-                }
-            }
-        }
+        let coverage = self.predicate_sort_coverage(query, estimated_rows);
 
         // Use an index only when there is something to index AND nothing scanned:
         // every relevant branch and the sort key were covered.
-        if relevant && warnings.is_empty() {
-            if let Some((index_id, kind)) = covered_index_id {
+        if coverage.relevant && coverage.warnings.is_empty() {
+            if let Some((index_id, kind)) = coverage.covered_index_id {
                 return IndexPlan {
                     uses_index: true,
                     index_id: Some(index_id),
@@ -702,8 +665,65 @@ impl IndexManager {
             uses_index: false,
             index_id: None,
             kind: None,
-            warnings,
+            warnings: coverage.warnings,
         }
+    }
+
+    /// Evaluate active-index coverage of a query's `where` predicate leaves and
+    /// `order_by` key (independent of any text search). Every relevant predicate
+    /// branch and the sort key that is NOT served by an active expression index
+    /// yields a `planner.full_scan` warning (`dynamic-indexes.md:139`). Shared by
+    /// the scalar path and the text-search path so a text search never masks an
+    /// uncovered filter/sort scan (review 045/046 finding 2).
+    fn predicate_sort_coverage(&self, query: &Query, estimated_rows: i64) -> PredicateCoverage {
+        let mut leaves = Vec::new();
+        if let Some(filter) = &query.filter {
+            collect_leaves(filter, &mut leaves);
+        }
+
+        let mut out = PredicateCoverage::default();
+
+        for (field, op) in &leaves {
+            out.relevant = true;
+            match self.predicate_coverage(&query.from, field, *op) {
+                Ok((index_id, kind)) => {
+                    out.covered_index_id.get_or_insert((index_id, kind));
+                }
+                Err(reason) => {
+                    out.warnings.push(PlannerWarning::full_scan(
+                        &query.from,
+                        field,
+                        reason,
+                        Some(estimated_rows),
+                    ));
+                }
+            }
+        }
+
+        // The sort key participates in coverage too. `id`/`entity_id` sorts use
+        // the primary key and never need a dynamic index (no warning). Any other
+        // order key must be covered by an active expression index. The `rank`
+        // pseudo-field orders a text-search result by FTS rank, not a stored
+        // column, so it never needs an expression index either.
+        if let Some(ob) = &query.order_by {
+            if !is_entity_id_order(&ob.field) && !is_rank_order(&ob.field) {
+                out.relevant = true;
+                match self.predicate_coverage(&query.from, &ob.field, Op::Eq) {
+                    Ok((index_id, kind)) => {
+                        out.covered_index_id.get_or_insert((index_id, kind));
+                    }
+                    Err(reason) => {
+                        out.warnings.push(PlannerWarning::full_scan(
+                            &query.from,
+                            &ob.field,
+                            reason,
+                            Some(estimated_rows),
+                        ));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Whether an active expression index serves `<field> <op>`. Returns the
@@ -754,24 +774,38 @@ impl IndexManager {
                 )],
             };
         };
-        match self.get_fts(collection, field_id) {
-            Some(def) if def.kind == IndexKind::Fts5 && def.state.is_usable() => IndexPlan {
-                uses_index: true,
-                index_id: Some(def.index_id.clone()),
-                kind: Some(def.kind),
-                warnings: Vec::new(),
-            },
-            _ => IndexPlan {
-                uses_index: false,
-                index_id: None,
-                kind: None,
-                warnings: vec![PlannerWarning::full_scan(
-                    collection,
-                    field,
-                    FullScanReason::FtsNotAvailable,
-                    Some(estimated_rows),
-                )],
-            },
+        // Distinguish FTS lifecycle states the same way the expression path does
+        // (review 045 finding 3): an active FTS serves the search; a deprecated FTS
+        // reports `index_deprecated`; any other exists-but-not-active FTS reports
+        // `index_not_active`; and a missing FTS definition reports
+        // `fts_not_available`. Collapsing all of these into `fts_not_available`
+        // would erase the DL-5 lifecycle signal (a deprecated index looks like no
+        // index at all).
+        let reason = match self.get_fts(collection, field_id) {
+            Some(def) if def.kind == IndexKind::Fts5 && def.state.is_usable() => {
+                return IndexPlan {
+                    uses_index: true,
+                    index_id: Some(def.index_id.clone()),
+                    kind: Some(def.kind),
+                    warnings: Vec::new(),
+                };
+            }
+            // An FTS definition exists but is not active: surface its lifecycle
+            // reason (deprecated vs not-active) rather than "no FTS at all".
+            Some(def) if def.kind == IndexKind::Fts5 => def.state.full_scan_reason(),
+            // No FTS definition (or a non-FTS entry only) covers this field.
+            _ => FullScanReason::FtsNotAvailable,
+        };
+        IndexPlan {
+            uses_index: false,
+            index_id: None,
+            kind: None,
+            warnings: vec![PlannerWarning::full_scan(
+                collection,
+                field,
+                reason,
+                Some(estimated_rows),
+            )],
         }
     }
 }
@@ -827,6 +861,24 @@ fn collect_leaves<'a>(filter: &'a crate::query::Filter, out: &mut Vec<(&'a Field
 /// (`dynamic-indexes.md` §Full-Scan Warnings).
 fn is_entity_id_order(field: &FieldRef) -> bool {
     matches!(field, FieldRef::Name(n) if n == "id" || n == "entity_id")
+}
+
+/// Whether an order key is the FTS `rank` pseudo-field, which orders a text-search
+/// result by relevance rank (not a stored column) and so needs no expression
+/// index — the active FTS table already produces the rank order.
+fn is_rank_order(field: &FieldRef) -> bool {
+    matches!(field, FieldRef::Name(n) if n == "rank")
+}
+
+/// The result of evaluating a query's predicate/sort coverage against the active
+/// indexes: any uncovered branch's `planner.full_scan` warnings, whether there was
+/// anything index-relevant at all, and the first covering expression index (if
+/// the whole predicate/sort is served).
+#[derive(Default)]
+struct PredicateCoverage {
+    warnings: Vec<PlannerWarning>,
+    covered_index_id: Option<(String, IndexKind)>,
+    relevant: bool,
 }
 
 #[cfg(test)]
@@ -1015,6 +1067,94 @@ mod tests {
         let plan = mgr.plan(&q, 2);
         assert!(!plan.uses_index);
         assert_eq!(plan.warnings[0].reason, FullScanReason::IndexDeprecated);
+    }
+
+    #[test]
+    fn text_search_does_not_mask_uncovered_filter_warning() {
+        // review 045/046 finding 2: a text search over an ACTIVE FTS index serves
+        // the match (uses_index), but a `where` filter on an UNINDEXED field still
+        // scans `records`, so the planner must surface a planner.full_scan for that
+        // branch instead of returning early on the text-search path.
+        let mut mgr = IndexManager::new();
+        mgr.register(
+            IndexDef::new("notes", "f_body", IndexKind::Fts5, IndexState::Active).unwrap(),
+        );
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_body", "match": "offline"},
+            "where": {"field": "tag", "op": "eq", "value": "data"}
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 4);
+        assert!(plan.uses_index, "the active FTS index still serves the match");
+        assert_eq!(plan.index_id.as_deref(), Some("fts_records_notes_f_body"));
+        // ...but the unindexed `tag` filter is reported, not masked.
+        assert_eq!(plan.warnings.len(), 1, "the uncovered filter must warn");
+        assert_eq!(plan.warnings[0].reason, FullScanReason::NoIndex);
+        assert_eq!(plan.warnings[0].field_name.as_deref(), Some("tag"));
+
+        // A text search whose only filter is over a COVERED expression index emits
+        // no warning (nothing scans beyond the FTS match).
+        mgr.register(
+            IndexDef::new("notes", "f_tag", IndexKind::Expression, IndexState::Active).unwrap(),
+        );
+        let q_ok = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_body", "match": "offline"},
+            "where": {"field_id": "f_tag", "op": "eq", "value": "data"}
+        }))
+        .unwrap();
+        let plan_ok = mgr.plan(&q_ok, 4);
+        assert!(plan_ok.uses_index);
+        assert!(
+            plan_ok.warnings.is_empty(),
+            "a fully-covered filter under a text search must not warn: {:?}",
+            plan_ok.warnings
+        );
+    }
+
+    #[test]
+    fn fts_lifecycle_states_have_distinct_full_scan_reasons() {
+        // review 045 finding 3: a non-active FTS definition must keep its lifecycle
+        // signal. A deprecated FTS reports `index_deprecated`; an
+        // exists-but-not-active FTS (stale/rebuilding/...) reports
+        // `index_not_active`; and a missing FTS reports `fts_not_available`. They
+        // must NOT all collapse into `fts_not_available`.
+        let q = |field_id: &str| {
+            Query::from_fixture_value(&serde_json::json!({
+                "from": "notes",
+                "text_search": {"field_id": field_id, "match": "offline"}
+            }))
+            .unwrap()
+        };
+
+        // Deprecated FTS -> index_deprecated.
+        let mut dep = IndexManager::new();
+        dep.register(
+            IndexDef::new("notes", "f_body", IndexKind::Fts5, IndexState::Deprecated).unwrap(),
+        );
+        let p_dep = dep.plan(&q("f_body"), 3);
+        assert!(!p_dep.uses_index);
+        assert_eq!(p_dep.warnings[0].reason, FullScanReason::IndexDeprecated);
+
+        // Stale (exists, not active) FTS -> index_not_active.
+        let mut stale = IndexManager::new();
+        stale.register(
+            IndexDef::new("notes", "f_body", IndexKind::Fts5, IndexState::Stale).unwrap(),
+        );
+        let p_stale = stale.plan(&q("f_body"), 3);
+        assert!(!p_stale.uses_index);
+        assert_eq!(p_stale.warnings[0].reason, FullScanReason::IndexNotActive);
+
+        // No FTS definition at all -> fts_not_available (distinct from the above).
+        let empty = IndexManager::new();
+        let p_missing = empty.plan(&q("f_body"), 3);
+        assert!(!p_missing.uses_index);
+        assert_eq!(p_missing.warnings[0].reason, FullScanReason::FtsNotAvailable);
+
+        // The three reasons are genuinely distinct.
+        assert_ne!(p_dep.warnings[0].reason, p_stale.warnings[0].reason);
+        assert_ne!(p_stale.warnings[0].reason, p_missing.warnings[0].reason);
     }
 
     // --- create / drop / deprecate / FTS sync (DL-5/DL-6) ----------------

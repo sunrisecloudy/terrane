@@ -295,6 +295,16 @@ fn mutation_insert_patch_delete() {
     assert_eq!(got.fields, want_env.fields, "merged fields");
     assert_eq!(got.updated_at, want_env.updated_at, "updated_at advanced");
     assert_eq!(got.created_at, want_env.created_at, "created_at preserved");
+    // Review 045/046 finding 1: the DL-17 mutation surface must materialize the
+    // stable field ids the projection indexes read (`$.field_ids.<id>`). The
+    // fixture pins these `f_<name>` ids in its `post_state`; assert them so a
+    // mutation that left `field_ids` empty (invisible to FTS/value indexes)
+    // fails this vector instead of silently passing.
+    assert!(!want_env.field_ids.is_empty(), "fixture must pin field_ids");
+    assert_eq!(
+        got.field_ids, want_env.field_ids,
+        "mutation must materialize stable field_ids so the record is index-visible"
+    );
 }
 
 #[test]

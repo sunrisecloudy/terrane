@@ -1326,6 +1326,34 @@ fn bump_updated_at(env: &mut RecordEnvelope, logical_at: Option<i64>) {
     }
 }
 
+/// The stable `field_id` (DL-7) a display field name maps to in the M0a mutation
+/// surface: `f_<name>`. This is the projection-side stand-in for the schema
+/// registry's name→stable-id mapping (the registry mints ids from `ActorId` for
+/// schema-defined fields; the DL-17 mutation surface writes display fields and
+/// must materialize the matching stable id so expression/FTS indexes keyed by
+/// `$.field_ids.<id>` actually see the record — review 045/046 finding 1).
+fn field_id_for_name(name: &str) -> String {
+    format!("f_{name}")
+}
+
+/// Re-derive `env.field_ids` from the record's display `fields` so a record
+/// written through the DL-17 mutation surface is visible to indexes keyed by the
+/// stable field id (review 045/046 finding 1). Without this, `RecordEnvelope::new`
+/// leaves `field_ids` empty and an inserted/patched record is invisible to active
+/// expression/FTS indexes until a manual rebuild.
+///
+/// Each display field `<name>` materializes `field_ids["f_<name>"] = value`. Stable
+/// ids that no longer correspond to any current display field are dropped so a
+/// patched-away field also leaves the index (the mutation owns the projection's
+/// stable-id view; unknown/forward-compat stable ids live in `unknown_fields`).
+fn materialize_field_ids(env: &mut RecordEnvelope) {
+    env.field_ids = env
+        .fields
+        .iter()
+        .map(|(name, value)| (field_id_for_name(name), value.clone()))
+        .collect();
+}
+
 // --- Transaction-scoped record helpers (for grouped mutations) -------------
 
 /// Read a record inside an open transaction.
@@ -1410,12 +1438,16 @@ fn apply_mutation_tx(
                 CoreError::QueryError("insert requires a collection-scoped id".into())
             })?;
             let at = forge_domain::LogicalTimestamp(logical_at.unwrap_or(0).max(0) as u64);
-            let env = RecordEnvelope::new(
+            let mut env = RecordEnvelope::new(
                 forge_domain::CollectionId::new(collection.clone()),
                 forge_domain::RecordId::new(id.clone()),
                 fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 at,
             );
+            // Materialize the stable field ids the projection indexes read, so an
+            // inserted record is visible to active expression/FTS indexes (review
+            // 045/046 finding 1).
+            materialize_field_ids(&mut env);
             put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
         }
@@ -1429,6 +1461,7 @@ fn apply_mutation_tx(
                 CoreError::QueryError(format!("update: record {collection}/{id} does not exist"))
             })?;
             env.fields = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            materialize_field_ids(&mut env);
             bump_updated_at(&mut env, *logical_at);
             put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
@@ -1445,6 +1478,7 @@ fn apply_mutation_tx(
             for (k, v) in fields {
                 env.fields.insert(k.clone(), v.clone());
             }
+            materialize_field_ids(&mut env);
             bump_updated_at(&mut env, *logical_at);
             put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
@@ -2682,44 +2716,73 @@ mod tests {
     #[test]
     fn apply_mutation_keeps_active_fts_in_sync_without_rebuild() {
         let mut s = store();
-        let mgr = notes_fts(&s);
+        // FTS index over the stable id the display field `body` MATERIALIZES to
+        // through the mutation surface (`f_body`), so a record inserted purely via
+        // the DL-17 path — with NO pre-seeded field_ids and NO manual rebuild — is
+        // searchable. This is the mutation-discriminating coverage review 045/046
+        // finding 1 asks for: the mutation must materialize the stable field id
+        // (not leave it empty), or the FTS row is never created.
+        let mut mgr = IndexManager::new();
+        s.create_index(&mut mgr, "notes", "f_body", CreateIndexKind::Fts)
+            .expect("create fts index over the materialized stable id");
 
-        // A record whose stable field_id carries the searchable body is inserted
-        // through the DL-17 mutation surface (not the *_indexed helper). Because
-        // the mutation only writes display fields, seed the field_id directly and
-        // re-mirror it via a patch through the mutation path: the FTS sync runs
-        // inside the mutation transaction.
-        s.put_record(&note("n1", "offline rebuild keeps indexes honest")).unwrap();
-        // FTS is stale right now (the bare put_record did not sync) — prove it.
-        assert!(
-            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap().is_empty(),
-            "precondition: bare put_record leaves FTS stale"
+        // Insert through the applet mutation surface ONLY — no put_record pre-seed.
+        let insert = Mutation::Insert {
+            collection: "notes".into(),
+            id: Some("n1".into()),
+            fields: serde_json::json!({"body": "offline rebuild keeps indexes honest"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            logical_at: Some(1),
+        };
+        s.apply_mutation(&insert, &mgr).unwrap();
+
+        // The inserted record carries the materialized stable id...
+        let stored = s.get_record("notes", "n1").unwrap().unwrap();
+        assert_eq!(
+            stored.field_ids.get("f_body"),
+            Some(&serde_json::json!("offline rebuild keeps indexes honest")),
+            "insert must materialize the stable field_id the index reads"
+        );
+        // ...and is FTS-visible WITHOUT a rebuild, because the insert synced FTS.
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_body", "offline").unwrap(),
+            vec!["n1".to_string()],
+            "mutation insert must populate active FTS without a rebuild"
         );
 
-        // A patch mutation through the applet surface refreshes FTS in the same
-        // transaction, so the record becomes searchable with NO manual rebuild.
+        // A patch that changes the indexed display field re-mirrors FTS in the
+        // same transaction: the old term drops, the new term matches.
         let patch = Mutation::Patch {
             collection: "notes".into(),
             id: "n1".into(),
-            fields: serde_json::json!({"tag": "data"}).as_object().unwrap().clone(),
-            logical_at: None,
+            fields: serde_json::json!({"body": "lunch plans for the team"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            logical_at: Some(2),
         };
         s.apply_mutation(&patch, &mgr).unwrap();
+        assert!(
+            mgr.fts_match(s.connection(), "notes", "f_body", "offline").unwrap().is_empty(),
+            "patch must drop the stale term from active FTS"
+        );
         assert_eq!(
-            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
+            mgr.fts_match(s.connection(), "notes", "f_body", "lunch").unwrap(),
             vec!["n1".to_string()],
-            "mutation path must refresh active FTS without a rebuild"
+            "patch must re-mirror the new term into active FTS without a rebuild"
         );
 
         // A transact group is equally synced: tombstoning n1 drops it from FTS.
         let del = vec![Mutation::Delete {
             collection: "notes".into(),
             id: "n1".into(),
-            logical_at: None,
+            logical_at: Some(3),
         }];
         s.transact_mutations(&del, &mgr).unwrap();
         assert!(
-            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap().is_empty(),
+            mgr.fts_match(s.connection(), "notes", "f_body", "lunch").unwrap().is_empty(),
             "transact delete must drop the record from active FTS"
         );
     }
@@ -2753,9 +2816,23 @@ mod tests {
             "where": {"field": "tag", "op": "eq", "value": "data"}
         }))
         .unwrap();
-        let mut ids = s.query_planned(&q_filter, &mgr).unwrap().ids();
+        let planned_filter = s.query_planned(&q_filter, &mgr).unwrap();
+        let mut ids = planned_filter.ids();
         ids.sort();
         assert_eq!(ids, vec!["n1", "n3"], "text search must compose with the where filter");
+        // Review 045/046 finding 2: the FTS MATCH serves the search (uses_index),
+        // but the `tag` filter is over an UNINDEXED field, so the planner must NOT
+        // suppress the full_scan warning just because a text search is present.
+        assert!(planned_filter.uses_index, "the FTS match still uses its index");
+        assert!(
+            planned_filter.warnings.iter().any(|w| {
+                w.code == "planner.full_scan"
+                    && w.reason == FullScanReason::NoIndex
+                    && w.field_name.as_deref() == Some("tag")
+            }),
+            "text_search must not mask the uncovered `tag` filter scan: {:?}",
+            planned_filter.warnings
+        );
 
         // text_search + aggregate(count): the FTS-matched, filtered set is 2.
         let q_count = Query::from_fixture_value(&serde_json::json!({
