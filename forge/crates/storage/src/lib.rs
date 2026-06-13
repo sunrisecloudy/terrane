@@ -109,6 +109,16 @@ fn map_json(ctx: &str, e: serde_json::Error) -> CoreError {
     CoreError::StorageError(format!("{ctx}: {e}"))
 }
 
+/// Parse a persisted counter value (utf-8 decimal `u64`) for
+/// [`Store::next_counter`], surfacing a `StorageError` on corruption rather than
+/// silently resetting to zero.
+fn parse_counter_value(bytes: &[u8]) -> Result<u64> {
+    let s = std::str::from_utf8(bytes)
+        .map_err(|e| CoreError::StorageError(format!("counter value is not utf-8: {e}")))?;
+    s.parse::<u64>()
+        .map_err(|e| CoreError::StorageError(format!("counter value is malformed: {e}")))
+}
+
 /// Wall-clock milliseconds since the Unix epoch, used for the `updated_at` /
 /// `created_at` substrate columns. This is metadata only; logical ordering for
 /// the deterministic spine lives in `LogicalTimestamp`/`lamport`, not here. A
@@ -235,6 +245,56 @@ impl Store {
             )
             .map_err(map_sql)?;
         Ok(())
+    }
+
+    /// Atomically increment a persisted decimal counter stored at `(namespace,
+    /// key)` in the KV table, returning the value assigned to this reservation
+    /// (the first reservation yields `1`).
+    ///
+    /// The read-bump-write happens inside a single SQLite transaction
+    /// ([`transact`](Self::transact)), so concurrent reservations cannot collide:
+    /// SQLite serializes the transactions' writes, and a later transaction reads
+    /// the earlier committed value. This is the atomic primitive the core uses to
+    /// mint a unique per-execution `run_id` even when two `WorkspaceCore` handles
+    /// share the same file (review 036 finding 3) — without that atomicity a
+    /// separate read-then-write could hand the same number to two runs, and the
+    /// `run_id`-keyed `save_run` would silently overwrite one audit record.
+    ///
+    /// The value column stores the counter as utf-8 decimal text (matching
+    /// [`kv_set`](Self::kv_set)'s `text/plain` content type); a non-utf-8 or
+    /// non-integer existing value is a `StorageError` rather than a silent reset.
+    pub fn next_counter(&mut self, namespace: &str, key: &str) -> Result<u64> {
+        self.transact(|tx| {
+            let current: u64 = tx
+                .query_row(
+                    "SELECT value FROM kv WHERE namespace = ?1 AND key = ?2 AND tombstone = 0",
+                    params![namespace, key],
+                    |row| row.get::<_, Option<Vec<u8>>>(0),
+                )
+                .optional()
+                .map_err(map_sql)?
+                .flatten()
+                .map(|bytes| parse_counter_value(&bytes))
+                .transpose()?
+                .unwrap_or(0);
+            let next = current
+                .checked_add(1)
+                .ok_or_else(|| CoreError::StorageError("run counter overflowed u64".into()))?;
+            tx.execute(
+                "INSERT INTO kv
+                     (namespace, key, value, content_type, logical_version, updated_at, tombstone)
+                 VALUES (?1, ?2, ?3, 'text/plain', 1, ?4, 0)
+                 ON CONFLICT(namespace, key) DO UPDATE SET
+                     value = excluded.value,
+                     content_type = excluded.content_type,
+                     logical_version = kv.logical_version + 1,
+                     updated_at = excluded.updated_at,
+                     tombstone = 0",
+                params![namespace, key, next.to_string().as_bytes(), now_ms()],
+            )
+            .map_err(map_sql)?;
+            Ok(next)
+        })
     }
 
     /// List live keys in `namespace` whose key starts with `prefix`, sorted.
@@ -778,6 +838,43 @@ mod tests {
         // Should not error even though nothing matches.
         s.kv_delete("ns", "nope").unwrap();
         assert_eq!(s.kv_get("ns", "nope").unwrap(), None);
+    }
+
+    /// Review 036 finding 3: `next_counter` reserves a strictly increasing,
+    /// never-repeating value, starting at 1, and the reserved value is durably
+    /// persisted (so a re-open continues monotonically). This is the atomic
+    /// primitive the core uses to mint a unique per-execution `run_id`.
+    #[test]
+    fn next_counter_is_monotone_unique_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.db");
+        let mut seen = std::collections::BTreeSet::new();
+        {
+            let mut s = Store::open(&path).unwrap();
+            for expected in 1..=5u64 {
+                let n = s.next_counter("__forge/meta", "run_counter").unwrap();
+                assert_eq!(n, expected, "counter must increment by one from 1");
+                assert!(seen.insert(n), "every reservation must be unique: {n}");
+            }
+        }
+        // Re-open the SAME file: the counter is durable, so the next reservation
+        // continues past the last persisted value rather than restarting.
+        {
+            let mut s2 = Store::open(&path).unwrap();
+            let n = s2.next_counter("__forge/meta", "run_counter").unwrap();
+            assert_eq!(n, 6, "re-open must continue the persisted counter");
+            assert!(seen.insert(n));
+        }
+    }
+
+    /// A corrupted (non-integer) persisted counter is a `StorageError`, not a
+    /// silent reset to zero (which would re-issue already-used reservations).
+    #[test]
+    fn next_counter_rejects_a_corrupted_value() {
+        let mut s = store();
+        s.kv_set("__forge/meta", "run_counter", b"not-a-number", "text/plain").unwrap();
+        let err = s.next_counter("__forge/meta", "run_counter").unwrap_err();
+        assert_eq!(err.code(), "StorageError", "{err}");
     }
 
     // --- Records projection ----------------------------------------------
