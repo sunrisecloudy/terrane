@@ -236,6 +236,123 @@ fn editor_outside_db_write_scope_is_rejected() {
 }
 
 #[test]
+fn forwarded_chunk_is_authorized_against_original_author_not_relay() {
+    // review 092 #1: a three-peer relay regression. C writes; A imports C's chunk
+    // (A is only a relay); A then syncs to B. B trusts A as an owner but does NOT
+    // trust C, so A->B must DENY C's forwarded chunk — the receiver authorizes the
+    // ORIGINAL author (C), not the relay (A). This is SS-7 actor identity: a peer A
+    // is trusted cannot launder a write from an untrusted peer C through A.
+    let idx = IndexManager::new();
+    const C_PEER: u64 = 900;
+    let mut c = WorkspaceCore::in_memory("ws-c").unwrap();
+    let mut a = WorkspaceCore::in_memory("ws-a").unwrap();
+    let mut b = WorkspaceCore::in_memory("ws-b").unwrap();
+    c.store_mut().set_crdt_peer_id(C_PEER);
+    a.store_mut().set_crdt_peer_id(SENDER_PEER);
+    b.store_mut().set_crdt_peer_id(RECEIVER_PEER);
+
+    // A trusts C as an owner, so C->A applies (A becomes a relay holding C's chunk).
+    a.set_peer_membership(
+        source_id_for(C_PEER),
+        membership("actor-c", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    // C trusts A as owner so the symmetric back-channel never spuriously denies.
+    c.set_peer_membership(
+        source_id_for(SENDER_PEER),
+        membership("actor-a", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    // B trusts A as an OWNER but seeds NO row for C. A relay of C's chunk must still
+    // be gated against C — and C is unknown to B — so it is denied.
+    b.set_peer_membership(
+        source_id_for(SENDER_PEER),
+        membership("actor-a", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    // A trusts B as owner for the symmetric back-channel.
+    a.set_peer_membership(
+        source_id_for(RECEIVER_PEER),
+        membership("actor-b", Role::Owner, &["*"]),
+    )
+    .unwrap();
+
+    // C authors a record; A imports it as a relay.
+    c.store_mut()
+        .apply_mutation_crdt(&insert("task-c", json!({ "title": "from C" }), 1), &idx)
+        .unwrap();
+    let c_to_a = c.sync_with(&mut a).unwrap();
+    assert_eq!(c_to_a.chunks_denied, 0, "A trusts C, so C's chunk applies on A");
+    assert_eq!(query_tasks(&mut a).len(), 1, "A imported C's record");
+
+    // A -> B: A only relays C's chunk. B trusts A but not C, so the forwarded chunk
+    // is DENIED (authorized against C, who is unknown to B).
+    let a_to_b = a.sync_with(&mut b).unwrap();
+    assert_eq!(a_to_b.chunks_denied, 1, "C's forwarded chunk must be denied at B");
+    assert!(
+        query_tasks(&mut b).is_empty(),
+        "B imported nothing — C's write was not laundered through relay A"
+    );
+    let doc = forge_storage::collection_doc_id("tasks");
+    assert!(
+        b.store().get_chunks(&doc).unwrap().is_empty(),
+        "no forwarded chunk landed in B's history"
+    );
+
+    // B audited a permission_denied naming the missing trust for C's source.
+    let denial = b
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .next()
+        .expect("B audited a denial for the forwarded chunk");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+    assert_eq!(
+        denial.payload["source"],
+        json!(source_id_for(C_PEER)),
+        "the denial names C (the original author), not relay A"
+    );
+}
+
+#[test]
+fn malformed_non_collection_doc_chunk_is_denied_before_import() {
+    // review 092 #2: a chunk whose doc id is NOT a `collection/<name>` records doc
+    // must be denied fail-closed at the apply boundary — the receiver must reject a
+    // malformed chunk instead of guessing a collection / leaving the resource
+    // unidentified. Here the sender holds an opaque chunk under a non-records doc id;
+    // even with the sender trusted as an owner, the receiver denies it.
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-owner", Role::Owner, &["*"]));
+    // Put a chunk under a non-records doc id directly on the sender's store.
+    sender
+        .store_mut()
+        .put_chunk("applet/src", "chunk-0001", forge_sync::SYNC_CHUNK_FORMAT, b"opaque")
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(report.chunks_denied, 1, "the malformed-doc chunk must be denied");
+    assert_eq!(report.chunks_a_to_b, 0, "nothing imported into the receiver");
+    assert!(
+        receiver.store().get_chunks("applet/src").unwrap().is_empty(),
+        "the malformed chunk did not land in the receiver"
+    );
+
+    let denial = receiver
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .next()
+        .expect("a denial was audited for the malformed chunk");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+    assert!(
+        denial.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a collection/<name>"),
+        "the denial names the malformed doc id: {:?}",
+        denial.payload
+    );
+}
+
+#[test]
 fn seeded_membership_survives_reopen() {
     // The SS-7 membership table is persisted to the workspace file (mirrors the
     // db.read grant table, review 050): a seeded row must survive `open(...)`,

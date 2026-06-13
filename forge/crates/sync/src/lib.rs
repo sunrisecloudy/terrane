@@ -112,11 +112,27 @@ pub struct SyncOpEnvelope {
     /// The logical op the chunk authored: insert / patch / delete (or a generic
     /// write when the origin oplog row does not name a record op).
     pub op: SyncRecordOp,
-    /// The target collection, from the chunk's `doc_id` (`collection/<name>`).
+    /// The target collection, from the chunk's `doc_id` (`collection/<name>`). Empty
+    /// when `malformed` is set (the doc id was not a `collection/<name>` records doc).
     pub collection: String,
     /// The record ids the chunk touched, from the origin oplog payload (may be
     /// empty when unknown — the collection-level grant check still applies).
     pub record_ids: Vec<String>,
+    /// The ORIGINAL author of the chunk, when the staging store is only a RELAY for
+    /// it. A chunk authored locally on the staging store has `None` (the relay is
+    /// the author). A chunk the staging store imported from another peer carries a
+    /// `record.remote_import` oplog row whose payload names the original `source`;
+    /// that original `peer:<id>` is threaded here so a forwarded chunk is authorized
+    /// against the ORIGINAL actor, not the relay (`review 092 #1` / SS-7 actor
+    /// identity). The receiver resolves trusted membership for `origin_source` when
+    /// set, else for the direct relay source.
+    pub origin_source: Option<String>,
+    /// `Some(reason)` when the chunk's `doc_id` was not a `collection/<name>` records
+    /// doc (or the envelope is otherwise unfit to make a resource decision). A
+    /// malformed envelope is denied fail-closed at the apply boundary BEFORE any
+    /// grant check (`review 092 #2`: the apply path must reject a chunk lacking a
+    /// valid record doc id / op metadata rather than guessing a collection).
+    pub malformed: Option<String>,
 }
 
 /// The resource an incoming chunk targets. M0b chunk sync only carries records.
@@ -181,16 +197,32 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
     Ok(out)
 }
 
+/// What the origin store's oplog recorded for one chunk: the op `kind`, the touched
+/// `record_ids`, and — when the chunk is a FORWARDED foreign import — the original
+/// author's `origin_source`. Used to recover the SS-7 authorization envelope for a
+/// chunk staged FROM this store.
+struct OplogEntry {
+    kind: String,
+    record_ids: Vec<String>,
+    /// `Some(peer:<id>)` when the origin store only RELAYED this chunk (its row is a
+    /// `record.remote_import` whose payload names the original `source`); `None` for
+    /// a chunk this store authored locally (the relay IS the author).
+    origin_source: Option<String>,
+}
+
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
-/// `(kind, record_ids)` it recorded for that chunk. Used to recover the SS-7
+/// [`OplogEntry`] it recorded for that chunk. Used to recover the SS-7
 /// authorization envelope for each chunk staged FROM this store. A local write
 /// records `record.insert|patch|delete|transact` plus the touched record ids; a
-/// foreign re-import records `record.remote_import` with no record ids.
-fn oplog_index(store: &Store) -> Result<BTreeMap<String, (String, Vec<String>)>> {
+/// foreign re-import records `record.remote_import` whose payload names the
+/// original `source` (the actual author, preserved so a forwarded chunk is gated
+/// against the original actor — `review 092 #1`).
+fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
     let mut out = BTreeMap::new();
     for op in store.list_ops()? {
-        let record_ids = serde_json::from_slice::<serde_json::Value>(&op.payload)
-            .ok()
+        let payload = serde_json::from_slice::<serde_json::Value>(&op.payload).ok();
+        let record_ids = payload
+            .as_ref()
             .and_then(|v| {
                 v.get("record_ids").and_then(|r| r.as_array()).map(|arr| {
                     arr.iter()
@@ -199,32 +231,65 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, (String, Vec<String>)>>
                 })
             })
             .unwrap_or_default();
-        out.insert(op.op_id, (op.kind, record_ids));
+        // A forwarded foreign chunk carries the original author in its remote-import
+        // payload `source`; preserve it so the receiver gates the original actor.
+        let origin_source = if op.kind == "record.remote_import" {
+            payload
+                .as_ref()
+                .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(String::from))
+        } else {
+            None
+        };
+        out.insert(
+            op.op_id,
+            OplogEntry {
+                kind: op.kind,
+                record_ids,
+                origin_source,
+            },
+        );
     }
     Ok(out)
 }
 
 /// Build the [`SyncOpEnvelope`] for one chunk staged from `from`: the collection
-/// from its `doc_id`, the op + touched record ids from `from`'s oplog row keyed
-/// `doc_id#local_chunk_id`. A chunk whose doc id is not a records collection, or
-/// whose oplog row is missing/foreign, yields a generic record [`Write`] envelope
-/// so the receiver still gates it as a write (never silently allowed).
+/// from its `doc_id`, the op + touched record ids + original-author provenance from
+/// `from`'s oplog row keyed `doc_id#local_chunk_id`. A chunk whose doc id is NOT a
+/// `collection/<name>` records doc is marked `malformed` (and given an empty
+/// collection) so the apply boundary denies it fail-closed instead of guessing a
+/// collection from the raw doc id (`review 092 #2`). A chunk whose oplog row is
+/// missing or a foreign re-import yields a generic record [`Write`] envelope so the
+/// receiver still gates it as a write (never silently allowed); a forwarded foreign
+/// chunk additionally carries its original author in `origin_source` (`review
+/// 092 #1`).
 fn envelope_for_chunk(
     doc_id: &str,
     local_id: &str,
-    oplog: &BTreeMap<String, (String, Vec<String>)>,
+    oplog: &BTreeMap<String, OplogEntry>,
 ) -> SyncOpEnvelope {
-    let collection = collection_of_doc(doc_id).unwrap_or(doc_id).to_string();
+    let collection = collection_of_doc(doc_id);
+    let malformed = match collection {
+        Some(c) if !c.is_empty() => None,
+        _ => Some(format!(
+            "chunk doc id {doc_id:?} is not a collection/<name> records doc"
+        )),
+    };
     let op_id = format!("{doc_id}#{local_id}");
-    let (op, record_ids) = match oplog.get(&op_id) {
-        Some((kind, ids)) => (op_from_kind(kind), ids.clone()),
-        None => (SyncRecordOp::Write, Vec::new()),
+    let (op, record_ids, origin_source) = match oplog.get(&op_id) {
+        Some(entry) => (
+            op_from_kind(&entry.kind),
+            entry.record_ids.clone(),
+            entry.origin_source.clone(),
+        ),
+        None => (SyncRecordOp::Write, Vec::new(), None),
     };
     SyncOpEnvelope {
         resource_type: SyncResource::Record,
         op,
-        collection,
+        collection: collection.unwrap_or("").to_string(),
         record_ids,
+        origin_source,
+        malformed,
     }
 }
 
@@ -398,6 +463,14 @@ pub fn sync_stores(
 /// is filtered out of the batch handed to the atomic per-store apply, so the
 /// import never runs for it. The returned [`SyncReport::chunks_denied`] counts the
 /// rejections across both directions.
+///
+/// Two staging fields the authorizer must honor for SS-7 correctness (review 092):
+/// the envelope's [`origin_source`](SyncOpEnvelope::origin_source) names the chunk's
+/// ORIGINAL author when `source` is only a relay (a forwarded foreign import), so
+/// the receiver resolves trusted membership for the original actor, not the relay;
+/// and [`malformed`](SyncOpEnvelope::malformed) flags a chunk whose doc id is not a
+/// valid `collection/<name>` records doc, which the authorizer must deny fail-closed
+/// before any grant check.
 ///
 /// Staging, the pre-exchange-frontier symmetry, the per-store [`IndexManager`]
 /// (review 084 #1), and the one-transaction atomic apply (review 088) are all

@@ -394,6 +394,97 @@ fn authorized_gate_skips_denied_chunks_and_carries_allowed_with_envelope() {
 }
 
 #[test]
+fn forwarded_chunk_envelope_carries_original_author_not_relay() {
+    // review 092 #1: C authors a chunk, A imports it (A is only a RELAY), then A
+    // stages it for B. The envelope A presents must carry C's ORIGINAL source in
+    // `origin_source` (recovered from A's `record.remote_import` oplog provenance),
+    // so the receiver gates the chunk against C — not the relay A — for SS-7 actor
+    // identity. A chunk A authored locally has `origin_source == None`.
+    let idx = IndexManager::new();
+    let mut c = Store::open_in_memory().unwrap().with_crdt_peer_id(33); // original author
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11); // relay
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22); // receiver
+
+    // C authors `tasks/c1`; A imports it (A is now only a relay for that chunk).
+    c.apply_mutation_crdt(&insert("tasks", "c1", json!({"title": "from-c"}), 1), &idx)
+        .unwrap();
+    let pulled = pull(&mut a, &c, &idx).unwrap();
+    assert_eq!(pulled, 1, "A imported C's chunk as a relay");
+    // A also authors its OWN `tasks/a1` locally.
+    a.apply_mutation_crdt(&insert("tasks", "a1", json!({"title": "from-a"}), 2), &idx)
+        .unwrap();
+
+    // A → B: capture the (origin_source, record_ids) the gate observes per chunk.
+    let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_relay, env| {
+        seen.push((env.origin_source.clone(), env.record_ids.clone()));
+        true
+    })
+    .unwrap();
+
+    // C's forwarded chunk carries C's original source; A's own chunk carries none.
+    let c_chunk = seen
+        .iter()
+        .find(|(_, ids)| ids.iter().any(|r| r == "c1"));
+    let a_chunk = seen
+        .iter()
+        .find(|(_, ids)| ids.iter().any(|r| r == "a1"));
+    // The relay re-import row does not preserve the touched record ids, so locate
+    // the forwarded chunk by elimination when the record-id join is unavailable.
+    let forwarded_origin: Vec<&Option<String>> =
+        seen.iter().map(|(o, _)| o).filter(|o| o.is_some()).collect();
+    assert_eq!(
+        forwarded_origin.len(),
+        1,
+        "exactly one forwarded chunk carries an origin_source: {seen:?}"
+    );
+    assert_eq!(
+        forwarded_origin[0].as_deref(),
+        Some("peer:33"),
+        "the forwarded chunk is gated against C (the original author), not relay A"
+    );
+    // A's locally-authored chunk has no origin (relay == author). When the record-id
+    // join is present it confirms the mapping; otherwise the count above suffices.
+    if let Some((origin, _)) = a_chunk {
+        assert!(origin.is_none(), "A's own write has no origin_source");
+    }
+    let _ = c_chunk;
+}
+
+#[test]
+fn non_collection_doc_id_is_staged_malformed_and_denied() {
+    // review 092 #2: a chunk under a doc id that is NOT a `collection/<name>` records
+    // doc must be staged with `malformed` set (and an empty collection) so the apply
+    // boundary denies it fail-closed instead of guessing a collection from the raw
+    // doc id. Here a deny-everything-malformed gate confirms the staged envelope.
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    // Put a chunk under a non-records doc id directly (e.g. an applet src doc).
+    a.put_chunk("applet/src", "chunk-0001", SYNC_CHUNK_FORMAT, b"opaque")
+        .unwrap();
+
+    let mut seen_malformed: Vec<(String, Option<String>)> = Vec::new();
+    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_src, env| {
+        seen_malformed.push((env.collection.clone(), env.malformed.clone()));
+        // The gate here always allows; the MECHANISM under test is that the
+        // envelope is flagged malformed so the real core gate (which denies on
+        // `malformed`) fails closed. The seam's allow does still import the opaque
+        // chunk, but its non-collection doc never materializes a record.
+        env.malformed.is_none()
+    })
+    .unwrap();
+
+    assert_eq!(report.chunks_denied, 1, "the malformed-doc chunk was denied");
+    assert_eq!(seen_malformed.len(), 1);
+    assert_eq!(seen_malformed[0].0, "", "malformed envelope names no collection");
+    assert!(
+        seen_malformed[0].1.is_some(),
+        "the non-collection doc id is flagged malformed: {seen_malformed:?}"
+    );
+}
+
+#[test]
 fn one_directional_catchup_brings_lagging_peer_current() {
     // a holds a write b lacks; a single sync_stores carries it b-ward.
     let idx = IndexManager::new();

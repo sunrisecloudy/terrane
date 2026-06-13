@@ -34,6 +34,14 @@ This mirrors the `forge-core` command boundary: capability grants are trusted
 only when they come from the receiving workspace grant table, not from request or
 message payloads.
 
+The actor a chunk is authorized against is its **original author**, not whichever
+peer most recently relayed it. A chunk a peer merely forwarded (it imported the
+chunk from another peer and re-exports it) carries its original author's source in
+its remote-import provenance; the receiver resolves trusted membership for that
+original author. A peer the receiver trusts therefore cannot launder a write from
+an untrusted peer through itself — the relayed chunk is gated against the
+untrusted author and denied (`review 092 #1`).
+
 ## M0b scope
 
 M0b validates authorization at apply time in the receiving store. Full server

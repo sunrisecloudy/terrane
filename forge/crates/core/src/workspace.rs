@@ -471,15 +471,23 @@ impl WorkspaceCore {
             other_store,
             other_indexes,
             |source, envelope| {
-                // `source` is the chunk's ORIGIN peer; the RECEIVER is the other
-                // side. Authorize each direction against the receiver's table.
+                // `source` is the RELAY peer the chunk arrived from; it selects the
+                // RECEIVER (the other side) for the direction. But the ACTOR whose
+                // trusted membership decides authorization is the chunk's ORIGINAL
+                // author: a chunk `source` merely forwarded (its `origin_source` is
+                // set from the remote-import provenance) must be gated against that
+                // original author, not the relay (`review 092 #1` / SS-7 actor
+                // identity). A locally-authored chunk has no `origin_source`, so the
+                // relay IS the author and `actor == source`.
+                let actor = envelope.origin_source.as_deref().unwrap_or(source);
                 if source == self_source {
-                    // From self → received by `other`.
-                    authorize_incoming_op(other_membership, other_events, source, envelope)
+                    // Direction: self → received by `other`. Authorize against
+                    // `other`'s table for the original author.
+                    authorize_incoming_op(other_membership, other_events, actor, envelope)
                 } else {
-                    // From other → received by `self`.
+                    // Direction: other → received by `self`.
                     debug_assert_eq!(source, other_source);
-                    authorize_incoming_op(self_membership, self_events, source, envelope)
+                    authorize_incoming_op(self_membership, self_events, actor, envelope)
                 }
             },
         )
@@ -1529,6 +1537,24 @@ fn authorize_incoming_op(
     source: &str,
     envelope: &forge_sync::SyncOpEnvelope,
 ) -> bool {
+    // A chunk whose doc id is not a valid `collection/<name>` records doc (or whose
+    // staged envelope is otherwise unfit) is denied fail-closed BEFORE membership
+    // resolution: the apply path must reject a malformed chunk rather than guess a
+    // collection (`review 092 #2` / `forge/spec/sync-rbac.md` line 52). Surface a
+    // permission_denied audit naming the staging defect so the skip is observable.
+    if let Some(reason) = &envelope.malformed {
+        events.emit(
+            None,
+            "sync.permission_denied",
+            serde_json::json!({
+                "decision": "deny",
+                "source": source,
+                "collection": envelope.collection,
+                "reason": reason,
+            }),
+        );
+        return false;
+    }
     let env = remote_op_envelope_from_sync(envelope);
     match membership.get(source) {
         Some(trusted) => {
