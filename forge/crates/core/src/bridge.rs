@@ -28,7 +28,9 @@
 //!     emit a `ui.patch` `CoreEvent` per render — the **UI tree patch** link.
 
 use forge_domain::{CoreError, LogicalTimestamp, Result};
-use forge_runtime::{HostBridge, HttpClient, NetRequest, NetResponse};
+use forge_runtime::{
+    HostBridge, HttpClient, InMemorySecretStore, NetRequest, NetResponse, SecretStore,
+};
 use forge_storage::{AggregateResult, IndexManager, Mutation, Query, QueryResult, Store};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -145,6 +147,17 @@ pub struct StorageHostBridge<'a> {
     /// CI/the demo never reach the network; a host/shell injects a real client via
     /// [`with_http_client`](Self::with_http_client) and tests inject a mock.
     http: Box<dyn HttpClient>,
+    /// The secret store the host resolves `secret_ref` headers against at the
+    /// HTTP edge (prd-merged/07 SC-13). The runtime's [`HostContext`] consults
+    /// this ONLY inside the `net_fetch` recording closure to inject a resolved
+    /// value into the outgoing request handed to [`net_fetch`](Self::net_fetch);
+    /// the value never reaches the recorded trace, the applet, or any log.
+    ///
+    /// The default is an EMPTY [`InMemorySecretStore`] (every name unknown ⇒ a
+    /// secret_ref fails closed). The concrete OS-keychain-backed store is wired
+    /// host-side / shell-side (out of this crate's scope) via
+    /// [`with_secret_store`](Self::with_secret_store).
+    secret_store: Box<dyn SecretStore>,
 }
 
 impl<'a> StorageHostBridge<'a> {
@@ -174,7 +187,20 @@ impl<'a> StorageHostBridge<'a> {
             ui_renders: Vec::new(),
             logs: Vec::new(),
             http,
+            // Fail-closed default: empty store ⇒ any secret_ref header is denied
+            // until a host/shell injects a real secret store.
+            secret_store: Box::new(InMemorySecretStore::new()),
         }
+    }
+
+    /// Inject the [`SecretStore`] the host resolves `secret_ref` headers against
+    /// at the HTTP edge (prd-merged/07 SC-13). A host/shell wires its real
+    /// OS-keychain-backed store here; tests inject an in-memory store. Builder
+    /// style; everything else matches [`with_http_client`](Self::with_http_client).
+    /// Without this the store is empty and every secret_ref fails closed.
+    pub fn with_secret_store(mut self, secret_store: Box<dyn SecretStore>) -> Self {
+        self.secret_store = secret_store;
+        self
     }
 
     /// Advance and return the next logical timestamp for a write.
@@ -374,7 +400,16 @@ impl HostBridge for StorageHostBridge<'_> {
     /// fails closed rather than reaching the network — which is exactly the
     /// CI/demo path (they install no `net` capability and inject no client).
     fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
+        // By the time the runtime calls this, any `secret_ref` header has ALREADY
+        // been resolved to its literal value at the HTTP edge (the HostContext
+        // injects via `secret_store()` inside its recording closure). So `request`
+        // here is literal-only; the recorded trace upstream still holds only the
+        // secret_ref. The bridge performs no resolution and no networking itself.
         self.http.send(request)
+    }
+
+    fn secret_store(&self) -> &dyn SecretStore {
+        self.secret_store.as_ref()
     }
 }
 
@@ -527,5 +562,113 @@ mod tests {
         let resp = b.net_fetch(get_req("https://api.example.com/weather")).unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body.as_deref(), Some(r#"{"ok":true}"#));
+    }
+
+    // --- ctx.secrets: header secret_ref injection through the real bridge (SC-13) -
+
+    use forge_domain::{ActorContext, Capabilities, Limits, Manifest, NetGrant, NetRule};
+    use forge_runtime::{HostContext, InMemorySecretStore, NetHeaderValue, RunRecorder};
+    use std::sync::{Arc, Mutex};
+
+    /// A client that CAPTURES the request it received (so a test can prove the
+    /// resolved secret value arrived) and returns a canned 200.
+    #[derive(Clone, Default)]
+    struct CapturingClient {
+        seen: Arc<Mutex<Vec<NetRequest>>>,
+    }
+
+    impl HttpClient for CapturingClient {
+        fn send(&self, request: NetRequest) -> Result<NetResponse> {
+            self.seen.lock().unwrap().push(request);
+            Ok(NetResponse {
+                status: 200,
+                body: Some(r#"{"ok":true}"#.into()),
+                content_type: Some("application/json".into()),
+                ..Default::default()
+            })
+        }
+    }
+
+    fn secret_manifest() -> Manifest {
+        Manifest {
+            entrypoint: "main.ts".into(),
+            min_api: "forge-api@0.1".into(),
+            deterministic: true,
+            capabilities: Capabilities {
+                net: NetGrant(vec![NetRule {
+                    method: "GET".into(),
+                    url: "https://api.weather.example/*".into(),
+                    allow_secret_headers: vec!["Authorization".into()],
+                    ..Default::default()
+                }]),
+                ..Capabilities::default()
+            },
+            limits: Limits { max_host_calls: 100, ..Limits::default() },
+        }
+    }
+
+    fn secret_req() -> NetRequest {
+        let mut r =
+            NetRequest { method: "GET".into(), url: "https://api.weather.example/now".into(), ..Default::default() };
+        r.headers.insert(
+            "Authorization".into(),
+            NetHeaderValue::Secret { secret_ref: "secret_weather".into() },
+        );
+        r
+    }
+
+    /// End-to-end through the REAL StorageHostBridge: an allowlisted secret header
+    /// is resolved against the bridge's injected store and injected into the
+    /// outgoing client request, while the recorded trace keeps only the secret_ref
+    /// and the resolved value never appears in the trace or the applet's response.
+    #[test]
+    fn storage_bridge_injects_secret_into_client_but_not_trace() {
+        let mut s = store();
+        let client = CapturingClient::default();
+        let seen = client.seen.clone();
+        let secrets =
+            InMemorySecretStore::new().with_secret("secret_weather", "Bearer abc123");
+        let mut bridge = StorageHostBridge::with_http_client(&mut s, "app1", Box::new(client))
+            .with_secret_store(Box::new(secrets));
+
+        let manifest = secret_manifest();
+        let actor = ActorContext::owner("dev");
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let resp = host.net_fetch(secret_req()).unwrap();
+        assert_eq!(resp.status, 200);
+        // The applet's response carries no secret value.
+        assert!(!serde_json::to_string(&resp).unwrap().contains("abc123"));
+
+        let (recorder, _logs) = host.finish();
+        let trace = serde_json::to_string(&recorder.into_calls()).unwrap();
+        // The trace keeps only the secret_ref — never the resolved value.
+        assert!(trace.contains("secret_ref"), "trace must keep the ref: {trace}");
+        assert!(trace.contains("secret_weather"), "trace must name the ref: {trace}");
+        assert!(!trace.contains("abc123"), "trace leaked the secret value: {trace}");
+
+        // The CLIENT received the RESOLVED literal header value.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "exactly one request reached the client");
+        assert_eq!(
+            seen[0].headers.get("Authorization").and_then(|h| h.as_literal()),
+            Some("Bearer abc123"),
+            "client must receive the resolved secret value"
+        );
+    }
+
+    /// The bridge's default secret store is EMPTY, so a `secret_ref` header fails
+    /// closed (RuntimeError) and no request reaches the client.
+    #[test]
+    fn storage_bridge_default_secret_store_is_empty_fail_closed() {
+        let mut s = store();
+        let b = StorageHostBridge::new(&mut s, "app1");
+        // The default store resolves nothing.
+        assert_eq!(b.secret_store().resolve("secret_weather"), None);
     }
 }

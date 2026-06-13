@@ -109,12 +109,27 @@ pub struct WorkspaceCore {
     /// [`HttpClient`](forge_runtime::HttpClient) trait object is not `Clone`, and
     /// each run needs its own bridge-owned client.
     http_client_factory: HttpClientFactory,
+    /// Factory for the `ctx.net.fetch` secret store (prd-merged/07 SC-13). Each
+    /// `runtime.run` builds a fresh [`SecretStore`](forge_runtime::SecretStore)
+    /// from this factory and hands it to the run's [`StorageHostBridge`], so the
+    /// host can inject a `secret_ref` header's resolved value at the HTTP edge.
+    /// The default factory yields an EMPTY in-memory store — so any secret_ref
+    /// fails closed until a host/shell injects a real (OS-keychain-backed) store
+    /// via [`set_secret_store_factory`](WorkspaceCore::set_secret_store_factory).
+    /// A factory (not one shared store) is used because the run's bridge owns its
+    /// store and the trait object is not `Clone`.
+    secret_store_factory: SecretStoreFactory,
 }
 
 /// A factory that produces a fresh `ctx.net.fetch`
 /// [`HttpClient`](forge_runtime::HttpClient) per run. See
 /// [`WorkspaceCore::set_http_client_factory`].
 type HttpClientFactory = Box<dyn Fn() -> Box<dyn forge_runtime::HttpClient>>;
+
+/// A factory that produces a fresh `ctx.net.fetch`
+/// [`SecretStore`](forge_runtime::SecretStore) per run. See
+/// [`WorkspaceCore::set_secret_store_factory`].
+type SecretStoreFactory = Box<dyn Fn() -> Box<dyn forge_runtime::SecretStore>>;
 
 impl WorkspaceCore {
     /// Open (or create) a file-backed workspace at `path` (`workspace.open`
@@ -151,6 +166,11 @@ impl WorkspaceCore {
             // calling `set_http_client_factory` (review: keep the network seam
             // injectable so CI/the demo never reach the network).
             http_client_factory: Box::new(|| Box::new(crate::bridge::NoNetworkClient)),
+            // Fail-closed default: an EMPTY secret store (every secret_ref denied)
+            // until a host/shell injects a real one via `set_secret_store_factory`.
+            secret_store_factory: Box::new(|| {
+                Box::new(forge_runtime::InMemorySecretStore::new())
+            }),
         })
     }
 
@@ -172,6 +192,25 @@ impl WorkspaceCore {
         factory: impl Fn() -> Box<dyn forge_runtime::HttpClient> + 'static,
     ) {
         self.http_client_factory = Box::new(factory);
+    }
+
+    /// Inject the factory that builds the `ctx.net.fetch`
+    /// [`SecretStore`](forge_runtime::SecretStore) for each `runtime.run`
+    /// (prd-merged/07 SC-13). A host/shell wires its real OS-keychain-backed store
+    /// here; tests inject an in-memory store. Until this is called the workspace
+    /// uses an EMPTY in-memory store, so any `secret_ref` header fails closed.
+    ///
+    /// The factory is invoked once per run so each run's bridge owns its own store
+    /// (the trait object is not `Clone`). The store is consulted ONLY for an
+    /// allowed, record-mode fetch whose matched net rule allowlists the secret
+    /// header — the host resolves + injects the value into the outgoing request
+    /// inside the recording closure, so the value never reaches the trace, the
+    /// applet, or any log (SC-13); replay serves the recording and needs no store.
+    pub fn set_secret_store_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn forge_runtime::SecretStore> + 'static,
+    ) {
+        self.secret_store_factory = Box::new(factory);
     }
 
     /// Configure the TRUSTED `db.read` grant scope for `actor` (workspace
@@ -446,6 +485,10 @@ impl WorkspaceCore {
         // (fail-closed, no live network) unless a host/shell injected a real client
         // via `set_http_client_factory`.
         let http_client = (self.http_client_factory)();
+        // Build this run's secret store from the injected factory too (SC-13): the
+        // host resolves a `secret_ref` header's value against it at the HTTP edge,
+        // inside the runtime's recording closure. Default = empty (fail-closed).
+        let secret_store = (self.secret_store_factory)();
 
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
@@ -456,7 +499,8 @@ impl WorkspaceCore {
             &mut self.store,
             applet_id.as_str(),
             http_client,
-        );
+        )
+        .with_secret_store(secret_store);
         let mut run = record_run(
             &program,
             &installed.manifest,
