@@ -1,29 +1,34 @@
 //! Data-driven e2e coverage over the committed scenario corpus
 //! (prd-merged/09 M0a exit). Each `fixtures/e2e/<name>/` directory is a full
 //! spine case — `applet.ts` + `manifest.json` + `input.json` + `expect.json` —
-//! and this test runs every one through the real spine and asserts its
-//! `expect.json` outcome. Together with `e2e.rs` (notes-lite) these are the
-//! spine's real coverage.
+//! and this test runs every one **through the command/event facade**
+//! ([`forge_core::WorkspaceCore::handle`]) and asserts its `expect.json`
+//! outcome. Together with `e2e.rs` (notes-lite) these are the spine's real
+//! acceptance coverage.
 //!
-//! ## Why this test drives the runtime directly (not `forge-core`)
+//! ## Why this test drives the facade (not the runtime directly)
 //!
-//! `expect.json` pins a per-scenario `random_seed` and `time_start` (e.g.
-//! `seeded_random` is recorded under seed 7, `time_log` under time_start 500),
-//! and the seeded values flow into the asserted `result`/`records`/`ui`. The
-//! `forge-core` `runtime.run` command currently hardcodes its seeds
-//! (`DEFAULT_RANDOM_SEED`/`DEFAULT_TIME_START`) and does not yet thread per-run
-//! seeds from the command, so it cannot reproduce a scenario recorded under
-//! seed 7. Rather than weaken the asserts, this test composes the **same**
-//! published spine pieces `forge-core` wires — `forge_pipeline::compile`,
-//! `forge_runtime::record_run`/`replay`, and `forge_core::StorageHostBridge`
-//! over a real `forge_storage::Store` — honoring each scenario's recorded seeds.
-//! See the test report for this precisely-noted API gap.
+//! This corpus is the CLI/PS-5 acceptance proof (prd-merged/06 PS-5,
+//! prd-merged/09 M0a exit), so it must exercise the **same path a shell uses**:
+//! `applet.install` (TS → SWC transpile + policy scan → store) and
+//! `runtime.run` (capability-gated QuickJS → SQLite write → UI patch → recorded
+//! [`RunRecord`]) and `runtime.replay`, all through [`WorkspaceCore::handle`] —
+//! command authorization, run persistence, and the response contract included.
+//!
+//! `expect.json` pins a per-scenario `random_seed`/`time_start` (e.g.
+//! `seeded_random` is recorded under seed 7, `time_log` under time_start 500).
+//! Those seeds flow into the asserted `result`/`records`/`ui`. The facade's
+//! `runtime.run` command accepts an explicit `(random_seed, time_start)`
+//! override (review 032 finding 1), so each scenario is reproduced through the
+//! real command — not a parallel pipeline+runtime+bridge path.
 
-use forge_core::StorageHostBridge;
-use forge_domain::{ActorContext, Manifest, RunOutcome};
-use forge_runtime::{record_run, replay, NullBridge, Program};
-use forge_storage::Store;
+use forge_cli::{handle, install, list_records};
+use forge_core::WorkspaceCore;
+use forge_domain::CoreError;
 use std::path::{Path, PathBuf};
+
+/// The applet id every scenario installs under (one applet per fresh workspace).
+const SCENARIO_APPLET_ID: &str = "scenario";
 
 /// The parsed `expect.json` of a scenario (the subset this corpus uses).
 #[derive(serde::Deserialize)]
@@ -93,31 +98,32 @@ fn every_committed_scenario_meets_its_expectation() {
     }
 }
 
-/// Run a single scenario and assert it. Returns `Err(String)` with a precise
-/// message so the harness can name the failing scenario.
+/// Run a single scenario through the facade and assert it. Returns `Err(String)`
+/// with a precise message so the harness can name the failing scenario.
 fn run_one(dir: &Path) -> Result<(), String> {
     let ts = read(dir, "applet.ts");
     let manifest_json = read(dir, "manifest.json");
     let expect: Expect = serde_json::from_str(&read(dir, "expect.json"))
         .map_err(|e| format!("parse expect.json: {e}"))?;
-    let manifest: Manifest =
-        serde_json::from_str(&manifest_json).map_err(|e| format!("parse manifest.json: {e}"))?;
 
     match expect.stage.as_str() {
-        "install" => assert_install_stage(&ts, &expect),
-        "run" => assert_run_stage(dir, &ts, &manifest, &expect),
+        "install" => assert_install_stage(&manifest_json, &ts, &expect),
+        "run" => assert_run_stage(dir, &manifest_json, &ts, &expect),
         other => Err(format!("unknown stage {other:?}")),
     }
 }
 
-/// Install stage (e.g. `rejected_eval`): `compile()` — the front of the spine,
-/// the static policy scan + transpile — must REJECT, the applet never runs, and
-/// nothing is stored.
-fn assert_install_stage(ts: &str, expect: &Expect) -> Result<(), String> {
+/// Install stage (e.g. `rejected_eval`): `applet.install` — the front of the
+/// spine through the facade (static policy scan + transpile) — must REJECT with
+/// the expected `CoreError`, the applet never installs, and a follow-up
+/// `runtime.run` reports it missing (so nothing was stored).
+fn assert_install_stage(manifest_json: &str, ts: &str, expect: &Expect) -> Result<(), String> {
     assert!(expect.install_rejected, "install-stage expect must set install_rejected");
 
-    let err = match forge_pipeline::compile(ts) {
-        Ok(_) => return Err("compile accepted a source that must be rejected".into()),
+    let mut core = WorkspaceCore::in_memory("ws-scenario").map_err(|e| format!("open core: {e}"))?;
+
+    let err = match install(&mut core, SCENARIO_APPLET_ID, manifest_json, ts) {
+        Ok(_) => return Err("applet.install accepted a source that must be rejected".into()),
         Err(e) => e,
     };
 
@@ -131,52 +137,69 @@ fn assert_install_stage(ts: &str, expect: &Expect) -> Result<(), String> {
             return Err(format!("error_contains {needle:?}: got {err}"));
         }
     }
-    // The applet never ran ⇒ no records / storage / ui asserted on install stage.
-    Ok(())
+
+    // The applet never installed ⇒ a run reports it missing (nothing stored).
+    let run = handle(
+        &mut core,
+        Some(SCENARIO_APPLET_ID),
+        "runtime.run",
+        serde_json::json!({ "input": {} }),
+    );
+    match run {
+        Ok(_) => Err("a rejected install must leave no runnable applet".into()),
+        Err(CoreError::ValidationError(_)) => Ok(()),
+        Err(e) => Err(format!("expected ValidationError (applet missing), got {e}")),
+    }
 }
 
-/// Run stage: compile, run via `record_run` against a real Store-backed bridge
-/// honoring the scenario's seeds, then assert the result/records/storage/ui/
-/// host-calls and that the run replays byte-identically.
+/// Run stage: install the applet, run it through `runtime.run` with the
+/// scenario's pinned seeds, then assert the result/records/storage/ui/host-calls
+/// and that `runtime.replay` reports byte-identical replay — every link asserted
+/// through the facade's command/response contract.
 fn assert_run_stage(
     dir: &Path,
+    manifest_json: &str,
     ts: &str,
-    manifest: &Manifest,
     expect: &Expect,
 ) -> Result<(), String> {
-    let program_src = forge_pipeline::compile(ts).map_err(|e| format!("compile: {e}"))?;
-    let applet_id = "scenario";
-    let program = Program::new(applet_id, program_src.js_code);
-    let actor = ActorContext::owner("cli-test");
     let input: serde_json::Value =
         serde_json::from_str(&read(dir, "input.json")).map_err(|e| format!("parse input.json: {e}"))?;
 
-    let mut store = Store::open_in_memory().map_err(|e| format!("open store: {e}"))?;
+    let mut core = WorkspaceCore::in_memory("ws-scenario").map_err(|e| format!("open core: {e}"))?;
 
-    // ---- record ----
-    let (run, ui_trees) = {
-        let mut bridge = StorageHostBridge::new(&mut store, applet_id);
-        let run = record_run(
-            &program,
-            manifest,
-            &actor,
-            &input,
-            expect.random_seed,
-            expect.time_start,
-            &mut bridge,
-        )
-        .map_err(|e| format!("record_run: {e}"))?;
-        let ui_trees: Vec<serde_json::Value> =
-            bridge.ui_renders.iter().map(|r| r.tree.clone()).collect();
-        (run, ui_trees)
-    };
+    // ---- applet.install (TS → SWC → policy scan → store), through the facade --
+    install(&mut core, SCENARIO_APPLET_ID, manifest_json, ts)
+        .map_err(|e| format!("applet.install: {e}"))?;
 
-    // ---- result (ok + value, OR ok:false + error_code, e.g. denied_capability) ----
-    assert_result(&run, expect)?;
+    // ---- runtime.run with the scenario's pinned deterministic seeds ----------
+    let run_resp = handle(
+        &mut core,
+        Some(SCENARIO_APPLET_ID),
+        "runtime.run",
+        serde_json::json!({
+            "input": input,
+            "random_seed": expect.random_seed,
+            "time_start": expect.time_start,
+        }),
+    )
+    .map_err(|e| format!("runtime.run: {e}"))?;
 
-    // ---- host-call trace (method sequence the run issued) ----
+    let run_id = run_resp
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .ok_or("runtime.run returned no run_id")?
+        .to_string();
+
+    // ---- result (ok + value, OR ok:false + error_code, e.g. denied_capability)
+    assert_result(&run_resp, expect)?;
+
+    // ---- host-call trace (method sequence the run issued), from the response --
     if !expect.host_call_methods.is_empty() {
-        let got: Vec<String> = run.calls.iter().map(|c| c.method.clone()).collect();
+        let got: Vec<String> = run_resp
+            .get("host_call_methods")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         if got != expect.host_call_methods {
             return Err(format!(
                 "host_call_methods: expected {:?}, got {:?}",
@@ -185,101 +208,110 @@ fn assert_run_stage(
         }
     }
 
-    // ---- records stored (the SQLite write link), exact match incl. no-record cases ----
-    assert_records(&store, expect)?;
+    // ---- records stored (the SQLite write link), read back via query.execute --
+    assert_records(&mut core, expect)?;
 
-    // ---- storage KV (counter scenario) ----
-    assert_storage(&store, applet_id, expect)?;
+    // ---- storage KV (counter scenario), read back from the workspace store ----
+    assert_storage(&core, expect)?;
 
-    // ---- ui markers present in the emitted tree(s) ----
+    // ---- ui markers present in the emitted tree(s) (from the run response) ----
+    let ui_trees: Vec<serde_json::Value> = run_resp
+        .get("ui_renders")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for marker in &expect.ui_contains {
         if !ui_trees.iter().any(|t| ui_contains(t, marker)) {
             return Err(format!("ui_contains {marker:?} not found in {ui_trees:?}"));
         }
     }
 
-    // ---- deterministic replay (byte-identical fingerprint) ----
-    let mut null = NullBridge::new();
-    let replayed = replay(&run, &program, manifest, &actor, &mut null)
-        .map_err(|e| format!("replay: {e}"))?;
-    let identical = run.replays_identically(&replayed);
-    if identical != expect.replay_identical {
-        return Err(format!(
-            "replay_identical: expected {}, got {}",
-            expect.replay_identical, identical
-        ));
-    }
-    if expect.replay_identical {
-        run.assert_replay_of(&replayed)
-            .map_err(|e| format!("assert_replay_of: {e}"))?;
+    // ---- deterministic replay (byte-identical fingerprint), via runtime.replay
+    let replay_resp = handle(
+        &mut core,
+        None,
+        "runtime.replay",
+        serde_json::json!({ "run_id": run_id }),
+    );
+    match (&replay_resp, expect.replay_identical) {
+        (Ok(payload), true) => {
+            let identical = payload
+                .get("replays_identically")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !identical {
+                return Err("runtime.replay reported the run does NOT replay identically".into());
+            }
+        }
+        (Ok(_), false) => {
+            return Err("expected replay to differ, but runtime.replay reported identical".into());
+        }
+        (Err(e), true) => return Err(format!("runtime.replay: {e}")),
+        // A scenario that expects non-identical replay (none in the run corpus)
+        // would legitimately surface a replay error; tolerate that here.
+        (Err(_), false) => {}
     }
 
     Ok(())
 }
 
-fn assert_result(run: &forge_domain::RunRecord, expect: &Expect) -> Result<(), String> {
+/// Assert the run's `result` against the scenario's expectation. The
+/// `runtime.run` response carries `ok` plus the `AppResult` (`{ ok, value }`) on
+/// success, or `{ error: <CoreError> }` on a run-outcome failure.
+fn assert_result(run_resp: &serde_json::Value, expect: &Expect) -> Result<(), String> {
     let want_ok = expect
         .result
         .get("ok")
         .and_then(|v| v.as_bool())
         .ok_or("expect.result.ok missing")?;
+    let got_ok = run_resp.get("ok").and_then(|v| v.as_bool()).ok_or("response.ok missing")?;
 
-    match &run.outcome {
-        RunOutcome::Completed { result } => {
-            if !want_ok {
-                return Err(format!("expected failure, run completed ok with {:?}", result));
-            }
-            if let Some(want_value) = expect.result.get("value") {
-                if &result.value != want_value {
-                    return Err(format!(
-                        "result.value mismatch: expected {want_value}, got {}",
-                        result.value
-                    ));
-                }
+    if want_ok != got_ok {
+        return Err(format!(
+            "result.ok: expected {want_ok}, got {got_ok} (result: {})",
+            run_resp.get("result").unwrap_or(&serde_json::Value::Null)
+        ));
+    }
+
+    if want_ok {
+        if let Some(want_value) = expect.result.get("value") {
+            let got_value = run_resp
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .unwrap_or(&serde_json::Value::Null);
+            if got_value != want_value {
+                return Err(format!(
+                    "result.value mismatch: expected {want_value}, got {got_value}"
+                ));
             }
         }
-        RunOutcome::Failed { error } => {
-            if want_ok {
-                return Err(format!("expected ok, run failed: {error}"));
-            }
-            if let Some(code) = expect.result.get("error_code").and_then(|v| v.as_str()) {
-                if !denial_code_matches(code, error.code()) {
-                    return Err(format!(
-                        "result.error_code: expected {code}, got {} ({error})",
-                        error.code()
-                    ));
-                }
-            }
+    } else if let Some(code) = expect.result.get("error_code").and_then(|v| v.as_str()) {
+        // EXACT denial-code equality (review 032 finding 2): the run-outcome
+        // error's `kind` must equal the fixture's pinned code, not a fuzzy
+        // "any denial" match. The failure outcome is `{ "error": { "kind": ... } }`.
+        let got_code = run_resp
+            .get("result")
+            .and_then(|r| r.get("error"))
+            .and_then(|e| e.get("kind"))
+            .and_then(|k| k.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "run failed but response carried no error.kind: {}",
+                    run_resp.get("result").unwrap_or(&serde_json::Value::Null)
+                )
+            })?;
+        if got_code != code {
+            return Err(format!("result.error_code: expected {code}, got {got_code}"));
         }
     }
     Ok(())
 }
 
-/// Does the run's error code satisfy the scenario's expected `error_code`?
-///
-/// The `denied_capability` fixture's `expect.json` pins `"PermissionDenied"`,
-/// but the committed `forge-policy` engine deliberately splits the denial class:
-/// a manifest that declares NO grant in a category (here `db: {read:[], write:[]}`)
-/// fails closed with `CapabilityRequired` ("you forgot to declare a scope"),
-/// whereas a manifest that declares some scopes but not this resource fails with
-/// `PermissionDenied` ("out of scope"). Both are the same security outcome the
-/// scenario actually proves — the write is denied at the capability gate BEFORE
-/// it reaches SQLite, no record is stored, and the run fails deterministically.
-/// We therefore treat the two denial-class codes as equivalent here rather than
-/// weakening the test to "any error": the assertion still requires a genuine
-/// capability denial, just not the one exact string the fixture over-specified.
-/// (Noted in the test report as a fixture/policy `error_code` granularity gap.)
-fn denial_code_matches(expected: &str, got: &str) -> bool {
-    const DENIAL_CLASS: [&str; 2] = ["PermissionDenied", "CapabilityRequired"];
-    if expected == got {
-        return true;
-    }
-    DENIAL_CLASS.contains(&expected) && DENIAL_CLASS.contains(&got)
-}
-
-fn assert_records(store: &Store, expect: &Expect) -> Result<(), String> {
+/// Assert the records projection through the facade's `query.execute`, including
+/// the empty-set cases (denied_capability writes nothing).
+fn assert_records(core: &mut WorkspaceCore, expect: &Expect) -> Result<(), String> {
     // Group expected records by collection so we can check each collection's
-    // full contents (including the empty-set cases: denied_capability etc.).
+    // full contents (including the empty-set cases).
     let mut collections: std::collections::BTreeSet<String> = expect
         .records
         .iter()
@@ -291,29 +323,29 @@ fn assert_records(store: &Store, expect: &Expect) -> Result<(), String> {
     }
 
     for collection in &collections {
-        let stored = store
-            .list_records(collection)
-            .map_err(|e| format!("list_records({collection}): {e}"))?;
+        let rows =
+            list_records(core, collection).map_err(|e| format!("query.execute({collection}): {e}"))?;
         let want: Vec<&ExpectRecord> = expect
             .records
             .iter()
             .filter(|r| &r.collection == collection)
             .collect();
-        if stored.len() != want.len() {
+        if rows.len() != want.len() {
             return Err(format!(
                 "records[{collection}]: expected {} record(s), stored {}",
                 want.len(),
-                stored.len()
+                rows.len()
             ));
         }
-        for (got, exp) in stored.iter().zip(want.iter()) {
-            if got.entity_id.as_str() != exp.id {
+        for (got, exp) in rows.iter().zip(want.iter()) {
+            let got_id = got.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            if got_id != exp.id {
                 return Err(format!(
-                    "records[{collection}] id: expected {}, got {}",
-                    exp.id, got.entity_id
+                    "records[{collection}] id: expected {}, got {got_id}",
+                    exp.id
                 ));
             }
-            let got_fields = serde_json::to_value(&got.fields).unwrap();
+            let got_fields = got.get("fields").cloned().unwrap_or(serde_json::Value::Null);
             if got_fields != exp.fields {
                 return Err(format!(
                     "records[{collection}/{}] fields: expected {}, got {got_fields}",
@@ -325,10 +357,13 @@ fn assert_records(store: &Store, expect: &Expect) -> Result<(), String> {
     Ok(())
 }
 
-fn assert_storage(store: &Store, applet_id: &str, expect: &Expect) -> Result<(), String> {
-    let ns = format!("applet/{applet_id}");
+/// Assert the applet KV storage (counter scenario) by reading the workspace
+/// store the facade wrote through (`applet/<id>` namespace, read-only).
+fn assert_storage(core: &WorkspaceCore, expect: &Expect) -> Result<(), String> {
+    let ns = format!("applet/{SCENARIO_APPLET_ID}");
     for (key, want) in &expect.storage {
-        let bytes = store
+        let bytes = core
+            .store()
             .kv_get(&ns, key)
             .map_err(|e| format!("kv_get({key}): {e}"))?
             .ok_or_else(|| format!("storage key {key:?} not set"))?;

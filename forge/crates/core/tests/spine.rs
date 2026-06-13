@@ -590,6 +590,96 @@ fn same_input_reruns_share_seeds_but_persist_separately() {
 }
 
 // ---------------------------------------------------------------------------
+// 6b. explicit seed override on runtime.run (review 032 finding 1): a scenario
+//     recorded under fixed seeds can be reproduced THROUGH the facade by pinning
+//     `random_seed`/`time_start` in the command payload. The run records exactly
+//     those seeds, still replays identically, and a half-specified override is a
+//     graceful ValidationError.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn runtime_run_honors_explicit_seed_override_and_still_replays() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    // A pure seam-reading applet so the recorded values depend only on the seeds.
+    let seam_ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            const r = await ctx.random.next();
+            const t = await ctx.time.now();
+            return { ok: true, value: { r: r, t: t } };
+        }
+    "#;
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": { "storage": { "read": [], "write": [] }, "db": { "read": [], "write": [] }, "ui": true },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    install_demo(&mut core, seam_ts, manifest);
+
+    // Run with explicit seeds. The run records EXACTLY them (not the
+    // (code_hash,input)-derived defaults), proving the override threads through.
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {}, "random_seed": 7, "time_start": 500 }),
+    ));
+    assert!(resp.ok, "seeded run must succeed: {:?}", resp.error);
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+    let rec = core.store().load_run(&run_id).unwrap().unwrap();
+    assert_eq!(rec.random_seed, 7, "explicit random_seed must be recorded");
+    assert_eq!(rec.time_start, 500, "explicit time_start must be recorded");
+    // The deterministic clock seam starts at the pinned time_start.
+    assert_eq!(resp.payload["result"]["value"]["t"], serde_json::json!(500));
+
+    // It still replays byte-identically under the pinned seeds.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(replay.ok, "seeded run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+
+    // The host-call method trace is surfaced on the response (facade-asserted).
+    assert_eq!(
+        resp.payload["host_call_methods"],
+        serde_json::json!(["random.next", "time.now"])
+    );
+}
+
+#[test]
+fn runtime_run_rejects_half_specified_seed_override() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+
+    // Only random_seed → ValidationError (a scenario must pin BOTH seams or none).
+    let only_random = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {}, "random_seed": 7 }),
+    ));
+    assert!(!only_random.ok, "a half-specified seed override must be rejected");
+    assert_eq!(only_random.error.unwrap().code(), "ValidationError");
+
+    // Only time_start → likewise rejected, and a non-integer seed is rejected too.
+    let only_time = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {}, "time_start": 500 }),
+    ));
+    assert_eq!(only_time.error.unwrap().code(), "ValidationError");
+    let bad_type = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {}, "random_seed": "seven", "time_start": 500 }),
+    ));
+    assert_eq!(bad_type.error.unwrap().code(), "ValidationError");
+
+    // None of the rejected attempts recorded a run.
+    assert_eq!(core.events().events_of_kind("run.started").count(), 0);
+}
+
+// ---------------------------------------------------------------------------
 // 7. version-pinned replay (review 031 finding 3, CR-9): install v1, run,
 //    reinstall v2 (different code), replay the v1 run → still replays
 //    identically against v1's recorded program (code_hash).

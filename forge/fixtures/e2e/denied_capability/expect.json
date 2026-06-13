@@ -4,7 +4,7 @@
   "time_start": 1000,
   "result": {
     "ok": false,
-    "error_code": "PermissionDenied"
+    "error_code": "CapabilityRequired"
   },
   "records": [],
   "storage": {},

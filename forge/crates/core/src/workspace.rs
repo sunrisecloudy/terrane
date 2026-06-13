@@ -260,10 +260,19 @@ impl WorkspaceCore {
     /// `run.started`/`ui.patch`/`run.completed`, and return the run summary +
     /// `AppResult` (CR-A2, CR-8, CR-9).
     ///
-    /// Payload: `{ applet_id, input }`.
+    /// Payload: `{ applet_id, input, random_seed?, time_start? }`.
+    ///
+    /// `random_seed`/`time_start` are **optional** deterministic-seam overrides
+    /// (review 032 finding 1). When present they pin the run's RNG/clock seeds to
+    /// exact values — the conformance corpus uses this to drive a scenario
+    /// recorded under specific seeds (e.g. `seeded_random` under seed 7) through
+    /// this facade rather than a parallel direct path. When absent the seeds are a
+    /// deterministic function of `(code_hash, input)` (the default that makes
+    /// independent re-runs of the demo replay identically; review 031 finding 2).
     fn cmd_runtime_run(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
         let applet_id = require_applet_id(cmd)?;
         let input = cmd.payload.get("input").cloned().unwrap_or(serde_json::Value::Null);
+        let seed_override = run_seed_override(cmd)?;
         let installed = self
             .load_applet(applet_id.as_str())?
             .ok_or_else(|| {
@@ -292,7 +301,12 @@ impl WorkspaceCore {
         // re-run with the SAME applet code and input reproduces the SAME seeded
         // time/random seams, so the two records replay byte-identically. A
         // different input yields different seeds (a genuinely different run).
-        let (random_seed, time_start) = derive_seeds(&installed.code_hash, &input);
+        // An explicit `(random_seed, time_start)` in the payload overrides this
+        // default so a conformance scenario recorded under fixed seeds can be
+        // reproduced through the facade (review 032 finding 1). Either way the
+        // chosen seeds are recorded on the run, so replay stays byte-identical.
+        let (random_seed, time_start) =
+            seed_override.unwrap_or_else(|| derive_seeds(&installed.code_hash, &input));
 
         // Mint a UNIQUE per-execution run id (review 031 finding 2 / CR-9). The
         // counter is persisted in workspace meta so each execution is saved and
@@ -365,6 +379,11 @@ impl WorkspaceCore {
             "ok": ok,
             "result": app_result,
             "summary": summary,
+            // The ordered host-call method trace the run issued (`db.insert`,
+            // `ui.render`, …). Surfaced so a shell / conformance harness can
+            // assert the exact effect sequence through the facade rather than
+            // re-reading the persisted RunRecord (review 032 finding 1).
+            "host_call_methods": run.calls.iter().map(|c| c.method.clone()).collect::<Vec<_>>(),
             "ui_renders": ui_renders.iter().map(|r| r.tree.clone()).collect::<Vec<_>>(),
         }))
     }
@@ -548,6 +567,38 @@ fn applet_key(applet_id: &str) -> String {
 /// still maps to the one program every run that hashed to it can replay against.
 fn program_key(code_hash: &str) -> String {
     format!("program/{code_hash}")
+}
+
+/// Read the optional explicit `(random_seed, time_start)` seam override from a
+/// `runtime.run` payload (review 032 finding 1).
+///
+/// Returns `Ok(None)` when neither field is present (the default
+/// `(code_hash, input)`-derived seeds apply). If *either* is present, *both*
+/// must be: a half-specified override is a malformed command (a scenario that
+/// pins one seam but lets the other drift is not reproducible), rejected with
+/// `ValidationError` rather than silently defaulting the missing seam. Each
+/// field must be a non-negative integer that fits `u64`.
+fn run_seed_override(cmd: &CoreCommand) -> Result<Option<(u64, u64)>> {
+    let random_seed = cmd.payload.get("random_seed");
+    let time_start = cmd.payload.get("time_start");
+    match (random_seed, time_start) {
+        (None, None) => Ok(None),
+        (Some(r), Some(t)) => Ok(Some((seed_field("random_seed", r)?, seed_field("time_start", t)?))),
+        (Some(_), None) | (None, Some(_)) => Err(CoreError::ValidationError(
+            "runtime.run seed override must set BOTH `random_seed` and `time_start` or neither"
+                .into(),
+        )),
+    }
+}
+
+/// Parse a `u64` seed field from the command payload, rejecting non-integer /
+/// out-of-range values with a precise `ValidationError`.
+fn seed_field(name: &str, value: &serde_json::Value) -> Result<u64> {
+    value.as_u64().ok_or_else(|| {
+        CoreError::ValidationError(format!(
+            "runtime.run `{name}` must be a non-negative integer that fits u64, got {value}"
+        ))
+    })
 }
 
 /// Derive the deterministic replay seeds `(random_seed, time_start)` from the

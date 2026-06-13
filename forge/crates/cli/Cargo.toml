@@ -19,10 +19,8 @@ thiserror.workspace = true
 forge-core.workspace = true
 forge-domain.workspace = true
 
-[dev-dependencies]
-# The data-driven fixture test drives record/replay directly so it can honor
-# each scenario's recorded seeds (random_seed/time_start), which the core's
-# `runtime.run` does not yet thread through (see lib.rs `run_scenario`).
-forge-pipeline.workspace = true
-forge-runtime.workspace = true
-forge-storage.workspace = true
+# The data-driven fixture test (tests/scenarios.rs) drives every scenario
+# THROUGH the command/event facade (forge-core via the forge-cli helpers),
+# honoring each scenario's pinned seeds via the `runtime.run` seed override
+# (review 032 finding 1) — no parallel pipeline/runtime/storage path. It needs
+# no extra dev-dependencies beyond the crate's own deps (forge-core/forge-domain).
