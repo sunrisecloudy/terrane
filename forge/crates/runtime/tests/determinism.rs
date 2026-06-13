@@ -701,3 +701,103 @@ fn snapshotless_legacy_failed_run_replays_its_recorded_failure_not_a_denial() {
         "the replay must NOT turn the app failure into a permission denial"
     );
 }
+
+/// Review 035 P2: the legacy-fallback denial gate must key on the *exact* recorded
+/// denial shape — `{"denied": <CoreError>}` — not on the mere presence of a
+/// `"denied"` key. `ctx.storage.get`/`ctx.db.get`/`ctx.db.list` replay arbitrary
+/// user JSON, so a legitimate snapshotless legacy run that reads a stored value
+/// like `{ "denied": false }` and then fails for an app reason must STILL fall back
+/// to the manifest and replay its recorded success-then-failure. The looser
+/// "any object with a `denied` key" gate mis-classified that user data as a recorded
+/// denial and routed the run through the all-deny default, replaying it as a
+/// spurious permission failure.
+#[test]
+fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorded_denial() {
+    use forge_domain::{CoreError, PermissionSnapshot, RunRecord};
+
+    // The program stores a benign user object whose *value* contains a `denied`
+    // field (a perfectly legal app payload), reads it back (so the recorded
+    // `storage.get` response is exactly `{"denied": false}`), then fails for an
+    // app reason. This is the collision case from review 035.
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.storage.set("app/flags", { denied: false }); // legal user data
+            const got = await ctx.storage.get("app/flags");        // recorded resp == {"denied":false}
+            if (got.denied !== false) { throw new Error("unexpected"); }
+            throw new Error("boom");                                // then fail for an app reason
+        }"#,
+    );
+
+    // Record under the granting spine manifest: both host calls are allowed and the
+    // run fails on the thrown error AFTER they are recorded.
+    let mut bridge = MemoryHostBridge::new();
+    let recorded = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        9,
+        700,
+        &mut bridge,
+    )
+    .unwrap();
+    let recorded_error = match &recorded.outcome {
+        RunOutcome::Failed { error } => error.clone(),
+        other => panic!("precondition: the run must fail on the thrown error, got {other:?}"),
+    };
+    assert_eq!(recorded_error.code(), "RuntimeError", "{recorded_error}");
+    assert!(recorded_error.to_string().contains("boom"), "{recorded_error}");
+
+    // Precondition that makes this test meaningful: a recorded read response IS the
+    // literal `{"denied": false}` user object — the value that the looser gate
+    // misread as a recorded policy denial.
+    let read_back = recorded
+        .calls
+        .iter()
+        .find(|c| c.method == "storage.get")
+        .expect("the storage.get is recorded");
+    assert_eq!(
+        read_back.response,
+        serde_json::json!({ "denied": false }),
+        "the recorded read response carries a user `denied` field"
+    );
+    // It is NOT a serialized CoreError, so it must not be treated as a denial.
+    assert!(
+        serde_json::from_value::<CoreError>(serde_json::json!({ "denied": false })).is_err(),
+        "user `{{denied:false}}` is not a CoreError"
+    );
+
+    // Simulate a PRE-CR-9 record: drop `permissions` so it loads all-deny default.
+    let mut json = serde_json::to_value(&recorded).unwrap();
+    json.as_object_mut().unwrap().remove("permissions");
+    let legacy: RunRecord = serde_json::from_value(json).unwrap();
+    assert_eq!(legacy.permissions, PermissionSnapshot::default());
+    assert!(!legacy.is_completed(), "the legacy record still failed");
+
+    // Replay under the granting manifest. Because no recorded call is a *real*
+    // denial (the `{"denied":false}` read is user data, not a CoreError), the
+    // manifest fallback must engage: the allowed host calls replay and the ORIGINAL
+    // RuntimeError("boom") is reproduced — NOT a spurious PermissionDenied.
+    let mut null = NullBridge::new();
+    let replayed = replay(&legacy, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    match &replayed.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(
+                error.code(),
+                "RuntimeError",
+                "legacy failure after a `denied`-keyed user read must replay its recorded failure, not a denial: {error}"
+            );
+            assert!(error.to_string().contains("boom"), "{error}");
+            assert_eq!(error, &recorded_error, "the replayed failure must be the recorded one");
+        }
+        other => panic!("expected the recorded Runtime(\"boom\") failure, got {other:?}"),
+    }
+    assert_eq!(
+        recorded.calls, replayed.calls,
+        "the legacy run's host-call trace (incl. the `{{denied:false}}` read) must replay identically"
+    );
+    assert!(
+        !matches!(replayed.outcome, RunOutcome::Failed { error: CoreError::PermissionDenied(_) }),
+        "the replay must NOT turn the app failure into a permission denial"
+    );
+}

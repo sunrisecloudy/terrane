@@ -240,21 +240,51 @@ fn finish_run(
     .with_permissions(permissions))
 }
 
-/// True if any recorded call captured a policy **denial** — a
+/// True if any recorded call captured a policy **denial** — the exact
 /// `{"denied": <CoreError>}` response written by
 /// [`RunRecorder::record_denial`](crate::RunRecorder) (recorder.rs).
 ///
 /// Review 029 P2 uses this to keep snapshotless records that contain a recorded
 /// denial on the recorded (all-deny default) snapshot path, so a stripped
 /// post-CR-9 denial cannot be re-granted the capability it lacked by the legacy
-/// manifest fallback. A response object carrying a `"denied"` key is the canonical
-/// denial marker (a normal effect/seam response is never an object with that key).
+/// manifest fallback.
+///
+/// Review 035 P2: the presence of a `"denied"` *key* is NOT a unique denial
+/// marker. `ctx.storage.get`/`ctx.db.get`/`ctx.db.list` replay arbitrary user
+/// JSON, so a legitimate legacy run that read a stored value like
+/// `{ "denied": false }` and then failed for an app reason would have been
+/// mis-routed onto the all-deny path and replayed as a permission failure. The
+/// denial encoding is a *specific* shape: `record_denial` writes an object with
+/// exactly one key, `"denied"`, whose value is a serialized [`CoreError`]
+/// (`{"kind": "...", "detail": "..."}` per its `#[serde(tag, content)]`). So we
+/// match that shape exactly — a single `"denied"` key whose value deserializes as
+/// a `CoreError` — instead of any object that merely carries a `"denied"` key.
+/// Arbitrary user data cannot collide: a bool/string/number fails the object
+/// check, and an object that lacks a valid `kind`/`detail` `CoreError` body fails
+/// to deserialize.
 fn trace_has_denial(calls: &[forge_domain::RecordedCall]) -> bool {
-    calls.iter().any(|call| {
-        call.response
-            .as_object()
-            .is_some_and(|obj| obj.contains_key("denied"))
-    })
+    calls.iter().any(|call| is_recorded_denial(&call.response))
+}
+
+/// True iff `response` is exactly the `{"denied": <CoreError>}` shape emitted by
+/// [`RunRecorder::record_denial`](crate::RunRecorder): an object with a single
+/// `"denied"` key whose value deserializes as a [`CoreError`]. See
+/// [`trace_has_denial`] for why the key alone is insufficient (review 035 P2).
+fn is_recorded_denial(response: &serde_json::Value) -> bool {
+    let Some(obj) = response.as_object() else {
+        return false;
+    };
+    // Exactly one key, and it is `denied`: a real denial response is `{"denied": …}`
+    // and nothing else, so a stored user object that happens to include a `denied`
+    // field alongside other keys is not mistaken for a denial.
+    if obj.len() != 1 {
+        return false;
+    }
+    let Some(denied) = obj.get("denied") else {
+        return false;
+    };
+    // The value must be a serialized CoreError (`{"kind": "...", "detail": "..."}`).
+    serde_json::from_value::<CoreError>(denied.clone()).is_ok()
 }
 
 /// A deterministic-but-readable run id from the program + seeds. Replays derive
