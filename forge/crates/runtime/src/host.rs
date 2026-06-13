@@ -32,11 +32,24 @@ pub struct HostContext<'b> {
     /// a flood of empty-string logs costs zero bytes, so the byte budget alone
     /// can't stop it — count the *calls* against the host-call cap too.
     log_calls_used: u64,
-    /// The network egress allowlist for `ctx.net.fetch` (prd-merged/07 SC-5/SC-8).
+    /// The full network egress allowlist for `ctx.net.fetch` (prd-merged/07
+    /// SC-5/SC-8), with **every** SC-5 constraint intact (request + response).
     /// Derived from the policy's permission snapshot at construction so it tracks
     /// the *recorded* grants on replay (review 009 P1 CR-9), not the live manifest.
-    /// Empty ⇒ no network (the default for every applet).
+    /// Empty ⇒ no network (the default for every applet). The **response-leg**
+    /// check (`net_fetch` step 5) runs against this full allowlist.
     net_allowlist: NetGrant,
+    /// The **request-phase** view of [`net_allowlist`](Self::net_allowlist): the
+    /// same rules with their *response* constraints (`max_response_bytes`,
+    /// `response_content_types`) cleared. The call gate (`net_fetch` step 2) must
+    /// decide *before* a request is sent, when the response is unknown — so it
+    /// evaluates only the request-side gates against this view. A rule that
+    /// constrains the response would otherwise spuriously deny at the call gate
+    /// (the policy denies an unknown response content-type); stripping the
+    /// response constraints here defers them, intact, to the response leg where
+    /// the real response is in hand. Built once at construction so each fetch is
+    /// allocation-free on this path.
+    net_allowlist_request_phase: NetGrant,
     /// `ctx.net.fetch` calls so far (against `Limits::max_host_calls`). `net` is
     /// gated by the [`NetPolicy`] decision rather than the [`PolicyEngine`]
     /// `HostCall` categories, so — like `ctx.log` — it counts its own calls
@@ -80,6 +93,7 @@ impl<'b> HostContext<'b> {
         // now — keeping a net allow/deny decision deterministic across replay
         // exactly like the storage/db scopes (review 009 P1 CR-9).
         let net_allowlist = policy.snapshot().capabilities.net;
+        let net_allowlist_request_phase = request_phase_allowlist(&net_allowlist);
         HostContext {
             policy,
             recorder,
@@ -89,6 +103,7 @@ impl<'b> HostContext<'b> {
             storage_bytes_used: 0,
             log_calls_used: 0,
             net_allowlist,
+            net_allowlist_request_phase,
             net_calls_used: 0,
             logs: Vec::new(),
         }
@@ -346,10 +361,17 @@ impl<'b> HostContext<'b> {
             return Err(err);
         }
 
-        // 2. Egress policy (SC-5 / CR-4): a denial is recorded then propagated;
-        //    no request reaches the client on a deny.
+        // 2. Egress call gate (SC-5 / CR-4): request-side gates only, decided
+        //    BEFORE the request is sent so no request reaches the client on a
+        //    deny. Evaluated against the request-phase allowlist (response
+        //    constraints stripped) so a rule that caps the *response* does not
+        //    spuriously deny here, where the response is still unknown — those
+        //    caps are enforced, intact, on the response leg (step 5). A denial is
+        //    recorded then propagated.
         let policy_request = to_policy_request(&request);
-        if let Err(net_err) = NetPolicy::new(&self.net_allowlist).check(&policy_request) {
+        if let Err(net_err) =
+            NetPolicy::new(&self.net_allowlist_request_phase).check(&policy_request)
+        {
             self.recorder.record_denial("net.fetch", args, &net_err)?;
             return Err(net_err);
         }
@@ -373,9 +395,24 @@ impl<'b> HostContext<'b> {
                 CoreError::RuntimeError(format!("net.fetch response serialize failed: {e}"))
             })
         })?;
-        serde_json::from_value::<NetResponse>(response_json).map_err(|e| {
+        let response = serde_json::from_value::<NetResponse>(response_json).map_err(|e| {
             CoreError::RuntimeError(format!("net.fetch response decode failed: {e}"))
-        })
+        })?;
+
+        // 5. Response-leg egress check (SC-5 response caps): the call-gate check
+        //    above could only see the *request* — `max_response_bytes` and
+        //    `response_content_types` cannot be evaluated until the response is in
+        //    hand. Re-run the SAME `NetPolicy` against the populated response
+        //    size/content-type (against the same matched rule) before the body is
+        //    served to the applet. This re-check runs on **both** record and replay
+        //    (the recorded response is policy-bound too: a tampered/oversized
+        //    recording is denied identically on replay), and is fail-closed —
+        //    an over-cap or wrong-content-type response surfaces as the run's
+        //    `CoreError` and the body never reaches the applet.
+        let response_policy_request = to_response_policy_request(&request, &response);
+        NetPolicy::new(&self.net_allowlist).check(&response_policy_request)?;
+
+        Ok(response)
     }
 
     // --- UI (capability-checked, recorded) ------------------------------
@@ -430,13 +467,14 @@ impl<'b> HostContext<'b> {
 }
 
 /// Project the runtime's [`NetRequest`] onto the [`forge_policy::NetRequest`] the
-/// egress [`NetPolicy`] evaluates. The runtime carries the *wire* request
-/// (method/url/headers/body/content-type/timeout); the policy needs the
-/// match-relevant fields plus the declared body size for the SC-5 size cap. The
-/// response-size/content-type and redirect/DNS checks are evaluated host-side at
-/// fetch time (the response isn't known yet at the call gate), so they are not
-/// populated here; the literal URL/host/scheme/path/method/body-size/timeout/
-/// secret-header gates are what this call-time check enforces.
+/// egress [`NetPolicy`] evaluates **at the call gate**. The runtime carries the
+/// *wire* request (method/url/headers/body/content-type/timeout); the policy
+/// needs the match-relevant fields plus the declared body size for the SC-5 size
+/// cap. The response-size/content-type caps cannot be evaluated here (the
+/// response isn't known yet at the call gate); they are enforced on the response
+/// leg by [`to_response_policy_request`] + a second [`NetPolicy`] check after the
+/// bridge returns (`net_fetch` step 5). The literal URL/host/scheme/path/method/
+/// body-size/timeout/secret-header gates are what this call-time check enforces.
 fn to_policy_request(request: &NetRequest) -> forge_policy::NetRequest {
     use forge_policy::HeaderValue;
     forge_policy::NetRequest {
@@ -453,6 +491,48 @@ fn to_policy_request(request: &NetRequest) -> forge_policy::NetRequest {
             .map(|(k, v)| (k.clone(), HeaderValue::Literal(v.clone())))
             .collect(),
         ..Default::default()
+    }
+}
+
+/// Build the **request-phase** view of a net allowlist: the same rules in the
+/// same order, but with each rule's *response* constraints (`max_response_bytes`,
+/// `response_content_types`) cleared. The call gate checks against this view so a
+/// rule that constrains the response cannot spuriously deny a request before its
+/// response is known (the policy denies an unknown response content-type). The
+/// response constraints are preserved in the full allowlist and enforced on the
+/// response leg. All request-side fields (host/scheme/path/method/body/timeout/
+/// request-content-type/secret-headers) are untouched, so the call gate's
+/// request-side decision is identical to the full allowlist's.
+fn request_phase_allowlist(full: &NetGrant) -> NetGrant {
+    NetGrant(
+        full
+            .rules()
+            .iter()
+            .map(|rule| forge_domain::NetRule {
+                max_response_bytes: None,
+                response_content_types: Vec::new(),
+                ..rule.clone()
+            })
+            .collect(),
+    )
+}
+
+/// Project the request **plus the real response** onto a [`forge_policy::NetRequest`]
+/// for the **response-leg** egress check (SC-5 response caps). This is the call-gate
+/// projection ([`to_policy_request`]) with the now-known
+/// `response_bytes`/`response_content_type` populated from the [`NetResponse`], so a
+/// second [`NetPolicy`] check matches the **same** allowlist rule (host/scheme/path/
+/// method must still match) and additionally enforces `max_response_bytes` and
+/// `response_content_types`. Reusing the same projection keeps the rule selection
+/// identical to the call gate; only the response constraints are added.
+fn to_response_policy_request(
+    request: &NetRequest,
+    response: &NetResponse,
+) -> forge_policy::NetRequest {
+    forge_policy::NetRequest {
+        response_bytes: Some(response.body_bytes()),
+        response_content_type: response.content_type.clone(),
+        ..to_policy_request(request)
     }
 }
 
@@ -550,6 +630,171 @@ mod tests {
         let err = host.net_fetch(req("https://api.example.com/x")).unwrap_err();
         assert_eq!(err.code(), "CapabilityRequired");
         assert!(bridge.net_requests.is_empty());
+    }
+
+    // --- Response-leg SC-5 caps (max_response_bytes / response_content_types) --
+
+    use crate::net::MockHttpClient;
+
+    /// A rule with a response cap whose response, when it comes back, exceeds the
+    /// cap is denied — the over-cap body is NOT served to the applet (SC-5
+    /// max_response_bytes enforced on the response leg, not just at the call gate).
+    #[test]
+    fn net_fetch_oversized_response_is_denied_and_not_served() {
+        let mut rule = get_rule("https://api.example.com/public/*");
+        rule.max_response_bytes = Some(8);
+        let manifest = manifest_with_net(NetGrant(vec![rule]), 100);
+        let actor = ActorContext::owner("dev");
+        // Inject a client whose response body is 16 bytes — over the 8-byte cap.
+        let big = NetResponse {
+            status: 200,
+            body: Some("0123456789abcdef".into()), // 16 bytes > 8
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        let mut bridge =
+            MemoryHostBridge::with_http_client(Box::new(MockHttpClient::new(big)));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/weather"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("response"), "{err}");
+        assert!(err.to_string().contains("max_response_bytes"), "{err}");
+    }
+
+    /// A rule constraining response content-types denies a response whose
+    /// content-type is outside the set (SC-5 response_content_types on the
+    /// response leg). The wrong-type body never reaches the applet.
+    #[test]
+    fn net_fetch_wrong_response_content_type_is_denied() {
+        let mut rule = get_rule("https://api.example.com/public/*");
+        rule.response_content_types = vec!["application/json".into()];
+        let manifest = manifest_with_net(NetGrant(vec![rule]), 100);
+        let actor = ActorContext::owner("dev");
+        let html = NetResponse {
+            status: 200,
+            body: Some("<html></html>".into()),
+            content_type: Some("text/html".into()),
+            ..Default::default()
+        };
+        let mut bridge =
+            MemoryHostBridge::with_http_client(Box::new(MockHttpClient::new(html)));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/page"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("content-type"), "{err}");
+    }
+
+    /// A response within the rule's caps is served unchanged: the new response-leg
+    /// check must not over-deny a compliant response (positive control).
+    #[test]
+    fn net_fetch_response_within_caps_is_served() {
+        let mut rule = get_rule("https://api.example.com/public/*");
+        rule.max_response_bytes = Some(64);
+        rule.response_content_types = vec!["application/json".into()];
+        let manifest = manifest_with_net(NetGrant(vec![rule]), 100);
+        let actor = ActorContext::owner("dev");
+        // Default canned mock: 11-byte `{"ok":true}` JSON body, application/json.
+        let mut bridge = MemoryHostBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let resp = host
+            .net_fetch(req("https://api.example.com/public/weather"))
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.as_deref(), Some(r#"{"ok":true}"#));
+    }
+
+    /// The response-leg cap is enforced on **replay** too: a recorded response
+    /// that violates a response cap is denied identically when replayed (the
+    /// recording is policy-bound; a tampered/oversized recording cannot smuggle a
+    /// body past SC-5). We replay a recording whose `net.fetch` response is over
+    /// the rule's cap and assert it surfaces the same PermissionDenied.
+    #[test]
+    fn net_fetch_response_cap_is_enforced_on_replay() {
+        use crate::bridge::NullBridge;
+        use forge_domain::RecordedCall;
+
+        let mut rule = get_rule("https://api.example.com/public/*");
+        rule.max_response_bytes = Some(8);
+        let manifest = manifest_with_net(NetGrant(vec![rule]), 100);
+        let actor = ActorContext::owner("dev");
+
+        // A recorded trace whose net.fetch response body is 16 bytes (> 8 cap).
+        let recorded_resp = NetResponse {
+            status: 200,
+            body: Some("0123456789abcdef".into()),
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        let request = req("https://api.example.com/public/weather");
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "net.fetch".into(),
+            args: serde_json::to_value(&request).unwrap(),
+            response: serde_json::to_value(&recorded_resp).unwrap(),
+        }];
+
+        // Replay must NOT touch a live bridge; NullBridge proves the recorder
+        // serves the response, and the response-leg policy check still denies it.
+        let mut bridge = NullBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::replaying(1, 0, recorded),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host.net_fetch(request).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("max_response_bytes"), "{err}");
+    }
+
+    /// A rule that constrains the response content-type still denies a
+    /// request-side violation (wrong host) AT THE CALL GATE — before any request
+    /// reaches the client. Proves the request-phase allowlist (response
+    /// constraints stripped) keeps every request-side gate intact: the response
+    /// caps don't make the call gate either over-deny a good host or under-deny a
+    /// bad one.
+    #[test]
+    fn net_fetch_response_constrained_rule_still_gates_request_side() {
+        let mut rule = get_rule("https://api.example.com/public/*");
+        rule.max_response_bytes = Some(1024);
+        rule.response_content_types = vec!["application/json".into()];
+        let manifest = manifest_with_net(NetGrant(vec![rule]), 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        // Wrong host: denied at the call gate, bridge never touched.
+        let err = host.net_fetch(req("https://evil.example.com/public/x")).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(bridge.net_requests.is_empty(), "denied request must not reach the client");
     }
 
     /// `net.fetch` counts against the host-call flood cap (SC-2): the (n+1)th
