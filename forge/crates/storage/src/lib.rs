@@ -1342,16 +1342,22 @@ fn field_id_for_name(name: &str) -> String {
 /// leaves `field_ids` empty and an inserted/patched record is invisible to active
 /// expression/FTS indexes until a manual rebuild.
 ///
-/// Each display field `<name>` materializes `field_ids["f_<name>"] = value`. Stable
-/// ids that no longer correspond to any current display field are dropped so a
-/// patched-away field also leaves the index (the mutation owns the projection's
-/// stable-id view; unknown/forward-compat stable ids live in `unknown_fields`).
+/// Each display field `<name>` materializes/refreshes `field_ids["f_<name>"] =
+/// value`, **layered on top of** any existing stable ids rather than rebuilding
+/// the map. Existing schema-minted ids (e.g. `f_alice_0`, `f_dev.01_0`) are
+/// PRESERVED — a display-name `update`/`patch` must never drop them, which would
+/// strand the record from an expression/FTS index keyed to the real schema id and
+/// (because active FTS sync deletes-then-reinserts) make it disappear from search
+/// after an unrelated mutation (review 049). A brand-new insert starts with empty
+/// `field_ids`, so this yields exactly the `f_<name>` stand-ins.
+///
+/// Trade-off (M0a): storage has no schema name→id map, so a field patched away
+/// leaves its stand-in behind rather than risk dropping a real schema id; a stale
+/// stand-in is a far lesser fault than corrupting a record's stable identity.
 fn materialize_field_ids(env: &mut RecordEnvelope) {
-    env.field_ids = env
-        .fields
-        .iter()
-        .map(|(name, value)| (field_id_for_name(name), value.clone()))
-        .collect();
+    for (name, value) in &env.fields {
+        env.field_ids.insert(field_id_for_name(name), value.clone());
+    }
 }
 
 // --- Transaction-scoped record helpers (for grouped mutations) -------------
@@ -2784,6 +2790,70 @@ mod tests {
         assert!(
             mgr.fts_match(s.connection(), "notes", "f_body", "lunch").unwrap().is_empty(),
             "transact delete must drop the record from active FTS"
+        );
+    }
+
+    #[test]
+    fn mutation_preserves_existing_schema_field_ids_and_index_visibility() {
+        // Review 049: a display-name mutation must NOT clobber a record's
+        // schema-minted stable ids. Seed a record carrying `f_alice_0` and an FTS
+        // index keyed on it; a patch of an UNRELATED display field must keep
+        // `f_alice_0` present AND keep the record FTS-visible (the active-FTS sync
+        // deletes-then-reinserts reading `$.field_ids.f_alice_0`, so dropping that
+        // id would strand the record from search).
+        let mut s = store();
+        let mut mgr = IndexManager::new();
+
+        // Seed a record whose field_ids use a SCHEMA-minted id (not the f_<name>
+        // stand-in the mutation surface would mint).
+        let mut env = RecordEnvelope::new(
+            forge_domain::CollectionId::new("notes"),
+            forge_domain::RecordId::new("n1"),
+            [("title".to_string(), serde_json::json!("alpha beta gamma"))]
+                .into_iter()
+                .collect(),
+            forge_domain::LogicalTimestamp(1),
+        );
+        env.field_ids.insert("f_alice_0".into(), serde_json::json!("alpha beta gamma"));
+        s.put_record(&env).unwrap();
+
+        // FTS index over the schema id, populated from the canonical record.
+        s.create_index(&mut mgr, "notes", "f_alice_0", CreateIndexKind::Fts)
+            .expect("create fts index on the schema-minted id");
+        s.build_indexes(&mgr).unwrap();
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "beta").unwrap(),
+            vec!["n1".to_string()],
+            "baseline: record is FTS-visible on its schema id"
+        );
+
+        // Patch an UNRELATED display field through the DL-17 mutation surface.
+        let patch = Mutation::Patch {
+            collection: "notes".into(),
+            id: "n1".into(),
+            fields: serde_json::json!({"tag": "urgent"}).as_object().unwrap().clone(),
+            logical_at: Some(2),
+        };
+        s.apply_mutation(&patch, &mgr).unwrap();
+
+        let stored = s.get_record("notes", "n1").unwrap().unwrap();
+        // The schema id SURVIVES the mutation (the bug clobbered it to f_title/f_tag).
+        assert_eq!(
+            stored.field_ids.get("f_alice_0"),
+            Some(&serde_json::json!("alpha beta gamma")),
+            "schema-minted f_alice_0 must survive a display-name patch (review 049)"
+        );
+        // And the record is STILL FTS-visible on the schema id after the patch.
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "beta").unwrap(),
+            vec!["n1".to_string()],
+            "record must remain FTS-visible on its schema id after an unrelated patch"
+        );
+        // The new display field also got its stand-in (so it is itself indexable).
+        assert_eq!(
+            stored.field_ids.get("f_tag"),
+            Some(&serde_json::json!("urgent")),
+            "the patched display field still materializes its own stand-in id"
         );
     }
 
