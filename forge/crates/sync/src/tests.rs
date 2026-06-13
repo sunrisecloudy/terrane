@@ -16,7 +16,7 @@
 //!    one-directional catch-up, and an empty-peer catch-up.
 
 use super::*;
-use forge_storage::{IndexManager, Mutation, Store};
+use forge_storage::{CreateIndexKind, IndexManager, Mutation, Store};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -241,11 +241,12 @@ fn run_fixture(path: &std::path::Path) {
     apply_ops(&mut peer_a, &fx.peer_a, &idx, &mut clock);
     apply_ops(&mut peer_b, &fx.peer_b, &idx, &mut clock);
 
-    // Converge the two workspaces.
-    let report = sync_stores(&mut peer_a, &mut peer_b, &idx).unwrap();
+    // Converge the two workspaces. Both peers share the same (empty) index set in
+    // these fixtures, so each rebuilds against `idx` — passed per store now.
+    let report = sync_stores(&mut peer_a, &idx, &mut peer_b, &idx).unwrap();
 
     // A second sync must be a no-op (idempotent): the frontiers now match.
-    let again = sync_stores(&mut peer_a, &mut peer_b, &idx).unwrap();
+    let again = sync_stores(&mut peer_a, &idx, &mut peer_b, &idx).unwrap();
     assert_eq!(
         again.total_chunks_moved(),
         0,
@@ -336,10 +337,10 @@ fn second_sync_moves_no_chunks() {
     b.apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "b"}), 2), &idx)
         .unwrap();
 
-    let first = sync_stores(&mut a, &mut b, &idx).unwrap();
+    let first = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
     assert!(first.total_chunks_moved() > 0, "first sync should move chunks");
 
-    let second = sync_stores(&mut a, &mut b, &idx).unwrap();
+    let second = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
     assert_eq!(second.total_chunks_moved(), 0, "second sync must be a no-op");
 }
 
@@ -352,7 +353,7 @@ fn one_directional_catchup_brings_lagging_peer_current() {
     a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "only-on-a"}), 1), &idx)
         .unwrap();
 
-    let report = sync_stores(&mut a, &mut b, &idx).unwrap();
+    let report = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
     assert_eq!(report.chunks_a_to_b, 1, "the one write should move a->b");
     assert_eq!(report.chunks_b_to_a, 0, "b had nothing to send");
 
@@ -384,4 +385,116 @@ fn empty_peer_catches_up_via_pull() {
 
     // Re-pulling moves nothing (frontiers now match).
     assert_eq!(pull(&mut empty, &a, &idx).unwrap(), 0);
+}
+
+/// Review 084 #1 (P1): two peers with ASYMMETRIC active indexes must each rebuild
+/// against their OWN [`IndexManager`], so `sync_stores` is NOT order-dependent.
+///
+/// Peer A holds an active FTS index on `notes/f_body`; peer B holds NONE. Before
+/// the fix, `sync_stores` rebuilt BOTH stores with a single manager: rebuilding the
+/// FTS-less store against A's manager issued FTS DML against a table that store
+/// lacks (an error / corruption), and the reverse order left A's FTS index stale.
+/// With per-store managers neither happens, in either order.
+///
+/// The assertions, for both `(a, b)` and `(b, a)` argument orders:
+///   - sync returns `Ok` (no FTS-DML-against-missing-table error);
+///   - the two stores' record projections are byte-identical (convergence);
+///   - the FTS store's index is INTACT and queryable for BOTH peers' notes
+///     (A's own seeded note AND B's note that arrived only via sync);
+///   - the non-FTS store gained no FTS table.
+fn build_fts_peer(peer_id: u64, seed_note: (&str, &str)) -> (Store, IndexManager) {
+    let mut store = Store::open_in_memory().unwrap().with_crdt_peer_id(peer_id);
+    let mut idx = IndexManager::new();
+    // Seed one note so the FTS index has a live row, then activate the FTS index
+    // over the materialized `f_body` field id (DL-5).
+    store
+        .apply_mutation_crdt(
+            &insert("notes", seed_note.0, json!({ "body": seed_note.1 }), 1),
+            &idx,
+        )
+        .unwrap();
+    store
+        .create_index(&mut idx, "notes", "f_body", CreateIndexKind::Fts)
+        .expect("activate FTS index on notes/f_body");
+    (store, idx)
+}
+
+fn build_plain_peer(peer_id: u64, seed_note: (&str, &str)) -> (Store, IndexManager) {
+    let mut store = Store::open_in_memory().unwrap().with_crdt_peer_id(peer_id);
+    let idx = IndexManager::new();
+    store
+        .apply_mutation_crdt(
+            &insert("notes", seed_note.0, json!({ "body": seed_note.1 }), 2),
+            &idx,
+        )
+        .unwrap();
+    (store, idx)
+}
+
+/// Drive one sync direction and assert the post-sync invariants. `fts_first`
+/// selects which argument slot the FTS peer occupies, proving order-independence.
+fn assert_asymmetric_sync_converges(fts_first: bool) {
+    // Peer A: FTS-indexed, seeded with a note containing "offline".
+    let (mut a, a_idx) = build_fts_peer(101, ("a1", "offline sync keeps indexes honest"));
+    // Peer B: NO indexes, seeded with a note containing "lunch".
+    let (mut b, b_idx) = build_plain_peer(202, ("b1", "lunch plans for the whole team"));
+
+    // Run sync in the requested argument order — each store paired with ITS OWN
+    // index manager (the review 084 #1 contract).
+    let report = if fts_first {
+        sync_stores(&mut a, &a_idx, &mut b, &b_idx)
+    } else {
+        sync_stores(&mut b, &b_idx, &mut a, &a_idx)
+    }
+    .unwrap_or_else(|e| panic!("sync_stores(fts_first={fts_first}) errored: {e:?}"));
+    assert!(
+        report.total_chunks_moved() > 0,
+        "fts_first={fts_first}: the two divergent notes should move"
+    );
+
+    // Convergence: both stores hold the identical visible projection.
+    let proj_a = projection(&a, &["notes"]);
+    let proj_b = projection(&b, &["notes"]);
+    assert_eq!(
+        proj_a, proj_b,
+        "fts_first={fts_first}: peers disagree after asymmetric sync"
+    );
+    assert_eq!(
+        proj_a["notes"].len(),
+        2,
+        "fts_first={fts_first}: both notes (a1 + b1) should be present"
+    );
+
+    // The FTS store's index is INTACT and queryable for BOTH notes — its own
+    // seeded one AND b1, which arrived only through sync and was folded in by the
+    // rebuild against A's OWN manager.
+    assert_eq!(
+        a_idx
+            .fts_match(a.connection(), "notes", "f_body", "offline")
+            .unwrap(),
+        vec!["a1".to_string()],
+        "fts_first={fts_first}: A's own note dropped out of its FTS index"
+    );
+    assert_eq!(
+        a_idx
+            .fts_match(a.connection(), "notes", "f_body", "lunch")
+            .unwrap(),
+        vec!["b1".to_string()],
+        "fts_first={fts_first}: B's synced note was not indexed in A's FTS"
+    );
+
+    // The plain store never grew an FTS table: it rebuilt against its OWN (empty)
+    // manager, so a search against its connection finds no such index.
+    assert!(
+        b_idx.get_fts("notes", "f_body").is_none(),
+        "fts_first={fts_first}: the non-FTS peer must not have gained an FTS index"
+    );
+}
+
+#[test]
+fn asymmetric_indexes_sync_is_not_order_dependent() {
+    // FTS peer as `a` (the original failing order: rebuild the FTS-less store).
+    assert_asymmetric_sync_converges(true);
+    // FTS peer as `b` (the reverse order: A's own FTS index must not go stale).
+    assert_asymmetric_sync_converges(false);
 }

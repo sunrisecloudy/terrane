@@ -157,9 +157,13 @@ fn pull_doc(into: &mut Store, from: &Store, doc_id: &str) -> Result<usize> {
 /// superset of `from`'s chunks for every doc and rebuilds to include them.
 /// Returns the number of chunks imported into `into`.
 ///
-/// `indexes` is the active [`IndexManager`] whose physical indexes are rebuilt
-/// with the projection (DL-6); pass [`IndexManager::new`] when none are active.
-pub fn pull(into: &mut Store, from: &Store, indexes: &IndexManager) -> Result<usize> {
+/// `into_indexes` is the active [`IndexManager`] of the **`into`** store whose
+/// physical indexes are rebuilt with its projection (DL-6); pass
+/// [`IndexManager::new`] when none are active. It must be `into`'s OWN manager —
+/// index metadata is per-store and not part of the synced chunk payload, so
+/// rebuilding `into` against a foreign manager would issue index DML for tables
+/// `into` does not have (or skip the ones it does), leaving its indexes wrong.
+pub fn pull(into: &mut Store, from: &Store, into_indexes: &IndexManager) -> Result<usize> {
     let doc_ids = union_doc_ids(into, from)?;
     let mut moved = 0usize;
     for doc_id in &doc_ids {
@@ -167,7 +171,7 @@ pub fn pull(into: &mut Store, from: &Store, indexes: &IndexManager) -> Result<us
     }
     // Rebuild once after importing all docs: cheaper than per-doc, and the
     // projection is derived purely from the now-complete chunk history (DL-6).
-    into.rebuild_projection(indexes)?;
+    into.rebuild_projection(into_indexes)?;
     Ok(moved)
 }
 
@@ -194,14 +198,27 @@ fn union_doc_ids(a: &Store, b: &Store) -> Result<Vec<String>> {
 /// agreed LWW winner on both peers.
 ///
 /// Idempotent: a second `sync_stores` over an already-converged pair moves zero
-/// chunks ([`SyncReport::total_chunks_moved`] is `0`). `indexes` rebuilds active
-/// physical indexes with each projection (DL-6).
+/// chunks ([`SyncReport::total_chunks_moved`] is `0`).
+///
+/// Each store rebuilds against its OWN [`IndexManager`] — `a_indexes` for `a`,
+/// `b_indexes` for `b` (DL-6). Index metadata is per-store and is NOT part of the
+/// synced (chunk) payload, so the two peers may hold ASYMMETRIC active indexes
+/// (e.g. one has an FTS index on a collection the other does not). Rebuilding both
+/// against a single manager would be order-dependent and wrong: it would issue
+/// index DML for tables the other store lacks, or skip the indexes that store
+/// actually has and leave them stale. Pass [`IndexManager::new`] for a store with
+/// no active indexes.
 ///
 /// The exchange is staged so each direction diffs against the *pre-exchange*
 /// frontier: `a`'s missing chunks are computed from `a`'s original frontier, not
 /// one already mutated by `b`'s push. Both directions only move immutable
 /// history; the single projection rebuild per store happens after both pushes.
-pub fn sync_stores(a: &mut Store, b: &mut Store, indexes: &IndexManager) -> Result<SyncReport> {
+pub fn sync_stores(
+    a: &mut Store,
+    a_indexes: &IndexManager,
+    b: &mut Store,
+    b_indexes: &IndexManager,
+) -> Result<SyncReport> {
     let doc_ids = union_doc_ids(a, b)?;
 
     let mut chunks_a_to_b = 0usize;
@@ -229,9 +246,11 @@ pub fn sync_stores(a: &mut Store, b: &mut Store, indexes: &IndexManager) -> Resu
         }
     }
 
-    // Rebuild both projections from their (now-augmented) chunk histories (DL-6).
-    a.rebuild_projection(indexes)?;
-    b.rebuild_projection(indexes)?;
+    // Rebuild both projections from their (now-augmented) chunk histories (DL-6),
+    // each against its OWN index manager so asymmetric indexes stay correct and
+    // the result is independent of which store is `a` vs `b`.
+    a.rebuild_projection(a_indexes)?;
+    b.rebuild_projection(b_indexes)?;
 
     Ok(SyncReport {
         chunks_a_to_b,

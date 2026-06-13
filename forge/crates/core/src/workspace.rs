@@ -359,11 +359,22 @@ impl WorkspaceCore {
     /// callers that build peers for sync set this (the demo/single-writer default
     /// is the shared local id, which is fine until two workspaces are synced).
     pub fn sync_with(&mut self, other: &mut WorkspaceCore) -> Result<forge_sync::SyncReport> {
-        // Rebuild against THIS workspace's active indexes; `other` rebuilds its own
-        // projection inside sync_stores too. Index *metadata* is per-workspace and
-        // not part of the synced (chunk) payload yet, so passing one index manager
-        // keeps both projections materialized from canonical chunks (DL-6).
-        forge_sync::sync_stores(&mut self.store, &mut other.store, &self.indexes)
+        // Each store rebuilds its projection against its OWN index manager: this
+        // workspace's `self.indexes` for `self.store`, `other.indexes` for
+        // `other.store` (review 084 #1). Index metadata is per-workspace and NOT
+        // part of the synced (chunk) payload, so the two peers may hold asymmetric
+        // active indexes (e.g. one has an FTS index the other lacks). Passing a
+        // single manager for both rebuilds would be order-dependent and wrong —
+        // issuing index DML against tables the other store lacks, or skipping the
+        // indexes it does have and leaving them stale. Per-store managers keep both
+        // projections materialized from canonical chunks with each store's own
+        // indexes intact (DL-6).
+        forge_sync::sync_stores(
+            &mut self.store,
+            &self.indexes,
+            &mut other.store,
+            &other.indexes,
+        )
     }
 
     // ---------------------------------------------------------------- dispatch
