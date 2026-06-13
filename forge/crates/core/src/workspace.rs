@@ -336,6 +336,36 @@ impl WorkspaceCore {
         &mut self.store
     }
 
+    /// In-process CRDT sync (SS-1/SS-2, M0b): converge this workspace with
+    /// `other` by exchanging the chunk sets their two [`Store`]s hold, then
+    /// rebuilding both projections — the local CI seam before WebSocket transport
+    /// / relay / server RBAC exist (those are deferred; both peers are assumed
+    /// already authorized here).
+    ///
+    /// Delegates to [`forge_sync::sync_stores`] over the two stores: for the union
+    /// of `collection/<name>` docs it diffs the per-doc content-addressed chunk
+    /// frontiers, sends each peer the chunks the other lacks (append-only,
+    /// idempotent), and rebuilds the records projection on both. Afterwards the
+    /// two workspaces hold the same chunk set per doc and their projections
+    /// converge (DL-9): independent collections and different records merge,
+    /// concurrent edits to different fields of one record both survive, and a
+    /// concurrent same-scalar write resolves to one Loro LWW winner both peers
+    /// agree on. Idempotent — a second `sync_with` over an already-converged pair
+    /// moves zero chunks.
+    ///
+    /// For two peers' concurrent same-scalar edits to converge to one agreed
+    /// winner the two stores must mint CRDT ops under DISTINCT Loro peer ids
+    /// ([`Store::set_crdt_peer_id`](forge_storage::Store::set_crdt_peer_id));
+    /// callers that build peers for sync set this (the demo/single-writer default
+    /// is the shared local id, which is fine until two workspaces are synced).
+    pub fn sync_with(&mut self, other: &mut WorkspaceCore) -> Result<forge_sync::SyncReport> {
+        // Rebuild against THIS workspace's active indexes; `other` rebuilds its own
+        // projection inside sync_stores too. Index *metadata* is per-workspace and
+        // not part of the synced (chunk) payload yet, so passing one index manager
+        // keeps both projections materialized from canonical chunks (DL-6).
+        forge_sync::sync_stores(&mut self.store, &mut other.store, &self.indexes)
+    }
+
     // ---------------------------------------------------------------- dispatch
 
     /// Handle one [`CoreCommand`], returning a [`CoreResponse`]
