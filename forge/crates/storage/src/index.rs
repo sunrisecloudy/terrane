@@ -34,7 +34,9 @@
 //! out of the name nor the `WHERE collection = '…'` clause. A validation failure
 //! is a `QueryError`, never a silently-built bad index.
 
-use crate::query::{validate_index_ident, FieldRef, FullScanReason, Op, PlannerWarning, Query};
+use crate::query::{
+    field_id_json_path, validate_index_ident, FieldRef, FullScanReason, Op, PlannerWarning, Query,
+};
 use forge_domain::{CoreError, Result};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -232,7 +234,10 @@ impl IndexDef {
     /// collection literal in the partial predicate is single-quote escaped, so
     /// the DDL is injection-safe (DL-16-style structure safety).
     pub fn ddl(&self) -> String {
-        let json_path = format!("$.field_ids.{}", self.field_id);
+        // Double-quoted leaf key so a dotted field id addresses the literal key
+        // (must match the query predicate's path exactly, or SQLite would not
+        // consult the expression index). See `query::field_id_json_path`.
+        let json_path = field_id_json_path(&self.field_id);
         match self.kind {
             IndexKind::Expression => format!(
                 "CREATE INDEX IF NOT EXISTS {} ON records (json_extract(data, '{}')) WHERE collection = '{}';",
@@ -514,7 +519,7 @@ impl IndexManager {
     /// Repopulate an FTS5 shadow table from canonical `records`: one row per
     /// record in the collection, `value` extracted from `$.field_ids.<id>`.
     fn populate_fts(&self, conn: &Connection, def: &IndexDef) -> Result<()> {
-        let json_path = format!("$.field_ids.{}", def.field_id);
+        let json_path = field_id_json_path(&def.field_id);
         // Read (id, text) from canonical records; bind the collection.
         let select = "SELECT id, json_extract(data, ?1) FROM records \
                       WHERE collection = ?2 AND json_extract(data, '$.deleted') IS NOT 1";
@@ -739,7 +744,7 @@ fn op_uses_expression_index(op: Op) -> bool {
 /// a rebuild and an incremental sync agree byte-for-byte. The JSON is bound as a
 /// parameter; only the validated `field_id` is interpolated into the path.
 fn fts_value_for(conn: &Connection, def: &IndexDef, data_json: &str) -> Result<Option<String>> {
-    let json_path = format!("$.field_ids.{}", def.field_id);
+    let json_path = field_id_json_path(&def.field_id);
     // Skip tombstoned records: a deleted note must drop out of FTS.
     let row = conn
         .query_row(
@@ -786,7 +791,9 @@ mod tests {
             .unwrap();
         let ddl = def.ddl();
         assert!(ddl.contains("\"idx_records_tasks_f_alice_1\""));
-        assert!(ddl.contains("json_extract(data, '$.field_ids.f_alice_1')"));
+        // The leaf field-id key is double-quoted in the JSON path so a dotted id
+        // would address the literal key.
+        assert!(ddl.contains("json_extract(data, '$.field_ids.\"f_alice_1\"')"));
         assert!(ddl.contains("WHERE collection = 'tasks'"));
     }
 

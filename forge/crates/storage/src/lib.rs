@@ -584,9 +584,11 @@ impl Store {
     /// so the rows are still correct (records are canonical) while the planner
     /// surfaces the `fts_not_available` warning.
     fn text_search_scan(&self, q: &Query, ts: &query::TextSearch) -> Result<Vec<String>> {
+        // Use the same double-quoted JSON path the planner/index DDL emit, so a
+        // dotted field id resolves to the literal key (not a nested path).
         let path = match &ts.field {
-            query::FieldRef::Id(id) => format!("$.field_ids.{id}"),
-            query::FieldRef::Name(n) => format!("$.fields.{n}"),
+            query::FieldRef::Id(id) => query::field_id_json_path(id),
+            query::FieldRef::Name(n) => format!("$.fields.{}", query::quote_json_path_key(n)),
         };
         let sql = "SELECT id, json_extract(data, ?1) FROM records \
                    WHERE collection = ?2 AND json_extract(data, '$.deleted') IS NOT 1";
@@ -1990,6 +1992,139 @@ mod tests {
             }
             other => panic!("expected groups, got {other:?}"),
         }
+    }
+
+    /// Review 040 finding 3: `eq`/`ne`/`in` over a JSON boolean must not coerce
+    /// to numbers. On one collection where the same field holds a boolean on some
+    /// records and a numeric 0/1 on others, `done.eq(false)` matches ONLY the
+    /// boolean-false record (not the stored numeric 0), and `eq(true)` matches
+    /// only boolean-true (not numeric 1). `json_extract` renders both as SQL 0/1,
+    /// so without the json_type guard this silently over-matches.
+    #[test]
+    fn query_boolean_eq_does_not_coerce_numeric_zero_or_one() {
+        let s = store();
+        let mut bf = sample_record("flags", "bool_false", "bf");
+        bf.fields.insert("done".into(), serde_json::json!(false));
+        let mut bt = sample_record("flags", "bool_true", "bt");
+        bt.fields.insert("done".into(), serde_json::json!(true));
+        let mut n0 = sample_record("flags", "num_0", "n0");
+        n0.fields.insert("done".into(), serde_json::json!(0));
+        let mut n1 = sample_record("flags", "num_1", "n1");
+        n1.fields.insert("done".into(), serde_json::json!(1));
+        for r in [&bf, &bt, &n0, &n1] {
+            s.put_record(r).unwrap();
+        }
+
+        // eq(false) -> only the boolean false, NOT numeric 0.
+        let q = plan(serde_json::json!({"from": "flags", "where": ["done", "=", false]}));
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["bool_false"], "eq(false) must not match numeric 0");
+        // eq(true) -> only the boolean true, NOT numeric 1.
+        let qt = plan(serde_json::json!({"from": "flags", "where": ["done", "=", true]}));
+        assert_eq!(s.query(&qt).unwrap().ids(), vec!["bool_true"], "eq(true) must not match numeric 1");
+    }
+
+    #[test]
+    fn query_boolean_ne_and_in_do_not_coerce_numbers() {
+        let s = store();
+        let mut bf = sample_record("flags", "bool_false", "bf");
+        bf.fields.insert("done".into(), serde_json::json!(false));
+        let mut bt = sample_record("flags", "bool_true", "bt");
+        bt.fields.insert("done".into(), serde_json::json!(true));
+        let mut n0 = sample_record("flags", "num_0", "n0");
+        n0.fields.insert("done".into(), serde_json::json!(0));
+        for r in [&bf, &bt, &n0] {
+            s.put_record(r).unwrap();
+        }
+
+        // ne(false): boolean-true and numeric-0 both DIFFER from boolean false;
+        // only boolean-false is excluded.
+        let qne = plan(serde_json::json!({"from": "flags", "where": ["done", "!=", false]}));
+        assert_eq!(
+            s.query(&qne).unwrap().ids(),
+            vec!["bool_true", "num_0"],
+            "ne(false) must treat numeric 0 as differing"
+        );
+        // in [false]: only the boolean false, NOT numeric 0.
+        let qin = plan(serde_json::json!({"from": "flags", "where": ["done", "in", [false]]}));
+        assert_eq!(s.query(&qin).unwrap().ids(), vec!["bool_false"], "in[false] must not match numeric 0");
+    }
+
+    /// Review 041 finding 5: a stable field id containing a `.` (e.g. `f_dev.01_0`,
+    /// mintable from an actor id `dev.01`) must address the literal JSON key, not
+    /// a nested json1 path. Filter, index DDL, and FTS all read the same quoted
+    /// path, so a query over a dotted id returns the right rows and an index over
+    /// it is actually consulted.
+    #[test]
+    fn query_with_dotted_field_id_addresses_literal_key() {
+        let s = store();
+        let mut a = sample_record("tasks", "t1", "a");
+        a.field_ids.insert("f_dev.01_0".into(), serde_json::json!("open"));
+        let mut b = sample_record("tasks", "t2", "b");
+        b.field_ids.insert("f_dev.01_0".into(), serde_json::json!("closed"));
+        s.put_record(&a).unwrap();
+        s.put_record(&b).unwrap();
+
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": [{"field_id": "f_dev.01_0", "op": "eq", "value": "open"}]
+        }))
+        .unwrap();
+        // Without the quoted path this returns [] (json1 reads NULL for the dotted
+        // path) instead of the matching row.
+        assert_eq!(s.query(&q).unwrap().ids(), vec!["t1"], "dotted field id must read the literal key");
+    }
+
+    #[test]
+    fn value_index_over_dotted_field_id_is_consulted() {
+        let s = store();
+        let mut a = sample_record("tasks", "t1", "a");
+        a.field_ids.insert("f_dev.01_0".into(), serde_json::json!("open"));
+        s.put_record(&a).unwrap();
+        let mut mgr = IndexManager::new();
+        s.create_index(&mut mgr, "tasks", "f_dev.01_0", CreateIndexKind::Value)
+            .unwrap();
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": [{"field_id": "f_dev.01_0", "op": "eq", "value": "open"}]
+        }))
+        .unwrap();
+        let planned = s.query_planned(&q, &mgr).unwrap();
+        assert!(planned.uses_index, "index over dotted field id must be usable");
+        assert_eq!(planned.ids(), vec!["t1"], "indexed query over dotted id returns the row");
+        // The expression index over the quoted path is the one SQLite consults.
+        let plan: String = s
+            .connection()
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM records \
+                 WHERE collection = 'tasks' AND json_extract(data, '$.field_ids.\"f_dev.01_0\"') = 'open'",
+                [],
+                |r| r.get::<_, String>(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("idx_records_tasks_f_dev.01_0"),
+            "SQLite must consult the dotted-id expression index, got: {plan}"
+        );
+    }
+
+    #[test]
+    fn fts_over_dotted_field_id_matches() {
+        let s = store();
+        let mut env = RecordEnvelope::new(
+            CollectionId::new("notes"),
+            RecordId::new("n1"),
+            fields(&[("body", serde_json::json!("offline rebuild keeps indexes honest"))]),
+            LogicalTimestamp(1),
+        );
+        env.field_ids
+            .insert("f_dev.01_0".into(), serde_json::json!("offline rebuild keeps indexes honest"));
+        s.put_record(&env).unwrap();
+        let mut mgr = IndexManager::new();
+        s.create_index(&mut mgr, "notes", "f_dev.01_0", CreateIndexKind::Fts)
+            .unwrap();
+        // Populated from the literal dotted key, so the term is searchable.
+        let hits = mgr.fts_match(s.connection(), "notes", "f_dev.01_0", "offline").unwrap();
+        assert_eq!(hits, vec!["n1".to_string()], "FTS over a dotted field id must mirror the literal key");
     }
 
     // --- Mutations (DL-17) -----------------------------------------------

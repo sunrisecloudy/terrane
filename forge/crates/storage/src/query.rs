@@ -18,12 +18,16 @@
 //! Query plans address fields two ways and the planner resolves each to a
 //! distinct canonical envelope JSON path:
 //!
-//! - **Display name** (`status`, `prio`) → `$.fields.<name>` — applet
+//! - **Display name** (`status`, `prio`) → `$.fields."<name>"` — applet
 //!   ergonomics; the query-DSL surface.
-//! - **Stable field id** (`f_alice_1`) → `$.field_ids.<id>` — the merge/index
+//! - **Stable field id** (`f_alice_1`) → `$.field_ids."<id>"` — the merge/index
 //!   correct addressing the dynamic-index engine and its fixtures use
 //!   (`dynamic-indexes.md`). A `field_id` key in a plan resolves to the
 //!   stable-id path, never the display path.
+//!
+//! The leaf key is always **double-quoted** in the JSON path so an identifier
+//! containing a `.` (e.g. a field id `f_dev.01_0`) addresses the literal key
+//! rather than a nested JSON1 path. See [`FieldRef::json_path`].
 //!
 //! Either path component is validated against an identifier allowlist before it
 //! is placed in the (otherwise constant) statement text, so a field reference
@@ -136,12 +140,37 @@ impl FieldRef {
     /// The canonical envelope JSON path this reference resolves to. The inner
     /// name is validated by [`validate_ident`] before reaching here, so the
     /// returned path can never carry SQL.
+    ///
+    /// The leaf identifier is **double-quoted** (`$.field_ids."<id>"`) so a
+    /// stable field id that contains a `.` (e.g. `f_dev.01_0`, mintable from an
+    /// actor id like `dev.01`) addresses the literal key instead of being parsed
+    /// by JSON1 as nested keys (`field_ids.f_dev.01.0`), which would silently
+    /// read `NULL`. The allowlist forbids a `"` in the identifier, so the quote
+    /// cannot be escaped; we still double any quote defensively.
     fn json_path(&self) -> String {
         match self {
-            FieldRef::Name(s) => format!("$.fields.{s}"),
-            FieldRef::Id(s) => format!("$.field_ids.{s}"),
+            FieldRef::Name(s) => format!("$.fields.{}", quote_json_path_key(s)),
+            FieldRef::Id(s) => format!("$.field_ids.{}", quote_json_path_key(s)),
         }
     }
+}
+
+/// Double-quote a validated JSON-path key segment per JSON1's quoting rule, so a
+/// key containing a `.`/`-`/`/` addresses the literal key rather than a nested
+/// path. The key is already restricted to `[A-Za-z0-9_./-]` by
+/// [`validate_ident`], so it can never contain a `"`; we double any quote anyway
+/// as belt-and-suspenders. Exposed to the index/text modules so the expression
+/// index DDL and the query predicate compile to the **identical** path string
+/// (a mismatch would silently disable the index).
+pub(crate) fn quote_json_path_key(key: &str) -> String {
+    format!("\"{}\"", key.replace('"', "\"\""))
+}
+
+/// The canonical `$.field_ids."<id>"` JSON path for a stable field id, with the
+/// id double-quoted (see [`quote_json_path_key`]). Used by the index DDL / FTS
+/// population / text-search scan so every surface reads the same JSON1 path.
+pub(crate) fn field_id_json_path(field_id: &str) -> String {
+    format!("$.field_ids.{}", quote_json_path_key(field_id))
 }
 
 /// A single leaf predicate: `<field> <op> <value>`.
@@ -624,6 +653,24 @@ fn type_expr(field: &FieldRef) -> String {
     format!("json_type(data, '{}')", field_path(field))
 }
 
+/// A single equality term `<col> = ?N`, type-guarded so a JSON boolean operand
+/// cannot coerce-match a numeric `0`/`1`.
+///
+/// `json_extract` (and a bound `serde_json::Bool`) both render a JSON boolean as
+/// the SQL integers `0`/`1`, which collide with a stored JSON number `0`/`1`
+/// (verified against SQLite's json1). `json_type` *does* distinguish them
+/// (`'true'`/`'false'` vs `'integer'`/`'real'`), so when the operand is a boolean
+/// we require the stored value to itself be a JSON boolean. This enforces the
+/// query-dsl.md §Result rule that comparisons do not coerce types — the same rule
+/// that makes `"2" > 10` an error — for the canonical `f.done.eq(false)` case.
+fn eq_term(col: &str, ty: &str, value: &serde_json::Value, bind: usize) -> String {
+    if value.is_boolean() {
+        format!("({ty} IN ('true','false') AND {col} = ?{bind})")
+    } else {
+        format!("{col} = ?{bind}")
+    }
+}
+
 fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<String> {
     let col = extract_expr(&p.field);
     match p.op {
@@ -641,10 +688,17 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
                 return Ok(expr);
             }
             let bind = bind_index(params, &p.value)?;
+            let ty = type_expr(&p.field);
             // NULL/missing never equals a concrete value; for `ne` it should be
-            // true (the value differs), so guard explicitly.
+            // true (the value differs), so guard explicitly. Booleans carry an
+            // extra json_type guard so `eq(false)` does not also match a stored
+            // numeric `0` (and a stored `0` *does* differ for `ne(false)`).
             if p.op == Op::Eq {
-                Ok(format!("{col} = ?{bind}"))
+                Ok(eq_term(&col, &ty, &p.value, bind))
+            } else if p.value.is_boolean() {
+                Ok(format!(
+                    "({col} IS NULL OR {ty} NOT IN ('true','false') OR {col} <> ?{bind})"
+                ))
             } else {
                 Ok(format!("({col} IS NULL OR {col} <> ?{bind})"))
             }
@@ -688,7 +742,12 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
                     p.field.as_str()
                 )));
             }
-            let mut placeholders = Vec::with_capacity(arr.len());
+            // `in` is a disjunction of type-guarded equality terms (the same
+            // [`eq_term`] eq uses), so a boolean member cannot coerce-match a
+            // stored numeric `0`/`1`. A plain `col IN (...)` would reintroduce the
+            // bool/number collision because json1 renders both as integer `0`/`1`.
+            let ty = type_expr(&p.field);
+            let mut terms = Vec::with_capacity(arr.len());
             for val in arr {
                 if val.is_null() || val.is_array() || val.is_object() {
                     return Err(CoreError::QueryError(format!(
@@ -697,9 +756,9 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
                     )));
                 }
                 let bind = bind_index(params, val)?;
-                placeholders.push(format!("?{bind}"));
+                terms.push(eq_term(&col, &ty, val, bind));
             }
-            Ok(format!("{col} IN ({})", placeholders.join(", ")))
+            Ok(format!("({})", terms.join(" OR ")))
         }
         Op::Like => {
             let pat = p.value.as_str().ok_or_else(|| {
@@ -1220,6 +1279,84 @@ mod tests {
         let q = plan(json!({"from": "t", "where": ["status", "in", []]}));
         let err = compile_select(&q).unwrap_err();
         assert_eq!(err.code(), "QueryError");
+    }
+
+    // --- no boolean<->number coercion (review 040 finding 3) --------------
+
+    #[test]
+    fn eq_boolean_compiles_a_json_type_guard() {
+        // `done.eq(false)` must require the stored value to be a JSON boolean, so
+        // it cannot also match a stored numeric 0. A non-boolean operand keeps the
+        // plain equality (no needless guard).
+        let qb = plan(json!({"from": "t", "where": ["done", "=", false]}));
+        let cb = compile_select(&qb).unwrap();
+        assert!(
+            cb.sql.contains("json_type") && cb.sql.contains("'true','false'"),
+            "boolean eq must carry the type guard: {}",
+            cb.sql
+        );
+        let qs = plan(json!({"from": "t", "where": ["status", "=", "todo"]}));
+        let cs = compile_select(&qs).unwrap();
+        assert!(!cs.sql.contains("json_type"), "string eq needs no guard: {}", cs.sql);
+    }
+
+    #[test]
+    fn ne_boolean_compiles_a_json_type_guard() {
+        // `done.ne(false)` must treat a stored numeric 0 (or a missing field) as
+        // differing, so the compiled predicate guards on json_type.
+        let q = plan(json!({"from": "t", "where": ["done", "!=", true]}));
+        let c = compile_select(&q).unwrap();
+        assert!(
+            c.sql.contains("NOT IN ('true','false')"),
+            "boolean ne must carry the type guard: {}",
+            c.sql
+        );
+    }
+
+    #[test]
+    fn in_with_boolean_member_guards_each_term() {
+        // `in [false]` is a disjunction of type-guarded equality terms, so a
+        // boolean member cannot coerce-match a stored numeric 0.
+        let q = plan(json!({"from": "t", "where": ["done", "in", [false]]}));
+        let c = compile_select(&q).unwrap();
+        assert!(
+            c.sql.contains("json_type") && c.sql.contains("'true','false'"),
+            "boolean `in` member must carry the type guard: {}",
+            c.sql
+        );
+    }
+
+    // --- dotted field-id JSON paths (review 041 finding 5) ----------------
+
+    #[test]
+    fn dotted_field_id_path_is_double_quoted() {
+        // A stable field id containing a `.` (mintable from an actor id like
+        // `dev.01`) must address the literal key `$.field_ids."f_dev.01_0"`, not
+        // the nested path `$.field_ids.f_dev.01.0` (which json1 reads as NULL).
+        let q = Query::from_fixture_value(&json!({
+            "from": "tasks",
+            "where": [{"field_id": "f_dev.01_0", "op": "eq", "value": "x"}]
+        }))
+        .unwrap();
+        let c = compile_select(&q).unwrap();
+        assert!(
+            c.sql.contains("$.field_ids.\"f_dev.01_0\""),
+            "dotted field id must use a quoted JSON path: {}",
+            c.sql
+        );
+        // And the canonical helper agrees.
+        assert_eq!(field_id_json_path("f_dev.01_0"), "$.field_ids.\"f_dev.01_0\"");
+    }
+
+    #[test]
+    fn display_name_path_is_double_quoted_too() {
+        let q = plan(json!({"from": "t", "where": ["status", "=", "todo"]}));
+        let c = compile_select(&q).unwrap();
+        assert!(
+            c.sql.contains("$.fields.\"status\""),
+            "display name must use a quoted JSON path: {}",
+            c.sql
+        );
     }
 
     // --- coercion rule: no type coercion (query-dsl.md §Result) -----------

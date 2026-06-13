@@ -281,11 +281,13 @@ fn expression_index_is_physically_present_and_consulted() {
         .unwrap();
     assert_eq!(n, 1, "expression index must be created");
 
-    // SQLite's planner consults it for the indexed equality predicate.
+    // SQLite's planner consults it for the indexed equality predicate. The path
+    // is double-quoted at the leaf key (matching the index DDL); SQLite only
+    // consults the expression index when the query expression is byte-identical.
     let plan: String = conn
         .query_row(
             "EXPLAIN QUERY PLAN SELECT id FROM records \
-             WHERE collection = 'tasks' AND json_extract(data, '$.field_ids.f_alice_1') = 'open'",
+             WHERE collection = 'tasks' AND json_extract(data, '$.field_ids.\"f_alice_1\"') = 'open'",
             [],
             |r| r.get::<_, String>(3),
         )
