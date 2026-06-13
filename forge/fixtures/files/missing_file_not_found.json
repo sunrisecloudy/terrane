@@ -1,0 +1,45 @@
+{
+  "case": "missing_file_not_found",
+  "grant": {
+    "files": {
+      "read": [
+        {
+          "handle": "workspace_data",
+          "path_glob": "data/*.json",
+          "max_bytes": 65536,
+          "content_types": [
+            "application/json"
+          ]
+        }
+      ],
+      "write": []
+    }
+  },
+  "resolved_handles": {
+    "workspace_data": {
+      "root": "<applet-sandbox>/workspace_data",
+      "kind": "per_applet_root"
+    }
+  },
+  "filesystem": {
+    "files": [],
+    "symlinks": []
+  },
+  "op": {
+    "kind": "read",
+    "handle": "workspace_data",
+    "path": "data/missing.json",
+    "encoding": "base64"
+  },
+  "expect": "error",
+  "error": {
+    "kind": "StorageError",
+    "detail_contains": "not_found"
+  },
+  "trace_expectation": {
+    "method": "files.read",
+    "denial_recorded": false,
+    "error_recorded": true
+  },
+  "reason": "a missing file under an otherwise valid grant is a clean not_found error, not a permission denial or panic"
+}

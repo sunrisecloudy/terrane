@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium
@@ -52,4 +52,30 @@ declared grant is absent from the manifest entirely -> rejected.
 
 ## Result
 
-(codex fills this in)
+Added:
+
+- `forge/spec/files.md`
+- `forge/fixtures/files/manifest.json`
+- 12 fixture cases under `forge/fixtures/files/`
+
+Proposed manifest grant shape:
+
+```json
+{
+  "files": {
+    "read": [{ "handle": "workspace_data", "path_glob": "data/**/*.json", "max_bytes": 65536 }],
+    "write": [{ "handle": "workspace_data", "path_glob": "drafts/*.txt", "max_bytes": 65536 }]
+  }
+}
+```
+
+The `handle` is a logical, user/workspace-granted id resolved by trusted policy
+to a per-applet sandbox root. The manifest never chooses a native absolute root.
+
+Coverage includes: granted read, outside-grant read, write without write grant,
+`..` traversal, absolute path, symlink escape, nested `**` read, write then
+read-back, clean not_found, special characters, deterministic replay of recorded
+read bytes, and absent `files` capability. The handoff referenced
+`prd-merged/05-runtime-prd.md`; the live CR-3 source is
+`prd-merged/01-core-runtime-prd.md`, with security gates in
+`prd-merged/07-security-prd.md`, so the spec cites those.

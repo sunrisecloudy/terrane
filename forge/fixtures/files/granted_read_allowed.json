@@ -1,0 +1,59 @@
+{
+  "case": "granted_read_allowed",
+  "grant": {
+    "files": {
+      "read": [
+        {
+          "handle": "workspace_data",
+          "path_glob": "data/*.json",
+          "max_bytes": 65536,
+          "content_types": [
+            "application/json"
+          ]
+        }
+      ],
+      "write": []
+    }
+  },
+  "resolved_handles": {
+    "workspace_data": {
+      "root": "<applet-sandbox>/workspace_data",
+      "kind": "per_applet_root"
+    }
+  },
+  "filesystem": {
+    "files": [
+      {
+        "path": "data/settings.json",
+        "bytes_base64": "eyJvayI6dHJ1ZX0=",
+        "content_type": "application/json"
+      }
+    ],
+    "symlinks": []
+  },
+  "op": {
+    "kind": "read",
+    "handle": "workspace_data",
+    "path": "data/settings.json",
+    "encoding": "base64"
+  },
+  "expect": "allowed",
+  "response": {
+    "path": "data/settings.json",
+    "bytes_base64": "eyJvayI6dHJ1ZX0=",
+    "size": 11,
+    "content_type": "application/json"
+  },
+  "trace_expectation": {
+    "method": "files.read",
+    "args": [
+      {
+        "handle": "workspace_data",
+        "path": "data/settings.json",
+        "encoding": "base64"
+      }
+    ],
+    "replay_touches_filesystem": false
+  },
+  "reason": "the actor has a read grant for the handle and the normalized path matches data/*.json"
+}

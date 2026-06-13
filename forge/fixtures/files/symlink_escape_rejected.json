@@ -1,0 +1,51 @@
+{
+  "case": "symlink_escape_rejected",
+  "grant": {
+    "files": {
+      "read": [
+        {
+          "handle": "workspace_data",
+          "path_glob": "links/*.md",
+          "max_bytes": 65536,
+          "content_types": [
+            "text/markdown"
+          ]
+        }
+      ],
+      "write": []
+    }
+  },
+  "resolved_handles": {
+    "workspace_data": {
+      "root": "<applet-sandbox>/workspace_data",
+      "kind": "per_applet_root"
+    }
+  },
+  "filesystem": {
+    "files": [],
+    "symlinks": [
+      {
+        "path": "links/outside.md",
+        "target": "../../outside/secrets.md",
+        "target_resolves_outside_root": true
+      }
+    ]
+  },
+  "op": {
+    "kind": "read",
+    "handle": "workspace_data",
+    "path": "links/outside.md",
+    "encoding": "base64"
+  },
+  "expect": "rejected",
+  "error": {
+    "kind": "PermissionDenied",
+    "detail_contains": "symlink target escapes handle root"
+  },
+  "trace_expectation": {
+    "method": "files.read",
+    "denial_recorded": true,
+    "filesystem_touched": "metadata_only_no_open"
+  },
+  "reason": "glob match is not enough; the canonical symlink target must remain inside the per-applet root"
+}

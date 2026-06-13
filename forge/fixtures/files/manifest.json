@@ -1,0 +1,105 @@
+{
+  "suite": "files-capability-validation-vectors",
+  "version": 1,
+  "spec": "../../spec/files.md",
+  "prd": [
+    "CR-1",
+    "CR-3",
+    "CR-4",
+    "CR-8",
+    "CR-9",
+    "SC-1",
+    "SC-8",
+    "SC-10",
+    "SC-12"
+  ],
+  "grant_shape": {
+    "capabilities": {
+      "files": {
+        "read": [
+          {
+            "handle": "workspace_data",
+            "path_glob": "data/**/*.json",
+            "max_bytes": 65536,
+            "content_types": [
+              "application/json"
+            ]
+          }
+        ],
+        "write": [
+          {
+            "handle": "workspace_data",
+            "path_glob": "drafts/*.txt",
+            "max_bytes": 65536,
+            "content_types": [
+              "text/plain"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "count": 12,
+  "cases": [
+    {
+      "case": "granted_read_allowed",
+      "expect": "allowed",
+      "file": "granted_read_allowed.json"
+    },
+    {
+      "case": "read_outside_grant_rejected",
+      "expect": "capability_required",
+      "file": "read_outside_grant_rejected.json"
+    },
+    {
+      "case": "write_without_write_grant_rejected",
+      "expect": "capability_required",
+      "file": "write_without_write_grant_rejected.json"
+    },
+    {
+      "case": "parent_traversal_rejected",
+      "expect": "permission_denied",
+      "file": "parent_traversal_rejected.json"
+    },
+    {
+      "case": "absolute_path_rejected",
+      "expect": "permission_denied",
+      "file": "absolute_path_rejected.json"
+    },
+    {
+      "case": "symlink_escape_rejected",
+      "expect": "permission_denied",
+      "file": "symlink_escape_rejected.json"
+    },
+    {
+      "case": "nested_allowed_read",
+      "expect": "allowed",
+      "file": "nested_allowed_read.json"
+    },
+    {
+      "case": "write_then_read_back_allowed",
+      "expect": "allowed",
+      "file": "write_then_read_back_allowed.json"
+    },
+    {
+      "case": "missing_file_not_found",
+      "expect": "not_found",
+      "file": "missing_file_not_found.json"
+    },
+    {
+      "case": "special_chars_within_grant_allowed",
+      "expect": "allowed",
+      "file": "special_chars_within_grant_allowed.json"
+    },
+    {
+      "case": "deterministic_replay_recorded_read",
+      "expect": "replay_byte_identical",
+      "file": "deterministic_replay_recorded_read.json"
+    },
+    {
+      "case": "absent_files_capability_rejected",
+      "expect": "capability_required",
+      "file": "absent_files_capability_rejected.json"
+    }
+  ]
+}

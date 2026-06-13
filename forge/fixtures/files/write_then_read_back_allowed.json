@@ -1,0 +1,75 @@
+{
+  "case": "write_then_read_back_allowed",
+  "grant": {
+    "files": {
+      "read": [
+        {
+          "handle": "workspace_data",
+          "path_glob": "drafts/*.txt",
+          "max_bytes": 65536,
+          "content_types": [
+            "text/plain"
+          ]
+        }
+      ],
+      "write": [
+        {
+          "handle": "workspace_data",
+          "path_glob": "drafts/*.txt",
+          "max_bytes": 65536,
+          "content_types": [
+            "text/plain"
+          ]
+        }
+      ]
+    }
+  },
+  "resolved_handles": {
+    "workspace_data": {
+      "root": "<applet-sandbox>/workspace_data",
+      "kind": "per_applet_root"
+    }
+  },
+  "filesystem_before": {
+    "files": [],
+    "symlinks": []
+  },
+  "ops": [
+    {
+      "kind": "write",
+      "handle": "workspace_data",
+      "path": "drafts/note.txt",
+      "bytes_base64": "ZHJhZnQgdjE=",
+      "content_type": "text/plain",
+      "mode": "create_or_truncate"
+    },
+    {
+      "kind": "read",
+      "handle": "workspace_data",
+      "path": "drafts/note.txt",
+      "encoding": "base64"
+    }
+  ],
+  "expect": "allowed",
+  "responses": [
+    {
+      "path": "drafts/note.txt",
+      "written_bytes": 8,
+      "version": "file_version_1"
+    },
+    {
+      "path": "drafts/note.txt",
+      "bytes_base64": "ZHJhZnQgdjE=",
+      "size": 8,
+      "content_type": "text/plain"
+    }
+  ],
+  "trace_expectation": {
+    "methods": [
+      "files.write",
+      "files.read"
+    ],
+    "replay_touches_filesystem": false
+  },
+  "reason": "the same handle has explicit read and write grants for the path, so record mode may write then read the bytes back"
+}
