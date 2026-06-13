@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "case": "editor_schema_change_rejected",
+  "coverage": ["SS-7", "SC-9", "SC-10", "SC-11", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-editor-3",
+    "role": "editor",
+    "db_read": ["tasks"],
+    "db_write": ["tasks"],
+    "schema_write": false
+  },
+  "incoming_claim": {
+    "actor_id": "actor-editor-3",
+    "role": "editor",
+    "db_read": ["tasks"],
+    "db_write": ["tasks"],
+    "schema_write": true
+  },
+  "incoming": {
+    "frame": "live_update",
+    "doc_id": "schema/tasks",
+    "metadata": {
+      "resource_type": "schema",
+      "op": "schema_change",
+      "schema_id": "tasks",
+      "from_schema_version": 1,
+      "to_schema_version": 2,
+      "compatible": true
+    },
+    "schema_op": {
+      "op": "remove_required_field",
+      "schema": "tasks",
+      "field": "title"
+    }
+  },
+  "expect": {
+    "decision": "rejected",
+    "error_frame": "permission_denied",
+    "audit": {
+      "action": "sync.schema.change",
+      "decision": "deny",
+      "reason_contains": "editor lacks trusted schema_write"
+    },
+    "apply": {
+      "import_chunk": false,
+      "rebuild_projection": false
+    }
+  },
+  "assertions": [
+    "incoming schema_write claim is ignored because trusted_peer.schema_write is false",
+    "schema-changing operations require owner or maintainer"
+  ]
+}

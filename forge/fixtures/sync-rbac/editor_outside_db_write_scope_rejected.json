@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "case": "editor_outside_db_write_scope_rejected",
+  "coverage": ["SS-7", "SC-9", "SC-10", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-editor-2",
+    "role": "editor",
+    "db_read": ["notes", "tasks"],
+    "db_write": ["notes"],
+    "schema_write": false
+  },
+  "incoming_claim": {
+    "actor_id": "actor-editor-2",
+    "role": "editor",
+    "db_read": ["notes", "tasks"],
+    "db_write": ["notes"],
+    "schema_write": false
+  },
+  "incoming": {
+    "frame": "chunk_response",
+    "doc_id": "collection/tasks",
+    "metadata": {
+      "resource_type": "record",
+      "op": "patch",
+      "collection": "tasks",
+      "record_id": "task-102",
+      "schema_version": 1,
+      "touched_records": ["tasks/task-102"]
+    },
+    "record_op": {
+      "op": "patch",
+      "collection": "tasks",
+      "id": "task-102",
+      "fields": {
+        "status": "done"
+      }
+    }
+  },
+  "expect": {
+    "decision": "rejected",
+    "error_frame": "permission_denied",
+    "audit": {
+      "action": "sync.record.patch",
+      "decision": "deny",
+      "reason_contains": "trusted db.write does not include tasks"
+    },
+    "apply": {
+      "import_chunk": false,
+      "rebuild_projection": false
+    }
+  },
+  "assertions": [
+    "editor role is insufficient without trusted collection write grant",
+    "collection grants are exact unless wildcard is present"
+  ]
+}

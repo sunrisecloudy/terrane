@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "case": "authorized_concurrent_edit_applied_converges",
+  "coverage": ["SS-7", "SC-9", "SC-10", "SC-11", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-editor-4",
+    "role": "editor",
+    "db_read": ["tasks"],
+    "db_write": ["tasks"],
+    "schema_write": false
+  },
+  "incoming_claim": {
+    "actor_id": "actor-editor-4",
+    "role": "editor",
+    "db_read": ["tasks"],
+    "db_write": ["tasks"],
+    "schema_write": false
+  },
+  "local_concurrent_op": {
+    "actor_id": "actor-owner-local",
+    "op": "patch",
+    "collection": "tasks",
+    "id": "task-106",
+    "fields": {
+      "priority": "high"
+    }
+  },
+  "incoming": {
+    "frame": "live_update",
+    "doc_id": "collection/tasks",
+    "metadata": {
+      "resource_type": "record",
+      "op": "patch",
+      "collection": "tasks",
+      "record_id": "task-106",
+      "schema_version": 1,
+      "touched_records": ["tasks/task-106"]
+    },
+    "record_op": {
+      "op": "patch",
+      "collection": "tasks",
+      "id": "task-106",
+      "fields": {
+        "status": "done"
+      }
+    }
+  },
+  "expect": {
+    "decision": "applied",
+    "error_frame": null,
+    "audit": {
+      "action": "sync.record.patch",
+      "decision": "allow",
+      "reason_contains": "trusted editor has db.write on tasks"
+    },
+    "apply": {
+      "import_chunk": true,
+      "rebuild_projection": true
+    },
+    "convergence": {
+      "record_id": "task-106",
+      "eventual_fields": {
+        "priority": "high",
+        "status": "done"
+      }
+    }
+  },
+  "assertions": [
+    "authorization precedes convergence handling",
+    "authorized concurrent edit is imported and converges with local edit"
+  ]
+}

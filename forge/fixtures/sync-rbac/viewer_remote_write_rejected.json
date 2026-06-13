@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "case": "viewer_remote_write_rejected",
+  "coverage": ["SS-7", "SS-9", "SC-10", "SC-11", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-viewer-1",
+    "role": "viewer",
+    "db_read": ["tasks"],
+    "db_write": [],
+    "schema_write": false
+  },
+  "incoming_claim": {
+    "actor_id": "actor-viewer-1",
+    "role": "viewer",
+    "db_read": ["tasks"],
+    "db_write": [],
+    "schema_write": false
+  },
+  "incoming": {
+    "frame": "live_update",
+    "doc_id": "collection/tasks",
+    "metadata": {
+      "resource_type": "record",
+      "op": "insert",
+      "collection": "tasks",
+      "record_id": "task-101",
+      "schema_version": 1,
+      "touched_records": ["tasks/task-101"]
+    },
+    "record_op": {
+      "op": "insert",
+      "collection": "tasks",
+      "id": "task-101",
+      "fields": {
+        "title": "Viewer should not write",
+        "status": "open"
+      }
+    }
+  },
+  "expect": {
+    "decision": "rejected",
+    "error_frame": "permission_denied",
+    "audit": {
+      "action": "sync.record.insert",
+      "decision": "deny",
+      "reason_contains": "viewer cannot author remote record writes"
+    },
+    "apply": {
+      "import_chunk": false,
+      "rebuild_projection": false
+    }
+  },
+  "assertions": [
+    "denial occurs before CRDT import",
+    "local projection remains unchanged",
+    "permission_denied is surfaced to the sync peer"
+  ]
+}

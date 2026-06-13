@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "case": "runner_delete_rejected",
+  "coverage": ["SS-7", "SC-10", "SC-11", "SC-12"],
+  "trusted_peer": {
+    "actor_id": "actor-runner-1",
+    "role": "runner",
+    "db_read": ["tasks"],
+    "db_write": [],
+    "schema_write": false
+  },
+  "incoming_claim": {
+    "actor_id": "actor-runner-1",
+    "role": "runner",
+    "db_read": ["tasks"],
+    "db_write": [],
+    "schema_write": false
+  },
+  "incoming": {
+    "frame": "live_update",
+    "doc_id": "collection/tasks",
+    "metadata": {
+      "resource_type": "record",
+      "op": "delete",
+      "collection": "tasks",
+      "record_id": "task-104",
+      "schema_version": 1,
+      "touched_records": ["tasks/task-104"]
+    },
+    "record_op": {
+      "op": "delete",
+      "collection": "tasks",
+      "id": "task-104"
+    }
+  },
+  "expect": {
+    "decision": "rejected",
+    "error_frame": "permission_denied",
+    "audit": {
+      "action": "sync.record.delete",
+      "decision": "deny",
+      "reason_contains": "runner role does not imply remote record write"
+    },
+    "apply": {
+      "import_chunk": false,
+      "rebuild_projection": false
+    }
+  },
+  "assertions": [
+    "runtime execution role is not a sync write role",
+    "delete is blocked before apply"
+  ]
+}

@@ -567,6 +567,7 @@ dependencies = [
  "forge-schema",
  "forge-signing",
  "forge-storage",
+ "forge-sync",
  "forge-ui",
  "serde",
  "serde_json",
@@ -682,6 +683,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "forge-sync"
+version = "0.1.0"
+dependencies = [
+ "forge-crdt",
+ "forge-domain",
+ "forge-storage",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

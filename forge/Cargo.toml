@@ -4,6 +4,7 @@ members = [
   "crates/domain",
   "crates/storage",
   "crates/crdt",
+  "crates/sync",
   "crates/schema",
   "crates/policy",
   "crates/secrets",
@@ -27,9 +28,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tempfile = "3"
+sha2 = "0.10"
 forge-domain = { path = "crates/domain" }
 forge-storage = { path = "crates/storage" }
 forge-crdt = { path = "crates/crdt" }
+forge-sync = { path = "crates/sync" }
 forge-schema = { path = "crates/schema" }
 forge-policy = { path = "crates/policy" }
 forge-secrets = { path = "crates/secrets" }

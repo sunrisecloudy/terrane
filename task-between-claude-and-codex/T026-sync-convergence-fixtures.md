@@ -47,3 +47,38 @@ empty peer syncs from a populated peer; both peers already in sync (no-op).
 In `## Result`, flag any case whose converged state is ambiguous (esp. the same-scalar
 LWW winner — state that both peers must agree but which value wins is impl-defined) so
 the Rust sync test asserts agreement rather than a specific winner.
+
+## Result
+
+Done:
+
+- Added `forge/spec/sync-protocol.md` for the M0b in-process sync seam.
+- Added `forge/fixtures/sync/manifest.json` plus 10 semantic convergence fixtures.
+- Kept fixtures as semantic vectors, not embedded Loro bytes, matching the existing
+  `crdt-write` fixture style.
+- Marked non-empty seeds as `"seed_mode": "shared_history"` so runners create one
+  baseline CRDT history and clone/import it to both peers before partition.
+
+Ambiguous convergence case:
+
+- `same_scalar_concurrent_lww_agreement` intentionally does not pin which scalar
+  value wins. The Rust runner should assert both peers agree and the winner is one
+  of the two concurrent writes.
+
+Implementation notes for the next Rust sync runner:
+
+- Current local storage chunk ids (`chunk-NNNN`) are not safe as exchanged sync
+  frontier ids because two disconnected peers can mint the same `(doc_id, chunk_id)`.
+  Use peer-scoped exchanged ids or content-addressed ids before importing remote
+  chunks into `crdt_chunks`.
+- Seeded fixtures must not replay seed ops independently per peer; that creates
+  different Loro histories/frontiers instead of a true shared baseline.
+- SS-7 authorization cannot be recovered from opaque Loro update bytes after
+  import, so future `chunk_response` / `live_update` frames need metadata like
+  actor, role/capability claims, doc id, operation, collection, touched records,
+  and schema version before `import_updates` runs.
+
+Verification:
+
+- `jq empty forge/fixtures/sync/*.json`
+- `git diff --check -- forge/spec/sync-protocol.md forge/fixtures/sync task-between-claude-and-codex/T026-sync-convergence-fixtures.md`
