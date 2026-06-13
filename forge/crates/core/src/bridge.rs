@@ -13,19 +13,23 @@
 //! reaches the Store.
 //!
 //! Two effects are special:
-//!   * `db.insert` builds a [`RecordEnvelope`] and `put_record`s it into the
-//!     `records` projection — the literal **SQLite write** link of the spine —
-//!     returning the new record id.
+//!   * `db.insert` routes the record write through the storage **CRDT-backed
+//!     mutation path** ([`Store::apply_mutation_crdt`](forge_storage::Store::apply_mutation_crdt),
+//!     DL-4): the insert becomes a Loro op on the collection's `RecordsDoc`, the
+//!     incremental update is appended to `crdt_chunks` (+ an oplog row), AND the
+//!     `records` projection row is materialized — all in one SQLite transaction.
+//!     The CRDT docs are the source of truth and the projection is derived /
+//!     rebuildable (DL-6). This is the literal **SQLite write** link of the spine;
+//!     it returns the new record id, observably unchanged from the prior
+//!     projection-only write so the recorded trace (and replay) is byte-identical.
 //!   * `ui.render` parses the rendered tree into a [`forge_ui::Node`], diffs it
 //!     against the previously-rendered tree, and captures the resulting
 //!     [`forge_ui::Patch`] list so [`WorkspaceCore`](crate::WorkspaceCore) can
 //!     emit a `ui.patch` `CoreEvent` per render — the **UI tree patch** link.
 
-use forge_domain::{
-    CollectionId, CoreError, LogicalTimestamp, RecordEnvelope, RecordId, Result,
-};
+use forge_domain::{CoreError, LogicalTimestamp, Result};
 use forge_runtime::HostBridge;
-use forge_storage::{AggregateResult, Query, QueryResult, Store};
+use forge_storage::{AggregateResult, IndexManager, Mutation, Query, QueryResult, Store};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -96,6 +100,12 @@ pub struct StorageHostBridge<'a> {
     /// (`<collection>/<n>`), mirroring the in-memory bridge so a real run's ids
     /// are reproducible.
     db_counter: BTreeMap<String, u64>,
+    /// Dynamic-index manager threaded into the CRDT write path so an inserted
+    /// record keeps any active FTS5 shadow rows in sync inside the same write
+    /// transaction (DL-5). M0a constructs no indexes through this bridge, so it is
+    /// an empty manager and the FTS sync is a cheap no-op; it exists so the CRDT
+    /// mutation surface is never bypassed (see [`db_insert`](Self::db_insert)).
+    indexes: IndexManager,
     /// The previous rendered tree, used as the diff base for the next render.
     prev_ui: Option<forge_ui::Node>,
     /// Every UI render captured this run (tree + patch list), in order.
@@ -112,6 +122,7 @@ impl<'a> StorageHostBridge<'a> {
             applet_ns: format!("applet/{applet_id}"),
             logical: LogicalTimestamp::default(),
             db_counter: BTreeMap::new(),
+            indexes: IndexManager::new(),
             prev_ui: None,
             ui_renders: Vec::new(),
             logs: Vec::new(),
@@ -124,16 +135,15 @@ impl<'a> StorageHostBridge<'a> {
         self.logical
     }
 
-    /// Map the JSON `record` an applet passed to `ctx.db.insert` into the
-    /// display-named `fields` map of a [`RecordEnvelope`]. A non-object record
-    /// is rejected as a `ValidationError` (the `DbRecord` contract is an object).
+    /// Validate the JSON `record` an applet passed to `ctx.db.insert` and return
+    /// its display-named `fields` map (the `Mutation::Insert` field shape). A
+    /// non-object record is rejected as a `ValidationError` (the `DbRecord`
+    /// contract is an object).
     fn record_fields(
-        record: &serde_json::Value,
-    ) -> Result<BTreeMap<String, serde_json::Value>> {
+        record: serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>> {
         match record {
-            serde_json::Value::Object(map) => {
-                Ok(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            }
+            serde_json::Value::Object(map) => Ok(map),
             other => Err(CoreError::ValidationError(format!(
                 "ctx.db.insert record must be an object, got {other}"
             ))),
@@ -169,7 +179,7 @@ impl HostBridge for StorageHostBridge<'_> {
     }
 
     fn db_insert(&mut self, collection: &str, record: serde_json::Value) -> Result<String> {
-        let fields = Self::record_fields(&record)?;
+        let fields = Self::record_fields(record)?;
         // Deterministic, readable record id: `<collection>/<n>`. The per-run
         // counter is seeded on first use from the count of records already in the
         // collection, so ids never collide with a prior run's writes (each run
@@ -186,14 +196,22 @@ impl HostBridge for StorageHostBridge<'_> {
         self.db_counter.insert(collection.to_string(), next);
         let id = format!("{collection}/{next}");
         let at = self.tick();
-        let env = RecordEnvelope::new(
-            CollectionId::new(collection),
-            RecordId::new(id.clone()),
+        // THE SQLite write link of the spine — now the CRDT-backed write path
+        // (DL-4): the insert becomes a Loro op on the collection's RecordsDoc, the
+        // incremental update is appended to `crdt_chunks` (+ an oplog row), AND the
+        // `records` projection row is materialized — all in ONE SQLite transaction.
+        // The CRDT docs are the source of truth; the projection is derived and
+        // rebuildable (`Store::rebuild_projection`, DL-6). Observable behavior is
+        // unchanged: the inserted record is still queryable/returned by the same
+        // id, so the recorded trace (the returned id) — and therefore replay — is
+        // byte-identical to the prior projection-only write.
+        let mutation = Mutation::Insert {
+            collection: collection.to_string(),
+            id: Some(id.clone()),
             fields,
-            at,
-        );
-        // THE SQLite write link of the spine.
-        self.store.put_record(&env)?;
+            logical_at: Some(at.0 as i64),
+        };
+        self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
         Ok(id)
     }
 

@@ -1220,3 +1220,93 @@ fn db_query_on_ungranted_collection_is_denied_with_no_rows() {
     assert!(replay.ok, "the denied run must replay: {:?}", replay.error);
     assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// 9. CRDT-backed record writes through the spine (DL-4) + projection rebuild
+//    (DL-6): a `ctx.db.insert` in a run is no longer a projection-only write.
+//    It becomes a Loro op on the collection's RecordsDoc whose incremental update
+//    is appended to `crdt_chunks` (+ an oplog row) AND materializes the `records`
+//    projection row — all in one SQLite transaction. The CRDT docs are the source
+//    of truth, so dropping and rebuilding the projection purely from the chunks
+//    (`Store::rebuild_projection`) reproduces the SAME record. Observable behavior
+//    is unchanged: the record is still queryable/returned and the run still
+//    replays byte-identically.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn db_insert_through_spine_writes_crdt_chunk_oplog_and_rebuildable_projection() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "title": "Buy milk" } }),
+    ));
+    assert!(resp.ok, "run must succeed: {:?}", resp.error);
+    assert_eq!(resp.payload["ok"], serde_json::json!(true));
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+
+    // (a) The record landed in the `records` PROJECTION (still queryable/returned).
+    let rec = core
+        .store()
+        .get_record("tasks", "tasks/1")
+        .unwrap()
+        .expect("ctx.db.insert must materialize the projection row");
+    assert_eq!(rec.fields["title"], serde_json::json!("Buy milk"));
+    assert_eq!(rec.fields["done"], serde_json::json!(false));
+
+    // (b) A CRDT CHUNK was written for the collection doc (DL-4): the insert is a
+    //     Loro op whose incremental update is appended to `crdt_chunks`. The doc id
+    //     is the collection doc selector `collection/tasks`.
+    let doc_id = forge_storage::collection_doc_id("tasks");
+    let chunks = core.store().get_chunks(&doc_id).unwrap();
+    assert_eq!(
+        chunks.len(),
+        1,
+        "exactly one CRDT chunk for the single insert (DL-4)"
+    );
+    assert_eq!(chunks[0].chunk_id, "chunk-0001", "first chunk id is immutable + sequenced");
+    assert_eq!(chunks[0].format, forge_storage::CHUNK_FORMAT);
+
+    // (c) An OPLOG row was appended for the same write (DL-4 write metadata), of
+    //     the logical kind `record.insert`.
+    let ops = core.store().list_ops().unwrap();
+    assert_eq!(ops.len(), 1, "one oplog row for the one insert");
+    assert_eq!(ops[0].kind, "record.insert");
+
+    // (d) DL-6: drop the ENTIRE projection and rebuild it purely from the persisted
+    //     `crdt_chunks` (the CRDT docs are the source of truth). The rebuilt
+    //     projection must reproduce the SAME record — proving the projection is a
+    //     derived, rebuildable view of the CRDT op log, not the source of truth.
+    let before = core.store().get_record("tasks", "tasks/1").unwrap().unwrap();
+    let idx = forge_storage::IndexManager::new();
+    core.store_mut().rebuild_projection(&idx).unwrap();
+    let after = core
+        .store()
+        .get_record("tasks", "tasks/1")
+        .unwrap()
+        .expect("rebuild-from-chunks must reproduce the record (DL-6)");
+    assert_eq!(after, before, "rebuilt projection record must equal the maintained one");
+    assert_eq!(after.fields["title"], serde_json::json!("Buy milk"));
+    // The chunk history survives the rebuild (append-only), and no extra rows leak.
+    assert_eq!(core.store().get_chunks(&doc_id).unwrap().len(), 1);
+    assert_eq!(core.store().list_records("tasks").unwrap().len(), 1);
+
+    // (e) Observable behavior is unchanged: the run still replays byte-identically
+    //     (the RunRecord trace records the same db.insert ack — `tasks/1`).
+    let saved = core.store().load_run(&run_id).unwrap().unwrap();
+    let insert_call = saved
+        .calls
+        .iter()
+        .find(|c| c.method == "db.insert")
+        .expect("the run recorded a db.insert");
+    assert_eq!(
+        insert_call.response,
+        serde_json::json!("tasks/1"),
+        "the recorded db.insert ack is the returned id, unchanged by the CRDT path"
+    );
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(replay.ok, "the CRDT-backed run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
