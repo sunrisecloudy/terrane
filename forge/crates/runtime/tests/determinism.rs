@@ -86,6 +86,67 @@ fn replay_is_stable_across_repeats() {
     assert!(original.replays_identically(&r1));
 }
 
+/// Review 032 enablement: the run API accepts caller-supplied `random_seed` /
+/// `time_start` (it does not hard-default them), and replay re-uses the RECORDED
+/// seeds. Two record runs with the **same** seeds produce identical seeded
+/// values and replay byte-identically; two runs with **different** seeds produce
+/// different seeded values. This is the contract forge-core threads to give every
+/// `(applet, input)` a deterministic-but-distinct seed and the CLI scenario
+/// fixtures rely on when running through the facade.
+#[test]
+fn run_api_threads_seeds_same_seeds_match_different_seeds_differ() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const t = ctx.time.now();
+            const r = ctx.random.next();
+            return { ok: true, value: { t, r } };
+        }"#,
+    );
+
+    let run_with = |seed: u64, time_start: u64| {
+        let mut bridge = MemoryHostBridge::new();
+        record_run(
+            &prog,
+            &spine_manifest(),
+            &owner(),
+            &serde_json::json!({}),
+            seed,
+            time_start,
+            &mut bridge,
+        )
+        .unwrap()
+    };
+
+    // Same seeds → the seeded time/random values (and the whole trace) match.
+    let a = run_with(42, 1000);
+    let b = run_with(42, 1000);
+    assert_eq!(a.random_seed, 42);
+    assert_eq!(a.time_start, 1000);
+    assert_eq!(a.calls, b.calls, "same seeds must produce the same seeded trace");
+
+    // Replay re-uses the RECORDED seeds (not any live default) and is identical.
+    let mut null = NullBridge::new();
+    let replayed = replay(&a, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    assert_eq!(replayed.random_seed, a.random_seed);
+    assert_eq!(replayed.time_start, a.time_start);
+    assert!(a.replays_identically(&replayed));
+
+    // Different seeds → different seeded values. The random seam diverges on the
+    // random_seed; the clock seam diverges on time_start.
+    let c = run_with(43, 1000);
+    let random_idx = a.calls.iter().position(|c| c.method == "random.next").unwrap();
+    assert_ne!(
+        a.calls[random_idx].response, c.calls[random_idx].response,
+        "a different random_seed must yield a different ctx.random.next() value"
+    );
+    let d = run_with(42, 2000);
+    let time_idx = a.calls.iter().position(|c| c.method == "time.now").unwrap();
+    assert_ne!(
+        a.calls[time_idx].response, d.calls[time_idx].response,
+        "a different time_start must yield a different ctx.time.now() value"
+    );
+}
+
 /// Mutating a recorded response that a later call's arguments depend on makes
 /// replay diverge with `RuntimeError` (the recorder catches the method/args
 /// mismatch). The program reads a counter and writes `counter + 1` back, so a
@@ -542,4 +603,101 @@ fn stripping_permissions_from_a_recorded_denial_still_fails_on_replay() {
         ),
         other => panic!("stripped recorded denial must not replay as success, got {other:?}"),
     }
+}
+
+/// Review 029 P2: a snapshotless legacy run that made an **allowed** host call and
+/// then *failed for an app/runtime reason* (not a policy denial) must replay its
+/// recorded failure faithfully — it must NOT be turned into a different (spurious
+/// permission) failure by the legacy fallback path.
+///
+/// The completed-only gate (review 026 P1) routed every snapshotless *failed*
+/// legacy record through the all-deny default snapshot, so a run like
+/// `await ctx.time.now(); throw new Error("boom")` would die at the first host
+/// call with a `PermissionDenied` (the all-deny role gate) instead of replaying
+/// the recorded `time.now` and reproducing the original `RuntimeError("boom")`.
+/// The fix gates the manifest fallback on the recorded trace shape: a snapshotless
+/// record with no recorded denial falls back to the manifest, so its successful
+/// host calls replay and the original failure is reproduced byte-for-byte.
+#[test]
+fn snapshotless_legacy_failed_run_replays_its_recorded_failure_not_a_denial() {
+    use forge_domain::{CoreError, PermissionSnapshot, RunRecord};
+
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const t = ctx.time.now();          // an ALLOWED host call, recorded
+            await ctx.storage.set("app/x", t); // a second ALLOWED host call
+            throw new Error("boom");           // then fail for an app reason
+        }"#,
+    );
+
+    // Record under the granting spine manifest: both host calls are allowed and
+    // the run fails on the thrown error AFTER they are recorded.
+    let mut bridge = MemoryHostBridge::new();
+    let recorded = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        7,
+        500,
+        &mut bridge,
+    )
+    .unwrap();
+    let recorded_error = match &recorded.outcome {
+        RunOutcome::Failed { error } => error.clone(),
+        other => panic!("precondition: the run must fail on the thrown error, got {other:?}"),
+    };
+    // The original failure is the app-level throw, surfaced as a RuntimeError that
+    // carries the thrown message — NOT a permission denial.
+    assert_eq!(recorded_error.code(), "RuntimeError", "{recorded_error}");
+    assert!(recorded_error.to_string().contains("boom"), "{recorded_error}");
+    // It made at least one successful host call BEFORE failing, and NONE of the
+    // recorded calls is a denial (the precondition the fix keys on).
+    assert!(recorded.calls.len() >= 2, "the allowed host calls are recorded");
+    assert_eq!(recorded.calls[0].method, "time.now");
+    assert!(
+        recorded.calls.iter().all(|c| c.response.get("denied").is_none()),
+        "no recorded call is a denial: {:?}",
+        recorded.calls
+    );
+
+    // Simulate a PRE-CR-9 record: drop the `permissions` field so it loads with
+    // the all-deny default snapshot (the legacy on-disk shape).
+    let mut json = serde_json::to_value(&recorded).unwrap();
+    json.as_object_mut().unwrap().remove("permissions");
+    let legacy: RunRecord = serde_json::from_value(json).unwrap();
+    assert_eq!(legacy.permissions, PermissionSnapshot::default());
+    assert!(!legacy.is_completed(), "the legacy record still failed");
+
+    // Replay under the granting manifest. The fallback must engage (no recorded
+    // denial), so the allowed host calls replay and the ORIGINAL failure — the
+    // RuntimeError("boom"), not a PermissionDenied — is reproduced.
+    let mut null = NullBridge::new();
+    let replayed = replay(&legacy, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    match &replayed.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(
+                error.code(),
+                "RuntimeError",
+                "legacy failed run must replay its recorded failure, not a spurious denial: {error}"
+            );
+            assert!(error.to_string().contains("boom"), "{error}");
+            assert_eq!(
+                error, &recorded_error,
+                "the replayed failure must be the recorded one"
+            );
+        }
+        other => panic!("expected the recorded Runtime(\"boom\") failure, got {other:?}"),
+    }
+    // The recorded host-call trace replays identically (the allowed calls are
+    // served from the recording, not re-denied under an all-deny snapshot).
+    assert_eq!(
+        recorded.calls, replayed.calls,
+        "the legacy failed run's host-call trace must replay identically"
+    );
+    // Belt-and-suspenders: the replayed error is not a permission denial.
+    assert!(
+        !matches!(replayed.outcome, RunOutcome::Failed { error: CoreError::PermissionDenied(_) }),
+        "the replay must NOT turn the app failure into a permission denial"
+    );
 }

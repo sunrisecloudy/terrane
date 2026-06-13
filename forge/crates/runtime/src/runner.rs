@@ -88,21 +88,29 @@ pub fn record_run(
 /// replay policy from the *caller-provided* manifest/actor (the pre-CR-9 replay
 /// behavior) rather than denying everything.
 ///
-/// The fallback is gated on a **completed** outcome (review 026 P1). A record can
-/// have its `permissions` field stripped — by an old format or by tampering — and
-/// still load, so an attacker could take a post-CR-9 run that *failed* on a
-/// recorded denial (e.g. a denied `storage.set`), remove `permissions`, and
-/// replay it under a now-permissive manifest. Falling back to the live manifest
-/// there would re-grant the very capability the original lacked and turn the
-/// recorded denial into a success. A genuine pre-CR-9 run we want to rescue had
-/// *completed* (it never failed on a snapshot that did not yet exist), so we only
-/// extend the manifest fallback to completed records. A record that carries the
-/// default snapshot but *failed* is replayed under that recorded all-deny snapshot
-/// itself ([`from_snapshot`](PolicyEngine::from_snapshot)), so a recorded denial
-/// stays denied and a stripped failure cannot replay as a success. A record
-/// produced post-CR-9 always carries a real snapshot (a completed run necessarily
-/// had `can_run == true` and a positive `max_host_calls`), so this fallback never
-/// masks a genuine all-deny replay.
+/// The fallback is gated on the **recorded trace shape**, not the outcome (review
+/// 029 P2, tightening review 026 P1). A record can have its `permissions` field
+/// stripped — by an old format or by tampering — and still load, so an attacker
+/// could take a post-CR-9 run that *failed* on a recorded denial (e.g. a denied
+/// `storage.set`), remove `permissions`, and replay it under a now-permissive
+/// manifest. Falling back to the live manifest there would re-grant the very
+/// capability the original lacked and turn the recorded denial into a success.
+/// The denial-specific signal already lives in the trace: a policy denial is
+/// recorded by [`RunRecorder::record_denial`](crate::RunRecorder) as a
+/// `{"denied": <CoreError>}` response. So we extend the manifest fallback to any
+/// snapshotless record whose recorded calls contain **no recorded denial**, and
+/// keep a record that *does* carry a recorded denial on the recorded (all-deny
+/// default) snapshot path ([`from_snapshot`](PolicyEngine::from_snapshot)).
+///
+/// This is strictly more faithful than the prior completed-only gate. A genuine
+/// pre-CR-9 run that made an *allowed* host call and then failed for an
+/// app/runtime reason (`await ctx.time.now(); throw new Error("boom")`) carries no
+/// recorded denial, so it falls back to the manifest and replays its recorded
+/// success-then-failure instead of dying at the first host call under the
+/// all-deny default. A stripped post-CR-9 denial still carries its `{"denied": …}`
+/// call, so it stays on the all-deny path and a recorded denial stays denied — a
+/// stripped failure cannot replay as a success. A record produced post-CR-9 always
+/// carries a real snapshot, so this fallback never masks a genuine all-deny replay.
 pub fn replay(
     run: &RunRecord,
     program: &Program,
@@ -139,14 +147,19 @@ pub fn replay(
     // run as an all-deny denial; fall back to the caller-provided manifest/actor
     // (the legacy replay path) and use the manifest's host-call cap.
     //
-    // Review 026 P1: the manifest fallback is gated on a *completed* outcome. A
-    // failed record carrying the default snapshot — a genuinely-failed old run, or
-    // a post-CR-9 denial whose `permissions` field was stripped — must NOT be
-    // re-granted permissions from the live manifest, or a recorded denial could
-    // replay as a success. Replay it under the recorded (all-deny default)
-    // snapshot instead so the denial stays denied.
+    // Review 029 P2: gate the manifest fallback on the recorded *trace shape*, not
+    // the outcome. The completed-only gate (review 026 P1) over-rotated: it routed
+    // every snapshotless *failed* legacy record through the all-deny default, so a
+    // genuine pre-CR-9 run that made an allowed host call and then failed for an
+    // app/runtime reason (e.g. `await ctx.time.now(); throw …`) would die at the
+    // first host call instead of replaying its recorded success and reproducing the
+    // original failure. The denial-specific signal is in the trace: a policy denial
+    // is recorded as a `{"denied": …}` response. So fall back to the manifest only
+    // when no recorded call is a denial; a stripped post-CR-9 denial keeps its
+    // `{"denied": …}` call and stays on the recorded all-deny snapshot, so a
+    // recorded denial cannot replay as a success.
     let use_manifest_fallback =
-        run.permissions == PermissionSnapshot::default() && run.is_completed();
+        run.permissions == PermissionSnapshot::default() && !trace_has_denial(&run.calls);
     let (policy, host_call_cap) = if use_manifest_fallback {
         (
             PolicyEngine::new(manifest, actor)?,
@@ -225,6 +238,23 @@ fn finish_run(
         domain_outcome,
     )?
     .with_permissions(permissions))
+}
+
+/// True if any recorded call captured a policy **denial** — a
+/// `{"denied": <CoreError>}` response written by
+/// [`RunRecorder::record_denial`](crate::RunRecorder) (recorder.rs).
+///
+/// Review 029 P2 uses this to keep snapshotless records that contain a recorded
+/// denial on the recorded (all-deny default) snapshot path, so a stripped
+/// post-CR-9 denial cannot be re-granted the capability it lacked by the legacy
+/// manifest fallback. A response object carrying a `"denied"` key is the canonical
+/// denial marker (a normal effect/seam response is never an object with that key).
+fn trace_has_denial(calls: &[forge_domain::RecordedCall]) -> bool {
+    calls.iter().any(|call| {
+        call.response
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("denied"))
+    })
 }
 
 /// A deterministic-but-readable run id from the program + seeds. Replays derive
