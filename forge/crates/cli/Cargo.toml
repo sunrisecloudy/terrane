@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "forge_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "forge"
 path = "src/main.rs"
@@ -13,3 +17,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 forge-core.workspace = true
+forge-domain.workspace = true
+
+[dev-dependencies]
+# The data-driven fixture test drives record/replay directly so it can honor
+# each scenario's recorded seeds (random_seed/time_start), which the core's
+# `runtime.run` does not yet thread through (see lib.rs `run_scenario`).
+forge-pipeline.workspace = true
+forge-runtime.workspace = true
+forge-storage.workspace = true
