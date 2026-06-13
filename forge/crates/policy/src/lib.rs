@@ -7,13 +7,34 @@
 //!     [`Capabilities`] grants are the action+resource scopes.
 //!   - **SC-9** grants are per-workspace-member: the [`ActorContext`] role is
 //!     evaluated together with the manifest grants on every call.
-//!   - **SC-10** a run is allowed only if *all* pass: the actor role permits
-//!     running ∧ the manifest requests the capability ∧ the resource matches
-//!     the allowlist ∧ a resource (host-call count) budget remains.
+//!   - **SC-10** a run is allowed only if **all** of seven gates pass:
+//!     `actor role permits operation ∧ workspace policy permits capability ∧
+//!     manifest requests it ∧ run profile permits it ∧ platform permission
+//!     granted ∧ resource matches allowlist ∧ rate/resource limit available`.
 //!   - **SC-2** the host-call counter is a flood guard mapped to
 //!     `manifest.limits.max_host_calls` → [`CoreError::ResourceLimitExceeded`].
 //!   - **CR-4** revocation takes effect immediately: [`PolicyEngine::revoke`]
 //!     denies a category on the very next [`PolicyEngine::check`].
+//!
+//! ## Honest scoping of the SC-10 decision (review 006 P1)
+//!
+//! SC-10 enumerates **seven** independent gates. This crate's
+//! [`CapabilityCheck`] implements only **three** of them — the
+//! *manifest-requests-it* gate, the *resource-matches-allowlist* gate, and the
+//! immediate-revocation hook (CR-4). It is **not** the whole SC-10 decision and
+//! must never be mistaken for it. The remaining gates
+//! (`workspace policy permits capability`, `run profile permits it`,
+//! `platform permission granted`) live behind the [`DecisionContext`] seam,
+//! which has an explicit, fail-closed place for each. The actor-role and
+//! rate-limit gates are enforced directly by [`PolicyEngine::check`].
+//!
+//! [`PolicyEngine`] composes all of these: it runs the [`DecisionContext`]
+//! gates, the actor-role gate, the budget gate, and finally the
+//! [`CapabilityCheck`] subcheck. **In M0a the three [`DecisionContext`] gates
+//! are permissive stubs** (`AllowAll`), documented per-method below; they exist
+//! so that wiring a real workspace-policy / run-profile / platform-permission
+//! source in M0b is a drop-in, and so that the missing gates have a visible,
+//! fail-closed seam today rather than being silently absent.
 //!
 //! This crate is pure logic with no I/O; it stays `wasm32-unknown-unknown`
 //! clean (no `std::time`/`std::fs`). The runtime crate owns real CPU/memory
@@ -37,9 +58,9 @@ pub enum HostCall {
     Db { op: Access, collection: String },
     /// `ctx.ui.render` — emit a UI tree.
     Ui,
-    /// `ctx.time.now` — deterministic clock seam (always allowed).
+    /// `ctx.time.now` — deterministic clock seam.
     Time,
-    /// `ctx.random.next` — deterministic RNG seam (always allowed).
+    /// `ctx.random.next` — deterministic RNG seam.
     Random,
 }
 
@@ -72,6 +93,8 @@ pub enum Category {
     Random,
 }
 
+const CATEGORY_COUNT: usize = 5;
+
 impl Category {
     fn as_str(self) -> &'static str {
         match self {
@@ -80,6 +103,17 @@ impl Category {
             Category::Ui => "ui",
             Category::Time => "time",
             Category::Random => "random",
+        }
+    }
+
+    /// Dense index of a category, used for the per-category allowance bitset.
+    fn index(self) -> usize {
+        match self {
+            Category::Storage => 0,
+            Category::Db => 1,
+            Category::Ui => 2,
+            Category::Time => 3,
+            Category::Random => 4,
         }
     }
 }
@@ -93,38 +127,247 @@ fn role_can_run(role: Role) -> bool {
     matches!(role, Role::Owner | Role::Maintainer | Role::Editor | Role::Runner)
 }
 
-/// The capability + RBAC decision engine for a single run.
+// ---------------------------------------------------------------------------
+// SC-10 gates that are NOT the manifest+resource subcheck (review 006 P1).
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single SC-10 gate hook. A gate either permits the capability
+/// or denies it with a reason that is surfaced as `PermissionDenied`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    Allow,
+    /// Deny, carrying a human-readable reason naming the failing gate.
+    Deny(String),
+}
+
+/// The SC-10 gates that this crate does **not** implement as the
+/// manifest+resource [`CapabilityCheck`]: the workspace-policy, run-profile,
+/// and platform-permission gates (prd-merged/07 SC-10).
 ///
-/// Built from a `&Manifest` (the requested grants) plus an [`ActorContext`]
-/// (who is running, with what role). [`PolicyEngine::check`] is called once per
-/// host call the runtime makes, in order, and enforces all of SC-10 plus the
-/// SC-2 host-call flood guard.
+/// Implementors decide each gate *fail-closed*: a real implementation returns
+/// [`GateDecision::Deny`] whenever it cannot positively confirm the gate is
+/// satisfied. M0a ships [`AllowAll`], a permissive stub that is the *only*
+/// place these gates are short-circuited, so the absence of the real gates is
+/// explicit and auditable rather than invisible.
+///
+/// Each hook receives the [`Category`] being exercised so a future
+/// implementation can scope decisions per capability category (e.g. "this run
+/// profile forbids `db` writes" or "platform has no clipboard").
+pub trait DecisionContext: std::fmt::Debug {
+    /// **Gate: workspace policy permits capability** (SC-10).
+    ///
+    /// The workspace admin policy can forbid a capability category outright,
+    /// independent of any single applet's manifest. **M0a stub: AllowAll.**
+    fn workspace_policy(&self, _category: Category) -> GateDecision {
+        GateDecision::Allow
+    }
+
+    /// **Gate: run profile permits it** (SC-10).
+    ///
+    /// The run profile (e.g. a locked-down "review-safety" profile, prd-merged/07
+    /// SC-21) can narrow what a run may do. **M0a stub: AllowAll.**
+    fn run_profile(&self, _category: Category) -> GateDecision {
+        GateDecision::Allow
+    }
+
+    /// **Gate: platform permission granted** (SC-10, prd-merged/01 CR-3
+    /// `PlatformUnavailable`).
+    ///
+    /// The host platform may not grant a capability (no camera, no clipboard,
+    /// OS denied the prompt). **M0a stub: AllowAll.**
+    fn platform_permission(&self, _category: Category) -> GateDecision {
+        GateDecision::Allow
+    }
+}
+
+/// The M0a permissive [`DecisionContext`]: every non-capability SC-10 gate
+/// allows. This is the **single, explicit** place the workspace-policy,
+/// run-profile, and platform-permission gates are short-circuited until M0b
+/// wires real sources (review 006 P1).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AllowAll;
+
+impl DecisionContext for AllowAll {}
+
+/// The **manifest + resource capability subcheck** of SC-10 (review 006 P1).
+///
+/// This is deliberately *not* "the SC-10 gate". It enforces exactly three of
+/// the seven SC-10 conjuncts:
+///   - *manifest requests it* — the capability category is declared, and
+///   - *resource matches allowlist* — the specific key/collection is in scope;
+///   - plus the CR-4 immediate-revocation hook (a runtime revocation denies a
+///     category before any manifest grant is consulted).
+///
+/// It owns the per-category allowance state so that the *non-ambient seams*
+/// (time/random/ui) are routed through the **same** decision path as
+/// storage/db: each is a default-granted but revocable, counted allowance, not
+/// an unconditional `Ok` (prd-merged/07 zero-ambient; review 006 P1).
 #[derive(Debug, Clone)]
-pub struct PolicyEngine {
+struct CapabilityCheck {
     /// Requested grants, cloned so revocation can mutate without touching the
     /// caller's manifest (revocation is per-engine/per-member, prd-merged/07
     /// SC-9/CR-4).
     capabilities: Capabilities,
+    /// Per-category runtime allowance. `true` = currently granted, `false` =
+    /// revoked (CR-4). Seam categories (time/random/ui) start granted so the
+    /// deterministic seams are available by default — but as an explicit,
+    /// revocable allowance routed through this same path, never an ambient
+    /// bypass.
+    allowed: [bool; CATEGORY_COUNT],
+}
+
+impl CapabilityCheck {
+    /// Build the subcheck from a manifest's capabilities, after validating the
+    /// storage glob grants (review 006 P2). All categories start granted; the
+    /// manifest-declared / resource-allowlist gates then decide each call.
+    fn from_capabilities(capabilities: &Capabilities) -> Result<Self> {
+        validate_storage_grants(capabilities)?;
+        Ok(CapabilityCheck {
+            capabilities: capabilities.clone(),
+            allowed: [true; CATEGORY_COUNT],
+        })
+    }
+
+    fn is_allowed(&self, cat: Category) -> bool {
+        self.allowed[cat.index()]
+    }
+
+    fn revoke(&mut self, cat: Category) {
+        self.allowed[cat.index()] = false;
+    }
+
+    /// The capability/allowlist portion of a decision. Does not touch any
+    /// counter and assumes the role/budget/`DecisionContext` gates already ran.
+    fn check(&self, call: &HostCall) -> Result<()> {
+        let cat = PolicyEngine::category_of(call);
+        // CR-4: a runtime revocation denies the whole category before the
+        // manifest grant is even consulted — including the time/random/ui
+        // seams, which are revocable allowances, not ambient capabilities.
+        if !self.is_allowed(cat) {
+            return Err(revoked_error_for(call));
+        }
+        match call {
+            HostCall::Storage { op, key } => {
+                let scope = match op {
+                    Access::Read => &self.capabilities.storage.read,
+                    Access::Write => &self.capabilities.storage.write,
+                };
+                // Distinguish "no grant of this category at all" (the applet
+                // forgot to declare it → CapabilityRequired) from "declared
+                // some scopes but not this key" (→ PermissionDenied).
+                if !category_declared_storage(&self.capabilities) {
+                    return Err(capability_required(Category::Storage, *op, key));
+                }
+                if scope.iter().any(|prefix| prefix_matches(prefix, key)) {
+                    Ok(())
+                } else {
+                    Err(permission_denied(Category::Storage, *op, key))
+                }
+            }
+            HostCall::Db { op, collection } => {
+                let scope = match op {
+                    Access::Read => &self.capabilities.db.read,
+                    Access::Write => &self.capabilities.db.write,
+                };
+                if !category_declared_db(&self.capabilities) {
+                    return Err(capability_required(Category::Db, *op, collection));
+                }
+                if scope.iter().any(|c| c == collection) {
+                    Ok(())
+                } else {
+                    Err(permission_denied(Category::Db, *op, collection))
+                }
+            }
+            HostCall::Ui => {
+                if self.capabilities.ui {
+                    Ok(())
+                } else {
+                    // `ui` is a single boolean grant, not a list of scopes, so
+                    // an absent grant is a flat-out denial rather than a
+                    // "you forgot to declare a scope" CapabilityRequired.
+                    Err(CoreError::PermissionDenied(
+                        "ui capability not granted in manifest (capabilities.ui = false)"
+                            .to_string(),
+                    ))
+                }
+            }
+            // Deterministic seams (prd-merged/01 CR-3 `time`/`random`,
+            // prd-merged/07 zero-ambient): default-granted but revocable. The
+            // revocation check above already enforces CR-4; reaching here means
+            // the allowance is live, so the seam is permitted.
+            HostCall::Time | HostCall::Random => Ok(()),
+        }
+    }
+}
+
+/// The capability + RBAC decision engine for a single run.
+///
+/// Built from a `&Manifest` (the requested grants) plus an [`ActorContext`]
+/// (who is running, with what role) and a [`DecisionContext`] (the
+/// workspace-policy / run-profile / platform-permission gates).
+/// [`PolicyEngine::check`] is called once per host call the runtime makes, in
+/// order, and composes **all** of SC-10: the [`DecisionContext`] gates, the
+/// actor-role gate, the SC-2 host-call flood guard, and the manifest+resource
+/// [`CapabilityCheck`] subcheck.
+#[derive(Debug)]
+pub struct PolicyEngine {
+    /// The manifest+resource capability subcheck (review 006 P1): NOT the whole
+    /// decision — see the crate docs and [`CapabilityCheck`].
+    capability: CapabilityCheck,
+    /// The non-capability SC-10 gates (workspace policy / run profile /
+    /// platform permission). M0a defaults to the permissive [`AllowAll`] stub.
+    context: Box<dyn DecisionContext>,
     /// Whether the actor's role may run code at all (SC-10).
     can_run: bool,
-    /// Categories revoked at runtime; denied immediately regardless of grant.
-    revoked: [bool; 5],
     /// Max host calls permitted this run (`manifest.limits.max_host_calls`).
     max_host_calls: u64,
     /// Host calls counted so far this run.
     host_calls: u64,
 }
 
-impl PolicyEngine {
-    /// Build an engine for `actor` running under `manifest`.
-    pub fn new(manifest: &Manifest, actor: &ActorContext) -> Self {
+impl Clone for PolicyEngine {
+    fn clone(&self) -> Self {
+        // `DecisionContext` is a trait object so the engine can't derive Clone;
+        // M0a only ever uses the stateless `AllowAll` stub, so cloning the
+        // engine re-installs a fresh permissive context. (Replay/snapshot paths
+        // never depend on a custom context surviving a clone.)
         PolicyEngine {
-            capabilities: manifest.capabilities.clone(),
+            capability: self.capability.clone(),
+            context: Box::new(AllowAll),
+            can_run: self.can_run,
+            max_host_calls: self.max_host_calls,
+            host_calls: self.host_calls,
+        }
+    }
+}
+
+impl PolicyEngine {
+    /// Build an engine for `actor` running under `manifest`, with the M0a
+    /// permissive [`DecisionContext`] ([`AllowAll`]).
+    ///
+    /// Returns `Err` if the manifest's storage glob grants are overly broad or
+    /// malformed (review 006 P2) — a bare `*`, an unscoped/empty grant, or a
+    /// glob with `*` anywhere but the end is rejected fail-closed at build time
+    /// rather than silently granting more than intended.
+    pub fn new(manifest: &Manifest, actor: &ActorContext) -> Result<Self> {
+        Self::with_context(manifest, actor, Box::new(AllowAll))
+    }
+
+    /// Build an engine with an explicit [`DecisionContext`] (the
+    /// workspace-policy / run-profile / platform-permission gates). M0b wires a
+    /// real context here; M0a callers use [`new`](Self::new).
+    pub fn with_context(
+        manifest: &Manifest,
+        actor: &ActorContext,
+        context: Box<dyn DecisionContext>,
+    ) -> Result<Self> {
+        Ok(PolicyEngine {
+            capability: CapabilityCheck::from_capabilities(&manifest.capabilities)?,
+            context,
             can_run: role_can_run(actor.role),
-            revoked: [false; 5],
             max_host_calls: manifest.limits.max_host_calls,
             host_calls: 0,
-        }
+        })
     }
 
     /// Build an engine from a recorded [`PermissionSnapshot`] (review 009 P1
@@ -133,14 +376,24 @@ impl PolicyEngine {
     /// stays denied (and an allowed call stays allowed) even if grants/role/budget
     /// have since changed. The runtime builds its replay-mode engine from the
     /// record's snapshot, making the recorded decision authoritative.
-    pub fn from_snapshot(snapshot: &PermissionSnapshot) -> Self {
-        PolicyEngine {
-            capabilities: snapshot.capabilities.clone(),
+    ///
+    /// Replay re-installs the permissive [`AllowAll`] context: the recorded
+    /// snapshot already captured the *outcome* of the non-capability gates at
+    /// record time (a call that those gates denied was never recorded as
+    /// allowed), so replay must not re-impose today's workspace/run-profile
+    /// policy on a historical run.
+    ///
+    /// Returns `Err` if the snapshot's stored grants fail glob validation —
+    /// which should never happen for a snapshot this crate produced, but is
+    /// enforced fail-closed in case a record was tampered with (review 006 P2).
+    pub fn from_snapshot(snapshot: &PermissionSnapshot) -> Result<Self> {
+        Ok(PolicyEngine {
+            capability: CapabilityCheck::from_capabilities(&snapshot.capabilities)?,
+            context: Box::new(AllowAll),
             can_run: snapshot.can_run,
-            revoked: [false; 5],
             max_host_calls: snapshot.max_host_calls,
             host_calls: 0,
-        }
+        })
     }
 
     /// Capture the engine's evaluated permission state as a [`PermissionSnapshot`]
@@ -149,25 +402,10 @@ impl PolicyEngine {
     /// of the static snapshot; M0a has no mid-run revocation on the spine path).
     pub fn snapshot(&self) -> PermissionSnapshot {
         PermissionSnapshot {
-            capabilities: self.capabilities.clone(),
+            capabilities: self.capability.capabilities.clone(),
             can_run: self.can_run,
             max_host_calls: self.max_host_calls,
         }
-    }
-
-    /// Index of a category into the `revoked` bitset.
-    fn revoke_index(cat: Category) -> usize {
-        match cat {
-            Category::Storage => 0,
-            Category::Db => 1,
-            Category::Ui => 2,
-            Category::Time => 3,
-            Category::Random => 4,
-        }
-    }
-
-    fn is_revoked(&self, cat: Category) -> bool {
-        self.revoked[Self::revoke_index(cat)]
     }
 
     /// Revoke a capability category for the rest of this run.
@@ -175,8 +413,11 @@ impl PolicyEngine {
     /// prd-merged/07 CR-4: revocation takes effect immediately — the very next
     /// [`check`](Self::check) of a call in `cat` is denied with
     /// `PermissionDenied`, even though the manifest still nominally grants it.
+    /// This applies uniformly to the time/random/ui seams: revoking `Time`
+    /// denies the next `ctx.time.now()`, proving they are revocable allowances
+    /// and not ambient (review 006 P1).
     pub fn revoke(&mut self, cat: Category) {
-        self.revoked[Self::revoke_index(cat)] = true;
+        self.capability.revoke(cat);
     }
 
     /// Number of host calls counted so far this run.
@@ -198,22 +439,26 @@ impl PolicyEngine {
     /// Decide whether `call` is permitted, and on success count it against the
     /// host-call budget.
     ///
-    /// Order of checks (prd-merged/07 SC-10 — *all* must pass):
+    /// Order of checks (prd-merged/07 SC-10 — *all seven conjuncts* must pass):
     /// 1. the actor's role permits running at all;
     /// 2. the budget (`max_host_calls`) has not been exhausted (SC-2);
-    /// 3. the category has not been revoked (CR-4);
-    /// 4. the manifest grants the capability category, and the specific
-    ///    resource matches the allowlist (SC-8).
+    /// 3. the workspace-policy / run-profile / platform-permission gates
+    ///    ([`DecisionContext`]; M0a-permissive but fail-closed-capable);
+    /// 4. the category has not been revoked (CR-4), the manifest grants the
+    ///    capability category, and the specific resource matches the allowlist
+    ///    (SC-8) — the [`CapabilityCheck`] subcheck.
     ///
     /// On any failure no call is counted; the budget is only consumed by calls
     /// that are actually allowed to proceed.
     pub fn check(&mut self, call: &HostCall) -> Result<()> {
+        let cat = Self::category_of(call);
+
         // 1. Role gate (SC-10): read-only roles cannot run code, so no host
         //    call they would issue is ever permitted.
         if !self.can_run {
             return Err(CoreError::PermissionDenied(format!(
                 "actor role is not permitted to run applets (required: Owner/Maintainer/Editor/Runner) for {} call",
-                Self::category_of(call).as_str()
+                cat.as_str()
             )));
         }
 
@@ -225,92 +470,32 @@ impl PolicyEngine {
             )));
         }
 
-        // 3 + 4. Capability gate (SC-8/CR-4).
-        self.check_capability(call)?;
+        // 3. Non-capability SC-10 gates (review 006 P1): workspace policy, run
+        //    profile, platform permission. M0a stubs allow, but a real context
+        //    can deny any of them fail-closed here.
+        gate(self.context.workspace_policy(cat), "workspace policy", cat)?;
+        gate(self.context.run_profile(cat), "run profile", cat)?;
+        gate(self.context.platform_permission(cat), "platform permission", cat)?;
+
+        // 4. Capability subcheck (SC-8/CR-4): manifest grant + resource match,
+        //    including the revocable seam allowances.
+        self.capability.check(call)?;
 
         // Only count calls that pass every gate.
         self.host_calls += 1;
         Ok(())
     }
+}
 
-    /// The capability/allowlist portion of [`check`](Self::check), separated so
-    /// the role and budget gates read cleanly. Does not touch the counter.
-    fn check_capability(&self, call: &HostCall) -> Result<()> {
-        match call {
-            HostCall::Storage { op, key } => {
-                if self.is_revoked(Category::Storage) {
-                    return Err(revoked_error(Category::Storage, *op, key));
-                }
-                let scope = match op {
-                    Access::Read => &self.capabilities.storage.read,
-                    Access::Write => &self.capabilities.storage.write,
-                };
-                // Distinguish "no grant of this category at all" (the applet
-                // forgot to declare it → CapabilityRequired) from "declared
-                // some scopes but not this key" (→ PermissionDenied).
-                if !category_declared_storage(&self.capabilities) {
-                    return Err(capability_required(Category::Storage, *op, key));
-                }
-                if scope.iter().any(|prefix| prefix_matches(prefix, key)) {
-                    Ok(())
-                } else {
-                    Err(permission_denied(Category::Storage, *op, key))
-                }
-            }
-            HostCall::Db { op, collection } => {
-                if self.is_revoked(Category::Db) {
-                    return Err(revoked_error(Category::Db, *op, collection));
-                }
-                let scope = match op {
-                    Access::Read => &self.capabilities.db.read,
-                    Access::Write => &self.capabilities.db.write,
-                };
-                if !category_declared_db(&self.capabilities) {
-                    return Err(capability_required(Category::Db, *op, collection));
-                }
-                if scope.iter().any(|c| c == collection) {
-                    Ok(())
-                } else {
-                    Err(permission_denied(Category::Db, *op, collection))
-                }
-            }
-            HostCall::Ui => {
-                if self.is_revoked(Category::Ui) {
-                    return Err(CoreError::PermissionDenied(
-                        "ui capability has been revoked".to_string(),
-                    ));
-                }
-                if self.capabilities.ui {
-                    Ok(())
-                } else {
-                    // `ui` is a single boolean grant, not a list of scopes, so
-                    // an absent grant is a flat-out denial rather than a
-                    // "you forgot to declare a scope" CapabilityRequired.
-                    Err(CoreError::PermissionDenied(
-                        "ui capability not granted in manifest (capabilities.ui = false)"
-                            .to_string(),
-                    ))
-                }
-            }
-            // Deterministic seams are always available (prd-merged/01 CR-11),
-            // but still honor an explicit runtime revocation (CR-4).
-            HostCall::Time => {
-                if self.is_revoked(Category::Time) {
-                    return Err(CoreError::PermissionDenied(
-                        "time capability has been revoked".to_string(),
-                    ));
-                }
-                Ok(())
-            }
-            HostCall::Random => {
-                if self.is_revoked(Category::Random) {
-                    return Err(CoreError::PermissionDenied(
-                        "random capability has been revoked".to_string(),
-                    ));
-                }
-                Ok(())
-            }
-        }
+/// Map a [`GateDecision`] from a [`DecisionContext`] hook to a `Result`, naming
+/// the gate and category in the denial so the seam is auditable.
+fn gate(decision: GateDecision, gate_name: &str, cat: Category) -> Result<()> {
+    match decision {
+        GateDecision::Allow => Ok(()),
+        GateDecision::Deny(reason) => Err(CoreError::PermissionDenied(format!(
+            "{gate_name} gate denied {cat} capability: {reason}",
+            cat = cat.as_str(),
+        ))),
     }
 }
 
@@ -325,9 +510,63 @@ fn category_declared_db(caps: &Capabilities) -> bool {
     !caps.db.read.is_empty() || !caps.db.write.is_empty()
 }
 
+/// Validate every storage glob grant (review 006 P2).
+///
+/// A grant is rejected fail-closed if it is:
+///   - empty / whitespace-only (an unscoped grant);
+///   - a bare `*` (or `**`, etc.) — a lone wildcard must **not** silently mean
+///     "full storage access"; applets must scope grants to a prefix;
+///   - a prefix glob that would still match everything (`*` with nothing before
+///     it, e.g. `*notes`), since the prefix before `*` is empty;
+///   - malformed — contains a `*` anywhere except as the final character (M0a
+///     only supports a trailing-`*` prefix glob, prd-merged/07 SC-8 `path/*`).
+///
+/// Exact (non-glob) grants like `config` are always fine; trailing-`*` grants
+/// like `app/*` are fine because they carry a non-empty `app/` prefix.
+fn validate_storage_grants(caps: &Capabilities) -> Result<()> {
+    for grant in caps.storage.read.iter().chain(caps.storage.write.iter()) {
+        validate_storage_grant(grant)?;
+    }
+    Ok(())
+}
+
+fn validate_storage_grant(grant: &str) -> Result<()> {
+    if grant.trim().is_empty() {
+        return Err(CoreError::ValidationError(
+            "storage grant is empty; grants must be applet-scoped (e.g. \"app/*\")".to_string(),
+        ));
+    }
+    let star_count = grant.matches('*').count();
+    if star_count == 0 {
+        // Exact-key grant: always well-scoped.
+        return Ok(());
+    }
+    // A glob: the single `*` must be the final character (trailing-prefix glob).
+    if star_count > 1 || !grant.ends_with('*') {
+        return Err(CoreError::ValidationError(format!(
+            "malformed storage grant {grant:?}: the only supported glob is a single trailing \"*\" (e.g. \"app/*\")"
+        )));
+    }
+    // Trailing-`*` glob: the prefix before `*` must be non-empty, otherwise the
+    // grant matches every key — a bare `*` (or `*`-prefixed) "full access" grant
+    // is exactly what we reject (review 006 P2).
+    let prefix = &grant[..grant.len() - 1];
+    if prefix.is_empty() {
+        return Err(CoreError::ValidationError(
+            "overly broad storage grant \"*\": a bare wildcard would grant full storage access; \
+             scope it to an applet prefix (e.g. \"app/*\")"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Prefix/glob match for storage keys. A grant of `app/*` matches any key
 /// under `app/`; a bare grant (`config`) matches exactly that key. The `*`
 /// suffix is the only glob form M0a supports (prd-merged/07 SC-8 `path/*`).
+///
+/// Callers must have validated grants with [`validate_storage_grant`] first, so
+/// a bare `*` never reaches here as an allowed grant.
 fn prefix_matches(grant: &str, key: &str) -> bool {
     if let Some(prefix) = grant.strip_suffix('*') {
         key.starts_with(prefix)
@@ -350,6 +589,22 @@ fn permission_denied(cat: Category, op: Access, resource: &str) -> CoreError {
         cat = cat.as_str(),
         op = op.as_str(),
     ))
+}
+
+/// Build the "revoked" denial for any host call, naming the resource where one
+/// exists (storage/db) and the category otherwise (ui/time/random).
+fn revoked_error_for(call: &HostCall) -> CoreError {
+    match call {
+        HostCall::Storage { op, key } => revoked_error(Category::Storage, *op, key),
+        HostCall::Db { op, collection } => revoked_error(Category::Db, *op, collection),
+        HostCall::Ui => CoreError::PermissionDenied("ui capability has been revoked".to_string()),
+        HostCall::Time => {
+            CoreError::PermissionDenied("time capability has been revoked".to_string())
+        }
+        HostCall::Random => {
+            CoreError::PermissionDenied("random capability has been revoked".to_string())
+        }
+    }
 }
 
 fn revoked_error(cat: Category, op: Access, resource: &str) -> CoreError {
@@ -401,7 +656,7 @@ mod tests {
     }
 
     fn engine(caps: Capabilities, actor: ActorContext) -> PolicyEngine {
-        PolicyEngine::new(&manifest_with(caps, 10_000), &actor)
+        PolicyEngine::new(&manifest_with(caps, 10_000), &actor).expect("valid grants")
     }
 
     // --- Storage grants -----------------------------------------------------
@@ -457,6 +712,97 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "CapabilityRequired");
         assert!(err.to_string().contains("storage"), "{err}");
+    }
+
+    // --- Glob grant validation (review 006 P2) ------------------------------
+
+    #[test]
+    fn bare_star_storage_grant_is_rejected() {
+        // A lone "*" must not silently mean full storage access.
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&["*"], &[], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("full storage access"), "{err}");
+    }
+
+    #[test]
+    fn bare_star_write_grant_is_rejected() {
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&[], &["*"], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    #[test]
+    fn empty_storage_grant_is_rejected() {
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&["   "], &[], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("applet-scoped"), "{err}");
+    }
+
+    #[test]
+    fn malformed_glob_with_inner_star_is_rejected() {
+        // `*` is only supported as a trailing char; an inner `*` is malformed.
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&["app/*/secret"], &[], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("malformed"), "{err}");
+    }
+
+    #[test]
+    fn malformed_glob_with_leading_star_is_rejected() {
+        // `*notes` would match everything (empty prefix) and isn't a trailing
+        // glob → rejected as malformed.
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&["*notes"], &[], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    #[test]
+    fn malformed_glob_with_double_star_is_rejected() {
+        let err = PolicyEngine::new(
+            &manifest_with(caps(&["app/**"], &[], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+    }
+
+    #[test]
+    fn scoped_prefix_and_exact_grants_are_accepted() {
+        // A trailing-`*` prefix glob and an exact key are both well-formed.
+        assert!(PolicyEngine::new(
+            &manifest_with(caps(&["app/*", "config"], &["app/*"], &[], &[], true), 10_000),
+            &owner(),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn from_snapshot_rejects_tampered_broad_grant() {
+        // A snapshot whose stored grant was tampered to a bare "*" is rejected
+        // fail-closed on replay (review 006 P2).
+        let snap = PermissionSnapshot {
+            capabilities: caps(&["*"], &[], &[], &[], true),
+            can_run: true,
+            max_host_calls: 10,
+        };
+        assert_eq!(PolicyEngine::from_snapshot(&snap).unwrap_err().code(), "ValidationError");
     }
 
     // --- Db grants ----------------------------------------------------------
@@ -515,15 +861,124 @@ mod tests {
         assert!(err.to_string().contains("ui"), "{err}");
     }
 
-    // --- Deterministic seams ------------------------------------------------
+    // --- Non-ambient seams: granted-by-default, revocable (review 006 P1) ---
 
     #[test]
-    fn time_and_random_are_always_allowed() {
-        // Even with an utterly empty capability set, the deterministic seams
-        // are available (prd-merged/01 CR-11).
+    fn seams_allowed_when_granted() {
+        // Time/Random are routed through the capability decision path as a
+        // default-granted allowance — allowed while granted.
         let mut e = engine(caps(&[], &[], &[], &[], false), owner());
         assert!(e.check(&HostCall::Time).is_ok());
         assert!(e.check(&HostCall::Random).is_ok());
+    }
+
+    #[test]
+    fn time_seam_denied_when_revoked() {
+        // The seam is a REVOCABLE allowance, not an ambient capability: revoking
+        // it denies the next call (zero-ambient, prd-merged/07).
+        let mut e = engine(caps(&[], &[], &[], &[], false), owner());
+        assert!(e.check(&HostCall::Time).is_ok());
+        e.revoke(Category::Time);
+        let err = e.check(&HostCall::Time).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("revoked"), "{err}");
+    }
+
+    #[test]
+    fn random_seam_denied_when_revoked() {
+        let mut e = engine(caps(&[], &[], &[], &[], false), owner());
+        assert!(e.check(&HostCall::Random).is_ok());
+        e.revoke(Category::Random);
+        let err = e.check(&HostCall::Random).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("revoked"), "{err}");
+    }
+
+    // --- DecisionContext seam (review 006 P1) -------------------------------
+
+    /// A context that denies one named gate for a given category, allowing the
+    /// rest — used to prove each missing SC-10 gate has a fail-closed seam.
+    #[derive(Debug)]
+    struct DenyGate {
+        which: &'static str,
+        category: Category,
+    }
+
+    impl DecisionContext for DenyGate {
+        fn workspace_policy(&self, category: Category) -> GateDecision {
+            self.maybe_deny("workspace_policy", category)
+        }
+        fn run_profile(&self, category: Category) -> GateDecision {
+            self.maybe_deny("run_profile", category)
+        }
+        fn platform_permission(&self, category: Category) -> GateDecision {
+            self.maybe_deny("platform_permission", category)
+        }
+    }
+
+    impl DenyGate {
+        fn maybe_deny(&self, gate: &str, category: Category) -> GateDecision {
+            if gate == self.which && category == self.category {
+                GateDecision::Deny("test-denied".into())
+            } else {
+                GateDecision::Allow
+            }
+        }
+    }
+
+    fn engine_with(ctx: Box<dyn DecisionContext>, c: Capabilities) -> PolicyEngine {
+        PolicyEngine::with_context(&manifest_with(c, 10_000), &owner(), ctx).expect("valid grants")
+    }
+
+    #[test]
+    fn allow_all_context_permits_all_gates() {
+        // The M0a default stub allows the otherwise-granted call.
+        let mut e = engine_with(Box::new(AllowAll), caps(&["app/*"], &[], &[], &[], true));
+        assert!(e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_ok());
+    }
+
+    #[test]
+    fn workspace_policy_gate_can_deny_fail_closed() {
+        let ctx = Box::new(DenyGate { which: "workspace_policy", category: Category::Storage });
+        let mut e = engine_with(ctx, caps(&["app/*"], &[], &[], &[], true));
+        let err = e
+            .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("workspace policy"), "{err}");
+    }
+
+    #[test]
+    fn run_profile_gate_can_deny_fail_closed() {
+        let ctx = Box::new(DenyGate { which: "run_profile", category: Category::Db });
+        let mut e = engine_with(ctx, caps(&[], &[], &["tasks"], &["tasks"], true));
+        let err = e
+            .check(&HostCall::Db { op: Access::Write, collection: "tasks".into() })
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("run profile"), "{err}");
+    }
+
+    #[test]
+    fn platform_permission_gate_can_deny_fail_closed() {
+        let ctx = Box::new(DenyGate { which: "platform_permission", category: Category::Ui });
+        let mut e = engine_with(ctx, caps(&[], &[], &[], &[], true));
+        let err = e.check(&HostCall::Ui).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("platform permission"), "{err}");
+    }
+
+    #[test]
+    fn decision_context_gate_does_not_consume_budget() {
+        let ctx = Box::new(DenyGate { which: "workspace_policy", category: Category::Storage });
+        let mut e = PolicyEngine::with_context(
+            &manifest_with(caps(&["app/*"], &[], &[], &[], true), 5),
+            &owner(),
+            ctx,
+        )
+        .unwrap();
+        assert!(e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_err());
+        assert_eq!(e.host_calls(), 0, "a gate denial must not be counted");
     }
 
     // --- Roles (SC-10 / SC-11) ----------------------------------------------
@@ -557,7 +1012,7 @@ mod tests {
         for role in [Role::Auditor, Role::Reviewer] {
             let actor = ActorContext { actor: "u".into(), role };
             let mut e = engine(caps(&[], &[], &[], &[], true), actor);
-            // Even the always-allowed Time seam is gated by the role check.
+            // Even the deterministic Time seam is gated by the role check.
             let err = e.check(&HostCall::Time).unwrap_err();
             assert_eq!(err.code(), "PermissionDenied", "{role:?}");
         }
@@ -567,7 +1022,8 @@ mod tests {
     fn role_gate_does_not_consume_budget() {
         let actor = ActorContext { actor: "u".into(), role: Role::Viewer };
         let mut e =
-            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 1), &actor);
+            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 1), &actor)
+                .unwrap();
         // A denied call must not advance the host-call counter.
         assert!(e.check(&HostCall::Time).is_err());
         assert_eq!(e.host_calls(), 0);
@@ -622,9 +1078,19 @@ mod tests {
     }
 
     #[test]
+    fn revoking_one_seam_leaves_the_other() {
+        // Revoking Time must not revoke Random — seam allowances are per-category.
+        let mut e = engine(caps(&[], &[], &[], &[], false), owner());
+        e.revoke(Category::Time);
+        assert!(e.check(&HostCall::Time).is_err());
+        assert!(e.check(&HostCall::Random).is_ok());
+    }
+
+    #[test]
     fn revoked_call_does_not_consume_budget() {
         let mut e =
-            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 5), &owner());
+            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 5), &owner())
+                .unwrap();
         e.revoke(Category::Storage);
         assert!(e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_err());
         assert_eq!(e.host_calls(), 0, "denied calls must not be counted");
@@ -635,7 +1101,8 @@ mod tests {
     #[test]
     fn host_call_count_over_max_is_resource_limit_exceeded() {
         let mut e =
-            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 3), &owner());
+            PolicyEngine::new(&manifest_with(caps(&["app/*"], &[], &[], &[], true), 3), &owner())
+                .unwrap();
         for i in 0..3 {
             assert!(
                 e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_ok(),
@@ -654,9 +1121,10 @@ mod tests {
 
     #[test]
     fn budget_counts_seam_calls_too() {
-        // Time/Random are "always allowed" capability-wise but still count
+        // Time/Random are granted-by-default capability-wise but still count
         // toward the flood guard.
-        let mut e = PolicyEngine::new(&manifest_with(caps(&[], &[], &[], &[], true), 2), &owner());
+        let mut e = PolicyEngine::new(&manifest_with(caps(&[], &[], &[], &[], true), 2), &owner())
+            .unwrap();
         assert!(e.check(&HostCall::Time).is_ok());
         assert!(e.check(&HostCall::Random).is_ok());
         assert_eq!(e.check(&HostCall::Time).unwrap_err().code(), "ResourceLimitExceeded");
@@ -667,7 +1135,8 @@ mod tests {
         // Once the budget is spent, even a normally-denied call surfaces the
         // limit error (the budget gate runs first). This keeps a hostile loop
         // from being able to distinguish denials by error code after flooding.
-        let mut e = PolicyEngine::new(&manifest_with(caps(&[], &[], &[], &[], true), 1), &owner());
+        let mut e = PolicyEngine::new(&manifest_with(caps(&[], &[], &[], &[], true), 1), &owner())
+            .unwrap();
         assert!(e.check(&HostCall::Time).is_ok());
         let err = e
             .check(&HostCall::Storage { op: Access::Read, key: "denied".into() })
@@ -719,7 +1188,7 @@ mod tests {
         let recorded = engine(caps(&["app/*"], &["app/*"], &[], &[], true), owner()).snapshot();
         // Replay engine built from the snapshot honors the SAME grants, even
         // though no manifest/actor is consulted.
-        let mut replay = PolicyEngine::from_snapshot(&recorded);
+        let mut replay = PolicyEngine::from_snapshot(&recorded).unwrap();
         assert!(replay
             .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
             .is_ok());
@@ -738,7 +1207,7 @@ mod tests {
         // denial regardless of how generous a current manifest would be.
         let recorded =
             engine(caps(&[], &[], &["tasks"], &["tasks"], true), owner()).snapshot();
-        let mut replay = PolicyEngine::from_snapshot(&recorded);
+        let mut replay = PolicyEngine::from_snapshot(&recorded).unwrap();
         let err = replay
             .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
             .unwrap_err();
@@ -750,17 +1219,32 @@ mod tests {
     fn snapshot_roundtrips_through_from_snapshot() {
         let original = engine(caps(&["app/*"], &[], &["tasks"], &["tasks"], false), owner());
         let snap = original.snapshot();
-        let rebuilt = PolicyEngine::from_snapshot(&snap);
+        let rebuilt = PolicyEngine::from_snapshot(&snap).unwrap();
         assert_eq!(rebuilt.snapshot(), snap);
     }
 
     #[test]
     fn prefix_match_handles_bare_star_and_empty() {
-        // A lone "*" grant matches everything (prefix is empty).
+        // `prefix_matches` is the low-level matcher; it still matches greedily
+        // for a bare "*" — which is exactly why `validate_storage_grant` rejects
+        // such a grant before it can ever be installed (review 006 P2).
         assert!(prefix_matches("*", "anything"));
         assert!(prefix_matches("*", ""));
         // Empty grant matches only the empty key.
         assert!(prefix_matches("", ""));
         assert!(!prefix_matches("", "x"));
+    }
+
+    #[test]
+    fn validate_storage_grant_accepts_and_rejects() {
+        // Direct unit coverage of the validator's branches.
+        assert!(validate_storage_grant("config").is_ok());
+        assert!(validate_storage_grant("app/*").is_ok());
+        assert!(validate_storage_grant("*").is_err());
+        assert!(validate_storage_grant("").is_err());
+        assert!(validate_storage_grant("  ").is_err());
+        assert!(validate_storage_grant("a*b").is_err());
+        assert!(validate_storage_grant("**").is_err());
+        assert!(validate_storage_grant("*x").is_err());
     }
 }

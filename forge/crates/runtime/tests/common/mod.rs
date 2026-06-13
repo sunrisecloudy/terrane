@@ -59,13 +59,15 @@ pub fn spine_manifest() -> Manifest {
 /// wall clock *is* the intended fast limiter (any budget tripping yields
 /// `ResourceLimitExceeded`, which is all those cases assert).
 ///
-/// Storage is granted broadly (`*`) so flood/seam tests reach the limits, not a
-/// capability denial.
+/// Storage is granted broadly under the applet-scoped `app/*` prefix so
+/// flood/seam tests reach the limits, not a capability denial. (A bare `*`
+/// grant is rejected at policy-build time as overly broad — forge-policy review
+/// 006 P2 — so these fixtures use a scoped wildcard and `app/`-prefixed keys.)
 pub fn small_limits_manifest() -> Manifest {
     let mut m = spine_manifest();
     m.capabilities.storage = StorageGrant {
-        read: vec!["*".into()],
-        write: vec!["*".into()],
+        read: vec!["app/*".into()],
+        write: vec!["app/*".into()],
     };
     m.limits = Limits {
         // Generous backstop: the count/byte caps are the deterministic limiters;

@@ -43,7 +43,10 @@ pub fn record_run(
 ) -> Result<RunRecord> {
     manifest.validate()?;
     let recorder = RunRecorder::recording(seed, time_start);
-    let policy = PolicyEngine::new(manifest, actor);
+    // `PolicyEngine::new` now validates the manifest's storage glob grants
+    // (forge-policy review 006 P2); a bare `*`/malformed grant fails closed here
+    // as a ValidationError rather than being silently accepted.
+    let policy = PolicyEngine::new(manifest, actor)?;
     finish_run(
         program,
         policy,
@@ -99,7 +102,7 @@ pub fn replay(
     // role, or budget have since changed. Engine-level limits (memory/fuel/wall)
     // still come from the manifest, but the host-call cap tracks the snapshot so
     // the budget gate behaves identically on replay.
-    let policy = PolicyEngine::from_snapshot(&run.permissions);
+    let policy = PolicyEngine::from_snapshot(&run.permissions)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = run.permissions.max_host_calls;
     finish_run(

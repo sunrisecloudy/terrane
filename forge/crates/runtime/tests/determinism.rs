@@ -383,10 +383,14 @@ fn replay_uses_recorded_permission_snapshot_not_current_grants() {
     assert!(!original.permissions.capabilities.storage.write.iter().any(|s| s == "secret/*"));
 
     // Now replay under a MORE PERMISSIVE manifest that DOES grant secret/*.
+    // (A bare `*` grant is rejected as overly broad by forge-policy review 006
+    // P2; a scoped `secret/*` grant is enough to make the point that the live
+    // manifest is permissive while the recorded snapshot — which lacks it — is
+    // what actually governs the replay decision.)
     let mut permissive = spine_manifest();
     permissive.capabilities.storage = StorageGrant {
-        read: vec!["*".into()],
-        write: vec!["*".into()],
+        read: vec!["secret/*".into()],
+        write: vec!["secret/*".into()],
     };
     let mut null = NullBridge::new();
     let replayed = replay(&original, &prog, &permissive, &owner(), &mut null).unwrap();

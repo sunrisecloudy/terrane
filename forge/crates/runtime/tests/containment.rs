@@ -77,7 +77,7 @@ fn js_for(file: &str) -> &'static str {
             "function left(d) { return right(d + 1); } function right(d) { return left(d + 1); } export async function main(c, i) { return left(0); }"
         }
         "ctx_storage_flood.ts" => {
-            r#"export async function main(c, i) { while (true) { await c.storage.get("flood"); } }"#
+            r#"export async function main(c, i) { while (true) { await c.storage.get("app/flood"); } }"#
         }
         other => panic!("no JS equivalent wired for engine-owned corpus case {other:?}"),
     }
@@ -251,7 +251,7 @@ fn host_call_flood_is_capped_at_max_host_calls() {
     // can't trip the wall budget first and leave fewer than 51 recorded calls.
     let prog = program(
         r#"export async function main(ctx, input) {
-            while (true) { await ctx.storage.get("flood"); }
+            while (true) { await ctx.storage.get("app/flood"); }
         }"#,
     );
     let mut bridge = MemoryHostBridge::new();

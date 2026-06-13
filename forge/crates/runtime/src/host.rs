@@ -41,13 +41,16 @@ impl<'b> HostContext<'b> {
         actor: &ActorContext,
         recorder: RunRecorder,
         bridge: &'b mut dyn HostBridge,
-    ) -> Self {
-        Self::with_policy(
-            PolicyEngine::new(manifest, actor),
+    ) -> Result<Self> {
+        // `PolicyEngine::new` validates the manifest's storage glob grants
+        // (forge-policy review 006 P2), so it can now fail closed; propagate that
+        // instead of constructing a hub around invalid grants.
+        Ok(Self::with_policy(
+            PolicyEngine::new(manifest, actor)?,
             manifest.limits.clone(),
             recorder,
             bridge,
-        )
+        ))
     }
 
     /// Build a hub around a pre-constructed [`PolicyEngine`]. Replay uses this
