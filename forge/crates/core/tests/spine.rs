@@ -2046,10 +2046,28 @@ fn signature_block_from_fixture(fixture: &serde_json::Value) -> serde_json::Valu
     block
 }
 
-/// Install the demo applet WITH an attached signature block (from a fixture).
+/// Build the install `sources` map FROM a signed fixture's `package.files`, so
+/// the install carries exactly the code the signature signed. The signature is
+/// bound to the install sources (review 080 #1), so a signed install must ship
+/// the signed files — these fixture sources are valid TypeScript the pipeline
+/// compiles.
+fn sources_from_fixture(fixture: &serde_json::Value) -> serde_json::Value {
+    let mut sources = serde_json::Map::new();
+    for file in fixture["package"]["files"].as_array().expect("files array") {
+        sources.insert(
+            file["path"].as_str().expect("file path").to_string(),
+            file["content"].clone(),
+        );
+    }
+    serde_json::Value::Object(sources)
+}
+
+/// Install an applet WITH an attached signature block (from a fixture), shipping
+/// the SIGNED files as the install sources so the signature binds to the payload.
 fn install_demo_signed(
     core: &mut WorkspaceCore,
     applet_id: &str,
+    fixture: &serde_json::Value,
     signature: serde_json::Value,
 ) -> forge_domain::CoreResponse {
     core.handle(cmd(
@@ -2057,7 +2075,7 @@ fn install_demo_signed(
         Some(applet_id),
         serde_json::json!({
             "manifest": demo_manifest(),
-            "sources": { "src/main.ts": DEMO_TS },
+            "sources": sources_from_fixture(fixture),
             "signature": signature,
         }),
     ))
@@ -2069,7 +2087,8 @@ fn install_signed_package_verifies_and_records_trust() {
     // over the canonical preimage and records the verified publisher as trust.
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     let fixture = load_signing_fixture("valid_signature.json");
-    let resp = install_demo_signed(&mut core, "app_signed", signature_block_from_fixture(&fixture));
+    let sig = signature_block_from_fixture(&fixture);
+    let resp = install_demo_signed(&mut core, "app_signed", &fixture, sig);
 
     assert!(resp.ok, "a valid signed package must install: {:?}", resp.error);
     let trust = &resp.payload["trust"];
@@ -2099,6 +2118,41 @@ fn install_signed_package_verifies_and_records_trust() {
 }
 
 #[test]
+fn a_valid_signature_cannot_bless_different_top_level_code() {
+    // review 080 #1: a valid T012 signed package attached to an install whose
+    // top-level `sources` are NOT the signed files must be REJECTED — otherwise a
+    // caller could borrow any valid signature to bless arbitrary code. The
+    // signature verifies (crypto + integrity are fine), but the install ships
+    // `DEMO_TS` instead of the signed `src/main.ts`, so the bind-to-payload check
+    // rejects at the package_hash layer and nothing is stored.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app_borrowed_sig"),
+        serde_json::json!({
+            "manifest": demo_manifest(),
+            // The signed package's file is `return { ok: true }`; ship different code.
+            "sources": { "src/main.ts": DEMO_TS },
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(!resp.ok, "a borrowed signature over different code must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("package signature invalid")
+            && err.to_string().contains("package_hash"),
+        "the bind-to-payload mismatch is surfaced at package_hash: {err}"
+    );
+
+    // Nothing was installed.
+    let run = core.handle(cmd("runtime.run", Some("app_borrowed_sig"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected install stored nothing");
+}
+
+#[test]
 fn install_signed_package_with_trusted_publisher_enforces_policy_layer() {
     // When the install carries a publisher-trust block, the marketplace-policy
     // layer is ENFORCED (SC-15 policy-vs-crypto split). A trusted, unexpired
@@ -2112,7 +2166,7 @@ fn install_signed_package_with_trusted_publisher_enforces_policy_layer() {
         "trusted": true,
         "valid_until": serde_json::Value::Null,
     });
-    let resp = install_demo_signed(&mut core, "app_trusted", signature);
+    let resp = install_demo_signed(&mut core, "app_trusted", &fixture, signature);
 
     assert!(resp.ok, "trusted publisher installs: {:?}", resp.error);
     assert_eq!(resp.payload["trust"]["status"], serde_json::json!("signed"));
@@ -2132,7 +2186,8 @@ fn install_tampered_signed_package_is_rejected_and_not_installed() {
     // with a ValidationError and NOTHING stored.
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     let fixture = load_signing_fixture("invalid_file_content_hash_mismatch.json");
-    let resp = install_demo_signed(&mut core, "app_tampered", signature_block_from_fixture(&fixture));
+    let sig = signature_block_from_fixture(&fixture);
+    let resp = install_demo_signed(&mut core, "app_tampered", &fixture, sig);
 
     assert!(!resp.ok, "a tampered signed package must be rejected");
     let err = resp.error.expect("must carry an error");
@@ -2159,7 +2214,8 @@ fn install_with_a_garbage_signature_is_rejected_at_the_crypto_layer() {
     // surfaced — distinct from the integrity (package_hash) rejection above.
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     let fixture = load_signing_fixture("invalid_garbage_signature.json");
-    let resp = install_demo_signed(&mut core, "app_garbage", signature_block_from_fixture(&fixture));
+    let sig = signature_block_from_fixture(&fixture);
+    let resp = install_demo_signed(&mut core, "app_garbage", &fixture, sig);
 
     assert!(!resp.ok, "a garbage signature must be rejected");
     let err = resp.error.expect("must carry an error");
@@ -2180,7 +2236,8 @@ fn install_with_an_untrusted_publisher_is_rejected_at_the_policy_layer() {
     // publisher (the `invalid_unknown_publisher` T012 vector).
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     let fixture = load_signing_fixture("invalid_unknown_publisher.json");
-    let resp = install_demo_signed(&mut core, "app_untrusted", signature_block_from_fixture(&fixture));
+    let sig = signature_block_from_fixture(&fixture);
+    let resp = install_demo_signed(&mut core, "app_untrusted", &fixture, sig);
 
     assert!(!resp.ok, "an untrusted publisher must be rejected");
     let err = resp.error.expect("must carry an error");

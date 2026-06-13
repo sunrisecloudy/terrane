@@ -413,6 +413,9 @@ impl WorkspaceCore {
     ///
     ///   - a CRYPTO / integrity / policy failure REJECTS the install with
     ///     `ValidationError("package signature invalid: ...")` — nothing is stored;
+    ///   - the verified package is BOUND to the install payload (review 080 #1):
+    ///     its files must be the same `path -> content` set as `sources`, so a
+    ///     valid signature can only bless the exact code being compiled/stored;
     ///   - on success the verified publisher / key id + trust layer is recorded in
     ///     the install metadata ([`InstallTrust::Signed`]) so a later command can
     ///     report the package's trust.
@@ -426,10 +429,6 @@ impl WorkspaceCore {
         let manifest: Manifest = take_field(cmd, "manifest")?;
         manifest.validate()?;
 
-        // SC-15 / MP-4: verify the package signature when one is carried, BEFORE
-        // any state is touched. `Unsigned` when the install carries no signature.
-        let trust = verify_install_signature(cmd)?;
-
         let sources = cmd
             .payload
             .get("sources")
@@ -442,6 +441,12 @@ impl WorkspaceCore {
                 "applet.install `sources` must not be empty".into(),
             ));
         }
+
+        // SC-15 / MP-4: verify the package signature when one is carried, BEFORE
+        // any state is touched, and BIND it to the actual install sources so a
+        // valid signature can only bless the exact code being installed (review
+        // 080 #1). `Unsigned` when the install carries no signature.
+        let trust = verify_install_signature(cmd, sources)?;
 
         // Compile every source so a forbidden construct in ANY file rejects the
         // whole install (CR-13: the static policy scan is layer one). Capture
@@ -1898,13 +1903,19 @@ fn scope_grants(scope: &[String], collection: &str) -> bool {
 ///     `policy` (publisher not trusted / expired) — is surfaced as
 ///     `ValidationError("package signature invalid: <layer>: <reason>")`, so the
 ///     caller REJECTS the install;
+///   - the verified package is then BOUND to `sources` via
+///     [`bind_signature_to_sources`] so the signature only blesses the code
+///     actually being installed (review 080 #1);
 ///   - on success the verified publisher / key id (+ whether the policy layer was
 ///     enforced) is returned as [`InstallTrust::Signed`].
 ///
 /// `publisher_trust` is optional: present → the marketplace-policy layer is
 /// enforced (the publisher must be trusted and unexpired); absent → crypto +
 /// integrity only, the M0a "verify when present, surface the result" default.
-fn verify_install_signature(cmd: &CoreCommand) -> Result<InstallTrust> {
+fn verify_install_signature(
+    cmd: &CoreCommand,
+    sources: &serde_json::Map<String, serde_json::Value>,
+) -> Result<InstallTrust> {
     let signature = match cmd.payload.get("signature") {
         None | Some(serde_json::Value::Null) => return Ok(InstallTrust::Unsigned),
         Some(sig) => sig,
@@ -1936,6 +1947,14 @@ fn verify_install_signature(cmd: &CoreCommand) -> Result<InstallTrust> {
         publisher_trust.as_ref(),
     ) {
         TrustOutcome::Trusted => {
+            // BIND the verified package to the install payload (review 080 #1):
+            // a valid signature only blesses the EXACT code it signed. The signed
+            // package's files must be identical (path + content) to the `sources`
+            // that will actually be compiled and stored — otherwise a caller could
+            // attach any valid signed package to arbitrary top-level code and still
+            // be reported as `Signed`.
+            bind_signature_to_sources(&package, sources)?;
+
             // Record the verified publisher identity for later trust reporting.
             let publisher = manifest_string(&package.manifest, "publisher");
             let key_id = manifest_string(&package.manifest, "keyId");
@@ -1951,6 +1970,62 @@ fn verify_install_signature(cmd: &CoreCommand) -> Result<InstallTrust> {
             err.reason
         ))),
     }
+}
+
+/// Confirm a verified signed `package` actually describes the code being
+/// installed (review 080 #1). Without this, a valid signature over package A
+/// could be attached to an install of arbitrary code B and still report
+/// `Signed` — the signature would bless an app that is not the one installed.
+///
+/// The bind is exact: the signed package's files and the install `sources` must
+/// be the SAME set of `path -> content` entries. The signature already attests
+/// the files' integrity (forge-signing verified each `contentHash`/per-file
+/// digest), so matching the install sources to those files transitively binds
+/// the signature to exactly what is compiled and stored. A mismatch — an extra,
+/// missing, or differing file — is a `package_hash`-class rejection (the package
+/// does not match the payload), surfaced like any other signature failure so the
+/// install is rejected and nothing is stored.
+fn bind_signature_to_sources(
+    package: &Package,
+    sources: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let reject = |reason: String| {
+        Err(CoreError::ValidationError(format!(
+            "package signature invalid: package_hash: {reason}"
+        )))
+    };
+
+    // Same number of files (so the signed set has no extra files and the install
+    // has no unsigned ones).
+    if package.files.len() != sources.len() {
+        return reject(format!(
+            "signed package declares {} file(s) but the install carries {} source(s)",
+            package.files.len(),
+            sources.len()
+        ));
+    }
+
+    // Every signed file must be present in the install with identical content,
+    // and every install source must therefore be covered (the equal-length check
+    // above turns "every signed file matches a source" into a bijection).
+    for file in &package.files {
+        match sources.get(&file.path).and_then(|v| v.as_str()) {
+            Some(content) if content == file.content => {}
+            Some(_) => {
+                return reject(format!(
+                    "install source {:?} content does not match the signed package",
+                    file.path
+                ));
+            }
+            None => {
+                return reject(format!(
+                    "signed file {:?} is not among the install sources",
+                    file.path
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Read an optional `manifest.<key>` string out of a signed package's manifest
