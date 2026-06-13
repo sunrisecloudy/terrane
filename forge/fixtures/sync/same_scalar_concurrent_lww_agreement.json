@@ -15,6 +15,7 @@
       }
     }
   ],
+  "seed_mode": "shared_history",
   "peer_a": [
     {
       "op": "patch",

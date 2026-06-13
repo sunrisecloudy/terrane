@@ -15,6 +15,7 @@
       }
     }
   ],
+  "seed_mode": "shared_history",
   "peer_a": [],
   "peer_b": [],
   "sync": {

@@ -1,0 +1,387 @@
+//! Tests for the in-process CRDT sync seam (SS-1/SS-2, M0b).
+//!
+//! Two layers:
+//!
+//! 1. A **data-driven** suite over `forge/fixtures/sync/*.json` (the Codex T026
+//!    convergence corpus). For each case we build peer A's and peer B's
+//!    [`Store`]s — each under its own distinct Loro peer id — apply the seed and
+//!    the per-peer divergent ops, run [`sync_stores`], and assert BOTH peers'
+//!    record projections equal the fixture's `expect_converged` in every
+//!    collection. The fixtures are load-bearing: a broken chunk diff or merge
+//!    leaves a peer short a record (or with the wrong field) and the assertion
+//!    fails.
+//!
+//! 2. **Unit tests** pinning the SS-2 observable invariants the fixtures imply
+//!    but do not isolate: a second sync moves zero chunks (idempotent), a
+//!    one-directional catch-up, and an empty-peer catch-up.
+
+use super::*;
+use forge_storage::{IndexManager, Mutation, Store};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+
+// ---------------------------------------------------------------- fixture model
+
+/// One op inside a fixture's `seed` / `peer_a` / `peer_b` list.
+#[derive(serde::Deserialize)]
+struct FixtureOp {
+    op: String,
+    collection: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    fields: Map<String, Value>,
+}
+
+/// One expected converged record (`{id, fields}`) in a collection.
+#[derive(serde::Deserialize)]
+struct ExpectRecord {
+    id: String,
+    fields: Value,
+}
+
+/// A T026 convergence fixture (`fixtures/sync/<case>.json`).
+#[derive(serde::Deserialize)]
+struct Fixture {
+    case: String,
+    peer_a_id: u64,
+    peer_b_id: u64,
+    #[serde(default)]
+    seed: Vec<FixtureOp>,
+    #[serde(default)]
+    seed_mode: Option<String>,
+    #[serde(default)]
+    peer_a: Vec<FixtureOp>,
+    #[serde(default)]
+    peer_b: Vec<FixtureOp>,
+    /// collection -> expected converged records. For an ambiguous-winner case a
+    /// field value may be an `{one_of, agreement_required}` marker instead of a
+    /// scalar; those fields are checked for peer agreement only (see below).
+    expect_converged: BTreeMap<String, Vec<ExpectRecord>>,
+    #[serde(default)]
+    expect_deleted_ids: Vec<String>,
+}
+
+/// Turn a fixture op into a storage [`Mutation`], threading a monotone logical
+/// clock so timestamps advance deterministically.
+fn op_to_mutation(op: &FixtureOp, at: i64) -> Mutation {
+    match op.op.as_str() {
+        "insert" => Mutation::Insert {
+            collection: op.collection.clone(),
+            id: Some(op.id.clone().expect("insert op needs an id")),
+            fields: op.fields.clone(),
+            logical_at: Some(at),
+        },
+        "patch" => Mutation::Patch {
+            collection: op.collection.clone(),
+            id: op.id.clone().expect("patch op needs an id"),
+            fields: op.fields.clone(),
+            logical_at: Some(at),
+        },
+        "delete" => Mutation::Delete {
+            collection: op.collection.clone(),
+            id: op.id.clone().expect("delete op needs an id"),
+            logical_at: Some(at),
+        },
+        other => panic!("unknown fixture op {other}"),
+    }
+}
+
+/// Apply each op in `ops` to `store` as one DL-4 CRDT logical write, advancing a
+/// shared clock so ordering is deterministic across peers.
+fn apply_ops(store: &mut Store, ops: &[FixtureOp], idx: &IndexManager, clock: &mut i64) {
+    for op in ops {
+        *clock += 1;
+        let m = op_to_mutation(op, *clock);
+        store.apply_mutation_crdt(&m, idx).expect("apply op");
+    }
+}
+
+/// Copy every persisted chunk of `from` verbatim (same `doc_id`/`chunk_id`/
+/// `format`/`payload`) into `into`. Used to clone a single baseline CRDT history
+/// into both peers for a `seed_mode: "shared_history"` fixture, so the seed is
+/// genuinely *shared* history (byte-identical chunks) rather than two independent
+/// inserts that would conflict.
+fn copy_chunks(into: &Store, from: &Store) {
+    for doc_id in from.list_doc_ids().expect("list seed doc ids") {
+        for chunk in from.get_chunks(&doc_id).expect("read seed chunks") {
+            into.put_chunk(&doc_id, &chunk.chunk_id, &chunk.format, &chunk.payload)
+                .expect("seed chunk into peer");
+        }
+    }
+}
+
+/// The visible projection of a store as `collection -> {id -> fields}` (deleted
+/// records excluded), for converged-state comparison.
+fn projection(store: &Store, collections: &[&str]) -> BTreeMap<String, BTreeMap<String, Value>> {
+    let mut out = BTreeMap::new();
+    for &collection in collections {
+        let mut by_id = BTreeMap::new();
+        for env in store.list_records(collection).expect("list records") {
+            if env.deleted {
+                continue;
+            }
+            by_id.insert(
+                env.entity_id.as_str().to_string(),
+                serde_json::to_value(&env.fields).expect("fields to json"),
+            );
+        }
+        out.insert(collection.to_string(), by_id);
+    }
+    out
+}
+
+/// True iff `value` is an ambiguous-winner marker (`{one_of: [...],
+/// agreement_required: true}`) rather than a concrete scalar. Such a field's
+/// exact value is implementation-defined (Loro LWW tie-break), so the fixture
+/// only requires the two peers to AGREE and the value to be one of the listed
+/// options.
+fn is_ambiguous(value: &Value) -> bool {
+    value
+        .as_object()
+        .map(|o| o.contains_key("one_of") && o.contains_key("agreement_required"))
+        .unwrap_or(false)
+}
+
+/// Assert one store's projection matches `expect_converged`, treating an
+/// ambiguous-winner field as "must be one of the listed options" (peer agreement
+/// is asserted separately by comparing both peers' full projections).
+fn assert_matches_expected(
+    actual: &BTreeMap<String, BTreeMap<String, Value>>,
+    expect: &BTreeMap<String, Vec<ExpectRecord>>,
+    case: &str,
+) {
+    for (collection, records) in expect {
+        let got = actual
+            .get(collection)
+            .unwrap_or_else(|| panic!("case {case}: missing collection {collection}"));
+        assert_eq!(
+            got.len(),
+            records.len(),
+            "case {case}: collection {collection} record count mismatch (got {got:?})"
+        );
+        for rec in records {
+            let got_fields = got
+                .get(&rec.id)
+                .unwrap_or_else(|| panic!("case {case}: missing record {collection}/{}", rec.id));
+            let expect_fields = rec.fields.as_object().expect("expected fields object");
+            assert_eq!(
+                got_fields.as_object().expect("got fields object").len(),
+                expect_fields.len(),
+                "case {case}: {collection}/{} field count mismatch (got {got_fields:?})",
+                rec.id
+            );
+            for (key, want) in expect_fields {
+                let have = got_fields
+                    .get(key)
+                    .unwrap_or_else(|| panic!("case {case}: {collection}/{} missing field {key}", rec.id));
+                if is_ambiguous(want) {
+                    let options = want["one_of"].as_array().expect("one_of array");
+                    assert!(
+                        options.contains(have),
+                        "case {case}: {collection}/{} field {key} = {have} not in {options:?}",
+                        rec.id
+                    );
+                } else {
+                    assert_eq!(
+                        have, want,
+                        "case {case}: {collection}/{} field {key} mismatch",
+                        rec.id
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Run one fixture end to end: build both peers (distinct peer ids), apply the
+/// seed (cloned as shared history when requested) and divergent ops, sync, then
+/// assert BOTH peers converged to `expect_converged` and AGREE with each other.
+fn run_fixture(path: &std::path::Path) {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+    let fx: Fixture = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()));
+
+    assert_ne!(
+        fx.peer_a_id, fx.peer_b_id,
+        "case {}: the two peers must use distinct Loro peer ids",
+        fx.case
+    );
+
+    let idx = IndexManager::new();
+    let mut peer_a = Store::open_in_memory().unwrap().with_crdt_peer_id(fx.peer_a_id);
+    let mut peer_b = Store::open_in_memory().unwrap().with_crdt_peer_id(fx.peer_b_id);
+
+    // A shared clock across seed + both peers so logical timestamps are
+    // deterministic and the divergent ops happen "after" the seed.
+    let mut clock = 0i64;
+
+    let shared_history = fx.seed_mode.as_deref() == Some("shared_history");
+    if !fx.seed.is_empty() {
+        if shared_history {
+            // Build ONE baseline history and clone its chunks byte-for-byte into
+            // both peers, so the seed is genuine shared history (not two
+            // independent inserts that would conflict).
+            let mut seed = Store::open_in_memory().unwrap().with_crdt_peer_id(fx.peer_a_id);
+            apply_ops(&mut seed, &fx.seed, &idx, &mut clock);
+            copy_chunks(&peer_a, &seed);
+            copy_chunks(&peer_b, &seed);
+            peer_a.rebuild_projection(&idx).unwrap();
+            peer_b.rebuild_projection(&idx).unwrap();
+        } else {
+            // No shared-history hint: each peer applies the seed independently.
+            let mut a_clock = clock;
+            apply_ops(&mut peer_a, &fx.seed, &idx, &mut a_clock);
+            apply_ops(&mut peer_b, &fx.seed, &idx, &mut clock);
+        }
+    }
+
+    // The divergent per-peer ops, each under its own peer id.
+    apply_ops(&mut peer_a, &fx.peer_a, &idx, &mut clock);
+    apply_ops(&mut peer_b, &fx.peer_b, &idx, &mut clock);
+
+    // Converge the two workspaces.
+    let report = sync_stores(&mut peer_a, &mut peer_b, &idx).unwrap();
+
+    // A second sync must be a no-op (idempotent): the frontiers now match.
+    let again = sync_stores(&mut peer_a, &mut peer_b, &idx).unwrap();
+    assert_eq!(
+        again.total_chunks_moved(),
+        0,
+        "case {}: a second sync moved chunks ({again:?}) — sync is not idempotent",
+        fx.case
+    );
+
+    let collections: Vec<&str> = fx.expect_converged.keys().map(|s| s.as_str()).collect();
+    let proj_a = projection(&peer_a, &collections);
+    let proj_b = projection(&peer_b, &collections);
+
+    // Both peers agree (identical projection) — this is the assertion that covers
+    // the ambiguous-winner case where the exact value is implementation-defined.
+    assert_eq!(
+        proj_a, proj_b,
+        "case {}: peers disagree after sync (report {report:?})",
+        fx.case
+    );
+
+    // Each peer matches the declared converged state (ambiguous fields checked as
+    // "one of" only).
+    assert_matches_expected(&proj_a, &fx.expect_converged, &fx.case);
+    assert_matches_expected(&proj_b, &fx.expect_converged, &fx.case);
+
+    // Deleted ids (e.g. `tasks/t1`) must be absent from BOTH peers' visible set.
+    for deleted in &fx.expect_deleted_ids {
+        let (collection, id) = deleted
+            .split_once('/')
+            .unwrap_or_else(|| panic!("case {}: malformed deleted id {deleted}", fx.case));
+        assert!(
+            !proj_a.get(collection).map(|c| c.contains_key(id)).unwrap_or(false),
+            "case {}: deleted id {deleted} still visible on peer A",
+            fx.case
+        );
+        assert!(
+            !proj_b.get(collection).map(|c| c.contains_key(id)).unwrap_or(false),
+            "case {}: deleted id {deleted} still visible on peer B",
+            fx.case
+        );
+    }
+}
+
+/// The `forge/fixtures/sync` directory (relative to this crate).
+fn fixtures_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sync")
+}
+
+#[test]
+fn every_sync_fixture_converges() {
+    let dir = fixtures_dir();
+    let mut ran = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("read fixtures/sync dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
+            continue;
+        }
+        run_fixture(&path);
+        ran += 1;
+    }
+    // The T026 corpus is 10 convergence cases (+ the manifest). Guard against a
+    // silently empty run (e.g. a moved fixtures dir) so the suite stays
+    // load-bearing.
+    assert_eq!(ran, 10, "expected 10 sync fixtures, ran {ran}");
+}
+
+// ---------------------------------------------------------------- unit tests
+
+/// A minimal insert mutation for the unit tests.
+fn insert(collection: &str, id: &str, fields: Value, at: i64) -> Mutation {
+    Mutation::Insert {
+        collection: collection.into(),
+        id: Some(id.into()),
+        fields: fields.as_object().expect("object").clone(),
+        logical_at: Some(at),
+    }
+}
+
+#[test]
+fn second_sync_moves_no_chunks() {
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "a"}), 1), &idx)
+        .unwrap();
+    b.apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "b"}), 2), &idx)
+        .unwrap();
+
+    let first = sync_stores(&mut a, &mut b, &idx).unwrap();
+    assert!(first.total_chunks_moved() > 0, "first sync should move chunks");
+
+    let second = sync_stores(&mut a, &mut b, &idx).unwrap();
+    assert_eq!(second.total_chunks_moved(), 0, "second sync must be a no-op");
+}
+
+#[test]
+fn one_directional_catchup_brings_lagging_peer_current() {
+    // a holds a write b lacks; a single sync_stores carries it b-ward.
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "only-on-a"}), 1), &idx)
+        .unwrap();
+
+    let report = sync_stores(&mut a, &mut b, &idx).unwrap();
+    assert_eq!(report.chunks_a_to_b, 1, "the one write should move a->b");
+    assert_eq!(report.chunks_b_to_a, 0, "b had nothing to send");
+
+    let env = b.get_record("tasks", "t1").unwrap().expect("b caught up");
+    assert_eq!(env.fields["title"], json!("only-on-a"));
+}
+
+#[test]
+fn empty_peer_catches_up_via_pull() {
+    // The one-directional `pull` half: a fresh empty peer pulls all of a's docs.
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "x"}), 1), &idx)
+        .unwrap();
+    a.apply_mutation_crdt(&insert("notes", "n1", json!({"body": "y"}), 2), &idx)
+        .unwrap();
+
+    let mut empty = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    let moved = pull(&mut empty, &a, &idx).unwrap();
+    assert_eq!(moved, 2, "the empty peer should import both docs' chunks");
+    assert_eq!(
+        empty.get_record("tasks", "t1").unwrap().unwrap().fields["title"],
+        json!("x")
+    );
+    assert_eq!(
+        empty.get_record("notes", "n1").unwrap().unwrap().fields["body"],
+        json!("y")
+    );
+
+    // Re-pulling moves nothing (frontiers now match).
+    assert_eq!(pull(&mut empty, &a, &idx).unwrap(), 0);
+}
