@@ -258,6 +258,31 @@ impl<'b> HostContext<'b> {
         Ok(resp.as_array().cloned().unwrap_or_default())
     }
 
+    /// `ctx.db.query(collection, query)` — run the structured query plan against
+    /// the collection and return the matched rows (DL-15). Like the other `db.*`
+    /// reads it is gated on `db.read` for `collection` and recorded: in record
+    /// mode the call + the bridge's rows are appended as a `RecordedCall`; on
+    /// replay the recorded rows are *served* (the live storage is never touched),
+    /// so replay stays byte-identical. A denied query is recorded as the run's
+    /// denial and no rows are returned.
+    pub fn db_query(
+        &mut self,
+        collection: &str,
+        query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let args = serde_json::json!([collection, query]);
+        self.check_or_record_denial(
+            &HostCall::Db { op: Access::Read, collection: collection.to_string() },
+            "db.query",
+            &args,
+        )?;
+        let bridge = &mut *self.bridge;
+        let c = collection.to_string();
+        let q = query.clone();
+        self.recorder
+            .host_call("db.query", args, || bridge.db_query(&c, q))
+    }
+
     // --- UI (capability-checked, recorded) ------------------------------
 
     pub fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {

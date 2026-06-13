@@ -39,6 +39,18 @@ pub trait HostBridge {
     fn db_get(&mut self, collection: &str, id: &str) -> Result<serde_json::Value>;
     /// `ctx.db.list(collection)` → all records in the collection.
     fn db_list(&mut self, collection: &str) -> Result<Vec<serde_json::Value>>;
+    /// `ctx.db.query(collection, query)` → the matched rows as JSON.
+    ///
+    /// `query` is the structured query plan (the DL-15 Query JSON); the result is
+    /// the rows the engine ([`forge_storage::Store::query`]) returns, marshalled to
+    /// JSON. Like the other `db.*` reads, the host gates this on `db.read` for
+    /// `collection` and the recorder captures the call + result so replay serves
+    /// the recording instead of re-running live storage.
+    fn db_query(
+        &mut self,
+        collection: &str,
+        query: serde_json::Value,
+    ) -> Result<serde_json::Value>;
 
     /// `ctx.ui.render(tree)` — emit a UI tree for the shell to paint.
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()>;
@@ -136,6 +148,47 @@ impl HostBridge for MemoryHostBridge {
             .unwrap_or_default())
     }
 
+    /// A deliberately small query: scan the collection named by the plan's
+    /// `from` (falling back to the `collection` argument) and apply at most one
+    /// `[field, value]` equality leaf (`where: {field, value}` or the array-tuple
+    /// `where: [field, op, value]`). This is enough for the runtime's own
+    /// record/replay tests to assert specific rows; the real query engine lives in
+    /// forge-storage and is wired through [`crate::HostBridge`] by forge-core.
+    fn db_query(
+        &mut self,
+        collection: &str,
+        query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let from = query
+            .get("from")
+            .and_then(|f| f.as_str())
+            .unwrap_or(collection);
+        let rows = self
+            .db
+            .get(from)
+            .map(|rows| rows.iter().map(|(_, rec)| rec.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        // Optional single equality filter, in either fixture shape.
+        let leaf = query.get("where").and_then(|w| match w {
+            serde_json::Value::Object(o) => o
+                .get("field")
+                .and_then(|f| f.as_str())
+                .map(|field| (field.to_string(), o.get("value").cloned())),
+            serde_json::Value::Array(a) if a.len() == 3 => a[0]
+                .as_str()
+                .map(|field| (field.to_string(), Some(a[2].clone()))),
+            _ => None,
+        });
+        let filtered = match leaf {
+            Some((field, Some(value))) => rows
+                .into_iter()
+                .filter(|rec| rec.get(&field) == Some(&value))
+                .collect(),
+            _ => rows,
+        };
+        Ok(serde_json::Value::Array(filtered))
+    }
+
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {
         self.ui_trees.push(tree);
         Ok(())
@@ -187,6 +240,13 @@ impl HostBridge for NullBridge {
     }
     fn db_list(&mut self, _collection: &str) -> Result<Vec<serde_json::Value>> {
         Err(null_violation("db.list"))
+    }
+    fn db_query(
+        &mut self,
+        _collection: &str,
+        _query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        Err(null_violation("db.query"))
     }
     fn ui_render(&mut self, _tree: serde_json::Value) -> Result<()> {
         Err(null_violation("ui.render"))

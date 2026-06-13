@@ -56,6 +56,61 @@ fn record_then_replay_is_identical() {
     assert_eq!(original.outcome, replayed.outcome);
 }
 
+/// `ctx.db.query` (DL-15) is a recordable read: in record mode the call + the
+/// matched rows are appended as a `RecordedCall`; on replay the recorded rows are
+/// SERVED (the live bridge is a `NullBridge` that refuses every effect), so the
+/// replay is byte-identical. Mirrors how `db.list` is recorded/served.
+#[test]
+fn db_query_is_recorded_and_replays_identically() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.db.insert("tasks", { title: "A", status: "todo" });
+            await ctx.db.insert("tasks", { title: "B", status: "done" });
+            const rows = await ctx.db.query("tasks", {
+                from: "tasks",
+                where: { field: "status", value: "todo" }
+            });
+            return { ok: true, value: rows };
+        }"#,
+    );
+
+    let mut bridge = MemoryHostBridge::new();
+    let original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        7,
+        100,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(original.is_completed());
+    // The query call was recorded, with the matched rows as its response.
+    let q = original
+        .calls
+        .iter()
+        .find(|c| c.method == "db.query")
+        .expect("db.query must be recorded");
+    assert_eq!(
+        q.response,
+        serde_json::json!([{ "title": "A", "status": "todo" }]),
+        "recorded response must be the matched rows"
+    );
+
+    // Replay against a NullBridge: the recorder serves the recorded rows; the
+    // live bridge is never touched, yet the replay is byte-identical.
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    assert!(
+        original.replays_identically(&replayed),
+        "db.query replay must be byte-identical:\n original={:#?}\n replayed={:#?}",
+        original.calls,
+        replayed.calls
+    );
+    assert_eq!(original.calls, replayed.calls);
+}
+
 /// Replaying twice yields the same fingerprint each time (stable determinism).
 #[test]
 fn replay_is_stable_across_repeats() {

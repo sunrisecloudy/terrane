@@ -9,7 +9,7 @@ mod common;
 use common::{owner, program, spine_manifest};
 use forge_domain::{CollectionId, LogicalTimestamp, RecordEnvelope, RecordId, Result, RunOutcome};
 use forge_runtime::{record_run, HostBridge};
-use forge_storage::Store;
+use forge_storage::{Query, QueryResult, Store};
 
 /// A `HostBridge` that persists `ctx.storage`/`ctx.db` into a real SQLite
 /// `Store`. KV values are stored as canonical JSON bytes; db records become
@@ -89,6 +89,25 @@ impl HostBridge for StoreHostBridge {
             .collect())
     }
 
+    fn db_query(
+        &mut self,
+        collection: &str,
+        query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        // Exercise the REAL query engine: parse the plan, pin `from` to the
+        // trusted collection, run it, and surface row `fields` like `db.list`.
+        let mut q = Query::from_fixture_value(&query)?;
+        q.from = collection.to_string();
+        let rows = match self.store.query(&q)? {
+            QueryResult::Rows(rows) => rows
+                .into_iter()
+                .map(|row| serde_json::json!(row.envelope.fields))
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok(serde_json::Value::Array(rows))
+    }
+
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {
         self.ui.push(tree);
         Ok(())
@@ -157,4 +176,43 @@ fn spine_writes_reach_sqlite() {
         bridge.ui.last().unwrap()["value"],
         serde_json::json!("from-spine")
     );
+}
+
+/// `ctx.db.query` reaches the REAL forge-storage query engine through the host
+/// path: insert rows, query with a filter plan, and assert only the matching
+/// rows come back (DL-15). The trusted `collection` pins `from`, so an applet
+/// cannot query a different collection by naming it in the plan.
+#[test]
+fn db_query_runs_the_real_engine_through_the_host() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.db.insert("tasks", { title: "A", status: "todo" });
+            await ctx.db.insert("tasks", { title: "B", status: "done" });
+            await ctx.db.insert("tasks", { title: "C", status: "todo" });
+            const rows = await ctx.db.query("tasks", {
+                from: "tasks",
+                where: { field: "status", op: "eq", value: "todo" },
+                orderBy: ["title", "asc"]
+            });
+            return { ok: true, value: rows.map(r => r.title) };
+        }"#,
+    );
+
+    let store = Store::open_in_memory().unwrap();
+    let mut bridge = StoreHostBridge::new(store);
+    let rec = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    let value = match rec.outcome {
+        RunOutcome::Completed { result } => result.value,
+        other => panic!("query run failed: {other:?}"),
+    };
+    assert_eq!(value, serde_json::json!(["A", "C"]));
 }

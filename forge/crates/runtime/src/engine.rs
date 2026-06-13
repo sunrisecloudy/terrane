@@ -589,6 +589,24 @@ fn install_ctx<'js>(
         )?;
         db.set("list", f)?;
     }
+    // --- db.query(collection, query) -> record[] -------------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>,
+                  coll: Value<'js>,
+                  query: Value<'js>|
+                  -> rquickjs::Result<Value<'js>> {
+                let coll = value_to_string(&cx, &coll)?;
+                let query_json = QuickJsEngine::js_to_json(&cx, query)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let r = unsafe { host.get() }.db_query(&coll, query_json);
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("query", f)?;
+    }
 
     // --- ui.render(tree) -> null -----------------------------------------
     {

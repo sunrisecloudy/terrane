@@ -205,6 +205,70 @@ fn db_insert_and_get_roundtrips() {
     assert_eq!(result.value["title"], serde_json::json!("T1"));
 }
 
+/// `ctx.db.query(collection, plan)` runs a structured query against the bridge
+/// and returns the matched rows (DL-15). The test bridge applies a single
+/// equality leaf, so the applet sees only the rows the plan selects.
+#[test]
+fn db_query_returns_matched_rows() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.db.insert("tasks", { title: "A", status: "todo" });
+            await ctx.db.insert("tasks", { title: "B", status: "done" });
+            await ctx.db.insert("tasks", { title: "C", status: "todo" });
+            const rows = await ctx.db.query("tasks", {
+                from: "tasks",
+                where: { field: "status", value: "todo" }
+            });
+            return { ok: true, value: { count: rows.length, titles: rows.map(r => r.title) } };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let result = run_once(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert_eq!(result.value["count"], serde_json::json!(2));
+    assert_eq!(result.value["titles"], serde_json::json!(["A", "C"]));
+}
+
+/// A `ctx.db.query` against an ungranted collection surfaces `PermissionDenied`
+/// as the run outcome (CR-3/SC-10): the query needs `db.read` for the queried
+/// collection, and no rows are returned.
+#[test]
+fn db_query_outside_grant_is_denied() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const rows = await ctx.db.query("users", { from: "users" });
+            return { ok: true, value: rows };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match rec.outcome {
+        RunOutcome::Failed { error } => assert_eq!(error.code(), "PermissionDenied"),
+        other => panic!("expected PermissionDenied, got {other:?}"),
+    }
+    // The denied query is recorded so the denial replays; its response is the
+    // recorded denial, not rows.
+    let q = rec.calls.iter().find(|c| c.method == "db.query").unwrap();
+    assert!(q.response.get("denied").is_some(), "denied query must record a denial");
+}
+
 /// `ctx.db` against an ungranted collection is denied.
 #[test]
 fn db_write_outside_grant_is_denied() {
