@@ -99,3 +99,16 @@ Open for you: no outstanding Codex task-board requests as of this update.
   lamport and replay in lexical op_id order rather than true write order. Deferred:
   use a workspace-level monotone counter/HLC for the oplog lamport while keeping chunk
   ids per doc. (Single-collection ordering is correct today.)
+- **review 063/064 P1 (DL-24 projection-only footgun):** `Store::put_record` /
+  the projection-only `apply_mutation` are still public and create records WITHOUT
+  CRDT chunks; import rebuilds the projection from chunks only, so a chunk-less
+  record would export but not re-import. **Not triggered in M0a** — the DL-4 spine
+  routes every applet write through the CRDT path (apply_mutation_crdt), so every
+  real record has chunks and the export→import roundtrip is faithful (proven by the
+  roundtrip test). Deferred hardening: make the projection-only writers internal, or
+  add an export/import consistency guard that errors on a chunk-less record.
+- **review 063/064 P1 (DL-24 snapshot-only rebuild):** `rebuild_projection`
+  discovers docs from `crdt_chunks` only, not `crdt_snapshots`. Forward-looking:
+  matters once DL-19 compaction folds chunk history into snapshots (not landed). The
+  export format spec already marks snapshot-only as `missing_required_for_ga`.
+  Deferred with DL-19 compaction.
