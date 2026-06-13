@@ -8,3 +8,13 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+forge-domain.workspace = true
+forge-storage.workspace = true
+forge-runtime.workspace = true
+forge-pipeline.workspace = true
+forge-policy.workspace = true
+forge-ui.workspace = true
+forge-schema.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

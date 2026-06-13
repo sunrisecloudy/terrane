@@ -506,8 +506,16 @@ dependencies = [
 name = "forge-core"
 version = "0.1.0"
 dependencies = [
+ "forge-domain",
+ "forge-pipeline",
+ "forge-policy",
+ "forge-runtime",
+ "forge-schema",
+ "forge-storage",
+ "forge-ui",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
