@@ -24,8 +24,13 @@
 
 mod bridge;
 mod event;
+mod sync_rbac;
 mod workspace;
 
 pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender};
 pub use event::EventSink;
+pub use sync_rbac::{
+    authorize_remote_op, IncomingClaim, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuditRecord,
+    SyncAuthDecision, TrustedMembership,
+};
 pub use workspace::WorkspaceCore;
