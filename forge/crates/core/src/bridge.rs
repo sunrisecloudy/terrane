@@ -25,8 +25,46 @@ use forge_domain::{
     CollectionId, CoreError, LogicalTimestamp, RecordEnvelope, RecordId, Result,
 };
 use forge_runtime::HostBridge;
-use forge_storage::Store;
+use forge_storage::{AggregateResult, Query, QueryResult, Store};
+use serde::Serialize;
 use std::collections::BTreeMap;
+
+/// The applet-facing JSON shape of an aggregate result bundle returned by
+/// `ctx.db.query` over an aggregate plan. Mirrors [`AggregateResult`] with stable,
+/// serializable field names so an applet can read `count`/`sum`/`avg`/`min`/`max`.
+#[derive(Debug, Clone, Serialize)]
+struct AggregateJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sum: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<serde_json::Value>,
+}
+
+impl From<AggregateResult> for AggregateJson {
+    fn from(a: AggregateResult) -> Self {
+        AggregateJson {
+            count: a.count,
+            sum: a.sum,
+            avg: a.avg,
+            min: a.min,
+            max: a.max,
+        }
+    }
+}
+
+/// The applet-facing JSON shape of one group bucket (`{key, aggregate}`) returned
+/// by `ctx.db.query` over a group-by plan.
+#[derive(Debug, Clone, Serialize)]
+struct GroupJson {
+    key: serde_json::Value,
+    aggregate: AggregateJson,
+}
 
 /// A single UI render captured during a run: the full tree the applet rendered,
 /// plus the minimal patch list that turns the *previous* rendered tree into it
@@ -178,6 +216,49 @@ impl HostBridge for StorageHostBridge<'_> {
                 })
             })
             .collect()
+    }
+
+    fn db_query(
+        &mut self,
+        collection: &str,
+        query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        // The applet passes the structured query plan; the trusted collection
+        // (already capability-checked upstream as `db.read`) is authoritative for
+        // `from`, so an applet cannot widen the query to a collection it lacks
+        // read on by naming a different `from` in the payload (core 048#1).
+        let mut q = Query::from_fixture_value(&query)?;
+        q.from = collection.to_string();
+        let result = self.store.query(&q)?;
+        // Mirror `ctx.db.list`: a row result surfaces each record's display
+        // `fields` map. Aggregate/group shapes serialize their result bundle.
+        let rows = match result {
+            QueryResult::Rows(rows) => rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::to_value(row.envelope.fields).map_err(|e| {
+                        CoreError::StorageError(format!("ctx.db.query encode failed: {e}"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            QueryResult::Aggregate(agg) => vec![serde_json::to_value(AggregateJson::from(agg))
+                .map_err(|e| {
+                    CoreError::StorageError(format!("ctx.db.query encode failed: {e}"))
+                })?],
+            QueryResult::Groups(groups) => groups
+                .into_iter()
+                .map(|g| {
+                    serde_json::to_value(GroupJson {
+                        key: g.key,
+                        aggregate: AggregateJson::from(g.aggregate),
+                    })
+                    .map_err(|e| {
+                        CoreError::StorageError(format!("ctx.db.query encode failed: {e}"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
+        Ok(serde_json::Value::Array(rows))
     }
 
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {

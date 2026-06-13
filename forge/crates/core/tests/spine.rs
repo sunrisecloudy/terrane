@@ -1022,3 +1022,159 @@ fn legacy_run_on_codehash_fallback_replays_after_same_code_tighter_reinstall() {
     );
     assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// 8. ctx.db.query (DL-15): the applet-facing structured query reaches the real
+//    forge-storage engine through the StorageHostBridge, the matched rows flow
+//    back into the AppResult, and the call + its rows are RECORDED so replay is
+//    byte-identical (the rows are served from the recording, NOT re-run against
+//    live storage). The denial case proves an ungranted collection surfaces as
+//    the run's CapabilityRequired outcome with no rows (CR-3/SC-10).
+// ---------------------------------------------------------------------------
+
+/// An applet that inserts a few task records, then `ctx.db.query`s them with a
+/// filter (`priority > input.minPriority`) and an order (`date desc`), returns
+/// the matched rows, and renders them. Deterministic: it consumes no seams and
+/// writes a fixed record set, so the trace depends only on the (inserted) data.
+const QUERY_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        const tasks = [
+            { title: "Ship spine",    priority: 3, date: "2026-06-10" },
+            { title: "Polish docs",   priority: 1, date: "2026-06-12" },
+            { title: "Fix replay",    priority: 5, date: "2026-06-11" },
+            { title: "Review grants", priority: 4, date: "2026-06-13" }
+        ];
+        for (const task of tasks) {
+            await ctx.db.insert("tasks", task);
+        }
+        const rows = await ctx.db.query({
+            from: "tasks",
+            where: ["priority", ">", input.minPriority],
+            orderBy: ["date", "desc"]
+        });
+        const queryRows = rows.map((row: any) => ({
+            title: row.title, priority: row.priority, date: row.date
+        }));
+        await ctx.ui.render({
+            type: "Stack", direction: "v",
+            children: [
+                { type: "Text", text: "Priority Tasks" },
+                { type: "List", items: queryRows.map((r: any) => ({ type: "Text", text: r.date + ": " + r.title })) }
+            ]
+        });
+        return { ok: true, value: { count: queryRows.length, query_rows: queryRows } };
+    }
+"#;
+
+#[test]
+fn db_query_filter_order_returns_matched_rows_and_replays_identically() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, QUERY_TS, demo_manifest());
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "minPriority": 2 } }),
+    ));
+    assert!(resp.ok, "query run must succeed: {:?}", resp.error);
+    assert_eq!(resp.payload["ok"], serde_json::json!(true), "run outcome must complete");
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+
+    // The matched rows flowed back into the AppResult: priority > 2 keeps three
+    // tasks, ordered by date DESC (newest first).
+    let value = &resp.payload["result"]["value"];
+    assert_eq!(value["count"], serde_json::json!(3));
+    assert_eq!(
+        value["query_rows"],
+        serde_json::json!([
+            { "title": "Review grants", "priority": 4, "date": "2026-06-13" },
+            { "title": "Fix replay",    "priority": 5, "date": "2026-06-11" },
+            { "title": "Ship spine",    "priority": 3, "date": "2026-06-10" }
+        ]),
+        "filter (priority > 2) + order (date desc) must shape the rows"
+    );
+
+    // The host-call trace shows the four inserts, the db.query, and the render —
+    // and db.query was RECORDED as a host call (CR-8).
+    assert_eq!(
+        resp.payload["host_call_methods"],
+        serde_json::json!(["db.insert", "db.insert", "db.insert", "db.insert", "db.query", "ui.render"])
+    );
+    let saved = core.store().load_run(&run_id).unwrap().unwrap();
+    let query_call = saved
+        .calls
+        .iter()
+        .find(|c| c.method == "db.query")
+        .expect("the run recorded a db.query call");
+    // The recorded response is the exact matched-row array the bridge returned.
+    let recorded_rows = query_call.response.as_array().expect("recorded rows are an array");
+    assert_eq!(recorded_rows.len(), 3, "the recorded db.query rows are the matched set");
+    assert_eq!(recorded_rows[0]["title"], serde_json::json!("Review grants"));
+
+    // All four records actually landed in the projection (the SQLite write link).
+    assert_eq!(core.store().list_records("tasks").unwrap().len(), 4);
+
+    // Replay serves the recorded db.query rows (the live bridge is a NullBridge
+    // that would error if consulted) and is byte-identical to the original.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(replay.ok, "query run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
+
+/// A `ctx.db.query` over a collection the manifest does NOT grant `db.read` for
+/// is denied at host-call time: the policy gate fires (the applet declared no db
+/// capability → `CapabilityRequired`, CR-3/SC-10), the live storage is never
+/// touched, no rows come back, and the run OUTCOME is the denial. The denial is
+/// recorded, so the run still replays byte-identically.
+#[test]
+fn db_query_on_ungranted_collection_is_denied_with_no_rows() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    // Manifest grants ui but NO db capability at all (empty read+write), so a
+    // db.read on any collection is CapabilityRequired (the category is undeclared).
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    let denied_ts = r#"
+        export async function main(ctx: any, _input: any): Promise<any> {
+            const rows = await ctx.db.query({ from: "secrets", limit: 1 });
+            return { ok: true, value: { query_rows: rows } };
+        }
+    "#;
+    install_demo(&mut core, denied_ts, manifest);
+
+    let resp = core.handle(cmd(
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": {} }),
+    ));
+    // The run COMMAND completes (it records the failure); the run OUTCOME is the
+    // capability denial.
+    assert!(resp.ok, "the run command itself completes (records the denial)");
+    assert_eq!(resp.payload["ok"], serde_json::json!(false), "run outcome must be the denial");
+    assert_eq!(
+        resp.payload["result"]["error"]["kind"],
+        serde_json::json!("CapabilityRequired"),
+        "an ungranted db.read query is CapabilityRequired (undeclared db category): {}",
+        resp.payload["result"]
+    );
+
+    // Only the denied db.query was attempted (no rows, no further effect).
+    assert_eq!(resp.payload["host_call_methods"], serde_json::json!(["db.query"]));
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+
+    // The denial was recorded → the run replays byte-identically.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(replay.ok, "the denied run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
