@@ -19,7 +19,8 @@ use crate::host::HostContext;
 use crate::recorder::RunRecorder;
 use crate::{JsEngine, Program};
 use forge_domain::{
-    ActorContext, AppResult, CoreError, Manifest, Result, RunId, RunOutcome, RunRecord,
+    ActorContext, AppResult, CoreError, Manifest, PermissionSnapshot, Result, RunId, RunOutcome,
+    RunRecord,
 };
 use forge_policy::PolicyEngine;
 
@@ -68,16 +69,33 @@ pub fn record_run(
 /// The produced record must `replays_identically` to `run`; callers/tests
 /// assert this to prove determinism.
 ///
-/// `actor` is accepted for call-site symmetry with [`record_run`] but is
-/// intentionally **not** consulted: the permission decision on replay comes from
-/// the record's [`PermissionSnapshot`](forge_domain::PermissionSnapshot), not the
-/// live actor/manifest (review 009 P1 CR-9), so a replay is governed by the
+/// `actor` is consulted **only** for a legacy/pre-CR-9 record that carries no
+/// permission snapshot (see below). For any record produced by this engine since
+/// CR-9, the permission decision on replay comes from the record's
+/// [`PermissionSnapshot`](forge_domain::PermissionSnapshot), not the live
+/// actor/manifest (review 009 P1 CR-9), so a replay is governed by the
 /// permissions it was recorded under.
+///
+/// **Pre-CR-9 fallback (review 019 P2).** Older records predate the permission
+/// snapshot: deserializing them defaults `permissions` to
+/// [`PermissionSnapshot::default`], which is the *all-deny* state (`can_run =
+/// false`, `max_host_calls = 0`, no grants). Replaying such a record against that
+/// default would turn a legitimate historical run — one that did `time`/`random`/
+/// storage/db/ui/log calls — into a spurious permission/resource denial, even
+/// though the run had completed cleanly when recorded. We refuse to treat
+/// "snapshot absent" as "explicitly all-deny": when `run.permissions` is exactly
+/// the default snapshot we deliberately fall back to building the replay policy
+/// from the *caller-provided* manifest/actor (the pre-CR-9 replay behavior),
+/// rather than denying everything. A record produced post-CR-9 always carries a
+/// real snapshot (a completed run necessarily had `can_run == true` and a
+/// positive `max_host_calls`, so a captured snapshot is never the all-deny
+/// default), so this fallback never masks a genuine all-deny replay — there is no
+/// way to *record* one.
 pub fn replay(
     run: &RunRecord,
     program: &Program,
     manifest: &Manifest,
-    _actor: &ActorContext,
+    actor: &ActorContext,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
     manifest.validate()?;
@@ -96,15 +114,31 @@ pub fn replay(
         )));
     }
     let recorder = RunRecorder::replaying(run.random_seed, run.time_start, run.calls.clone());
+
     // CR-9 (review 009 P1): build the replay policy from the RECORDED permission
     // snapshot, not the live manifest/actor, so a call denied (or allowed) at
     // record time replays with the same decision even if the workspace's grants,
     // role, or budget have since changed. Engine-level limits (memory/fuel/wall)
     // still come from the manifest, but the host-call cap tracks the snapshot so
     // the budget gate behaves identically on replay.
-    let policy = PolicyEngine::from_snapshot(&run.permissions)?;
+    //
+    // Exception — review 019 P2: a pre-CR-9 record has no snapshot, which
+    // deserializes to the all-deny default. Don't replay a legitimate historical
+    // run as an all-deny denial; fall back to the caller-provided manifest/actor
+    // (the legacy replay path) and use the manifest's host-call cap.
+    let (policy, host_call_cap) = if run.permissions == PermissionSnapshot::default() {
+        (
+            PolicyEngine::new(manifest, actor)?,
+            manifest.limits.max_host_calls,
+        )
+    } else {
+        (
+            PolicyEngine::from_snapshot(&run.permissions)?,
+            run.permissions.max_host_calls,
+        )
+    };
     let mut limits = manifest.limits.clone();
-    limits.max_host_calls = run.permissions.max_host_calls;
+    limits.max_host_calls = host_call_cap;
     finish_run(
         program,
         policy,

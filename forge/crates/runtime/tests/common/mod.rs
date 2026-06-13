@@ -99,6 +99,26 @@ pub fn cpu_tight_manifest() -> Manifest {
     m
 }
 
+/// A manifest for the **memory-exhaustion containment corpus** cases (unbounded
+/// allocation: array push, string doubling, deep object graph). Here the
+/// **memory ceiling is the intended limiter** and the wall/CPU budgets are
+/// deliberately *generous* so they cannot win the race and let a broken
+/// `set_memory_limit` path pass for the wrong reason (review 020/021 P2): a
+/// memory-hostile case run under a tight wall could be "contained" by the wall
+/// interrupt while the memory limiter does nothing.
+///
+/// The memory ceiling is small (4 MiB) so allocation growth hits it in a small
+/// fraction of a second, while `wall_ms` (30s) and `fuel` (huge) stay backstops
+/// against a true hang. The corpus test asserts these cases fail through the
+/// memory classification (`memory budget exceeded`), not the wall clock.
+pub fn mem_tight_manifest() -> Manifest {
+    let mut m = small_limits_manifest();
+    m.limits.wall_ms = 30_000;
+    m.limits.fuel = 1_000_000_000;
+    m.limits.memory_bytes = 4 * 1024 * 1024;
+    m
+}
+
 /// The owner actor (permits running in M0a).
 pub fn owner() -> ActorContext {
     ActorContext::owner("dev")

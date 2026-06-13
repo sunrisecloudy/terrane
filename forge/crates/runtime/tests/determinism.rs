@@ -406,3 +406,71 @@ fn replay_uses_recorded_permission_snapshot_not_current_grants() {
         other => panic!("replay should reproduce the recorded denial, got {other:?}"),
     }
 }
+
+/// Review 019 P2: a legacy/pre-CR-9 record carries no permission snapshot, so it
+/// deserializes with the all-deny `PermissionSnapshot::default()` (`can_run =
+/// false`, `max_host_calls = 0`, no grants). Replay must NOT treat that absent
+/// snapshot as an explicit all-deny — a legitimate historical run that did
+/// `time`/`random`/`storage`/`ui`/`log` host calls must still replay correctly,
+/// falling back to the caller-provided manifest/actor. Without the fix, the
+/// snapshot-less record replays as a permission/resource denial.
+#[test]
+fn snapshotless_legacy_record_replays_against_manifest_not_all_deny() {
+    use forge_domain::{PermissionSnapshot, RunRecord};
+
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const t = ctx.time.now();
+            const r = ctx.random.next();
+            await ctx.storage.set("app/state", { t, r });
+            const got = await ctx.storage.get("app/state");
+            await ctx.ui.render({ type: "text", value: "ok" });
+            ctx.log("legacy");
+            return { ok: true, value: got };
+        }"#,
+    );
+
+    // Record a normal, completing run (it makes several host calls).
+    let mut bridge = MemoryHostBridge::new();
+    let recorded = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        7,
+        500,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(recorded.is_completed(), "precondition: the run completes");
+    assert!(!recorded.calls.is_empty(), "precondition: it made host calls");
+
+    // Simulate a PRE-CR-9 record: serialize, drop the `permissions` field, and
+    // deserialize. The missing field defaults to the all-deny snapshot — exactly
+    // what an old on-disk record would load as (mirrors the domain test
+    // `missing_permission_snapshot_defaults_on_deserialize`).
+    let mut json = serde_json::to_value(&recorded).unwrap();
+    json.as_object_mut().unwrap().remove("permissions");
+    let legacy: RunRecord = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        legacy.permissions,
+        PermissionSnapshot::default(),
+        "a snapshot-less record loads as the all-deny default"
+    );
+
+    // Replay the legacy record under the granting manifest/actor. It must
+    // complete (fall back to the manifest), NOT fail as an all-deny denial.
+    let mut null = NullBridge::new();
+    let replayed = replay(&legacy, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    match &replayed.outcome {
+        RunOutcome::Completed { .. } => {}
+        RunOutcome::Failed { error } => panic!(
+            "legacy snapshot-less record must replay against the manifest, not as all-deny: {error}"
+        ),
+    }
+    // And the trace it produces matches the recorded one (the host calls replay).
+    assert_eq!(
+        recorded.calls, replayed.calls,
+        "the legacy record's host-call trace must replay identically"
+    );
+}

@@ -24,7 +24,7 @@
 
 mod common;
 
-use common::{cpu_tight_manifest, owner, program, small_limits_manifest};
+use common::{cpu_tight_manifest, mem_tight_manifest, owner, program, small_limits_manifest};
 use forge_domain::RunOutcome;
 use forge_runtime::{record_run, MemoryHostBridge};
 use std::time::Instant;
@@ -88,11 +88,6 @@ fn js_for(file: &str) -> &'static str {
 /// panics. Small limits keep the whole thing well under a second.
 #[test]
 fn corpus_engine_owned_cases_are_contained() {
-    // CPU-exhaustion cases: the wall clock is the intended fast limiter (see
-    // `cpu_tight_manifest`); any budget tripping yields `ResourceLimitExceeded`,
-    // which is all these cases assert. A 500ms wall keeps every case well under
-    // the 1500ms containment ceiling below.
-    let manifest = cpu_tight_manifest();
     let corpus = load_corpus();
     let mut checked = 0;
 
@@ -111,6 +106,23 @@ fn corpus_engine_owned_cases_are_contained() {
             case.file, case.expected_error, case.expected_outcome, expected_code
         );
 
+        // Split containment by category (review 020/021 P2). A memory-exhaustion
+        // case run under a tight WALL could be "contained" by the wall interrupt
+        // while a broken memory limiter does nothing — that would keep the suite
+        // green for the wrong reason. So:
+        //   * memory_exhaustion → GENEROUS wall/cpu, TIGHT memory ceiling: the
+        //     memory limiter must be what wins, and we additionally assert the
+        //     failure is classified as memory exhaustion (not the wall clock).
+        //   * everything else (cpu_exhaustion / recursion / host_call_flood) →
+        //     tight wall, where the wall/fuel/host-call budget is the fast limiter
+        //     and the only assertion is the contained CoreError code.
+        let is_memory = case.category == "memory_exhaustion";
+        let manifest = if is_memory {
+            mem_tight_manifest()
+        } else {
+            cpu_tight_manifest()
+        };
+
         let prog = program(js_for(&case.file));
         let mut bridge = MemoryHostBridge::new();
         let start = Instant::now();
@@ -127,25 +139,49 @@ fn corpus_engine_owned_cases_are_contained() {
         let elapsed = start.elapsed();
 
         match rec.outcome {
-            RunOutcome::Failed { error } => assert_eq!(
-                error.code(),
-                expected_code,
-                "{} ({}) expected {} but got {} :: {error}",
-                case.file,
-                case.category,
-                expected_code,
-                error.code()
-            ),
+            RunOutcome::Failed { error } => {
+                assert_eq!(
+                    error.code(),
+                    expected_code,
+                    "{} ({}) expected {} but got {} :: {error}",
+                    case.file,
+                    case.category,
+                    expected_code,
+                    error.code()
+                );
+                // Memory cases must fail THROUGH the memory limiter/classification,
+                // not by the wall clock winning the race (review 020/021 P2). The
+                // engine's `classify_failure` tags a memory/allocation exhaustion
+                // as "memory budget exceeded ..."; a wall-clock trip reads
+                // "CPU/wall-clock budget exceeded ...". Assert the former and
+                // explicitly reject the latter so a regressed `set_memory_limit`
+                // cannot pass on a wall interrupt.
+                if is_memory {
+                    let msg = error.to_string();
+                    assert!(
+                        msg.contains("memory budget exceeded"),
+                        "{} ({}) must be contained by the MEMORY limiter, not the wall clock: {msg}",
+                        case.file,
+                        case.category
+                    );
+                    assert!(
+                        !msg.contains("CPU/wall-clock"),
+                        "{} ({}) tripped the wall clock instead of the memory ceiling: {msg}",
+                        case.file,
+                        case.category
+                    );
+                }
+            }
             RunOutcome::Completed { result } => panic!(
                 "{} ({}) should have been contained as {} but completed: {result:?}",
                 case.file, case.category, expected_code
             ),
         }
-        // Containment must be fast: the 500ms wall budget bounds termination, and
-        // the interrupt fires at most one bytecode-op interval after the deadline,
-        // so the run ends shortly after ~500ms. The ceiling (5s) is generous
-        // headroom for realm build + that final interval under CPU contention —
-        // the point is "does not hang CI", not a tight wall-clock assertion.
+        // Containment must be fast and never hang CI. CPU cases are bounded by the
+        // 500ms wall; memory cases hit the small ceiling in a fraction of a second
+        // (allocation growth is steep). The 5s ceiling is generous headroom for
+        // realm build + the final interrupt interval under CPU contention — the
+        // point is "does not hang CI", not a tight wall-clock assertion.
         assert!(
             elapsed.as_millis() < 5000,
             "{} took too long ({elapsed:?}); containment must not hang CI",
@@ -428,10 +464,14 @@ fn function_constructor_chain_is_poisoned_for_all_kinds() {
 #[test]
 fn function_constructor_chain_bypass_does_not_execute() {
     for src in [
-        // The reviewer's exact repro plus the other function kinds.
+        // The reviewer's exact repro plus every other function kind, so the
+        // chain bypass is proven unreachable at the ENGINE level for all of them
+        // (review 020/021 P2): arrow, normal, async, generator, async-generator.
         r#"export async function main(ctx, input) { return (() => {}).constructor("return 1+1")(); }"#,
         r#"export async function main(ctx, input) { return (function () {}).constructor("return 1+1")(); }"#,
         r#"export async function main(ctx, input) { return (async function () {}).constructor("return 1+1")(); }"#,
+        r#"export async function main(ctx, input) { return (function* () {}).constructor("return 1+1")(); }"#,
+        r#"export async function main(ctx, input) { return (async function* () {}).constructor("return 1+1")(); }"#,
     ] {
         let prog = program(src);
         let mut bridge = MemoryHostBridge::new();
