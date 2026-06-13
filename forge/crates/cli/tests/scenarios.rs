@@ -42,6 +42,8 @@ struct Expect {
     #[serde(default)]
     result: serde_json::Value,
     #[serde(default)]
+    query_rows: Option<serde_json::Value>,
+    #[serde(default)]
     records: Vec<ExpectRecord>,
     #[serde(default)]
     storage: serde_json::Map<String, serde_json::Value>,
@@ -192,6 +194,7 @@ fn assert_run_stage(
 
     // ---- result (ok + value, OR ok:false + error_code, e.g. denied_capability)
     assert_result(&run_resp, expect)?;
+    assert_query_rows(&run_resp, expect)?;
 
     // ---- host-call trace (method sequence the run issued), from the response --
     if !expect.host_call_methods.is_empty() {
@@ -303,6 +306,24 @@ fn assert_result(run_resp: &serde_json::Value, expect: &Expect) -> Result<(), St
         if got_code != code {
             return Err(format!("result.error_code: expected {code}, got {got_code}"));
         }
+    }
+    Ok(())
+}
+
+/// Assert the rows a query scenario surfaces from `ctx.db.query`. Keeping this
+/// as a first-class `expect.json` field makes query fixture intent scan-friendly
+/// while still comparing against the applet's returned value.
+fn assert_query_rows(run_resp: &serde_json::Value, expect: &Expect) -> Result<(), String> {
+    let Some(want) = &expect.query_rows else {
+        return Ok(());
+    };
+    let got = run_resp
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.get("query_rows"))
+        .unwrap_or(&serde_json::Value::Null);
+    if got != want {
+        return Err(format!("query_rows: expected {want}, got {got}"));
     }
     Ok(())
 }

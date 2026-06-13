@@ -1,0 +1,16 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": false,
+    "error_code": "CapabilityRequired"
+  },
+  "records": [],
+  "storage": {},
+  "ui_contains": [],
+  "host_call_methods": [
+    "db.query"
+  ],
+  "replay_identical": true
+}

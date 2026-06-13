@@ -237,6 +237,37 @@ fn db_query_returns_matched_rows() {
     assert_eq!(result.value["titles"], serde_json::json!(["A", "C"]));
 }
 
+/// `ctx.db.query(plan)` — the single-argument overload — resolves the queried
+/// collection from the plan's own `from` (DL-15). It must reach the same gated,
+/// recorded host call as the two-argument form, returning the matched rows.
+#[test]
+fn db_query_single_arg_resolves_collection_from_plan() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.db.insert("tasks", { title: "A", status: "todo" });
+            await ctx.db.insert("tasks", { title: "B", status: "done" });
+            const rows = await ctx.db.query({
+                from: "tasks",
+                where: { field: "status", value: "todo" }
+            });
+            return { ok: true, value: { count: rows.length, titles: rows.map(r => r.title) } };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let result = run_once(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert_eq!(result.value["count"], serde_json::json!(1));
+    assert_eq!(result.value["titles"], serde_json::json!(["A"]));
+}
+
 /// A `ctx.db.query` against an ungranted collection surfaces `PermissionDenied`
 /// as the run outcome (CR-3/SC-10): the query needs `db.read` for the queried
 /// collection, and no rows are returned.

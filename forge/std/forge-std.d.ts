@@ -46,13 +46,61 @@ declare module "@forge/std" {
   export type Main = (ctx: AppContext, input: unknown) => Promise<AppResult>;
 
   /**
-   * Minimal M0a relational surface. Full typed query DSL from DL-15 is later.
-   * PRD refs: CR-3, DL-15.
+   * M0a row-query plan subset accepted by `ctx.db.query` (DL-15). The runtime
+   * supports both `query(plan)` and `query(collection, plan)`; in both forms the
+   * trusted host capability-checks the collection being read.
+   * PRD refs: CR-3, DL-15, DL-16, T023.
+   */
+  export type QueryOperator =
+    | "="
+    | "!="
+    | "<"
+    | "<="
+    | ">"
+    | ">="
+    | "in"
+    | "like"
+    | "eq"
+    | "ne"
+    | "lt"
+    | "le"
+    | "gt"
+    | "ge";
+  export type QueryDirection = "asc" | "desc";
+  export type QueryFieldRef = string | { field: string } | { field_id: string };
+  export type QueryWhere =
+    | [string, QueryOperator, JsonValue]
+    | { field: string; op: QueryOperator; value?: JsonValue }
+    | { field_id: string; op: QueryOperator; value?: JsonValue }
+    | { and: QueryWhere[] }
+    | { or: QueryWhere[] };
+  export type QueryOrderBy =
+    | [string, QueryDirection]
+    | { field: string; dir?: QueryDirection }
+    | { field_id: string; dir?: QueryDirection };
+  export interface QueryPlan {
+    from: string;
+    where?: QueryWhere | QueryWhere[];
+    orderBy?: QueryOrderBy | QueryOrderBy[];
+    order_by?: QueryOrderBy | QueryOrderBy[];
+    limit?: number;
+    offset?: number;
+    includeDeleted?: boolean;
+    include_deleted?: boolean;
+    includeDeprecated?: boolean;
+    include_deprecated?: boolean;
+  }
+
+  /**
+   * Minimal M0a relational surface plus the DL-15 structured query.
+   * PRD refs: CR-3, DL-15, T023.
    */
   export interface Db {
     insert(collection: string, record: DbRecord): Promise<{ id: string }>;
     get(collection: string, id: string): Promise<DbRecord | null>;
     list(collection: string): Promise<DbRecord[]>;
+    query(query: QueryPlan): Promise<DbRecord[]>;
+    query(collection: string, query: QueryPlan): Promise<DbRecord[]>;
   }
 
   /**

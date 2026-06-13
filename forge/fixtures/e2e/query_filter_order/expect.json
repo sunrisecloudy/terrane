@@ -1,0 +1,100 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": true,
+    "value": {
+      "count": 3,
+      "query_rows": [
+        {
+          "title": "Review grants",
+          "priority": 4,
+          "date": "2026-06-13"
+        },
+        {
+          "title": "Fix replay",
+          "priority": 5,
+          "date": "2026-06-11"
+        },
+        {
+          "title": "Ship spine",
+          "priority": 3,
+          "date": "2026-06-10"
+        }
+      ],
+      "replay_identical": true
+    }
+  },
+  "query_rows": [
+    {
+      "title": "Review grants",
+      "priority": 4,
+      "date": "2026-06-13"
+    },
+    {
+      "title": "Fix replay",
+      "priority": 5,
+      "date": "2026-06-11"
+    },
+    {
+      "title": "Ship spine",
+      "priority": 3,
+      "date": "2026-06-10"
+    }
+  ],
+  "records": [
+    {
+      "collection": "tasks",
+      "id": "tasks/1",
+      "fields": {
+        "title": "Ship spine",
+        "priority": 3,
+        "date": "2026-06-10"
+      }
+    },
+    {
+      "collection": "tasks",
+      "id": "tasks/2",
+      "fields": {
+        "title": "Polish docs",
+        "priority": 1,
+        "date": "2026-06-12"
+      }
+    },
+    {
+      "collection": "tasks",
+      "id": "tasks/3",
+      "fields": {
+        "title": "Fix replay",
+        "priority": 5,
+        "date": "2026-06-11"
+      }
+    },
+    {
+      "collection": "tasks",
+      "id": "tasks/4",
+      "fields": {
+        "title": "Review grants",
+        "priority": 4,
+        "date": "2026-06-13"
+      }
+    }
+  ],
+  "storage": {},
+  "ui_contains": [
+    "Text:Priority Tasks",
+    "List",
+    "Text:2026-06-13: Review grants",
+    "Text:2026-06-10: Ship spine"
+  ],
+  "host_call_methods": [
+    "db.insert",
+    "db.insert",
+    "db.insert",
+    "db.insert",
+    "db.query",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

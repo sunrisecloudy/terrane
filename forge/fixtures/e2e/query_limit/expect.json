@@ -1,0 +1,82 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": true,
+    "value": {
+      "count": 2,
+      "query_rows": [
+        {
+          "title": "Beta",
+          "score": 10
+        },
+        {
+          "title": "Gamma",
+          "score": 20
+        }
+      ],
+      "replay_identical": true
+    }
+  },
+  "query_rows": [
+    {
+      "title": "Beta",
+      "score": 10
+    },
+    {
+      "title": "Gamma",
+      "score": 20
+    }
+  ],
+  "records": [
+    {
+      "collection": "queue",
+      "id": "queue/1",
+      "fields": {
+        "title": "Alpha",
+        "score": 30
+      }
+    },
+    {
+      "collection": "queue",
+      "id": "queue/2",
+      "fields": {
+        "title": "Beta",
+        "score": 10
+      }
+    },
+    {
+      "collection": "queue",
+      "id": "queue/3",
+      "fields": {
+        "title": "Gamma",
+        "score": 20
+      }
+    },
+    {
+      "collection": "queue",
+      "id": "queue/4",
+      "fields": {
+        "title": "Delta",
+        "score": 40
+      }
+    }
+  ],
+  "storage": {},
+  "ui_contains": [
+    "Text:Top Queue",
+    "List",
+    "Text:Beta: 10",
+    "Text:Gamma: 20"
+  ],
+  "host_call_methods": [
+    "db.insert",
+    "db.insert",
+    "db.insert",
+    "db.insert",
+    "db.query",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

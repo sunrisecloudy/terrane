@@ -40,7 +40,9 @@ use crate::host::HostContext;
 use crate::{EngineOutcome, JsEngine, Program};
 use forge_domain::{AppResult, CoreError, Limits};
 use rquickjs::promise::PromiseState;
-use rquickjs::{CatchResultExt, Context, Ctx, Function, Object, Promise, Runtime, Value};
+use rquickjs::{
+    function::Rest, CatchResultExt, Context, Ctx, Function, Object, Promise, Runtime, Value,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -589,18 +591,48 @@ fn install_ctx<'js>(
         )?;
         db.set("list", f)?;
     }
-    // --- db.query(collection, query) -> record[] -------------------------
+    // --- db.query(query) / db.query(collection, query) -> record[] --------
     {
         let host_error = host_error.clone();
         let f = Function::new(
             ctx.clone(),
-            move |cx: Ctx<'js>,
-                  coll: Value<'js>,
-                  query: Value<'js>|
-                  -> rquickjs::Result<Value<'js>> {
-                let coll = value_to_string(&cx, &coll)?;
-                let query_json = QuickJsEngine::js_to_json(&cx, query)
-                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+            move |cx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
+                let (coll, query_json) = match args.as_slice() {
+                    [query] => {
+                        let query_json = QuickJsEngine::js_to_json(&cx, query.clone())
+                            .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                        let coll = query_json
+                            .get("from")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                store_and_throw(
+                                    &cx,
+                                    &host_error,
+                                    CoreError::QueryError(
+                                        "ctx.db.query(query) requires a string 'from' collection"
+                                            .into(),
+                                    ),
+                                )
+                            })?
+                            .to_string();
+                        (coll, query_json)
+                    }
+                    [collection, query] => {
+                        let coll = value_to_string(&cx, collection)?;
+                        let query_json = QuickJsEngine::js_to_json(&cx, query.clone())
+                            .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                        (coll, query_json)
+                    }
+                    _ => {
+                        return Err(store_and_throw(
+                            &cx,
+                            &host_error,
+                            CoreError::QueryError(
+                                "ctx.db.query expects query or collection, query".into(),
+                            ),
+                        ))
+                    }
+                };
                 let r = unsafe { host.get() }.db_query(&coll, query_json);
                 host_result_to_js(&cx, &host_error, r)
             },
