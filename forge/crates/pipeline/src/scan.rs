@@ -454,15 +454,42 @@ fn for_head_bindings(head: &swc_core::ecma::ast::ForHead) -> HashSet<String> {
     out
 }
 
-/// Names bound at module (top-level) scope that are *function-scoped* (visible
-/// throughout the module): `var` declarators and top-level function/class names.
-/// Top-level `let`/`const` are block-scoped to the module body and are tracked as
-/// a block frame instead (so a top-level `{ let fetch }` block does not leak).
-/// Used as the root scope frame.
+/// Names bound at module (top-level) scope and visible throughout the module
+/// body: the *function-scoped* names (`var` declarators, top-level
+/// function/class declaration names) **and** the top-level `let`/`const`
+/// declarators bound *directly* in the module body. The module body is the
+/// outermost lexical scope, so a top-level `let`/`const fetch` legitimately
+/// shadows the global for the whole module and must populate the root frame
+/// (review 025: top-level `const fetch = …; fetch("a")` is valid, not a
+/// forbidden global read). A `let`/`const` nested inside a top-level *block*
+/// (`{ let fetch }`) is NOT collected here — it is pushed/popped per-block by
+/// [`ScanVisitor::visit_block_stmt`] so it cannot leak (review 018 P1). Used as
+/// the root scope frame.
 fn collect_module_scope_bindings(module: &swc_core::ecma::ast::Module) -> HashSet<String> {
+    use swc_core::ecma::ast::{Decl, ModuleDecl, Stmt, VarDeclKind};
     let mut c = FnScopeBindingCollector::default();
     for item in &module.body {
         item.visit_with(&mut c);
+    }
+    // Top-level `let`/`const` declared directly in the module body are
+    // block-scoped, but their block *is* the module body (the outermost scope),
+    // so they belong in the root frame. We only walk module items directly here,
+    // never descending into nested blocks/functions, so a `{ let fetch }` block
+    // is left to its own per-block frame. Both a bare top-level declaration and an
+    // `export const fetch = …` (which wraps the same `Decl`) are covered.
+    for item in &module.body {
+        let decl = match item {
+            ModuleItem::Stmt(Stmt::Decl(d)) => d,
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(e)) => &e.decl,
+            _ => continue,
+        };
+        if let Decl::Var(v) = decl {
+            if v.kind != VarDeclKind::Var {
+                for d in &v.decls {
+                    add_pat_bindings(&d.name, &mut c.0);
+                }
+            }
+        }
     }
     c.0
 }
@@ -1620,6 +1647,48 @@ mod tests {
         assert_rejected(
             r#"try {} catch (require) {} export const v = require("fs");"#,
             "require",
+        );
+    }
+
+    // ---- Review 025: TOP-LEVEL `let`/`const` shadows ARE in scope for the
+    //      whole module body and must NOT be treated as forbidden globals
+    //      (the review-018 fix must not over-correct module-level shadows). ----
+
+    #[test]
+    fn module_level_lexical_shadow_is_not_a_forbidden_global() {
+        // A top-level `let`/`const` declaration named like a global is the local
+        // binding for the entire module body — `const fetch = …; fetch("a")` is
+        // valid code, not a raw-network read (review 025).
+        for src in [
+            // top-level `const fetch`
+            r#"const fetch = (x: string) => x; export const v = fetch("a");"#,
+            // top-level `let process`
+            "let process = { id: 1 }; export const v = process.id;",
+            // top-level `const require`
+            r#"const require = (s: string) => s; export const v = require("fs");"#,
+            // exported top-level `const` shadow (wraps the same Decl)
+            r#"export const fetch = (x: string) => x; export const v = fetch("a");"#,
+            // top-level destructured shadow
+            "const { process } = { process: { id: 1 } }; export const v = process.id;",
+        ] {
+            let findings = policy_scan(src).unwrap();
+            assert!(findings.is_empty(), "false positive on {src:?}: {findings:?}");
+            assert!(enforce_policy(src).is_ok(), "false rejection on {src:?}");
+        }
+    }
+
+    #[test]
+    fn module_level_block_shadow_still_leaks_nothing() {
+        // The review-018 guarantee must survive the review-025 fix: a `let`/`const`
+        // nested in a top-level *block* still does NOT suppress a forbidden
+        // reference outside that block.
+        assert_rejected(
+            r#"{ let fetch = (x: string) => x; } export const v = fetch("https://x");"#,
+            "fetch",
+        );
+        assert_rejected(
+            "{ const process = 1; } export const v = process.env;",
+            "process",
         );
     }
 
