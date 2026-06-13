@@ -169,15 +169,46 @@ impl Node {
 }
 
 /// Accessibility for catalog components that reach this crate only as
-/// [`Node::Unknown`](crate::Node::Unknown) (Icon/Image/Chart/Table/form
-/// controls/...), keyed off the verbatim `type` per `spec/accessibility.md`.
-/// Anything genuinely outside the catalog uses the UI-6 fallback group.
+/// [`Node::Unknown`](crate::Node::Unknown) — the structural containers
+/// (Grid/Card/Scroll/Spacer/Divider/Markdown/Tabs), the media/region components
+/// (Icon/Image/Chart/Table/Modal/Form) and the form controls — keyed off the
+/// verbatim `type` per `spec/accessibility.md`. Every component named in the
+/// spec table emits its spec role here; only a `type` genuinely OUTSIDE the
+/// catalog falls through to the UI-6 "Unsupported component <Type>" group.
 fn unknown_accessibility(
     type_name: &str,
     props: &serde_json::Map<String, serde_json::Value>,
 ) -> Accessibility {
     let aria = prop_str(props, "ariaLabel");
     match type_name {
+        // Structural containers (`spec/accessibility.md` table). These are real
+        // catalog members, NOT the UI-6 unknown fallback: they expose a grouping
+        // role and an OPTIONAL `ariaLabel` (no name when absent), and never the
+        // raw JSON. (`Stack` is a typed node handled in `Node::accessibility`;
+        // `Grid` arrives here as a UI-6 fallback.) Grid is `grid` when
+        // interactive (has cells/columns), else a plain `group`; Card/Scroll
+        // become `region` once labelled.
+        "Grid" => {
+            let role = if is_interactive_grid(props) {
+                "grid"
+            } else {
+                "group"
+            };
+            optional_aria_named(role, aria)
+        }
+        "Card" => optional_aria_named(if aria.is_some() { "region" } else { "group" }, aria),
+        "Scroll" => optional_aria_named(if aria.is_some() { "region" } else { "group" }, aria),
+        // Spacer / Divider are presentational; Divider is a `separator` and may
+        // carry an optional meaningful label.
+        "Spacer" => Accessibility::new("presentation", None, AxNameSource::None),
+        "Divider" => optional_aria_named("separator", aria),
+        // Markdown is a `document`; its visible content supplies names, so it
+        // exposes no container-level accessible name of its own.
+        "Markdown" => Accessibility::new("document", None, AxNameSource::None),
+        // Tabs exposes a `tablist`; individual tab labels are required but live
+        // on child tab descriptors, so the tablist itself is named (optionally)
+        // by an `ariaLabel`.
+        "Tabs" => optional_aria_named("tablist", aria),
         "Icon" => {
             // Decorative icons expose nothing; informative icons need ariaLabel.
             if is_decorative(props) {
@@ -261,6 +292,33 @@ fn unknown_accessibility(
             AxNameSource::Label,
         ),
     }
+}
+
+/// A grouping/structural node whose accessible name is an OPTIONAL `ariaLabel`:
+/// it carries the name when present and exposes none otherwise (the spec marks
+/// these names "optional", so absence is not a violation).
+fn optional_aria_named(role: &'static str, aria: Option<&str>) -> Accessibility {
+    match aria {
+        Some(a) => Accessibility::new(role, Some(a.to_string()), AxNameSource::AriaLabel),
+        None => Accessibility::new(role, None, AxNameSource::None),
+    }
+}
+
+/// Whether a `Grid` is interactive enough to expose the `grid` role rather than
+/// a plain `group` (`spec/accessibility.md`: "group/grid when interactive").
+/// Heuristic over the verbatim props: an explicit `interactive`/`selectable`
+/// flag, or a declared column/row structure.
+fn is_interactive_grid(props: &serde_json::Map<String, serde_json::Value>) -> bool {
+    props
+        .get("interactive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || props
+            .get("selectable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        || props.contains_key("columns")
+        || props.contains_key("rows")
 }
 
 /// The ARIA role for a known-by-name form control (`spec/accessibility.md`).

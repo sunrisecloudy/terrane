@@ -133,6 +133,64 @@ fn select_and_switch_emit_their_roles_named_by_label() {
     assert_eq!(ax(&switch).name.as_deref(), Some("Dark mode"));
 }
 
+#[test]
+fn structural_catalog_components_emit_their_spec_roles_not_the_unknown_fallback() {
+    // Grid, Card, Scroll, Spacer, Divider, Markdown, Tabs are all in the spec
+    // table; they must emit their spec role, NOT the UI-6 "Unsupported
+    // component" group, and never the raw JSON as a name.
+    let grid = from_str(r#"{"type":"Grid","children":[]}"#).unwrap();
+    assert_eq!(ax(&grid).role.as_str(), "group");
+    assert_eq!(ax(&grid).name, None);
+
+    // An interactive grid (declared columns) upgrades to the `grid` role.
+    let interactive = from_str(r#"{"type":"Grid","columns":3,"children":[]}"#).unwrap();
+    assert_eq!(ax(&interactive).role.as_str(), "grid");
+
+    // Card/Scroll are a plain group until labelled, then a region.
+    let card = from_str(r#"{"type":"Card","children":[]}"#).unwrap();
+    assert_eq!(ax(&card).role.as_str(), "group");
+    let labelled_card = from_str(r#"{"type":"Card","ariaLabel":"Summary","children":[]}"#).unwrap();
+    assert_eq!(ax(&labelled_card).role.as_str(), "region");
+    assert_eq!(ax(&labelled_card).name.as_deref(), Some("Summary"));
+    assert_eq!(ax(&labelled_card).name_source, AxNameSource::AriaLabel);
+
+    let scroll = from_str(r#"{"type":"Scroll","children":[]}"#).unwrap();
+    assert_eq!(ax(&scroll).role.as_str(), "group");
+
+    let spacer = from_str(r#"{"type":"Spacer"}"#).unwrap();
+    assert_eq!(ax(&spacer).role.as_str(), "presentation");
+    assert_eq!(ax(&spacer).name, None);
+
+    let divider = from_str(r#"{"type":"Divider","ariaLabel":"Section"}"#).unwrap();
+    assert_eq!(ax(&divider).role.as_str(), "separator");
+    assert_eq!(ax(&divider).name.as_deref(), Some("Section"));
+
+    let markdown = from_str(r##"{"type":"Markdown","text":"# Hi"}"##).unwrap();
+    assert_eq!(ax(&markdown).role.as_str(), "document");
+    assert_eq!(ax(&markdown).name, None);
+
+    let tabs = from_str(r#"{"type":"Tabs","ariaLabel":"Sections","tabs":[]}"#).unwrap();
+    assert_eq!(ax(&tabs).role.as_str(), "tablist");
+    assert_eq!(ax(&tabs).name.as_deref(), Some("Sections"));
+    // None of these structural roles expose raw JSON as the accessible name.
+    for node in [&grid, &card, &scroll, &markdown, &tabs] {
+        if let Some(name) = ax(node).name {
+            assert!(!name.contains('{') && !name.contains("Unsupported"), "{name}");
+        }
+    }
+}
+
+#[test]
+fn badge_and_stat_emit_status_named_by_label() {
+    let badge = from_str(r#"{"type":"Badge","label":"New","intent":"info"}"#).unwrap();
+    assert_eq!(ax(&badge).role.as_str(), "status");
+    assert_eq!(ax(&badge).name.as_deref(), Some("New"));
+
+    let stat = from_str(r#"{"type":"Stat","label":"Revenue","value":"$1.2M"}"#).unwrap();
+    assert_eq!(ax(&stat).role.as_str(), "status");
+    assert_eq!(ax(&stat).name.as_deref(), Some("Revenue"));
+}
+
 // --- UI-6 fallback: labelled group, never raw JSON ------------------------
 
 #[test]
@@ -272,6 +330,33 @@ fn form_controls_must_have_labels() {
     )
     .unwrap();
     assert!(validate_accessibility(&good).is_ok());
+}
+
+#[test]
+fn structural_containers_have_optional_names_and_pass_validation_unlabelled() {
+    // Spec marks Grid/Card/Scroll/Divider/Tabs names "optional", so an
+    // unlabelled instance must NOT be a validation error — and its labelled
+    // descendants are still validated.
+    for json in [
+        r#"{"type":"Grid","children":[]}"#,
+        r#"{"type":"Card","children":[]}"#,
+        r#"{"type":"Scroll","children":[]}"#,
+        r#"{"type":"Spacer"}"#,
+        r#"{"type":"Divider"}"#,
+        r#"{"type":"Markdown","text":"hi"}"#,
+        r#"{"type":"Tabs","tabs":[]}"#,
+    ] {
+        let node = from_str(json).unwrap();
+        assert!(validate_accessibility(&node).is_ok(), "{json} should pass");
+    }
+
+    // But a bad control nested inside a structural container is still caught.
+    let bad = from_str(
+        r#"{"type":"Card","children":[{"type":"Image","src":"a.png"}]}"#,
+    )
+    .unwrap();
+    let err = validate_accessibility(&bad).unwrap_err();
+    assert!(err.to_string().contains("Image"), "{err}");
 }
 
 #[test]
