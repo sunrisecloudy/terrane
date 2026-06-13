@@ -201,15 +201,28 @@ impl CollectionDef {
     }
 
     /// Re-validate structural invariants after deserialization (review 005 P2):
-    /// field ids must be unique within the collection and every field's id must
-    /// be reachable by *some* actor counter (no id minted past its counter — an
-    /// id `f_<actor>_<n>` requires `next_field_seq[actor] > n`), so a
-    /// hand-built registry can't smuggle in a future-colliding id.
+    /// field ids must be unique within the collection, every field's id must be
+    /// reachable by *some* actor counter (no id minted past its counter — an id
+    /// `f_<actor>_<n>` requires `next_field_seq[actor] > n`), and display names
+    /// must be unique within the collection — so a hand-built/deserialized
+    /// registry can't smuggle in a future-colliding id *or* duplicate the
+    /// display names that [`add_field`](Self::add_field)/rename reject on the
+    /// additive path (review 022 P2).
     pub(crate) fn validate_invariants(&self) -> Result<(), String> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen_ids = std::collections::BTreeSet::new();
+        let mut seen_names = std::collections::BTreeSet::new();
         for f in &self.fields {
-            if !seen.insert(f.field_id.as_str()) {
+            if !seen_ids.insert(f.field_id.as_str()) {
                 return Err(format!("duplicate field id {:?} in collection {:?}", f.field_id, self.name));
+            }
+            // Display names are unique within a collection on the additive path
+            // (add/rename reject collisions); re-enforce it here so a tampered
+            // or deserialized registry can't bypass that invariant (review 022).
+            if !seen_names.insert(f.name.as_str()) {
+                return Err(format!(
+                    "duplicate field name {:?} in collection {:?}",
+                    f.name, self.name
+                ));
             }
             if let Some((actor, seq)) = parse_field_id(&f.field_id) {
                 let next = self.next_field_seq.get(actor).copied().unwrap_or(0);
@@ -331,5 +344,20 @@ mod tests {
         // Forge an id ahead of the counter.
         c.field_mut("f_alice_0").unwrap().field_id = "f_alice_5".into();
         assert!(c.validate_invariants().is_err());
+    }
+
+    #[test]
+    fn validate_invariants_catches_duplicate_field_name() {
+        // review 022 P2: the additive path rejects duplicate display names, but
+        // deserialization bypasses it — validate_invariants must re-catch it.
+        let a = actor("alice");
+        let mut c = CollectionDef::new("tasks");
+        c.add_field(&a, "title", FieldType::Text, false, false);
+        c.add_field(&a, "done", FieldType::Bool, false, false);
+        assert!(c.validate_invariants().is_ok());
+        // Tamper the second field to share the first field's display name.
+        c.field_mut("f_alice_1").unwrap().name = "title".into();
+        let err = c.validate_invariants().unwrap_err();
+        assert!(err.contains("duplicate field name"), "got {err:?}");
     }
 }

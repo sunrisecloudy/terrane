@@ -1190,6 +1190,22 @@ mod tests {
     }
 
     #[test]
+    fn validated_rejects_duplicate_field_name() {
+        // review 022 P2: the additive API (add/rename) rejects two fields
+        // sharing a DISPLAY name, but serde deserialization bypasses it. A
+        // tampered/deserialized registry carrying duplicate names must be
+        // rejected by validated() (full re-validation), not silently accepted.
+        let good = tasks_registry();
+        let mut json = serde_json::to_value(&good).unwrap();
+        // Rename the second field ("done") to collide with the first ("title").
+        json["collections"]["tasks"]["fields"][1]["name"] = serde_json::json!("title");
+        let bad: SchemaRegistry = serde_json::from_value(json).unwrap();
+        let err = bad.validated().unwrap_err();
+        assert_eq!(err.code(), "SchemaCompatibilityError");
+        assert!(err.to_string().contains("duplicate field name"), "got {err}");
+    }
+
+    #[test]
     fn change_roundtrips_json() {
         let c = SchemaChange::AddField {
             collection: "tasks".into(),
