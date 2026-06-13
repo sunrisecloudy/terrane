@@ -7,7 +7,7 @@
 //! denied/​rejected on the unhappy paths — all offline, against the real Store.
 
 use forge_core::WorkspaceCore;
-use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, WorkspaceId};
+use forge_domain::{ActorContext, ActorId, AppletId, CoreCommand, RequestId, Role, WorkspaceId};
 
 /// A small inline TS applet that exercises all three effect families: it writes
 /// a record (`ctx.db.insert`), writes KV (`ctx.storage.set`), and renders a UI
@@ -58,14 +58,30 @@ fn owner() -> ActorContext {
 }
 
 fn cmd(name: &str, applet_id: Option<&str>, payload: serde_json::Value) -> CoreCommand {
+    cmd_as(owner(), name, applet_id, payload)
+}
+
+/// Like [`cmd`] but with an explicit actor, for the command-level RBAC tests
+/// (review 031 finding 1).
+fn cmd_as(
+    actor: ActorContext,
+    name: &str,
+    applet_id: Option<&str>,
+    payload: serde_json::Value,
+) -> CoreCommand {
     CoreCommand {
         request_id: RequestId::new("r1"),
-        actor: owner(),
+        actor,
         workspace_id: WorkspaceId::new("ws1"),
         applet_id: applet_id.map(AppletId::new),
         name: name.into(),
         payload,
     }
+}
+
+/// An actor in `role` (id derived from the role for readable failures).
+fn actor(role: Role) -> ActorContext {
+    ActorContext { actor: ActorId::new(format!("{role:?}").to_lowercase()), role }
 }
 
 /// Install the demo applet into a fresh in-memory workspace, asserting success.
@@ -397,4 +413,224 @@ fn unknown_command_is_a_graceful_validation_error() {
     let resp = core.handle(cmd("does.not.exist", None, serde_json::Value::Null));
     assert!(!resp.ok);
     assert_eq!(resp.error.unwrap().code(), "ValidationError");
+}
+
+// ---------------------------------------------------------------------------
+// 5. command-level RBAC (review 031 finding 1, CR-A3): the actor role is gated
+//    per command BEFORE dispatch, matching forge/spec/commands.md.
+// ---------------------------------------------------------------------------
+
+/// A Viewer (read-only) cannot install an applet; the gate fires before any
+/// compile/store, and a follow-up run reports the applet missing.
+#[test]
+fn viewer_cannot_install_applet() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let resp = core.handle(cmd_as(
+        actor(Role::Viewer),
+        "applet.install",
+        Some("app_demo"),
+        serde_json::json!({
+            "manifest": demo_manifest(),
+            "sources": { "src/main.ts": DEMO_TS }
+        }),
+    ));
+    assert!(!resp.ok, "Viewer install must be denied");
+    assert_eq!(resp.error.unwrap().code(), "PermissionDenied");
+
+    // Nothing was installed: an owner run now reports it missing (the gate ran
+    // before the store was touched).
+    let run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok);
+    assert_eq!(run.error.unwrap().code(), "ValidationError");
+}
+
+/// An Auditor cannot run code, and a Viewer cannot run code: `runtime.run` is
+/// limited to the run-capable roles.
+#[test]
+fn read_only_roles_cannot_run() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+
+    for role in [Role::Viewer, Role::Auditor] {
+        let resp = core.handle(cmd_as(
+            actor(role),
+            "runtime.run",
+            Some("app_demo"),
+            serde_json::json!({ "input": {} }),
+        ));
+        assert!(!resp.ok, "{role:?} must not be permitted to runtime.run");
+        assert_eq!(resp.error.unwrap().code(), "PermissionDenied");
+    }
+    // And no run was recorded by the denied attempts.
+    assert_eq!(core.events().events_of_kind("run.started").count(), 0);
+}
+
+/// A bare Runner can run but NOT replay (commands.md: replay is Auditor /
+/// Maintainer / Owner). The Runner records a run; replaying it as a Runner is
+/// denied; replaying as an Auditor succeeds.
+#[test]
+fn runner_can_run_but_not_replay_auditor_can_replay() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+
+    // Runner runs (allowed).
+    let run = core.handle(cmd_as(
+        actor(Role::Runner),
+        "runtime.run",
+        Some("app_demo"),
+        serde_json::json!({ "input": { "title": "Run by runner" } }),
+    ));
+    assert!(run.ok, "Runner must be permitted to runtime.run: {:?}", run.error);
+    let run_id = run.payload["run_id"].as_str().unwrap().to_string();
+
+    // Runner replay (denied by the command-level gate).
+    let denied = core.handle(cmd_as(
+        actor(Role::Runner),
+        "runtime.replay",
+        None,
+        serde_json::json!({ "run_id": run_id }),
+    ));
+    assert!(!denied.ok, "Runner must not be permitted to runtime.replay");
+    assert_eq!(denied.error.unwrap().code(), "PermissionDenied");
+
+    // Auditor replay (allowed) and replays identically.
+    let ok = core.handle(cmd_as(
+        actor(Role::Auditor),
+        "runtime.replay",
+        None,
+        serde_json::json!({ "run_id": run_id }),
+    ));
+    assert!(ok.ok, "Auditor must be permitted to replay: {:?}", ok.error);
+    assert_eq!(ok.payload["replays_identically"], serde_json::json!(true));
+}
+
+// ---------------------------------------------------------------------------
+// 6. unique per-execution run identity (review 031 finding 2, CR-9): two runs
+//    of the same applet with DIFFERENT inputs both persist + remain loadable.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_runs_persist_distinctly_and_each_replays_identically() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_demo(&mut core, DEMO_TS, demo_manifest());
+
+    let r1 = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "First" } })));
+    assert!(r1.ok, "{:?}", r1.error);
+    let id1 = r1.payload["run_id"].as_str().unwrap().to_string();
+
+    let r2 = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": { "title": "Second" } })));
+    assert!(r2.ok, "{:?}", r2.error);
+    let id2 = r2.payload["run_id"].as_str().unwrap().to_string();
+
+    // Distinct run ids → the second did not overwrite the first.
+    assert_ne!(id1, id2, "each execution must mint a unique run_id");
+
+    // BOTH records remain independently loadable.
+    let rec1 = core.store().load_run(&id1).unwrap().expect("first run must persist");
+    let rec2 = core.store().load_run(&id2).unwrap().expect("second run must persist");
+    // They captured their distinct inputs.
+    assert_eq!(rec1.input["title"], serde_json::json!("First"));
+    assert_eq!(rec2.input["title"], serde_json::json!("Second"));
+
+    // Each replays identically to ITSELF (deterministic across independent runs).
+    for id in [&id1, &id2] {
+        let resp = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": id })));
+        assert!(resp.ok, "replay of {id} must succeed: {:?}", resp.error);
+        assert_eq!(resp.payload["replays_identically"], serde_json::json!(true));
+    }
+}
+
+/// Re-running the SAME (stateless) applet with the SAME input keeps the
+/// deterministic replay seeds — and because the applet's trace depends only on
+/// seeds+input (it does not mutate shared DB state), the two records are
+/// replay-identical to EACH OTHER — while still persisting as two distinct,
+/// loadable runs (unique run_id). This is the "deterministic across independent
+/// runs" property the unique run_id must not break (review 031 finding 2).
+#[test]
+fn same_input_reruns_share_seeds_but_persist_separately() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    // A pure, stateless applet: its trace is a function of seeds + input only
+    // (it consumes the random/time seams but writes no shared state), so two
+    // runs with the same input replay-identically to each other.
+    let pure_ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            const r = await ctx.random.next();
+            const t = await ctx.time.now();
+            await ctx.ui.render({ type: "Text", text: "pure" });
+            return { ok: true, value: { r: r, t: t } };
+        }
+    "#;
+    let manifest = serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": { "storage": { "read": [], "write": [] }, "db": { "read": [], "write": [] }, "ui": true },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    install_demo(&mut core, pure_ts, manifest);
+
+    let input = serde_json::json!({ "input": { "title": "Same" } });
+    let a = core.handle(cmd("runtime.run", Some("app_demo"), input.clone()));
+    let b = core.handle(cmd("runtime.run", Some("app_demo"), input));
+    assert!(a.ok && b.ok, "both runs must succeed: {:?} {:?}", a.error, b.error);
+    let ida = a.payload["run_id"].as_str().unwrap().to_string();
+    let idb = b.payload["run_id"].as_str().unwrap().to_string();
+    assert_ne!(ida, idb, "same input still mints distinct run_ids");
+
+    let reca = core.store().load_run(&ida).unwrap().unwrap();
+    let recb = core.store().load_run(&idb).unwrap().unwrap();
+    // Deterministic seeds derived from (code_hash, input) → equal across re-runs.
+    assert_eq!(reca.random_seed, recb.random_seed);
+    assert_eq!(reca.time_start, recb.time_start);
+    // ...and the two records are replay-identical to EACH OTHER (run_id excluded).
+    assert!(reca.replays_identically(&recb), "same code+input runs must be replay-identical");
+}
+
+// ---------------------------------------------------------------------------
+// 7. version-pinned replay (review 031 finding 3, CR-9): install v1, run,
+//    reinstall v2 (different code), replay the v1 run → still replays
+//    identically against v1's recorded program (code_hash).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replay_uses_recorded_program_not_reinstalled_version() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // v1: returns value "v1".
+    let v1_ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            await ctx.ui.render({ type: "Text", text: "v1" });
+            return { ok: true, value: "v1" };
+        }
+    "#;
+    install_demo(&mut core, v1_ts, demo_manifest());
+    let run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "v1 run must succeed: {:?}", run.error);
+    let v1_run_id = run.payload["run_id"].as_str().unwrap().to_string();
+    let v1_code_hash = run.payload["code_hash"].as_str().unwrap().to_string();
+
+    // v2: DIFFERENT code (returns "v2"), reinstalled over the same applet id.
+    let v2_ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            await ctx.ui.render({ type: "Text", text: "COMPLETELY DIFFERENT v2" });
+            return { ok: true, value: "v2-and-more" };
+        }
+    "#;
+    install_demo(&mut core, v2_ts, demo_manifest());
+    let v2_hash = forge_pipeline::compile(v2_ts).unwrap().code_hash;
+    assert_ne!(v1_code_hash, v2_hash, "v2 must be different code than v1");
+
+    // Replaying the v1 run reconstructs v1's program from the recorded code_hash,
+    // NOT the currently installed v2 — so it still replays byte-identically.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": v1_run_id })));
+    assert!(replay.ok, "v1 replay after v2 reinstall must succeed: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+
+    // The replayed run is provably the v1 program (its code_hash), not v2's.
+    let v1_rec = core.store().load_run(&v1_run_id).unwrap().unwrap();
+    assert_eq!(v1_rec.code_hash, v1_code_hash);
+    assert_ne!(v1_rec.code_hash, v2_hash);
 }

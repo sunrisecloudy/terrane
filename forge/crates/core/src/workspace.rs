@@ -22,7 +22,7 @@
 use crate::bridge::StorageHostBridge;
 use crate::event::EventSink;
 use forge_domain::{
-    AppletId, CoreCommand, CoreError, CoreResponse, Manifest, Result, RunRecord,
+    AppletId, CoreCommand, CoreError, CoreResponse, Manifest, Result, Role, RunId, RunRecord,
 };
 use forge_runtime::{record_run, replay, NullBridge, Program as RuntimeProgram};
 use forge_schema::SchemaRegistry;
@@ -34,11 +34,11 @@ use forge_storage::Store;
 /// `__forge/...` prefix.
 const META_NS: &str = "__forge/meta";
 
-/// The deterministic seeds the spine uses for a run's time/random seams in M0a.
-/// Fixed so a fresh run is itself reproducible; a later milestone threads these
-/// from the command/run profile.
-const DEFAULT_RANDOM_SEED: u64 = 0x5EED;
-const DEFAULT_TIME_START: u64 = 0;
+/// The KV key (within [`META_NS`]) holding the workspace's monotone run counter.
+/// Bumped once per `runtime.run` to mint a unique per-execution `run_id` while
+/// the replay *seeds* stay a deterministic function of `(code_hash, input)`
+/// (review 031 finding 2 / CR-9 "every execution persists").
+const RUN_COUNTER_KEY: &str = "run_counter";
 
 /// The compiled, installed form of an applet: its manifest plus the transpiled
 /// JS the runtime executes and the canonical `code_hash` the pipeline produced.
@@ -121,12 +121,18 @@ impl WorkspaceCore {
     /// (prd-merged/01 CR-A1/CR-A2). Unknown command names return a
     /// `ValidationError` response rather than panicking (CR-A5 graceful reject).
     ///
-    /// Every command carries an [`ActorContext`]; the policy gate is enforced at
-    /// host-call time inside `runtime.run`/`replay` (CR-A3 / CR-4), where the
-    /// applet's manifest capabilities are checked per `ctx.*` call.
+    /// Every command carries an [`ActorContext`]; CR-A3 requires that context to
+    /// pass policy *before* the command touches state. This happens in two
+    /// layers: a **command-level RBAC gate** ([`authorize`]) runs here, before
+    /// dispatch, rejecting an actor whose role is not permitted to issue the
+    /// command per `forge/spec/commands.md` (e.g. a Viewer cannot
+    /// `applet.install`, a Runner cannot `runtime.replay`); then the
+    /// **capability gate** is enforced at host-call time inside
+    /// `runtime.run`/`replay` (CR-A3 / CR-4), where the applet's manifest
+    /// capabilities are checked per `ctx.*` call.
     pub fn handle(&mut self, cmd: CoreCommand) -> CoreResponse {
         let request_id = cmd.request_id.clone();
-        let result = match cmd.name.as_str() {
+        let result = authorize(&cmd).and_then(|()| match cmd.name.as_str() {
             "workspace.create" => self.cmd_workspace_create(&cmd),
             "workspace.open" => self.cmd_workspace_open(&cmd),
             "applet.install" => self.cmd_applet_install(&cmd),
@@ -136,7 +142,7 @@ impl WorkspaceCore {
             other => Err(CoreError::ValidationError(format!(
                 "unknown command {other:?} (CR-A5: client should negotiate capability)"
             ))),
-        };
+        });
         match result {
             Ok(payload) => CoreResponse::ok(request_id, payload),
             Err(error) => CoreResponse::err(request_id, error),
@@ -282,23 +288,49 @@ impl WorkspaceCore {
             )));
         }
 
+        // Replay seeds are a deterministic function of (code_hash, input): a
+        // re-run with the SAME applet code and input reproduces the SAME seeded
+        // time/random seams, so the two records replay byte-identically. A
+        // different input yields different seeds (a genuinely different run).
+        let (random_seed, time_start) = derive_seeds(&installed.code_hash, &input);
+
+        // Mint a UNIQUE per-execution run id (review 031 finding 2 / CR-9). The
+        // counter is persisted in workspace meta so each execution is saved and
+        // loadable separately, even when code+input (and therefore the seeds)
+        // match a prior run. This bump happens before the run so the id is
+        // reserved even if the run itself fails.
+        let invocation = self.next_run_counter()?;
+
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
         // each ctx.* call against the manifest policy BEFORE the bridge runs.
         let mut bridge = StorageHostBridge::new(&mut self.store, applet_id.as_str());
-        let run = record_run(
+        let mut run = record_run(
             &program,
             &installed.manifest,
             &cmd.actor,
             &input,
-            DEFAULT_RANDOM_SEED,
-            DEFAULT_TIME_START,
+            random_seed,
+            time_start,
             &mut bridge,
         )?;
         // Drain the captured UI renders + logs before dropping the bridge (which
         // releases the &mut Store borrow so we can save the run).
         let ui_renders = std::mem::take(&mut bridge.ui_renders);
         drop(bridge);
+
+        // Override the runtime's deterministic run_id with the unique per-core
+        // identity so two executions of the same applet+input persist as two
+        // distinct, independently loadable records (the seeds/trace are
+        // unchanged, so each still replays identically to itself).
+        run.run_id = unique_run_id(&run.code_hash, invocation);
+
+        // Pin the replay artifact: persist the EXACT compiled program this run
+        // executed, keyed by code_hash, so a later applet.install/upgrade that
+        // overwrites applet/<id> cannot strand this run — replay reconstructs the
+        // program from what was recorded, not from whatever is installed now
+        // (review 031 finding 3 / CR-9 version-pinned replay).
+        self.store_program(&installed)?;
 
         // Persist the deterministic run record (replay source, CR-9). save_run
         // re-validates the canonical code_hash.
@@ -356,14 +388,33 @@ impl WorkspaceCore {
             .load_run(&run_id)?
             .ok_or_else(|| CoreError::ValidationError(format!("run {run_id} not found")))?;
 
-        let installed = self
-            .load_applet(original.applet_id.as_str())?
-            .ok_or_else(|| {
-                CoreError::ValidationError(format!(
-                    "applet {} for run {run_id} is not installed; cannot replay",
-                    original.applet_id
-                ))
-            })?;
+        // Version-pinned replay (review 031 finding 3): reconstruct the program
+        // from the artifact recorded for THIS run's code_hash, not the currently
+        // installed applet. A reinstall/upgrade bumps applet/<id> to new code, but
+        // the old run still replays against the exact bytes it executed. Fall back
+        // to the installed applet only for legacy runs predating program pinning
+        // (and only if it still matches the recorded code_hash).
+        let pinned = self.load_program(&original.code_hash)?;
+        let replay_artifact = match pinned {
+            Some(p) => p,
+            None => {
+                let installed =
+                    self.load_applet(original.applet_id.as_str())?.ok_or_else(|| {
+                        CoreError::ValidationError(format!(
+                            "no recorded program for run {run_id} (code_hash {}) and applet {} is not installed; cannot replay",
+                            original.code_hash, original.applet_id
+                        ))
+                    })?;
+                if installed.code_hash != original.code_hash {
+                    return Err(CoreError::ValidationError(format!(
+                        "no recorded program for run {run_id}; installed applet {} is a different version (code_hash {} != recorded {}); cannot replay",
+                        original.applet_id, installed.code_hash, original.code_hash
+                    )));
+                }
+                installed
+            }
+        };
+        let installed = replay_artifact;
 
         let program = RuntimeProgram::new(original.applet_id.clone(), installed.js_code.clone());
         let mut null = NullBridge::new();
@@ -434,11 +485,165 @@ impl WorkspaceCore {
             None => Ok(None),
         }
     }
+
+    // -------------------------------------------------- replay program pinning
+
+    /// Persist the exact compiled program a run executed, keyed by its
+    /// `code_hash`, so `runtime.replay` can reconstruct it even after the
+    /// applet is reinstalled/upgraded (review 031 finding 3 / CR-9). Keyed by
+    /// content hash, so re-running the same code is idempotent (same bytes).
+    fn store_program(&mut self, installed: &InstalledApplet) -> Result<()> {
+        let bytes = serde_json::to_vec(installed).map_err(|e| {
+            CoreError::StorageError(format!("program serialize failed: {e}"))
+        })?;
+        self.store
+            .kv_set(META_NS, &program_key(&installed.code_hash), &bytes, "application/json")
+    }
+
+    /// Load the program recorded for a given `code_hash`, if one was pinned.
+    fn load_program(&self, code_hash: &str) -> Result<Option<InstalledApplet>> {
+        match self.store.kv_get(META_NS, &program_key(code_hash))? {
+            Some(bytes) => {
+                let installed = serde_json::from_slice(&bytes).map_err(|e| {
+                    CoreError::StorageError(format!("program deserialize failed: {e}"))
+                })?;
+                Ok(Some(installed))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // -------------------------------------------------- per-execution counter
+
+    /// Read-bump-write the persisted workspace run counter, returning the value
+    /// assigned to this invocation. Monotone across the workspace's lifetime
+    /// (persisted in meta), so each `runtime.run` mints a distinct `run_id`
+    /// even for an identical applet+input pair (review 031 finding 2).
+    fn next_run_counter(&mut self) -> Result<u64> {
+        let current = match self.store.kv_get(META_NS, RUN_COUNTER_KEY)? {
+            Some(bytes) => {
+                let s = std::str::from_utf8(&bytes).map_err(|e| {
+                    CoreError::StorageError(format!("run counter is not utf-8: {e}"))
+                })?;
+                s.parse::<u64>().map_err(|e| {
+                    CoreError::StorageError(format!("run counter is malformed: {e}"))
+                })?
+            }
+            None => 0,
+        };
+        let next = current + 1;
+        self.store
+            .kv_set(META_NS, RUN_COUNTER_KEY, next.to_string().as_bytes(), "text/plain")?;
+        Ok(next)
+    }
 }
 
 /// KV key for an applet's installed record within [`META_NS`].
 fn applet_key(applet_id: &str) -> String {
     format!("applet/{applet_id}")
+}
+
+/// KV key for a pinned replay program within [`META_NS`], keyed by `code_hash`.
+/// Content-addressed, so the same code reinstalled under a new applet version
+/// still maps to the one program every run that hashed to it can replay against.
+fn program_key(code_hash: &str) -> String {
+    format!("program/{code_hash}")
+}
+
+/// Derive the deterministic replay seeds `(random_seed, time_start)` from the
+/// run's `(code_hash, input)` (review 031 finding 2). The same code + input
+/// always produces the same seeds, so re-runs replay byte-identically and the
+/// "deterministic across independent runs" property holds; a different input
+/// produces different seeds (a genuinely different deterministic run).
+///
+/// This is a stable, non-cryptographic split of the canonical `code_hash`
+/// (which already digests the program) mixed with a digest of the input. It is
+/// not security-sensitive — only determinism matters — so a fixed FNV-style
+/// fold over the canonical inputs is sufficient and dependency-free.
+fn derive_seeds(code_hash: &str, input: &serde_json::Value) -> (u64, u64) {
+    // Canonical JSON for the input (serde_json sorts object keys), so equal
+    // inputs fold to the same digest regardless of construction order.
+    let input_repr = input.to_string();
+    let random_seed = fnv1a64(code_hash.as_bytes()) ^ fnv1a64(input_repr.as_bytes());
+    // A second, independent fold (salted) for the time seam so the two seeds are
+    // not trivially correlated.
+    let time_start = fnv1a64(input_repr.as_bytes()).wrapping_mul(0x100000001b3)
+        ^ fnv1a64(code_hash.as_bytes());
+    (random_seed, time_start)
+}
+
+/// A small FNV-1a 64-bit fold. Deterministic and dependency-free; used only to
+/// derive replay seeds (not for security or collision resistance).
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Mint a unique, inspectable per-execution `run_id` from the run's `code_hash`
+/// and the workspace's monotone invocation counter (review 031 finding 2). The
+/// counter guarantees uniqueness even when two executions share code+input (and
+/// therefore seeds); the short hash prefix keeps the id self-describing.
+fn unique_run_id(code_hash: &str, invocation: u64) -> RunId {
+    // Strip the `alg:` tag, then take a short prefix of the digest body.
+    let digest = code_hash.split_once(':').map(|(_, body)| body).unwrap_or(code_hash);
+    let short = &digest[..8.min(digest.len())];
+    RunId::new(format!("run_{short}_{invocation:06}"))
+}
+
+/// Command-level RBAC gate (prd-merged/01 CR-A3): reject a command whose
+/// actor role is not permitted to issue it *before* any handler touches state.
+///
+/// The role matrix is the "Roles" column of `forge/spec/commands.md` for the
+/// M0a command set. An unauthorized actor returns [`CoreError::PermissionDenied`];
+/// an unknown command is left for the dispatcher to reject with a
+/// `ValidationError` (so capability negotiation, not authorization, owns that
+/// message). This is the first of the two CR-A3 layers; the per-`ctx.*`
+/// capability/policy gate still runs at host-call time inside the runtime.
+fn authorize(cmd: &CoreCommand) -> Result<()> {
+    let role = cmd.actor.role;
+    // `None` ⇒ no command-level role restriction (the command is reachable by
+    // any authenticated actor, or it is an unknown name the dispatcher rejects).
+    let allowed: Option<&[Role]> = match cmd.name.as_str() {
+        // Owner-only workspace lifecycle (commands.md: workspace.create → Owner).
+        "workspace.create" => Some(&[Role::Owner]),
+        // Read-level metadata: every member role may open/inspect the workspace.
+        "workspace.open" => Some(&[
+            Role::Owner,
+            Role::Maintainer,
+            Role::Editor,
+            Role::Viewer,
+            Role::Auditor,
+        ]),
+        // Installing/compiling an applet is a maintainer+ operation (SC-15):
+        // Viewer/Auditor/Runner/Editor cannot install.
+        "applet.install" => Some(&[Role::Owner, Role::Maintainer]),
+        // Triggering execution: the run-capable roles (CR-8). Viewer/Auditor are
+        // read-only/oversight and cannot run code.
+        "runtime.run" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),
+        // Replay is an audit/oversight operation (CR-9): Auditor/Maintainer/Owner.
+        // A bare Runner can run but not replay (per commands.md).
+        "runtime.replay" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
+        // Reading the records projection requires a read-capable role (db.read).
+        "query.execute" => Some(&[
+            Role::Owner,
+            Role::Maintainer,
+            Role::Editor,
+            Role::Viewer,
+            Role::Auditor,
+        ]),
+        _ => None,
+    };
+    match allowed {
+        Some(roles) if !roles.contains(&role) => Err(CoreError::PermissionDenied(format!(
+            "actor role {role:?} is not permitted to issue {:?} (see forge/spec/commands.md)",
+            cmd.name
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Extract and require the command's `applet_id` (from the envelope, or the
