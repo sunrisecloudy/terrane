@@ -40,6 +40,11 @@ const META_NS: &str = "__forge/meta";
 /// (review 031 finding 2 / CR-9 "every execution persists").
 const RUN_COUNTER_KEY: &str = "run_counter";
 
+/// The KV key (within [`META_NS`]) holding the persisted trusted `db.read` grant
+/// table (actor id → readable collections). Persisted so a scoped grant survives
+/// reopening the workspace file instead of fail-opening to read-all (review 050).
+const DB_READ_GRANTS_KEY: &str = "db_read_grants";
+
 /// The compiled, installed form of an applet: its manifest plus the transpiled
 /// JS the runtime executes and the canonical `code_hash` the pipeline produced.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -75,23 +80,27 @@ impl WorkspaceCore {
     /// Open (or create) a file-backed workspace at `path` (`workspace.open`
     /// semantics; the single portable SQLite file, DECISIONS E1).
     pub fn open(path: impl AsRef<std::path::Path>, workspace_id: impl Into<String>) -> Result<Self> {
+        let store = Store::open(path)?;
+        let db_read_grants = load_db_read_grants(&store)?;
         Ok(WorkspaceCore {
-            store: Store::open(path)?,
+            store,
             registry: SchemaRegistry::new(),
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
-            db_read_grants: std::collections::BTreeMap::new(),
+            db_read_grants,
         })
     }
 
     /// Open an in-memory workspace (tests/scratch).
     pub fn in_memory(workspace_id: impl Into<String>) -> Result<Self> {
+        let store = Store::open_in_memory()?;
+        let db_read_grants = load_db_read_grants(&store)?;
         Ok(WorkspaceCore {
-            store: Store::open_in_memory()?,
+            store,
             registry: SchemaRegistry::new(),
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
-            db_read_grants: std::collections::BTreeMap::new(),
+            db_read_grants,
         })
     }
 
@@ -102,9 +111,22 @@ impl WorkspaceCore {
     /// request payload, so a shell cannot widen its own read scope by editing the
     /// command body (review 048 finding 1). Passing an empty `scope` provisions an
     /// actor that holds the `db.read` role but is granted NO collection.
-    pub fn grant_db_read(&mut self, actor: impl Into<String>, scope: impl IntoIterator<Item = impl Into<String>>) {
+    ///
+    /// The grant table is **persisted** to the workspace file (review 050): a
+    /// scoped actor stays scoped after `open(...)`, instead of silently reverting
+    /// to role-derived read-all (a fail-open regression).
+    pub fn grant_db_read(
+        &mut self,
+        actor: impl Into<String>,
+        scope: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<()> {
         self.db_read_grants
             .insert(actor.into(), scope.into_iter().map(Into::into).collect());
+        let bytes = serde_json::to_vec(&self.db_read_grants)
+            .map_err(|e| CoreError::StorageError(format!("serialize db.read grants: {e}")))?;
+        self.store
+            .kv_set(META_NS, DB_READ_GRANTS_KEY, &bytes, "application/json")?;
+        Ok(())
     }
 
     /// The event sink (observability): all `run.*` / `ui.patch` events land here.
@@ -656,6 +678,20 @@ impl WorkspaceCore {
     /// audit record is silently replaced via a `run_id` collision.
     fn next_run_counter(&mut self) -> Result<u64> {
         self.store.next_counter(META_NS, RUN_COUNTER_KEY)
+    }
+}
+
+/// Load the persisted trusted `db.read` grant table from the workspace file
+/// (review 050). Absent / empty → an empty table (no configured scopes), which
+/// preserves the owner-permits-all M0a default for actors with no grant entry.
+fn load_db_read_grants(
+    store: &Store,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    match store.kv_get(META_NS, DB_READ_GRANTS_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::StorageError(format!("deserialize db.read grants: {e}"))
+        }),
+        None => Ok(std::collections::BTreeMap::new()),
     }
 }
 

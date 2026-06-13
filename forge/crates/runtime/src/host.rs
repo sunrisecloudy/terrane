@@ -268,8 +268,17 @@ impl<'b> HostContext<'b> {
     pub fn db_query(
         &mut self,
         collection: &str,
-        query: serde_json::Value,
+        mut query: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        // Pin the query's `from` to the capability-checked `collection` BEFORE it
+        // reaches any bridge, so a caller cannot read an ungranted collection by
+        // putting a different `from` in the query body — the host is the single
+        // source of truth for which collection a db.read grant authorizes
+        // (review 052 #2; the real StorageHostBridge also pins this, but
+        // normalizing here means no bridge — incl. test doubles — can widen).
+        if let Some(obj) = query.as_object_mut() {
+            obj.insert("from".into(), serde_json::Value::String(collection.to_string()));
+        }
         let args = serde_json::json!([collection, query]);
         self.check_or_record_denial(
             &HostCall::Db { op: Access::Read, collection: collection.to_string() },

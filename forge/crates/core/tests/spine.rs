@@ -469,7 +469,7 @@ fn query_execute_enforces_collection_scoped_db_read_grant() {
 
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     // Provision the fixture's grant trustedly: the owner actor id is "dev".
-    core.grant_db_read("dev", ["tasks"]);
+    core.grant_db_read("dev", ["tasks"]).unwrap();
 
     // An Owner (clears the role gate) querying a collection OUTSIDE the granted
     // db.read scope is denied by the capability layer, before any scan — and the
@@ -499,6 +499,48 @@ fn query_execute_enforces_collection_scoped_db_read_grant() {
     assert!(in_scope.ok, "an in-scope db.read must be permitted: {:?}", in_scope.error);
 }
 
+/// Review 050: a trusted `db.read` scope provisioned via `grant_db_read` must
+/// SURVIVE reopening the file-backed workspace. Before the fix the grant table
+/// was in-memory only, so after `open(...)` the actor had no entry and absence
+/// meant role-derived read-all — a scoped actor could suddenly read `secrets`.
+#[test]
+fn db_read_grant_scope_persists_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+
+    // Provision a scoped grant, then drop the handle (simulating app restart).
+    {
+        let mut core = WorkspaceCore::open(&path, "ws1").unwrap();
+        core.grant_db_read("dev", ["tasks"]).unwrap();
+    }
+
+    // Reopen the SAME file: the scoped grant must still be in force.
+    let mut core = WorkspaceCore::open(&path, "ws1").unwrap();
+
+    // An ungranted collection stays DENIED after reopen (no fail-open to read-all).
+    let denied = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "secrets" }),
+    ));
+    assert!(
+        !denied.ok,
+        "a scoped db.read must remain scoped after reopen — `secrets` must stay denied"
+    );
+    // A collection outside the granted db.read scope is CapabilityRequired.
+    assert_eq!(denied.error.unwrap().code(), "CapabilityRequired");
+
+    // The granted collection still works.
+    let ok = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks" }),
+    ));
+    assert!(ok.ok, "the granted collection must still be readable after reopen: {:?}", ok.error);
+}
+
 /// Review 048 finding 1: the `db.read` scope must NOT be forgeable from the
 /// request body. An actor trusted to read only `tasks` cannot reach an ungranted
 /// collection by (a) omitting `grants`, or (b) self-expanding `grants` to `["*"]`
@@ -508,7 +550,7 @@ fn query_execute_enforces_collection_scoped_db_read_grant() {
 fn query_execute_db_read_scope_is_not_forgeable_from_payload() {
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     // Owner ("dev") is trusted to read ONLY `tasks`.
-    core.grant_db_read("dev", ["tasks"]);
+    core.grant_db_read("dev", ["tasks"]).unwrap();
 
     // (a) Omitting grants does not fall back to read-all: `secrets` stays denied.
     let omitted = core.handle(cmd_as(
