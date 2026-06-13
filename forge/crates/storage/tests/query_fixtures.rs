@@ -10,7 +10,7 @@
 //! prd-merged/02-data-layer-prd.md DL-15/16/17; spec `forge/spec/query-dsl.md`.
 
 use forge_domain::RecordEnvelope;
-use forge_storage::{Mutation, Query, QueryResult, Store};
+use forge_storage::{IndexManager, Mutation, Query, QueryResult, Store};
 use std::path::{Path, PathBuf};
 
 fn fixtures_dir() -> PathBuf {
@@ -194,10 +194,13 @@ fn empty_result() {
 
 #[test]
 fn text_search_match_is_unsupported_p1() {
-    // The vector is `p1_semantics`: the planner records the unsupported feature
-    // rather than executing an FTS path that does not exist yet (query-dsl.md
-    // §Result). We assert the planner flags it; the expected rows are P1-only.
+    // The vector is `p1_semantics`: a bare `text` marker is an unsupported P1
+    // feature. The parser flags it AND `Store::query` must REFUSE it before
+    // planning rather than scanning and returning bogus rows (review 040 finding
+    // 7; query-dsl.md §Result). We execute through Store::query, not just the
+    // parser.
     let fx = load("text_search_match.json");
+    let store = seed_store(&fx);
     let plan = fx.get("query").and_then(|q| q.get("plan")).unwrap().clone();
     let query = Query::from_fixture_value(&plan).expect("parse p1 text plan");
     assert_eq!(
@@ -205,17 +208,34 @@ fn text_search_match_is_unsupported_p1() {
         Some("text_search"),
         "text search must be flagged unsupported until P1"
     );
+    let err = store.query(&query).unwrap_err();
+    assert_eq!(err.code(), "QueryError", "{err}");
+    assert!(
+        err.to_string().contains("unsupported_feature"),
+        "must carry the unsupported_feature marker before planning: {err}"
+    );
 }
 
 #[test]
 fn join_reference_field_is_unsupported_p1() {
+    // A `join` is unsupported in M0a. Crucially, the join `where` is over the
+    // joined field `assignee.name`, which a bare scan would compile to a literal
+    // `$.fields."assignee.name"` path and return bogus rows; Store::query must
+    // refuse it before planning (review 040 finding 7).
     let fx = load("join_reference_field.json");
+    let store = seed_store(&fx);
     let plan = fx.get("query").unwrap().clone();
     let query = Query::from_fixture_value(&plan).expect("parse p1 join plan");
     assert_eq!(
         query.unsupported.as_deref(),
         Some("join"),
         "join must be flagged unsupported until P1"
+    );
+    let err = store.query(&query).unwrap_err();
+    assert_eq!(err.code(), "QueryError", "{err}");
+    assert!(
+        err.to_string().contains("unsupported_feature"),
+        "join must be refused with the unsupported_feature marker, not scanned: {err}"
     );
 }
 
@@ -226,7 +246,11 @@ fn mutation_insert_patch_delete() {
     // insert -> patch -> delete; assert each applied (commit_count) and the
     // tombstoned post-state (deleted=true, merged fields, advanced updated_at).
     let fx = load("mutation_insert_patch_delete.json");
-    let store = seed_store(&fx);
+    let mut store = seed_store(&fx);
+    // No FTS index is active here, so the index-synced mutation path behaves
+    // identically to a bare projection write — but it is the DL-17 surface, so it
+    // is exercised through the same FTS-syncing path applets use (review 041/042).
+    let indexes = IndexManager::new();
 
     let muts: Vec<Mutation> = fx
         .get("mutations")
@@ -238,7 +262,7 @@ fn mutation_insert_patch_delete() {
 
     let mut applied = 0usize;
     for m in &muts {
-        store.apply_mutation(m).expect("apply mutation");
+        store.apply_mutation(m, &indexes).expect("apply mutation");
         applied += 1;
     }
     let expect = fx.get("expect").unwrap();
@@ -288,8 +312,11 @@ fn transact_group() {
         .collect();
 
     // The fixture's single mutation is the transact group itself.
+    let indexes = IndexManager::new();
     let count = match &muts[0] {
-        Mutation::Transact { items } => store.transact_mutations(items).expect("transact"),
+        Mutation::Transact { items } => {
+            store.transact_mutations(items, &indexes).expect("transact")
+        }
         other => panic!("expected transact group, got {other:?}"),
     };
     assert_eq!(count, 2, "two leaf mutations applied");

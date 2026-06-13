@@ -405,6 +405,17 @@ impl Store {
     /// Returns rows, a single aggregate, or grouped aggregates depending on the
     /// query shape.
     pub fn query(&self, q: &Query) -> Result<QueryResult> {
+        // Unsupported P1 features (a bare `text`/`join` marker) must be refused
+        // BEFORE planning: scanning anyway would silently return bogus rows
+        // (e.g. a `join` predicate over `assignee.name` compiles to a literal
+        // `$.fields."assignee.name"` path and matches nothing/garbage). Surface
+        // the typed `unsupported_feature` error so the caller sees the contract,
+        // not a wrong answer (review 040 finding 7; query-dsl.md §Result).
+        if let Some(feature) = &q.unsupported {
+            return Err(CoreError::QueryError(format!(
+                "unsupported_feature: '{feature}' is not supported in M0a (P1)"
+            )));
+        }
         let matched = self.scan_matched(q)?;
 
         // Group-by: bucket by the (display) group field, then aggregate each
@@ -498,13 +509,24 @@ impl Store {
     /// active FTS5 shadow table serves a text search; every other case scans and
     /// warns.
     ///
-    /// For a text search the matched ids come from the FTS shadow table (ordered
-    /// by FTS rank); the envelopes are then re-read from canonical `records`.
+    /// A text search is not a bypass: the FTS shadow table (or a portable
+    /// fallback scan) produces a MATCH set in rank order, then the same
+    /// `filter`/`group`/`aggregate`/`order`/`limit`/`offset` pipeline is applied
+    /// to that set as for a scalar query (DL-15; review 041/042 finding 4). FTS
+    /// rank order is preserved unless an explicit non-rank `order_by` overrides it.
     pub fn query_planned(
         &self,
         q: &Query,
         indexes: &index::IndexManager,
     ) -> Result<query::PlannedQuery> {
+        // Same guard as `query`: refuse an unsupported P1 feature before planning
+        // so we never plan/scan a query that would return bogus rows (review 040
+        // finding 7).
+        if let Some(feature) = &q.unsupported {
+            return Err(CoreError::QueryError(format!(
+                "unsupported_feature: '{feature}' is not supported in M0a (P1)"
+            )));
+        }
         let estimated = self.count_records(&q.from, q.include_deleted)?;
         let plan = indexes.plan(q, estimated);
 
@@ -530,11 +552,13 @@ impl Store {
         })
     }
 
-    /// Resolve a text search to a row result. When an active FTS table covers it
-    /// the matched ids come from the shadow table (rank order); otherwise a
-    /// portable case-insensitive substring scan over canonical `records` yields
-    /// the same set (records stay canonical). Result ordering follows the query's
-    /// `order_by` when present (FTS `rank` falls back to id order).
+    /// Resolve a text search as a **MATCH source inside the normal query
+    /// pipeline** (DL-15). The FTS5 shadow table (or a portable fallback scan)
+    /// produces the candidate id set in rank order; the rest of the query —
+    /// `filter`, `group_by`, `aggregate`, `order_by`/`limit`/`offset` — is then
+    /// applied to exactly that set, just like a non-text query (review 041/042
+    /// finding 4). FTS rank ordering is preserved when the query requests it (or
+    /// leaves the order default); an explicit non-rank `order_by` wins.
     fn run_text_search(
         &self,
         q: &Query,
@@ -542,7 +566,8 @@ impl Store {
         plan: &index::IndexPlan,
         indexes: &index::IndexManager,
     ) -> Result<QueryResult> {
-        let ids: Vec<String> = if plan.uses_index {
+        // 1. The MATCH set: candidate ids in FTS rank order (or fallback scan).
+        let match_ids: Vec<String> = if plan.uses_index {
             let field_id = ts
                 .field
                 .field_id()
@@ -551,32 +576,107 @@ impl Store {
         } else {
             self.text_search_scan(q, ts)?
         };
+        // rank position by id (FTS already ordered by rank; index = rank).
+        let rank_of: std::collections::HashMap<&str, usize> = match_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
 
-        // Re-read envelopes from canonical records, preserving FTS rank order.
-        let mut rows: Vec<QueryRow> = Vec::new();
-        for id in ids {
-            if let Some(env) = self.get_record(&q.from, &id)? {
-                if env.deleted && !q.include_deleted {
-                    continue;
+        // 2. Apply the query's filter over canonical records (same SQL semantics
+        //    as a non-text query), then intersect with the MATCH set so the text
+        //    search composes with `where`. Records are canonical, so this is the
+        //    correct row set regardless of the FTS path.
+        let matched: Vec<RecordEnvelope> = self
+            .scan_matched(q)?
+            .into_iter()
+            .filter(|env| rank_of.contains_key(env.entity_id.as_str()))
+            .collect();
+
+        // 3. Group-by / aggregate over the composed set (identical to `query`).
+        if let Some(group_field) = &q.group_by {
+            let agg = q.aggregate.clone().unwrap_or(query::Aggregate {
+                count: true,
+                sum: None,
+                avg: None,
+                min: None,
+                max: None,
+            });
+            let mut buckets: Vec<(serde_json::Value, Vec<&RecordEnvelope>)> = Vec::new();
+            for env in &matched {
+                let key = query::group_key(env, group_field);
+                match buckets.iter_mut().find(|(k, _)| k == &key) {
+                    Some((_, v)) => v.push(env),
+                    None => buckets.push((key, vec![env])),
                 }
-                rows.push(QueryRow { id, envelope: env });
             }
+            buckets.sort_by(|a, b| query::cmp_json_pub(&a.0, &b.0));
+            let groups = buckets
+                .into_iter()
+                .map(|(key, rows)| GroupResult {
+                    key,
+                    aggregate: query::compute_aggregate(&rows, &agg),
+                })
+                .collect();
+            return Ok(QueryResult::Groups(groups));
+        }
+        if let Some(agg) = &q.aggregate {
+            let refs: Vec<&RecordEnvelope> = matched.iter().collect();
+            return Ok(QueryResult::Aggregate(query::compute_aggregate(&refs, agg)));
         }
 
-        // If the query pins an explicit order other than FTS rank/id, finalize
-        // it with the spec total order; an `id`/`rank` order keeps FTS order but
-        // we apply a stable id sort so the result is deterministic.
+        // 4. Row result. An explicit non-rank `order_by` is finalized with the
+        //    spec total order (and its limit/offset). Otherwise FTS rank order is
+        //    preserved, and the rank path's limit/offset are applied here (the
+        //    bug review 041/042 finding 4 calls out: rank-path limit/offset were
+        //    previously dropped).
+        let rows: Vec<QueryRow> = matched
+            .into_iter()
+            .map(|env| QueryRow {
+                id: env.entity_id.as_str().to_string(),
+                envelope: env,
+            })
+            .collect();
         let rank_order = q
             .order_by
             .as_ref()
             .map(|ob| matches!(&ob.field, query::FieldRef::Name(n) if n == "rank"))
             .unwrap_or(true);
-        if rank_order {
-            rows.sort_by(|a, b| a.id.cmp(&b.id));
+        let rows = if rank_order {
+            self.finalize_rank_ordered(rows, &rank_of, q)
         } else {
-            rows = query::finalize_rows(rows, q);
-        }
+            query::finalize_rows(rows, q)
+        };
         Ok(QueryResult::Rows(rows))
+    }
+
+    /// Order a text-search row set by FTS rank (rank position, then entity id as
+    /// a stable tie-break), then apply the query's `offset`/`limit`. Used when
+    /// the query keeps FTS rank order (default or explicit `rank`); the rank-path
+    /// limit/offset are applied here so they are not silently dropped.
+    fn finalize_rank_ordered(
+        &self,
+        mut rows: Vec<QueryRow>,
+        rank_of: &std::collections::HashMap<&str, usize>,
+        q: &Query,
+    ) -> Vec<QueryRow> {
+        rows.sort_by(|a, b| {
+            let ra = rank_of.get(a.id.as_str()).copied().unwrap_or(usize::MAX);
+            let rb = rank_of.get(b.id.as_str()).copied().unwrap_or(usize::MAX);
+            ra.cmp(&rb).then_with(|| a.id.cmp(&b.id))
+        });
+        if let Some(off) = q.offset {
+            let off = off as usize;
+            if off >= rows.len() {
+                rows.clear();
+            } else {
+                rows.drain(0..off);
+            }
+        }
+        if let Some(lim) = q.limit {
+            rows.truncate(lim as usize);
+        }
+        rows
     }
 
     /// Portable text-search fallback: ASCII case-insensitive substring match over
@@ -770,76 +870,56 @@ impl Store {
         Ok(env)
     }
 
-    /// Apply a single [`Mutation`] outside a group (its own statement). Insert
-    /// builds a fresh envelope (caller id required for an addressable row);
-    /// update/patch/delete reuse the typed methods. A nested `transact` here is
-    /// rejected — use [`transact_mutations`](Self::transact_mutations) for groups.
-    pub fn apply_mutation(&self, m: &Mutation) -> Result<()> {
-        match m {
-            Mutation::Insert {
-                collection,
-                id,
-                fields,
-                logical_at,
-            } => {
-                let id = id.as_ref().ok_or_else(|| {
-                    CoreError::QueryError("insert requires a collection-scoped id".into())
-                })?;
-                let at = forge_domain::LogicalTimestamp(logical_at.unwrap_or(0).max(0) as u64);
-                let env = RecordEnvelope::new(
-                    forge_domain::CollectionId::new(collection.clone()),
-                    forge_domain::RecordId::new(id.clone()),
-                    fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-                    at,
-                );
-                self.put_record(&env)?;
-                Ok(())
-            }
-            Mutation::Update {
-                collection,
-                id,
-                fields,
-                logical_at,
-            } => {
-                self.update_record(collection, id, fields, *logical_at)?;
-                Ok(())
-            }
-            Mutation::Patch {
-                collection,
-                id,
-                fields,
-                logical_at,
-            } => {
-                self.patch_record(collection, id, fields, *logical_at)?;
-                Ok(())
-            }
-            Mutation::Delete {
-                collection,
-                id,
-                logical_at,
-            } => {
-                self.delete_record(collection, id, *logical_at)?;
-                Ok(())
-            }
-            Mutation::Transact { .. } => Err(CoreError::QueryError(
+    /// Apply a single [`Mutation`] outside a group (its own statement), keeping
+    /// active FTS5 shadow tables in sync in the **same** transaction (DL-5/DL-17).
+    ///
+    /// This is the applet-facing DL-17 mutation surface, so it must not bypass
+    /// dynamic-index maintenance: insert/update/patch/delete each refresh any
+    /// active FTS rows for the touched record atomically with the projection
+    /// write (review 041/042 finding 3). A nested `transact` here is rejected —
+    /// use [`transact_mutations`](Self::transact_mutations) for groups.
+    ///
+    /// Pass the workspace's [`IndexManager`](index::IndexManager); when no FTS
+    /// index is active the sync is a cheap no-op, but it can never be skipped by
+    /// going through this surface (the unsynced [`put_record`](Self::put_record)
+    /// family is reserved for projection rebuild, not applet writes).
+    pub fn apply_mutation(
+        &mut self,
+        m: &Mutation,
+        indexes: &index::IndexManager,
+    ) -> Result<()> {
+        if matches!(m, Mutation::Transact { .. }) {
+            return Err(CoreError::QueryError(
                 "nested transact is not allowed; pass items to transact_mutations".into(),
-            )),
+            ));
         }
+        self.transact(|tx| {
+            apply_mutation_tx(tx, m, indexes)?;
+            Ok(())
+        })
     }
 
     /// Apply a group of mutations as one local SQLite transaction (DL-17
     /// `transact`): all-or-nothing. A failure rolls back the whole group, so the
     /// projection is left byte-for-byte unchanged (reuses [`transact`](Self::transact)).
     ///
+    /// Active FTS5 shadow tables are refreshed for every touched record inside
+    /// the same transaction (DL-5), so a record inserted/patched here is
+    /// immediately searchable without a manual rebuild (review 041/042 finding 3).
+    ///
     /// Returns the number of leaf mutations applied. Items may themselves be a
     /// `transact` group; nested items are flattened into the same transaction.
-    pub fn transact_mutations(&mut self, items: &[Mutation]) -> Result<usize> {
+    pub fn transact_mutations(
+        &mut self,
+        items: &[Mutation],
+        indexes: &index::IndexManager,
+    ) -> Result<usize> {
         // Borrow-checker: run inside one transaction by routing each leaf through
-        // a tx-scoped applier.
+        // a tx-scoped applier that also keeps FTS in sync.
         self.transact(|tx| {
             let mut count = 0usize;
             for m in items {
-                count += apply_mutation_tx(tx, m)?;
+                count += apply_mutation_tx(tx, m, indexes)?;
             }
             Ok(count)
         })
@@ -1187,11 +1267,35 @@ fn put_record_tx(tx: &rusqlite::Transaction<'_>, env: &RecordEnvelope) -> Result
     Ok(())
 }
 
+/// Upsert a record inside an open transaction AND refresh active FTS rows for it
+/// in the same transaction (DL-5). The single seam every tx-scoped mutation uses,
+/// so no applet write can leave an active FTS shadow table stale (review
+/// 041/042 finding 3).
+fn put_record_synced_tx(
+    tx: &rusqlite::Transaction<'_>,
+    env: &RecordEnvelope,
+    indexes: &index::IndexManager,
+) -> Result<()> {
+    let data = serde_json::to_string(env).map_err(|e| map_json("put_record_synced_tx", e))?;
+    put_record_tx(tx, env)?;
+    indexes.sync_fts_for_record(
+        tx,
+        env.collection.as_str(),
+        env.entity_id.as_str(),
+        &data,
+    )
+}
+
 /// Apply one mutation inside an open transaction, returning the number of leaf
 /// mutations applied (so a nested `transact` counts each contained leaf). Every
-/// projection write goes through the transaction, so a later failure rolls the
-/// whole group back (DL-17 atomic-local).
-fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usize> {
+/// projection write goes through the transaction and refreshes any active FTS
+/// shadow rows in the same transaction, so a later failure rolls the whole group
+/// back (DL-17 atomic-local) and an active FTS index never goes stale (DL-5).
+fn apply_mutation_tx(
+    tx: &rusqlite::Transaction<'_>,
+    m: &Mutation,
+    indexes: &index::IndexManager,
+) -> Result<usize> {
     match m {
         Mutation::Insert {
             collection,
@@ -1209,7 +1313,7 @@ fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usi
                 fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 at,
             );
-            put_record_tx(tx, &env)?;
+            put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
         }
         Mutation::Update {
@@ -1223,7 +1327,7 @@ fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usi
             })?;
             env.fields = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             bump_updated_at(&mut env, *logical_at);
-            put_record_tx(tx, &env)?;
+            put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
         }
         Mutation::Patch {
@@ -1239,7 +1343,7 @@ fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usi
                 env.fields.insert(k.clone(), v.clone());
             }
             bump_updated_at(&mut env, *logical_at);
-            put_record_tx(tx, &env)?;
+            put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
         }
         Mutation::Delete {
@@ -1252,13 +1356,13 @@ fn apply_mutation_tx(tx: &rusqlite::Transaction<'_>, m: &Mutation) -> Result<usi
             })?;
             env.deleted = true;
             bump_updated_at(&mut env, *logical_at);
-            put_record_tx(tx, &env)?;
+            put_record_synced_tx(tx, &env, indexes)?;
             Ok(1)
         }
         Mutation::Transact { items } => {
             let mut count = 0usize;
             for item in items {
-                count += apply_mutation_tx(tx, item)?;
+                count += apply_mutation_tx(tx, item, indexes)?;
             }
             Ok(count)
         }
@@ -2131,7 +2235,8 @@ mod tests {
 
     #[test]
     fn insert_patch_delete_sequence_post_state() {
-        let s = store();
+        let mut s = store();
+        let indexes = IndexManager::new();
         // insert
         let ins = Mutation::Insert {
             collection: "tasks".into(),
@@ -2142,7 +2247,7 @@ mod tests {
                 .clone(),
             logical_at: Some(1),
         };
-        s.apply_mutation(&ins).unwrap();
+        s.apply_mutation(&ins, &indexes).unwrap();
         let after_insert = s.get_record("tasks", "task_001").unwrap().unwrap();
         assert_eq!(after_insert.fields["status"], serde_json::json!("draft"));
         assert!(!after_insert.deleted);
@@ -2230,7 +2335,7 @@ mod tests {
                 logical_at: None,
             },
         ];
-        let n = s.transact_mutations(&items).unwrap();
+        let n = s.transact_mutations(&items, &IndexManager::new()).unwrap();
         assert_eq!(n, 2);
         let q = Query::from("tasks");
         assert_eq!(s.query(&q).unwrap().ids(), vec!["tasks/1", "tasks/2"]);
@@ -2259,7 +2364,7 @@ mod tests {
                 logical_at: None,
             },
         ];
-        let err = s.transact_mutations(&items).unwrap_err();
+        let err = s.transact_mutations(&items, &IndexManager::new()).unwrap_err();
         assert_eq!(err.code(), "QueryError");
         assert!(
             s.get_record("tasks", "tasks/2").unwrap().is_none(),
@@ -2286,7 +2391,7 @@ mod tests {
                 },
             ],
         }];
-        assert_eq!(s.transact_mutations(&items).unwrap(), 2);
+        assert_eq!(s.transact_mutations(&items, &IndexManager::new()).unwrap(), 2);
         assert_eq!(s.list_records("tasks").unwrap().len(), 2);
     }
 
@@ -2406,6 +2511,139 @@ mod tests {
             mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
             vec!["n2".to_string()]
         );
+    }
+
+    /// Review 041/042 finding 3: the applet-facing DL-17 mutation path
+    /// (`apply_mutation` / `transact_mutations`) must keep active FTS shadow
+    /// tables in sync in the same transaction. Build FTS, insert/patch a matching
+    /// record through the mutation surface, then query WITHOUT a manual rebuild —
+    /// the record is found because the mutation refreshed FTS atomically.
+    #[test]
+    fn apply_mutation_keeps_active_fts_in_sync_without_rebuild() {
+        let mut s = store();
+        let mgr = notes_fts(&s);
+
+        // A record whose stable field_id carries the searchable body is inserted
+        // through the DL-17 mutation surface (not the *_indexed helper). Because
+        // the mutation only writes display fields, seed the field_id directly and
+        // re-mirror it via a patch through the mutation path: the FTS sync runs
+        // inside the mutation transaction.
+        s.put_record(&note("n1", "offline rebuild keeps indexes honest")).unwrap();
+        // FTS is stale right now (the bare put_record did not sync) — prove it.
+        assert!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap().is_empty(),
+            "precondition: bare put_record leaves FTS stale"
+        );
+
+        // A patch mutation through the applet surface refreshes FTS in the same
+        // transaction, so the record becomes searchable with NO manual rebuild.
+        let patch = Mutation::Patch {
+            collection: "notes".into(),
+            id: "n1".into(),
+            fields: serde_json::json!({"tag": "data"}).as_object().unwrap().clone(),
+            logical_at: None,
+        };
+        s.apply_mutation(&patch, &mgr).unwrap();
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
+            vec!["n1".to_string()],
+            "mutation path must refresh active FTS without a rebuild"
+        );
+
+        // A transact group is equally synced: tombstoning n1 drops it from FTS.
+        let del = vec![Mutation::Delete {
+            collection: "notes".into(),
+            id: "n1".into(),
+            logical_at: None,
+        }];
+        s.transact_mutations(&del, &mgr).unwrap();
+        assert!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap().is_empty(),
+            "transact delete must drop the record from active FTS"
+        );
+    }
+
+    /// Review 041/042 finding 4: text_search composes with the rest of the
+    /// pipeline. The FTS MATCH set is filtered by `where`, reduced by `aggregate`,
+    /// and bounded by rank-path `limit` — none of which the early-return path used
+    /// to honor.
+    /// Build a note with a `tag` display field (so a text search can compose
+    /// with a `tag` filter), populating the FTS-mirrored `field_ids.f_alice_0`.
+    fn tagged_note(id: &str, body: &str, tag: &str) -> RecordEnvelope {
+        let mut env = note(id, body);
+        env.fields.insert("tag".into(), serde_json::json!(tag));
+        env
+    }
+
+    #[test]
+    fn text_search_composes_with_filter_aggregate_and_limit() {
+        let mut s = store();
+        let mgr = notes_fts(&s);
+        // Three notes match "offline"; tag distinguishes two buckets.
+        s.put_record_indexed(&tagged_note("n1", "offline rebuild keeps indexes honest", "data"), &mgr).unwrap();
+        s.put_record_indexed(&tagged_note("n2", "lunch plans for the team", "personal"), &mgr).unwrap(); // no "offline"
+        s.put_record_indexed(&tagged_note("n3", "offline sync path for the data plane", "data"), &mgr).unwrap();
+        s.put_record_indexed(&tagged_note("n4", "offline indexing notes", "personal"), &mgr).unwrap();
+
+        // text_search + filter: "offline" matches n1,n3,n4; tag=data keeps n1,n3.
+        let q_filter = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_alice_0", "match": "offline"},
+            "where": {"field": "tag", "op": "eq", "value": "data"}
+        }))
+        .unwrap();
+        let mut ids = s.query_planned(&q_filter, &mgr).unwrap().ids();
+        ids.sort();
+        assert_eq!(ids, vec!["n1", "n3"], "text search must compose with the where filter");
+
+        // text_search + aggregate(count): the FTS-matched, filtered set is 2.
+        let q_count = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_alice_0", "match": "offline"},
+            "where": {"field": "tag", "op": "eq", "value": "data"},
+            "aggregate": {"op": "count"}
+        }))
+        .unwrap();
+        match s.query_planned(&q_count, &mgr).unwrap().result {
+            QueryResult::Aggregate(a) => assert_eq!(a.count, Some(2), "aggregate over the match set"),
+            other => panic!("expected aggregate, got {other:?}"),
+        }
+
+        // text_search + rank-path limit: limit bounds the rank-ordered result
+        // (previously dropped on the rank path).
+        let q_limit = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_alice_0", "match": "offline"},
+            "order_by": [{"field": "rank", "dir": "asc"}],
+            "limit": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            s.query_planned(&q_limit, &mgr).unwrap().ids().len(),
+            1,
+            "rank-path limit must bound the result"
+        );
+    }
+
+    #[test]
+    fn text_search_without_active_fts_falls_back_and_still_composes() {
+        // No FTS index registered: the portable scan finds the match set and the
+        // filter/limit pipeline still composes (records are canonical), with a
+        // fts_not_available warning surfaced.
+        let s = store();
+        let empty = IndexManager::new();
+        s.put_record(&tagged_note("n1", "offline rebuild", "data")).unwrap();
+        s.put_record(&tagged_note("n2", "offline lunch", "personal")).unwrap();
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_alice_0", "match": "offline"},
+            "where": {"field": "tag", "op": "eq", "value": "data"}
+        }))
+        .unwrap();
+        let planned = s.query_planned(&q, &empty).unwrap();
+        assert!(!planned.uses_index, "no active FTS -> fallback scan");
+        assert_eq!(planned.warnings[0].reason, FullScanReason::FtsNotAvailable);
+        assert_eq!(planned.ids(), vec!["n1"], "fallback still composes the filter");
     }
 
     #[test]

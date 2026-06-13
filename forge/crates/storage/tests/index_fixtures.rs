@@ -184,6 +184,15 @@ fn fts_text_search_uses_shadow_table() {
     run_index_case("fts_text_search_uses_shadow_table.json");
 }
 
+/// review 041/042 finding 4: text_search is NOT a bypass — it composes with the
+/// normal query pipeline. This vector combines an FTS MATCH with a `where`
+/// filter and a `limit`, in FTS rank order; the planner must apply the filter to
+/// the match set and bound it with limit while preserving rank order.
+#[test]
+fn fts_text_search_with_filter_and_limit() {
+    run_index_case("fts_text_search_with_filter_and_limit.json");
+}
+
 #[test]
 fn deprecated_index_no_longer_used() {
     run_index_case("deprecated_index_no_longer_used.json");
@@ -225,13 +234,23 @@ fn rebuild_after_records_activates_index() {
     assert_eq!(proposed.ids(), expected_ids(&fx), "rows correct while proposed");
 
     // rebuilding -> still not usable.
-    mgr.set_state(&collection, &field_id, IndexState::Rebuilding);
+    mgr.set_state(
+        &collection,
+        &field_id,
+        forge_storage::IndexKind::Expression,
+        IndexState::Rebuilding,
+    );
     store.build_indexes(&mgr).expect("build (rebuilding still not active)");
     let rebuilding = store.query_planned(&q, &mgr).expect("planned rebuilding");
     assert!(!rebuilding.uses_index, "rebuilding index must not be used");
 
     // active -> usable; rebuild from canonical records, then the planner uses it.
-    mgr.set_state(&collection, &field_id, IndexState::Active);
+    mgr.set_state(
+        &collection,
+        &field_id,
+        forge_storage::IndexKind::Expression,
+        IndexState::Active,
+    );
     store.build_indexes(&mgr).expect("rebuild from canonical records -> active");
     let active = store.query_planned(&q, &mgr).expect("planned active");
     assert_outcome(name, &fx, &active);
@@ -307,7 +326,7 @@ fn manifest_lists_every_wired_case() {
     let declared = manifest.get("count").and_then(|c| c.as_i64()).unwrap();
     let cases = manifest.get("cases").and_then(|c| c.as_array()).unwrap();
     assert_eq!(declared as usize, cases.len(), "manifest count vs case list");
-    assert_eq!(declared, 6, "expected 6 dynamic-index vectors");
+    assert_eq!(declared, 7, "expected 7 dynamic-index vectors");
     for case in cases {
         let file = case.get("file").and_then(|f| f.as_str()).unwrap();
         let _ = load(file); // panics if missing/unparseable

@@ -7,8 +7,20 @@
     "DL-6",
     "DL-15"
   ],
-  "count": 6,
+  "count": 7,
   "cases": [
+    {
+      "case": "fts_text_search_with_filter_and_limit",
+      "file": "fts_text_search_with_filter_and_limit.json",
+      "expect_uses_index": true,
+      "coverage": [
+        "fts5",
+        "text_search",
+        "filter",
+        "limit",
+        "rank_order"
+      ]
+    },
     {
       "case": "indexed_equality_uses_expression_index",
       "file": "indexed_equality_uses_expression_index.json",

@@ -19,10 +19,10 @@
 //! query answer — only performance and the `planner.full_scan` warning. The
 //! planner always scans `records` for correctness (ordering/null rules live in
 //! Rust); the index decision only drives `uses_index` / `index_id` / warnings.
-//! Concretely, [`IndexManager::plan_predicate`] tells the planner whether an
-//! active index *would* serve the predicate; the row answer is identical either
-//! way. This keeps the design honest to the spec's "dropping an index cannot
-//! change answers" rule while still exercising real DDL.
+//! Concretely, [`IndexManager::plan`] tells the planner whether an active index
+//! *would* serve the query's predicates and sort; the row answer is identical
+//! either way. This keeps the design honest to the spec's "dropping an index
+//! cannot change answers" rule while still exercising real DDL.
 //!
 //! ## Injection safety
 //!
@@ -42,7 +42,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 
 /// The physical kind of an index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IndexKind {
     /// A SQLite expression index over `json_extract(data, '$.field_ids.<id>')`,
     /// serving equality / range / order.
@@ -292,11 +292,24 @@ pub struct IndexPlan {
     pub warnings: Vec<PlannerWarning>,
 }
 
+/// The map key for a definition: `(collection, field_id, kind)`. Keying by
+/// `kind` as well as the field lets one field own BOTH a `Value` expression
+/// index (for equality/range/order) and an `Fts` shadow table (for full-text)
+/// at once — the dynamic-index definition hash includes `kind`
+/// (`dynamic-indexes.md`), so the two are distinct physical structures and must
+/// not overwrite each other (review 041/042 finding 5/4).
+type DefKey = (String, String, IndexKind);
+
+fn def_key(collection: &str, field_id: &str, kind: IndexKind) -> DefKey {
+    (collection.to_string(), field_id.to_string(), kind)
+}
+
 /// Owns index definitions and the physical structures (expression indexes / FTS5
 /// shadow tables) derived from them.
 pub struct IndexManager {
-    /// Definitions keyed by `(collection, field_id)`.
-    defs: BTreeMap<(String, String), IndexDef>,
+    /// Definitions keyed by `(collection, field_id, kind)` so a field can carry
+    /// both a Value and an FTS index simultaneously.
+    defs: BTreeMap<DefKey, IndexDef>,
 }
 
 impl Default for IndexManager {
@@ -312,16 +325,36 @@ impl IndexManager {
         }
     }
 
-    /// Register (or replace) an index definition.
+    /// Register (or replace) an index definition. Replaces only the *same kind*
+    /// for the field, so a `Value` and an `Fts` index over one field coexist.
     pub fn register(&mut self, def: IndexDef) {
-        self.defs
-            .insert((def.collection.clone(), def.field_id.clone()), def);
+        self.defs.insert(
+            def_key(&def.collection, &def.field_id, def.kind),
+            def,
+        );
     }
 
-    /// The registered definition for `(collection, field_id)`, if any.
-    pub fn get(&self, collection: &str, field_id: &str) -> Option<&IndexDef> {
-        self.defs
-            .get(&(collection.to_string(), field_id.to_string()))
+    /// The registered definition for `(collection, field_id, kind)`, if any.
+    /// Distinct kinds on the same field are separate entries.
+    pub fn get_kind(
+        &self,
+        collection: &str,
+        field_id: &str,
+        kind: IndexKind,
+    ) -> Option<&IndexDef> {
+        self.defs.get(&def_key(collection, field_id, kind))
+    }
+
+    /// The expression (`Value`) index for `(collection, field_id)`, if any. The
+    /// scalar planner path uses this; an FTS index on the same field is ignored.
+    pub fn get_expression(&self, collection: &str, field_id: &str) -> Option<&IndexDef> {
+        self.get_kind(collection, field_id, IndexKind::Expression)
+    }
+
+    /// The FTS5 (`Fts`) index for `(collection, field_id)`, if any. The text
+    /// search path uses this; an expression index on the same field is ignored.
+    pub fn get_fts(&self, collection: &str, field_id: &str) -> Option<&IndexDef> {
+        self.get_kind(collection, field_id, IndexKind::Fts5)
     }
 
     /// All registered definitions, in a stable order.
@@ -329,12 +362,16 @@ impl IndexManager {
         self.defs.values()
     }
 
-    /// Transition a registered index to a new lifecycle state, if present.
-    pub fn set_state(&mut self, collection: &str, field_id: &str, state: IndexState) {
-        if let Some(def) = self
-            .defs
-            .get_mut(&(collection.to_string(), field_id.to_string()))
-        {
+    /// Transition a registered index of a specific `kind` to a new lifecycle
+    /// state, if present.
+    pub fn set_state(
+        &mut self,
+        collection: &str,
+        field_id: &str,
+        kind: IndexKind,
+        state: IndexState,
+    ) {
+        if let Some(def) = self.defs.get_mut(&def_key(collection, field_id, kind)) {
             def.state = state;
         }
     }
@@ -376,42 +413,43 @@ impl IndexManager {
         Ok(index_id)
     }
 
-    /// Deprecate (DL-5 / DL-8 "delete = deprecate + retain") a registered index:
-    /// move it to the `Deprecated` state and drop the physical structure so the
-    /// planner stops using it, while keeping the definition as metadata. Records
-    /// stay canonical, so query answers are unchanged — only the plan and the
-    /// `index_deprecated` warning differ. No-op if the index is not registered.
+    /// Deprecate (DL-5 / DL-8 "delete = deprecate + retain") the registered index
+    /// of a specific `kind`: move it to the `Deprecated` state and drop the
+    /// physical structure so the planner stops using it, while keeping the
+    /// definition as metadata. Records stay canonical, so query answers are
+    /// unchanged — only the plan and the `index_deprecated` warning differ.
+    /// Targets the matching kind so deprecating the `Value` index leaves a
+    /// coexisting `Fts` index untouched. No-op if that index is not registered.
     pub fn deprecate_index(
         &mut self,
         conn: &Connection,
         collection: &str,
         field_id: &str,
+        kind: CreateIndexKind,
     ) -> Result<()> {
-        if let Some(def) = self
-            .defs
-            .get(&(collection.to_string(), field_id.to_string()))
-            .cloned()
-        {
+        let kind: IndexKind = kind.into();
+        if let Some(def) = self.defs.get(&def_key(collection, field_id, kind)).cloned() {
             self.drop_physical(conn, &def)?;
-            self.set_state(collection, field_id, IndexState::Deprecated);
+            self.set_state(collection, field_id, kind, IndexState::Deprecated);
         }
         Ok(())
     }
 
-    /// Drop (DL-5 `removed`) a registered index: drop the physical structure and
-    /// forget the definition entirely. After this the planner has no candidate
-    /// for `(collection, field_id)` and a predicate over it scans with a
-    /// `no_index` warning. No-op if the index is not registered.
+    /// Drop (DL-5 `removed`) the registered index of a specific `kind`: drop the
+    /// physical structure and forget that definition entirely. After this the
+    /// planner has no candidate of that kind for `(collection, field_id)` and a
+    /// predicate/search over it scans with a `no_index`/`fts_not_available`
+    /// warning. A coexisting index of the other kind is left intact. No-op if
+    /// that index is not registered.
     pub fn drop_index(
         &mut self,
         conn: &Connection,
         collection: &str,
         field_id: &str,
+        kind: CreateIndexKind,
     ) -> Result<()> {
-        if let Some(def) = self
-            .defs
-            .remove(&(collection.to_string(), field_id.to_string()))
-        {
+        let kind: IndexKind = kind.into();
+        if let Some(def) = self.defs.remove(&def_key(collection, field_id, kind)) {
             self.drop_physical(conn, &def)?;
         }
         Ok(())
@@ -556,7 +594,7 @@ impl IndexManager {
         field_id: &str,
         query: &str,
     ) -> Result<Vec<String>> {
-        let def = self.get(collection, field_id).ok_or_else(|| {
+        let def = self.get_fts(collection, field_id).ok_or_else(|| {
             CoreError::QueryError(format!(
                 "no FTS index for {collection}/{field_id}"
             ))
@@ -594,82 +632,103 @@ impl IndexManager {
         if let Some(ts) = &query.text_search {
             return self.plan_text_search(&query.from, &ts.field, estimated_rows);
         }
-        // Otherwise, the predicate's single indexable leaf decides. The fixtures
-        // pin a single equality/range predicate (possibly an implicit-AND list
-        // over the same field for a range); we look at the first index-eligible
-        // leaf.
-        if let Some((field, op)) = query.filter.as_ref().and_then(first_indexable_leaf) {
-            return self.plan_predicate(&query.from, field, op, estimated_rows);
+
+        // Full coverage (review 041/042 finding 6/5): EVERY relevant predicate
+        // branch AND the sort key must be served by an active index before we
+        // claim `uses_index` / suppress the full-scan warning. A single uncovered
+        // branch (e.g. `indexed = x OR unindexed = y`) means part of the query
+        // still scans, so we report it.
+        let mut leaves = Vec::new();
+        if let Some(filter) = &query.filter {
+            collect_leaves(filter, &mut leaves);
         }
-        // No predicate / no text search: nothing to index against. Not a full
-        // scan warning case (a bare list is expected to scan).
+
+        let mut warnings = Vec::new();
+        let mut covered_index_id: Option<(String, IndexKind)> = None;
+        let mut relevant = false;
+
+        for (field, op) in &leaves {
+            relevant = true;
+            match self.predicate_coverage(&query.from, field, *op) {
+                Ok((index_id, kind)) => {
+                    covered_index_id.get_or_insert((index_id, kind));
+                }
+                Err(reason) => {
+                    warnings.push(PlannerWarning::full_scan(
+                        &query.from,
+                        field,
+                        reason,
+                        Some(estimated_rows),
+                    ));
+                }
+            }
+        }
+
+        // The sort key participates in coverage too. `id`/`entity_id` sorts use
+        // the primary key and never need a dynamic index (no warning). Any other
+        // order key must be covered by an active expression index.
+        if let Some(ob) = &query.order_by {
+            if !is_entity_id_order(&ob.field) {
+                relevant = true;
+                match self.predicate_coverage(&query.from, &ob.field, Op::Eq) {
+                    Ok((index_id, kind)) => {
+                        covered_index_id.get_or_insert((index_id, kind));
+                    }
+                    Err(reason) => {
+                        warnings.push(PlannerWarning::full_scan(
+                            &query.from,
+                            &ob.field,
+                            reason,
+                            Some(estimated_rows),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Use an index only when there is something to index AND nothing scanned:
+        // every relevant branch and the sort key were covered.
+        if relevant && warnings.is_empty() {
+            if let Some((index_id, kind)) = covered_index_id {
+                return IndexPlan {
+                    uses_index: true,
+                    index_id: Some(index_id),
+                    kind: Some(kind),
+                    warnings: Vec::new(),
+                };
+            }
+        }
         IndexPlan {
             uses_index: false,
             index_id: None,
             kind: None,
-            warnings: Vec::new(),
+            warnings,
         }
     }
 
-    /// Plan a single predicate `<field> <op>`.
-    fn plan_predicate(
+    /// Whether an active expression index serves `<field> <op>`. Returns the
+    /// `(index_id, kind)` when covered, or the [`FullScanReason`] when it is not.
+    /// A non-stable-id field, a missing/non-active/wrong-kind index, or an
+    /// operator the expression index cannot serve all report a reason.
+    fn predicate_coverage(
         &self,
         collection: &str,
         field: &FieldRef,
         op: Op,
-        estimated_rows: i64,
-    ) -> IndexPlan {
-        // Only a stable field id can match an index by id.
+    ) -> std::result::Result<(String, IndexKind), FullScanReason> {
         let Some(field_id) = field.field_id() else {
-            return IndexPlan {
-                uses_index: false,
-                index_id: None,
-                kind: None,
-                warnings: vec![PlannerWarning::full_scan(
-                    collection,
-                    field,
-                    FullScanReason::NoIndex,
-                    Some(estimated_rows),
-                )],
-            };
+            return Err(FullScanReason::NoIndex);
         };
-        match self.get(collection, field_id) {
-            None => self.no_index(collection, field, estimated_rows),
+        match self.get_expression(collection, field_id) {
+            None => Err(FullScanReason::NoIndex),
             Some(def) => {
-                // An expression index serves eq/range/order. (An FTS index does
-                // not serve scalar predicates.)
                 if def.kind != IndexKind::Expression || !op_uses_expression_index(op) {
-                    return IndexPlan {
-                        uses_index: false,
-                        index_id: None,
-                        kind: None,
-                        warnings: vec![PlannerWarning::full_scan(
-                            collection,
-                            field,
-                            FullScanReason::UnsupportedOperator,
-                            Some(estimated_rows),
-                        )],
-                    };
+                    return Err(FullScanReason::UnsupportedOperator);
                 }
                 if def.state.is_usable() {
-                    IndexPlan {
-                        uses_index: true,
-                        index_id: Some(def.index_id.clone()),
-                        kind: Some(def.kind),
-                        warnings: Vec::new(),
-                    }
+                    Ok((def.index_id.clone(), def.kind))
                 } else {
-                    IndexPlan {
-                        uses_index: false,
-                        index_id: None,
-                        kind: None,
-                        warnings: vec![PlannerWarning::full_scan(
-                            collection,
-                            field,
-                            def.state.full_scan_reason(),
-                            Some(estimated_rows),
-                        )],
-                    }
+                    Err(def.state.full_scan_reason())
                 }
             }
         }
@@ -695,7 +754,7 @@ impl IndexManager {
                 )],
             };
         };
-        match self.get(collection, field_id) {
+        match self.get_fts(collection, field_id) {
             Some(def) if def.kind == IndexKind::Fts5 && def.state.is_usable() => IndexPlan {
                 uses_index: true,
                 index_id: Some(def.index_id.clone()),
@@ -713,20 +772,6 @@ impl IndexManager {
                     Some(estimated_rows),
                 )],
             },
-        }
-    }
-
-    fn no_index(&self, collection: &str, field: &FieldRef, estimated_rows: i64) -> IndexPlan {
-        IndexPlan {
-            uses_index: false,
-            index_id: None,
-            kind: None,
-            warnings: vec![PlannerWarning::full_scan(
-                collection,
-                field,
-                FullScanReason::NoIndex,
-                Some(estimated_rows),
-            )],
         }
     }
 }
@@ -760,15 +805,28 @@ fn fts_value_for(conn: &Connection, def: &IndexDef, data_json: &str) -> Result<O
     Ok(value)
 }
 
-/// Find the first index-eligible leaf predicate in a filter tree: a leaf
-/// addressing a stable `field_id`. For the fixtures' implicit-AND range form,
-/// every leaf is over the same field id, so the first one decides.
-fn first_indexable_leaf(filter: &crate::query::Filter) -> Option<(&FieldRef, Op)> {
+/// Collect EVERY leaf predicate `(field, op)` in a filter tree (both AND and OR
+/// branches). The planner requires every relevant branch to be index-covered
+/// before suppressing the full-scan warning, so — unlike a first-leaf check — an
+/// uncovered branch under an `OR` (or a second AND clause over a different field)
+/// is never silently ignored (review 041/042 finding 6/5).
+fn collect_leaves<'a>(filter: &'a crate::query::Filter, out: &mut Vec<(&'a FieldRef, Op)>) {
     use crate::query::Filter;
     match filter {
-        Filter::Leaf(p) => Some((&p.field, p.op)),
-        Filter::And(items) | Filter::Or(items) => items.iter().find_map(first_indexable_leaf),
+        Filter::Leaf(p) => out.push((&p.field, p.op)),
+        Filter::And(items) | Filter::Or(items) => {
+            for f in items {
+                collect_leaves(f, out);
+            }
+        }
     }
+}
+
+/// Whether an order key is the entity-id key (`id`/`entity_id`), which sorts by
+/// the table primary key and so never needs a dynamic-index warning
+/// (`dynamic-indexes.md` §Full-Scan Warnings).
+fn is_entity_id_order(field: &FieldRef) -> bool {
+    matches!(field, FieldRef::Name(n) if n == "id" || n == "entity_id")
 }
 
 #[cfg(test)]
@@ -846,6 +904,95 @@ mod tests {
         let plan2 = mgr.plan(&q2, 3);
         assert!(!plan2.uses_index);
         assert_eq!(plan2.warnings[0].reason, FullScanReason::NoIndex);
+    }
+
+    #[test]
+    fn or_mixed_indexed_and_unindexed_does_not_use_index() {
+        // review 041/042 finding 6/5: `indexed = x OR unindexed = y` must NOT
+        // report uses_index, because the unindexed branch still scans. The
+        // uncovered branch surfaces a full_scan warning.
+        let mut mgr = IndexManager::new();
+        mgr.register(
+            IndexDef::new("tasks", "f_indexed", IndexKind::Expression, IndexState::Active).unwrap(),
+        );
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": {"or": [
+                {"field_id": "f_indexed", "op": "eq", "value": "x"},
+                {"field_id": "f_unindexed", "op": "eq", "value": "y"}
+            ]}
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 5);
+        assert!(!plan.uses_index, "an uncovered OR branch must not claim uses_index");
+        assert_eq!(plan.index_id, None);
+        // Exactly one warning, for the uncovered field.
+        assert_eq!(plan.warnings.len(), 1);
+        assert_eq!(plan.warnings[0].field_id.as_deref(), Some("f_unindexed"));
+        assert_eq!(plan.warnings[0].reason, FullScanReason::NoIndex);
+    }
+
+    #[test]
+    fn all_and_branches_covered_uses_index() {
+        // The complement: when EVERY branch over the same active index is
+        // covered (the range fixture's implicit-AND shape), uses_index holds with
+        // no warning.
+        let mut mgr = IndexManager::new();
+        mgr.register(
+            IndexDef::new("expenses", "f_amt", IndexKind::Expression, IndexState::Active).unwrap(),
+        );
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "expenses",
+            "where": [
+                {"field_id": "f_amt", "op": "ge", "value": 100},
+                {"field_id": "f_amt", "op": "lt", "value": 200}
+            ]
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 4);
+        assert!(plan.uses_index);
+        assert_eq!(plan.index_id.as_deref(), Some("idx_records_expenses_f_amt"));
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn order_only_scan_warns_and_covered_sort_uses_index() {
+        // review 041/042 finding 6/5: a bare `order_by` over an uncovered field
+        // must warn (a sort-only scan), while a sort over the active index is
+        // covered. An `id`/`entity_id` sort uses the primary key and never warns.
+        let mut mgr = IndexManager::new();
+        mgr.register(
+            IndexDef::new("tasks", "f_prio", IndexKind::Expression, IndexState::Active).unwrap(),
+        );
+
+        // Sort over an uncovered field -> warning, no index.
+        let q_uncovered = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks", "order_by": [{"field_id": "f_other", "dir": "asc"}]
+        }))
+        .unwrap();
+        let p1 = mgr.plan(&q_uncovered, 7);
+        assert!(!p1.uses_index, "uncovered sort must scan");
+        assert_eq!(p1.warnings.len(), 1, "sort-only scan must warn");
+        assert_eq!(p1.warnings[0].field_id.as_deref(), Some("f_other"));
+
+        // Sort over the active index -> covered, uses_index, no warning.
+        let q_covered = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks", "order_by": [{"field_id": "f_prio", "dir": "desc"}]
+        }))
+        .unwrap();
+        let p2 = mgr.plan(&q_covered, 7);
+        assert!(p2.uses_index, "sort over the active index is covered");
+        assert_eq!(p2.index_id.as_deref(), Some("idx_records_tasks_f_prio"));
+        assert!(p2.warnings.is_empty());
+
+        // Sort by entity id -> primary key, never warns and never uses an index.
+        let q_id = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks", "order_by": ["id", "asc"]
+        }))
+        .unwrap();
+        let p3 = mgr.plan(&q_id, 7);
+        assert!(!p3.uses_index);
+        assert!(p3.warnings.is_empty(), "id sort uses the primary key, no warning");
     }
 
     #[test]
@@ -930,7 +1077,7 @@ mod tests {
             .unwrap();
         assert_eq!(id, "idx_records_tasks_f_alice_1");
         // Registered Active and physically present.
-        let def = mgr.get("tasks", "f_alice_1").unwrap();
+        let def = mgr.get_expression("tasks", "f_alice_1").unwrap();
         assert_eq!(def.state, IndexState::Active);
         assert_eq!(def.kind, IndexKind::Expression);
         assert!(index_exists(&conn, "idx_records_tasks_f_alice_1"));
@@ -982,12 +1129,12 @@ mod tests {
         mgr.create_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
             .unwrap();
         assert!(index_exists(&conn, "idx_records_tasks_f_alice_1"));
-        mgr.drop_index(&conn, "tasks", "f_alice_1").unwrap();
+        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value).unwrap();
         // Definition gone and physical index removed.
-        assert!(mgr.get("tasks", "f_alice_1").is_none());
+        assert!(mgr.get_expression("tasks", "f_alice_1").is_none());
         assert!(!index_exists(&conn, "idx_records_tasks_f_alice_1"));
         // Dropping again is a no-op (idempotent).
-        mgr.drop_index(&conn, "tasks", "f_alice_1").unwrap();
+        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value).unwrap();
     }
 
     #[test]
@@ -997,9 +1144,10 @@ mod tests {
         let mut mgr = IndexManager::new();
         mgr.create_index(&conn, "contacts", "f_alice_0", CreateIndexKind::Value)
             .unwrap();
-        mgr.deprecate_index(&conn, "contacts", "f_alice_0").unwrap();
+        mgr.deprecate_index(&conn, "contacts", "f_alice_0", CreateIndexKind::Value)
+            .unwrap();
         // Metadata retained, state Deprecated, physical index dropped.
-        let def = mgr.get("contacts", "f_alice_0").unwrap();
+        let def = mgr.get_expression("contacts", "f_alice_0").unwrap();
         assert_eq!(def.state, IndexState::Deprecated);
         assert!(!index_exists(&conn, "idx_records_contacts_f_alice_0"));
         // Planner refuses a deprecated index and surfaces the distinct reason.
@@ -1011,6 +1159,57 @@ mod tests {
         let plan = mgr.plan(&q, 1);
         assert!(!plan.uses_index);
         assert_eq!(plan.warnings[0].reason, FullScanReason::IndexDeprecated);
+    }
+
+    #[test]
+    fn value_and_fts_indexes_coexist_on_one_field() {
+        // review 041/042 finding 5/4: a field that needs BOTH equality/order and
+        // full-text must own a Value expression index AND an Fts shadow table at
+        // once. Keying by (collection, field_id, kind) keeps both; registering
+        // the second kind must NOT overwrite the first.
+        let conn = records_conn();
+        seed(&conn, "notes", "n1", "f_alice_0", "offline rebuild keeps indexes honest");
+        let mut mgr = IndexManager::new();
+        mgr.create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Value)
+            .unwrap();
+        mgr.create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Fts)
+            .unwrap();
+
+        // Both definitions are registered, of the right kind, and physically
+        // present.
+        let expr = mgr.get_expression("notes", "f_alice_0").unwrap();
+        assert_eq!(expr.kind, IndexKind::Expression);
+        assert_eq!(expr.state, IndexState::Active);
+        let fts = mgr.get_fts("notes", "f_alice_0").unwrap();
+        assert_eq!(fts.kind, IndexKind::Fts5);
+        assert!(index_exists(&conn, "idx_records_notes_f_alice_0"), "value index present");
+        assert!(table_exists(&conn, "fts_records_notes_f_alice_0"), "fts table present");
+
+        // The expression index serves an equality predicate...
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "where": [{"field_id": "f_alice_0", "op": "eq", "value": "x"}]
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 1);
+        assert!(plan.uses_index);
+        assert_eq!(plan.index_id.as_deref(), Some("idx_records_notes_f_alice_0"));
+        // ...and the FTS table still answers a text search.
+        let qt = Query::from_fixture_value(&serde_json::json!({
+            "from": "notes",
+            "text_search": {"field_id": "f_alice_0", "match": "offline"}
+        }))
+        .unwrap();
+        let plan_t = mgr.plan(&qt, 1);
+        assert!(plan_t.uses_index);
+        assert_eq!(plan_t.index_id.as_deref(), Some("fts_records_notes_f_alice_0"));
+
+        // Dropping the Value index leaves the Fts index intact (targets one kind).
+        mgr.drop_index(&conn, "notes", "f_alice_0", CreateIndexKind::Value)
+            .unwrap();
+        assert!(mgr.get_expression("notes", "f_alice_0").is_none());
+        assert!(mgr.get_fts("notes", "f_alice_0").is_some(), "fts survives value drop");
+        assert!(table_exists(&conn, "fts_records_notes_f_alice_0"));
     }
 
     #[test]

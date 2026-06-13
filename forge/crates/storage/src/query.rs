@@ -945,6 +945,16 @@ impl PlannedQuery {
     }
 }
 
+/// Whether a JSON value is an orderable scalar (number/string/bool). Null and
+/// non-scalar arrays/objects are NOT orderable and sort LAST (independent of
+/// direction) per query-dsl.md §Result.
+fn is_orderable(v: &serde_json::Value) -> bool {
+    matches!(
+        v,
+        serde_json::Value::Number(_) | serde_json::Value::String(_) | serde_json::Value::Bool(_)
+    )
+}
+
 /// JSON value sort rank for the spec order: numbers < strings < booleans <
 /// null (last). Used as the primary ordering discriminator.
 fn type_rank(v: &serde_json::Value) -> u8 {
@@ -1003,27 +1013,70 @@ pub fn group_key(env: &RecordEnvelope, field: &FieldRef) -> serde_json::Value {
     row_field(env, field).clone()
 }
 
+/// Whether `field` is the entity-id sort key (`id` / `entity_id`), which sorts
+/// directly by the stable `records.id` rather than a `$.fields`/`$.field_ids`
+/// value. Only meaningful as a display name (`field_ids` never names `id`).
+fn is_entity_id_key(field: &FieldRef) -> bool {
+    matches!(field, FieldRef::Name(n) if n == "id" || n == "entity_id")
+}
+
 /// Apply ordering (spec total order), then offset, then limit, in Rust so the
 /// result is platform-stable. `id` is always the secondary tie-break.
+///
+/// Two direction rules from query-dsl.md §Result are kept *separate* so a
+/// descending sort does not corrupt either:
+///
+/// - **Nulls (and other non-orderable values) sort LAST regardless of
+///   direction.** A naive `primary.reverse()` for `desc` would also reverse the
+///   null rank and float nulls to the front; instead, present-vs-absent is a
+///   higher-priority discriminator that is never reversed, and only the
+///   value-vs-value comparison flips for `desc`.
+/// - **The `entity_id` tie-break is always ascending** for a value sort, so ties
+///   are stable independent of direction. The exception is an explicit
+///   `orderBy("id"/"entity_id", …)`: there the entity id *is* the primary key,
+///   so `desc` reverses it (it is a real sortable key, not a no-op tie-break).
 pub fn finalize_rows(mut rows: Vec<QueryRow>, q: &Query) -> Vec<QueryRow> {
     if let Some(ob) = &q.order_by {
-        // `id`/`entity_id` (only meaningful as a display name) order purely by
-        // the stable entity-id tie-break below.
-        let by_entity_id = matches!(&ob.field, FieldRef::Name(n) if n == "id" || n == "entity_id");
-        rows.sort_by(|a, b| {
-            let primary = if by_entity_id {
-                Ordering::Equal
-            } else {
-                cmp_json(row_field(&a.envelope, &ob.field), row_field(&b.envelope, &ob.field))
-            };
-            let primary = match ob.dir {
-                Dir::Asc => primary,
-                Dir::Desc => primary.reverse(),
-            };
-            // entity_id tie-break is ALWAYS ascending (stable secondary order),
-            // independent of the primary direction (query-dsl.md §Result).
-            primary.then_with(|| a.id.cmp(&b.id))
-        });
+        let desc = ob.dir == Dir::Desc;
+        if is_entity_id_key(&ob.field) {
+            // The entity id is the real sort key: honor the direction (a `desc`
+            // id sort must actually descend, not collapse to the ascending
+            // tie-break).
+            rows.sort_by(|a, b| {
+                let primary = a.id.cmp(&b.id);
+                if desc {
+                    primary.reverse()
+                } else {
+                    primary
+                }
+            });
+        } else {
+            rows.sort_by(|a, b| {
+                let va = row_field(&a.envelope, &ob.field);
+                let vb = row_field(&b.envelope, &ob.field);
+                // Present-before-absent is fixed regardless of direction so
+                // nulls/non-orderables stay LAST even for `desc`.
+                let a_absent = !is_orderable(va);
+                let b_absent = !is_orderable(vb);
+                let presence = a_absent.cmp(&b_absent); // false(present) < true(absent)
+                let value = match (a_absent, b_absent) {
+                    (false, false) => {
+                        let c = cmp_json(va, vb);
+                        if desc {
+                            c.reverse()
+                        } else {
+                            c
+                        }
+                    }
+                    // At least one side is absent: presence already decided it
+                    // (or both absent -> Equal), and we never reverse that.
+                    _ => Ordering::Equal,
+                };
+                // entity_id tie-break is ALWAYS ascending (stable secondary
+                // order), independent of the primary direction.
+                presence.then(value).then_with(|| a.id.cmp(&b.id))
+            });
+        }
     } else {
         // No explicit order: stable by entity_id (matches list_records and the
         // fixtures' default ordering expectation).
@@ -1444,6 +1497,62 @@ mod tests {
         let out = finalize_rows(input, &q);
         let ids: Vec<_> = out.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn nulls_sort_last_independent_of_direction() {
+        // review 040 finding 8: descending must NOT float nulls to the front.
+        // A missing/null value sorts LAST for both asc and desc; only the
+        // present values reverse.
+        let input = vec![
+            env_with("e_null", "v", json!(null)),
+            env_with("e1", "v", json!(1)),
+            env_with("e3", "v", json!(3)),
+        ];
+        let mut q = Query::from("t");
+        q.order_by = Some(OrderBy { field: name("v"), dir: Dir::Asc });
+        let asc: Vec<_> = finalize_rows(rows(clone_envs(&input)), &q)
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(asc, vec!["e1", "e3", "e_null"], "asc: nulls last");
+
+        q.order_by = Some(OrderBy { field: name("v"), dir: Dir::Desc });
+        let desc: Vec<_> = finalize_rows(rows(clone_envs(&input)), &q)
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(desc, vec!["e3", "e1", "e_null"], "desc: values reversed but nulls STILL last");
+    }
+
+    #[test]
+    fn order_by_entity_id_desc_is_a_real_sort_key() {
+        // review 040 finding 8: orderBy("id","desc") must actually descend by
+        // entity id, not collapse to the ascending tie-break.
+        let input = rows(vec![
+            env_with("a", "v", json!(1)),
+            env_with("c", "v", json!(1)),
+            env_with("b", "v", json!(1)),
+        ]);
+        let mut q = Query::from("t");
+        q.order_by = Some(OrderBy { field: name("id"), dir: Dir::Desc });
+        let ids: Vec<_> = finalize_rows(input, &q).iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids, vec!["c", "b", "a"], "id desc descends by entity id");
+
+        let input2 = rows(vec![
+            env_with("a", "v", json!(1)),
+            env_with("c", "v", json!(1)),
+            env_with("b", "v", json!(1)),
+        ]);
+        q.order_by = Some(OrderBy { field: name("entity_id"), dir: Dir::Asc });
+        let ids2: Vec<_> = finalize_rows(input2, &q).iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids2, vec!["a", "b", "c"], "entity_id asc ascends");
+    }
+
+    /// Clone a slice of envelopes (helper for re-running finalize_rows on the
+    /// same input under two directions).
+    fn clone_envs(items: &[RecordEnvelope]) -> Vec<RecordEnvelope> {
+        items.to_vec()
     }
 
     #[test]
