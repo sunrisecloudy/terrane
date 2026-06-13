@@ -38,11 +38,23 @@ struct Manifest {
     cases: Vec<Case>,
 }
 
+/// The expected verdict for a fixture. Deserialized as a *closed* enum so a typo
+/// in the manifest (`"rejectd"`, `"allow"`) fails manifest parsing instead of
+/// silently dropping the fixture from a test (review 018 P2). `serde` rejects any
+/// JSON string that is not exactly one of these variants.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+enum Expect {
+    Rejected,
+    Allowed,
+}
+
 #[derive(serde::Deserialize)]
 struct Case {
     file: String,
-    /// `"rejected"` or `"allowed"`.
-    expect: String,
+    /// Must be exactly `rejected` or `allowed` — an unknown value is a hard
+    /// manifest-parse failure (review 018 P2), so no fixture is silently skipped.
+    expect: Expect,
     /// Operator-facing note on what the spelling does (used in failure messages).
     #[serde(default)]
     reason: String,
@@ -52,7 +64,26 @@ fn load_manifest() -> Manifest {
     let path = bypass_dir().join("manifest.json");
     let raw = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read bypass manifest {}: {e}", path.display()));
+    // A typo in any `expect` value (e.g. "rejectd") makes this `expect()` panic,
+    // failing the whole suite rather than dropping a fixture.
     serde_json::from_str(&raw).expect("parse bypass manifest")
+}
+
+/// Exact partition of the manifest by expected verdict. Both per-verdict tests
+/// assert they exercised *exactly* this many rows, so a fixture cannot be
+/// silently skipped (review 018 P2): a miscounted/typo'd row either fails
+/// manifest parsing or trips an exact-count assertion.
+fn expected_counts(manifest: &Manifest) -> (usize, usize) {
+    let rejected = manifest.cases.iter().filter(|c| c.expect == Expect::Rejected).count();
+    let allowed = manifest.cases.iter().filter(|c| c.expect == Expect::Allowed).count();
+    // Every row is exactly one of the two verdicts (the closed enum guarantees
+    // it), so the partition must cover the whole manifest.
+    assert_eq!(
+        rejected + allowed,
+        manifest.cases.len(),
+        "manifest rows did not partition cleanly into rejected/allowed"
+    );
+    (rejected, allowed)
 }
 
 fn read_case(file: &str) -> String {
@@ -63,10 +94,11 @@ fn read_case(file: &str) -> String {
 #[test]
 fn every_rejected_bypass_is_stopped_before_execution() {
     let manifest = load_manifest();
+    let (expected_rejected, _) = expected_counts(&manifest);
     let mut checked = 0usize;
 
     for case in &manifest.cases {
-        if case.expect != "rejected" {
+        if case.expect != Expect::Rejected {
             continue;
         }
         checked += 1;
@@ -112,20 +144,29 @@ fn every_rejected_bypass_is_stopped_before_execution() {
         }
     }
 
-    // Guard against the corpus silently shrinking out from under this test.
+    // EXACT count, not a lower bound: every `rejected` row in the manifest must
+    // have been exercised here. A typo'd verdict drops from this partition and
+    // trips this assertion (review 018 P2 — no silent skips). We also keep a
+    // floor so an accidentally-shrunk corpus is caught even if both counts move
+    // together.
+    assert_eq!(
+        checked, expected_rejected,
+        "exercised {checked} rejected cases but manifest has {expected_rejected}"
+    );
     assert!(
-        checked >= 30,
-        "expected at least 30 rejected bypass cases, saw {checked}"
+        expected_rejected >= 30,
+        "expected at least 30 rejected bypass cases, manifest has {expected_rejected}"
     );
 }
 
 #[test]
 fn every_allowed_bypass_control_passes_clean() {
     let manifest = load_manifest();
+    let (_, expected_allowed) = expected_counts(&manifest);
     let mut checked = 0usize;
 
     for case in &manifest.cases {
-        if case.expect != "allowed" {
+        if case.expect != Expect::Allowed {
             continue;
         }
         checked += 1;
@@ -148,8 +189,42 @@ fn every_allowed_bypass_control_passes_clean() {
         });
     }
 
-    assert!(
-        checked >= 6,
-        "expected at least 6 benign bypass controls, saw {checked}"
+    // EXACT count: every `allowed` row must have been exercised (review 018 P2).
+    assert_eq!(
+        checked, expected_allowed,
+        "exercised {checked} allowed cases but manifest has {expected_allowed}"
     );
+    assert!(
+        expected_allowed >= 6,
+        "expected at least 6 benign bypass controls, manifest has {expected_allowed}"
+    );
+}
+
+// ---- Review 018 P2 regression: a malformed `expect` value cannot silently
+//      drop a fixture — it must fail manifest deserialization outright. ----
+
+#[test]
+fn typo_in_expect_verdict_fails_manifest_parse() {
+    // A typo like "rejectd" used to leave a fixture matching neither `"rejected"`
+    // nor `"allowed"`, silently skipping it while the suite stayed green. The
+    // closed `Expect` enum now makes such a manifest fail to parse.
+    let bad = r#"{ "cases": [ { "file": "x.ts", "expect": "rejectd" } ] }"#;
+    let err = match serde_json::from_str::<Manifest>(bad) {
+        Ok(_) => panic!("a typo'd expect value must fail manifest parsing, not be skipped"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("rejectd") || msg.contains("variant") || msg.contains("expect"),
+        "unexpected parse error for typo'd verdict: {msg}"
+    );
+
+    // Sanity: the two valid spellings still deserialize.
+    let good = r#"{ "cases": [
+        { "file": "a.ts", "expect": "rejected" },
+        { "file": "b.ts", "expect": "allowed" }
+    ] }"#;
+    let m: Manifest = serde_json::from_str(good).expect("valid verdicts must parse");
+    let (rejected, allowed) = expected_counts(&m);
+    assert_eq!((rejected, allowed), (1, 1));
 }

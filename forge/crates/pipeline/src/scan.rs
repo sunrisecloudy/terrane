@@ -24,14 +24,21 @@
 //! captured value — not just at a call site — is forbidden (review 010 +
 //! follow-up).
 //!
-//! Shadowing is *scope-aware* (review 016 P1). A benign local legitimately named
-//! like a global (`let process = 1`, `function f(fetch) {...}`) suppresses the
-//! global-read finding only for references in that binding's own scope or an
-//! enclosing one — tracked with a scope stack the visitor pushes/pops as it
-//! descends. A binding that exists only inside *another* function never
-//! suppresses a forbidden reference elsewhere, so
-//! `fetch("x"); function f(fetch){}` is still rejected for the top-level
-//! `fetch(...)`.
+//! Shadowing is *scope-aware* (review 016 P1, refined in review 018 P1). A benign
+//! local legitimately named like a global (`let process = 1`,
+//! `function f(fetch) {...}`) suppresses the global-read finding only for
+//! references in that binding's *own* scope or an enclosing one — tracked with a
+//! scope stack the visitor pushes/pops as it descends. The stack carries a frame
+//! per lexical scope: function/arrow/method bodies *and* every block (`{ }`,
+//! `if`/`for`/`while` bodies, `try`/`catch`/`finally`) and `catch`/for-header
+//! binding. Function-scoped names (`var`, function/class declaration names,
+//! parameters) live in the wider function frame; block-scoped `let`/`const`/catch
+//! bindings live only in their block's frame and are popped on exit. So a binding
+//! that exists only inside *another* function — or only inside a sibling/inner
+//! block — never suppresses a forbidden reference elsewhere:
+//! `fetch("x"); function f(fetch){}`, `{ let eval = 1; } eval("x")`, and
+//! `try{}catch(process){} process.env` are all still rejected for the outer
+//! reference.
 //!
 //! The forbidden set (each names a *construct* and a *reason*):
 //!   - `eval` (call / alias / member / computed) — arbitrary code evaluation.
@@ -369,26 +376,32 @@ fn add_pat_bindings(p: &Pat, out: &mut HashSet<String>) {
     }
 }
 
-/// Collects the identifiers bound *within a single (function/module) scope* —
-/// `var`/`let`/`const` declarators, nested function/class declaration *names*,
-/// and `catch` bindings — WITHOUT descending into nested function bodies (which
-/// open their own scope). This is what makes suppression scope-aware: a binding
-/// that only exists inside one function must not suppress a forbidden reference
-/// in a *different* scope (review 016 P1).
+/// Collects only the *function-scoped* identifiers visible throughout a
+/// function/module scope: `var` declarators (which hoist out of any nested
+/// block) plus nested function/class declaration *names* (hoisted into the
+/// enclosing scope). It descends through nested *blocks* (so a `var` inside an
+/// `if {}` is seen) but NOT into nested function/arrow/method bodies (which open
+/// their own scope).
 ///
-/// Note: a nested function/class *declaration name* and a `catch` binding are
-/// hoisted into / visible from the enclosing scope, so they are collected here;
-/// the nested function's *parameters and body* belong to that function's own
-/// scope and are deliberately not visited.
+/// Crucially, `let`/`const` declarators and `catch` bindings are *block*-scoped,
+/// not function-scoped, so they are deliberately NOT collected here — they are
+/// tracked per-block by [`collect_block_scope_bindings`] and pushed/popped as the
+/// visitor enters/leaves each block (review 018 P1: a block-only `let fetch`
+/// must not suppress a forbidden reference outside its block).
 #[derive(Default)]
-struct ScopeBindingCollector(HashSet<String>);
+struct FnScopeBindingCollector(HashSet<String>);
 
-impl Visit for ScopeBindingCollector {
-    fn visit_var_declarator(&mut self, d: &swc_core::ecma::ast::VarDeclarator) {
-        add_pat_bindings(&d.name, &mut self.0);
-        // Recurse into the initializer so a `var` hoisted out of a nested block
-        // (`{ var x = 1 }`) is still seen — but `visit_*` for nested functions is
-        // overridden below to NOT descend, keeping us within this scope.
+impl Visit for FnScopeBindingCollector {
+    fn visit_var_decl(&mut self, d: &swc_core::ecma::ast::VarDecl) {
+        // Only `var` is function-scoped (hoisted out of blocks). `let`/`const`
+        // are block-scoped and handled per-block, not here.
+        if d.kind == swc_core::ecma::ast::VarDeclKind::Var {
+            for decl in &d.decls {
+                add_pat_bindings(&decl.name, &mut self.0);
+            }
+        }
+        // Descend into initializers so a nested block's `var` is reached, but the
+        // nested-function overrides below keep us within this function scope.
         d.visit_children_with(self);
     }
     fn visit_fn_decl(&mut self, f: &swc_core::ecma::ast::FnDecl) {
@@ -398,42 +411,73 @@ impl Visit for ScopeBindingCollector {
     fn visit_class_decl(&mut self, c: &swc_core::ecma::ast::ClassDecl) {
         self.0.insert(c.ident.sym.as_str().to_string());
     }
-    fn visit_catch_clause(&mut self, c: &swc_core::ecma::ast::CatchClause) {
-        if let Some(p) = &c.param {
-            add_pat_bindings(p, &mut self.0);
-        }
-        // Visit the catch body (same scope) but the override on nested functions
-        // stops descent there.
-        c.body.visit_children_with(self);
-    }
     // Do NOT descend into nested function/arrow/method bodies: they open their
     // own scope, collected separately when the visitor enters them.
     fn visit_function(&mut self, _f: &swc_core::ecma::ast::Function) {}
     fn visit_arrow_expr(&mut self, _a: &swc_core::ecma::ast::ArrowExpr) {}
 }
 
-/// Names bound at module (top-level) scope: declarators, top-level function /
-/// class names, plus the *parameters* of nothing (a module has none). Used as
-/// the root scope frame.
+/// Collect the `let`/`const` declarator names bound *directly* in one block's
+/// statement list (not in nested blocks or nested functions). These are
+/// block-scoped: visible only inside this block (and blocks it encloses), so the
+/// visitor pushes them on entry to the block and pops them on exit. `var` is
+/// function-scoped and intentionally excluded here (it is handled by
+/// [`FnScopeBindingCollector`]).
+fn collect_block_scope_bindings(stmts: &[swc_core::ecma::ast::Stmt]) -> HashSet<String> {
+    use swc_core::ecma::ast::{Decl, Stmt, VarDeclKind};
+    let mut out = HashSet::new();
+    for stmt in stmts {
+        if let Stmt::Decl(decl) = stmt {
+            match decl {
+                Decl::Var(v) if v.kind != VarDeclKind::Var => {
+                    for d in &v.decls {
+                        add_pat_bindings(&d.name, &mut out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Names bound by a `for-in`/`for-of` head (`for (const x of xs)`). A plain
+/// `for (x of xs)` head (existing variable, no declaration) binds nothing new.
+fn for_head_bindings(head: &swc_core::ecma::ast::ForHead) -> HashSet<String> {
+    use swc_core::ecma::ast::ForHead;
+    let mut out = HashSet::new();
+    if let ForHead::VarDecl(v) = head {
+        for d in &v.decls {
+            add_pat_bindings(&d.name, &mut out);
+        }
+    }
+    out
+}
+
+/// Names bound at module (top-level) scope that are *function-scoped* (visible
+/// throughout the module): `var` declarators and top-level function/class names.
+/// Top-level `let`/`const` are block-scoped to the module body and are tracked as
+/// a block frame instead (so a top-level `{ let fetch }` block does not leak).
+/// Used as the root scope frame.
 fn collect_module_scope_bindings(module: &swc_core::ecma::ast::Module) -> HashSet<String> {
-    let mut c = ScopeBindingCollector::default();
+    let mut c = FnScopeBindingCollector::default();
     for item in &module.body {
         item.visit_with(&mut c);
     }
     c.0
 }
 
-/// Names bound by a function/method scope: its own parameters plus everything
-/// its body binds (stopping at nested functions). `collect_fn_scope_bindings`
-/// is used when the visitor enters a `Function`; `collect_arrow_scope_bindings`
-/// for an arrow.
+/// Function-scoped names of a function/method scope: its own parameters plus the
+/// `var` declarators and nested function/class *names* its body hoists (stopping
+/// at nested functions). `let`/`const`/`catch` bindings are block-scoped and are
+/// pushed/popped per-block by the visitor, not collected here.
 fn collect_fn_scope_bindings(f: &swc_core::ecma::ast::Function) -> HashSet<String> {
     let mut out = HashSet::new();
     for p in &f.params {
         add_pat_bindings(&p.pat, &mut out);
     }
     if let Some(body) = &f.body {
-        let mut c = ScopeBindingCollector(out);
+        let mut c = FnScopeBindingCollector(out);
         for stmt in &body.stmts {
             stmt.visit_with(&mut c);
         }
@@ -442,9 +486,10 @@ fn collect_fn_scope_bindings(f: &swc_core::ecma::ast::Function) -> HashSet<Strin
     out
 }
 
-/// Names bound by an arrow scope: its parameters plus, for a block-body arrow,
-/// everything the block binds (stopping at nested functions). An
-/// expression-body arrow binds only its parameters.
+/// Function-scoped names of an arrow scope: its parameters plus, for a block-body
+/// arrow, the `var`/function/class names its block hoists (stopping at nested
+/// functions). An expression-body arrow binds only its parameters. `let`/`const`
+/// are block-scoped and tracked per-block by the visitor.
 fn collect_arrow_scope_bindings(a: &swc_core::ecma::ast::ArrowExpr) -> HashSet<String> {
     use swc_core::ecma::ast::BlockStmtOrExpr;
     let mut out = HashSet::new();
@@ -452,7 +497,7 @@ fn collect_arrow_scope_bindings(a: &swc_core::ecma::ast::ArrowExpr) -> HashSet<S
         add_pat_bindings(p, &mut out);
     }
     if let BlockStmtOrExpr::BlockStmt(body) = &*a.body {
-        let mut c = ScopeBindingCollector(out);
+        let mut c = FnScopeBindingCollector(out);
         for stmt in &body.stmts {
             stmt.visit_with(&mut c);
         }
@@ -680,6 +725,62 @@ impl Visit for ScanVisitor {
     fn visit_arrow_expr(&mut self, a: &swc_core::ecma::ast::ArrowExpr) {
         self.scopes.push(collect_arrow_scope_bindings(a));
         a.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    // Entering a lexical *block* opens a new block scope for its `let`/`const`
+    // declarations. We push only the names bound *directly* in this block so a
+    // reference *inside* it sees them, then pop on exit so a sibling/outer
+    // reference does NOT (review 018 P1: `{ let fetch = 1; } fetch("x")` must
+    // still flag the outer `fetch`). A function/arrow body is itself a block, so
+    // its body-local `let`/`const` are covered here while its params/`var` live
+    // in the function frame.
+    fn visit_block_stmt(&mut self, b: &swc_core::ecma::ast::BlockStmt) {
+        self.scopes.push(collect_block_scope_bindings(&b.stmts));
+        b.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    // A `catch (binding)` clause binds `binding` in a scope covering the catch
+    // body only. Push it as its own frame so `try{}catch(process){} process.env`
+    // still flags the outer `process` read (review 018 P1). The catch body block
+    // gets its own block frame via `visit_block_stmt`.
+    fn visit_catch_clause(&mut self, c: &swc_core::ecma::ast::CatchClause) {
+        let mut frame = HashSet::new();
+        if let Some(p) = &c.param {
+            add_pat_bindings(p, &mut frame);
+        }
+        self.scopes.push(frame);
+        c.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    // A `for (let/const/var x ...)` header binds `x` in a scope covering the
+    // header and the loop body only. Push it as a frame so a benign loop variable
+    // named like a global (`for (const fetch of xs) fetch(...)`) is not a false
+    // positive, while it does not leak to code after the loop.
+    fn visit_for_stmt(&mut self, n: &swc_core::ecma::ast::ForStmt) {
+        use swc_core::ecma::ast::VarDeclOrExpr;
+        let mut frame = HashSet::new();
+        if let Some(VarDeclOrExpr::VarDecl(v)) = &n.init {
+            for d in &v.decls {
+                add_pat_bindings(&d.name, &mut frame);
+            }
+        }
+        self.scopes.push(frame);
+        n.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    fn visit_for_in_stmt(&mut self, n: &swc_core::ecma::ast::ForInStmt) {
+        self.scopes.push(for_head_bindings(&n.left));
+        n.visit_children_with(self);
+        self.scopes.pop();
+    }
+
+    fn visit_for_of_stmt(&mut self, n: &swc_core::ecma::ast::ForOfStmt) {
+        self.scopes.push(for_head_bindings(&n.left));
+        n.visit_children_with(self);
         self.scopes.pop();
     }
 
@@ -1472,6 +1573,77 @@ mod tests {
             "export const leak = fetch('https://x'); class C { m(fetch: unknown){ return fetch; } }",
             "fetch",
         );
+    }
+
+    // ---- Review 018 P1: BLOCK-scoped and CATCH-scoped shadows must NOT
+    //      suppress a forbidden reference OUTSIDE their own block. ----
+
+    #[test]
+    fn block_scoped_shadow_does_not_suppress_outer_forbidden_ref() {
+        // A `let`/`const` bound only inside a sibling/inner block must not leak
+        // out and suppress a real forbidden reference after/outside that block.
+        assert_rejected(
+            // sibling bare block before the use
+            r#"{ let eval = (x: string) => x; } export const v = eval("1");"#,
+            "eval",
+        );
+        assert_rejected(
+            // block local inside an `if`, forbidden ref after the `if` (the
+            // reviewer's exact repro shape)
+            r#"export function leak() { if (true) { let fetch = (x: string) => x; } return fetch("https://x"); }"#,
+            "fetch",
+        );
+        assert_rejected(
+            // top-level block `let process` before a `process.env` read
+            "{ let process = 1; } export const v = process.env;",
+            "process",
+        );
+        assert_rejected(
+            // `const` in a nested block does not suppress the outer require()
+            r#"function f(){ { const require = (s: string) => s; } return require("fs"); } export const v = f;"#,
+            "require",
+        );
+    }
+
+    #[test]
+    fn catch_scoped_shadow_does_not_suppress_outer_forbidden_ref() {
+        // A `catch (binding)` param is scoped to the catch body only; a forbidden
+        // reference outside that body must still be flagged.
+        assert_rejected(
+            "try {} catch (process) {} export const v = process.env;",
+            "process",
+        );
+        assert_rejected(
+            r#"try {} catch (fetch) {} export const v = fetch("https://x");"#,
+            "fetch",
+        );
+        assert_rejected(
+            r#"try {} catch (require) {} export const v = require("fs");"#,
+            "require",
+        );
+    }
+
+    #[test]
+    fn block_and_catch_shadows_still_suppress_within_their_own_scope() {
+        // The legitimate same-scope cases must keep passing: a block/catch binding
+        // shadows the global for references *inside* that block (review 018 P1
+        // control — the fix must not regress in-scope suppression).
+        for src in [
+            // bare block: declaration and use in the SAME block
+            r#"export function f(){ { let fetch = (x: string) => x; return fetch("a"); } }"#,
+            // catch param used within the catch body
+            "export function f(){ try { throw 1; } catch (process) { return process; } }",
+            // `let` shadow used in an enclosed inner block
+            r#"export function f(){ let fetch = (x: string) => x; { return fetch("a"); } }"#,
+            // for-of header variable named like a global, used in the loop body
+            r#"export function f(xs: string[]){ for (const fetch of xs) { void fetch; } }"#,
+            // classic for header variable named like a global
+            r#"export function f(){ for (let process = 0; process < 1; process++) { void process; } }"#,
+        ] {
+            let findings = policy_scan(src).unwrap();
+            assert!(findings.is_empty(), "false positive on {src:?}: {findings:?}");
+            assert!(enforce_policy(src).is_ok(), "false rejection on {src:?}");
+        }
     }
 
     #[test]
