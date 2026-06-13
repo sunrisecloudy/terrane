@@ -1995,3 +1995,247 @@ fn net_fetch_with_no_injected_client_fails_closed_platform_unavailable() {
         "the default bridge client refuses with PlatformUnavailable: {result_str}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SC-15 / MP-4 — app signing/trust at install (signing-ready, M0a).
+//
+// `applet.install` MAY carry an optional Ed25519-signed package under a
+// `signature` field; when present the platform VERIFIES it (forge-signing) over
+// the canonical `terrane/sig/v1` preimage BEFORE trusting/installing:
+//
+//   - a SIGNED package that verifies installs OK + records the trust (publisher);
+//   - a TAMPERED signed package is REJECTED with ValidationError + nothing stored;
+//   - an install with NO signature proceeds unsigned (the response says so).
+//
+// These drive the committed T012 vectors in forge/fixtures/signing/ through the
+// real facade, so the core's preimage/verify wiring is proven against the exact
+// bytes the fixtures signed.
+// ---------------------------------------------------------------------------
+
+/// Load a signing fixture (`forge/fixtures/signing/<name>`) as JSON.
+fn load_signing_fixture(name: &str) -> serde_json::Value {
+    // CARGO_MANIFEST_DIR = forge/crates/core
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/signing")
+        .join(name);
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("read signing fixture {}: {e}", path.display()));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("parse signing fixture {name}: {e}"))
+}
+
+/// Build the `applet.install` `signature` payload block from a T012 fixture: the
+/// signed package + signature + public key (the fixtures carry `public_key_pem`),
+/// and — when the fixture exercises the policy layer — its publisher-trust block
+/// mapped to the verifier's `{publisher, trusted, valid_until}` shape
+/// (`status == "unknown"` → not trusted).
+fn signature_block_from_fixture(fixture: &serde_json::Value) -> serde_json::Value {
+    let mut block = serde_json::json!({
+        "package": fixture["package"].clone(),
+        "signature": fixture["signature"].clone(),
+        "public_key": fixture["public_key_pem"].clone(),
+    });
+    if let Some(trust) = fixture.get("publisher_trust") {
+        let trusted = trust.get("status").and_then(|s| s.as_str()) != Some("unknown");
+        block["publisher_trust"] = serde_json::json!({
+            "publisher": trust["publisher"].clone(),
+            "trusted": trusted,
+            "valid_until": trust.get("valid_until").cloned().unwrap_or(serde_json::Value::Null),
+        });
+    }
+    block
+}
+
+/// Install the demo applet WITH an attached signature block (from a fixture).
+fn install_demo_signed(
+    core: &mut WorkspaceCore,
+    applet_id: &str,
+    signature: serde_json::Value,
+) -> forge_domain::CoreResponse {
+    core.handle(cmd(
+        "applet.install",
+        Some(applet_id),
+        serde_json::json!({
+            "manifest": demo_manifest(),
+            "sources": { "src/main.ts": DEMO_TS },
+            "signature": signature,
+        }),
+    ))
+}
+
+#[test]
+fn install_signed_package_verifies_and_records_trust() {
+    // A valid T012 signed package: the install verifies the Ed25519 signature
+    // over the canonical preimage and records the verified publisher as trust.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let resp = install_demo_signed(&mut core, "app_signed", signature_block_from_fixture(&fixture));
+
+    assert!(resp.ok, "a valid signed package must install: {:?}", resp.error);
+    let trust = &resp.payload["trust"];
+    assert_eq!(trust["status"], serde_json::json!("signed"), "trust recorded as signed: {trust}");
+    assert_eq!(
+        trust["publisher"],
+        serde_json::json!("test-publisher"),
+        "the verified publisher is recorded for later trust reporting"
+    );
+    assert_eq!(
+        trust["key_id"],
+        serde_json::json!("test-ed25519-2026-06"),
+        "the signing key id is recorded"
+    );
+
+    // The trust is also surfaced on the applet.installed event.
+    let installed_evt = core
+        .events()
+        .events_of_kind("applet.installed")
+        .next()
+        .expect("applet.installed emitted");
+    assert_eq!(installed_evt.payload["trust"]["status"], serde_json::json!("signed"));
+
+    // And the signed applet actually runs (the install was real, not just a check).
+    let run = core.handle(cmd("runtime.run", Some("app_signed"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "the verified applet runs: {:?}", run.error);
+}
+
+#[test]
+fn install_signed_package_with_trusted_publisher_enforces_policy_layer() {
+    // When the install carries a publisher-trust block, the marketplace-policy
+    // layer is ENFORCED (SC-15 policy-vs-crypto split). A trusted, unexpired
+    // publisher matching the package installs OK and reports the policy was
+    // enforced. (The `valid_signature` fixture's publisher is `test-publisher`.)
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut signature = signature_block_from_fixture(&fixture);
+    signature["publisher_trust"] = serde_json::json!({
+        "publisher": "test-publisher",
+        "trusted": true,
+        "valid_until": serde_json::Value::Null,
+    });
+    let resp = install_demo_signed(&mut core, "app_trusted", signature);
+
+    assert!(resp.ok, "trusted publisher installs: {:?}", resp.error);
+    assert_eq!(resp.payload["trust"]["status"], serde_json::json!("signed"));
+    assert_eq!(
+        resp.payload["trust"]["publisher_trust_enforced"],
+        serde_json::json!(true),
+        "the policy layer was enforced because a publisher_trust block was supplied"
+    );
+}
+
+#[test]
+fn install_tampered_signed_package_is_rejected_and_not_installed() {
+    // A signed package whose file content was changed after signing: the
+    // signature still verifies over the (unchanged) recorded-hash preimage, but
+    // the live content no longer matches the signed contentHash, so verify_package
+    // rejects at the package_hash (integrity) layer. The install must be REJECTED
+    // with a ValidationError and NOTHING stored.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("invalid_file_content_hash_mismatch.json");
+    let resp = install_demo_signed(&mut core, "app_tampered", signature_block_from_fixture(&fixture));
+
+    assert!(!resp.ok, "a tampered signed package must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError", "tamper → ValidationError: {err}");
+    assert!(
+        err.to_string().contains("package signature invalid"),
+        "the rejection names the signature failure: {err}"
+    );
+    assert!(
+        err.to_string().contains("package_hash"),
+        "the integrity (package_hash) failure layer is surfaced: {err}"
+    );
+
+    // Nothing was installed: a subsequent run reports the applet missing.
+    let run = core.handle(cmd("runtime.run", Some("app_tampered"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected applet was never stored");
+    assert_eq!(run.error.unwrap().code(), "ValidationError");
+}
+
+#[test]
+fn install_with_a_garbage_signature_is_rejected_at_the_crypto_layer() {
+    // A garbage Ed25519 signature over an otherwise-intact package: verify_package
+    // rejects at the crypto layer. The install is rejected with the crypto layer
+    // surfaced — distinct from the integrity (package_hash) rejection above.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("invalid_garbage_signature.json");
+    let resp = install_demo_signed(&mut core, "app_garbage", signature_block_from_fixture(&fixture));
+
+    assert!(!resp.ok, "a garbage signature must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("package signature invalid")
+            && err.to_string().contains("crypto"),
+        "the crypto failure layer is surfaced: {err}"
+    );
+}
+
+#[test]
+fn install_with_an_untrusted_publisher_is_rejected_at_the_policy_layer() {
+    // The package's crypto + integrity are fine, but the supplied publisher-trust
+    // block marks the publisher `unknown` (not in the trusted set), so the
+    // marketplace-policy layer rejects the install. This is the policy-vs-crypto
+    // split: a valid signature is not enough when the installer does not trust the
+    // publisher (the `invalid_unknown_publisher` T012 vector).
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("invalid_unknown_publisher.json");
+    let resp = install_demo_signed(&mut core, "app_untrusted", signature_block_from_fixture(&fixture));
+
+    assert!(!resp.ok, "an untrusted publisher must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("package signature invalid")
+            && err.to_string().contains("policy"),
+        "the policy failure layer is surfaced: {err}"
+    );
+}
+
+#[test]
+fn install_without_a_signature_proceeds_unsigned() {
+    // No `signature` field: the install proceeds (M0a — signing is not yet
+    // mandatory) and the response indicates `unsigned`. This is the existing
+    // demo/spine path, unchanged.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app_unsigned"),
+        serde_json::json!({
+            "manifest": demo_manifest(),
+            "sources": { "src/main.ts": DEMO_TS },
+        }),
+    ));
+
+    assert!(resp.ok, "an unsigned install still succeeds: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["trust"]["status"],
+        serde_json::json!("unsigned"),
+        "the response indicates the applet was installed unsigned"
+    );
+
+    // The unsigned applet runs exactly as before (no regression).
+    let run = core.handle(cmd("runtime.run", Some("app_unsigned"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "the unsigned applet runs: {:?}", run.error);
+}
+
+#[test]
+fn install_with_a_malformed_signature_block_is_a_validation_error() {
+    // A `signature` field that is present but missing required sub-fields is a
+    // ValidationError (no panic/unwrap on the real path), and nothing is stored.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app_malformed"),
+        serde_json::json!({
+            "manifest": demo_manifest(),
+            "sources": { "src/main.ts": DEMO_TS },
+            "signature": { "signature": "ed25519:AAAA" }, // missing `package` + `public_key`
+        }),
+    ));
+    assert!(!resp.ok, "a malformed signature block must be rejected");
+    assert_eq!(resp.error.unwrap().code(), "ValidationError");
+
+    let run = core.handle(cmd("runtime.run", Some("app_malformed"), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "nothing was installed");
+}

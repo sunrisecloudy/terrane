@@ -15,6 +15,7 @@ forge-pipeline.workspace = true
 forge-policy.workspace = true
 forge-ui.workspace = true
 forge-schema.workspace = true
+forge-signing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

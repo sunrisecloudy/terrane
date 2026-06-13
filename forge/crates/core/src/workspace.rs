@@ -26,6 +26,7 @@ use forge_domain::{
 };
 use forge_runtime::{record_run, replay, NullBridge, Program as RuntimeProgram};
 use forge_schema::{CollectionDef, FieldDef, FieldType, SchemaChange, SchemaRegistry};
+use forge_signing::{verify_package, Package, PublisherTrust, TrustOutcome};
 use forge_storage::{
     CreateIndexKind, ExportOptions, IndexDef, IndexManager, IndexState, RunLogPolicy, Store,
     EXPORT_FORMAT_VERSION,
@@ -67,6 +68,67 @@ struct InstalledApplet {
     code_hash: String,
     /// Monotone install version (bumps on re-install/upgrade).
     version: u32,
+    /// The signing/trust result recorded at install time (SC-15 / MP-4). An
+    /// install that carried a verified Ed25519 package records the verified
+    /// publisher + key id here so a later command can report the package's trust;
+    /// an install with no signature records [`InstallTrust::Unsigned`]. Older
+    /// records (installed before signing) deserialize to `Unsigned` via the serde
+    /// default, so the field is backward-compatible with the existing meta store.
+    #[serde(default)]
+    trust: InstallTrust,
+}
+
+/// The signing/trust provenance recorded for an installed applet (SC-15 / MP-4).
+///
+/// M0a is *signing-ready, not mandatory*: an install MAY carry an Ed25519-signed
+/// package, in which case the platform VERIFIES it before trusting/installing and
+/// records the [`Signed`](InstallTrust::Signed) result; an install with no
+/// signature proceeds [`Unsigned`](InstallTrust::Unsigned). A failed verification
+/// never lands here — the install is rejected before any record is written.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum InstallTrust {
+    /// No signature accompanied the install (the M0a default; allowed because
+    /// signing is not yet mandatory). The install response surfaces `unsigned`.
+    #[default]
+    Unsigned,
+    /// The install carried an Ed25519-signed package whose signature verified
+    /// over the canonical `terrane/sig/v1` preimage and whose live files/manifest
+    /// still match the signed hashes. Records the verified publisher identity so a
+    /// later command can report the package's trust.
+    Signed {
+        /// The verified publisher id (`manifest.publisher` in the signed package),
+        /// when the package declared one.
+        publisher: Option<String>,
+        /// The signing key id (`manifest.keyId`) the package was signed under.
+        key_id: Option<String>,
+        /// Whether the marketplace-policy trust layer (publisher trust set) was
+        /// also enforced for this install (`true`) or skipped — the M0a default of
+        /// crypto + integrity only (`false`).
+        publisher_trust_enforced: bool,
+    },
+}
+
+impl InstallTrust {
+    /// A compact JSON view of the trust result for the install response + meta.
+    /// `Unsigned` surfaces `{ "status": "unsigned" }`; `Signed` surfaces the
+    /// verified publisher / key id so a shell can report the package's trust
+    /// without re-reading the stored applet.
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            InstallTrust::Unsigned => serde_json::json!({ "status": "unsigned" }),
+            InstallTrust::Signed {
+                publisher,
+                key_id,
+                publisher_trust_enforced,
+            } => serde_json::json!({
+                "status": "signed",
+                "publisher": publisher,
+                "key_id": key_id,
+                "publisher_trust_enforced": publisher_trust_enforced,
+            }),
+        }
+    }
 }
 
 /// The workspace facade. Owns the SQLite [`Store`], a [`SchemaRegistry`], and an
@@ -338,12 +400,35 @@ impl WorkspaceCore {
     /// transpile; reject forbidden constructs), validate the manifest, and store
     /// the manifest + transpiled program (CR-A2, CR-13/CR-14, SC-15).
     ///
-    /// Payload: `{ applet_id, manifest, sources: { "<path>": "<ts>" } }`. The
-    /// manifest's `entrypoint` selects which source is the runnable program.
+    /// Payload: `{ applet_id, manifest, sources: { "<path>": "<ts>" }, signature? }`.
+    /// The manifest's `entrypoint` selects which source is the runnable program.
+    ///
+    /// SC-15 / MP-4 — package signing/trust (M0a: *signing-ready, not mandatory*):
+    /// the install MAY carry an optional Ed25519-signed package under a
+    /// `signature` field (the prd-merged/08 MP-4 package shape
+    /// `{ package: { manifest, files, hashes }, signature, public_key,
+    /// publisher_trust? }`, identical to the T012 fixtures). When present the
+    /// platform VERIFIES it via [`forge_signing::verify_package`] BEFORE trusting
+    /// or installing the applet:
+    ///
+    ///   - a CRYPTO / integrity / policy failure REJECTS the install with
+    ///     `ValidationError("package signature invalid: ...")` — nothing is stored;
+    ///   - on success the verified publisher / key id + trust layer is recorded in
+    ///     the install metadata ([`InstallTrust::Signed`]) so a later command can
+    ///     report the package's trust.
+    ///
+    /// When NO `signature` is present the install proceeds [`InstallTrust::Unsigned`]
+    /// (the M0a default) — the existing demo path is untouched and the response
+    /// simply reports `unsigned`. The signature check runs BEFORE compilation so a
+    /// tampered/untrusted package never reaches the transpiler or the store.
     fn cmd_applet_install(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
         let applet_id = require_applet_id(cmd)?;
         let manifest: Manifest = take_field(cmd, "manifest")?;
         manifest.validate()?;
+
+        // SC-15 / MP-4: verify the package signature when one is carried, BEFORE
+        // any state is touched. `Unsigned` when the install carries no signature.
+        let trust = verify_install_signature(cmd)?;
 
         let sources = cmd
             .payload
@@ -394,6 +479,7 @@ impl WorkspaceCore {
             js_code: entry_program.js_code,
             code_hash: entry_program.code_hash,
             version,
+            trust: trust.clone(),
         };
         self.store_applet(applet_id.as_str(), &installed)?;
 
@@ -407,7 +493,11 @@ impl WorkspaceCore {
         self.events.emit(
             Some(applet_id.clone()),
             "applet.installed",
-            serde_json::json!({ "applet_id": applet_id, "version": version }),
+            serde_json::json!({
+                "applet_id": applet_id,
+                "version": version,
+                "trust": trust.to_json(),
+            }),
         );
 
         Ok(serde_json::json!({
@@ -415,6 +505,10 @@ impl WorkspaceCore {
             "version": version,
             "code_hash": installed.code_hash,
             "warnings": warnings,
+            // SC-15: the verified trust result for this install — `unsigned`, or
+            // `signed` with the verified publisher / key id (the package passed
+            // crypto + integrity, and the policy layer when enforced).
+            "trust": trust.to_json(),
         }))
     }
 
@@ -1777,6 +1871,127 @@ fn payload_db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
 /// match or the read-all wildcard `"*"`.
 fn scope_grants(scope: &[String], collection: &str) -> bool {
     scope.iter().any(|s| s == "*" || s == collection)
+}
+
+/// Verify the optional package signature carried on an `applet.install`
+/// (SC-15 / MP-4), returning the [`InstallTrust`] to record.
+///
+/// The optional `signature` payload field is the prd-merged/08 MP-4 signed
+/// package — the exact T012 fixture shape:
+///
+/// ```json
+/// "signature": {
+///   "package": { "manifest": {…}, "files": [{path, content, sha256}], "hashes": {…} },
+///   "signature": "ed25519:…",
+///   "public_key": "ed25519:…" | "<PEM SubjectPublicKeyInfo>",
+///   "publisher_trust": { "publisher": "...", "status": "unknown" | …, "valid_until": "…" }
+/// }
+/// ```
+///
+/// When the field is ABSENT the install is [`InstallTrust::Unsigned`] (the M0a
+/// default — signing is not yet mandatory). When PRESENT the package is verified
+/// with [`forge_signing::verify_package`] over the canonical `terrane/sig/v1`
+/// preimage:
+///
+///   - any failure — crypto (bad/garbage/wrong-key signature), `package_hash`
+///     (a file/manifest/permissions/policy region tampered after signing), or
+///     `policy` (publisher not trusted / expired) — is surfaced as
+///     `ValidationError("package signature invalid: <layer>: <reason>")`, so the
+///     caller REJECTS the install;
+///   - on success the verified publisher / key id (+ whether the policy layer was
+///     enforced) is returned as [`InstallTrust::Signed`].
+///
+/// `publisher_trust` is optional: present → the marketplace-policy layer is
+/// enforced (the publisher must be trusted and unexpired); absent → crypto +
+/// integrity only, the M0a "verify when present, surface the result" default.
+fn verify_install_signature(cmd: &CoreCommand) -> Result<InstallTrust> {
+    let signature = match cmd.payload.get("signature") {
+        None | Some(serde_json::Value::Null) => return Ok(InstallTrust::Unsigned),
+        Some(sig) => sig,
+    };
+
+    // The signed package (MP-4 `files`/`manifest`/`hashes`).
+    let package: Package = signed_field(signature, "package")?;
+    let signature_str = signed_str(signature, "signature")?;
+    let public_key = signed_str(signature, "public_key")?;
+
+    // Optional marketplace-policy input (the publisher trust set). Present →
+    // enforce the policy layer; absent → crypto + integrity only.
+    let publisher_trust: Option<PublisherTrust> = match signature.get("publisher_trust") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+            CoreError::ValidationError(format!(
+                "applet.install `signature.publisher_trust` is malformed: {e}"
+            ))
+        })?),
+    };
+    let publisher_trust_enforced = publisher_trust.is_some();
+
+    // Verify over the canonical preimage. A CRYPTO/integrity/policy failure
+    // rejects the install; the typed reason names the failing layer.
+    match verify_package(
+        &package,
+        &signature_str,
+        &public_key,
+        publisher_trust.as_ref(),
+    ) {
+        TrustOutcome::Trusted => {
+            // Record the verified publisher identity for later trust reporting.
+            let publisher = manifest_string(&package.manifest, "publisher");
+            let key_id = manifest_string(&package.manifest, "keyId");
+            Ok(InstallTrust::Signed {
+                publisher,
+                key_id,
+                publisher_trust_enforced,
+            })
+        }
+        TrustOutcome::Rejected(err) => Err(CoreError::ValidationError(format!(
+            "package signature invalid: {}: {}",
+            err.layer.as_str(),
+            err.reason
+        ))),
+    }
+}
+
+/// Read an optional `manifest.<key>` string out of a signed package's manifest
+/// (a [`serde_json::Value`]), for recording the verified publisher / key id. A
+/// missing/non-string field yields `None` rather than erroring — by the time
+/// this runs the package has already verified, so this is provenance reporting,
+/// not validation.
+fn manifest_string(manifest: &serde_json::Value, key: &str) -> Option<String> {
+    manifest
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Deserialize a required sub-field of the install `signature` object into `T`,
+/// surfacing a `ValidationError` (never a panic) on a missing/malformed field.
+fn signed_field<T: serde::de::DeserializeOwned>(
+    signature: &serde_json::Value,
+    field: &str,
+) -> Result<T> {
+    let value = signature.get(field).ok_or_else(|| {
+        CoreError::ValidationError(format!(
+            "applet.install `signature` requires a `{field}` field"
+        ))
+    })?;
+    serde_json::from_value(value.clone()).map_err(|e| {
+        CoreError::ValidationError(format!("applet.install `signature.{field}` is malformed: {e}"))
+    })
+}
+
+/// Read a required string sub-field of the install `signature` object.
+fn signed_str(signature: &serde_json::Value, field: &str) -> Result<String> {
+    signature
+        .get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            CoreError::ValidationError(format!(
+                "applet.install `signature.{field}` must be a string"
+            ))
+        })
 }
 
 /// Extract and require the command's `applet_id` (from the envelope, or the

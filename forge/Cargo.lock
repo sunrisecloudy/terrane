@@ -565,6 +565,7 @@ dependencies = [
  "forge-policy",
  "forge-runtime",
  "forge-schema",
+ "forge-signing",
  "forge-storage",
  "forge-ui",
  "serde",
