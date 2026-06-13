@@ -147,4 +147,4 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 - **Fixtures + corpora:** workspace-compat fixtures, replay fixtures, hostile `*.ts`, injection `*.json`, conformance vectors — spec-driven + adversarial, no core Rust. (T001 ✓, T004 ✓, T026 ✓ already in this vein.)
 - **Spec extraction:** `@forge/std` full UI catalog (UI-2, 26 components), `ctx` type tables (CR-3), commands/errors/capabilities spec tables (CR-A2/A4, SC-8), UI golden-tree fixtures (UI-6). (T002 ✓ M0a subset; T005 files the UI golden-trees.)
-- **Sync fixtures:** in-process convergence scenarios (T026 ✓ — 11 scenarios, idempotence + LWW + delete propagation).
+- **Sync fixtures:** in-process convergence scenarios (T026 ✓ — 10 scenarios, idempotence + LWW + delete propagation).
