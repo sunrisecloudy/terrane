@@ -45,6 +45,12 @@ use forge_domain::{
 };
 use serde::{Deserialize, Serialize};
 
+mod net;
+mod net_url;
+
+pub use net::{check_net, HeaderValue, NetPolicy, NetRequest};
+pub use net_url::{host_is_private_literal, ParsedUrl};
+
 /// A concrete `ctx.*` host call the runtime is about to perform.
 ///
 /// Each variant carries exactly the resource the policy engine needs to match
@@ -711,6 +717,10 @@ mod tests {
                 write: db_write.iter().map(|s| s.to_string()).collect(),
             },
             ui,
+            // The capability-engine tests don't exercise net; an empty net grant
+            // keeps these manifests "no network" (net is gated by NetPolicy, a
+            // separate decision path from this CapabilityCheck).
+            net: forge_domain::NetGrant::default(),
         }
     }
 
