@@ -251,6 +251,15 @@ impl Store {
         src.query_row("SELECT 1 FROM sqlite_schema LIMIT 1", [], |_| Ok(()))
             .optional()
             .map_err(map_sql)?;
+        // TEST SEAM (review 062 P1 #3 regression): once the source snapshot above is
+        // frozen, run any installed test hook. The snapshot-consistency test uses it
+        // to land a concurrent write on a SECOND connection *after* the snapshot was
+        // pinned but *before* any `copy_*` reads, then asserts the write is invisible
+        // to the bundle. Without the `src_tx` snapshot the later `copy_*` SELECTs
+        // would see the hook's write and split-brain the bundle, so this seam makes
+        // the test fail if the snapshot is removed. Compiles to nothing in release.
+        #[cfg(test)]
+        run_post_snapshot_test_hook();
         // Order is FIXED so re-export is byte-stable: header → kv → oplog →
         // chunks → snapshots → records → (runs/run_logs by policy).
         let result = in_transaction(&bundle.conn, |dst| {
@@ -814,6 +823,30 @@ pub fn bundle_meta(bundle: &Store, key: &str) -> Result<Option<String>> {
             Ok(Some(s.to_string()))
         }
         None => Ok(None),
+    }
+}
+
+// A one-shot test hook fired inside `Store::write_bundle` immediately after the
+// source read snapshot is frozen but before any table is copied (review 062 P1 #3).
+// Lets a test interleave a concurrent write into the export deterministically; the
+// hook takes itself out on fire so it runs at most once per install.
+#[cfg(test)]
+thread_local! {
+    static POST_SNAPSHOT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install a one-shot hook fired after the export's source snapshot is frozen.
+#[cfg(test)]
+fn set_post_snapshot_test_hook(f: impl FnOnce() + 'static) {
+    POST_SNAPSHOT_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+}
+
+/// Fire and clear the installed post-snapshot hook, if any.
+#[cfg(test)]
+fn run_post_snapshot_test_hook() {
+    if let Some(f) = POST_SNAPSHOT_HOOK.with(|h| h.borrow_mut().take()) {
+        f();
     }
 }
 
@@ -1483,6 +1516,65 @@ mod tests {
         let restore_path = dir.path().join("restored.db");
         let restored = Store::import_workspace(&bundle_path, &restore_path, &idx).unwrap();
         assert!(restored.get_record("notes", "n1").unwrap().is_some(), "n1 round-trips");
+    }
+
+    #[test]
+    fn write_bundle_snapshot_excludes_a_write_that_lands_mid_export() {
+        // The LOAD-BEARING regression for review 062 P1 #3: drive the REAL
+        // `export_workspace` / `write_bundle` and, via the post-snapshot test hook,
+        // commit a concurrent write on a second connection to the SAME file AFTER the
+        // export's source snapshot has been frozen but BEFORE any `copy_*` reads. The
+        // bundle must reflect only the pre-snapshot state. If the `src_tx` snapshot in
+        // `write_bundle` is removed, each `copy_*` SELECT reads the live file and the
+        // hook's `n2` row bleeds into the bundle — so this assertion fails, which is
+        // exactly the regression guard the snapshot fix needs.
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.db");
+        let idx = IndexManager::new();
+        {
+            let mut w = Store::open(&src_path).unwrap();
+            w.apply_mutation_crdt(&insert("notes", "n1", json!({"title": "Alpha"}), 1), &idx)
+                .unwrap();
+        }
+        let exporter = Store::open(&src_path).unwrap();
+
+        // The hook fires after the snapshot is frozen: a SECOND handle commits n2.
+        let hook_path = src_path.clone();
+        set_post_snapshot_test_hook(move || {
+            let mut concurrent = Store::open(&hook_path).unwrap();
+            let hook_idx = IndexManager::new();
+            concurrent
+                .apply_mutation_crdt(&insert("notes", "n2", json!({"title": "Beta"}), 2), &hook_idx)
+                .unwrap();
+        });
+
+        let bundle_path = dir.path().join("ws.forgews");
+        exporter.export_workspace(&bundle_path, &ExportOptions::new("ws")).unwrap();
+
+        // The bundle reflects the frozen snapshot only. n1 and n2 share the same
+        // `collection/notes` doc, so the n2 write appears as a SECOND chunk on that
+        // doc: at snapshot time there is exactly ONE chunk; a leaked mid-export write
+        // would make it two.
+        let bundle = Store::open(&bundle_path).unwrap();
+        let chunks_on_notes: i64 = bundle
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM crdt_chunks WHERE doc_id = 'collection/notes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            chunks_on_notes, 1,
+            "the bundle carries only the pre-snapshot chunk; the concurrent write's chunk must not leak in"
+        );
+
+        // And the imported projection (re-derived from the bundle's chunks) has only
+        // n1 — a split-brain bundle would resurrect n2 here.
+        let restore_path = dir.path().join("restored.db");
+        let restored = Store::import_workspace(&bundle_path, &restore_path, &idx).unwrap();
+        assert!(restored.get_record("notes", "n1").unwrap().is_some(), "n1 round-trips");
+        assert!(restored.get_record("notes", "n2").unwrap().is_none(), "n2 must be absent");
     }
 
     // --- fixtures/export descriptors (T017) ------------------------------
