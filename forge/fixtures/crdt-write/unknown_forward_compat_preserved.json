@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "case": "unknown_forward_compat_preserved",
+  "coverage": ["patch", "forward_compat", "dl9_unknown_field_preservation", "dl6_rebuild"],
+  "collection": "tasks",
+  "doc_id": "collection/tasks",
+  "chunk_format": "loro",
+  "ops": [
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "Preserve future field",
+        "status": "open",
+        "f_future_003": {
+          "type": "rich_text",
+          "value": {
+            "ops": [
+              {
+                "insert": "future note"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "op": "patch",
+      "id": "t1",
+      "fields": {
+        "status": "done"
+      }
+    }
+  ],
+  "expect_records": [
+    {
+      "id": "t1",
+      "fields": {
+        "title": "Preserve future field",
+        "status": "done",
+        "f_future_003": {
+          "type": "rich_text",
+          "value": {
+            "ops": [
+              {
+                "insert": "future note"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "expect_deleted_ids": [],
+  "expect_chunk_count": 2,
+  "expect_oplog_kinds": ["record.insert", "record.patch"],
+  "rebuild_equals_projection": true
+}

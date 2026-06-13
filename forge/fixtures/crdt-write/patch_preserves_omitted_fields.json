@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "case": "patch_preserves_omitted_fields",
+  "coverage": ["patch", "dl9_omitted_field_preservation", "dl6_rebuild"],
+  "collection": "tasks",
+  "doc_id": "collection/tasks",
+  "chunk_format": "loro",
+  "ops": [
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "Write fixture runner",
+        "status": "draft",
+        "priority": 1
+      }
+    },
+    {
+      "op": "patch",
+      "id": "t1",
+      "fields": {
+        "status": "ready"
+      }
+    }
+  ],
+  "expect_records": [
+    {
+      "id": "t1",
+      "fields": {
+        "title": "Write fixture runner",
+        "status": "ready",
+        "priority": 1
+      }
+    }
+  ],
+  "expect_deleted_ids": [],
+  "expect_chunk_count": 2,
+  "expect_oplog_kinds": ["record.insert", "record.patch"],
+  "rebuild_equals_projection": true
+}

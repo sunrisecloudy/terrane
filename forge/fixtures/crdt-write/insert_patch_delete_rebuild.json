@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "case": "insert_patch_delete_rebuild",
+  "coverage": ["insert", "patch", "delete", "dl6_rebuild"],
+  "collection": "tasks",
+  "doc_id": "collection/tasks",
+  "chunk_format": "loro",
+  "ops": [
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "a"
+      }
+    },
+    {
+      "op": "patch",
+      "id": "t1",
+      "fields": {
+        "done": true
+      }
+    },
+    {
+      "op": "insert",
+      "id": "t2",
+      "fields": {
+        "title": "b"
+      }
+    },
+    {
+      "op": "delete",
+      "id": "t1"
+    }
+  ],
+  "expect_records": [
+    {
+      "id": "t2",
+      "fields": {
+        "title": "b"
+      }
+    }
+  ],
+  "expect_deleted_ids": ["t1"],
+  "expect_chunk_count": 4,
+  "expect_oplog_kinds": ["record.insert", "record.patch", "record.insert", "record.delete"],
+  "rebuild_equals_projection": true
+}

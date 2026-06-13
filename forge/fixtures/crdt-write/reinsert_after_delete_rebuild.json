@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "case": "reinsert_after_delete_rebuild",
+  "coverage": ["delete", "reinsert_same_id", "dl6_rebuild"],
+  "collection": "tasks",
+  "doc_id": "collection/tasks",
+  "chunk_format": "loro",
+  "ops": [
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "Old title",
+        "done": false
+      }
+    },
+    {
+      "op": "delete",
+      "id": "t1"
+    },
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "Recreated title",
+        "done": false
+      }
+    }
+  ],
+  "expect_records": [
+    {
+      "id": "t1",
+      "fields": {
+        "title": "Recreated title",
+        "done": false
+      }
+    }
+  ],
+  "expect_deleted_ids": [],
+  "expect_chunk_count": 3,
+  "expect_oplog_kinds": ["record.insert", "record.delete", "record.insert"],
+  "rebuild_equals_projection": true
+}

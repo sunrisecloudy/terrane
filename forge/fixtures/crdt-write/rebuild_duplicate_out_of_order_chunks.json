@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "case": "rebuild_duplicate_out_of_order_chunks",
+  "coverage": ["chunk_idempotence", "out_of_order_updates", "dl6_rebuild"],
+  "collection": "tasks",
+  "doc_id": "collection/tasks",
+  "chunk_format": "loro",
+  "ops": [
+    {
+      "op": "insert",
+      "id": "t1",
+      "fields": {
+        "title": "First"
+      }
+    },
+    {
+      "op": "insert",
+      "id": "t2",
+      "fields": {
+        "title": "Second"
+      }
+    },
+    {
+      "op": "patch",
+      "id": "t1",
+      "fields": {
+        "done": true
+      }
+    }
+  ],
+  "rebuild_chunk_order": ["chunk-0002", "chunk-0001", "chunk-0003", "chunk-0002"],
+  "expect_records": [
+    {
+      "id": "t1",
+      "fields": {
+        "title": "First",
+        "done": true
+      }
+    },
+    {
+      "id": "t2",
+      "fields": {
+        "title": "Second"
+      }
+    }
+  ],
+  "expect_deleted_ids": [],
+  "expect_chunk_count": 3,
+  "expect_oplog_kinds": ["record.insert", "record.insert", "record.patch"],
+  "rebuild_equals_projection": true
+}
