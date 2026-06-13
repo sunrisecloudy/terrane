@@ -61,6 +61,28 @@ impl IndexKind {
     }
 }
 
+/// The caller-facing index kind for [`IndexManager::create_index`] (DL-5). This
+/// is the ergonomic `{Value, Fts}` surface named in the data-layer spec; it maps
+/// 1:1 to the physical [`IndexKind`] (`Value -> Expression`, `Fts -> Fts5`).
+/// Keeping it separate from [`IndexKind`] lets the fixture-facing `"expression"`
+/// / `"fts5"` strings stay stable while the create API speaks the PRD vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateIndexKind {
+    /// An equality/range/order index — a JSON1 expression index (DL-5).
+    Value,
+    /// A full-text index — an FTS5 shadow table (DL-5).
+    Fts,
+}
+
+impl From<CreateIndexKind> for IndexKind {
+    fn from(k: CreateIndexKind) -> IndexKind {
+        match k {
+            CreateIndexKind::Value => IndexKind::Expression,
+            CreateIndexKind::Fts => IndexKind::Fts5,
+        }
+    }
+}
+
 /// The DL-5 lifecycle state. The planner may use **only** `Active`; every other
 /// state scans `records` and warns. M0a-first states are `Proposed`,
 /// `Rebuilding`, and `Active`; `Deprecated` is recognized so a deprecated
@@ -310,6 +332,133 @@ impl IndexManager {
         {
             def.state = state;
         }
+    }
+
+    /// Create (DL-5) an `Active` index for `(collection, field_id)` of the given
+    /// `kind` and build it from canonical `records` in one call.
+    ///
+    /// This is the ergonomic create entry point named in the data-layer PRD:
+    /// `Value` → a collection-scoped JSON1 **expression index** for
+    /// equality/range/order; `Fts` → an **FTS5 shadow table** for full-text
+    /// search, populated from `$.field_ids.<field_id>`. Identifiers are validated
+    /// against the index allowlist by [`IndexDef::new`], so a hostile collection
+    /// or field id is rejected before any DDL is emitted (no SQL injection).
+    ///
+    /// The definition lands in the `Active` state and its physical structure is
+    /// built immediately from canonical records — so creating an index *after*
+    /// rows already exist activates it correctly (DL-6 rebuild-after-records).
+    /// Re-creating the same index is idempotent (DDL is `IF NOT EXISTS`; the FTS
+    /// table is dropped and repopulated). Returns the deterministic `index_id`.
+    pub fn create_index(
+        &mut self,
+        conn: &Connection,
+        collection: &str,
+        field_id: &str,
+        kind: CreateIndexKind,
+    ) -> Result<String> {
+        let def = IndexDef::new(collection, field_id, kind.into(), IndexState::Active)?;
+        let index_id = def.index_id.clone();
+        // Build the physical structure (from canonical records) before recording
+        // the definition, so a DDL/populate failure leaves no half-registered
+        // index in the manager.
+        self.drop_physical(conn, &def)?;
+        conn.execute_batch(&def.ddl())
+            .map_err(|e| CoreError::StorageError(e.to_string()))?;
+        if def.kind == IndexKind::Fts5 {
+            self.populate_fts(conn, &def)?;
+        }
+        self.register(def);
+        Ok(index_id)
+    }
+
+    /// Deprecate (DL-5 / DL-8 "delete = deprecate + retain") a registered index:
+    /// move it to the `Deprecated` state and drop the physical structure so the
+    /// planner stops using it, while keeping the definition as metadata. Records
+    /// stay canonical, so query answers are unchanged — only the plan and the
+    /// `index_deprecated` warning differ. No-op if the index is not registered.
+    pub fn deprecate_index(
+        &mut self,
+        conn: &Connection,
+        collection: &str,
+        field_id: &str,
+    ) -> Result<()> {
+        if let Some(def) = self
+            .defs
+            .get(&(collection.to_string(), field_id.to_string()))
+            .cloned()
+        {
+            self.drop_physical(conn, &def)?;
+            self.set_state(collection, field_id, IndexState::Deprecated);
+        }
+        Ok(())
+    }
+
+    /// Drop (DL-5 `removed`) a registered index: drop the physical structure and
+    /// forget the definition entirely. After this the planner has no candidate
+    /// for `(collection, field_id)` and a predicate over it scans with a
+    /// `no_index` warning. No-op if the index is not registered.
+    pub fn drop_index(
+        &mut self,
+        conn: &Connection,
+        collection: &str,
+        field_id: &str,
+    ) -> Result<()> {
+        if let Some(def) = self
+            .defs
+            .remove(&(collection.to_string(), field_id.to_string()))
+        {
+            self.drop_physical(conn, &def)?;
+        }
+        Ok(())
+    }
+
+    /// Refresh the FTS5 shadow rows for a single record after a put/patch/delete
+    /// (DL-5: "inserts, updates, and deletes must refresh the FTS row in the same
+    /// logical write transaction when the index is active").
+    ///
+    /// For every **active** FTS index on `collection`, the record's prior row is
+    /// deleted and (when the record is live and has a text value at
+    /// `$.field_ids.<field_id>`) re-inserted with the current value. A tombstoned
+    /// record drops out of the FTS table so a deleted note stops matching. Pass
+    /// the same `conn` (or a transaction) the canonical write used, so the FTS
+    /// refresh commits or rolls back atomically with the record write.
+    ///
+    /// `record_id` is the canonical `records.id`; `data_json` is the record's
+    /// stored JSON (the same string written to `records.data`). Non-FTS and
+    /// non-active indexes are skipped — expression indexes are maintained by
+    /// SQLite itself, so only the FTS shadow needs hand-syncing.
+    pub fn sync_fts_for_record(
+        &self,
+        conn: &Connection,
+        collection: &str,
+        record_id: &str,
+        data_json: &str,
+    ) -> Result<()> {
+        for def in self.defs.values() {
+            if def.collection != collection
+                || def.kind != IndexKind::Fts5
+                || !def.state.is_usable()
+            {
+                continue;
+            }
+            // Drop the existing row for this id (idempotent: zero or one row).
+            let delete = format!(
+                "DELETE FROM {} WHERE record_id = ?1",
+                quote_ident(&def.index_id)
+            );
+            conn.execute(&delete, rusqlite::params![record_id])
+                .map_err(|e| CoreError::StorageError(e.to_string()))?;
+            // Re-insert iff the record is live and carries a text value.
+            if let Some(text) = fts_value_for(conn, def, data_json)? {
+                let insert = format!(
+                    "INSERT INTO {} (record_id, value) VALUES (?1, ?2)",
+                    quote_ident(&def.index_id)
+                );
+                conn.execute(&insert, rusqlite::params![record_id, text])
+                    .map_err(|e| CoreError::StorageError(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     /// Apply the physical DDL for every **active** definition. Expression index
@@ -583,6 +732,29 @@ fn op_uses_expression_index(op: Op) -> bool {
     matches!(op, Op::Eq | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::In)
 }
 
+/// The FTS `value` for one record's JSON, or `None` when the record should not
+/// have an FTS row (tombstoned, or no text at `$.field_ids.<field_id>`).
+///
+/// Extraction goes through SQLite's `json_extract` (same as [`populate_fts`]) so
+/// a rebuild and an incremental sync agree byte-for-byte. The JSON is bound as a
+/// parameter; only the validated `field_id` is interpolated into the path.
+fn fts_value_for(conn: &Connection, def: &IndexDef, data_json: &str) -> Result<Option<String>> {
+    let json_path = format!("$.field_ids.{}", def.field_id);
+    // Skip tombstoned records: a deleted note must drop out of FTS.
+    let row = conn
+        .query_row(
+            "SELECT json_extract(?1, '$.deleted') IS 1, json_extract(?1, ?2)",
+            rusqlite::params![data_json, json_path],
+            |r| Ok((r.get::<_, bool>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(|e| CoreError::StorageError(e.to_string()))?;
+    let (deleted, value) = row;
+    if deleted {
+        return Ok(None);
+    }
+    Ok(value)
+}
+
 /// Find the first index-eligible leaf predicate in a filter tree: a leaf
 /// addressing a stable `field_id`. For the fixtures' implicit-AND range form,
 /// every leaf is over the same field id, so the first one decides.
@@ -689,5 +861,205 @@ mod tests {
         let plan = mgr.plan(&q, 2);
         assert!(!plan.uses_index);
         assert_eq!(plan.warnings[0].reason, FullScanReason::IndexDeprecated);
+    }
+
+    // --- create / drop / deprecate / FTS sync (DL-5/DL-6) ----------------
+
+    /// A bare in-memory connection with just the `records` table, so the index
+    /// unit tests can build real DDL without pulling in the whole `Store`.
+    fn records_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE records (collection TEXT NOT NULL, id TEXT NOT NULL, \
+             data TEXT NOT NULL, updated_at INTEGER, PRIMARY KEY(collection, id));",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Seed one record's canonical JSON directly into `records`.
+    fn seed(conn: &Connection, collection: &str, id: &str, field_id: &str, value: &str) {
+        let data = serde_json::json!({
+            "entity_id": id,
+            "collection": collection,
+            "field_ids": { field_id: value },
+            "deleted": false
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO records (collection, id, data, updated_at) VALUES (?1, ?2, ?3, 0)",
+            rusqlite::params![collection, id, data],
+        )
+        .unwrap();
+    }
+
+    fn index_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+            rusqlite::params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            rusqlite::params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    #[test]
+    fn create_value_index_registers_active_and_builds_ddl() {
+        let conn = records_conn();
+        seed(&conn, "tasks", "t1", "f_alice_1", "open");
+        let mut mgr = IndexManager::new();
+        let id = mgr
+            .create_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
+            .unwrap();
+        assert_eq!(id, "idx_records_tasks_f_alice_1");
+        // Registered Active and physically present.
+        let def = mgr.get("tasks", "f_alice_1").unwrap();
+        assert_eq!(def.state, IndexState::Active);
+        assert_eq!(def.kind, IndexKind::Expression);
+        assert!(index_exists(&conn, "idx_records_tasks_f_alice_1"));
+    }
+
+    #[test]
+    fn create_index_after_records_activates_and_uses_it() {
+        // DL-6: an index created after rows already exist is built from canonical
+        // records and is immediately a planner candidate.
+        let conn = records_conn();
+        seed(&conn, "events", "e1", "f_alice_0", "alice");
+        seed(&conn, "events", "e2", "f_alice_0", "bob");
+        let mut mgr = IndexManager::new();
+        mgr.create_index(&conn, "events", "f_alice_0", CreateIndexKind::Value)
+            .unwrap();
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "events",
+            "where": [{"field_id": "f_alice_0", "op": "eq", "value": "alice"}]
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 2);
+        assert!(plan.uses_index);
+        assert_eq!(plan.index_id.as_deref(), Some("idx_records_events_f_alice_0"));
+    }
+
+    #[test]
+    fn create_fts_index_populates_shadow_table_from_records() {
+        let conn = records_conn();
+        seed(&conn, "notes", "n1", "f_alice_0", "offline rebuild keeps indexes honest");
+        seed(&conn, "notes", "n2", "f_alice_0", "lunch plans for the team");
+        let mut mgr = IndexManager::new();
+        let id = mgr
+            .create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Fts)
+            .unwrap();
+        assert_eq!(id, "fts_records_notes_f_alice_0");
+        assert!(table_exists(&conn, "fts_records_notes_f_alice_0"));
+        // The shadow rows were populated from canonical records.
+        let hits = mgr
+            .fts_match(&conn, "notes", "f_alice_0", "offline")
+            .unwrap();
+        assert_eq!(hits, vec!["n1".to_string()]);
+    }
+
+    #[test]
+    fn drop_index_removes_definition_and_structure() {
+        let conn = records_conn();
+        seed(&conn, "tasks", "t1", "f_alice_1", "open");
+        let mut mgr = IndexManager::new();
+        mgr.create_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
+            .unwrap();
+        assert!(index_exists(&conn, "idx_records_tasks_f_alice_1"));
+        mgr.drop_index(&conn, "tasks", "f_alice_1").unwrap();
+        // Definition gone and physical index removed.
+        assert!(mgr.get("tasks", "f_alice_1").is_none());
+        assert!(!index_exists(&conn, "idx_records_tasks_f_alice_1"));
+        // Dropping again is a no-op (idempotent).
+        mgr.drop_index(&conn, "tasks", "f_alice_1").unwrap();
+    }
+
+    #[test]
+    fn deprecate_index_keeps_metadata_but_stops_planner_use() {
+        let conn = records_conn();
+        seed(&conn, "contacts", "c1", "f_alice_0", "ana@old.example");
+        let mut mgr = IndexManager::new();
+        mgr.create_index(&conn, "contacts", "f_alice_0", CreateIndexKind::Value)
+            .unwrap();
+        mgr.deprecate_index(&conn, "contacts", "f_alice_0").unwrap();
+        // Metadata retained, state Deprecated, physical index dropped.
+        let def = mgr.get("contacts", "f_alice_0").unwrap();
+        assert_eq!(def.state, IndexState::Deprecated);
+        assert!(!index_exists(&conn, "idx_records_contacts_f_alice_0"));
+        // Planner refuses a deprecated index and surfaces the distinct reason.
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "contacts",
+            "where": [{"field_id": "f_alice_0", "op": "eq", "value": "ana@old.example"}]
+        }))
+        .unwrap();
+        let plan = mgr.plan(&q, 1);
+        assert!(!plan.uses_index);
+        assert_eq!(plan.warnings[0].reason, FullScanReason::IndexDeprecated);
+    }
+
+    #[test]
+    fn create_index_rejects_malicious_identifier() {
+        let conn = records_conn();
+        let mut mgr = IndexManager::new();
+        let err = mgr
+            .create_index(
+                &conn,
+                "tasks'); DROP TABLE records;--",
+                "f_alice_1",
+                CreateIndexKind::Value,
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+        // `records` table is untouched.
+        assert!(table_exists(&conn, "records"));
+    }
+
+    #[test]
+    fn sync_fts_for_record_inserts_updates_and_deletes_rows() {
+        let conn = records_conn();
+        let mut mgr = IndexManager::new();
+        mgr.create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Fts)
+            .unwrap();
+
+        // Insert: a new record's text becomes searchable.
+        let live = |body: &str, deleted: bool| {
+            serde_json::json!({
+                "entity_id": "n1",
+                "collection": "notes",
+                "field_ids": { "f_alice_0": body },
+                "deleted": deleted
+            })
+            .to_string()
+        };
+        mgr.sync_fts_for_record(&conn, "notes", "n1", &live("offline rebuild", false))
+            .unwrap();
+        assert_eq!(
+            mgr.fts_match(&conn, "notes", "f_alice_0", "offline").unwrap(),
+            vec!["n1".to_string()]
+        );
+
+        // Update: the old text no longer matches; the new text does. No duplicate
+        // rows (the prior row is deleted before re-insert).
+        mgr.sync_fts_for_record(&conn, "notes", "n1", &live("lunch plans", false))
+            .unwrap();
+        assert!(mgr.fts_match(&conn, "notes", "f_alice_0", "offline").unwrap().is_empty());
+        assert_eq!(
+            mgr.fts_match(&conn, "notes", "f_alice_0", "lunch").unwrap(),
+            vec!["n1".to_string()]
+        );
+
+        // Delete (tombstone): the record drops out of the FTS table entirely.
+        mgr.sync_fts_for_record(&conn, "notes", "n1", &live("lunch plans", true))
+            .unwrap();
+        assert!(mgr.fts_match(&conn, "notes", "f_alice_0", "lunch").unwrap().is_empty());
     }
 }

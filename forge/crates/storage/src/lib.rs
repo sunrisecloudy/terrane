@@ -31,7 +31,7 @@ pub use query::{
 };
 
 pub mod index;
-pub use index::{IndexDef, IndexKind, IndexManager, IndexState};
+pub use index::{CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexState};
 
 /// The M0a physical schema (prd-merged/02 §4 subset). Created on open if
 /// absent. Tables that exist in the full spec but are unused by the spine are
@@ -616,6 +616,95 @@ impl Store {
     /// callers need not reach the connection.
     pub fn build_indexes(&self, indexes: &index::IndexManager) -> Result<()> {
         indexes.rebuild_active(&self.conn)
+    }
+
+    /// Create (DL-5) one index over the `records` projection and build it from
+    /// canonical records in a single call: `Value` → a collection-scoped JSON1
+    /// expression index, `Fts` → a populated FTS5 shadow table. The definition is
+    /// registered `Active` in `indexes` and its physical structure is built
+    /// immediately (so creating an index *after* rows exist activates it — DL-6).
+    /// Returns the deterministic `index_id`. Thin wrapper over
+    /// [`IndexManager::create_index`](index::IndexManager::create_index).
+    pub fn create_index(
+        &self,
+        indexes: &mut index::IndexManager,
+        collection: &str,
+        field_id: &str,
+        kind: index::CreateIndexKind,
+    ) -> Result<String> {
+        indexes.create_index(&self.conn, collection, field_id, kind)
+    }
+
+    // --- Index-synced record writes (DL-5 FTS maintenance) ----------------
+
+    /// Put a record (as [`put_record`](Self::put_record)) **and** refresh any
+    /// active FTS5 shadow rows for it in the **same** SQLite transaction (DL-5:
+    /// FTS must be kept in sync on insert/update). Expression indexes are
+    /// maintained by SQLite automatically, so only FTS needs the hand-sync; the
+    /// canonical `records` write and the FTS refresh commit or roll back together.
+    pub fn put_record_indexed(
+        &mut self,
+        env: &RecordEnvelope,
+        indexes: &index::IndexManager,
+    ) -> Result<()> {
+        let data = serde_json::to_string(env).map_err(|e| map_json("put_record_indexed", e))?;
+        let collection = env.collection.as_str().to_string();
+        let id = env.entity_id.as_str().to_string();
+        self.transact(|tx| {
+            put_record_tx(tx, env)?;
+            indexes.sync_fts_for_record(tx, &collection, &id, &data)
+        })
+    }
+
+    /// Patch a record (as [`patch_record`](Self::patch_record)) and refresh active
+    /// FTS rows for it in the same transaction (DL-5). Returns the merged
+    /// envelope.
+    pub fn patch_record_indexed(
+        &mut self,
+        collection: &str,
+        id: &str,
+        fields: &serde_json::Map<String, serde_json::Value>,
+        logical_at: Option<i64>,
+        indexes: &index::IndexManager,
+    ) -> Result<RecordEnvelope> {
+        self.transact(|tx| {
+            let mut env = get_record_tx(tx, collection, id)?.ok_or_else(|| {
+                CoreError::QueryError(format!("patch: record {collection}/{id} does not exist"))
+            })?;
+            for (k, v) in fields {
+                env.fields.insert(k.clone(), v.clone());
+            }
+            bump_updated_at(&mut env, logical_at);
+            put_record_tx(tx, &env)?;
+            let data =
+                serde_json::to_string(&env).map_err(|e| map_json("patch_record_indexed", e))?;
+            indexes.sync_fts_for_record(tx, collection, id, &data)?;
+            Ok(env)
+        })
+    }
+
+    /// Delete (tombstone) a record (as [`delete_record`](Self::delete_record)) and
+    /// drop it from any active FTS shadow rows in the same transaction (DL-5): a
+    /// deleted record stops matching text search. Returns the tombstoned envelope.
+    pub fn delete_record_indexed(
+        &mut self,
+        collection: &str,
+        id: &str,
+        logical_at: Option<i64>,
+        indexes: &index::IndexManager,
+    ) -> Result<RecordEnvelope> {
+        self.transact(|tx| {
+            let mut env = get_record_tx(tx, collection, id)?.ok_or_else(|| {
+                CoreError::QueryError(format!("delete: record {collection}/{id} does not exist"))
+            })?;
+            env.deleted = true;
+            bump_updated_at(&mut env, logical_at);
+            put_record_tx(tx, &env)?;
+            let data =
+                serde_json::to_string(&env).map_err(|e| map_json("delete_record_indexed", e))?;
+            indexes.sync_fts_for_record(tx, collection, id, &data)?;
+            Ok(env)
+        })
     }
 
     // --- Mutations (DL-17) -----------------------------------------------
@@ -2064,5 +2153,145 @@ mod tests {
         }];
         assert_eq!(s.transact_mutations(&items).unwrap(), 2);
         assert_eq!(s.list_records("tasks").unwrap().len(), 2);
+    }
+
+    // --- Index-synced record writes (DL-5 FTS maintenance) ---------------
+
+    /// A note envelope whose stable `field_ids.f_alice_0` carries `body` (so an
+    /// FTS index over that field id has text to mirror).
+    fn note(id: &str, body: &str) -> RecordEnvelope {
+        let mut env = RecordEnvelope::new(
+            CollectionId::new("notes"),
+            RecordId::new(id),
+            fields(&[("body", serde_json::json!(body))]),
+            LogicalTimestamp(1),
+        );
+        env.field_ids
+            .insert("f_alice_0".into(), serde_json::json!(body));
+        env
+    }
+
+    /// Create an Active FTS index on notes/body via the Store create API.
+    fn notes_fts(store: &Store) -> IndexManager {
+        let mut mgr = IndexManager::new();
+        store
+            .create_index(&mut mgr, "notes", "f_alice_0", CreateIndexKind::Fts)
+            .expect("create fts index");
+        mgr
+    }
+
+    #[test]
+    fn put_record_indexed_keeps_fts_in_sync_on_insert_and_update() {
+        let mut s = store();
+        let mgr = notes_fts(&s);
+        // Insert: searchable immediately.
+        s.put_record_indexed(&note("n1", "offline rebuild keeps indexes honest"), &mgr)
+            .unwrap();
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
+            vec!["n1".to_string()]
+        );
+        // Overwrite the same id with new text: old term gone, new term present,
+        // no duplicate rows.
+        s.put_record_indexed(&note("n1", "lunch plans for the team"), &mgr)
+            .unwrap();
+        assert!(mgr
+            .fts_match(s.connection(), "notes", "f_alice_0", "offline")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "lunch").unwrap(),
+            vec!["n1".to_string()]
+        );
+    }
+
+    #[test]
+    fn patch_record_indexed_runs_fts_sync_without_corrupting_the_row() {
+        let mut s = store();
+        let mgr = notes_fts(&s);
+        s.put_record_indexed(&note("n1", "offline rebuild"), &mgr).unwrap();
+        // Patch a display field. The FTS index mirrors the stable
+        // `field_ids.f_alice_0` (DL-7), which `patch` does not touch, so the
+        // searchable value is unchanged — but the sync still runs and must leave
+        // exactly one consistent row (no duplicate, no loss).
+        let env = s
+            .patch_record_indexed(
+                "notes",
+                "n1",
+                &fields(&[("tag", serde_json::json!("data"))])
+                    .into_iter()
+                    .collect(),
+                None,
+                &mgr,
+            )
+            .unwrap();
+        assert_eq!(env.fields.get("tag"), Some(&serde_json::json!("data")));
+        let hits = mgr
+            .fts_match(s.connection(), "notes", "f_alice_0", "offline")
+            .unwrap();
+        assert_eq!(
+            hits,
+            vec!["n1".to_string()],
+            "exactly one FTS row mirrors the canonical field_id after patch"
+        );
+    }
+
+    #[test]
+    fn put_record_indexed_with_changed_field_id_updates_fts() {
+        // When the stable field_id value itself changes (the case FTS truly
+        // tracks), put_record_indexed re-mirrors it.
+        let mut s = store();
+        let mgr = notes_fts(&s);
+        s.put_record_indexed(&note("n1", "offline rebuild"), &mgr).unwrap();
+        s.put_record_indexed(&note("n1", "lunch plans"), &mgr).unwrap();
+        assert!(mgr
+            .fts_match(s.connection(), "notes", "f_alice_0", "offline")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "lunch").unwrap(),
+            vec!["n1".to_string()]
+        );
+    }
+
+    #[test]
+    fn delete_record_indexed_drops_record_from_fts() {
+        let mut s = store();
+        let mgr = notes_fts(&s);
+        s.put_record_indexed(&note("n1", "offline rebuild"), &mgr).unwrap();
+        s.put_record_indexed(&note("n2", "offline sync path"), &mgr).unwrap();
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
+            vec!["n1".to_string(), "n2".to_string()]
+        );
+        // Tombstone n1: it drops out of FTS; n2 still matches.
+        let env = s.delete_record_indexed("notes", "n1", None, &mgr).unwrap();
+        assert!(env.deleted);
+        assert_eq!(
+            mgr.fts_match(s.connection(), "notes", "f_alice_0", "offline").unwrap(),
+            vec!["n2".to_string()]
+        );
+    }
+
+    #[test]
+    fn store_create_index_builds_value_index_from_existing_records() {
+        // DL-6: create after records exist -> the planner can use it.
+        let s = store();
+        let mut env = sample_record("tasks", "t1", "Ship");
+        env.field_ids.insert("f_alice_1".into(), serde_json::json!("open"));
+        s.put_record(&env).unwrap();
+        let mut mgr = IndexManager::new();
+        let id = s
+            .create_index(&mut mgr, "tasks", "f_alice_1", CreateIndexKind::Value)
+            .unwrap();
+        assert_eq!(id, "idx_records_tasks_f_alice_1");
+        let q = Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": [{"field_id": "f_alice_1", "op": "eq", "value": "open"}]
+        }))
+        .unwrap();
+        let planned = s.query_planned(&q, &mgr).unwrap();
+        assert!(planned.uses_index);
+        assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_alice_1"));
     }
 }
