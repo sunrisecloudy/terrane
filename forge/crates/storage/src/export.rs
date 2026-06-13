@@ -138,20 +138,28 @@ impl ExportOptions {
 /// namespace is dropped. Applet `ctx.storage` namespaces are `applet/<id>` and
 /// are portable workspace data, so they are not matched here.
 pub fn is_local_only_namespace(namespace: &str) -> bool {
-    const LOCAL_ONLY_PREFIXES: &[&str] = &[
-        "secret/",
-        "secrets/",
-        "provider/",     // provider credentials / tokens
-        "credentials/",
-        "device/",       // device-local settings
-        "__device/",
-        "local/",        // local window state / transient UI
-        "__local/",
+    // Reserved secret / device-local buckets. Each entry is the bucket root; a
+    // namespace is dropped when it IS the bucket exactly (a key stored directly
+    // under the root, e.g. `secret`) OR is a child of it (`secret/<...>`). Matching
+    // both forms closes the gap where an exact root namespace like `secret`,
+    // `provider`, or `__device` (no trailing key) would otherwise slip past a
+    // prefix-only check and be exported (review 061 P2).
+    const LOCAL_ONLY_BUCKETS: &[&str] = &[
+        "secret",      // secret values
+        "secrets",
+        "provider",    // provider credentials / tokens
+        "credentials",
+        "device",      // device-local settings / window state
+        "__device",
+        "local",       // local window state / transient UI
+        "__local",
     ];
-    // Exact reserved buckets (no trailing key) and prefix buckets.
-    const LOCAL_ONLY_EXACT: &[&str] = &["secrets", "device", "local"];
-    LOCAL_ONLY_EXACT.contains(&namespace)
-        || LOCAL_ONLY_PREFIXES.iter().any(|p| namespace.starts_with(p))
+    LOCAL_ONLY_BUCKETS.iter().any(|bucket| {
+        namespace == *bucket
+            || namespace
+                .strip_prefix(bucket)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 impl Store {
@@ -186,7 +194,17 @@ impl Store {
         // A fresh Store creates the canonical M0a schema, so the bundle is a
         // valid, inspectable workspace file in its own right.
         let bundle = Store::open(path)?;
-        self.write_bundle(&bundle, options)
+        // On a write failure, remove the freshly created (now partial/empty) file
+        // so a retry is not refused by the "already exists" guard above and no
+        // half-written bundle is left on disk (review 061 P1).
+        match self.write_bundle(&bundle, options) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                drop(bundle);
+                let _ = std::fs::remove_file(path);
+                Err(e)
+            }
+        }
     }
 
     /// Export into an **in-memory** bundle store (tests / piping). Same
@@ -200,20 +218,28 @@ impl Store {
 
     /// Copy every syncable table from `self` into the fresh `bundle`, in a fixed
     /// deterministic order. Shared by the file and in-memory export entry points.
+    ///
+    /// All destination writes run inside ONE transaction on the bundle connection
+    /// (review 061 P1): either the whole bundle is written and committed, or an
+    /// error rolls every insert back so a failed export never leaves a partial,
+    /// schema-but-no-data bundle file behind (the file-path entry point removes
+    /// that empty file on error — see [`export_workspace`](Store::export_workspace)).
     fn write_bundle(&self, bundle: &Store, options: &ExportOptions) -> Result<()> {
         // Order is FIXED so re-export is byte-stable: header → kv → oplog →
         // chunks → snapshots → records → (runs/run_logs by policy).
-        write_meta_header(&bundle.conn, options)?;
-        copy_kv(&self.conn, &bundle.conn)?;
-        copy_oplog(&self.conn, &bundle.conn)?;
-        copy_crdt_chunks(&self.conn, &bundle.conn)?;
-        copy_crdt_snapshots(&self.conn, &bundle.conn)?;
-        copy_records(&self.conn, &bundle.conn)?;
-        if options.run_logs == RunLogPolicy::Include {
-            copy_runs(&self.conn, &bundle.conn)?;
-            copy_run_logs(&self.conn, &bundle.conn)?;
-        }
-        Ok(())
+        in_transaction(&bundle.conn, |dst| {
+            write_meta_header(dst, options)?;
+            copy_kv(&self.conn, dst)?;
+            copy_oplog(&self.conn, dst)?;
+            copy_crdt_chunks(&self.conn, dst)?;
+            copy_crdt_snapshots(&self.conn, dst)?;
+            copy_records(&self.conn, dst)?;
+            if options.run_logs == RunLogPolicy::Include {
+                copy_runs(&self.conn, dst)?;
+                copy_run_logs(&self.conn, dst)?;
+            }
+            Ok(())
+        })
     }
 
     /// Import a portable bundle file into a **fresh** target `Store` at
@@ -241,9 +267,18 @@ impl Store {
             )));
         }
         let bundle = open_bundle_readonly(bundle_path.as_ref())?;
-        let mut target = Store::open(target)?;
-        target.load_from_bundle(&bundle, indexes)?;
-        Ok(target)
+        let mut store = Store::open(target)?;
+        // On a load failure, remove the freshly created (now partial) target so a
+        // retry is not refused by the "already exists" guard above and no
+        // half-imported workspace is left on disk (review 061 P1).
+        match store.load_from_bundle(&bundle, indexes) {
+            Ok(()) => Ok(store),
+            Err(e) => {
+                drop(store);
+                let _ = std::fs::remove_file(target);
+                Err(e)
+            }
+        }
     }
 
     /// Import a bundle `Store` (e.g. one produced by
@@ -260,20 +295,47 @@ impl Store {
     /// Copy every syncable table from an (already version-validated) bundle
     /// connection into this fresh store, then rebuild the projection from the
     /// imported chunks. Mirrors the export order so the two paths stay in lockstep.
+    ///
+    /// The table copies run inside ONE transaction on the target connection
+    /// (review 061 P1): if any copy fails the whole import rolls back, so a failed
+    /// import never leaves a half-populated target with chunks but no oplog (the
+    /// file-path entry point also removes the freshly created target file on error
+    /// — see [`import_workspace`](Store::import_workspace)). The projection rebuild
+    /// runs after commit because [`rebuild_projection`](Store::rebuild_projection)
+    /// manages its own write transaction over the now-imported chunks.
     fn load_from_bundle(&mut self, bundle: &Connection, indexes: &IndexManager) -> Result<()> {
-        copy_kv(bundle, &self.conn)?;
-        copy_oplog(bundle, &self.conn)?;
-        copy_crdt_chunks(bundle, &self.conn)?;
-        copy_crdt_snapshots(bundle, &self.conn)?;
-        // The bundle's `records` rows are advisory; the import re-derives the
-        // projection from the authoritative `crdt_chunks` (DL-6), so we do NOT
-        // copy `records` here — rebuild produces them.
-        copy_runs(bundle, &self.conn)?;
-        copy_run_logs(bundle, &self.conn)?;
+        in_transaction(&self.conn, |dst| {
+            copy_kv(bundle, dst)?;
+            copy_oplog(bundle, dst)?;
+            copy_crdt_chunks(bundle, dst)?;
+            copy_crdt_snapshots(bundle, dst)?;
+            // The bundle's `records` rows are advisory; the import re-derives the
+            // projection from the authoritative `crdt_chunks` (DL-6), so we do NOT
+            // copy `records` here — rebuild produces them.
+            copy_runs(bundle, dst)?;
+            copy_run_logs(bundle, dst)?;
+            Ok(())
+        })?;
         // DL-6: reconstruct the records projection purely from imported chunks.
         // This is the byte-identical-projection invariant: records are derived.
         self.rebuild_projection(indexes)
     }
+}
+
+/// Run `f` against `conn` inside one SQLite transaction, committing iff `f`
+/// returns `Ok` and rolling back on any error (review 061 P1: the table copies
+/// are all-or-nothing, never a partially populated bundle/target). Uses
+/// `unchecked_transaction` because the copy helpers borrow the connection by
+/// shared reference; the bundle/target connection is freshly created and owned by
+/// this call, so no other handle is mutating it concurrently.
+fn in_transaction<F>(conn: &Connection, f: F) -> Result<()>
+where
+    F: FnOnce(&Connection) -> Result<()>,
+{
+    let tx = conn.unchecked_transaction().map_err(map_sql)?;
+    f(&tx)?;
+    tx.commit().map_err(map_sql)?;
+    Ok(())
 }
 
 /// Open a bundle file **read-only** and validate its format version before any
@@ -863,10 +925,22 @@ mod tests {
         assert!(is_local_only_namespace("credentials/aws"));
         assert!(is_local_only_namespace("device/window"));
         assert!(is_local_only_namespace("local/ui"));
+        // Exact root buckets (a key stored directly under the bucket, no trailing
+        // `/<key>` segment) are excluded too — closes the review 061 P2 gap where
+        // `secret`, `provider`, `credentials`, `__device`, `__local` slipped past a
+        // prefix-only check and were exported.
+        assert!(is_local_only_namespace("secret"));
+        assert!(is_local_only_namespace("provider"));
+        assert!(is_local_only_namespace("credentials"));
+        assert!(is_local_only_namespace("__device"));
+        assert!(is_local_only_namespace("__local"));
+        assert!(is_local_only_namespace("secrets/aws"), "secrets/ children stay excluded");
         // ...but portable workspace namespaces are NOT excluded.
         assert!(!is_local_only_namespace("__forge/meta"), "applet manifests/programs are portable");
         assert!(!is_local_only_namespace("applet/notes"), "applet ctx.storage is portable");
         assert!(!is_local_only_namespace("localized"), "prefix must be a bucket boundary, not a substring");
+        assert!(!is_local_only_namespace("secretive"), "a longer name sharing a bucket prefix is portable");
+        assert!(!is_local_only_namespace("providers"), "providers (plural) is not the provider bucket");
     }
 
     // --- DL-24 deterministic re-export: byte-identical --------------------
