@@ -219,27 +219,59 @@ impl Store {
     /// Copy every syncable table from `self` into the fresh `bundle`, in a fixed
     /// deterministic order. Shared by the file and in-memory export entry points.
     ///
+    /// **Source snapshot (review 062 P1 #3).** Every SOURCE read runs inside ONE
+    /// read transaction (`src_tx`) opened on `self.conn` for the whole copy, so the
+    /// bundle reflects a single consistent point-in-time snapshot of the workspace.
+    /// Without it each `copy_*` helper ran its own `SELECT`, and a concurrent write
+    /// landing *between* two copies (e.g. a new chunk after `oplog` but before
+    /// `crdt_chunks`) would split-brain the bundle — an oplog row whose record never
+    /// made it, or a chunk with no matching op. A single read transaction (frozen by
+    /// the priming read below before any copy runs) pins the snapshot at the start of
+    /// the export, so any concurrent writer's changes are simply invisible to this
+    /// export (they ride the next one). The read transaction never writes, so dropping
+    /// it (on success or error) is a clean rollback of nothing.
+    ///
     /// All destination writes run inside ONE transaction on the bundle connection
     /// (review 061 P1): either the whole bundle is written and committed, or an
     /// error rolls every insert back so a failed export never leaves a partial,
     /// schema-but-no-data bundle file behind (the file-path entry point removes
     /// that empty file on error — see [`export_workspace`](Store::export_workspace)).
     fn write_bundle(&self, bundle: &Store, options: &ExportOptions) -> Result<()> {
+        // Pin a consistent read snapshot of the SOURCE for the whole export. The
+        // bundle/dst connection is freshly created and owned here; `self.conn` is
+        // borrowed shared, so `unchecked_transaction` is the read seam (it never
+        // writes, so it only ever rolls back nothing on drop).
+        let src_tx = self.conn.unchecked_transaction().map_err(map_sql)?;
+        let src: &Connection = &src_tx;
+        // A DEFERRED read transaction does not fix its snapshot until the first
+        // read. Issue one trivial read now so the snapshot is frozen at the START of
+        // the export — before any `copy_*` runs — so a concurrent write landing
+        // between BEGIN and the first copy is also excluded, not just writes between
+        // two copies. Every later `copy_*` then reads this same frozen view.
+        src.query_row("SELECT 1 FROM sqlite_schema LIMIT 1", [], |_| Ok(()))
+            .optional()
+            .map_err(map_sql)?;
         // Order is FIXED so re-export is byte-stable: header → kv → oplog →
         // chunks → snapshots → records → (runs/run_logs by policy).
-        in_transaction(&bundle.conn, |dst| {
+        let result = in_transaction(&bundle.conn, |dst| {
             write_meta_header(dst, options)?;
-            copy_kv(&self.conn, dst)?;
-            copy_oplog(&self.conn, dst)?;
-            copy_crdt_chunks(&self.conn, dst)?;
-            copy_crdt_snapshots(&self.conn, dst)?;
-            copy_records(&self.conn, dst)?;
+            copy_kv(src, dst)?;
+            copy_oplog(src, dst)?;
+            copy_crdt_chunks(src, dst)?;
+            copy_crdt_snapshots(src, dst)?;
+            copy_records(src, dst)?;
             if options.run_logs == RunLogPolicy::Include {
-                copy_runs(&self.conn, dst)?;
-                copy_run_logs(&self.conn, dst)?;
+                copy_runs(src, dst)?;
+                copy_run_logs(src, dst)?;
             }
             Ok(())
-        })
+        });
+        // End the read snapshot. It only read, so this is a no-op rollback either
+        // way; surface a rollback failure only when the export otherwise succeeded.
+        match (result, src_tx.rollback().map_err(map_sql)) {
+            (Ok(()), rollback) => rollback,
+            (Err(e), _) => Err(e),
+        }
     }
 
     /// Import a portable bundle file into a **fresh** target `Store` at
@@ -292,6 +324,91 @@ impl Store {
         Ok(target)
     }
 
+    /// Import a bundle `Store` into **THIS** (already-open) store *in place* (DL-24
+    /// import-into-target; review 062 P1 #1). Validates the bundle's format version
+    /// (an unknown version is a clean error before any state is touched), copies
+    /// every syncable table from the bundle into `self` inside ONE transaction, then
+    /// rebuilds the `records` projection from the imported `crdt_chunks` (DL-6).
+    ///
+    /// Unlike [`import_workspace_in_memory`](Store::import_workspace_in_memory) —
+    /// which builds a *separate* in-memory `Store` the caller must then keep — this
+    /// writes the imported tables into the connection `self` already holds. When
+    /// `self` is **file-backed** that means the import is committed to the same file
+    /// on disk, so it survives a reopen (the in-memory variant lost the data when
+    /// the caller swapped the imported store away and reopened the original file —
+    /// the review 062 P1 #1 bug).
+    ///
+    /// The caller is responsible for the fresh-target precondition: an import
+    /// reconstructs a whole workspace, it does not merge. Use
+    /// [`is_empty_target`](Store::is_empty_target) to gate it. The copy is
+    /// all-or-nothing (the shared `load_from_bundle` transaction), so a mid-import
+    /// failure rolls `self` back to its pre-import contents.
+    pub fn import_workspace_in_place(
+        &mut self,
+        bundle: &Store,
+        indexes: &IndexManager,
+    ) -> Result<()> {
+        validate_bundle_version(&bundle.conn)?;
+        self.load_from_bundle(&bundle.conn, indexes)
+    }
+
+    /// True iff this store holds **no importable state at all** — the precondition
+    /// for an in-place import (review 062 P1 #2). Checks EVERY table/namespace a
+    /// bundle would populate, so a workspace that is "empty" only in its records
+    /// projection but already carries (say) a `db.read` grant table or applet
+    /// manifests is correctly reported as **not** fresh:
+    ///
+    /// - the projected `records`,
+    /// - the CRDT source of truth (`crdt_chunks`, `crdt_snapshots`) and `oplog`,
+    /// - the policy-gated `runs` / `run_logs`,
+    /// - and every **portable** `kv` row — i.e. any namespace NOT dropped by
+    ///   [`is_local_only_namespace`]. Local-only / secret namespaces are excluded
+    ///   because they never travel in a bundle, so a store holding *only* a stray
+    ///   device-local key is still a valid (fresh) import target; counting them
+    ///   would wrongly refuse a genuinely importable workspace.
+    ///
+    /// (M0a storage has no `schema_defs` / `index_defs` tables yet — those are
+    /// GA-future, reported as `missing_required_for_ga` in the export descriptor —
+    /// so there is nothing to check for them here; this is the complete importable
+    /// surface for the current schema.)
+    pub fn is_empty_target(&self) -> Result<bool> {
+        // Any importable physical table with a row → not fresh. A single
+        // `EXISTS`/`LIMIT 1` per table is enough (we only need presence).
+        for table in ["records", "crdt_chunks", "crdt_snapshots", "oplog", "runs", "run_logs"] {
+            if table_has_any_row(&self.conn, table)? {
+                return Ok(false);
+            }
+        }
+        // Portable kv: a row in any namespace a bundle WOULD carry counts. A row in
+        // a purely local-only / secret namespace (never exported) does not.
+        if self.has_portable_kv_row()? {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// True iff the `kv` table holds at least one row in a **portable** namespace —
+    /// one a bundle would carry (i.e. NOT [`is_local_only_namespace`]). Tombstoned
+    /// rows count: a deleted-but-exported key is still importable state that a fresh
+    /// target must not silently shadow. Local-only / secret namespaces are skipped
+    /// because they never travel in a bundle.
+    fn has_portable_kv_row(&self) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT namespace FROM kv")
+            .map_err(map_sql)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(map_sql)?;
+        for r in rows {
+            let namespace = r.map_err(map_sql)?;
+            if !is_local_only_namespace(&namespace) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Copy every syncable table from an (already version-validated) bundle
     /// connection into this fresh store, then rebuild the projection from the
     /// imported chunks. Mirrors the export order so the two paths stay in lockstep.
@@ -336,6 +453,21 @@ where
     f(&tx)?;
     tx.commit().map_err(map_sql)?;
     Ok(())
+}
+
+/// True iff `table` holds at least one row (a presence probe for
+/// [`is_empty_target`](Store::is_empty_target)). `table` is always one of this
+/// module's FIXED table-name literals — never caller/user input — so formatting it
+/// into the statement carries no injection surface; the `EXISTS`/`LIMIT 1` shape
+/// lets SQLite stop at the first row instead of counting the whole table.
+fn table_has_any_row(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(map_sql)
+    .map(|exists| exists != 0)
 }
 
 /// Open a bundle file **read-only** and validate its format version before any
@@ -1085,6 +1217,272 @@ mod tests {
             .err()
             .expect("import must refuse a pre-existing target");
         assert_eq!(err.code(), "StorageError");
+    }
+
+    // --- in-place import persists to the target file (review 062 P1 #1) ---
+
+    #[test]
+    fn import_workspace_in_place_persists_to_the_same_file() {
+        // A file-backed target must actually PERSIST an in-place import: write the
+        // bundle, import into a file-backed store, drop it, reopen the SAME path,
+        // and still see the imported records / applet kv / grant table. This is the
+        // review 062 P1 #1 regression — the in-memory swap reported success but lost
+        // everything on reopen.
+        let dir = tempfile::tempdir().unwrap();
+        let (src, idx) = source_workspace();
+        let before = projection_snapshot(&src);
+        // Persist a grant table so a non-record namespace travels too.
+        src.kv_set(
+            "__forge/meta",
+            "db_read_grants",
+            b"{\"actor\":[\"notes\"]}",
+            "application/json",
+        )
+        .unwrap();
+
+        let bundle_path = dir.path().join("ws.forgews");
+        src.export_workspace(&bundle_path, &ExportOptions::new("ws_demo")).unwrap();
+
+        let target_path = dir.path().join("target.db");
+        {
+            // Open the bundle as a Store and import into a file-backed target.
+            let bundle = Store::open(&bundle_path).unwrap();
+            let mut target = Store::open(&target_path).unwrap();
+            target.import_workspace_in_place(&bundle, &idx).unwrap();
+            // Visible in the same handle that imported.
+            assert_eq!(projection_snapshot(&target), before, "import populates the live handle");
+        } // Drop both stores: the WAL flushes the committed import to disk.
+
+        // Reopen the SAME file path: the imported state is durably present.
+        let reopened = Store::open(&target_path).unwrap();
+        assert_eq!(
+            projection_snapshot(&reopened),
+            before,
+            "in-place import must survive a reopen of the same file"
+        );
+        // Records query as expected (deleted record stays gone).
+        assert_eq!(reopened.list_records("notes").unwrap().len(), 2);
+        assert_eq!(reopened.list_records("tasks").unwrap().len(), 1);
+        assert!(reopened.get_record("tasks", "t9").unwrap().is_none());
+        // Portable kv survived the reopen too: applet manifest + grant table.
+        assert_eq!(
+            reopened.kv_get("__forge/meta", "applet/notes").unwrap().as_deref(),
+            Some(&b"{\"manifest\":true}"[..])
+        );
+        assert_eq!(
+            reopened.kv_get("__forge/meta", "db_read_grants").unwrap().as_deref(),
+            Some(&b"{\"actor\":[\"notes\"]}"[..])
+        );
+    }
+
+    #[test]
+    fn import_workspace_in_place_rejects_a_bad_version_before_touching_state() {
+        // A version-mismatched bundle is refused before any table is copied, so the
+        // (fresh) target is left untouched.
+        let (src, idx) = source_workspace();
+        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        bundle
+            .connection()
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'export_format_version'",
+                params![b"999".as_slice()],
+            )
+            .unwrap();
+        let mut target = Store::open_in_memory().unwrap();
+        let err = target.import_workspace_in_place(&bundle, &idx).unwrap_err();
+        assert_eq!(err.code(), "StorageError");
+        assert!(target.is_empty_target().unwrap(), "a rejected import must not populate the target");
+    }
+
+    // --- is_empty_target across every importable namespace (062 P1 #2) ----
+
+    #[test]
+    fn is_empty_target_true_on_a_fresh_store() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.is_empty_target().unwrap(), "a brand-new store is a fresh import target");
+    }
+
+    #[test]
+    fn is_empty_target_false_when_any_importable_table_is_populated() {
+        // Each importable physical table independently makes the target non-fresh.
+        // records:
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.put_record(&{
+                let mut e = crate::RecordEnvelope::new(
+                    forge_domain::CollectionId::new("notes"),
+                    forge_domain::RecordId::new("n1"),
+                    Default::default(),
+                    forge_domain::LogicalTimestamp(1),
+                );
+                e.fields.insert("title".into(), json!("x"));
+                e
+            })
+            .unwrap();
+            assert!(!s.is_empty_target().unwrap(), "a projected record is importable state");
+        }
+        // crdt_chunks:
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.put_chunk("collection/notes", "c1", "loro", b"x").unwrap();
+            assert!(!s.is_empty_target().unwrap(), "a crdt chunk is importable state");
+        }
+        // crdt_snapshots:
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.put_snapshot("collection/notes", "s1", "loro", b"x", b"f").unwrap();
+            assert!(!s.is_empty_target().unwrap(), "a crdt snapshot is importable state");
+        }
+        // oplog:
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.append_op("op1", "a", "ws", 1, "insert", b"p").unwrap();
+            assert!(!s.is_empty_target().unwrap(), "an oplog row is importable state");
+        }
+        // runs + run_logs:
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.save_run(&sample_run("run_1")).unwrap();
+            assert!(!s.is_empty_target().unwrap(), "a run row is importable state");
+        }
+        {
+            let s = Store::open_in_memory().unwrap();
+            s.connection()
+                .execute(
+                    "INSERT INTO run_logs (run_id, seq, level, event_type, payload, created_at)
+                     VALUES ('run_1', 0, 'info', 'log', ?1, 0)",
+                    params![b"a".as_slice()],
+                )
+                .unwrap();
+            assert!(!s.is_empty_target().unwrap(), "a run_log row is importable state");
+        }
+    }
+
+    #[test]
+    fn is_empty_target_false_for_a_grants_only_or_applet_only_workspace() {
+        // A workspace whose ONLY content is a portable __forge/meta kv entry (the
+        // grants-only / kv-only case the review calls out) is NOT fresh: the grant
+        // table / applet manifest would be silently shadowed by an import.
+        let grants_only = Store::open_in_memory().unwrap();
+        grants_only
+            .kv_set("__forge/meta", "db_read_grants", b"{}", "application/json")
+            .unwrap();
+        assert!(
+            !grants_only.is_empty_target().unwrap(),
+            "a grants-only workspace must not pass the fresh-target check"
+        );
+
+        let applet_only = Store::open_in_memory().unwrap();
+        applet_only
+            .kv_set("applet/notes", "draft", b"hello", "text/plain")
+            .unwrap();
+        assert!(
+            !applet_only.is_empty_target().unwrap(),
+            "an applet ctx.storage namespace is importable workspace state"
+        );
+    }
+
+    #[test]
+    fn is_empty_target_ignores_purely_local_only_kv() {
+        // Local-only / secret namespaces never travel in a bundle, so a store whose
+        // ONLY content is such a key is still a valid (fresh) import target — counting
+        // it would wrongly refuse a genuinely importable workspace.
+        let s = Store::open_in_memory().unwrap();
+        s.kv_set("secret/weather", "api_key", b"sk-x", "text/plain").unwrap();
+        s.kv_set("device/window", "geometry", b"{}", "application/json").unwrap();
+        s.kv_set("local/ui", "scroll", b"42", "text/plain").unwrap();
+        assert!(
+            s.is_empty_target().unwrap(),
+            "a store holding only non-exportable local-only kv is still a fresh target"
+        );
+        // Add ONE portable key and it flips to non-fresh.
+        s.kv_set("applet/notes", "draft", b"hi", "text/plain").unwrap();
+        assert!(!s.is_empty_target().unwrap(), "a portable kv row makes it non-fresh");
+    }
+
+    #[test]
+    fn is_empty_target_counts_a_tombstoned_portable_kv_row() {
+        // An exported-then-tombstoned portable key is still importable state: the
+        // tombstone row travels in the bundle, so a fresh target must not shadow it.
+        let s = Store::open_in_memory().unwrap();
+        s.kv_set("applet/notes", "draft", b"hi", "text/plain").unwrap();
+        s.kv_delete("applet/notes", "draft").unwrap();
+        assert!(
+            !s.is_empty_target().unwrap(),
+            "a tombstoned portable kv row is still importable state"
+        );
+    }
+
+    // --- export reflects a single consistent source snapshot (062 P1 #3) --
+
+    #[test]
+    fn export_reflects_a_single_consistent_source_snapshot() {
+        // While an export reads the source inside ONE read transaction, a concurrent
+        // write on a SECOND connection to the same file must NOT bleed into the
+        // bundle: the snapshot is pinned at the export's BEGIN, so the bundle is a
+        // single consistent point-in-time view (no split-brain). We model the race
+        // deterministically: open a second handle, mutate it AFTER the export's read
+        // snapshot has begun, and assert the bundle reflects the pre-write state.
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("src.db");
+        let writer = Store::open(&src_path).unwrap();
+        // Seed one CRDT-backed record so the bundle has chunks + a projection.
+        let idx = IndexManager::new();
+        {
+            let mut w = Store::open(&src_path).unwrap();
+            w.apply_mutation_crdt(&insert("notes", "n1", json!({"title": "Alpha"}), 1), &idx)
+                .unwrap();
+        }
+        // A second, independent handle is the "concurrent writer".
+        let mut concurrent = Store::open(&src_path).unwrap();
+
+        // Begin the export's source snapshot manually so we can interleave a write
+        // against the live file mid-export, then run the copy against that snapshot.
+        // A SQLite read transaction pins its snapshot at the FIRST read, so we issue
+        // one read to freeze the snapshot — modelling `write_bundle`, whose first
+        // `copy_*` SELECT freezes the snapshot before every later copy runs.
+        let exporter = Store::open(&src_path).unwrap();
+        let snapshot = exporter.connection().unchecked_transaction().unwrap();
+        let _pin: i64 = snapshot
+            .query_row("SELECT COUNT(*) FROM crdt_chunks", [], |r| r.get(0))
+            .unwrap();
+        // CONCURRENT WRITE: lands on the file AFTER the snapshot was frozen. WAL lets
+        // the writer commit while the snapshot keeps reading its pinned view.
+        concurrent
+            .apply_mutation_crdt(&insert("notes", "n2", json!({"title": "Beta"}), 2), &idx)
+            .unwrap();
+
+        // The pinned snapshot still sees ONLY n1 (the concurrent n2 is invisible).
+        let chunk_docs: i64 = snapshot
+            .query_row("SELECT COUNT(DISTINCT doc_id) FROM crdt_chunks", [], |r| r.get(0))
+            .unwrap();
+        let n1_present: i64 = snapshot
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE collection='notes' AND id='n1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n2_present: i64 = snapshot
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE collection='notes' AND id='n2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(snapshot);
+        assert_eq!(chunk_docs, 1, "snapshot pins one doc; the concurrent write is invisible");
+        assert_eq!(n1_present, 1, "the pre-write record is in the snapshot");
+        assert_eq!(n2_present, 0, "the concurrent write must not bleed into the snapshot");
+
+        // And the real export entry point produces a bundle that round-trips to a
+        // consistent projection (n1 present, importable) — proving write_bundle's
+        // snapshot does not corrupt the output.
+        let bundle_path = dir.path().join("ws.forgews");
+        writer.export_workspace(&bundle_path, &ExportOptions::new("ws")).unwrap();
+        let restore_path = dir.path().join("restored.db");
+        let restored = Store::import_workspace(&bundle_path, &restore_path, &idx).unwrap();
+        assert!(restored.get_record("notes", "n1").unwrap().is_some(), "n1 round-trips");
     }
 
     // --- fixtures/export descriptors (T017) ------------------------------
