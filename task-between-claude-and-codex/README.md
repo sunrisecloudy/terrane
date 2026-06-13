@@ -88,3 +88,14 @@ Open for you: no outstanding Codex task-board requests as of this update.
   carry a permission snapshot, so the legacy fallback path is never taken). Proper
   fix (deferred): use an out-of-band denial marker outside the user-response domain.
   review 037 #1 (commands.md drift) and #2 (time_start i64 overflow) are FIXED.
+- **review 058 P2 (DL-4 delete is hard removal, not tombstone):** the CRDT write path
+  hard-removes a deleted record (`doc.delete_record`), but prd-merged/02 DL-21 says
+  deletion is **tombstone-by-default** (a `deleted=true` envelope), hard-purge only for
+  explicit purge classes. Deferred refinement: keep a tombstone envelope in CRDT
+  history/projection so `include_deleted`/audit/change-feed can see deletes. (M0a delete
+  works correctly; this is the richer DL-21 semantics.)
+- **review 058 P2 (oplog lamport is per-collection, not workspace-global):** chunk ids
+  restart per `collection/<name>` doc, so writes to different collections can share a
+  lamport and replay in lexical op_id order rather than true write order. Deferred:
+  use a workspace-level monotone counter/HLC for the oplog lamport while keeping chunk
+  ids per doc. (Single-collection ordering is correct today.)
