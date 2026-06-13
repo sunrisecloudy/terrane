@@ -542,6 +542,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-ffi"
+version = "0.1.0"
+dependencies = [
+ "forge-core",
+ "forge-domain",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-pipeline"
 version = "0.1.0"
 dependencies = [

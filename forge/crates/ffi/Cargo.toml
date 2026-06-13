@@ -1,0 +1,16 @@
+[package]
+name = "forge-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "forge_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+forge-core.workspace = true
+forge-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
