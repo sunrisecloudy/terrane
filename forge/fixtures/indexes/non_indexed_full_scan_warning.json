@@ -1,0 +1,161 @@
+{
+  "case": "non_indexed_full_scan_warning",
+  "vectorVersion": 1,
+  "description": "Predicate over a non-indexed field returns correct rows but emits a planner.full_scan warning.",
+  "schema": {
+    "changes": [
+      {
+        "op": "add_collection",
+        "name": "tasks"
+      },
+      {
+        "op": "add_field",
+        "collection": "tasks",
+        "actor": "alice",
+        "name": "project",
+        "ty": "text",
+        "indexed": true,
+        "required": false
+      },
+      {
+        "op": "add_field",
+        "collection": "tasks",
+        "actor": "alice",
+        "name": "due_day",
+        "ty": "int_num",
+        "indexed": false,
+        "required": false
+      }
+    ],
+    "collections": {
+      "tasks": {
+        "fields": [
+          {
+            "field_id": "f_alice_0",
+            "name": "project",
+            "ty": "text",
+            "indexed": true,
+            "deprecated": false
+          },
+          {
+            "field_id": "f_alice_1",
+            "name": "due_day",
+            "ty": "int_num",
+            "indexed": false,
+            "deprecated": false
+          }
+        ]
+      }
+    }
+  },
+  "indexes": [
+    {
+      "index_id": "idx_records_tasks_f_alice_0",
+      "collection": "tasks",
+      "field_id": "f_alice_0",
+      "kind": "expression",
+      "state": "active",
+      "ddl": "CREATE INDEX IF NOT EXISTS \"idx_records_tasks_f_alice_0\" ON records (json_extract(data, '$.field_ids.f_alice_0')) WHERE collection = 'tasks';"
+    }
+  ],
+  "records": [
+    {
+      "envelope_version": 1,
+      "entity_id": "task_1",
+      "collection": "tasks",
+      "fields": {
+        "project": "forge",
+        "due_day": 14
+      },
+      "field_ids": {
+        "f_alice_0": "forge",
+        "f_alice_1": 14
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 30,
+      "updated_at": 30,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "task_2",
+      "collection": "tasks",
+      "fields": {
+        "project": "forge",
+        "due_day": 18
+      },
+      "field_ids": {
+        "f_alice_0": "forge",
+        "f_alice_1": 18
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 31,
+      "updated_at": 31,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "task_3",
+      "collection": "tasks",
+      "fields": {
+        "project": "site",
+        "due_day": 25
+      },
+      "field_ids": {
+        "f_alice_0": "site",
+        "f_alice_1": 25
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 32,
+      "updated_at": 32,
+      "deleted": false
+    }
+  ],
+  "query": {
+    "from": "tasks",
+    "where": [
+      {
+        "field_id": "f_alice_1",
+        "op": "lt",
+        "value": 20
+      }
+    ],
+    "order_by": [
+      {
+        "field": "id",
+        "dir": "asc"
+      }
+    ]
+  },
+  "expected": {
+    "uses_index": false,
+    "warnings": [
+      {
+        "code": "planner.full_scan",
+        "collection": "tasks",
+        "field_id": "f_alice_1",
+        "reason": "no_index",
+        "estimated_rows": 3
+      }
+    ],
+    "result_rows": [
+      {
+        "entity_id": "task_1",
+        "fields": {
+          "project": "forge",
+          "due_day": 14
+        }
+      },
+      {
+        "entity_id": "task_2",
+        "fields": {
+          "project": "forge",
+          "due_day": 18
+        }
+      }
+    ]
+  }
+}

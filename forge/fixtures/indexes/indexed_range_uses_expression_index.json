@@ -1,0 +1,177 @@
+{
+  "case": "indexed_range_uses_expression_index",
+  "vectorVersion": 1,
+  "description": "Range predicate over an indexed numeric stable field id uses the same JSON1 expression index.",
+  "schema": {
+    "changes": [
+      {
+        "op": "add_collection",
+        "name": "expenses"
+      },
+      {
+        "op": "add_field",
+        "collection": "expenses",
+        "actor": "alice",
+        "name": "amount",
+        "ty": "int_num",
+        "indexed": true,
+        "required": false
+      },
+      {
+        "op": "add_field",
+        "collection": "expenses",
+        "actor": "alice",
+        "name": "memo",
+        "ty": "text",
+        "indexed": false,
+        "required": false
+      }
+    ],
+    "collections": {
+      "expenses": {
+        "fields": [
+          {
+            "field_id": "f_alice_0",
+            "name": "amount",
+            "ty": "int_num",
+            "indexed": true,
+            "deprecated": false
+          },
+          {
+            "field_id": "f_alice_1",
+            "name": "memo",
+            "ty": "text",
+            "indexed": false,
+            "deprecated": false
+          }
+        ]
+      }
+    }
+  },
+  "indexes": [
+    {
+      "index_id": "idx_records_expenses_f_alice_0",
+      "collection": "expenses",
+      "field_id": "f_alice_0",
+      "kind": "expression",
+      "state": "active",
+      "ddl": "CREATE INDEX IF NOT EXISTS \"idx_records_expenses_f_alice_0\" ON records (json_extract(data, '$.field_ids.f_alice_0')) WHERE collection = 'expenses';"
+    }
+  ],
+  "records": [
+    {
+      "envelope_version": 1,
+      "entity_id": "expense_1",
+      "collection": "expenses",
+      "fields": {
+        "amount": 45,
+        "memo": "coffee"
+      },
+      "field_ids": {
+        "f_alice_0": 45,
+        "f_alice_1": "coffee"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 20,
+      "updated_at": 20,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "expense_2",
+      "collection": "expenses",
+      "fields": {
+        "amount": 120,
+        "memo": "train pass"
+      },
+      "field_ids": {
+        "f_alice_0": 120,
+        "f_alice_1": "train pass"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 21,
+      "updated_at": 21,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "expense_3",
+      "collection": "expenses",
+      "fields": {
+        "amount": 250,
+        "memo": "monitor"
+      },
+      "field_ids": {
+        "f_alice_0": 250,
+        "f_alice_1": "monitor"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 22,
+      "updated_at": 22,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "expense_4",
+      "collection": "expenses",
+      "fields": {
+        "amount": 150,
+        "memo": "team lunch"
+      },
+      "field_ids": {
+        "f_alice_0": 150,
+        "f_alice_1": "team lunch"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 23,
+      "updated_at": 23,
+      "deleted": false
+    }
+  ],
+  "query": {
+    "from": "expenses",
+    "where": [
+      {
+        "field_id": "f_alice_0",
+        "op": "ge",
+        "value": 100
+      },
+      {
+        "field_id": "f_alice_0",
+        "op": "lt",
+        "value": 200
+      }
+    ],
+    "order_by": [
+      {
+        "field_id": "f_alice_0",
+        "dir": "asc"
+      }
+    ]
+  },
+  "expected": {
+    "uses_index": true,
+    "index_id": "idx_records_expenses_f_alice_0",
+    "warnings": [],
+    "result_rows": [
+      {
+        "entity_id": "expense_2",
+        "fields": {
+          "amount": 120,
+          "memo": "train pass"
+        }
+      },
+      {
+        "entity_id": "expense_4",
+        "fields": {
+          "amount": 150,
+          "memo": "team lunch"
+        }
+      }
+    ]
+  }
+}

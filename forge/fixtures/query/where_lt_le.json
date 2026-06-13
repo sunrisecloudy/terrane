@@ -1,0 +1,11 @@
+{
+  "case": "where_lt_le",
+  "description": "Less-than and less-or-equal comparisons over numeric fields.",
+  "seed": [
+    {"envelope_version":1,"entity_id":"tasks/1","collection":"tasks","fields":{"title":"alpha","prio":1},"field_ids":{"f_tasks_title":"alpha","f_tasks_prio":1},"unknown_fields":{},"extensions":{},"created_at":1,"updated_at":1,"deleted":false},
+    {"envelope_version":1,"entity_id":"tasks/2","collection":"tasks","fields":{"title":"beta","prio":2},"field_ids":{"f_tasks_title":"beta","f_tasks_prio":2},"unknown_fields":{},"extensions":{},"created_at":2,"updated_at":2,"deleted":false},
+    {"envelope_version":1,"entity_id":"tasks/3","collection":"tasks","fields":{"title":"gamma","prio":3},"field_ids":{"f_tasks_title":"gamma","f_tasks_prio":3},"unknown_fields":{},"extensions":{},"created_at":3,"updated_at":3,"deleted":false}
+  ],
+  "query": {"dsl":"db.from('tasks').where(f => f.prio.lt(3).and(f.prio.le(2))).orderBy('prio','asc')","plan":{"from":"tasks","where":{"and":[["prio","<",3],["prio","<=",2]]},"orderBy":["prio","asc"]},"sql_like":"SELECT * FROM tasks WHERE prio < 3 AND prio <= 2 ORDER BY prio ASC"},
+  "expect": {"ids":["tasks/1","tasks/2"],"warnings":[]}
+}

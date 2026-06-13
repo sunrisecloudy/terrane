@@ -1,0 +1,186 @@
+{
+  "case": "rebuild_after_records_activates_index",
+  "vectorVersion": 1,
+  "description": "An index proposed after records already exist is rebuilt from canonical records before the planner may use it.",
+  "phases": [
+    {
+      "name": "seed_without_index",
+      "schema_field_indexed": false,
+      "records_exist": true
+    },
+    {
+      "name": "propose_index",
+      "index_state": "proposed"
+    },
+    {
+      "name": "rebuild_from_records",
+      "index_state": "rebuilding",
+      "source": "records projection rebuilt from CRDT docs"
+    },
+    {
+      "name": "query_after_rebuild",
+      "index_state": "active"
+    }
+  ],
+  "schema": {
+    "initial_changes": [
+      {
+        "op": "add_collection",
+        "name": "events"
+      },
+      {
+        "op": "add_field",
+        "collection": "events",
+        "actor": "alice",
+        "name": "actor_id",
+        "ty": "text",
+        "indexed": false,
+        "required": false
+      },
+      {
+        "op": "add_field",
+        "collection": "events",
+        "actor": "alice",
+        "name": "kind",
+        "ty": "text",
+        "indexed": false,
+        "required": false
+      }
+    ],
+    "after_index": {
+      "collection": "events",
+      "field_id": "f_alice_0",
+      "indexed": true,
+      "note": "Target DL-8 add-index intent; current SchemaChange has no add_index op yet."
+    },
+    "collections": {
+      "events": {
+        "fields": [
+          {
+            "field_id": "f_alice_0",
+            "name": "actor_id",
+            "ty": "text",
+            "indexed": true,
+            "deprecated": false
+          },
+          {
+            "field_id": "f_alice_1",
+            "name": "kind",
+            "ty": "text",
+            "indexed": false,
+            "deprecated": false
+          }
+        ]
+      }
+    }
+  },
+  "indexes": [
+    {
+      "index_id": "idx_records_events_f_alice_0",
+      "collection": "events",
+      "field_id": "f_alice_0",
+      "kind": "expression",
+      "state": "active",
+      "ddl": "CREATE INDEX IF NOT EXISTS \"idx_records_events_f_alice_0\" ON records (json_extract(data, '$.field_ids.f_alice_0')) WHERE collection = 'events';",
+      "built_from_existing_records": true
+    }
+  ],
+  "records": [
+    {
+      "envelope_version": 1,
+      "entity_id": "event_1",
+      "collection": "events",
+      "fields": {
+        "actor_id": "alice",
+        "kind": "create"
+      },
+      "field_ids": {
+        "f_alice_0": "alice",
+        "f_alice_1": "create"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 50,
+      "updated_at": 50,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "event_2",
+      "collection": "events",
+      "fields": {
+        "actor_id": "bob",
+        "kind": "update"
+      },
+      "field_ids": {
+        "f_alice_0": "bob",
+        "f_alice_1": "update"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 51,
+      "updated_at": 51,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "event_3",
+      "collection": "events",
+      "fields": {
+        "actor_id": "alice",
+        "kind": "comment"
+      },
+      "field_ids": {
+        "f_alice_0": "alice",
+        "f_alice_1": "comment"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 52,
+      "updated_at": 52,
+      "deleted": false
+    }
+  ],
+  "query": {
+    "from": "events",
+    "where": [
+      {
+        "field_id": "f_alice_0",
+        "op": "eq",
+        "value": "alice"
+      }
+    ],
+    "order_by": [
+      {
+        "field": "id",
+        "dir": "asc"
+      }
+    ]
+  },
+  "expected": {
+    "uses_index": true,
+    "index_id": "idx_records_events_f_alice_0",
+    "warnings": [],
+    "rebuild_assertions": [
+      "index was not usable while proposed or rebuilding",
+      "active index result equals reference full scan",
+      "no index rows are trusted as canonical input"
+    ],
+    "result_rows": [
+      {
+        "entity_id": "event_1",
+        "fields": {
+          "actor_id": "alice",
+          "kind": "create"
+        }
+      },
+      {
+        "entity_id": "event_3",
+        "fields": {
+          "actor_id": "alice",
+          "kind": "comment"
+        }
+      }
+    ]
+  }
+}

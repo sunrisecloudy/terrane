@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "case": "join_reference_field",
+  "kind": "query",
+  "milestone": "p1",
+  "schema": {
+    "collections": {
+      "tasks": {
+        "fields": {
+          "title": {
+            "field_id": "f_task_title",
+            "type": "text"
+          },
+          "priority": {
+            "field_id": "f_task_priority",
+            "type": "int",
+            "indexed": true
+          },
+          "assignee_id": {
+            "field_id": "f_task_assignee",
+            "type": "reference",
+            "references": {
+              "collection": "users",
+              "field": "entity_id"
+            }
+          }
+        }
+      },
+      "users": {
+        "fields": {
+          "name": {
+            "field_id": "f_user_name",
+            "type": "text",
+            "indexed": true
+          }
+        }
+      }
+    }
+  },
+  "grants": {
+    "db": {
+      "read": ["tasks", "users"],
+      "write": []
+    }
+  },
+  "seed": [
+    {
+      "envelope_version": 1,
+      "entity_id": "user_ada",
+      "collection": "users",
+      "fields": {
+        "name": "Ada",
+        "role": "maintainer"
+      },
+      "field_ids": {
+        "f_user_name": "Ada",
+        "f_user_role": "maintainer"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 1,
+      "updated_at": 1,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "user_grace",
+      "collection": "users",
+      "fields": {
+        "name": "Grace",
+        "role": "editor"
+      },
+      "field_ids": {
+        "f_user_name": "Grace",
+        "f_user_role": "editor"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 2,
+      "updated_at": 2,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "task_001",
+      "collection": "tasks",
+      "fields": {
+        "title": "Build query planner",
+        "priority": 1,
+        "assignee_id": "user_ada"
+      },
+      "field_ids": {
+        "f_task_title": "Build query planner",
+        "f_task_priority": 1,
+        "f_task_assignee": "user_ada"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 3,
+      "updated_at": 3,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "task_002",
+      "collection": "tasks",
+      "fields": {
+        "title": "Review UI catalog",
+        "priority": 2,
+        "assignee_id": "user_grace"
+      },
+      "field_ids": {
+        "f_task_title": "Review UI catalog",
+        "f_task_priority": 2,
+        "f_task_assignee": "user_grace"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 4,
+      "updated_at": 4,
+      "deleted": false
+    },
+    {
+      "envelope_version": 1,
+      "entity_id": "task_003",
+      "collection": "tasks",
+      "fields": {
+        "title": "Pin join vectors",
+        "priority": 3,
+        "assignee_id": "user_ada"
+      },
+      "field_ids": {
+        "f_task_title": "Pin join vectors",
+        "f_task_priority": 3,
+        "f_task_assignee": "user_ada"
+      },
+      "unknown_fields": {},
+      "extensions": {},
+      "created_at": 5,
+      "updated_at": 5,
+      "deleted": false
+    }
+  ],
+  "query": {
+    "from": "tasks",
+    "join": [
+      {
+        "collection": "users",
+        "as": "assignee",
+        "localField": "assignee_id",
+        "foreignField": "entity_id",
+        "declaredReference": "tasks.assignee_id"
+      }
+    ],
+    "where": {
+      "field": "assignee.name",
+      "op": "eq",
+      "value": "Ada"
+    },
+    "orderBy": [
+      {
+        "field": "priority",
+        "dir": "asc"
+      }
+    ]
+  },
+  "dsl": "ctx.db.from('tasks').join('assignee').where(f => f.assignee.name.eq('Ada')).orderBy('priority', 'asc')",
+  "sql": "SELECT tasks.id, tasks.title, assignee.name AS assignee_name FROM tasks JOIN users AS assignee ON tasks.assignee_id = assignee.entity_id WHERE assignee.name = 'Ada' ORDER BY tasks.priority ASC",
+  "expect": {
+    "ids": ["task_001", "task_003"],
+    "rows": [
+      {
+        "id": "task_001",
+        "fields": {
+          "title": "Build query planner",
+          "priority": 1,
+          "assignee_id": "user_ada"
+        },
+        "joined": {
+          "assignee": {
+            "id": "user_ada",
+            "fields": {
+              "name": "Ada",
+              "role": "maintainer"
+            }
+          }
+        }
+      },
+      {
+        "id": "task_003",
+        "fields": {
+          "title": "Pin join vectors",
+          "priority": 3,
+          "assignee_id": "user_ada"
+        },
+        "joined": {
+          "assignee": {
+            "id": "user_ada",
+            "fields": {
+              "name": "Ada",
+              "role": "maintainer"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

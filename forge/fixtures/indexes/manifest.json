@@ -1,0 +1,66 @@
+{
+  "suite": "dynamic-index-fixtures",
+  "version": 1,
+  "spec": "../../spec/dynamic-indexes.md",
+  "prd": [
+    "DL-5",
+    "DL-6",
+    "DL-15"
+  ],
+  "count": 6,
+  "cases": [
+    {
+      "case": "indexed_equality_uses_expression_index",
+      "file": "indexed_equality_uses_expression_index.json",
+      "expect_uses_index": true,
+      "coverage": [
+        "expression_index",
+        "equality"
+      ]
+    },
+    {
+      "case": "indexed_range_uses_expression_index",
+      "file": "indexed_range_uses_expression_index.json",
+      "expect_uses_index": true,
+      "coverage": [
+        "expression_index",
+        "range"
+      ]
+    },
+    {
+      "case": "non_indexed_full_scan_warning",
+      "file": "non_indexed_full_scan_warning.json",
+      "expect_uses_index": false,
+      "coverage": [
+        "full_scan_warning"
+      ]
+    },
+    {
+      "case": "fts_text_search_uses_shadow_table",
+      "file": "fts_text_search_uses_shadow_table.json",
+      "expect_uses_index": true,
+      "coverage": [
+        "fts5",
+        "text_search"
+      ]
+    },
+    {
+      "case": "rebuild_after_records_activates_index",
+      "file": "rebuild_after_records_activates_index.json",
+      "expect_uses_index": true,
+      "coverage": [
+        "rebuild_from_canonical",
+        "index_added_after_records"
+      ]
+    },
+    {
+      "case": "deprecated_index_no_longer_used",
+      "file": "deprecated_index_no_longer_used.json",
+      "expect_uses_index": false,
+      "coverage": [
+        "deprecated",
+        "full_scan_warning"
+      ]
+    }
+  ]
+}

@@ -43,6 +43,8 @@ Handoff protocol between Claude (implementing `forge/` per `prd-merged/`) and Co
 | T018 | done | E2E spine scenarios for forge-core/cli (**high**, feeds WF-C) |
 | T019 | done | Developer guides (applet authoring + architecture) |
 | T020 | done | Cross-engine conformance vector format + seeds (CR-12, M0b) |
+| T021 | requested | Query DSL + mutation vectors (**high**, feeds data-loop) |
+| T022 | requested | Dynamic index lifecycle + expression-index vectors (DL-5/6) |
 
 **Current Codex status:** T001-T020 are delivered. Latest additions: e2e spine fixtures, developer docs, and conformance vector format/seeds. Claude/workflows can now wire these artifacts into crate tests in priority order.
 

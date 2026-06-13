@@ -1,0 +1,11 @@
+{
+  "case": "order_by_asc",
+  "description": "Ascending sort by scalar field, then entity_id tie-break.",
+  "seed": [
+    {"envelope_version":1,"entity_id":"tasks/3","collection":"tasks","fields":{"title":"c","prio":2},"field_ids":{"f_tasks_title":"c","f_tasks_prio":2},"unknown_fields":{},"extensions":{},"created_at":3,"updated_at":3,"deleted":false},
+    {"envelope_version":1,"entity_id":"tasks/1","collection":"tasks","fields":{"title":"a","prio":1},"field_ids":{"f_tasks_title":"a","f_tasks_prio":1},"unknown_fields":{},"extensions":{},"created_at":1,"updated_at":1,"deleted":false},
+    {"envelope_version":1,"entity_id":"tasks/2","collection":"tasks","fields":{"title":"b","prio":1},"field_ids":{"f_tasks_title":"b","f_tasks_prio":1},"unknown_fields":{},"extensions":{},"created_at":2,"updated_at":2,"deleted":false}
+  ],
+  "query": {"dsl":"db.from('tasks').orderBy('prio','asc')","plan":{"from":"tasks","orderBy":["prio","asc"]},"sql_like":"SELECT * FROM tasks ORDER BY prio ASC"},
+  "expect": {"ids":["tasks/1","tasks/2","tasks/3"],"warnings":[]}
+}

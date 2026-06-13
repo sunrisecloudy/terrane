@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "case": "mutation_insert_patch_delete",
+  "kind": "mutation",
+  "milestone": "m0a",
+  "grants": {
+    "db": {
+      "read": ["tasks"],
+      "write": ["tasks"]
+    }
+  },
+  "seed": [],
+  "mutations": [
+    {
+      "op": "insert",
+      "collection": "tasks",
+      "id": "task_001",
+      "fields": {
+        "title": "Draft query planner",
+        "status": "draft",
+        "priority": 1
+      },
+      "logical_at": 1
+    },
+    {
+      "op": "patch",
+      "collection": "tasks",
+      "id": "task_001",
+      "fields": {
+        "status": "open",
+        "priority": 2
+      },
+      "logical_at": 2
+    },
+    {
+      "op": "delete",
+      "collection": "tasks",
+      "id": "task_001",
+      "logical_at": 3
+    }
+  ],
+  "expect": {
+    "commit_count": 3,
+    "atomic": false,
+    "visible_ids": [],
+    "post_state": [
+      {
+        "envelope_version": 1,
+        "entity_id": "task_001",
+        "collection": "tasks",
+        "fields": {
+          "title": "Draft query planner",
+          "status": "open",
+          "priority": 2
+        },
+        "field_ids": {
+          "f_title": "Draft query planner",
+          "f_status": "open",
+          "f_priority": 2
+        },
+        "unknown_fields": {},
+        "extensions": {},
+        "created_at": 1,
+        "updated_at": 3,
+        "deleted": true
+      }
+    ]
+  }
+}
