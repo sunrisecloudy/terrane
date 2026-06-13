@@ -13,6 +13,7 @@
 //! bridge methods: those are deterministic seams owned by the recorder
 //! (prd-merged/01 CR-11), not host effects.
 
+use crate::net::{live_network_forbidden, HttpClient, MockHttpClient, NetRequest, NetResponse};
 use forge_domain::Result;
 use std::collections::BTreeMap;
 
@@ -57,6 +58,25 @@ pub trait HostBridge {
 
     /// `ctx.log(line)` — append a log line (the engine enforces `log_bytes`).
     fn log(&mut self, line: &str) -> Result<()>;
+
+    /// `ctx.net.fetch(request)` — perform a network request and return the
+    /// response (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`).
+    ///
+    /// This is reached **only in record mode**, and **only after** the
+    /// [`HostContext`](crate::HostContext) has run the network egress policy
+    /// (forge-policy [`NetPolicy`](forge_policy::NetPolicy)) and the host-call
+    /// budget — a denied fetch never reaches a bridge. On **replay** the recorder
+    /// serves the recorded response and this method is never called (CR-8: no live
+    /// network unless a recorded response is being served).
+    ///
+    /// The actual HTTP is behind the injectable [`HttpClient`] seam, so a bridge
+    /// performs no networking itself; tests/CI/the demo inject a mock. The
+    /// **default** returns a `RuntimeError` (no client wired) so an implementor
+    /// that does not opt into network — including any out-of-crate bridge — keeps
+    /// compiling and fails closed rather than reaching the network silently.
+    fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
+        Err(live_network_forbidden(&request.method))
+    }
 }
 
 /// An in-memory [`HostBridge`] for tests and replay sandboxes: storage in a
@@ -65,7 +85,7 @@ pub trait HostBridge {
 ///
 /// Db ids are assigned deterministically (`<collection>/<n>`) so a record-mode
 /// run is itself reproducible without relying on wall-clock or RNG.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemoryHostBridge {
     storage: BTreeMap<String, serde_json::Value>,
     db: BTreeMap<String, Vec<(String, serde_json::Value)>>,
@@ -74,11 +94,48 @@ pub struct MemoryHostBridge {
     pub ui_trees: Vec<serde_json::Value>,
     /// Every log line captured this run.
     pub logs: Vec<String>,
+    /// The injectable HTTP client for `ctx.net.fetch`. Defaults to a
+    /// [`MockHttpClient`] returning a canned response so the bridge is
+    /// network-free in tests/CI/the demo. The host swaps in a real client.
+    http: Box<dyn HttpClient>,
+    /// Every net request this bridge sent this run, in order (test convenience;
+    /// proves a denied fetch never reached the client — the vec stays empty).
+    pub net_requests: Vec<NetRequest>,
+}
+
+// Hand-rolled `Debug` because `Box<dyn HttpClient>` is not `Debug`.
+impl std::fmt::Debug for MemoryHostBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryHostBridge")
+            .field("storage", &self.storage)
+            .field("db", &self.db)
+            .field("db_counter", &self.db_counter)
+            .field("ui_trees", &self.ui_trees)
+            .field("logs", &self.logs)
+            .field("net_requests", &self.net_requests)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Box<dyn HttpClient> {
+    fn default() -> Self {
+        Box::new(MockHttpClient::canned())
+    }
 }
 
 impl MemoryHostBridge {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a bridge with a specific injected [`HttpClient`] for `ctx.net.fetch`
+    /// (e.g. a [`MockHttpClient`] returning a custom response). Stays network-free
+    /// unless the caller injects a real client (never in tests/CI/the demo).
+    pub fn with_http_client(client: Box<dyn HttpClient>) -> Self {
+        MemoryHostBridge {
+            http: client,
+            ..Self::default()
+        }
     }
 
     /// The most recently rendered UI tree, if any (test convenience).
@@ -198,6 +255,14 @@ impl HostBridge for MemoryHostBridge {
         self.logs.push(line.to_string());
         Ok(())
     }
+
+    fn net_fetch(&mut self, request: NetRequest) -> Result<NetResponse> {
+        // Record the request for test assertions, then forward to the injected
+        // (mock by default) client. No live network: the default client returns a
+        // canned response, so a record-mode run is itself reproducible.
+        self.net_requests.push(request.clone());
+        self.http.send(request)
+    }
 }
 
 /// A [`HostBridge`] that refuses every effect — used as the live bridge in
@@ -254,6 +319,11 @@ impl HostBridge for NullBridge {
     fn log(&mut self, _line: &str) -> Result<()> {
         Err(null_violation("log"))
     }
+    fn net_fetch(&mut self, _request: NetRequest) -> Result<NetResponse> {
+        // Replay must serve recorded net responses; a live fetch reaching here is
+        // a bug (CR-8: no live network unless replaying a recorded response).
+        Err(null_violation("net.fetch"))
+    }
 }
 
 #[cfg(test)]
@@ -309,5 +379,55 @@ mod tests {
         assert!(b.ui_render(serde_json::Value::Null).is_err());
         assert!(b.db_insert("c", serde_json::Value::Null).is_err());
         assert_eq!(b.log("x").unwrap_err().code(), "RuntimeError");
+    }
+
+    #[test]
+    fn memory_bridge_net_fetch_uses_injected_client_and_records_requests() {
+        // Default client is a network-free mock returning a canned response.
+        let mut b = MemoryHostBridge::new();
+        let req = NetRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/x".into(),
+            ..Default::default()
+        };
+        let resp = b.net_fetch(req.clone()).unwrap();
+        assert_eq!(resp.status, 200);
+        // The request is captured (proves a denied fetch — which never reaches the
+        // bridge — leaves this empty).
+        assert_eq!(b.net_requests, vec![req]);
+    }
+
+    #[test]
+    fn memory_bridge_net_fetch_honors_a_custom_client() {
+        let custom = NetResponse {
+            status: 503,
+            body: Some("down".into()),
+            ..Default::default()
+        };
+        let mut b = MemoryHostBridge::with_http_client(Box::new(MockHttpClient::new(custom)));
+        let resp = b
+            .net_fetch(NetRequest {
+                method: "GET".into(),
+                url: "https://api.example.com/x".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.status, 503);
+        assert_eq!(resp.body.as_deref(), Some("down"));
+    }
+
+    #[test]
+    fn null_bridge_refuses_net_fetch() {
+        // Replay must serve recorded net responses; a live fetch reaching the
+        // NullBridge is a determinism bug, surfaced as a RuntimeError (CR-8).
+        let mut b = NullBridge::new();
+        let err = b
+            .net_fetch(NetRequest {
+                method: "GET".into(),
+                url: "https://api.example.com/x".into(),
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
     }
 }

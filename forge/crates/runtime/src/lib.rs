@@ -26,10 +26,12 @@
 
 mod bridge;
 mod host;
+mod net;
 mod recorder;
 
 pub use bridge::{HostBridge, MemoryHostBridge, NullBridge};
 pub use host::HostContext;
+pub use net::{HttpClient, MockHttpClient, NetRequest, NetResponse};
 pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
 
 use forge_domain::{AppResult, CoreError};

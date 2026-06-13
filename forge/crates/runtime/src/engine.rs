@@ -480,6 +480,7 @@ fn install_ctx<'js>(
     let ui = Object::new(ctx.clone())?;
     let time = Object::new(ctx.clone())?;
     let random = Object::new(ctx.clone())?;
+    let net = Object::new(ctx.clone())?;
 
     // --- storage.get(key) -> value | null --------------------------------
     {
@@ -684,6 +685,43 @@ fn install_ctx<'js>(
         random.set("next", f)?;
     }
 
+    // --- net.fetch(request) -> response ----------------------------------
+    // The applet calls `await ctx.net.fetch({ method, url, headers?, body?,
+    // contentType?, timeoutMs? })`. The request is marshalled to a runtime
+    // `NetRequest`; the host runs the SC-5 egress policy + budget, then records
+    // (record) / serves (replay) the response. A denied fetch surfaces as the
+    // run's CoreError (PermissionDenied/CapabilityRequired) and never sends.
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, request: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let json = QuickJsEngine::js_to_json(&cx, request)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let req: crate::NetRequest = serde_json::from_value(json).map_err(|e| {
+                    store_and_throw(
+                        &cx,
+                        &host_error,
+                        CoreError::ValidationError(format!(
+                            "ctx.net.fetch request must be {{ method, url, ... }}: {e}"
+                        )),
+                    )
+                })?;
+                let r = unsafe { host.get() }
+                    .net_fetch(req)
+                    .and_then(|resp| {
+                        serde_json::to_value(&resp).map_err(|e| {
+                            CoreError::RuntimeError(format!(
+                                "ctx.net.fetch response serialize failed: {e}"
+                            ))
+                        })
+                    });
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        net.set("fetch", f)?;
+    }
+
     // --- log(line) -> null (top-level ctx.log) ---------------------------
     {
         let host_error = host_error.clone();
@@ -705,6 +743,7 @@ fn install_ctx<'js>(
     ctx_obj.set("ui", ui)?;
     ctx_obj.set("time", time)?;
     ctx_obj.set("random", random)?;
+    ctx_obj.set("net", net)?;
     globals.set("ctx", ctx_obj)?;
 
     // Poison dynamic code evaluation at the engine level (review 009 P1, CR-13).

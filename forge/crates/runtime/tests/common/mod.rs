@@ -4,7 +4,9 @@
 //! only one suite looks "dead" to the others — allow it crate-wide for tests.
 #![allow(dead_code)]
 
-use forge_domain::{ActorContext, Capabilities, DbGrant, Limits, Manifest, Role, StorageGrant};
+use forge_domain::{
+    ActorContext, Capabilities, DbGrant, Limits, Manifest, NetGrant, NetRule, Role, StorageGrant,
+};
 use forge_runtime::Program;
 
 /// A manifest granting `app/*` storage (read+write), the `tasks` collection
@@ -118,6 +120,22 @@ pub fn mem_tight_manifest() -> Manifest {
     m.limits.wall_ms = 30_000;
     m.limits.fuel = 1_000_000_000;
     m.limits.memory_bytes = 4 * 1024 * 1024;
+    m
+}
+
+/// A manifest that, on top of the spine grants, allowlists one network
+/// destination for `ctx.net.fetch`: `GET https://api.example.com/public/*`
+/// (prd-merged/07 SC-5/SC-8). Used by the net record/replay + deny tests.
+pub fn net_manifest() -> Manifest {
+    let mut m = spine_manifest();
+    m.capabilities = Capabilities {
+        net: NetGrant(vec![NetRule {
+            method: "GET".into(),
+            url: "https://api.example.com/public/*".into(),
+            ..Default::default()
+        }]),
+        ..m.capabilities
+    };
     m
 }
 
