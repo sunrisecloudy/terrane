@@ -21,6 +21,41 @@ use std::fmt;
 /// through the core event queue (prd-merged/05 UI-4, UI-12).
 pub type ActionRef = String;
 
+/// Shared identity fields every catalog node may carry (`BaseNode` in the TS
+/// contract, `forge/std/forge-std.d.ts`). `testId` in particular is a stable
+/// element handle the renderer/test harness relies on (T018 e2e fixtures), so
+/// it must survive (de)serialization and diffing rather than being dropped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BaseNode {
+    /// Optional stable identifier (wire key `id`).
+    pub id: Option<String>,
+    /// Optional test/renderer handle (wire key `testId`).
+    pub test_id: Option<String>,
+}
+
+impl BaseNode {
+    /// Read the base fields from a buffered wire object.
+    fn from_obj(obj: &serde_json::Map<String, serde_json::Value>) -> Self {
+        BaseNode {
+            id: take_str(obj, "id"),
+            test_id: take_str(obj, "testId"),
+        }
+    }
+
+    /// Emit the base fields (when present) into a serialized map. The TS
+    /// contract orders `id`/`testId` ahead of the type-specific props, so we
+    /// emit them right after `"type"`.
+    fn serialize_into<M: SerializeMap>(&self, map: &mut M) -> Result<(), M::Error> {
+        if let Some(id) = &self.id {
+            map.serialize_entry("id", id)?;
+        }
+        if let Some(test_id) = &self.test_id {
+            map.serialize_entry("testId", test_id)?;
+        }
+        Ok(())
+    }
+}
+
 /// Layout direction for a [`Node::Stack`]. Matches the `"h" | "v"` literal in
 /// the TS contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,32 +78,58 @@ pub enum StackDir {
 pub enum Node {
     /// A directional container of child nodes.
     Stack {
+        /// Shared `id`/`testId` (BaseNode).
+        base: BaseNode,
         /// Layout direction.
         dir: StackDir,
+        /// Optional inter-child spacing token (wire key `gap`,
+        /// `"none" | "xs" | "sm" | "md" | "lg"`). Stored as a string to stay
+        /// lossless and forward-compatible with future tokens.
+        gap: Option<String>,
         /// Ordered children.
         children: Vec<Node>,
     },
     /// A run of display text.
     Text {
+        /// Shared `id`/`testId` (BaseNode).
+        base: BaseNode,
         /// The displayed string (wire key `text`).
         value: String,
+        /// Optional typographic variant (wire key `variant`,
+        /// `"body" | "caption" | "title" | "monospace"`). Stored as a string to
+        /// stay lossless and forward-compatible.
+        variant: Option<String>,
     },
     /// A tappable button.
     Button {
+        /// Shared `id`/`testId` (BaseNode).
+        base: BaseNode,
         /// Button label.
         label: String,
+        /// Optional visual variant (wire key `variant`,
+        /// `"primary" | "secondary" | "destructive"`). Stored as a string to
+        /// stay lossless and forward-compatible.
+        variant: Option<String>,
         /// Optional action ref fired on tap (wire key `onTap`).
         on_tap: Option<ActionRef>,
     },
     /// A single-line editable text field.
     TextField {
+        /// Shared `id`/`testId` (BaseNode).
+        base: BaseNode,
         /// Current field value.
         value: String,
+        /// Optional field label (wire key `label`).
+        label: Option<String>,
+        /// Optional placeholder shown when empty (wire key `placeholder`).
+        placeholder: Option<String>,
         /// Optional action ref fired on change (wire key `onChange`).
         on_change: Option<ActionRef>,
     },
     /// A list of item nodes.
     List {
+        /// Shared `id`/`testId` (BaseNode).
+        base: BaseNode,
         /// Ordered items.
         items: Vec<Node>,
     },
@@ -87,37 +148,83 @@ pub enum Node {
 }
 
 impl Node {
-    /// Convenience constructor for a [`Node::Stack`].
+    /// Convenience constructor for a [`Node::Stack`] with no base/gap set.
     pub fn stack(dir: StackDir, children: Vec<Node>) -> Self {
-        Node::Stack { dir, children }
-    }
-
-    /// Convenience constructor for a [`Node::Text`].
-    pub fn text(value: impl Into<String>) -> Self {
-        Node::Text {
-            value: value.into(),
+        Node::Stack {
+            base: BaseNode::default(),
+            dir,
+            gap: None,
+            children,
         }
     }
 
-    /// Convenience constructor for a [`Node::Button`].
+    /// Convenience constructor for a [`Node::Text`] with no base/variant set.
+    pub fn text(value: impl Into<String>) -> Self {
+        Node::Text {
+            base: BaseNode::default(),
+            value: value.into(),
+            variant: None,
+        }
+    }
+
+    /// Convenience constructor for a [`Node::Button`] with no base/variant set.
     pub fn button(label: impl Into<String>, on_tap: Option<ActionRef>) -> Self {
         Node::Button {
+            base: BaseNode::default(),
             label: label.into(),
+            variant: None,
             on_tap,
         }
     }
 
-    /// Convenience constructor for a [`Node::TextField`].
+    /// Convenience constructor for a [`Node::TextField`] with no
+    /// base/label/placeholder set.
     pub fn text_field(value: impl Into<String>, on_change: Option<ActionRef>) -> Self {
         Node::TextField {
+            base: BaseNode::default(),
             value: value.into(),
+            label: None,
+            placeholder: None,
             on_change,
         }
     }
 
-    /// Convenience constructor for a [`Node::List`].
+    /// Convenience constructor for a [`Node::List`] with no base set.
     pub fn list(items: Vec<Node>) -> Self {
-        Node::List { items }
+        Node::List {
+            base: BaseNode::default(),
+            items,
+        }
+    }
+
+    /// Set the shared `testId` (BaseNode) on this node, returning `self` for
+    /// builder-style use. Unknown nodes carry `testId` in their verbatim
+    /// `props`, so this is a no-op for them.
+    pub fn with_test_id(mut self, test_id: impl Into<String>) -> Self {
+        if let Some(base) = self.base_mut() {
+            base.test_id = Some(test_id.into());
+        }
+        self
+    }
+
+    /// Set the shared `id` (BaseNode) on this node, builder-style.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        if let Some(base) = self.base_mut() {
+            base.id = Some(id.into());
+        }
+        self
+    }
+
+    /// Mutable access to a known node's [`BaseNode`]; `None` for unknowns.
+    fn base_mut(&mut self) -> Option<&mut BaseNode> {
+        match self {
+            Node::Stack { base, .. }
+            | Node::Text { base, .. }
+            | Node::Button { base, .. }
+            | Node::TextField { base, .. }
+            | Node::List { base, .. } => Some(base),
+            Node::Unknown { .. } => None,
+        }
     }
 
     /// The wire `"type"` tag for this node.
@@ -142,7 +249,7 @@ impl Node {
     pub(crate) fn children(&self) -> &[Node] {
         match self {
             Node::Stack { children, .. } => children,
-            Node::List { items } => items,
+            Node::List { items, .. } => items,
             _ => &[],
         }
     }
@@ -158,40 +265,80 @@ impl Node {
 impl Serialize for Node {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Node::Stack { dir, children } => {
-                let mut m = serializer.serialize_map(Some(3))?;
+            Node::Stack {
+                base,
+                dir,
+                gap,
+                children,
+            } => {
+                let mut m = serializer.serialize_map(None)?;
                 m.serialize_entry("type", "Stack")?;
+                base.serialize_into(&mut m)?;
                 m.serialize_entry("direction", dir)?;
+                if let Some(gap) = gap {
+                    m.serialize_entry("gap", gap)?;
+                }
                 m.serialize_entry("children", children)?;
                 m.end()
             }
-            Node::Text { value } => {
-                let mut m = serializer.serialize_map(Some(2))?;
+            Node::Text {
+                base,
+                value,
+                variant,
+            } => {
+                let mut m = serializer.serialize_map(None)?;
                 m.serialize_entry("type", "Text")?;
+                base.serialize_into(&mut m)?;
                 m.serialize_entry("text", value)?;
+                if let Some(variant) = variant {
+                    m.serialize_entry("variant", variant)?;
+                }
                 m.end()
             }
-            Node::Button { label, on_tap } => {
-                let mut m = serializer.serialize_map(Some(3))?;
+            Node::Button {
+                base,
+                label,
+                variant,
+                on_tap,
+            } => {
+                let mut m = serializer.serialize_map(None)?;
                 m.serialize_entry("type", "Button")?;
+                base.serialize_into(&mut m)?;
                 m.serialize_entry("label", label)?;
+                if let Some(variant) = variant {
+                    m.serialize_entry("variant", variant)?;
+                }
                 if let Some(a) = on_tap {
                     m.serialize_entry("onTap", a)?;
                 }
                 m.end()
             }
-            Node::TextField { value, on_change } => {
-                let mut m = serializer.serialize_map(Some(3))?;
+            Node::TextField {
+                base,
+                value,
+                label,
+                placeholder,
+                on_change,
+            } => {
+                let mut m = serializer.serialize_map(None)?;
                 m.serialize_entry("type", "TextField")?;
+                base.serialize_into(&mut m)?;
                 m.serialize_entry("value", value)?;
+                if let Some(label) = label {
+                    m.serialize_entry("label", label)?;
+                }
+                if let Some(placeholder) = placeholder {
+                    m.serialize_entry("placeholder", placeholder)?;
+                }
                 if let Some(a) = on_change {
                     m.serialize_entry("onChange", a)?;
                 }
                 m.end()
             }
-            Node::List { items } => {
-                let mut m = serializer.serialize_map(Some(2))?;
+            Node::List { base, items } => {
+                let mut m = serializer.serialize_map(None)?;
                 m.serialize_entry("type", "List")?;
+                base.serialize_into(&mut m)?;
                 m.serialize_entry("items", items)?;
                 m.end()
             }
@@ -246,6 +393,7 @@ impl<'de> Visitor<'de> for NodeVisitor {
             }
         };
 
+        let base = BaseNode::from_obj(&obj);
         let node = match type_name.as_str() {
             "Stack" => {
                 let dir = match obj.get("direction").and_then(|v| v.as_str()) {
@@ -254,8 +402,14 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     // design, consistent with the TS contract's optional field.
                     _ => StackDir::V,
                 };
+                let gap = take_str(&obj, "gap");
                 let children = take_node_array(&obj, "children").map_err(de::Error::custom)?;
-                Node::Stack { dir, children }
+                Node::Stack {
+                    base,
+                    dir,
+                    gap,
+                    children,
+                }
             }
             "Text" => {
                 let value = obj
@@ -263,7 +417,12 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                Node::Text { value }
+                let variant = take_str(&obj, "variant");
+                Node::Text {
+                    base,
+                    value,
+                    variant,
+                }
             }
             "Button" => {
                 let label = obj
@@ -271,11 +430,14 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let on_tap = obj
-                    .get("onTap")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                Node::Button { label, on_tap }
+                let variant = take_str(&obj, "variant");
+                let on_tap = take_str(&obj, "onTap");
+                Node::Button {
+                    base,
+                    label,
+                    variant,
+                    on_tap,
+                }
             }
             "TextField" => {
                 let value = obj
@@ -283,15 +445,20 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                let on_change = obj
-                    .get("onChange")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                Node::TextField { value, on_change }
+                let label = take_str(&obj, "label");
+                let placeholder = take_str(&obj, "placeholder");
+                let on_change = take_str(&obj, "onChange");
+                Node::TextField {
+                    base,
+                    value,
+                    label,
+                    placeholder,
+                    on_change,
+                }
             }
             "List" => {
                 let items = take_node_array(&obj, "items").map_err(de::Error::custom)?;
-                Node::List { items }
+                Node::List { base, items }
             }
             // Unknown catalog member → forward-compatible fallback (UI-6).
             _ => Node::Unknown {
@@ -301,6 +468,12 @@ impl<'de> Visitor<'de> for NodeVisitor {
         };
         Ok(node)
     }
+}
+
+/// Read an optional string field from a buffered wire object. Non-string
+/// values (or absent keys) yield `None`, staying tolerant per UI-6.
+fn take_str(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    obj.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
 /// Decode the named field of `obj` as a `Vec<Node>`, defaulting to empty when

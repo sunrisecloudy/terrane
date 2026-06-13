@@ -109,23 +109,59 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
         return;
     }
 
+    // Any optional scalar (base `id`/`testId` or a type-specific prop) that is
+    // being CLEARED (`Some -> None`) has no granular wire op, so the whole node
+    // is replaced. Detecting this up front keeps the granular path below purely
+    // additive (`None -> Some` / `Some -> Some`) and avoids emitting a Replace
+    // followed by now-redundant update_props for the same node.
+    if any_scalar_cleared(old, new) {
+        out.push(Patch::Replace {
+            path: path.clone(),
+            node: new.clone(),
+        });
+        return;
+    }
+
+    // Shared `id`/`testId` (BaseNode) changes are scalar prop updates on every
+    // known node (clears were already handled above).
+    if let (Some((oid, otid)), Some((nid, ntid))) = (base_of(old), base_of(new)) {
+        diff_optional_prop(path, "id", oid, nid, new, out);
+        diff_optional_prop(path, "testId", otid, ntid, new, out);
+    }
+
     match (old, new) {
-        (Node::Text { value: a }, Node::Text { value: b }) => {
+        (
+            Node::Text {
+                value: a,
+                variant: va,
+                ..
+            },
+            Node::Text {
+                value: b,
+                variant: vb,
+                ..
+            },
+        ) => {
             if a != b {
                 out.push(Patch::UpdateText {
                     path: path.clone(),
                     value: b.clone(),
                 });
             }
+            diff_optional_prop(path, "variant", va.as_deref(), vb.as_deref(), new, out);
         }
         (
             Node::Button {
                 label: la,
+                variant: va,
                 on_tap: ta,
+                ..
             },
             Node::Button {
                 label: lb,
+                variant: vb,
                 on_tap: tb,
+                ..
             },
         ) => {
             if la != lb {
@@ -135,16 +171,23 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
                     value: lb.clone(),
                 });
             }
+            diff_optional_prop(path, "variant", va.as_deref(), vb.as_deref(), new, out);
             diff_optional_prop(path, "onTap", ta.as_deref(), tb.as_deref(), new, out);
         }
         (
             Node::TextField {
                 value: va,
+                label: la,
+                placeholder: pa,
                 on_change: ca,
+                ..
             },
             Node::TextField {
                 value: vb,
+                label: lb,
+                placeholder: pb,
                 on_change: cb,
+                ..
             },
         ) => {
             if va != vb {
@@ -154,9 +197,18 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
                     value: vb.clone(),
                 });
             }
+            diff_optional_prop(path, "label", la.as_deref(), lb.as_deref(), new, out);
+            diff_optional_prop(path, "placeholder", pa.as_deref(), pb.as_deref(), new, out);
             diff_optional_prop(path, "onChange", ca.as_deref(), cb.as_deref(), new, out);
         }
-        (Node::Stack { dir: da, .. }, Node::Stack { dir: db, .. }) => {
+        (
+            Node::Stack {
+                dir: da, gap: ga, ..
+            },
+            Node::Stack {
+                dir: db, gap: gb, ..
+            },
+        ) => {
             if da != db {
                 // Direction is not a scalar string prop with its own patch op in
                 // the M0a vocabulary; a layout-axis change re-lays the whole
@@ -167,6 +219,7 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
                 });
                 return;
             }
+            diff_optional_prop(path, "gap", ga.as_deref(), gb.as_deref(), new, out);
             diff_children(path, old.children(), new.children(), out);
         }
         (Node::List { .. }, Node::List { .. }) => {
@@ -193,10 +246,82 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
     }
 }
 
+/// Borrow a known node's shared `(id, testId)` for base diffing. Returns `None`
+/// for [`Node::Unknown`], which carries its identity inside its verbatim props.
+#[allow(clippy::type_complexity)]
+fn base_of(node: &Node) -> Option<(Option<&str>, Option<&str>)> {
+    let base = match node {
+        Node::Stack { base, .. }
+        | Node::Text { base, .. }
+        | Node::Button { base, .. }
+        | Node::TextField { base, .. }
+        | Node::List { base, .. } => base,
+        Node::Unknown { .. } => return None,
+    };
+    Some((base.id.as_deref(), base.test_id.as_deref()))
+}
+
+/// Whether any optional scalar field (shared base or type-specific) transitions
+/// from `Some` in `old` to `None` in `new`. Such a clear has no granular wire op
+/// in the M0a patch vocabulary, so the caller replaces the whole node instead.
+/// Both nodes are the same type tag here (the caller already guarded that).
+fn any_scalar_cleared(old: &Node, new: &Node) -> bool {
+    let cleared = |o: Option<&str>, n: Option<&str>| o.is_some() && n.is_none();
+
+    // Shared base fields.
+    if let (Some((oid, otid)), Some((nid, ntid))) = (base_of(old), base_of(new)) {
+        if cleared(oid, nid) || cleared(otid, ntid) {
+            return true;
+        }
+    }
+
+    match (old, new) {
+        (Node::Text { variant: o, .. }, Node::Text { variant: n, .. }) => {
+            cleared(o.as_deref(), n.as_deref())
+        }
+        (
+            Node::Button {
+                variant: ov,
+                on_tap: ot,
+                ..
+            },
+            Node::Button {
+                variant: nv,
+                on_tap: nt,
+                ..
+            },
+        ) => cleared(ov.as_deref(), nv.as_deref()) || cleared(ot.as_deref(), nt.as_deref()),
+        (
+            Node::TextField {
+                label: ol,
+                placeholder: op,
+                on_change: oc,
+                ..
+            },
+            Node::TextField {
+                label: nl,
+                placeholder: np,
+                on_change: nc,
+                ..
+            },
+        ) => {
+            cleared(ol.as_deref(), nl.as_deref())
+                || cleared(op.as_deref(), np.as_deref())
+                || cleared(oc.as_deref(), nc.as_deref())
+        }
+        (Node::Stack { gap: o, .. }, Node::Stack { gap: n, .. }) => {
+            cleared(o.as_deref(), n.as_deref())
+        }
+        _ => false,
+    }
+}
+
 /// Emit an `update_prop` for an optional string prop when it changes. A prop
 /// that gains or loses its value is treated as a property update carrying the
 /// new (possibly empty) value; clearing to `None` re-uses replace to stay
 /// lossless rather than inventing a "clear" op the wire vocabulary lacks.
+/// (Clears are normally intercepted up front by [`any_scalar_cleared`]; the
+/// `None` arm here is a defensive fallback.)
 fn diff_optional_prop(
     path: &Path,
     key: &str,
@@ -268,7 +393,7 @@ fn apply_one(root: &mut Node, patch: &Patch) -> Result<()> {
         Patch::UpdateText { path, value } => {
             let target = resolve_mut(root, path)?;
             match target {
-                Node::Text { value: v } => {
+                Node::Text { value: v, .. } => {
                     *v = value.clone();
                     Ok(())
                 }
@@ -311,9 +436,36 @@ fn apply_one(root: &mut Node, patch: &Patch) -> Result<()> {
 
 /// Set a scalar prop on a known node by its wire key.
 fn apply_prop(target: &mut Node, key: &str, value: &str, path: &[usize]) -> Result<()> {
+    // Shared base props (`id`/`testId`) apply to any known node.
+    if let Some(base) = base_mut(target) {
+        match key {
+            "id" => {
+                base.id = Some(value.to_string());
+                return Ok(());
+            }
+            "testId" => {
+                base.test_id = Some(value.to_string());
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     match (target, key) {
+        (Node::Stack { gap, .. }, "gap") => {
+            *gap = Some(value.to_string());
+            Ok(())
+        }
+        (Node::Text { variant, .. }, "variant") => {
+            *variant = Some(value.to_string());
+            Ok(())
+        }
         (Node::Button { label, .. }, "label") => {
             *label = value.to_string();
+            Ok(())
+        }
+        (Node::Button { variant, .. }, "variant") => {
+            *variant = Some(value.to_string());
             Ok(())
         }
         (Node::Button { on_tap, .. }, "onTap") => {
@@ -324,6 +476,14 @@ fn apply_prop(target: &mut Node, key: &str, value: &str, path: &[usize]) -> Resu
             *v = value.to_string();
             Ok(())
         }
+        (Node::TextField { label, .. }, "label") => {
+            *label = Some(value.to_string());
+            Ok(())
+        }
+        (Node::TextField { placeholder, .. }, "placeholder") => {
+            *placeholder = Some(value.to_string());
+            Ok(())
+        }
         (Node::TextField { on_change, .. }, "onChange") => {
             *on_change = Some(value.to_string());
             Ok(())
@@ -332,6 +492,18 @@ fn apply_prop(target: &mut Node, key: &str, value: &str, path: &[usize]) -> Resu
             "update_prop key `{key}` is not valid for a {} node at {path:?}",
             other.type_name()
         ))),
+    }
+}
+
+/// Mutable access to a known node's [`BaseNode`]; `None` for [`Node::Unknown`].
+fn base_mut(node: &mut Node) -> Option<&mut crate::node::BaseNode> {
+    match node {
+        Node::Stack { base, .. }
+        | Node::Text { base, .. }
+        | Node::Button { base, .. }
+        | Node::TextField { base, .. }
+        | Node::List { base, .. } => Some(base),
+        Node::Unknown { .. } => None,
     }
 }
 
@@ -353,7 +525,7 @@ fn resolve_mut<'a>(root: &'a mut Node, path: &[usize]) -> Result<&'a mut Node> {
 fn children_mut<'a>(node: &'a mut Node, path: &[usize]) -> Result<&'a mut Vec<Node>> {
     match node {
         Node::Stack { children, .. } => Ok(children),
-        Node::List { items } => Ok(items),
+        Node::List { items, .. } => Ok(items),
         other => Err(CoreError::ValidationError(format!(
             "node at {path:?} is a leaf {} with no children",
             other.type_name()

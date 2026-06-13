@@ -313,7 +313,7 @@ fn unknown_node_nested_in_known_container_does_not_error() {
     }"#;
     let node = from_str(json).unwrap();
     match &node {
-        Node::List { items } => {
+        Node::List { items, .. } => {
             assert_eq!(items.len(), 2);
             assert!(!items[0].is_unknown());
             assert!(items[1].is_unknown());
@@ -404,4 +404,313 @@ fn apply_update_text_on_non_text_returns_error() {
         value: "z".into(),
     }];
     assert!(apply(&mut root, &bad).is_err());
+}
+
+// --- Review 030: known @forge/std fields survive round-trip (UI-12) --------
+//
+// Every BaseNode field (`id`/`testId`) and every type-specific known scalar
+// prop in `forge/std/forge-std.d.ts` (Stack.gap, Text.variant, Button.variant,
+// TextField.label/placeholder) must survive serialize→deserialize→serialize.
+// Before the fix these were silently dropped on the wire.
+
+/// Build one of each known node with EVERY known optional field set.
+fn fully_populated_nodes() -> Vec<Node> {
+    vec![
+        Node::Stack {
+            base: forge_ui::BaseNode {
+                id: Some("stack-id".into()),
+                test_id: Some("stack-test".into()),
+            },
+            dir: StackDir::H,
+            gap: Some("md".into()),
+            children: vec![Node::text("child")],
+        },
+        Node::Text {
+            base: forge_ui::BaseNode {
+                id: Some("text-id".into()),
+                test_id: Some("text-test".into()),
+            },
+            value: "Notes".into(),
+            variant: Some("title".into()),
+        },
+        Node::Button {
+            base: forge_ui::BaseNode {
+                id: Some("btn-id".into()),
+                test_id: Some("save".into()),
+            },
+            label: "Save".into(),
+            variant: Some("primary".into()),
+            on_tap: Some("save".into()),
+        },
+        Node::TextField {
+            base: forge_ui::BaseNode {
+                id: Some("tf-id".into()),
+                test_id: Some("name-field".into()),
+            },
+            value: "Ada".into(),
+            label: Some("Name".into()),
+            placeholder: Some("Your name".into()),
+            on_change: Some("name.change".into()),
+        },
+        Node::List {
+            base: forge_ui::BaseNode {
+                id: Some("list-id".into()),
+                test_id: Some("notes-list".into()),
+            },
+            items: vec![Node::text("row")],
+        },
+    ]
+}
+
+#[test]
+fn every_known_field_survives_serialize_deserialize_serialize() {
+    for node in fully_populated_nodes() {
+        let json1 = to_canonical_string(&node).unwrap();
+        let back = from_str(&json1).unwrap();
+        // The typed value must be identical (no field dropped).
+        assert_eq!(node, back, "typed round-trip dropped a field for {json1}");
+        // And re-serialization must be byte-identical (stable wire shape).
+        let json2 = to_canonical_string(&back).unwrap();
+        assert_eq!(json1, json2, "wire shape unstable across round-trip");
+    }
+}
+
+#[test]
+fn known_optional_fields_appear_on_the_wire() {
+    // Each known field name must actually be emitted, not silently dropped.
+    let json = to_canonical_string(&Node::Stack {
+        base: forge_ui::BaseNode {
+            id: Some("i".into()),
+            test_id: Some("t".into()),
+        },
+        dir: StackDir::V,
+        gap: Some("sm".into()),
+        children: vec![],
+    })
+    .unwrap();
+    for needle in [
+        "\"id\":\"i\"",
+        "\"testId\":\"t\"",
+        "\"gap\":\"sm\"",
+    ] {
+        assert!(json.contains(needle), "missing {needle} in {json}");
+    }
+
+    let json = to_canonical_string(&Node::Text {
+        base: forge_ui::BaseNode::default(),
+        value: "x".into(),
+        variant: Some("caption".into()),
+    })
+    .unwrap();
+    assert!(json.contains("\"variant\":\"caption\""), "{json}");
+
+    let json = to_canonical_string(&Node::Button {
+        base: forge_ui::BaseNode::default(),
+        label: "L".into(),
+        variant: Some("destructive".into()),
+        on_tap: None,
+    })
+    .unwrap();
+    assert!(json.contains("\"variant\":\"destructive\""), "{json}");
+
+    let json = to_canonical_string(&Node::TextField {
+        base: forge_ui::BaseNode::default(),
+        value: "v".into(),
+        label: Some("Label".into()),
+        placeholder: Some("hint".into()),
+        on_change: None,
+    })
+    .unwrap();
+    assert!(json.contains("\"label\":\"Label\""), "{json}");
+    assert!(json.contains("\"placeholder\":\"hint\""), "{json}");
+}
+
+#[test]
+fn known_optional_fields_are_omitted_when_absent() {
+    // Absent optional fields stay off the wire (so default trees don't grow new
+    // keys) and round-trip back to None.
+    let json = to_canonical_string(&Node::text("plain")).unwrap();
+    for needle in ["\"id\"", "\"testId\"", "\"variant\""] {
+        assert!(!json.contains(needle), "{needle} should be omitted: {json}");
+    }
+    let json = to_canonical_string(&Node::text_field("v", None)).unwrap();
+    for needle in ["\"label\"", "\"placeholder\"", "\"id\"", "\"testId\""] {
+        assert!(!json.contains(needle), "{needle} should be omitted: {json}");
+    }
+}
+
+#[test]
+fn parsing_known_fields_from_ts_contract_shape_preserves_them() {
+    // The exact applet-tree shape called out in review 030.
+    let json = r#"{"type":"Button","testId":"save","label":"Save","variant":"primary","onTap":"save"}"#;
+    let node = from_str(json).unwrap();
+    match &node {
+        Node::Button {
+            base,
+            label,
+            variant,
+            on_tap,
+        } => {
+            assert_eq!(base.test_id.as_deref(), Some("save"));
+            assert_eq!(label, "Save");
+            assert_eq!(variant.as_deref(), Some("primary"));
+            assert_eq!(on_tap.as_deref(), Some("save"));
+        }
+        other => panic!("expected Button, got {}", other.type_name()),
+    }
+    // And nothing is lost on the way back out.
+    let back: serde_json::Value = serde_json::from_str(&to_canonical_string(&node).unwrap()).unwrap();
+    let want: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(back, want);
+}
+
+#[test]
+fn known_field_changes_diff_and_patch_round_trip() {
+    // Set then change each of testId, gap, variant, placeholder and assert the
+    // diff is a granular update_prop that apply() replays back to `new`.
+    let cases: Vec<(Node, Node, Patch)> = vec![
+        // testId change (BaseNode, applies to any node).
+        (
+            Node::text("h").with_test_id("a"),
+            Node::text("h").with_test_id("b"),
+            Patch::UpdateProp {
+                path: vec![],
+                key: "testId".into(),
+                value: "b".into(),
+            },
+        ),
+        // Stack.gap change.
+        (
+            Node::Stack {
+                base: forge_ui::BaseNode::default(),
+                dir: StackDir::V,
+                gap: Some("sm".into()),
+                children: vec![],
+            },
+            Node::Stack {
+                base: forge_ui::BaseNode::default(),
+                dir: StackDir::V,
+                gap: Some("lg".into()),
+                children: vec![],
+            },
+            Patch::UpdateProp {
+                path: vec![],
+                key: "gap".into(),
+                value: "lg".into(),
+            },
+        ),
+        // Text.variant change.
+        (
+            Node::Text {
+                base: forge_ui::BaseNode::default(),
+                value: "x".into(),
+                variant: Some("body".into()),
+            },
+            Node::Text {
+                base: forge_ui::BaseNode::default(),
+                value: "x".into(),
+                variant: Some("title".into()),
+            },
+            Patch::UpdateProp {
+                path: vec![],
+                key: "variant".into(),
+                value: "title".into(),
+            },
+        ),
+        // TextField.placeholder change.
+        (
+            Node::TextField {
+                base: forge_ui::BaseNode::default(),
+                value: "v".into(),
+                label: None,
+                placeholder: Some("old".into()),
+                on_change: None,
+            },
+            Node::TextField {
+                base: forge_ui::BaseNode::default(),
+                value: "v".into(),
+                label: None,
+                placeholder: Some("new".into()),
+                on_change: None,
+            },
+            Patch::UpdateProp {
+                path: vec![],
+                key: "placeholder".into(),
+                value: "new".into(),
+            },
+        ),
+    ];
+
+    for (i, (old, new, expected)) in cases.into_iter().enumerate() {
+        let patches = diff(Some(&old), &new);
+        assert_eq!(patches, vec![expected], "case {i}: unexpected diff");
+        let mut applied = old.clone();
+        apply(&mut applied, &patches).unwrap();
+        assert_eq!(applied, new, "case {i}: apply(diff) did not reproduce new");
+    }
+}
+
+#[test]
+fn clearing_a_known_optional_field_replaces_the_node() {
+    // Some -> None has no granular clear op, so a single whole-node replace is
+    // emitted and round-trips losslessly.
+    let old = Node::button("Go", Some("go".into())).with_test_id("t");
+    let new = Node::button("Go", Some("go".into())); // testId cleared
+    let patches = diff(Some(&old), &new);
+    assert_eq!(
+        patches,
+        vec![Patch::Replace {
+            path: vec![],
+            node: new.clone(),
+        }]
+    );
+    let mut applied = old.clone();
+    apply(&mut applied, &patches).unwrap();
+    assert_eq!(applied, new);
+}
+
+#[test]
+fn populated_nodes_apply_diff_round_trip_against_bare_nodes() {
+    // Going from a bare node to a fully-populated one (and back) must round-trip
+    // through diff/apply without losing any known field.
+    for populated in fully_populated_nodes() {
+        let bare = match &populated {
+            Node::Stack { children, .. } => Node::stack(StackDir::H, children.clone()),
+            Node::Text { value, .. } => Node::text(value.clone()),
+            Node::Button { label, on_tap, .. } => Node::button(label.clone(), on_tap.clone()),
+            Node::TextField {
+                value, on_change, ..
+            } => Node::text_field(value.clone(), on_change.clone()),
+            Node::List { items, .. } => Node::list(items.clone()),
+            Node::Unknown { .. } => unreachable!(),
+        };
+        // bare -> populated
+        let patches = diff(Some(&bare), &populated);
+        let mut applied = bare.clone();
+        apply(&mut applied, &patches).unwrap();
+        assert_eq!(applied, populated, "bare->populated lost a field");
+        // populated -> bare
+        let patches = diff(Some(&populated), &bare);
+        let mut applied = populated.clone();
+        apply(&mut applied, &patches).unwrap();
+        assert_eq!(applied, bare, "populated->bare lost a field");
+    }
+}
+
+// UI-6 regression guard: unknown TYPE still falls back; unknown PROP on a known
+// node is still dropped (NOT preserved), even now that more props are known.
+#[test]
+fn ui6_unknown_type_and_unknown_prop_still_hold_after_field_expansion() {
+    // Unknown component type → fallback, value preserved verbatim.
+    let n = from_str(r#"{"type":"Sparkline","points":[1,2],"testId":"sp"}"#).unwrap();
+    assert!(n.is_unknown());
+    let reser: serde_json::Value =
+        serde_json::from_str(&to_canonical_string(&n).unwrap()).unwrap();
+    assert_eq!(reser["testId"], "sp", "unknown node preserves all props verbatim");
+
+    // Genuinely unknown prop on a KNOWN node is still dropped (not a std field).
+    let json = r#"{"type":"Text","text":"hi","variant":"title","sparkle":true}"#;
+    let back = to_canonical_string(&from_str(json).unwrap()).unwrap();
+    assert!(back.contains("\"variant\":\"title\""), "known field kept: {back}");
+    assert!(!back.contains("sparkle"), "unknown prop dropped: {back}");
 }

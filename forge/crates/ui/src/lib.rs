@@ -18,7 +18,7 @@
 mod node;
 mod patch;
 
-pub use node::{ActionRef, Node, StackDir};
+pub use node::{ActionRef, BaseNode, Node, StackDir};
 pub use patch::{apply, diff, Patch, Path};
 
 use forge_domain::{CoreError, Result};
