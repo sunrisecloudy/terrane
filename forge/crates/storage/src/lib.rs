@@ -1167,6 +1167,106 @@ impl Store {
         Ok(())
     }
 
+    /// Import a CRDT chunk that arrived from a **remote peer** during sync, in the
+    /// SAME `crdt_chunks` + `oplog` shape a local write uses (DL-4: "Remote updates
+    /// follow the identical path").
+    ///
+    /// Local CRDT writes append a `crdt_chunks` row **and** an `oplog` row in one
+    /// transaction (see `crdt_write::write_group_crdt`). A bare [`put_chunk`] only
+    /// touches `crdt_chunks`, so a remotely-imported chunk would be invisible to the
+    /// oplog / change-feed / audit surface. This method closes that gap: in ONE
+    /// transaction it appends the chunk (append-only, idempotent) and, **only when
+    /// the chunk is newly inserted**, appends an oplog row tagged with the remote
+    /// `source` metadata so it is distinguishable from a local op.
+    ///
+    /// Idempotence is load-bearing for sync: re-importing an already-present chunk
+    /// (identical `(format, payload)` under the same `(doc_id, chunk_id)`) appends
+    /// NO new oplog row — a second sync of an already-converged pair adds nothing.
+    /// A conflicting payload under an existing chunk id is rejected exactly as the
+    /// append-only [`put_chunk`] guard does (history is never rewritten).
+    ///
+    /// `source` is coarse by design for M0b: a peer identifier (no server membership
+    /// / source-token model yet), recorded as the oplog `actor_id` and echoed in the
+    /// op payload's `source` so audit can tell a remote import from a local write.
+    /// Returns `true` if the chunk (and its oplog row) was newly written, `false`
+    /// if it was already present (idempotent no-op).
+    pub fn put_chunk_from_remote(
+        &mut self,
+        doc_id: &str,
+        chunk_id: &str,
+        format: &str,
+        payload: &[u8],
+        source: &str,
+    ) -> Result<bool> {
+        // Borrow-checker: own these before the closure captures `self`-derived data.
+        let doc_id = doc_id.to_string();
+        let chunk_id = chunk_id.to_string();
+        let format = format.to_string();
+        let payload = payload.to_vec();
+        let source = source.to_string();
+        self.transact(move |tx| {
+            // Append-only chunk insert. An identical re-import is an idempotent
+            // no-op; a conflicting payload trips the history-rewrite guard.
+            let existing: Option<(String, Vec<u8>)> = tx
+                .query_row(
+                    "SELECT format, payload FROM crdt_chunks WHERE doc_id = ?1 AND chunk_id = ?2",
+                    params![doc_id, chunk_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(map_sql)?;
+            if let Some((ef, ep)) = existing {
+                if ef == format && ep == payload {
+                    // Already imported — DO NOT append a duplicate oplog row.
+                    return Ok(false);
+                }
+                return Err(CoreError::StorageError(format!(
+                    "crdt chunk ({doc_id}, {chunk_id}) is append-only and already exists \
+                     with different content; refusing to rewrite history"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO crdt_chunks (doc_id, chunk_id, format, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![doc_id, chunk_id, format, payload, now_ms()],
+            )
+            .map_err(map_sql)?;
+
+            // One oplog row in the SAME transaction, tagged remote (DL-4 parity).
+            // op_id mirrors the local path: `(doc_id)#(chunk_id)`, unique because
+            // chunk ids are unique per doc. The lamport is derived from the chunk id
+            // when it is the local `chunk-NNNN` form, else 0 (a foreign content id).
+            let op_id = format!("{doc_id}#{chunk_id}");
+            let lamport = chunk_id
+                .strip_prefix("chunk-")
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0);
+            let op_payload = serde_json::to_vec(&serde_json::json!({
+                "doc_id": doc_id,
+                "chunk_id": chunk_id,
+                "kind": "record.remote_import",
+                "source": source,
+            }))
+            .map_err(|e| map_json("remote oplog payload encode", e))?;
+            tx.execute(
+                "INSERT INTO oplog
+                     (op_id, actor_id, workspace_id, lamport, kind, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    op_id,
+                    source,
+                    "remote",
+                    lamport as i64,
+                    "record.remote_import",
+                    op_payload,
+                    now_ms()
+                ],
+            )
+            .map_err(map_sql)?;
+            Ok(true)
+        })
+    }
+
     /// Read a single chunk by `(doc_id, chunk_id)`, if present.
     pub fn get_chunk(&self, doc_id: &str, chunk_id: &str) -> Result<Option<ChunkRow>> {
         self.conn

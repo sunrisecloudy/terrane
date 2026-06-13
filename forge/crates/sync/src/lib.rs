@@ -134,17 +134,30 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
 fn pull_doc(into: &mut Store, from: &Store, doc_id: &str) -> Result<usize> {
     let have = frontier_for_doc(into, doc_id)?;
     let theirs = frontier_for_doc(from, doc_id)?;
+    let source = remote_source_id(from);
     let mut moved = 0usize;
     for (id, chunk) in &theirs {
         if have.contains_key(id) {
             continue; // frontier already covers this chunk — nothing to send
         }
-        // Append-only + idempotent: re-putting an identical content id is a
-        // no-op, and the content address guarantees a new id only for new bytes.
-        into.put_chunk(doc_id, &chunk.id, &chunk.format, &chunk.payload)?;
-        moved += 1;
+        // Import as a REMOTE chunk so it lands in `crdt_chunks` AND the oplog in one
+        // transaction, tagged with the source peer (DL-4: remote updates follow the
+        // identical path). Append-only + idempotent: re-importing an identical
+        // content id is a no-op that appends NO oplog row, and the content address
+        // guarantees a new id only for new bytes.
+        if into.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &source)? {
+            moved += 1;
+        }
     }
     Ok(moved)
+}
+
+/// A coarse remote-source identifier for oplog tagging (M0b has no server
+/// membership / source-token model): the source store's Loro peer id, which is
+/// distinct per workspace, rendered as `peer:<id>`. Recorded as the imported op's
+/// `actor_id` / `source` so audit can tell a remote import from a local write.
+fn remote_source_id(from: &Store) -> String {
+    format!("peer:{}", from.crdt_peer_id())
 }
 
 /// One-directional catch-up: import into `into` every chunk `from` holds that
@@ -220,6 +233,11 @@ pub fn sync_stores(
     b_indexes: &IndexManager,
 ) -> Result<SyncReport> {
     let doc_ids = union_doc_ids(a, b)?;
+    // Each peer tags the chunks it RECEIVES with the other peer's source id, so the
+    // imported oplog rows are attributable (DL-4 remote parity). Captured up front
+    // because `put_chunk_from_remote` borrows the receiver mutably below.
+    let a_source = remote_source_id(a);
+    let b_source = remote_source_id(b);
 
     let mut chunks_a_to_b = 0usize;
     let mut chunks_b_to_a = 0usize;
@@ -230,17 +248,20 @@ pub fn sync_stores(
         let a_front = frontier_for_doc(a, doc_id)?;
         let b_front = frontier_for_doc(b, doc_id)?;
 
-        // a -> b: chunks a holds that b lacks.
+        // a -> b: chunks a holds that b lacks. `b` records them as remote imports
+        // (crdt_chunks + oplog in one tx) tagged with a's source id; idempotent.
         for (id, chunk) in &a_front {
-            if !b_front.contains_key(id) {
-                b.put_chunk(doc_id, &chunk.id, &chunk.format, &chunk.payload)?;
+            if !b_front.contains_key(id)
+                && b.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &a_source)?
+            {
                 chunks_a_to_b += 1;
             }
         }
         // b -> a: chunks b holds that a lacks.
         for (id, chunk) in &b_front {
-            if !a_front.contains_key(id) {
-                a.put_chunk(doc_id, &chunk.id, &chunk.format, &chunk.payload)?;
+            if !a_front.contains_key(id)
+                && a.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &b_source)?
+            {
                 chunks_b_to_a += 1;
             }
         }

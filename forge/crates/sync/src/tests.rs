@@ -498,3 +498,74 @@ fn asymmetric_indexes_sync_is_not_order_dependent() {
     // FTS peer as `b` (the reverse order: A's own FTS index must not go stale).
     assert_asymmetric_sync_converges(false);
 }
+
+/// Review 084 #2 (P2): a chunk that arrives via sync must be recorded in the
+/// RECEIVING store's oplog (DL-4: "Remote updates follow the identical path"), so
+/// the change-feed / audit surface sees remote imports — not just local writes.
+/// A re-sync (idempotent) must add NO new oplog rows.
+///
+/// Setup: peer A inserts `t1`, peer B inserts `t2`; one `sync_stores` exchanges the
+/// two chunks. Then assert, on EACH receiving store:
+///   - the oplog now contains a row for the chunk it imported, tagged remote
+///     (`kind == record.remote_import`, `actor_id`/`workspace_id` mark it remote,
+///     payload carries the source peer id) and distinguishable from local ops;
+///   - a second `sync_stores` (converged, idempotent) appends ZERO new oplog rows.
+#[test]
+fn synced_chunks_are_recorded_in_receiver_oplog_as_remote_and_idempotent() {
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    a.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "from-a"}), 1), &idx)
+        .unwrap();
+    b.apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "from-b"}), 2), &idx)
+        .unwrap();
+
+    // Before sync each store has exactly its one LOCAL op (kind record.insert).
+    let a_local = a.list_ops().unwrap();
+    let b_local = b.list_ops().unwrap();
+    assert_eq!(a_local.len(), 1);
+    assert_eq!(a_local[0].kind, "record.insert");
+    assert_eq!(b_local.len(), 1);
+
+    let first = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
+    assert_eq!(first.total_chunks_moved(), 2, "the two divergent chunks move");
+
+    // Each store gained exactly ONE oplog row from the import: its prior local op
+    // plus the one remote chunk it received.
+    let a_ops = a.list_ops().unwrap();
+    let b_ops = b.list_ops().unwrap();
+    assert_eq!(a_ops.len(), 2, "A: local op + one imported remote op");
+    assert_eq!(b_ops.len(), 2, "B: local op + one imported remote op");
+
+    // The imported row is tagged remote and attributable to the SOURCE peer, and is
+    // distinguishable from the local op (different kind / actor / workspace).
+    let assert_remote_import = |ops: &[forge_storage::OpRow], source_peer: u64| {
+        let remote: Vec<_> = ops
+            .iter()
+            .filter(|o| o.kind == "record.remote_import")
+            .collect();
+        assert_eq!(remote.len(), 1, "exactly one remote-import op expected");
+        let op = remote[0];
+        assert_eq!(op.workspace_id, "remote", "remote import marked remote");
+        let expected_source = format!("peer:{source_peer}");
+        assert_eq!(op.actor_id, expected_source, "actor tags the source peer");
+        let payload: Value = serde_json::from_slice(&op.payload).unwrap();
+        assert_eq!(payload["source"], json!(expected_source));
+        assert_eq!(payload["kind"], json!("record.remote_import"));
+        // The local op is NOT mistaken for a remote one.
+        assert!(
+            ops.iter().any(|o| o.kind == "record.insert"),
+            "the local insert op must still be present and distinct"
+        );
+    };
+    // A received B's chunk (source = peer:22); B received A's chunk (source peer:11).
+    assert_remote_import(&a_ops, 22);
+    assert_remote_import(&b_ops, 11);
+
+    // Idempotence: a second sync over the now-converged pair moves no chunks AND
+    // appends NO new oplog rows (re-importing a present chunk is a pure no-op).
+    let second = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
+    assert_eq!(second.total_chunks_moved(), 0, "converged: no chunks move");
+    assert_eq!(a.list_ops().unwrap().len(), 2, "A: no duplicate import op");
+    assert_eq!(b.list_ops().unwrap().len(), 2, "B: no duplicate import op");
+}
