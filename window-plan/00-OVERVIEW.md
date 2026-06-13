@@ -13,7 +13,7 @@ exact crates/versions, folder layout, command lines, and acceptance checks.
 
 A **native Windows 11 / 10 desktop application** that is a **thin shell** — native UX chrome + a renderer
 for the declarative UI-tree protocol + platform services — sitting on top of the **existing, working
-`forge-core` Rust workspace** (`/Users/vehasuwat/Project/terrane/forge/`).
+`forge-core` Rust workspace** (`~/projects/terrane/forge/` inside WSL).
 
 - **Shell language/UI:** C# + **WinUI 3** (Windows App SDK), packaged as **MSIX**.
 - **Engine inside the core:** **QuickJS** (`rquickjs`, native) — already the M0a spine engine. WinUI does
@@ -92,7 +92,7 @@ macOS/Linux; only the thin top layer is new Windows code.
 The M0a spine runs **today**, headlessly, on macOS/Linux. Walk the existing entry points:
 
 - `forge-cli` runs `forge demo`, which calls `forge_cli::run_demo(input)`
-  (`/Users/vehasuwat/Project/terrane/forge/crates/cli/src/lib.rs`). That function drives the whole jewel:
+  (`~/projects/terrane/forge/crates/cli/src/lib.rs`). That function drives the whole jewel:
   install `notes-lite` → run it → capture UI trees + stored records → replay and assert byte-identity.
 - `run_demo` does this **only** through `WorkspaceCore::handle(CoreCommand)`
   (`crates/core/src/workspace.rs`). The CLI is, in PRD language, *"a shell like any other"* (PRD 01 §1).

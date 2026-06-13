@@ -8,7 +8,7 @@
 ## 0. Scope, principle, and the M0a line
 
 The Windows shell is a **thin renderer + platform-services host** over the existing native Rust
-core in `/Users/vehasuwat/Project/terrane/forge`. The shell contains **no business logic**
+core in `~/projects/terrane/forge` inside WSL. The shell contains **no business logic**
 (prd-merged/06 §intro): it never mutates SQLite, CRDT docs, schemas, permissions, or runtime
 state except by calling a `Command` (CR-A1). Platform services are therefore **effect providers
 injected into the core**, not features the shell implements on its own.

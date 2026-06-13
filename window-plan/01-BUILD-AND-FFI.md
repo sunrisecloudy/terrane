@@ -3,7 +3,7 @@
 **Project:** forge (Terrane) · **Shell:** Windows (PRD 06 PS-14, M6) · **Status:** implementable plan v1
 **Audience:** an engineer on a real Windows 11 machine who will build the native lib, generate/author the binding, and stand up the C# host.
 
-This is the crux of the Windows port. The WinUI 3 shell is a *thin* renderer + platform services over the existing `forge-core` Rust workspace at `/Users/vehasuwat/Project/terrane/forge/` (PRD 06 §1: "Shell code contains no business logic"). This document covers four things and nothing else:
+This is the crux of the Windows port. The WinUI 3 shell is a *thin* renderer + platform services over the existing `forge-core` Rust workspace at `~/projects/terrane/forge/` inside WSL (PRD 06 §1: "Shell code contains no business logic"). This document covers four things and nothing else:
 
 1. Building `forge-core` as a Windows native DLL (which crate becomes the `cdylib`, x64 + arm64, the C build deps, the `.dll` output).
 2. The binding strategy decision (PS-1 / PS-14): UniFFI-C# vs a hand-written stable C-ABI adapter — with a recommendation and a concrete sketch of both sides.

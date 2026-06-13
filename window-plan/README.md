@@ -2,7 +2,7 @@
 
 The complete, implementable plan for the **forge** (Terrane) Windows desktop shell:
 a thin C#/WinUI 3 renderer + platform services over the existing, working `forge-core`
-Rust workspace at `/Users/vehasuwat/Project/terrane/forge/`. No business logic lives in
+Rust workspace at `~/projects/terrane/forge/` inside WSL. No business logic lives in
 the shell — every state change goes through the core's `Command`/`Event`/`Stream`
 facade (`WorkspaceCore::handle`), exposed across a stable C-ABI seam (`forge_ffi.dll`),
 and the UI-tree + patch protocol is rendered natively in WinUI 3. Targets Windows 11
@@ -31,6 +31,10 @@ and Windows 10 22H2+, x64 + arm64, shipped as a signed MSIX (PRD 06 PS-14, roadm
 
 Install and verify on the Windows dev machine **before W0** (full table in 00-OVERVIEW §9):
 
+- [ ] **WSL Ubuntu 24.04 checkout** lives in the Linux filesystem, not under `C:\` or `/mnt/c`.
+      Recommended path: `~/projects/terrane`. From Windows, open it at
+      `\\wsl$\Ubuntu-24.04\home\<linux-username>\projects\terrane`. Run build/test commands
+      inside WSL; use the `\\wsl$` path for Windows editors and file browsing.
 - [ ] **Visual Studio 2022** (17.10+) with workloads: *Desktop development with C++*, *.NET desktop development*, *Windows App SDK / WinUI 3*. Components: MSVC v143 (x64/x86 **and** ARM64) build tools, C++ Clang tools (clang 18), Windows 11 SDK 10.0.22621+.
 - [ ] **Rust 1.96.0** (matches `forge/rust-toolchain.toml`): `rustup show` reports stable 1.96.0.
 - [ ] **Rust targets** added: `rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc`.

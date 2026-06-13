@@ -43,6 +43,28 @@ runtime, and launch a bundled generated app. The reference host is the local
 contract implementation that lets you use the runtime without installing every
 native platform toolchain first.
 
+On Windows, keep the working checkout in the WSL/Linux filesystem instead of
+`C:\` or `/mnt/c` for faster file watching, tests, native builds, and Unix-style
+tooling. The recommended layout is:
+
+```sh
+mkdir -p ~/projects
+cp -a /mnt/c/Users/veha/Project/terrane ~/projects/terrane
+cd ~/projects/terrane
+git submodule update --init --recursive
+git status
+```
+
+Windows apps can still browse the Linux checkout through:
+
+```text
+\\wsl$\Ubuntu-24.04\home\<linux-username>\projects\terrane
+```
+
+Run build, test, and development commands from inside WSL at
+`~/projects/terrane`; use the `\\wsl$` path mainly for Windows editors and file
+browsing.
+
 Start here:
 
 ```sh

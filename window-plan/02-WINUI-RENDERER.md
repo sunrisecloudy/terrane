@@ -4,9 +4,9 @@
 **Scope of this document:** the declarative component-tree renderer only — the C#/WinUI 3 layer that turns the core's UI tree + patch stream into a live `FrameworkElement` visual tree, routes events back to the core, and passes the renderer conformance kit (UI-14). It does **not** cover the FFI binding surface (see `01-FFI-AND-CORE-LIB.md`), the platform-app surfaces (editor/data-browser, prd-merged/05 §B), or packaging (see `04-MSIX-PACKAGING.md`).
 
 **The contract this renderer obeys (read before implementing):**
-- The catalog and node shapes: `/Users/vehasuwat/Project/terrane/forge/std/ui-catalog.d.ts`, `/Users/vehasuwat/Project/terrane/forge/spec/ui-catalog.md`.
-- The patch vocabulary and exact wire shapes: `/Users/vehasuwat/Project/terrane/forge/crates/ui/src/patch.rs` (the `Patch` enum) and `.../node.rs` (the manual serde — **TS-facing camelCase field names** on the wire: `direction`, `onTap`, `onChange`, `text`, `testId`).
-- The conformance corpus this renderer must pass: `/Users/vehasuwat/Project/terrane/forge/crates/ui/tests/golden/` (manifest + 20 fixtures) and the Rust harness `.../tests/golden.rs`.
+- The catalog and node shapes: `~/projects/terrane/forge/std/ui-catalog.d.ts`, `~/projects/terrane/forge/spec/ui-catalog.md`.
+- The patch vocabulary and exact wire shapes: `~/projects/terrane/forge/crates/ui/src/patch.rs` (the `Patch` enum) and `.../node.rs` (the manual serde — **TS-facing camelCase field names** on the wire: `direction`, `onTap`, `onChange`, `text`, `testId`).
+- The conformance corpus this renderer must pass: `~/projects/terrane/forge/crates/ui/tests/golden/` (manifest + 20 fixtures) and the Rust harness `.../tests/golden.rs`.
 - Normative requirements: **UI-1** (apply minimal patches), **UI-2** (full catalog), **UI-5** (shell-side virtualization via `ItemsRepeater`), **UI-6** (unknown → labeled fallback, never crash), **UI-8** (theming/semantic variants → XAML styles), **UI-12/UI-14** (golden + conformance kit).
 
 **The cardinal rule (prd-merged/06 intro):** the shell contains *no business logic*. The renderer never decides *what* to show or *what* an action does — it only maps `Node → FrameworkElement`, applies `Patch`es, and marshals `ActionRef` strings back as events. All state lives in the core.
@@ -681,7 +681,7 @@ A11y audit (Accessibility Insights for Windows) is a **GA gate** (UI-7); run it 
 
 > "Renderer conformance kit: golden trees + scripted-interaction + screenshot tests shared by all renderers; behavioral divergence is release-blocking (same bar as CR-12)." (UI-14)
 
-The corpus already exists and is the seed: `/Users/vehasuwat/Project/terrane/forge/crates/ui/tests/golden/` — `manifest.json` + 20 fixtures across three kinds (`roundtrip`, `diff`, `unknown`). The Rust harness `golden.rs` already asserts the *core* side. The C# kit asserts the *renderer* side against the **same files** (no fork — the C# test project reads them from the Rust tree via a relative path or a copied build artifact), so divergence is impossible by construction.
+The corpus already exists and is the seed: `~/projects/terrane/forge/crates/ui/tests/golden/` — `manifest.json` + 20 fixtures across three kinds (`roundtrip`, `diff`, `unknown`). The Rust harness `golden.rs` already asserts the *core* side. The C# kit asserts the *renderer* side against the **same files** (no fork — the C# test project reads them from the Rust tree via a relative path or a copied build artifact), so divergence is impossible by construction.
 
 The C# conformance test project (`Forge.Shell.Renderer.Conformance`, MSTest/xUnit running on WinUI `DispatcherQueue`) runs each fixture kind:
 

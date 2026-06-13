@@ -1,7 +1,7 @@
 # 05 — Implementation milestones & acceptance gates
 
 **Project:** forge — Windows desktop shell (codename per `prd-merged/00`)
-**Scope of this doc:** an ordered, implementable plan a single developer can execute on a real Windows 11 / Windows 10 22H2+ machine to bring up the **thin** C#/WinUI 3 shell over the existing Rust `forge-core` (`/Users/vehasuwat/Project/terrane/forge`).
+**Scope of this doc:** an ordered, implementable plan a single developer can execute on a real Windows 11 / Windows 10 22H2+ machine to bring up the **thin** C#/WinUI 3 shell over the existing Rust `forge-core` (`~/projects/terrane/forge` inside WSL).
 **Non-negotiable rule (carried from `prd-merged/06` §intro):** the shell contains **no business logic**. It only (a) sends `CoreCommand` and receives `CoreResponse`, (b) subscribes to events/streams, (c) renders the UI tree + patches, and (d) provides platform services the core calls back into. Every state mutation goes through a command (CR-A1). This rule is itself an acceptance gate (see W2/W3).
 
 This plan satisfies the `prd-merged` Windows requirements **PS-1, PS-3, PS-4, PS-14, PS-15** and the UI requirements **UI-1, UI-2, UI-5, UI-6, UI-12, UI-14**, mapping onto roadmap milestone **M6** (`prd-merged/00` §11), and gates the **Tauri fallback decision (PS-15)** at the end of W1.
