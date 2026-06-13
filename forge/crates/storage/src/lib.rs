@@ -25,9 +25,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod query;
 
 pub use query::{
-    compile_select, AggregateResult, CompiledSelect, Dir, Filter, GroupResult, Mutation, Op,
-    OrderBy, Predicate, Query, QueryResult, QueryRow,
+    compile_select, AggregateResult, CompiledSelect, Dir, FieldRef, Filter, FullScanReason,
+    GroupResult, Mutation, Op, OrderBy, PlannedQuery, PlannerWarning, Predicate, Query, QueryResult,
+    QueryRow, TextSearch,
 };
+
+pub mod index;
+pub use index::{IndexDef, IndexKind, IndexManager, IndexState};
 
 /// The M0a physical schema (prd-merged/02 §4 subset). Created on open if
 /// absent. Tables that exist in the full spec but are unused by the spine are
@@ -415,11 +419,7 @@ impl Store {
             });
             let mut buckets: Vec<(serde_json::Value, Vec<&RecordEnvelope>)> = Vec::new();
             for env in &matched {
-                let key = env
-                    .fields
-                    .get(group_field)
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
+                let key = query::group_key(env, group_field);
                 match buckets.iter_mut().find(|(k, _)| k == &key) {
                     Some((_, v)) => v.push(env),
                     None => buckets.push((key, vec![env])),
@@ -470,6 +470,152 @@ impl Store {
             out.push(serde_json::from_str(&json).map_err(|e| map_json("query", e))?);
         }
         Ok(out)
+    }
+
+    /// Count live records in `collection` (the planner's `estimated_rows`).
+    fn count_records(&self, collection: &str, include_deleted: bool) -> Result<i64> {
+        let sql = if include_deleted {
+            "SELECT COUNT(*) FROM records WHERE collection = ?1"
+        } else {
+            "SELECT COUNT(*) FROM records WHERE collection = ?1 \
+             AND json_extract(data, '$.deleted') IS NOT 1"
+        };
+        self.conn
+            .query_row(sql, params![collection], |r| r.get::<_, i64>(0))
+            .map_err(map_sql)
+    }
+
+    // --- Index-aware planner (DL-5/DL-6) ---------------------------------
+
+    /// Run a [`Query`] with index awareness against `indexes` (DL-5/DL-6).
+    ///
+    /// Returns the same rows/aggregates as [`query`](Self::query) — `records` is
+    /// canonical, so the answer never depends on whether an index exists — plus
+    /// the planner decision: `uses_index`, the `index_id` used, and any
+    /// `planner.full_scan` warnings. The index decision is computed from the
+    /// registered definitions and their lifecycle states (never hardcoded): an
+    /// active expression index serves eq/range/order over its stable field id; an
+    /// active FTS5 shadow table serves a text search; every other case scans and
+    /// warns.
+    ///
+    /// For a text search the matched ids come from the FTS shadow table (ordered
+    /// by FTS rank); the envelopes are then re-read from canonical `records`.
+    pub fn query_planned(
+        &self,
+        q: &Query,
+        indexes: &index::IndexManager,
+    ) -> Result<query::PlannedQuery> {
+        let estimated = self.count_records(&q.from, q.include_deleted)?;
+        let plan = indexes.plan(q, estimated);
+
+        // Text-search path: rows come from the FTS table when it is active,
+        // otherwise from a portable `like`-style scan over the records.
+        if let Some(ts) = &q.text_search {
+            let result = self.run_text_search(q, ts, &plan, indexes)?;
+            return Ok(query::PlannedQuery {
+                result,
+                uses_index: plan.uses_index,
+                index_id: plan.index_id,
+                warnings: plan.warnings,
+            });
+        }
+
+        // Scalar path: identical to `query`, with the planner decision attached.
+        let result = self.query(q)?;
+        Ok(query::PlannedQuery {
+            result,
+            uses_index: plan.uses_index,
+            index_id: plan.index_id,
+            warnings: plan.warnings,
+        })
+    }
+
+    /// Resolve a text search to a row result. When an active FTS table covers it
+    /// the matched ids come from the shadow table (rank order); otherwise a
+    /// portable case-insensitive substring scan over canonical `records` yields
+    /// the same set (records stay canonical). Result ordering follows the query's
+    /// `order_by` when present (FTS `rank` falls back to id order).
+    fn run_text_search(
+        &self,
+        q: &Query,
+        ts: &query::TextSearch,
+        plan: &index::IndexPlan,
+        indexes: &index::IndexManager,
+    ) -> Result<QueryResult> {
+        let ids: Vec<String> = if plan.uses_index {
+            let field_id = ts
+                .field
+                .field_id()
+                .ok_or_else(|| CoreError::QueryError("text search needs a stable field id".into()))?;
+            indexes.fts_match(&self.conn, &q.from, field_id, &ts.query)?
+        } else {
+            self.text_search_scan(q, ts)?
+        };
+
+        // Re-read envelopes from canonical records, preserving FTS rank order.
+        let mut rows: Vec<QueryRow> = Vec::new();
+        for id in ids {
+            if let Some(env) = self.get_record(&q.from, &id)? {
+                if env.deleted && !q.include_deleted {
+                    continue;
+                }
+                rows.push(QueryRow { id, envelope: env });
+            }
+        }
+
+        // If the query pins an explicit order other than FTS rank/id, finalize
+        // it with the spec total order; an `id`/`rank` order keeps FTS order but
+        // we apply a stable id sort so the result is deterministic.
+        let rank_order = q
+            .order_by
+            .as_ref()
+            .map(|ob| matches!(&ob.field, query::FieldRef::Name(n) if n == "rank"))
+            .unwrap_or(true);
+        if rank_order {
+            rows.sort_by(|a, b| a.id.cmp(&b.id));
+        } else {
+            rows = query::finalize_rows(rows, q);
+        }
+        Ok(QueryResult::Rows(rows))
+    }
+
+    /// Portable text-search fallback: ASCII case-insensitive substring match over
+    /// the field's stored value. Used when no active FTS table covers the search,
+    /// so the rows are still correct (records are canonical) while the planner
+    /// surfaces the `fts_not_available` warning.
+    fn text_search_scan(&self, q: &Query, ts: &query::TextSearch) -> Result<Vec<String>> {
+        let path = match &ts.field {
+            query::FieldRef::Id(id) => format!("$.field_ids.{id}"),
+            query::FieldRef::Name(n) => format!("$.fields.{n}"),
+        };
+        let sql = "SELECT id, json_extract(data, ?1) FROM records \
+                   WHERE collection = ?2 AND json_extract(data, '$.deleted') IS NOT 1";
+        let mut stmt = self.conn.prepare(sql).map_err(map_sql)?;
+        let needle = ts.query.to_ascii_lowercase();
+        let rows = stmt
+            .query_map(params![path, q.from], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(map_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, value) = r.map_err(map_sql)?;
+            if let Some(text) = value {
+                if text.to_ascii_lowercase().contains(&needle) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Create the physical structures for every active index in `indexes`
+    /// (idempotent expression-index DDL + populated FTS5 shadow tables), built
+    /// from canonical `records`. Thin wrapper over
+    /// [`IndexManager::rebuild_active`](index::IndexManager::rebuild_active) so
+    /// callers need not reach the connection.
+    pub fn build_indexes(&self, indexes: &index::IndexManager) -> Result<()> {
+        indexes.rebuild_active(&self.conn)
     }
 
     // --- Mutations (DL-17) -----------------------------------------------

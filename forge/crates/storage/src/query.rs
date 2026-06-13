@@ -15,12 +15,19 @@
 //!
 //! ## Field addressing
 //!
-//! Query plans address fields by **display name** (`status`, `prio`). The
-//! planner resolves these to the canonical envelope JSON path
-//! `$.fields.<name>` (the index engine, a separate stage, addresses stable
-//! `$.field_ids.<id>`). The path component is validated against an identifier
-//! allowlist before it is placed in the (otherwise constant) statement text, so
-//! a field name can never carry SQL.
+//! Query plans address fields two ways and the planner resolves each to a
+//! distinct canonical envelope JSON path:
+//!
+//! - **Display name** (`status`, `prio`) → `$.fields.<name>` — applet
+//!   ergonomics; the query-DSL surface.
+//! - **Stable field id** (`f_alice_1`) → `$.field_ids.<id>` — the merge/index
+//!   correct addressing the dynamic-index engine and its fixtures use
+//!   (`dynamic-indexes.md`). A `field_id` key in a plan resolves to the
+//!   stable-id path, never the display path.
+//!
+//! Either path component is validated against an identifier allowlist before it
+//! is placed in the (otherwise constant) statement text, so a field reference
+//! can never carry SQL (DL-16).
 //!
 //! ## Semantics (pinned by `query-dsl.md` §Result)
 //!
@@ -96,10 +103,51 @@ impl Dir {
     }
 }
 
+/// How a plan addresses a field: by display name (`$.fields.<name>`) or by
+/// stable schema field id (`$.field_ids.<id>`). The two are distinct JSON paths
+/// in the envelope, so the planner must not collapse one onto the other (a
+/// `field_id` resolved as a display name reads `NULL` for index-fixture
+/// records). See module docs and `dynamic-indexes.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldRef {
+    /// A display name under `$.fields`.
+    Name(String),
+    /// A stable schema field id under `$.field_ids`.
+    Id(String),
+}
+
+impl FieldRef {
+    /// The raw identifier (display name or field id) for diagnostics/ordering.
+    pub fn as_str(&self) -> &str {
+        match self {
+            FieldRef::Name(s) | FieldRef::Id(s) => s,
+        }
+    }
+
+    /// The stable field id when this reference is one (used to match an index
+    /// candidate; a display name never matches an index by id).
+    pub fn field_id(&self) -> Option<&str> {
+        match self {
+            FieldRef::Id(s) => Some(s),
+            FieldRef::Name(_) => None,
+        }
+    }
+
+    /// The canonical envelope JSON path this reference resolves to. The inner
+    /// name is validated by [`validate_ident`] before reaching here, so the
+    /// returned path can never carry SQL.
+    fn json_path(&self) -> String {
+        match self {
+            FieldRef::Name(s) => format!("$.fields.{s}"),
+            FieldRef::Id(s) => format!("$.field_ids.{s}"),
+        }
+    }
+}
+
 /// A single leaf predicate: `<field> <op> <value>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Predicate {
-    pub field: String,
+    pub field: FieldRef,
     pub op: Op,
     pub value: serde_json::Value,
 }
@@ -115,21 +163,29 @@ pub enum Filter {
 }
 
 /// An aggregate request. `count` ignores `field`; the numeric aggregates carry
-/// the (display) field they reduce over.
+/// the field they reduce over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Aggregate {
     pub count: bool,
-    pub sum: Option<String>,
-    pub avg: Option<String>,
-    pub min: Option<String>,
-    pub max: Option<String>,
+    pub sum: Option<FieldRef>,
+    pub avg: Option<FieldRef>,
+    pub min: Option<FieldRef>,
+    pub max: Option<FieldRef>,
 }
 
 /// An ordering key.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderBy {
-    pub field: String,
+    pub field: FieldRef,
     pub dir: Dir,
+}
+
+/// A full-text search request over a single field (P1 in the query DSL, but
+/// pinned by the dynamic-index fixtures: an active FTS5 shadow table answers it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSearch {
+    pub field: FieldRef,
+    pub query: String,
 }
 
 /// The compiled query AST. Round-trips the structured `plan`/`query` shapes the
@@ -142,13 +198,21 @@ pub struct Query {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub aggregate: Option<Aggregate>,
-    pub group_by: Option<String>,
+    pub group_by: Option<FieldRef>,
+    /// A full-text search request (dynamic-indexes.md): matched against an
+    /// active FTS5 shadow table when one exists, else a `like`-style scan with a
+    /// `planner.full_scan` warning.
+    pub text_search: Option<TextSearch>,
     /// Whether tombstoned (`deleted`) rows are included. Normal queries hide
     /// them (query-dsl.md §Data Model).
     pub include_deleted: bool,
-    /// A P1 feature (text search / join) was requested. The planner records the
-    /// requested feature so the runner can surface an `unsupported_feature`
-    /// warning instead of executing an unimplemented path.
+    /// Whether a deprecated field's stored values are still queryable. The
+    /// deprecated-index fixture sets this; it does not affect rows (records keep
+    /// the old field), only that a deprecated index is not a planner candidate.
+    pub include_deprecated: bool,
+    /// A P1 feature (join) was requested. The planner records the requested
+    /// feature so the runner can surface an `unsupported_feature` warning
+    /// instead of executing an unimplemented path.
     pub unsupported: Option<String>,
 }
 
@@ -163,7 +227,9 @@ impl Query {
             offset: None,
             aggregate: None,
             group_by: None,
+            text_search: None,
             include_deleted: false,
+            include_deprecated: false,
             unsupported: None,
         }
     }
@@ -189,6 +255,14 @@ fn validate_ident(kind: &str, name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Validate a `collection`/`field_id` before it is placed into index DDL (the
+/// index name and the partial-predicate collection literal). Same allowlist as
+/// [`validate_ident`]; exposed to the index module so a hostile identifier is
+/// refused at definition time rather than interpolated into structure.
+pub(crate) fn validate_index_ident(kind: &str, name: &str) -> Result<()> {
+    validate_ident(kind, name)
 }
 
 impl Query {
@@ -218,11 +292,18 @@ impl Query {
 
         let mut q = Query::from(from);
 
-        // P1 features: record the requested feature; the planner falls back to a
-        // best-effort scan and the runner surfaces the unsupported warning.
-        if obj.contains_key("text") {
+        // `text`/`text_search`: a full-text search request. The index-fixture
+        // form is the structured `text_search: {field_id|field, match}`; the
+        // query-DSL P1 form is a bare `text` marker. The structured form is a
+        // first-class request answered by an FTS5 shadow table (or a scan with a
+        // warning); the bare marker stays an unsupported-feature flag.
+        if let Some(ts) = obj.get("text_search") {
+            q.text_search = Some(parse_text_search(ts)?);
+        } else if obj.contains_key("text") {
             q.unsupported = Some("text_search".into());
         }
+        // P1 join: record the requested feature; the planner falls back to a
+        // best-effort scan and the runner surfaces the unsupported warning.
         if obj.contains_key("join") {
             q.unsupported = Some("join".into());
         }
@@ -241,9 +322,11 @@ impl Query {
         }
 
         if let Some(g) = obj.get("groupBy").or_else(|| obj.get("group_by")) {
+            // A bare string is a display name; an object form may carry field_id.
             if let Some(s) = g.as_str() {
-                validate_ident("field", s)?;
-                q.group_by = Some(s.to_string());
+                q.group_by = Some(field_ref_from_name(s)?);
+            } else if g.is_object() {
+                q.group_by = Some(field_ref_from_obj(g.as_object().unwrap())?);
             }
         }
 
@@ -258,12 +341,64 @@ impl Query {
             q.aggregate = Some(parse_aggregate(agg)?);
         }
 
-        if let Some(inc) = obj.get("includeDeleted").and_then(|b| b.as_bool()) {
+        if let Some(inc) = obj
+            .get("includeDeleted")
+            .or_else(|| obj.get("include_deleted"))
+            .and_then(|b| b.as_bool())
+        {
             q.include_deleted = inc;
+        }
+        if let Some(inc) = obj
+            .get("includeDeprecated")
+            .or_else(|| obj.get("include_deprecated"))
+            .and_then(|b| b.as_bool())
+        {
+            q.include_deprecated = inc;
         }
 
         Ok(q)
     }
+}
+
+/// Resolve a display name into a [`FieldRef::Name`] after validating it.
+fn field_ref_from_name(name: &str) -> Result<FieldRef> {
+    validate_ident("field", name)?;
+    Ok(FieldRef::Name(name.to_string()))
+}
+
+/// Resolve an object that names a field. `field_id` wins (stable-id path);
+/// otherwise `field`/`name` is a display name. Both are validated.
+fn field_ref_from_obj(obj: &serde_json::Map<String, serde_json::Value>) -> Result<FieldRef> {
+    if let Some(id) = obj.get("field_id").and_then(|f| f.as_str()) {
+        validate_ident("field id", id)?;
+        return Ok(FieldRef::Id(id.to_string()));
+    }
+    let name = obj
+        .get("field")
+        .or_else(|| obj.get("name"))
+        .and_then(|f| f.as_str())
+        .ok_or_else(|| CoreError::QueryError("field reference missing 'field'/'field_id'".into()))?;
+    field_ref_from_name(name)
+}
+
+/// Parse a `text_search: {field_id|field, match|query}` request.
+fn parse_text_search(v: &serde_json::Value) -> Result<TextSearch> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| CoreError::QueryError("text_search must be an object".into()))?;
+    let field = field_ref_from_obj(obj)?;
+    let query = obj
+        .get("match")
+        .or_else(|| obj.get("query"))
+        .and_then(|m| m.as_str())
+        .ok_or_else(|| CoreError::QueryError("text_search missing 'match'".into()))?
+        .to_string();
+    if query.is_empty() {
+        return Err(CoreError::QueryError(
+            "text_search 'match' must be non-empty".into(),
+        ));
+    }
+    Ok(TextSearch { field, query })
 }
 
 fn parse_nonneg_int(name: &str, v: &serde_json::Value) -> Result<i64> {
@@ -278,28 +413,27 @@ fn parse_nonneg_int(name: &str, v: &serde_json::Value) -> Result<i64> {
 
 fn parse_filter(v: &serde_json::Value) -> Result<Filter> {
     match v {
-        // Array-tuple leaf: ["field", "op", value]
         serde_json::Value::Array(items) => {
-            if items.len() != 3 {
+            // Two array shapes:
+            //  - a single tuple leaf `["field", "op", value]` (query-DSL plans),
+            //  - a list of sub-filters treated as an implicit AND (the
+            //    dynamic-index `where: [{...}, {...}]` form).
+            if is_tuple_leaf(items) {
+                let field = field_ref_from_name(items[0].as_str().unwrap())?;
+                let op = Op::parse(items[1].as_str().unwrap())?;
+                return Ok(Filter::Leaf(Predicate {
+                    field,
+                    op,
+                    value: items[2].clone(),
+                }));
+            }
+            if items.is_empty() {
                 return Err(CoreError::QueryError(
-                    "array filter leaf must be [field, op, value]".into(),
+                    "array filter must be [field, op, value] or a non-empty list".into(),
                 ));
             }
-            let field = items[0]
-                .as_str()
-                .ok_or_else(|| CoreError::QueryError("filter field must be a string".into()))?
-                .to_string();
-            validate_ident("field", &field)?;
-            let op = Op::parse(
-                items[1]
-                    .as_str()
-                    .ok_or_else(|| CoreError::QueryError("filter op must be a string".into()))?,
-            )?;
-            Ok(Filter::Leaf(Predicate {
-                field,
-                op,
-                value: items[2].clone(),
-            }))
+            // Implicit AND over the listed sub-filters.
+            Ok(Filter::And(items.iter().map(parse_filter).collect::<Result<_>>()?))
         }
         serde_json::Value::Object(obj) => {
             if let Some(items) = obj.get("and") {
@@ -308,14 +442,8 @@ fn parse_filter(v: &serde_json::Value) -> Result<Filter> {
             if let Some(items) = obj.get("or") {
                 return Ok(Filter::Or(parse_filter_list(items)?));
             }
-            // Object leaf: {field, op, value}
-            let field = obj
-                .get("field")
-                .or_else(|| obj.get("field_id"))
-                .and_then(|f| f.as_str())
-                .ok_or_else(|| CoreError::QueryError("object filter missing 'field'".into()))?
-                .to_string();
-            validate_ident("field", &field)?;
+            // Object leaf: {field|field_id, op, value}
+            let field = field_ref_from_obj(obj)?;
             let op = Op::parse(
                 obj.get("op")
                     .and_then(|o| o.as_str())
@@ -328,6 +456,13 @@ fn parse_filter(v: &serde_json::Value) -> Result<Filter> {
             "filter must be an array leaf or an and/or/leaf object".into(),
         )),
     }
+}
+
+/// Whether an array is a `[field, op, value]` tuple leaf (first two elements are
+/// strings). A list whose first element is an object/array is an implicit-AND
+/// list of sub-filters instead.
+fn is_tuple_leaf(items: &[serde_json::Value]) -> bool {
+    items.len() == 3 && items[0].is_string() && items[1].is_string()
 }
 
 fn parse_filter_list(v: &serde_json::Value) -> Result<Vec<Filter>> {
@@ -345,11 +480,10 @@ fn parse_filter_list(v: &serde_json::Value) -> Result<Vec<Filter>> {
 fn parse_order_by(v: &serde_json::Value) -> Result<Option<OrderBy>> {
     match v {
         serde_json::Value::Array(items) => {
-            // Either ["field","dir"] (two strings) or [{field,dir}, …].
+            // Either ["field","dir"] (two strings) or [{field|field_id,dir}, …].
             if items.len() == 2 && items[0].is_string() && items[1].is_string() {
-                let field = items[0].as_str().unwrap().to_string();
+                let field = field_ref_from_name(items[0].as_str().unwrap())?;
                 let dir = Dir::parse(items[1].as_str().unwrap())?;
-                validate_ident("field", &field)?;
                 return Ok(Some(OrderBy { field, dir }));
             }
             // Array of objects; the planner supports one key (first).
@@ -369,12 +503,7 @@ fn parse_order_obj(v: &serde_json::Value) -> Result<Option<OrderBy>> {
     let obj = v
         .as_object()
         .ok_or_else(|| CoreError::QueryError("orderBy entry must be an object".into()))?;
-    let field = obj
-        .get("field")
-        .and_then(|f| f.as_str())
-        .ok_or_else(|| CoreError::QueryError("orderBy entry missing 'field'".into()))?
-        .to_string();
-    validate_ident("field", &field)?;
+    let field = field_ref_from_obj(obj)?;
     let dir = obj
         .get("dir")
         .and_then(|d| d.as_str())
@@ -406,13 +535,12 @@ fn parse_aggregate(v: &serde_json::Value) -> Result<Aggregate> {
             }
         }
     }
-    // {"sum":"field", "avg":"field", …} bundle form.
-    let field_for = |key: &str| -> Result<Option<String>> {
+    // {"sum":"field", "avg":"field", …} bundle form. A string is a display
+    // name; an object form may carry `field_id` for stable-id addressing.
+    let field_for = |key: &str| -> Result<Option<FieldRef>> {
         match obj.get(key) {
-            Some(serde_json::Value::String(s)) => {
-                validate_ident("field", s)?;
-                Ok(Some(s.clone()))
-            }
+            Some(serde_json::Value::String(s)) => Ok(Some(field_ref_from_name(s)?)),
+            Some(serde_json::Value::Object(o)) => Ok(Some(field_ref_from_obj(o)?)),
             Some(serde_json::Value::Null) | None => Ok(None),
             Some(_) => Err(CoreError::QueryError(format!(
                 "aggregate '{key}' must name a field"
@@ -449,10 +577,11 @@ pub struct CompiledSelect {
     pub params: Vec<serde_json::Value>,
 }
 
-/// The JSON path a display field resolves to in the envelope (`$.fields.<name>`).
-/// The name is validated by [`validate_ident`] before reaching here.
-fn field_path(field: &str) -> String {
-    format!("$.fields.{field}")
+/// The JSON path a field reference resolves to in the envelope: `$.fields.<name>`
+/// for a display name, `$.field_ids.<id>` for a stable id. The inner identifier
+/// is validated by [`validate_ident`] before reaching here.
+fn field_path(field: &FieldRef) -> String {
+    field.json_path()
 }
 
 /// Compile the filter tree to a parameterized SQL boolean expression, pushing
@@ -485,13 +614,13 @@ fn compile_join(
 }
 
 /// `json_extract` expression for a field's value.
-fn extract_expr(field: &str) -> String {
+fn extract_expr(field: &FieldRef) -> String {
     format!("json_extract(data, '{}')", field_path(field))
 }
 
 /// `json_type` of a field's value (NULL when the path is absent), used to guard
 /// range comparisons so only numeric stored values participate.
-fn type_expr(field: &str) -> String {
+fn type_expr(field: &FieldRef) -> String {
     format!("json_type(data, '{}')", field_path(field))
 }
 
@@ -528,7 +657,8 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
             if !p.value.is_number() {
                 return Err(CoreError::QueryError(format!(
                     "range operator on field '{}' requires a numeric value, got {}",
-                    p.field, p.value
+                    p.field.as_str(),
+                    p.value
                 )));
             }
             let sym = match p.op {
@@ -547,12 +677,15 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
         }
         Op::In => {
             let arr = p.value.as_array().ok_or_else(|| {
-                CoreError::QueryError(format!("`in` on field '{}' requires an array", p.field))
+                CoreError::QueryError(format!(
+                    "`in` on field '{}' requires an array",
+                    p.field.as_str()
+                ))
             })?;
             if arr.is_empty() {
                 return Err(CoreError::QueryError(format!(
                     "`in` on field '{}' requires a non-empty array",
-                    p.field
+                    p.field.as_str()
                 )));
             }
             let mut placeholders = Vec::with_capacity(arr.len());
@@ -560,7 +693,7 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
                 if val.is_null() || val.is_array() || val.is_object() {
                     return Err(CoreError::QueryError(format!(
                         "`in` on field '{}' requires scalar values",
-                        p.field
+                        p.field.as_str()
                     )));
                 }
                 let bind = bind_index(params, val)?;
@@ -570,7 +703,10 @@ fn compile_leaf(p: &Predicate, params: &mut Vec<serde_json::Value>) -> Result<St
         }
         Op::Like => {
             let pat = p.value.as_str().ok_or_else(|| {
-                CoreError::QueryError(format!("`like` on field '{}' requires a string", p.field))
+                CoreError::QueryError(format!(
+                    "`like` on field '{}' requires a string",
+                    p.field.as_str()
+                ))
             })?;
             // Bind the pattern; backslash escapes the LIKE metacharacters. LIKE
             // is ASCII case-insensitive (SQLite default).
@@ -662,6 +798,94 @@ impl QueryResult {
     }
 }
 
+/// Why the planner fell back to a full scan instead of an active index, mirroring
+/// the `dynamic-indexes.md` §Full-Scan Warnings `reason` codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullScanReason {
+    /// No index definition exists for the predicate's field.
+    NoIndex,
+    /// An index exists but is not in the `active` state.
+    IndexNotActive,
+    /// The matching index belongs to a deprecated field.
+    IndexDeprecated,
+    /// The operator cannot be served by the available index kind.
+    UnsupportedOperator,
+    /// A text search was requested but no active FTS shadow table covers it.
+    FtsNotAvailable,
+}
+
+impl FullScanReason {
+    /// The stable wire string used in the warning payload (matches the fixtures).
+    pub fn code(&self) -> &'static str {
+        match self {
+            FullScanReason::NoIndex => "no_index",
+            FullScanReason::IndexNotActive => "index_not_active",
+            FullScanReason::IndexDeprecated => "index_deprecated",
+            FullScanReason::UnsupportedOperator => "unsupported_operator",
+            FullScanReason::FtsNotAvailable => "fts_not_available",
+        }
+    }
+}
+
+/// A `planner.full_scan` warning surfaced when the planner scans `records` for a
+/// predicate/sort/search that no active index covers (`dynamic-indexes.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannerWarning {
+    /// Always `planner.full_scan` for these warnings.
+    pub code: String,
+    pub collection: String,
+    /// The stable field id when known, else the display field name.
+    pub field_id: Option<String>,
+    pub field_name: Option<String>,
+    pub reason: FullScanReason,
+    /// The number of records scanned, when known.
+    pub estimated_rows: Option<i64>,
+}
+
+impl PlannerWarning {
+    /// Build a `planner.full_scan` warning for `field` over `collection`.
+    pub fn full_scan(
+        collection: &str,
+        field: &FieldRef,
+        reason: FullScanReason,
+        estimated_rows: Option<i64>,
+    ) -> Self {
+        let (field_id, field_name) = match field {
+            FieldRef::Id(id) => (Some(id.clone()), None),
+            FieldRef::Name(name) => (None, Some(name.clone())),
+        };
+        PlannerWarning {
+            code: "planner.full_scan".to_string(),
+            collection: collection.to_string(),
+            field_id,
+            field_name,
+            reason,
+            estimated_rows,
+        }
+    }
+}
+
+/// The full planner outcome: the row/aggregate/group result plus the index
+/// decision (`uses_index` / `index_id`) and any `planner.full_scan` warnings.
+/// [`crate::Store::query`] returns the bare [`QueryResult`]; the index-aware
+/// surface ([`crate::Store::query_planned`]) returns this.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedQuery {
+    pub result: QueryResult,
+    /// Whether an active index served the query's predicate/search.
+    pub uses_index: bool,
+    /// The id of the index used, when `uses_index` is true.
+    pub index_id: Option<String>,
+    pub warnings: Vec<PlannerWarning>,
+}
+
+impl PlannedQuery {
+    /// Convenience: the ordered entity ids of the result.
+    pub fn ids(&self) -> Vec<String> {
+        self.result.ids()
+    }
+}
+
 /// JSON value sort rank for the spec order: numbers < strings < booleans <
 /// null (last). Used as the primary ordering discriminator.
 fn type_rank(v: &serde_json::Value) -> u8 {
@@ -703,19 +927,32 @@ pub fn cmp_json_pub(a: &serde_json::Value, b: &serde_json::Value) -> Ordering {
     cmp_json(a, b)
 }
 
-/// The display value a row exposes for `field` (or JSON null when absent), used
-/// for ordering and grouping.
-fn row_field<'a>(env: &'a RecordEnvelope, field: &str) -> &'a serde_json::Value {
+/// The value a row exposes for `field` (or JSON null when absent), used for
+/// ordering and grouping. A display name reads `$.fields`; a stable id reads
+/// `$.field_ids` — the same split the SQL planner applies, so Rust-side ordering
+/// and SQL-side filtering agree.
+fn row_field<'a>(env: &'a RecordEnvelope, field: &FieldRef) -> &'a serde_json::Value {
     const NULL: serde_json::Value = serde_json::Value::Null;
-    env.fields.get(field).unwrap_or(&NULL)
+    match field {
+        FieldRef::Name(name) => env.fields.get(name).unwrap_or(&NULL),
+        FieldRef::Id(id) => env.field_ids.get(id).unwrap_or(&NULL),
+    }
+}
+
+/// The value a row exposes for grouping by a [`FieldRef`] (owned).
+pub fn group_key(env: &RecordEnvelope, field: &FieldRef) -> serde_json::Value {
+    row_field(env, field).clone()
 }
 
 /// Apply ordering (spec total order), then offset, then limit, in Rust so the
 /// result is platform-stable. `id` is always the secondary tie-break.
 pub fn finalize_rows(mut rows: Vec<QueryRow>, q: &Query) -> Vec<QueryRow> {
     if let Some(ob) = &q.order_by {
+        // `id`/`entity_id` (only meaningful as a display name) order purely by
+        // the stable entity-id tie-break below.
+        let by_entity_id = matches!(&ob.field, FieldRef::Name(n) if n == "id" || n == "entity_id");
         rows.sort_by(|a, b| {
-            let primary = if ob.field == "id" || ob.field == "entity_id" {
+            let primary = if by_entity_id {
                 Ordering::Equal
             } else {
                 cmp_json(row_field(&a.envelope, &ob.field), row_field(&b.envelope, &ob.field))
@@ -885,7 +1122,7 @@ mod tests {
         assert_eq!(q.from, "tasks");
         match q.filter.unwrap() {
             Filter::Leaf(p) => {
-                assert_eq!(p.field, "status");
+                assert_eq!(p.field, FieldRef::Name("status".into()));
                 assert_eq!(p.op, Op::Eq);
                 assert_eq!(p.value, json!("todo"));
             }
@@ -924,7 +1161,7 @@ mod tests {
     fn parses_order_limit_offset_both_forms() {
         let a = plan(json!({"from": "t", "orderBy": ["prio", "desc"], "limit": 5, "offset": 2}));
         let ob = a.order_by.unwrap();
-        assert_eq!(ob.field, "prio");
+        assert_eq!(ob.field, FieldRef::Name("prio".into()));
         assert_eq!(ob.dir, Dir::Desc);
         assert_eq!(a.limit, Some(5));
         assert_eq!(a.offset, Some(2));
@@ -1032,11 +1269,16 @@ mod tests {
             .collect()
     }
 
+    /// A display-name [`FieldRef`] for terse test construction.
+    fn name(s: &str) -> FieldRef {
+        FieldRef::Name(s.to_string())
+    }
+
     #[test]
     fn order_is_numbers_then_strings_then_bools_then_nulls() {
         let mut q = Query::from("t");
         q.order_by = Some(OrderBy {
-            field: "v".into(),
+            field: name("v"),
             dir: Dir::Asc,
         });
         let input = rows(vec![
@@ -1054,7 +1296,7 @@ mod tests {
     fn entity_id_tie_break_is_always_ascending_even_for_desc() {
         let mut q = Query::from("t");
         q.order_by = Some(OrderBy {
-            field: "v".into(),
+            field: name("v"),
             dir: Dir::Desc,
         });
         // Same primary value (1); ids must still ascend within the tie.
@@ -1071,7 +1313,7 @@ mod tests {
     fn offset_then_limit_applied_after_order() {
         let mut q = Query::from("t");
         q.order_by = Some(OrderBy {
-            field: "v".into(),
+            field: name("v"),
             dir: Dir::Asc,
         });
         q.offset = Some(1);
@@ -1093,10 +1335,10 @@ mod tests {
     fn aggregate_sum_avg_min_max_over_numbers() {
         let agg = Aggregate {
             count: true,
-            sum: Some("v".into()),
-            avg: Some("v".into()),
-            min: Some("v".into()),
-            max: Some("v".into()),
+            sum: Some(name("v")),
+            avg: Some(name("v")),
+            min: Some(name("v")),
+            max: Some(name("v")),
         };
         let e1 = env_with("a", "v", json!(2));
         let e2 = env_with("b", "v", json!(4));
@@ -1114,10 +1356,10 @@ mod tests {
     fn aggregate_over_empty_is_count_zero_sum_zero_none_else() {
         let agg = Aggregate {
             count: true,
-            sum: Some("v".into()),
-            avg: Some("v".into()),
-            min: Some("v".into()),
-            max: Some("v".into()),
+            sum: Some(name("v")),
+            avg: Some(name("v")),
+            min: Some(name("v")),
+            max: Some(name("v")),
         };
         let out = compute_aggregate(&[], &agg);
         assert_eq!(out.count, Some(0));
