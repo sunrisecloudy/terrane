@@ -686,6 +686,50 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_after_reinsert_following_delete_shows_recreated_record() {
+        // The hardest DL-6 fixture (fixtures/crdt-write/reinsert_after_delete_rebuild.json):
+        // insert -> delete -> reinsert the SAME id. A naive tombstone could leave
+        // the record hidden after rebuild; here rebuild-from-chunks must reproduce
+        // the *recreated* record exactly, and the maintained doc must agree.
+        let src = RecordsDoc::new(1).unwrap();
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+
+        // insert t1 (old title)
+        let v0 = src.version();
+        src.replace_record_fields("t1", &json!({"title": "Old title", "done": false})).unwrap();
+        src.commit();
+        chunks.push(src.export_updates_since(&v0).unwrap());
+
+        // delete t1
+        let v1 = src.version();
+        src.delete_record("t1").unwrap();
+        src.commit();
+        chunks.push(src.export_updates_since(&v1).unwrap());
+        assert!(src.get_record("t1").is_none(), "record must be gone after delete");
+
+        // reinsert t1 (recreated title) under the same id
+        let v2 = src.version();
+        src.replace_record_fields("t1", &json!({"title": "Recreated title", "done": false}))
+            .unwrap();
+        src.commit();
+        chunks.push(src.export_updates_since(&v2).unwrap());
+
+        // The maintained doc shows the recreated record.
+        let expect = json!({"title": "Recreated title", "done": false});
+        assert_eq!(src.get_record("t1").unwrap(), expect);
+        assert_eq!(src.list_record_ids(), vec!["t1"]);
+
+        // Rebuild purely from the three persisted chunks (the storage DL-6 path)
+        // must equal the maintained projection — no lingering tombstone.
+        let refs: Vec<&[u8]> = chunks.iter().map(|c| c.as_slice()).collect();
+        let rebuilt = RecordsDoc::from_updates(9, &refs).unwrap();
+        assert_eq!(rebuilt.get_record("t1").unwrap(), expect);
+        assert_eq!(rebuilt.list_record_ids(), vec!["t1"]);
+        assert_eq!(rebuilt.materialized(), src.materialized());
+        assert_eq!(chunks.len(), 3, "one chunk per write (expect_chunk_count: 3)");
+    }
+
+    #[test]
     fn rebuild_from_chunks_is_order_and_duplication_independent() {
         // Loro reorders/dedupes by version, so rebuilding from a shuffled,
         // duplicated chunk sequence still equals the original (DL-6: chunks are
