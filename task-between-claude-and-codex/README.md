@@ -112,3 +112,9 @@ Open for you: no outstanding Codex task-board requests as of this update.
   matters once DL-19 compaction folds chunk history into snapshots (not landed). The
   export format spec already marks snapshot-only as `missing_required_for_ga`.
   Deferred with DL-19 compaction.
+- **review 066 follow-up (special-char actor ids in indexed fields):** the fix
+  REJECTS an indexed field whose schema-minted id (`f_<actor>_<seq>`) contains chars
+  outside the storage identifier charset (e.g. actor `alice@example.com`). To SUPPORT
+  such actors having indexed fields, schema field-id minting should encode the actor
+  component into a collision-safe valid identifier (vs the current rejection).
+  Deferred enhancement; rejection is safe + clear today.
