@@ -787,6 +787,38 @@ mod tests {
         assert_eq!(rebuilt.materialized(), src.materialized());
     }
 
+    #[test]
+    fn transact_group_of_mutations_exports_one_chunk_that_rebuilds_whole_group() {
+        // DL-4 step 5 `transact` + fixture `transact_group_single_chunk`
+        // (expect_chunk_count: 1): the storage write path applies *all* child
+        // mutations to the same document, commits ONCE, then exports a SINGLE
+        // incremental update covering the whole group. This pins the crdt-level
+        // primitive that guarantee rests on — multiple mutations across one
+        // commit collapse into exactly one chunk, and that lone chunk rebuilds
+        // the entire group (DL-6) byte-identically to the maintained doc.
+        let src = RecordsDoc::new(1).unwrap();
+
+        // Capture the version once, before the whole transact group.
+        let before = src.version();
+        src.replace_record_fields("t1", &json!({"title": "Grouped A", "done": false})).unwrap();
+        src.replace_record_fields("t2", &json!({"title": "Grouped B", "done": false})).unwrap();
+        src.patch_record_fields("t1", &json!({"done": true})).unwrap();
+        // A single commit for the group, then a single export.
+        src.commit();
+        let group_chunk = src.export_updates_since(&before).unwrap();
+
+        // The maintained doc shows the post-group projection.
+        assert_eq!(src.get_record("t1").unwrap(), json!({"title": "Grouped A", "done": true}));
+        assert_eq!(src.get_record("t2").unwrap(), json!({"title": "Grouped B", "done": false}));
+
+        // The lone chunk rebuilds the whole group with zero diff (DL-6).
+        let rebuilt = RecordsDoc::from_updates(2, &[group_chunk.as_slice()]).unwrap();
+        assert_eq!(rebuilt.list_record_ids(), vec!["t1", "t2"]);
+        assert_eq!(rebuilt.get_record("t1").unwrap(), json!({"title": "Grouped A", "done": true}));
+        assert_eq!(rebuilt.get_record("t2").unwrap(), json!({"title": "Grouped B", "done": false}));
+        assert_eq!(rebuilt.materialized(), src.materialized());
+    }
+
     // --- Convergence: concurrent edits to DIFFERENT records ---
 
     #[test]
