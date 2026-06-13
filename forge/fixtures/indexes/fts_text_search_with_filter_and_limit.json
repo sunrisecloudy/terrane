@@ -1,7 +1,7 @@
 {
   "case": "fts_text_search_with_filter_and_limit",
   "vectorVersion": 1,
-  "description": "Full-text query composes with the normal pipeline: the FTS5 MATCH set is filtered by a where-clause and bounded by limit, preserving FTS rank order. Pins that text_search is not a bypass (DL-15).",
+  "description": "Full-text query composes with the normal pipeline: the FTS5 MATCH set is filtered by a where-clause and bounded by limit, preserving FTS rank order. The top FTS-rank match (note_1) is tag=personal, so the tag=data filter DROPS it and the result is the next-rank data note (note_4) — this makes the where-clause load-bearing: ignoring it would wrongly return note_1. Pins that text_search is not a bypass (DL-15).",
   "schema": {
     "collections": {
       "notes": {
@@ -42,11 +42,11 @@
       "collection": "notes",
       "fields": {
         "body": "Offline rebuild keeps indexes honest.",
-        "tag": "data"
+        "tag": "personal"
       },
       "field_ids": {
         "f_alice_0": "Offline rebuild keeps indexes honest.",
-        "f_alice_1": "data"
+        "f_alice_1": "personal"
       },
       "unknown_fields": {},
       "extensions": {},
@@ -139,9 +139,9 @@
     "warnings": [],
     "result_rows": [
       {
-        "entity_id": "note_1",
+        "entity_id": "note_4",
         "fields": {
-          "body": "Offline rebuild keeps indexes honest.",
+          "body": "Offline indexing for the data pipeline.",
           "tag": "data"
         }
       }
