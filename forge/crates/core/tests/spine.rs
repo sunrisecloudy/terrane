@@ -2511,6 +2511,40 @@ fn a_signed_package_with_an_unsupported_budget_field_is_refused() {
 }
 
 #[test]
+fn a_signed_package_with_an_unsupported_net_capability_field_is_refused() {
+    // review 089 #1: the sibling budget test (review 086 #1) only pinned the
+    // `resourceBudget` and `networkPolicy.allow[]` paths, so a future/tighter net
+    // constraint hidden under `capabilities.net[]` could still install as Signed
+    // and go silently unenforced. The `bind_unknown_net_capability_field` fixture
+    // is byte-identical to `bind_net_rule` EXCEPT its `capabilities.net[0]` carries
+    // one extra key (`max_retries`) outside NET_RULE_KEYS. The signature,
+    // manifestHash and policyHash are VALID over the edited manifest (crypto and
+    // integrity pass), so the refusal is a compat/permission decision — not tamper
+    // detection. Installing it as Signed would drop a net constraint this core
+    // cannot enforce, so the bind must fail closed.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("bind_unknown_net_capability_field.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.netnotes"),
+        serde_json::json!({
+            // The install manifest matches the enforceable (known-key) net rule, so
+            // the ONLY gap is the unknown signed `capabilities.net[]` field.
+            "manifest": net_rule_fixture_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+    assert!(!resp.ok, "a signed package declaring an unsupported net field must be refused");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("capabilities.net") && err.to_string().contains("max_retries"),
+        "the refusal names the unsupported capabilities.net[] field: {err}"
+    );
+}
+
+#[test]
 fn a_signed_multi_file_install_is_rejected_until_entrypoint_is_representable() {
     // review 083 #4: the signed manifest carries no entrypoint, so a signed
     // MULTI-FILE package cannot pin which file runs — a caller could otherwise

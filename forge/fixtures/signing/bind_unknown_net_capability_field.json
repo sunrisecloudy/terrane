@@ -1,0 +1,69 @@
+{
+  "case": "bind_unknown_net_capability_field",
+  "expect": "valid",
+  "failure_layer": null,
+  "package": {
+    "files": [
+      {
+        "content": "export async function main(ctx) { return { ok: true }; }\n",
+        "path": "src/main.ts",
+        "sha256": "sha256:652a7c480da0cf33584e8210bf826bb02230d0965a843a926e40493e86e63891"
+      }
+    ],
+    "hashes": {
+      "contentHash": "sha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6",
+      "manifestHash": "sha256:3e3cb1433e170b1bbb110ab343364ecade0aeb307219509255800a175c314da4",
+      "permissionsHash": "sha256:65ff02c455d22619d2b7dfb6c10c15a4eeebb1816ee389e8fef248f545be5aee",
+      "policyHash": "sha256:97bd1b116394339d19ba2849bdb0b830edabfe3fa23dd4d6a9b329a5149321c6"
+    },
+    "manifest": {
+      "appId": "app.netnotes",
+      "appVersion": "1.0.0",
+      "capabilities": {
+        "db": {
+          "read": [],
+          "write": []
+        },
+        "net": [
+          {
+            "max_response_bytes": 1000,
+            "method": "GET",
+            "url": "https://api.example.com/v1/*",
+            "max_retries": 3
+          }
+        ],
+        "storage": {
+          "read": [],
+          "write": []
+        },
+        "ui": true
+      },
+      "dataVersion": "1",
+      "keyId": "test-ed25519-2026-06",
+      "networkPolicy": {
+        "allow": [
+          {
+            "max_response_bytes": 1000,
+            "method": "GET",
+            "url": "https://api.example.com/v1/*"
+          }
+        ]
+      },
+      "permissions": [
+        "net.fetch:https://api.example.com/*"
+      ],
+      "publisher": "test-publisher",
+      "resourceBudget": {
+        "memory_bytes": 67108864,
+        "wall_ms": 3000
+      },
+      "runtimeVersion": "forge-m0a",
+      "signedAt": "2026-06-13T00:00:00Z",
+      "trustLevel": "signed-test"
+    }
+  },
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
+  "reason": "valid Ed25519 signature over canonical payload, but capabilities.net[0] carries an unsupported future key (max_retries) this core cannot enforce",
+  "signature": "ed25519:3ObD5LGNBUQnX6rALzJQH5tw3bxCRP7Eyp5uXTeJSo4iD8zwq/8kxi2uF0Un1GoweSfTihQKk62RFEbesvZsBg==",
+  "signed_payload": "terrane/sig/v1\napp.netnotes\n1.0.0\n1\nforge-m0a\nsigned-test\ntest-ed25519-2026-06\nsha256:3e3cb1433e170b1bbb110ab343364ecade0aeb307219509255800a175c314da4\nsha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6\nsha256:65ff02c455d22619d2b7dfb6c10c15a4eeebb1816ee389e8fef248f545be5aee\nsha256:97bd1b116394339d19ba2849bdb0b830edabfe3fa23dd4d6a9b329a5149321c6\n2026-06-13T00:00:00Z"
+}

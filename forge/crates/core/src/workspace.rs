@@ -2429,6 +2429,16 @@ fn reject_unknown_signed_policy_fields(
                 &["read", "write"],
             )?;
         }
+        // capabilities.net[] is policy-bearing and covered by the signed policy
+        // hash, so each entry must pass the SAME known-key check as
+        // networkPolicy.allow[]. Otherwise a future/tighter net constraint hidden
+        // under capabilities.net[] would install as Signed but go unenforced
+        // (review 089 #1).
+        if let Some(net) = caps.get("net").and_then(serde_json::Value::as_array) {
+            for rule in net {
+                check_object("capabilities.net[]", Some(rule), NET_RULE_KEYS)?;
+            }
+        }
     }
 
     // networkPolicy.allow[] — each rule must carry only known NetRule fields.
