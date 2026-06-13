@@ -633,16 +633,21 @@ impl WorkspaceCore {
         let mut next = self.registry.clone();
         next.apply_change(change.clone())?;
 
-        // The change was accepted. Persist the evolved registry BEFORE touching
-        // indexes, so the durable schema and the in-memory one never diverge.
-        self.persist_registry(&next)?;
-        self.registry = next;
-
         // DL-8 → DL-5: a newly added `indexed` field gets its storage index built
         // over the stable field id the schema crate just minted.
+        //
+        // Create the index BEFORE persisting/swapping the registry (review 066): a
+        // schema-minted field id interpolates the actor id (`f_<actor>_<seq>`), and
+        // an actor id with characters outside the storage identifier charset (e.g.
+        // `alice@example.com`) makes `create_index` fail. If we persisted first, the
+        // rejected change would still be on disk and `rebuild_indexes_from_registry`
+        // would fail on EVERY future open — poisoning the workspace. By creating the
+        // index against the candidate registry first, an invalid field id rejects the
+        // whole `apply_change` (`QueryError`) with the live + persisted registry
+        // untouched.
         let mut created_index: Option<String> = None;
         if let SchemaChange::AddField { collection, indexed: true, .. } = &change {
-            if let Some((field_id, kind)) = self.indexed_field_to_create(collection) {
+            if let Some((field_id, kind)) = indexed_field_to_create(&next, collection) {
                 let id = self.store.create_index(
                     &mut self.indexes,
                     collection,
@@ -652,6 +657,12 @@ impl WorkspaceCore {
                 created_index = Some(id);
             }
         }
+
+        // The index (if any) was created successfully — now durably commit the
+        // evolved registry. Persist BEFORE swapping the in-memory copy so the
+        // durable schema and the in-memory one never diverge.
+        self.persist_registry(&next)?;
+        self.registry = next;
 
         self.events.emit(
             None,
@@ -775,20 +786,6 @@ impl WorkspaceCore {
             rebuilt.push(id);
         }
         Ok(rebuilt)
-    }
-
-    /// The `(field_id, kind)` for the LAST field of `collection` — the one a just-
-    /// applied `add_field` minted — when it is marked `indexed`. The schema crate
-    /// pushes a new field to the end of the collection's field list, so the last
-    /// field is the freshly added one. Returns `None` if the collection/field is
-    /// unexpectedly absent (a guard; the apply already succeeded).
-    fn indexed_field_to_create(&self, collection: &str) -> Option<(String, CreateIndexKind)> {
-        let col = self.registry.collection(collection)?;
-        let field = col.fields().last()?;
-        if !field.indexed() {
-            return None;
-        }
-        Some((field.field_id().to_string(), index_kind_for(field)))
     }
 
     /// Persist the registry to the workspace file (`__forge/meta` /
@@ -1239,6 +1236,22 @@ fn index_kind_for(field: &FieldDef) -> CreateIndexKind {
         FieldType::Text => CreateIndexKind::Fts,
         _ => CreateIndexKind::Value,
     }
+}
+
+/// The (stable field id, index kind) for the last-added field of `collection` in
+/// `registry`, iff that field is marked `indexed` (DL-8 → DL-5). Takes the
+/// registry explicitly so `schema.apply_change` can probe the CANDIDATE registry
+/// and create the index BEFORE persisting (review 066 atomicity).
+fn indexed_field_to_create(
+    registry: &SchemaRegistry,
+    collection: &str,
+) -> Option<(String, CreateIndexKind)> {
+    let col = registry.collection(collection)?;
+    let field = col.fields().last()?;
+    if !field.indexed() {
+        return None;
+    }
+    Some((field.field_id().to_string(), index_kind_for(field)))
 }
 
 /// The serde `op` tag for a [`SchemaChange`] (for the response/event payload).

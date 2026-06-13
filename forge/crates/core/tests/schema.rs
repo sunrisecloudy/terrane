@@ -581,3 +581,48 @@ fn assert_final_state(fx: &serde_json::Value, core: &WorkspaceCore, name: &str) 
         }
     }
 }
+
+/// Review 066: an indexed `add_field` whose schema-minted field id contains
+/// characters the storage index identifier validator rejects (because the actor
+/// id has them, e.g. `alice@example.com` → `f_alice@example.com_0`) must REJECT
+/// the whole `apply_change` with the registry untouched — and crucially must NOT
+/// persist the change, which would poison every future reopen (rebuild_indexes
+/// re-runs the failing create_index). The fix creates the index BEFORE persisting.
+#[test]
+fn indexed_field_with_invalid_actor_id_is_rejected_without_poisoning() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws1").unwrap();
+        assert!(apply(&mut core, add_collection("tasks")).ok, "add_collection");
+
+        // `alice@example.com` mints `f_alice@example.com_0`; create_index rejects
+        // the `@` so the whole apply_change must fail.
+        let resp = apply(
+            &mut core,
+            add_field("tasks", "alice@example.com", "title", serde_json::json!("text"), true, false),
+        );
+        assert!(!resp.ok, "an un-indexable field id must reject apply_change: {resp:?}");
+
+        // The registry was NOT mutated: the collection still has zero fields, so the
+        // rejected change never reached the live (or persisted) registry.
+        assert_eq!(
+            core.registry().collection("tasks").unwrap().fields().len(),
+            0,
+            "a rejected indexed add_field must leave the registry untouched"
+        );
+    }
+
+    // CRUCIAL: the workspace REOPENS cleanly. If the rejected change had been
+    // persisted, rebuild_indexes_from_registry would re-run the failing create_index
+    // here and poison every open.
+    let reopened = WorkspaceCore::open(&path, "ws1");
+    assert!(
+        reopened.is_ok(),
+        "a rejected indexed field must not poison the workspace on reopen: {:?}",
+        reopened.err()
+    );
+    // And the persisted registry has no `tasks` field either.
+    let core2 = reopened.unwrap();
+    assert_eq!(core2.registry().collection("tasks").map(|c| c.fields().len()).unwrap_or(0), 0);
+}
