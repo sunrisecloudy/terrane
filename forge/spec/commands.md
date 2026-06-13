@@ -23,7 +23,7 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 | record.patch | collection, id, patch fields | record envelope | Role plus db.write capability | M0a | CR-A2, DL-9 |
 | record.delete | collection, id | tombstone/op id | Role plus db.write capability | M0b | CR-A2 |
 | record.hard_purge | collection, id, policy proof | purge report | Owner only | later | CR-A2 |
-| runtime.run | applet_id, entrypoint, input, limits? | run_id, result, ui patch, logs | Runner, Editor, Maintainer, Owner plus caps | M0a | CR-A2, CR-8 |
+| runtime.run | applet_id, input, random_seed?, time_start? (both-or-neither; time_start ≤ i64::MAX) | run_id, result, ui patch, logs, host_call_methods | Runner, Editor, Maintainer, Owner plus caps | M0a | CR-A2, CR-8 |
 | runtime.cancel | run_id | cancel status | Runner, Editor, Maintainer, Owner | M0b | CR-A2 |
 | runtime.replay | run_id | run record | replayed result and diff | Auditor, Maintainer, Owner | M0a | CR-A2, CR-9 |
 | runtime.get_logs | run_id, level?, cursor? | log rows | Auditor, Maintainer, Owner, Runner self | M0b | CR-A2 |

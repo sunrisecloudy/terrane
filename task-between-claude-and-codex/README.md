@@ -81,3 +81,10 @@ Open for you: no outstanding Codex task-board requests as of this update.
   **Deferred to M0b** (when real context gates exist): wire `check_context_gates()` into
   `HostContext::check_or_record_denial` + reconstruct the recorded context on replay +
   add the denying-DecisionContext replay test. Tracked so it is not forgotten.
+- **review 037 #3 (runtime legacy denial-marker collision):** `is_recorded_denial`
+  treats a recorded response shaped exactly `{"denied": <CoreError>}` as a denial.
+  A *pre-CR-9 snapshotless legacy* run that legitimately read user JSON of that exact
+  shape could be misclassified on replay. **Cannot occur in M0a** (all current runs
+  carry a permission snapshot, so the legacy fallback path is never taken). Proper
+  fix (deferred): use an out-of-band denial marker outside the user-response domain.
+  review 037 #1 (commands.md drift) and #2 (time_start i64 overflow) are FIXED.

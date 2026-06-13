@@ -641,7 +641,22 @@ fn run_seed_override(cmd: &CoreCommand) -> Result<Option<(u64, u64)>> {
     let time_start = cmd.payload.get("time_start");
     match (random_seed, time_start) {
         (None, None) => Ok(None),
-        (Some(r), Some(t)) => Ok(Some((seed_field("random_seed", r)?, seed_field("time_start", t)?))),
+        (Some(r), Some(t)) => {
+            let random_seed = seed_field("random_seed", r)?;
+            let time_start = seed_field("time_start", t)?;
+            // The logical clock represents time as `i64` (LogicalClock::new casts
+            // `time_start as i64`), so a value above `i64::MAX` would wrap to a
+            // negative start that `ctx.time.now()` could never have produced
+            // honestly. Reject it rather than record an unrepresentable seam
+            // (review 037 finding 2).
+            if time_start > i64::MAX as u64 {
+                return Err(CoreError::ValidationError(format!(
+                    "runtime.run `time_start` must fit i64 (<= {}), got {time_start}",
+                    i64::MAX
+                )));
+            }
+            Ok(Some((random_seed, time_start)))
+        }
         (Some(_), None) | (None, Some(_)) => Err(CoreError::ValidationError(
             "runtime.run seed override must set BOTH `random_seed` and `time_start` or neither"
                 .into(),
@@ -832,4 +847,64 @@ fn run_summary(run: &RunRecord) -> serde_json::Value {
         "logs": run.logs.len(),
         "completed": run.is_completed(),
     })
+}
+
+#[cfg(test)]
+mod seed_override_tests {
+    use super::*;
+    use forge_domain::{ActorContext, RequestId, WorkspaceId};
+
+    fn run_cmd(payload: serde_json::Value) -> CoreCommand {
+        CoreCommand {
+            request_id: RequestId::new("r1"),
+            actor: ActorContext::owner("dev"),
+            workspace_id: WorkspaceId::new("ws1"),
+            applet_id: None,
+            name: "runtime.run".into(),
+            payload,
+        }
+    }
+
+    #[test]
+    fn no_override_when_neither_seed_present() {
+        assert_eq!(run_seed_override(&run_cmd(serde_json::json!({}))).unwrap(), None);
+    }
+
+    #[test]
+    fn both_seeds_in_range_are_accepted() {
+        let got = run_seed_override(&run_cmd(serde_json::json!({
+            "random_seed": 7u64, "time_start": 1000u64
+        })))
+        .unwrap();
+        assert_eq!(got, Some((7, 1000)));
+    }
+
+    #[test]
+    fn half_specified_override_is_rejected() {
+        assert_eq!(
+            run_seed_override(&run_cmd(serde_json::json!({ "random_seed": 7u64 })))
+                .unwrap_err()
+                .code(),
+            "ValidationError"
+        );
+    }
+
+    #[test]
+    fn time_start_above_i64_max_is_rejected() {
+        // review 037 finding 2: the logical clock is i64, so a u64 time_start
+        // beyond i64::MAX would wrap negative — reject it instead of recording an
+        // unrepresentable seam. random_seed may still use the full u64 range.
+        let over = (i64::MAX as u64) + 1;
+        let err = run_seed_override(&run_cmd(serde_json::json!({
+            "random_seed": u64::MAX, "time_start": over
+        })))
+        .unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        // boundary: exactly i64::MAX is allowed.
+        let ok = run_seed_override(&run_cmd(serde_json::json!({
+            "random_seed": 1u64, "time_start": i64::MAX as u64
+        })))
+        .unwrap();
+        assert_eq!(ok, Some((1, i64::MAX as u64)));
+    }
 }
