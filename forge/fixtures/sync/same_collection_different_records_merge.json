@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "case": "same_collection_different_records_merge",
+  "coverage": ["SS-1", "SS-2", "same_collection_merge"],
+  "peer_a_id": 101,
+  "peer_b_id": 202,
+  "seed": [],
+  "peer_a": [
+    {
+      "op": "insert",
+      "collection": "tasks",
+      "id": "t1",
+      "fields": {
+        "title": "from-a"
+      }
+    }
+  ],
+  "peer_b": [
+    {
+      "op": "insert",
+      "collection": "tasks",
+      "id": "t2",
+      "fields": {
+        "title": "from-b"
+      }
+    }
+  ],
+  "sync": {
+    "directions": ["a_to_b", "b_to_a"],
+    "frontier": "exchanged_chunk_id_set_per_doc",
+    "duplicate_chunks": false,
+    "reorder_chunks": false
+  },
+  "expect_converged": {
+    "tasks": [
+      {
+        "id": "t1",
+        "fields": {
+          "title": "from-a"
+        }
+      },
+      {
+        "id": "t2",
+        "fields": {
+          "title": "from-b"
+        }
+      }
+    ]
+  },
+  "assertions": [
+    "peer_a_projection_equals_peer_b_projection",
+    "projection_equals_expect_converged"
+  ]
+}

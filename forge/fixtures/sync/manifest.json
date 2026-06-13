@@ -1,0 +1,22 @@
+{
+  "suite": "in-process-sync-convergence",
+  "version": 1,
+  "spec": "../../spec/sync-protocol.md",
+  "prd": ["SS-1", "SS-2", "SS-7", "DL-3", "DL-4", "DL-6", "DL-9"],
+  "record_shape": "semantic id-to-fields projection generated through forge_crdt::RecordsDoc",
+  "chunk_format": "loro",
+  "frontier": "exchanged_chunk_id_set_per_doc",
+  "count": 10,
+  "cases": [
+    {"case": "disjoint_collections_merge", "file": "disjoint_collections_merge.json", "status": "m0b_fixture"},
+    {"case": "same_collection_different_records_merge", "file": "same_collection_different_records_merge.json", "status": "m0b_fixture"},
+    {"case": "same_record_different_fields_merge", "file": "same_record_different_fields_merge.json", "status": "m0b_fixture"},
+    {"case": "same_scalar_concurrent_lww_agreement", "file": "same_scalar_concurrent_lww_agreement.json", "status": "m0b_ambiguous_winner"},
+    {"case": "delete_on_one_peer", "file": "delete_on_one_peer.json", "status": "m0b_fixture"},
+    {"case": "one_directional_catchup_a_to_b", "file": "one_directional_catchup_a_to_b.json", "status": "m0b_fixture"},
+    {"case": "empty_peer_syncs_from_populated_peer", "file": "empty_peer_syncs_from_populated_peer.json", "status": "m0b_fixture"},
+    {"case": "already_in_sync_noop", "file": "already_in_sync_noop.json", "status": "m0b_fixture"},
+    {"case": "duplicate_and_reordered_chunks_idempotent", "file": "duplicate_and_reordered_chunks_idempotent.json", "status": "m0b_fixture"},
+    {"case": "multi_doc_bidirectional_roundtrip", "file": "multi_doc_bidirectional_roundtrip.json", "status": "m0b_fixture"}
+  ]
+}

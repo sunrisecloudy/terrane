@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "case": "same_scalar_concurrent_lww_agreement",
+  "coverage": ["SS-1", "SS-2", "DL-3", "same_scalar_lww"],
+  "peer_a_id": 101,
+  "peer_b_id": 202,
+  "seed": [
+    {
+      "op": "insert",
+      "collection": "tasks",
+      "id": "t1",
+      "fields": {
+        "status": "open",
+        "title": "shared"
+      }
+    }
+  ],
+  "peer_a": [
+    {
+      "op": "patch",
+      "collection": "tasks",
+      "id": "t1",
+      "fields": {
+        "status": "from-a"
+      }
+    }
+  ],
+  "peer_b": [
+    {
+      "op": "patch",
+      "collection": "tasks",
+      "id": "t1",
+      "fields": {
+        "status": "from-b"
+      }
+    }
+  ],
+  "sync": {
+    "directions": ["a_to_b", "b_to_a"],
+    "frontier": "exchanged_chunk_id_set_per_doc",
+    "duplicate_chunks": false,
+    "reorder_chunks": false
+  },
+  "expect_converged": {
+    "tasks": [
+      {
+        "id": "t1",
+        "fields": {
+          "status": {
+            "one_of": ["from-a", "from-b"],
+            "agreement_required": true
+          },
+          "title": "shared"
+        }
+      }
+    ]
+  },
+  "ambiguous_result": {
+    "reason": "Loro map LWW winner for concurrent same-scalar writes is implementation-defined.",
+    "fields": ["tasks/t1.fields.status"],
+    "assertion_mode": "peers_agree_and_value_is_one_of"
+  },
+  "assertions": [
+    "peer_a_projection_equals_peer_b_projection",
+    "ambiguous_fields_use_agreement_only"
+  ]
+}
