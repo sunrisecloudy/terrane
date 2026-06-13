@@ -474,3 +474,72 @@ fn snapshotless_legacy_record_replays_against_manifest_not_all_deny() {
         "the legacy record's host-call trace must replay identically"
     );
 }
+
+/// Review 026 P1: stripping `permissions` from a recorded *denial* must NOT let
+/// it replay as a success. The manifest fallback (review 019 P2) is gated on a
+/// *completed* outcome, so a failed record carrying the default snapshot — a
+/// post-CR-9 denial with its `permissions` field removed by an old format or by
+/// tampering — is replayed under the recorded all-deny snapshot, keeping the
+/// denial denied even when the live manifest now grants the capability.
+#[test]
+fn stripping_permissions_from_a_recorded_denial_still_fails_on_replay() {
+    use forge_domain::{PermissionSnapshot, RunRecord, StorageGrant};
+
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            await ctx.storage.set("secret/x", 1); // outside grant -> PermissionDenied
+            return { ok: true, value: "wrote" };
+        }"#,
+    );
+
+    // Record under the default spine manifest: secret/* is NOT granted → the run
+    // fails on a recorded denial.
+    let mut bridge = MemoryHostBridge::new();
+    let recorded = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(
+        matches!(recorded.outcome, RunOutcome::Failed { .. }),
+        "precondition: the run fails on the denied write"
+    );
+    assert_eq!(recorded.calls.len(), 1, "the denied call is recorded");
+    assert!(
+        recorded.calls[0].response.get("denied").is_some(),
+        "precondition: the recorded response is a denial"
+    );
+
+    // Tamper: drop the `permissions` field, so the record loads with the all-deny
+    // default snapshot — the same shape an attacker would use to try to re-grant
+    // the capability from a permissive replay manifest.
+    let mut json = serde_json::to_value(&recorded).unwrap();
+    json.as_object_mut().unwrap().remove("permissions");
+    let stripped: RunRecord = serde_json::from_value(json).unwrap();
+    assert_eq!(stripped.permissions, PermissionSnapshot::default());
+    assert!(!stripped.is_completed(), "the stripped record still failed");
+
+    // Replay under a MORE PERMISSIVE manifest that DOES grant secret/*. Without
+    // the review-026 gate, the completed-record manifest fallback would re-grant
+    // the write and the run would succeed. It must still FAIL.
+    let mut permissive = spine_manifest();
+    permissive.capabilities.storage = StorageGrant {
+        read: vec!["secret/*".into()],
+        write: vec!["secret/*".into()],
+    };
+    let mut null = NullBridge::new();
+    let replayed = replay(&stripped, &prog, &permissive, &owner(), &mut null).unwrap();
+    match replayed.outcome {
+        RunOutcome::Failed { error } => assert_eq!(
+            error.code(),
+            "PermissionDenied",
+            "a stripped recorded denial must replay as a denial, not a success"
+        ),
+        other => panic!("stripped recorded denial must not replay as success, got {other:?}"),
+    }
+}

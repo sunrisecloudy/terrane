@@ -76,21 +76,33 @@ pub fn record_run(
 /// actor/manifest (review 009 P1 CR-9), so a replay is governed by the
 /// permissions it was recorded under.
 ///
-/// **Pre-CR-9 fallback (review 019 P2).** Older records predate the permission
-/// snapshot: deserializing them defaults `permissions` to
+/// **Pre-CR-9 fallback (review 019 P2, tightened in review 026).** Older records
+/// predate the permission snapshot: deserializing them defaults `permissions` to
 /// [`PermissionSnapshot::default`], which is the *all-deny* state (`can_run =
 /// false`, `max_host_calls = 0`, no grants). Replaying such a record against that
 /// default would turn a legitimate historical run — one that did `time`/`random`/
 /// storage/db/ui/log calls — into a spurious permission/resource denial, even
 /// though the run had completed cleanly when recorded. We refuse to treat
 /// "snapshot absent" as "explicitly all-deny": when `run.permissions` is exactly
-/// the default snapshot we deliberately fall back to building the replay policy
-/// from the *caller-provided* manifest/actor (the pre-CR-9 replay behavior),
-/// rather than denying everything. A record produced post-CR-9 always carries a
-/// real snapshot (a completed run necessarily had `can_run == true` and a
-/// positive `max_host_calls`, so a captured snapshot is never the all-deny
-/// default), so this fallback never masks a genuine all-deny replay — there is no
-/// way to *record* one.
+/// the default snapshot **and the record completed**, we fall back to building the
+/// replay policy from the *caller-provided* manifest/actor (the pre-CR-9 replay
+/// behavior) rather than denying everything.
+///
+/// The fallback is gated on a **completed** outcome (review 026 P1). A record can
+/// have its `permissions` field stripped — by an old format or by tampering — and
+/// still load, so an attacker could take a post-CR-9 run that *failed* on a
+/// recorded denial (e.g. a denied `storage.set`), remove `permissions`, and
+/// replay it under a now-permissive manifest. Falling back to the live manifest
+/// there would re-grant the very capability the original lacked and turn the
+/// recorded denial into a success. A genuine pre-CR-9 run we want to rescue had
+/// *completed* (it never failed on a snapshot that did not yet exist), so we only
+/// extend the manifest fallback to completed records. A record that carries the
+/// default snapshot but *failed* is replayed under that recorded all-deny snapshot
+/// itself ([`from_snapshot`](PolicyEngine::from_snapshot)), so a recorded denial
+/// stays denied and a stripped failure cannot replay as a success. A record
+/// produced post-CR-9 always carries a real snapshot (a completed run necessarily
+/// had `can_run == true` and a positive `max_host_calls`), so this fallback never
+/// masks a genuine all-deny replay.
 pub fn replay(
     run: &RunRecord,
     program: &Program,
@@ -126,7 +138,16 @@ pub fn replay(
     // deserializes to the all-deny default. Don't replay a legitimate historical
     // run as an all-deny denial; fall back to the caller-provided manifest/actor
     // (the legacy replay path) and use the manifest's host-call cap.
-    let (policy, host_call_cap) = if run.permissions == PermissionSnapshot::default() {
+    //
+    // Review 026 P1: the manifest fallback is gated on a *completed* outcome. A
+    // failed record carrying the default snapshot — a genuinely-failed old run, or
+    // a post-CR-9 denial whose `permissions` field was stripped — must NOT be
+    // re-granted permissions from the live manifest, or a recorded denial could
+    // replay as a success. Replay it under the recorded (all-deny default)
+    // snapshot instead so the denial stays denied.
+    let use_manifest_fallback =
+        run.permissions == PermissionSnapshot::default() && run.is_completed();
+    let (policy, host_call_cap) = if use_manifest_fallback {
         (
             PolicyEngine::new(manifest, actor)?,
             manifest.limits.max_host_calls,
