@@ -44,7 +44,7 @@
 
 use forge_crdt::RecordsDoc;
 use forge_domain::Result;
-use forge_storage::{IndexManager, Store, CHUNK_FORMAT};
+use forge_storage::{IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -122,34 +122,31 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
     Ok(out)
 }
 
-/// Send the chunks `from` holds for `doc_id` that `into` lacks — one direction,
-/// one doc. Returns how many chunks were newly imported into `into`.
+/// Collect the chunks `from` holds for `doc_id` that `into` lacks — one direction,
+/// one doc — as [`RemoteChunk`]s ready for an atomic apply. Does NOT mutate `into`;
+/// the caller stages every doc's missing chunks and applies them in ONE transaction
+/// per receiving store (review 088 #1).
 ///
-/// `into` stores each foreign chunk under its **content-addressed** exchanged id
-/// (not the origin's local id), so the append-only [`Store::put_chunk`] guard is
-/// never tripped by two peers' colliding `chunk-NNNN` sequences: a chunk `into`
-/// already has (same content id) is an idempotent no-op, and a chunk with new
-/// content lands under a fresh id. Projection rebuild is the caller's job (done
-/// once after the whole exchange), so this only moves immutable history.
-fn pull_doc(into: &mut Store, from: &Store, doc_id: &str) -> Result<usize> {
+/// Each chunk is keyed by its **content-addressed** exchanged id (not the origin's
+/// local id), so the append-only apply guard is never tripped by two peers'
+/// colliding `chunk-NNNN` sequences: a chunk `into` already has (same content id) is
+/// an idempotent no-op, and a chunk with new content lands under a fresh id.
+fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Vec<RemoteChunk>> {
     let have = frontier_for_doc(into, doc_id)?;
     let theirs = frontier_for_doc(from, doc_id)?;
-    let source = remote_source_id(from);
-    let mut moved = 0usize;
+    let mut out = Vec::new();
     for (id, chunk) in &theirs {
         if have.contains_key(id) {
             continue; // frontier already covers this chunk — nothing to send
         }
-        // Import as a REMOTE chunk so it lands in `crdt_chunks` AND the oplog in one
-        // transaction, tagged with the source peer (DL-4: remote updates follow the
-        // identical path). Append-only + idempotent: re-importing an identical
-        // content id is a no-op that appends NO oplog row, and the content address
-        // guarantees a new id only for new bytes.
-        if into.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &source)? {
-            moved += 1;
-        }
+        out.push(RemoteChunk {
+            doc_id: doc_id.to_string(),
+            chunk_id: chunk.id.clone(),
+            format: chunk.format.clone(),
+            payload: chunk.payload.clone(),
+        });
     }
-    Ok(moved)
+    Ok(out)
 }
 
 /// A coarse remote-source identifier for oplog tagging (M0b has no server
@@ -178,14 +175,16 @@ fn remote_source_id(from: &Store) -> String {
 /// `into` does not have (or skip the ones it does), leaving its indexes wrong.
 pub fn pull(into: &mut Store, from: &Store, into_indexes: &IndexManager) -> Result<usize> {
     let doc_ids = union_doc_ids(into, from)?;
-    let mut moved = 0usize;
+    let source = remote_source_id(from);
+    // Stage every doc's missing chunks, then apply the whole batch + projection
+    // rebuild in ONE transaction on `into` (review 088 #1): a failure rolls back
+    // every imported chunk, its oplog row, and the rebuild together rather than
+    // leaving committed chunks under a stale projection.
+    let mut staged: Vec<RemoteChunk> = Vec::new();
     for doc_id in &doc_ids {
-        moved += pull_doc(into, from, doc_id)?;
+        staged.extend(missing_chunks_for_doc(into, from, doc_id)?);
     }
-    // Rebuild once after importing all docs: cheaper than per-doc, and the
-    // projection is derived purely from the now-complete chunk history (DL-6).
-    into.rebuild_projection(into_indexes)?;
-    Ok(moved)
+    into.apply_remote_chunks(&staged, &source, into_indexes)
 }
 
 /// The sorted union of the doc ids that hold chunks in either store.
@@ -224,8 +223,11 @@ fn union_doc_ids(a: &Store, b: &Store) -> Result<Vec<String>> {
 ///
 /// The exchange is staged so each direction diffs against the *pre-exchange*
 /// frontier: `a`'s missing chunks are computed from `a`'s original frontier, not
-/// one already mutated by `b`'s push. Both directions only move immutable
-/// history; the single projection rebuild per store happens after both pushes.
+/// one already mutated by `b`'s push. Each receiving store's whole update — every
+/// imported chunk, its oplog row, AND the projection/index rebuild — commits or
+/// rolls back together in ONE transaction ([`Store::apply_remote_chunks`], review
+/// 088 #1): no longer per-chunk commits followed by a post-hoc rebuild that could
+/// leave committed chunk/oplog rows under a stale projection.
 pub fn sync_stores(
     a: &mut Store,
     a_indexes: &IndexManager,
@@ -234,44 +236,26 @@ pub fn sync_stores(
 ) -> Result<SyncReport> {
     let doc_ids = union_doc_ids(a, b)?;
     // Each peer tags the chunks it RECEIVES with the other peer's source id, so the
-    // imported oplog rows are attributable (DL-4 remote parity). Captured up front
-    // because `put_chunk_from_remote` borrows the receiver mutably below.
+    // imported oplog rows are attributable (DL-4 remote parity).
     let a_source = remote_source_id(a);
     let b_source = remote_source_id(b);
 
-    let mut chunks_a_to_b = 0usize;
-    let mut chunks_b_to_a = 0usize;
+    // Stage BOTH directions against the pre-exchange frontiers (reading only) before
+    // mutating either store, so the two diffs are symmetric and neither sees the
+    // other's just-applied chunks.
+    let mut to_b: Vec<RemoteChunk> = Vec::new(); // a's chunks b lacks
+    let mut to_a: Vec<RemoteChunk> = Vec::new(); // b's chunks a lacks
     for doc_id in &doc_ids {
-        // Snapshot both frontiers BEFORE moving anything for this doc, so the two
-        // directions are symmetric and neither sees the other's just-pushed chunks
-        // (the counts then reflect a true pre-exchange diff).
-        let a_front = frontier_for_doc(a, doc_id)?;
-        let b_front = frontier_for_doc(b, doc_id)?;
-
-        // a -> b: chunks a holds that b lacks. `b` records them as remote imports
-        // (crdt_chunks + oplog in one tx) tagged with a's source id; idempotent.
-        for (id, chunk) in &a_front {
-            if !b_front.contains_key(id)
-                && b.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &a_source)?
-            {
-                chunks_a_to_b += 1;
-            }
-        }
-        // b -> a: chunks b holds that a lacks.
-        for (id, chunk) in &b_front {
-            if !a_front.contains_key(id)
-                && a.put_chunk_from_remote(doc_id, &chunk.id, &chunk.format, &chunk.payload, &b_source)?
-            {
-                chunks_b_to_a += 1;
-            }
-        }
+        to_b.extend(missing_chunks_for_doc(b, a, doc_id)?);
+        to_a.extend(missing_chunks_for_doc(a, b, doc_id)?);
     }
 
-    // Rebuild both projections from their (now-augmented) chunk histories (DL-6),
-    // each against its OWN index manager so asymmetric indexes stay correct and
-    // the result is independent of which store is `a` vs `b`.
-    a.rebuild_projection(a_indexes)?;
-    b.rebuild_projection(b_indexes)?;
+    // Apply each direction atomically into the RECEIVING store, each against its OWN
+    // index manager (review 084 #1) so asymmetric indexes stay correct and the
+    // result is independent of which store is `a` vs `b`. The returned count is the
+    // number of chunks NEWLY imported (idempotent re-imports add nothing).
+    let chunks_a_to_b = b.apply_remote_chunks(&to_b, &a_source, b_indexes)?;
+    let chunks_b_to_a = a.apply_remote_chunks(&to_a, &b_source, a_indexes)?;
 
     Ok(SyncReport {
         chunks_a_to_b,

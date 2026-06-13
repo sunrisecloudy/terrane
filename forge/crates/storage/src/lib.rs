@@ -34,7 +34,7 @@ pub mod index;
 pub use index::{CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexState};
 
 pub mod crdt_write;
-pub use crdt_write::{collection_doc_id, CHUNK_FORMAT, LOCAL_PEER_ID};
+pub use crdt_write::{collection_doc_id, RemoteChunk, CHUNK_FORMAT, LOCAL_PEER_ID};
 
 pub mod export;
 pub use export::{

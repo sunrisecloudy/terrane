@@ -465,39 +465,177 @@ impl Store {
     /// simply absent from the rebuilt doc, so they do not reappear (DL-21).
     pub fn rebuild_projection(&mut self, indexes: &IndexManager) -> Result<()> {
         let peer_id = self.crdt_peer_id();
-        self.transact(|tx| {
-            // Drop the whole projection — it is derived, so this is safe.
-            tx.execute("DELETE FROM records", []).map_err(map_sql)?;
+        self.transact(|tx| rebuild_projection_tx(tx, peer_id, indexes))
+    }
 
-            // Every collection doc with persisted chunks.
-            let doc_ids: Vec<String> = {
-                let mut stmt = tx
-                    .prepare("SELECT DISTINCT doc_id FROM crdt_chunks ORDER BY doc_id")
-                    .map_err(map_sql)?;
-                let rows = stmt
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(map_sql)?;
-                let mut out = Vec::new();
-                for r in rows {
-                    out.push(r.map_err(map_sql)?);
-                }
-                out
-            };
-
-            for doc_id in &doc_ids {
-                let Some(collection) = collection_of_doc(doc_id) else {
-                    continue; // not a records collection doc (e.g. an applet src doc)
-                };
-                let doc = load_doc_tx(tx, doc_id, peer_id)?;
-                for id in doc.list_record_ids() {
-                    materialize_record_into_projection(tx, &doc, collection, &id, indexes)?;
+    /// Atomically apply a batch of chunks that arrived from a **remote peer**
+    /// during sync, in ONE SQLite transaction (DL-4: "Remote updates follow the
+    /// identical path"; review 088 #1). For the whole batch this:
+    ///
+    /// 1. inserts each missing chunk into `crdt_chunks` (append-only, idempotent —
+    ///    an identical re-import adds no row, a conflicting payload trips the
+    ///    history-rewrite guard) and, only for a newly-inserted chunk, appends one
+    ///    matching `oplog` row tagged with the remote `source`;
+    /// 2. rebuilds the records projection AND active physical indexes from the
+    ///    now-augmented chunk history — all inside the SAME transaction.
+    ///
+    /// Either the entire receiving-store update commits, or it rolls back wholly:
+    /// a failure in any chunk insert, the oplog append, or the projection/index
+    /// rebuild leaves `crdt_chunks`, `oplog`, and `records` byte-for-byte as they
+    /// were before the call. This closes the gap where per-chunk commits + a
+    /// post-hoc rebuild could leave committed chunk/oplog rows under a stale
+    /// projection if a later import or the rebuild failed.
+    ///
+    /// `indexes` must be the RECEIVING store's OWN [`IndexManager`] (review 084
+    /// #1): index metadata is per-store and not part of the synced chunk payload,
+    /// so rebuilding against a foreign manager would issue index DML for tables
+    /// this store lacks (or skip the ones it has). Returns the number of chunks
+    /// newly imported (a fully-converged re-apply returns `0` and is a pure no-op:
+    /// no chunk, no oplog row, and the projection is rebuilt to the identical
+    /// state).
+    pub fn apply_remote_chunks(
+        &mut self,
+        chunks: &[RemoteChunk],
+        source: &str,
+        indexes: &IndexManager,
+    ) -> Result<usize> {
+        let peer_id = self.crdt_peer_id();
+        let source = source.to_string();
+        self.transact(move |tx| {
+            let mut imported = 0usize;
+            for chunk in chunks {
+                if import_remote_chunk_tx(tx, chunk, &source)? {
+                    imported += 1;
                 }
             }
-            Ok(())
-        })?;
-        // Rebuild active physical indexes from the freshly materialized records.
-        self.build_indexes(indexes)
+            // Rebuild the projection + active physical indexes from the augmented
+            // chunk history INSIDE this transaction, so a rebuild failure rolls the
+            // chunk/oplog inserts back with it (atomic per receiving store).
+            rebuild_projection_tx(tx, peer_id, indexes)?;
+            Ok(imported)
+        })
     }
+}
+
+/// One chunk handed to [`Store::apply_remote_chunks`]: the receiving-store chunk id
+/// (content-addressed by the sync seam) plus the immutable `(format, payload)`.
+#[derive(Debug, Clone)]
+pub struct RemoteChunk {
+    /// The `doc_id` the chunk belongs to (`collection/<name>`).
+    pub doc_id: String,
+    /// The id the chunk is stored under in the receiver (the sync seam's
+    /// content-addressed exchanged id, network-safe across peers).
+    pub chunk_id: String,
+    /// The chunk encoding tag (`loro`), preserved verbatim.
+    pub format: String,
+    /// The opaque immutable Loro update bytes.
+    pub payload: Vec<u8>,
+}
+
+/// Import ONE remote chunk inside an open transaction: append-only insert into
+/// `crdt_chunks` plus, only when the chunk is newly inserted, one matching `oplog`
+/// row tagged with the remote `source` (DL-4 remote parity). Returns `true` iff a
+/// new chunk (and its oplog row) was written; an identical re-import is an
+/// idempotent `false` no-op, and a conflicting payload under an existing chunk id
+/// trips the append-only history-rewrite guard. The transaction-scoped twin of
+/// [`Store::put_chunk_from_remote`].
+fn import_remote_chunk_tx(
+    tx: &rusqlite::Transaction<'_>,
+    chunk: &RemoteChunk,
+    source: &str,
+) -> Result<bool> {
+    let RemoteChunk { doc_id, chunk_id, format, payload } = chunk;
+    let existing: Option<(String, Vec<u8>)> = tx
+        .query_row(
+            "SELECT format, payload FROM crdt_chunks WHERE doc_id = ?1 AND chunk_id = ?2",
+            params![doc_id, chunk_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional_row()?;
+    if let Some((ef, ep)) = existing {
+        if &ef == format && &ep == payload {
+            // Already imported — DO NOT append a duplicate oplog row.
+            return Ok(false);
+        }
+        return Err(CoreError::StorageError(format!(
+            "crdt chunk ({doc_id}, {chunk_id}) is append-only and already exists \
+             with different content; refusing to rewrite history"
+        )));
+    }
+    tx.execute(
+        "INSERT INTO crdt_chunks (doc_id, chunk_id, format, payload, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![doc_id, chunk_id, format, payload, now_ms()],
+    )
+    .map_err(map_sql)?;
+
+    // One oplog row in the SAME transaction, tagged remote (DL-4 parity). op_id
+    // mirrors the local path: `(doc_id)#(chunk_id)`, unique because chunk ids are
+    // unique per doc. The lamport is derived from a local `chunk-NNNN` id, else 0.
+    let op_id = format!("{doc_id}#{chunk_id}");
+    let lamport = chunk_id_lamport(chunk_id);
+    let op_payload = serde_json::to_vec(&serde_json::json!({
+        "doc_id": doc_id,
+        "chunk_id": chunk_id,
+        "kind": "record.remote_import",
+        "source": source,
+    }))
+    .map_err(|e| map_json("remote oplog payload encode", e))?;
+    append_op_tx(
+        tx,
+        &op_id,
+        source,
+        "remote",
+        lamport,
+        "record.remote_import",
+        &op_payload,
+    )?;
+    Ok(true)
+}
+
+/// DL-6 projection rebuild inside a caller-provided transaction: drop the whole
+/// `records` projection, re-materialize it from `crdt_chunks` (the CRDT source of
+/// truth), and rebuild active physical indexes — all on `tx` so the rebuild commits
+/// or rolls back with whatever else the caller did in the same transaction. The
+/// shared engine behind [`Store::rebuild_projection`] and
+/// [`Store::apply_remote_chunks`].
+fn rebuild_projection_tx(
+    tx: &rusqlite::Transaction<'_>,
+    peer_id: u64,
+    indexes: &IndexManager,
+) -> Result<()> {
+    // Drop the whole projection — it is derived, so this is safe.
+    tx.execute("DELETE FROM records", []).map_err(map_sql)?;
+
+    // Every collection doc with persisted chunks.
+    let doc_ids: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT DISTINCT doc_id FROM crdt_chunks ORDER BY doc_id")
+            .map_err(map_sql)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(map_sql)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(map_sql)?);
+        }
+        out
+    };
+
+    for doc_id in &doc_ids {
+        let Some(collection) = collection_of_doc(doc_id) else {
+            continue; // not a records collection doc (e.g. an applet src doc)
+        };
+        let doc = load_doc_tx(tx, doc_id, peer_id)?;
+        for id in doc.list_record_ids() {
+            materialize_record_into_projection(tx, &doc, collection, &id, indexes)?;
+        }
+    }
+
+    // Rebuild active physical indexes from the freshly materialized records, IN
+    // the same transaction (a Transaction derefs to &Connection), so an index
+    // failure rolls the projection rebuild back with it.
+    indexes.rebuild_active(tx)
 }
 
 /// Re-materialize ONE record into the `records` projection from the post-mutation
@@ -776,6 +914,138 @@ mod tests {
         // Post-state projection.
         assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["done"], json!(true));
         assert_eq!(s.get_record("tasks", "t2").unwrap().unwrap().fields["title"], json!("B"));
+    }
+
+    // --- apply_remote_chunks: atomic per-store remote apply (review 088 #1) --
+
+    /// Count `crdt_chunks` rows across every doc (a substrate-level total).
+    fn total_chunk_rows(s: &Store) -> i64 {
+        s.connection()
+            .query_row("SELECT COUNT(*) FROM crdt_chunks", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Borrow one valid `loro` chunk verbatim out of a store's persisted history,
+    /// to re-feed it as a `RemoteChunk` to a different store.
+    fn one_chunk(s: &Store, doc_id: &str) -> RemoteChunk {
+        let c = s.get_chunks(doc_id).unwrap().into_iter().next().unwrap();
+        RemoteChunk {
+            doc_id: doc_id.to_string(),
+            chunk_id: c.chunk_id,
+            format: c.format,
+            payload: c.payload,
+        }
+    }
+
+    #[test]
+    fn apply_remote_chunks_imports_and_rebuilds_atomically() {
+        // A clean remote apply: the staged chunk lands in crdt_chunks + oplog and
+        // the projection materializes — all committed together. A second apply of
+        // the same chunk is a pure idempotent no-op (no new chunk/oplog row).
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let chunk = one_chunk(&src, &doc_id);
+
+        let mut dst = store();
+        let imported = dst
+            .apply_remote_chunks(std::slice::from_ref(&chunk), "peer:7", &idx)
+            .unwrap();
+        assert_eq!(imported, 1, "one new chunk imported");
+        // Chunk + a remote-tagged oplog row landed, and the projection rebuilt.
+        assert_eq!(total_chunk_rows(&dst), 1);
+        let ops = dst.list_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "record.remote_import");
+        assert_eq!(ops[0].actor_id, "peer:7");
+        assert_eq!(ops[0].workspace_id, "remote");
+        assert_eq!(dst.get_record("tasks", "t1").unwrap().unwrap().fields["title"], json!("Ship"));
+
+        // Idempotent re-apply: no new chunk, no new oplog row, same projection.
+        let again = dst
+            .apply_remote_chunks(std::slice::from_ref(&chunk), "peer:7", &idx)
+            .unwrap();
+        assert_eq!(again, 0, "re-applying a present chunk imports nothing");
+        assert_eq!(total_chunk_rows(&dst), 1, "no duplicate chunk row");
+        assert_eq!(dst.list_ops().unwrap().len(), 1, "no duplicate oplog row");
+    }
+
+    /// Review 088 #1 (P2): a remote apply that inserts chunks and THEN fails during
+    /// the projection rebuild must roll back ENTIRELY — the receiving store must be
+    /// left with NO new `crdt_chunks` rows, NO new `oplog` rows, and an unchanged
+    /// `records` projection. Before the fix, per-chunk commits + a post-hoc rebuild
+    /// could strand committed chunk/oplog rows under a stale projection.
+    ///
+    /// Injection: stage a VALID chunk (which inserts cleanly) followed by a GARBAGE
+    /// chunk for the SAME collection doc. The garbage bytes insert into `crdt_chunks`
+    /// fine (the append-only insert is content-agnostic), but the in-transaction
+    /// `rebuild_projection` then folds the doc's chunks back through Loro
+    /// `from_updates`, which rejects the garbage with a `SyncError`. That error must
+    /// roll the whole apply back.
+    #[test]
+    fn apply_remote_chunks_rolls_back_entirely_on_rebuild_failure() {
+        // Seed the receiver with a prior LOCAL record so there is committed history
+        // and a projection row that must survive the failed remote apply untouched.
+        let mut dst = store();
+        let idx = IndexManager::new();
+        dst.apply_mutation_crdt(&insert("tasks", "kept", json!({"title": "stays"}), 1), &idx)
+            .unwrap();
+
+        let doc_id = collection_doc_id("tasks");
+        let chunks_before = total_chunk_rows(&dst);
+        let ops_before = dst.list_ops().unwrap();
+        let kept_before = dst.get_record("tasks", "kept").unwrap().unwrap();
+
+        // A genuinely valid foreign chunk (a record `t2` from another store) staged
+        // BEFORE a garbage chunk under a fresh id for the same doc. Both ride under
+        // network-safe content-style ids that do NOT collide with the receiver's
+        // local `chunk-0001`, so the GOOD chunk inserts cleanly and the failure is
+        // injected purely at the in-transaction rebuild (not the append-only guard).
+        let mut other = store();
+        other
+            .apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "remote"}), 2), &idx)
+            .unwrap();
+        let mut good = one_chunk(&other, &doc_id);
+        good.chunk_id = "sha256:goodgood".to_string();
+        let garbage = RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: "sha256:deadbeef".to_string(),
+            format: CHUNK_FORMAT.to_string(),
+            payload: vec![0xde, 0xad, 0xbe, 0xef],
+        };
+
+        let err = dst
+            .apply_remote_chunks(&[good, garbage], "peer:99", &idx)
+            .unwrap_err();
+        assert_eq!(err.code(), "SyncError", "garbage chunk must fail the rebuild");
+
+        // Whole apply rolled back: no new chunk rows, no new oplog rows, projection
+        // byte-for-byte as before (the good chunk did NOT leak in).
+        assert_eq!(
+            total_chunk_rows(&dst),
+            chunks_before,
+            "a failed remote apply must leave NO new crdt_chunks rows"
+        );
+        assert_eq!(
+            dst.list_ops().unwrap(),
+            ops_before,
+            "a failed remote apply must leave NO new oplog rows"
+        );
+        assert!(
+            dst.get_chunks(&doc_id).unwrap().iter().all(|c| c.chunk_id != "sha256:deadbeef"),
+            "the garbage chunk must not persist"
+        );
+        assert!(
+            dst.get_record("tasks", "t2").unwrap().is_none(),
+            "the staged good record must not leak through a rolled-back apply"
+        );
+        assert_eq!(
+            dst.get_record("tasks", "kept").unwrap().unwrap(),
+            kept_before,
+            "the prior record must be untouched after a rolled-back apply"
+        );
     }
 
     // --- DL-6: rebuild equals maintained projection (zero diff) -----------
