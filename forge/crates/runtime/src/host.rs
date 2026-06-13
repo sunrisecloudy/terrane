@@ -545,10 +545,24 @@ fn to_response_policy_request(
     request: &NetRequest,
     response: &NetResponse,
 ) -> forge_policy::NetRequest {
+    // Fold `final_url` (the URL the response actually came from) into the
+    // policy-checked redirect hops so it is **bound to the allowlist** even when a
+    // client reports it with an empty or truncated `redirect_chain` (review 074 #1).
+    // Without this, a client that follows redirects and returns
+    // `final_url = https://evil.example.net/...` but no chain would pass the
+    // response-leg redirect check. Appending it (when it isn't already the last
+    // hop) makes the policy re-run the full request-side gates against the real
+    // final destination — fail-closed.
+    let mut redirect_chain = response.redirect_chain.clone();
+    if let Some(final_url) = &response.final_url {
+        if redirect_chain.last() != Some(final_url) {
+            redirect_chain.push(final_url.clone());
+        }
+    }
     forge_policy::NetRequest {
         response_bytes: Some(response.body_bytes()),
         response_content_type: response.content_type.clone(),
-        redirect_chain: response.redirect_chain.clone(),
+        redirect_chain,
         dns_answers: response.dns_answers.clone(),
         ..to_policy_request(request)
     }
@@ -912,6 +926,41 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "PermissionDenied");
         assert!(err.to_string().contains("redirect hop"), "{err}");
+    }
+
+    /// Review 074 #1: a client that lands on an unallowlisted final URL but reports
+    /// an EMPTY `redirect_chain` (only `final_url`) must still be denied — the
+    /// response leg folds `final_url` into the policy-checked hops.
+    #[test]
+    fn net_fetch_final_url_to_unallowlisted_host_is_denied_without_a_chain() {
+        use crate::net::{MockHttpClient, NetResponse};
+        let manifest = manifest_with_net(
+            NetGrant(vec![get_rule("https://api.example.com/public/*")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        // Followed a redirect to evil but reports NO chain — only the final_url.
+        let response = NetResponse {
+            status: 200,
+            body: Some(r#"{"ok":true}"#.into()),
+            content_type: Some("application/json".into()),
+            final_url: Some("https://evil.example.net/public/asset".into()),
+            redirect_chain: vec![],
+            ..Default::default()
+        };
+        let mut bridge =
+            MemoryHostBridge::with_http_client(Box::new(MockHttpClient::new(response)));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/asset"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "final_url must be policy-bound: {err}");
     }
 
     /// A host that resolves (dns_answers) to a private IP is denied after the

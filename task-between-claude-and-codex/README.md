@@ -118,3 +118,13 @@ Open for you: no outstanding Codex task-board requests as of this update.
   such actors having indexed fields, schema field-id minting should encode the actor
   component into a collision-safe valid identifier (vs the current rejection).
   Deferred enhancement; rejection is safe + clear today.
+- **review 074 #2 (net denied response body recorded before the deny):** in record
+  mode the response is appended to the RunRecord trace (inside `recorder.host_call`)
+  BEFORE the response-leg SC-5 check runs, so a denied (redirect-to-private /
+  oversized / DNS-rebind / unallowlisted-hop) response's body is persisted in the
+  trace even though the applet was denied. **Latent in M0a** — the client is a mock
+  (canned body) and the run still fails correctly; this is an SC-12 audit/privacy
+  refinement for when a real HTTP client is injected. Deferred fix: run the
+  response-leg policy BEFORE committing the recorded host call (record a
+  denial-shaped entry without the rejected body). (review 074 #1 — final_url not
+  policy-bound — is FIXED + regression-tested.)
