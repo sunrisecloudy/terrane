@@ -351,7 +351,10 @@ impl WorkspaceCore {
         // runs' context — replay then used the new manifest's engine limits. The
         // per-run key is unique to this execution, so no reinstall (same code or
         // not) can overwrite it. The content-addressed `program/<code_hash>` pin
-        // is kept as a fallback for legacy runs recorded before per-run pinning.
+        // is kept as a fallback for legacy runs recorded before per-run pinning —
+        // and is now WRITE-ONCE (review 038 finding 3), so even a same-JS reinstall
+        // under a different manifest can no longer overwrite the fallback a legacy
+        // run depends on.
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
 
@@ -473,17 +476,23 @@ impl WorkspaceCore {
     }
 
     /// `query.execute` — list every record in `collection` from the projection
-    /// (CR-A2, DL-15 subset). Payload: `{ collection }`.
+    /// (CR-A2, DL-15 subset). Payload: `{ collection, grants? }`.
     ///
-    /// `forge/spec/commands.md:21` requires **"Role plus db.read capability"**:
-    /// the command-level [`authorize`] role gate is necessary but not sufficient
-    /// (review 036 finding 1). Before any records are listed, the actor must
-    /// actually hold the `db.read` capability — modeled in M0a as a role-derived
-    /// capability (see [`role_has_db_read`]). This is a distinct layer from the
-    /// role allowlist: a role reachable at the command level but lacking `db.read`
-    /// (e.g. a `Runner`, which is execution-only) is denied here before
-    /// `list_records` touches state, mirroring the per-`ctx.*` `db.read` gate the
-    /// runtime enforces for applet reads.
+    /// `forge/spec/commands.md:21` requires **"Role plus db.read capability"**,
+    /// and `forge/spec/capabilities.md:23` models `db.read` as a *collection-scoped*
+    /// grant (`resource: collection:<name>`). Two independent layers gate the read
+    /// (review 036/038 finding 1):
+    ///
+    ///   1. the command-level [`authorize`] role gate (a `Runner` is
+    ///      execution-only and cannot read data) — `PermissionDenied`; then
+    ///   2. the **collection-scoped `db.read` capability** ([`require_db_read`]):
+    ///      the target `collection` must fall within the caller's granted
+    ///      `db.read` scope (`payload.grants.db.read`, the same grant shape the
+    ///      `forge/fixtures/query/reject_ungranted_collection.json` vector pins).
+    ///      A collection outside the granted scope is `CapabilityRequired` —
+    ///      enforced **before** `list_records` touches state — even for a role that
+    ///      cleared layer 1. This is the caller boundary `forge-storage` defers to
+    ///      (the projection scans any collection unguarded; the grant lives here).
     fn cmd_query_execute(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
         let collection = cmd
             .payload
@@ -492,9 +501,8 @@ impl WorkspaceCore {
             .ok_or_else(|| {
                 CoreError::ValidationError("query.execute requires `collection`".into())
             })?;
-        // Capability gate (CR-A3 / DL-15): the actor must hold `db.read` before
-        // any projection is read. Denied with PermissionDenied, not silently
-        // listing the collection.
+        // Capability gate (CR-A3 / DL-15): role first, then the collection-scoped
+        // db.read grant. Denied before any projection is read.
         require_db_read(cmd, collection)?;
         let records = self.store.list_records(collection)?;
         let rows: Vec<serde_json::Value> = records
@@ -536,11 +544,31 @@ impl WorkspaceCore {
 
     // -------------------------------------------------- replay program pinning
 
-    /// Persist the exact compiled program a run executed, keyed by its
-    /// `code_hash`, so `runtime.replay` can reconstruct it even after the
-    /// applet is reinstalled/upgraded (review 031 finding 3 / CR-9). Keyed by
-    /// content hash, so re-running the same code is idempotent (same bytes).
+    /// Persist the content-addressed replay fallback (`program/<code_hash>`),
+    /// **write-once** (review 038 finding 3 / 036 finding 2).
+    ///
+    /// This artifact is the legacy fallback for runs recorded *before* per-run
+    /// pinning (every modern run also gets a per-run pin via
+    /// [`store_run_program`](Self::store_run_program), which is never overwritten).
+    /// Because it is keyed by `code_hash` alone it does NOT capture the manifest a
+    /// particular run used, so blindly overwriting it on every run let a later
+    /// same-JS reinstall under a *different* manifest (e.g. tighter `limits`)
+    /// replace the artifact a pre-per-run-pin run depends on — stranding that run,
+    /// which would then replay under the wrong engine limits.
+    ///
+    /// Write-once fixes that: the first run to hash to a given `code_hash` pins the
+    /// fallback (manifest + JS) and a later run with the **same** code_hash never
+    /// overwrites it with a *different* manifest. Re-pinning identical content is an
+    /// idempotent no-op (so a same-code, same-manifest re-run is unaffected); an
+    /// identical-manifest re-pin is also a no-op. A legacy run keyed to this hash
+    /// therefore always replays against the manifest first recorded for it.
     fn store_program(&mut self, installed: &InstalledApplet) -> Result<()> {
+        // Write-once: if a fallback already exists for this code_hash, keep it.
+        // A different manifest must not clobber the original (the stranding bug);
+        // an identical one is a no-op either way.
+        if self.load_program(&installed.code_hash)?.is_some() {
+            return Ok(());
+        }
         let bytes = serde_json::to_vec(installed).map_err(|e| {
             CoreError::StorageError(format!("program serialize failed: {e}"))
         })?;
@@ -614,8 +642,10 @@ fn applet_key(applet_id: &str) -> String {
 /// Content-addressed, so the same code reinstalled under a new applet version
 /// still maps to the one program every run that hashed to it can replay against.
 /// Kept as a fallback for runs recorded before per-run pinning (review 036
-/// finding 2): it does NOT capture the manifest a specific run used, so a
-/// same-code reinstall under a different manifest overwrites it.
+/// finding 2). It does NOT capture the manifest a specific run used, so the
+/// write is **write-once** ([`store_program`](WorkspaceCore::store_program)):
+/// the first run to hash to it pins the fallback and a later same-code reinstall
+/// under a different manifest can no longer overwrite it (review 038 finding 3).
 fn program_key(code_hash: &str) -> String {
     format!("program/{code_hash}")
 }
@@ -790,20 +820,85 @@ fn role_has_db_read(role: Role) -> bool {
     )
 }
 
-/// Command-level `db.read` capability gate for `query.execute` (review 036
-/// finding 1, `forge/spec/commands.md:21` "Role plus db.read capability"). The
-/// role allowlist in [`authorize`] is a separate, necessary layer; this enforces
-/// the *capability* before the projection is read, so an actor whose role lacks
-/// `db.read` is denied here rather than handed the records.
+/// Collection-scoped `db.read` capability gate for `query.execute` (review
+/// 036/038 finding 1; `forge/spec/commands.md:21` "Role plus db.read capability"
+/// + `forge/spec/capabilities.md:23` `resource: collection:<name>`).
+///
+/// Two independent checks, both required:
+///
+///   1. **Role** — the actor's role must carry `db.read` ([`role_has_db_read`]).
+///      A `Runner` (execution-only) fails here with `PermissionDenied`.
+///   2. **Scope** — the target `collection` must be within the caller's granted
+///      `db.read` scope. The scope is `payload.grants.db.read` (the grant shape
+///      the `reject_ungranted_collection` fixture pins): an array of granted
+///      collection names, where `"*"` is a read-all wildcard. A collection
+///      *outside* the granted scope is `CapabilityRequired` with a message naming
+///      `db.read collection:<name>` — so a role that cleared check 1 is still
+///      denied when it was not granted that specific collection (this is what
+///      makes the capability layer load-bearing rather than redundant with the
+///      role gate).
+///
+/// Back-compat: when the payload carries **no** explicit `grants.db.read`, the
+/// granted scope defaults to the actor's role-derived read scope (read-all for a
+/// `db.read`-capable role), so a caller that already passed the role gate and did
+/// not narrow its grant keeps working. A caller that *does* supply a scope is
+/// held to it exactly, regardless of role.
 fn require_db_read(cmd: &CoreCommand, collection: &str) -> Result<()> {
-    if role_has_db_read(cmd.actor.role) {
-        Ok(())
-    } else {
-        Err(CoreError::PermissionDenied(format!(
+    // Layer 1: role.
+    if !role_has_db_read(cmd.actor.role) {
+        return Err(CoreError::PermissionDenied(format!(
             "actor role {:?} lacks the db.read capability required to query {collection:?} (forge/spec/commands.md: query.execute = Role plus db.read)",
             cmd.actor.role
-        )))
+        )));
     }
+    // Layer 2: collection-scoped grant.
+    match db_read_scope(cmd)? {
+        // No explicit scope supplied → role-derived read-all (back-compat).
+        None => Ok(()),
+        Some(scope) if scope_grants(&scope, collection) => Ok(()),
+        Some(_) => Err(CoreError::CapabilityRequired(format!(
+            "db.read collection:{collection} is not within the caller's granted db.read scope (forge/spec/capabilities.md: db.read is collection-scoped)"
+        ))),
+    }
+}
+
+/// Parse the caller's granted `db.read` scope from `payload.grants.db.read`, if
+/// present. `Ok(None)` means no scope was supplied (role-derived read-all
+/// applies); `Ok(Some(scopes))` is the explicit list of granted collection names
+/// (`"*"` = read-all). A malformed `grants` shape is a `ValidationError` rather
+/// than a silently-ignored grant (which would be a capability bypass).
+fn db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
+    let grants = match cmd.payload.get("grants") {
+        None => return Ok(None),
+        Some(g) => g,
+    };
+    // `grants.db.read` — absent at any level means "no db.read scope supplied".
+    let read = grants.get("db").and_then(|db| db.get("read"));
+    let read = match read {
+        None => return Ok(None),
+        Some(r) => r,
+    };
+    let arr = read.as_array().ok_or_else(|| {
+        CoreError::ValidationError(
+            "query.execute `grants.db.read` must be an array of collection names".into(),
+        )
+    })?;
+    let mut scopes = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let s = entry.as_str().ok_or_else(|| {
+            CoreError::ValidationError(
+                "query.execute `grants.db.read` entries must be collection-name strings".into(),
+            )
+        })?;
+        scopes.push(s.to_string());
+    }
+    Ok(Some(scopes))
+}
+
+/// True iff `collection` is granted by `scope` — either an exact collection-name
+/// match or the read-all wildcard `"*"`.
+fn scope_grants(scope: &[String], collection: &str) -> bool {
+    scope.iter().any(|s| s == "*" || s == collection)
 }
 
 /// Extract and require the command's `applet_id` (from the envelope, or the

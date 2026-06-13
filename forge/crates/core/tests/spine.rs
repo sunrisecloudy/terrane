@@ -84,6 +84,21 @@ fn actor(role: Role) -> ActorContext {
     ActorContext { actor: ActorId::new(format!("{role:?}").to_lowercase()), role }
 }
 
+/// Load a normative query fixture (`forge/fixtures/query/<name>`). The fixtures
+/// are load-bearing across crates: forge-storage pins the unguarded-scan
+/// boundary, and forge-core (here) pins the *caller* boundary that actually
+/// enforces the `db.read` grant the fixture's `expect_error` describes.
+fn load_query_fixture(name: &str) -> serde_json::Value {
+    // CARGO_MANIFEST_DIR = forge/crates/core
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/query")
+        .join(name);
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("read query fixture {}: {e}", path.display()));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("parse query fixture {name}: {e}"))
+}
+
 /// Install the demo applet into a fresh in-memory workspace, asserting success.
 fn install_demo(core: &mut WorkspaceCore, ts: &str, manifest: serde_json::Value) {
     let resp = core.handle(cmd(
@@ -425,6 +440,53 @@ fn query_execute_requires_db_read_capability() {
     ));
     assert!(ok.ok, "Viewer holds db.read and must be permitted: {:?}", ok.error);
     assert_eq!(ok.payload["rows"].as_array().unwrap().len(), 1);
+}
+
+/// Review 038 finding 1 + `forge/fixtures/query/reject_ungranted_collection.json`
+/// (`forge/spec/capabilities.md:23` — `db.read` is *collection-scoped*): the
+/// `db.read` capability must be enforced against an actual GRANT SCOPE, not just
+/// the role gate. An actor whose role clears the role allowlist (here an Owner,
+/// the most-privileged role) but whose granted `db.read` scope does NOT include
+/// the target collection is denied with `CapabilityRequired` — proving the
+/// capability layer is load-bearing and distinct from the role gate (which the
+/// owner passes). The fixture pins the exact grant shape and error.
+#[test]
+fn query_execute_enforces_collection_scoped_db_read_grant() {
+    let fx = load_query_fixture("reject_ungranted_collection.json");
+    // The fixture's grant: db.read scoped to ["tasks"] only.
+    let grants = fx["grants"].clone();
+    assert_eq!(grants["db"]["read"], serde_json::json!(["tasks"]));
+    let target = fx["query"]["from"].as_str().unwrap().to_string(); // "secrets"
+    let expect_code = fx["expect_error"]["code"].as_str().unwrap().to_string();
+    let expect_msg = fx["expect_error"]["message_contains"].as_str().unwrap().to_string();
+
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // An Owner (clears the role gate) querying a collection OUTSIDE the granted
+    // db.read scope is denied by the capability layer, before any scan.
+    let denied = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": target, "grants": grants }),
+    ));
+    assert!(!denied.ok, "an out-of-scope db.read must be denied even for an Owner");
+    let err = denied.error.expect("must carry an error");
+    assert_eq!(err.code(), expect_code, "fixture pins {expect_code}: {err}");
+    assert!(
+        err.to_string().contains(&expect_msg),
+        "error must name the ungranted scope {expect_msg:?}: {err}"
+    );
+
+    // The SAME owner, querying a collection that IS within the granted scope,
+    // succeeds — so the gate denies the out-of-scope capability, not the command.
+    let in_scope = core.handle(cmd_as(
+        owner(),
+        "query.execute",
+        None,
+        serde_json::json!({ "collection": "tasks", "grants": grants }),
+    ));
+    assert!(in_scope.ok, "an in-scope db.read must be permitted: {:?}", in_scope.error);
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +889,72 @@ fn replay_uses_recorded_manifest_after_same_code_reinstall_with_tighter_limits()
     assert!(
         replay.ok,
         "old run must replay against its pinned (generous) manifest after a same-code tighter reinstall: {:?}",
+        replay.error
+    );
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
+
+// ---------------------------------------------------------------------------
+// 7c. WRITE-ONCE code_hash fallback (review 038 finding 3): a *legacy* run that
+//     has NO per-run pin (recorded before per-run pinning) relies on the
+//     content-addressed `program/<code_hash>` fallback. A later same-JS reinstall
+//     under a TIGHTER manifest must NOT overwrite that fallback, or the legacy run
+//     would replay under the wrong (crippled) limits. We simulate the legacy run
+//     by stripping its per-run pin, forcing replay through the fallback, then prove
+//     the fallback's generous manifest survived the same-code tighter reinstall.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_run_on_codehash_fallback_replays_after_same_code_tighter_reinstall() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // Same manifest-sensitive applet as 7b: a ~50-byte log line + a UI render.
+    // It completes under a generous `log_bytes` ceiling and trips a tight one.
+    let ts = r#"
+        export async function main(ctx: any, input: any): Promise<any> {
+            ctx.log("write-once fallback replay regression log line padding padding");
+            await ctx.ui.render({ type: "Text", text: "fallback" });
+            return { ok: true, value: 1 };
+        }
+    "#;
+
+    // Run under the generous manifest. This pins BOTH the per-run artifact and the
+    // code_hash fallback.
+    install_demo(&mut core, ts, demo_manifest());
+    let run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "generous run must succeed: {:?}", run.error);
+    assert_eq!(run.payload["ok"], serde_json::json!(true));
+    let run_id = run.payload["run_id"].as_str().unwrap().to_string();
+
+    // Make this a LEGACY run: strip its per-run pin so replay must fall through to
+    // the content-addressed `program/<code_hash>` fallback. The key shape
+    // (`__forge/meta` namespace, `program/run/<run_id>`) is the stable contract the
+    // facade writes via `store_run_program`.
+    core.store_mut()
+        .kv_delete("__forge/meta", &format!("program/run/{run_id}"))
+        .unwrap();
+
+    // Reinstall the SAME JS (identical code_hash) under a crippled `log_bytes`
+    // manifest. Pre-fix, this run's `store_program` overwrote the fallback with the
+    // crippled manifest, stranding the legacy run. Write-once must preserve the
+    // original (generous) fallback.
+    let mut crippled = demo_manifest();
+    crippled["limits"]["log_bytes"] = serde_json::json!(1);
+    install_demo(&mut core, ts, crippled);
+    let crippled_run = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(crippled_run.ok, "the run command itself must succeed: {:?}", crippled_run.error);
+    assert_eq!(
+        crippled_run.payload["ok"],
+        serde_json::json!(false),
+        "the crippled run must FAIL on the tighter log-bytes budget (manifest is genuinely tighter)"
+    );
+
+    // The legacy run (now on the fallback only) must still replay byte-identically:
+    // the write-once fallback kept its generous manifest, so the log line fits.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(
+        replay.ok,
+        "legacy fallback run must replay against the write-once (generous) fallback after a same-code tighter reinstall: {:?}",
         replay.error
     );
     assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
