@@ -154,12 +154,14 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
             Node::Button {
                 label: la,
                 variant: va,
+                aria_label: ala,
                 on_tap: ta,
                 ..
             },
             Node::Button {
                 label: lb,
                 variant: vb,
+                aria_label: alb,
                 on_tap: tb,
                 ..
             },
@@ -172,12 +174,14 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
                 });
             }
             diff_optional_prop(path, "variant", va.as_deref(), vb.as_deref(), new, out);
+            diff_optional_prop(path, "ariaLabel", ala.as_deref(), alb.as_deref(), new, out);
             diff_optional_prop(path, "onTap", ta.as_deref(), tb.as_deref(), new, out);
         }
         (
             Node::TextField {
                 value: va,
                 label: la,
+                aria_label: ala,
                 placeholder: pa,
                 on_change: ca,
                 ..
@@ -185,6 +189,7 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
             Node::TextField {
                 value: vb,
                 label: lb,
+                aria_label: alb,
                 placeholder: pb,
                 on_change: cb,
                 ..
@@ -198,6 +203,7 @@ fn diff_node(path: &mut Path, old: &Node, new: &Node, out: &mut Vec<Patch>) {
                 });
             }
             diff_optional_prop(path, "label", la.as_deref(), lb.as_deref(), new, out);
+            diff_optional_prop(path, "ariaLabel", ala.as_deref(), alb.as_deref(), new, out);
             diff_optional_prop(path, "placeholder", pa.as_deref(), pb.as_deref(), new, out);
             diff_optional_prop(path, "onChange", ca.as_deref(), cb.as_deref(), new, out);
         }
@@ -282,30 +288,39 @@ fn any_scalar_cleared(old: &Node, new: &Node) -> bool {
         (
             Node::Button {
                 variant: ov,
+                aria_label: oa,
                 on_tap: ot,
                 ..
             },
             Node::Button {
                 variant: nv,
+                aria_label: na,
                 on_tap: nt,
                 ..
             },
-        ) => cleared(ov.as_deref(), nv.as_deref()) || cleared(ot.as_deref(), nt.as_deref()),
+        ) => {
+            cleared(ov.as_deref(), nv.as_deref())
+                || cleared(oa.as_deref(), na.as_deref())
+                || cleared(ot.as_deref(), nt.as_deref())
+        }
         (
             Node::TextField {
                 label: ol,
+                aria_label: oa,
                 placeholder: op,
                 on_change: oc,
                 ..
             },
             Node::TextField {
                 label: nl,
+                aria_label: na,
                 placeholder: np,
                 on_change: nc,
                 ..
             },
         ) => {
             cleared(ol.as_deref(), nl.as_deref())
+                || cleared(oa.as_deref(), na.as_deref())
                 || cleared(op.as_deref(), np.as_deref())
                 || cleared(oc.as_deref(), nc.as_deref())
         }
@@ -468,6 +483,10 @@ fn apply_prop(target: &mut Node, key: &str, value: &str, path: &[usize]) -> Resu
             *variant = Some(value.to_string());
             Ok(())
         }
+        (Node::Button { aria_label, .. }, "ariaLabel") => {
+            *aria_label = Some(value.to_string());
+            Ok(())
+        }
         (Node::Button { on_tap, .. }, "onTap") => {
             *on_tap = Some(value.to_string());
             Ok(())
@@ -478,6 +497,10 @@ fn apply_prop(target: &mut Node, key: &str, value: &str, path: &[usize]) -> Resu
         }
         (Node::TextField { label, .. }, "label") => {
             *label = Some(value.to_string());
+            Ok(())
+        }
+        (Node::TextField { aria_label, .. }, "ariaLabel") => {
+            *aria_label = Some(value.to_string());
             Ok(())
         }
         (Node::TextField { placeholder, .. }, "placeholder") => {

@@ -110,6 +110,13 @@ pub enum Node {
         /// `"primary" | "secondary" | "destructive"`). Stored as a string to
         /// stay lossless and forward-compatible.
         variant: Option<String>,
+        /// Optional explicit accessible name (wire key `ariaLabel`, UI-7).
+        ///
+        /// Per `spec/accessibility.md` a Button's accessible name is its
+        /// `label`, but an *icon-only* Button (empty `label`) MUST supply
+        /// `ariaLabel`; the name is never inferred from an icon. Additive and
+        /// `#[serde(default)]`-equivalent (omitted when `None`).
+        aria_label: Option<String>,
         /// Optional action ref fired on tap (wire key `onTap`).
         on_tap: Option<ActionRef>,
     },
@@ -121,6 +128,13 @@ pub enum Node {
         value: String,
         /// Optional field label (wire key `label`).
         label: Option<String>,
+        /// Optional explicit accessible name (wire key `ariaLabel`, UI-7).
+        ///
+        /// Per `spec/accessibility.md` a TextField requires a label;
+        /// `placeholder` never counts. `ariaLabel` is an alternative label
+        /// source for an unlabelled-but-named field. Additive and
+        /// `#[serde(default)]`-equivalent (omitted when `None`).
+        aria_label: Option<String>,
         /// Optional placeholder shown when empty (wire key `placeholder`).
         placeholder: Option<String>,
         /// Optional action ref fired on change (wire key `onChange`).
@@ -173,6 +187,7 @@ impl Node {
             base: BaseNode::default(),
             label: label.into(),
             variant: None,
+            aria_label: None,
             on_tap,
         }
     }
@@ -184,6 +199,7 @@ impl Node {
             base: BaseNode::default(),
             value: value.into(),
             label: None,
+            aria_label: None,
             placeholder: None,
             on_change,
         }
@@ -211,6 +227,19 @@ impl Node {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         if let Some(base) = self.base_mut() {
             base.id = Some(id.into());
+        }
+        self
+    }
+
+    /// Set the explicit accessible name (`ariaLabel`, UI-7) on a node that
+    /// carries one (Button / TextField), builder-style. A no-op for nodes
+    /// without an `ariaLabel` slot.
+    pub fn with_aria_label(mut self, label: impl Into<String>) -> Self {
+        match &mut self {
+            Node::Button { aria_label, .. } | Node::TextField { aria_label, .. } => {
+                *aria_label = Some(label.into());
+            }
+            _ => {}
         }
         self
     }
@@ -299,6 +328,7 @@ impl Serialize for Node {
                 base,
                 label,
                 variant,
+                aria_label,
                 on_tap,
             } => {
                 let mut m = serializer.serialize_map(None)?;
@@ -307,6 +337,9 @@ impl Serialize for Node {
                 m.serialize_entry("label", label)?;
                 if let Some(variant) = variant {
                     m.serialize_entry("variant", variant)?;
+                }
+                if let Some(aria_label) = aria_label {
+                    m.serialize_entry("ariaLabel", aria_label)?;
                 }
                 if let Some(a) = on_tap {
                     m.serialize_entry("onTap", a)?;
@@ -317,6 +350,7 @@ impl Serialize for Node {
                 base,
                 value,
                 label,
+                aria_label,
                 placeholder,
                 on_change,
             } => {
@@ -326,6 +360,9 @@ impl Serialize for Node {
                 m.serialize_entry("value", value)?;
                 if let Some(label) = label {
                     m.serialize_entry("label", label)?;
+                }
+                if let Some(aria_label) = aria_label {
+                    m.serialize_entry("ariaLabel", aria_label)?;
                 }
                 if let Some(placeholder) = placeholder {
                     m.serialize_entry("placeholder", placeholder)?;
@@ -431,11 +468,13 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     .unwrap_or_default()
                     .to_string();
                 let variant = take_str(&obj, "variant");
+                let aria_label = take_str(&obj, "ariaLabel");
                 let on_tap = take_str(&obj, "onTap");
                 Node::Button {
                     base,
                     label,
                     variant,
+                    aria_label,
                     on_tap,
                 }
             }
@@ -446,12 +485,14 @@ impl<'de> Visitor<'de> for NodeVisitor {
                     .unwrap_or_default()
                     .to_string();
                 let label = take_str(&obj, "label");
+                let aria_label = take_str(&obj, "ariaLabel");
                 let placeholder = take_str(&obj, "placeholder");
                 let on_change = take_str(&obj, "onChange");
                 Node::TextField {
                     base,
                     value,
                     label,
+                    aria_label,
                     placeholder,
                     on_change,
                 }

@@ -8,6 +8,10 @@
 //! - **UI-6** (NORMATIVE forward-compat) — an unknown component `"type"`
 //!   deserializes to [`Node::Unknown`] (a labeled fallback that round-trips),
 //!   and unknown props on known nodes are ignored — never an error.
+//! - **UI-7** — every rendered node carries an accessibility annotation
+//!   ([`Node::accessibility`]) emitting its ARIA role + accessible name per
+//!   `spec/accessibility.md`, and [`validate_accessibility`] enforces the
+//!   spec's REQUIRED accessible-name rules as `ValidationError`s.
 //! - **UI-12** — versioned wire format with golden trees. `serde_json` is the
 //!   canonical encoding (see [`to_canonical_string`]).
 //!
@@ -15,9 +19,13 @@
 //! and is pure logic / `wasm32-unknown-unknown`-clean: no I/O, no panics on
 //! real paths.
 
+mod accessibility;
 mod node;
 mod patch;
 
+pub use accessibility::{
+    validate_accessibility, Accessibility, AxNameSource, AxRole,
+};
 pub use node::{ActionRef, BaseNode, Node, StackDir};
 pub use patch::{apply, diff, Patch, Path};
 

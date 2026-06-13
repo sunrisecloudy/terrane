@@ -440,6 +440,7 @@ fn fully_populated_nodes() -> Vec<Node> {
             },
             label: "Save".into(),
             variant: Some("primary".into()),
+            aria_label: None,
             on_tap: Some("save".into()),
         },
         Node::TextField {
@@ -449,6 +450,7 @@ fn fully_populated_nodes() -> Vec<Node> {
             },
             value: "Ada".into(),
             label: Some("Name".into()),
+            aria_label: None,
             placeholder: Some("Your name".into()),
             on_change: Some("name.change".into()),
         },
@@ -508,6 +510,7 @@ fn known_optional_fields_appear_on_the_wire() {
         base: forge_ui::BaseNode::default(),
         label: "L".into(),
         variant: Some("destructive".into()),
+        aria_label: None,
         on_tap: None,
     })
     .unwrap();
@@ -517,6 +520,7 @@ fn known_optional_fields_appear_on_the_wire() {
         base: forge_ui::BaseNode::default(),
         value: "v".into(),
         label: Some("Label".into()),
+        aria_label: None,
         placeholder: Some("hint".into()),
         on_change: None,
     })
@@ -550,6 +554,7 @@ fn parsing_known_fields_from_ts_contract_shape_preserves_them() {
             label,
             variant,
             on_tap,
+            ..
         } => {
             assert_eq!(base.test_id.as_deref(), Some("save"));
             assert_eq!(label, "Save");
@@ -623,6 +628,7 @@ fn known_field_changes_diff_and_patch_round_trip() {
                 base: forge_ui::BaseNode::default(),
                 value: "v".into(),
                 label: None,
+                aria_label: None,
                 placeholder: Some("old".into()),
                 on_change: None,
             },
@@ -630,6 +636,7 @@ fn known_field_changes_diff_and_patch_round_trip() {
                 base: forge_ui::BaseNode::default(),
                 value: "v".into(),
                 label: None,
+                aria_label: None,
                 placeholder: Some("new".into()),
                 on_change: None,
             },
