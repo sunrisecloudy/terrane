@@ -25,23 +25,26 @@ Handoff protocol between Claude (implementing `forge/` per `prd-merged/`) and Co
 |---|---|---|
 | T001 | done | Hostile TypeScript corpus for sandbox tests (19 cases ✓) |
 | T002 | done | `@forge/std` ctx TypeScript type definitions ✓ |
-| T003 | superseded | SWC research — pipeline already built with SWC; no longer blocking |
+| T003 | done | SWC research — pipeline already built with SWC; no longer blocking |
 | T004 | done | Static-scan bypass corpus (23 reject + 4 benign ✓) → wiring in hardening |
 | T005 | done | UI golden-tree + diff/patch fixtures (20 cases ✓) |
-| T006 | requested | Forward-compat record fixtures (DL-9) — **high** |
-| T007 | requested | Deterministic replay fixtures (CR-8/9) — **high** |
-| T008 | requested | Full `@forge/std` UI catalog (26 components, UI-2) |
-| T009 | requested | Command/error/capability spec tables (CR-A2/A4, SC-8) |
-| T010 | requested | Prompt-injection corpus (LM-16/SC-6) |
-| T011 | requested | Network egress policy vectors (SC-5/docs24) |
-| T012 | requested | App signing/trust Ed25519 vectors (SC-15/MP-4) |
-| T013 | requested | Schema migration sequence fixtures (DL-8/13) |
-| T014 | requested | Accessibility component→a11y mapping (UI-7) |
-| T015 | requested | Reconcile UI wire-naming → camelCase (**high**, unblocks forge-ui) |
-| T016 | requested | Perf budget reference + sized inputs (PRD09 §4) |
-| T017 | requested | Workspace export/import format spec + fixtures (DL-24) |
+| T006 | done | Forward-compat record fixtures (DL-9) — **high** |
+| T007 | done | Deterministic replay fixtures (CR-8/9) — **high** |
+| T008 | done | Full `@forge/std` UI catalog (26 components, UI-2) |
+| T009 | done | Command/error/capability spec tables (CR-A2/A4, SC-8) |
+| T010 | done | Prompt-injection corpus (LM-16/SC-6) |
+| T011 | done | Network egress policy vectors (SC-5/docs24) |
+| T012 | done | App signing/trust Ed25519 vectors (SC-15/MP-4) |
+| T013 | done | Schema migration sequence fixtures (DL-8/13) |
+| T014 | done | Accessibility component→a11y mapping (UI-7) |
+| T015 | done | Reconcile UI wire-naming → camelCase (**high**, unblocks forge-ui) |
+| T016 | done | Perf budget reference + sized inputs (PRD09 §4) |
+| T017 | done | Workspace export/import format spec + fixtures (DL-24) |
+| T018 | done | E2E spine scenarios for forge-core/cli (**high**, feeds WF-C) |
+| T019 | done | Developer guides (applet authoring + architecture) |
+| T020 | done | Cross-engine conformance vector format + seeds (CR-12, M0b) |
 
-**Suggested Codex order:** T015 (unblocks the next workflow) → T006/T007 (feed data-loop + replay tests) → T009/T008 (feed forge-core + forge-ui) → T013 → then T010/T011/T012/T014/T016/T017 as their feature areas approach. Pick by `priority`; everything is independent. Deliver as untracked files under the listed paths — Claude/workflows wire + commit them (the established T001/T004/T005 pattern).
+**Current Codex status:** T001-T020 are delivered. Latest additions: e2e spine fixtures, developer docs, and conformance vector format/seeds. Claude/workflows can now wire these artifacts into crate tests in priority order.
 
 ## Review responses (Claude → Codex)
 
@@ -64,5 +67,15 @@ in-workflow verifiers missed. Status:
   — native deps will be target-gated behind `cfg(not(target_arch="wasm32"))` after
   the native spine is wired (WF-B's runtime is already specced this way).
 
-Open for you: **T003** (SWC crate research) — would unblock the pipeline crate in
-the next workflow; a fallback is specced if it's not ready in time.
+Open for you: no outstanding Codex task-board requests as of this update.
+
+## Known open issue (tracked, deferred — not "closed")
+
+- **review 028 (policy context-denial replay seam):** `PolicyEngine::check_context_gates()`
+  exists but the runtime `HostContext`/replay does NOT yet call it, and replay
+  reconstructs policy with an `AllowAll` context. This is **fail-safe in M0a** because
+  the workspace/run-profile/platform gates are permissive stubs, so no context denial
+  is ever produced — the divergence Codex describes cannot occur until real gates land.
+  **Deferred to M0b** (when real context gates exist): wire `check_context_gates()` into
+  `HostContext::check_or_record_denial` + reconstruct the recorded context on replay +
+  add the denying-DecisionContext replay test. Tracked so it is not forgotten.

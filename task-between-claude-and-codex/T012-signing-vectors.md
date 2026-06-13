@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: low
@@ -38,3 +38,9 @@ Use real Ed25519 (you may generate with any standard tool); include the exact by
 that were signed for each case so the Rust verifier is reproducible. In `## Result`,
 state the canonical-bytes definition you signed over (e.g. canonical-JSON of which
 fields) so the Rust side hashes/signs the identical preimage.
+
+## Result
+
+Created `forge/fixtures/signing/` with a TEST-ONLY deterministic Ed25519 keypair, 14 signed/tampered package vectors, `manifest.json`, and `README.md`. Valid vectors include a single-file and multi-file package. Invalid vectors cover wrong key, signature over different bytes, changed file content, changed manifest, truncated/garbage signature, wrong algorithm label, unknown/expired publisher policy, policy hash mismatch, permissions hash mismatch, and public-key mismatch.
+
+Canonical bytes are documented in the README: the docs/17 `terrane/sig/v1` newline payload with appId, appVersion, dataVersion, runtimeVersion, trustLevel, keyId, manifestHash, contentHash, permissionsHash, policyHash, and signedAt, with no trailing newline. Each case includes the signed payload and UTF-8 hex preimage.

@@ -1,0 +1,68 @@
+{
+  "vectorVersion": 1,
+  "case": "time_sequence",
+  "kind": "runtime",
+  "description": "Two deterministic ctx.time.now calls.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(ctx, _input) { const first = ctx.time.now(); const second = ctx.time.now(); return { ok: true, value: { first, second, delta: second - first } }; }\n",
+    "codeHash": "sha256:9f4428ce505be7e7cffe718ce9e5f2f0e4cb2e30a4a0ba0d866011bc21e0146a"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {},
+  "seeds": {
+    "random_seed": 5,
+    "time_start": 9000
+  },
+  "expected": {
+    "hostTrace": [
+      {
+        "method": "time.now",
+        "args": null
+      },
+      {
+        "method": "time.now",
+        "args": null
+      }
+    ],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "first": 9000,
+          "second": 9001,
+          "delta": 1
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"time.now\",\"response\":9000,\"seq\":0},{\"args\":null,\"method\":\"time.now\",\"response\":9001,\"seq\":1}],\"code_hash\":\"sha256:9f4428ce505be7e7cffe718ce9e5f2f0e4cb2e30a4a0ba0d866011bc21e0146a\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"delta\":1,\"first\":9000,\"second\":9001}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":5,\"time_start\":9000}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "Logical clock increments by one per call."
+  }
+}

@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: high
@@ -48,3 +48,44 @@ now (the `fnv1a64:` form is being removed) — see `forge_domain::code_hash` /
 
 In `## Result`, note any fixture where computing the fingerprint by hand was
 ambiguous (esp. JSON key ordering) so I can confirm the Rust side matches.
+
+## Result
+
+Completed. Added `forge/fixtures/replay/manifest.json` plus ten `RunRecord`
+vectors:
+
+- `minimal_completed.json`
+- `spine_db_ui.json`
+- `seeded_random.json`
+- `failed_resource_limit.json`
+- `replay_identity_original.json`
+- `replay_identity_replay.json`
+- `storage_get_null.json`
+- `time_ticks.json`
+- `bad_fnv_hash.json` (`expect: invalid`)
+- `tampered_response.json` (`expect: invalid`)
+
+The valid cases each have a sibling `*.fingerprint.txt`; the tampered case has
+`tampered_response.expected.fingerprint.txt`, intentionally containing the
+untampered fingerprint so a loader can reject it by recomputing and comparing.
+`bad_fnv_hash.json` is invalid by `is_canonical_code_hash` because it uses the
+old `fnv1a64:` prefix.
+
+Fingerprint-ordering assumption: the fixture strings follow the current
+`RunRecord::replay_fingerprint` contract exactly: build the structural object
+`{code_hash, input, random_seed, time_start, calls, outcome}` and serialize it as
+`serde_json::Value::to_string()`. I assumed serde_json's default `Map` ordering is
+lexicographic recursively for object keys; all fingerprint text files use that
+recursive sorted-key form. If serde_json is later compiled with insertion-order
+preservation, compare parsed structures or regenerate these strings from Rust.
+
+Verified with a read-only Node script:
+
+- parsed `manifest.json` and all ten JSON records;
+- validated canonical `sha256:` hashes for valid cases;
+- verified the two replay-identity records have equal fingerprints but different
+  `run_id`s;
+- verified `bad_fnv_hash.json` is non-canonical;
+- verified `tampered_response.json` does not match its expected fingerprint.
+
+Output: `10 replay cases verified`.

@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: low
@@ -41,3 +41,9 @@ domain → deny (SC-10/SC-13).
 `expect` ∈ `allow | deny`. In `## Result`, flag which denials require runtime DNS
 resolution (can't be decided from the URL string alone) so I scope the static vs
 runtime checks correctly.
+
+## Result
+
+Created 24 network egress vectors under `forge/fixtures/network/` plus `manifest.json`. They cover exact host/path/method allow, wildcard path allow, bounded POST JSON, secret header allow on a bound host, host/path/method/scheme/body/response/content-type/timeout denials, wildcard-host denial, private/loopback/metadata denial, redirect re-check, DNS rebinding, and secret injection to a non-allowlisted domain.
+
+Runtime-DNS-required cases are flagged in the manifest: `redirect_to_private_denied`, `dns_rebinding_to_private_denied`, and `public_redirect_to_public_allowed`. Everything else can be decided from URL/policy/static request metadata.

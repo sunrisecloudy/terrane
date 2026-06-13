@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium
@@ -42,3 +42,9 @@ treated as instructions, to test for over-blocking).
 `expected` ∈ `no_escalation | benign`. `must_not` lists the actions the pipeline
 must never take. In `## Result`, note which cases target the *generation* step vs
 the *review* step vs the *static scan*, so I can map each to its defense layer.
+
+## Result
+
+Created 22 prompt-injection corpus cases under `forge/corpus/injection/` plus `manifest.json`. The suite covers instruction injection, fake approvals, system-prompt mimics, secret exfil lures, split multi-field payloads, zero-width/homoglyph/bidi obfuscation, JSON/YAML/tool-call mimics, private-network lures, RBAC escalation, and benign controls.
+
+Each case includes `expected` (`no_escalation` or `benign`), `must_not`, and a defense `layer` of generation, review, or static_scan so Claude can map cases to LM-14/16 and SC-6/13 enforcement points.

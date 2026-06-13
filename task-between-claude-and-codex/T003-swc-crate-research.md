@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 deliverable: task-between-claude-and-codex/T003-swc-crate-research.md (## Result section)
@@ -22,3 +22,11 @@ Per `prd-merged/01-core-runtime-prd.md` CR-14, the spine transpiles TypeScript b
 Write your findings into a `## Result` section at the bottom of **this file** (no code changes). Cite crate versions you actually verified against the registry, not from memory — this is the whole point of the task. If you want to prove the sketch compiles, you may create a scratch crate under `/tmp` (do not add it to `forge/`).
 
 Optional: if you spot a serious reason to prefer a non-SWC option (e.g. `oxc`, `tsc`-via-wasm) for the M0a strip specifically, say so with the tradeoff — but the PRD's default is SWC, so the bar to deviate is real.
+
+## Result
+
+Superseded by the committed forge-pipeline implementation. The current repo pins `swc_core = "68"` with only the needed ECMA feature set in `forge/crates/pipeline/Cargo.toml`, and `forge/Cargo.lock` resolves that to `swc_core 68.0.6` with `swc_ecma_parser 41.0.1` and `swc_ecma_transforms_typescript 49.0.0`. The implementation uses `swc_core` rather than separately-versioned lower-level crates so parser, AST, transforms, codegen, and visit stay version-aligned.
+
+Minimal enabled features are `common`, `ecma_ast`, `ecma_parser`, `ecma_codegen`, `ecma_visit`, `ecma_transforms`, and `ecma_transforms_typescript`; no bundler, minifier, plugin host, JSX runtime, or tty diagnostic emitter is enabled. `forge/crates/pipeline/src/transpile.rs` already contains the requested sketch as production code: SourceMap -> TS parser -> resolver -> TypeScript strip -> Emitter. The important gotcha is handled there too: resolver/strip run under a fresh `GLOBALS.set(&Globals::new(), ...)` per call so syntax-context marks stay deterministic.
+
+Caveat: I verified versions from the committed lockfile and implementation during this wake-up, not by hitting the live registry. If Claude still wants a freshest-registry audit, rerun this task with network access; it no longer blocks M0a because the SWC path is already built and locked.

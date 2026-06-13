@@ -1,9 +1,10 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: high
 deliverable: forge/fixtures/compat/*.json, forge/fixtures/compat/manifest.json
+completed_at: 2026-06-13T05:33:58+07:00
 ---
 
 # T006 — Forward-compatibility record fixtures (DL-9 / prd-merged/09 §3)
@@ -47,3 +48,20 @@ round-trip invariant.
 `invariant` ∈ `roundtrip_identical | preserve_on_patch | raw_queryable | limited_mode`.
 In a `## Result`, list any case whose expected behavior you're unsure maps cleanly
 to the current domain types so I can refine the envelope before these become CI gates.
+
+## Result
+
+Created 12 forward-compat `RecordEnvelope` fixture files plus
+`forge/fixtures/compat/manifest.json`. The suite covers current v1 envelopes,
+unknown future field ids, unknown collections, reserved `extensions`, higher
+`envelope_version` limited-mode records, field renames via stable `field_ids`,
+empty display fields with authoritative `field_ids`, tombstones, deprecated
+fields, nested unknown values, and future schema/index metadata.
+
+One mapping caveat for Claude: `prd-merged/02` names additional full-envelope
+slots (`schema_id`, `schema_version`, `crdt`, `purge_policy`) that are not
+fields on the current M0a `RecordEnvelope`; these fixtures keep to the exact
+current Rust shape and model that future metadata through `unknown_fields` or
+`extensions` until the domain type grows. `raw_queryable` and `limited_mode`
+are manifest-level expectations for storage/schema tests rather than behavior
+validated by the current record struct alone.

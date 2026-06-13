@@ -1,0 +1,81 @@
+{
+  "vectorVersion": 1,
+  "case": "db_insert_list",
+  "kind": "runtime",
+  "description": "ctx.db.insert followed by ctx.db.list.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(ctx, input) { const id = await ctx.db.insert(\"tasks\", { title: input.title, done: false }); const rows = await ctx.db.list(\"tasks\"); return { ok: true, value: { id, count: rows.length } }; }\n",
+    "codeHash": "sha256:daaa800cc54f8b1a5e547760f1e5ef8b83c01bb05b9282cc4bfcb83ad35cd16d"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "db": {
+        "read": [
+          "tasks"
+        ],
+        "write": [
+          "tasks"
+        ]
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {
+    "title": "Ship conformance"
+  },
+  "seeds": {
+    "random_seed": 3,
+    "time_start": 100
+  },
+  "expected": {
+    "hostTrace": [
+      {
+        "method": "db.insert",
+        "args": [
+          "tasks",
+          {
+            "title": "Ship conformance",
+            "done": false
+          }
+        ]
+      },
+      {
+        "method": "db.list",
+        "args": [
+          "tasks"
+        ]
+      }
+    ],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "id": "tasks/1",
+          "count": 1
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[{\"args\":[\"tasks\",{\"done\":false,\"title\":\"Ship conformance\"}],\"method\":\"db.insert\",\"response\":\"tasks/1\",\"seq\":0},{\"args\":[\"tasks\"],\"method\":\"db.list\",\"response\":[{\"done\":false,\"title\":\"Ship conformance\"}],\"seq\":1}],\"code_hash\":\"sha256:daaa800cc54f8b1a5e547760f1e5ef8b83c01bb05b9282cc4bfcb83ad35cd16d\",\"input\":{\"title\":\"Ship conformance\"},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"count\":1,\"id\":\"tasks/1\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[\"tasks\"],\"write\":[\"tasks\"]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":3,\"time_start\":100}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "MemoryHostBridge ids are deterministic; SQLite-backed harnesses should preserve the same observable id policy for this vector."
+  }
+}

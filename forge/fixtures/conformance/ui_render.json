@@ -1,0 +1,75 @@
+{
+  "vectorVersion": 1,
+  "case": "ui_render",
+  "kind": "runtime",
+  "description": "ctx.ui.render emits one UI tree.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(ctx, _input) { const tree = { type: \"Stack\", testId: \"root\", direction: \"v\", children: [{ type: \"Text\", testId: \"title\", text: \"Hello UI\" }] }; ctx.ui.render(tree); return { ok: true, value: { rendered: true } }; }\n",
+    "codeHash": "sha256:57926e50153d4e70d530e32e01a42459220eac1da81c6f2d7eaf26602df68411"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {},
+  "seeds": {
+    "random_seed": 4,
+    "time_start": 100
+  },
+  "expected": {
+    "hostTrace": [
+      {
+        "method": "ui.render",
+        "args": [
+          {
+            "type": "Stack",
+            "testId": "root",
+            "direction": "v",
+            "children": [
+              {
+                "type": "Text",
+                "testId": "title",
+                "text": "Hello UI"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "rendered": true
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[{\"args\":[{\"children\":[{\"testId\":\"title\",\"text\":\"Hello UI\",\"type\":\"Text\"}],\"direction\":\"v\",\"testId\":\"root\",\"type\":\"Stack\"}],\"method\":\"ui.render\",\"response\":null,\"seq\":0}],\"code_hash\":\"sha256:57926e50153d4e70d530e32e01a42459220eac1da81c6f2d7eaf26602df68411\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"rendered\":true}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":4,\"time_start\":100}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "The UI tree is data; renderers may differ later, but the emitted tree must not."
+  }
+}

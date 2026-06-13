@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium
@@ -34,3 +34,9 @@ Tables must be consistent with the committed `forge-domain` types (don't invent
 fields that aren't there; where the PRD is ahead of the code, mark the row
 "planned" and cite the PRD id). In `## Result`, list any command/error/capability
 the PRD implies but that has no home yet, so I can decide where it lands.
+
+## Result
+
+Created `forge/spec/commands.md`, `forge/spec/errors.md`, and `forge/spec/capabilities.md`. The command table follows the committed `CoreCommand` envelope (`request_id`, `actor`, `workspace_id`, optional `applet_id`, `name`, `payload`) and lists the CR-A2 command names with payload/response sketches, roles, and milestone.
+
+Gaps called out for Claude: per-command Rust request/response structs do not exist yet; index definitions, AI patch/review ids, secret refs, custom RBAC role storage, and the full SC-8 capability grant type still need concrete homes. The current Manifest only models the M0a subset (`storage`, `db`, `ui`).

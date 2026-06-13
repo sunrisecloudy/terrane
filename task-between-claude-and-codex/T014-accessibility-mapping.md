@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: low
@@ -25,3 +25,9 @@ behavior (UI-6 — the labeled fallback box must still be announced sensibly).
 Pure spec extraction; cross-reference UI-7 and docs/23. In `## Result`, flag any
 component where the accessible-name source is ambiguous (e.g. icon-only `Button`)
 so we encode a rule rather than guess.
+
+## Result
+
+Created `forge/spec/accessibility.md` with a component-by-component role/name/focus/WCAG table for the full T008 catalog. It also defines the Form label-presence rule, focus-order rules for Stack/Grid/Tabs/Modal, and the UI-6 unknown fallback accessibility behavior.
+
+Ambiguous-name decisions are called out: icon-only Button requires `ariaLabel`; Icon must be explicit informative/decorative; Chart requires summary; Image requires alt; standalone Table requires caption or `ariaLabel`.

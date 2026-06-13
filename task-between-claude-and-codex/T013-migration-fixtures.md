@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium
@@ -45,3 +45,9 @@ collision.
 
 `expect` ∈ `ok | rejected`. In `## Result`, note any change type the current
 SchemaChange enum can't express yet so I can extend it.
+
+## Result
+
+Created 14 schema migration fixtures under `forge/fixtures/migrations/` plus `manifest.json`. The JSON uses the current `forge-schema` serde shape: `op` tag with snake_case operations (`add_collection`, `add_field`, `widen_field`, `deprecate_field`, `enforce_required`).
+
+Current enum gaps are flagged as planned/rejected vectors: rename field, add index, destructive remove, and actor-scoped schema union are not expressible in the committed `SchemaChange` API yet. OK vectors cover stable ids, required warning mode, enforce-required transition, IntNum->FloatNum, Text->Scalar, nullable widening, and deprecation. Rejected vectors cover re-add collection, duplicate field names, narrowing, and enforcing a missing field.

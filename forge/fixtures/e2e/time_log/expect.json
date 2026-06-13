@@ -1,0 +1,26 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 500,
+  "result": {
+    "ok": true,
+    "value": {
+      "first": 500,
+      "second": 501,
+      "monotone": true
+    }
+  },
+  "records": [],
+  "storage": {},
+  "ui_contains": [
+    "Text:Time Log",
+    "Text:First: 500",
+    "Text:Second: 501"
+  ],
+  "host_call_methods": [
+    "time.now",
+    "time.now",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

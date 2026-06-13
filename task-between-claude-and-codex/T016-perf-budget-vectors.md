@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: low
@@ -26,3 +26,9 @@ single budget table + sized input fixtures for a future criterion-style harness.
 
 Spec extraction + simple fixtures; no Rust. In `## Result`, flag any budget the PRD
 leaves as "to be refined" so we set a concrete number when the harness lands.
+
+## Result
+
+Created `forge/spec/perf-budgets.md` and `forge/fixtures/perf/`. The spec table includes transpile, cold start, host-call overhead, indexed query latency, sync catch-up, app cold start, core size budgets, and current `forge-domain` Limits defaults.
+
+Fixture inputs include 1-file, 10-file, and 100-file TypeScript applets plus a 100k-record generator descriptor. Budgets still marked to refine: sync catch-up and whole app cold start are PRD-named but do not yet have concrete numeric gates.

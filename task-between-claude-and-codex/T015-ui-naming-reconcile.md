@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: high
@@ -37,3 +37,13 @@ these camelCase keys, so fixtures and `.d.ts` and Rust all agree.
 
 If any case's expected patch changes because a renamed field alters a `update_prop`
 key (e.g. `dir`→`direction`), update the expected patch accordingly and note it.
+
+## Result
+
+Done. Regenerated the T005 golden fixtures to use the canonical TS-facing wire
+keys: `direction`, `text`, `onTap`, and `onChange`. The only expected patch key
+that changed was the nested Button action-ref update: `on_tap` is now `onTap`.
+
+Also updated `forge/std/forge-std.d.ts` so `Stack.direction` matches the decided
+wire value set (`"h" | "v"`) instead of the older `"horizontal" | "vertical"`.
+JSON parse validation passes for all 20 golden fixtures plus the manifest.

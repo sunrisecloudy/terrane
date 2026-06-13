@@ -1,5 +1,5 @@
 ---
-status: requested
+status: done
 requester: claude
 assignee: codex
 priority: medium
@@ -40,3 +40,11 @@ Structure: `Tabs`, `Modal`, `Form` (validation states).
 Strict-TS-clean. Mark which components are M0a (already have fixtures) vs later.
 Note any component whose prop set is genuinely underspecified by the PRD so we can
 decide rather than guess (e.g. `Chart` axis config, `Table` column model).
+
+## Result
+
+Created `forge/std/ui-catalog.d.ts` and `forge/spec/ui-catalog.md`. The type file defines every UI-2 component as a discriminated node variant using the camelCase wire names from `forge/std/forge-std.d.ts` and T015: `direction`, `text`, `onTap`, `onChange`, `testId`. Handlers remain serializable `ActionRef` strings.
+
+The spec table covers category, key props, variants, sizes, a11y role, UI-6 fallback, and milestone. M0a is explicitly limited to Stack, Text, Button, TextField, and List. Proposed-deviation notes are included for Chart axes, Table column model, Image source policy, Icon catalog, Markdown sanitizer subset, and DatePicker range/timezone shape.
+
+Type-shape note: `Node` is the strict known-component union; `RenderableNode` is `KnownNode | UnknownNode` for renderer inputs/children that need UI-6 fallback support without weakening the discriminated catalog.

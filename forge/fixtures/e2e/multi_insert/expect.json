@@ -1,0 +1,57 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": true,
+    "value": {
+      "ids": [
+        "inventory/1",
+        "inventory/2",
+        "inventory/3"
+      ],
+      "count": 3
+    }
+  },
+  "records": [
+    {
+      "collection": "inventory",
+      "id": "inventory/1",
+      "fields": {
+        "name": "apples",
+        "qty": 3
+      }
+    },
+    {
+      "collection": "inventory",
+      "id": "inventory/2",
+      "fields": {
+        "name": "bananas",
+        "qty": 5
+      }
+    },
+    {
+      "collection": "inventory",
+      "id": "inventory/3",
+      "fields": {
+        "name": "coffee",
+        "qty": 1
+      }
+    }
+  ],
+  "storage": {},
+  "ui_contains": [
+    "Text:Inventory",
+    "List",
+    "Text:apples: 3",
+    "Text:coffee: 1"
+  ],
+  "host_call_methods": [
+    "db.insert",
+    "db.insert",
+    "db.insert",
+    "db.list",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

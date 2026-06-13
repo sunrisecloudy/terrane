@@ -1,0 +1,40 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": true,
+    "value": {
+      "inserted": "notes/1",
+      "count": 1,
+      "createdAt": 1000
+    }
+  },
+  "records": [
+    {
+      "collection": "notes",
+      "id": "notes/1",
+      "fields": {
+        "title": "My Notes",
+        "body": "Buy milk",
+        "tags": [
+          "home"
+        ],
+        "createdAt": 1000
+      }
+    }
+  ],
+  "storage": {},
+  "ui_contains": [
+    "Text:My Notes",
+    "List",
+    "Text:My Notes: Buy milk"
+  ],
+  "host_call_methods": [
+    "time.now",
+    "db.insert",
+    "db.list",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

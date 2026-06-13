@@ -1,0 +1,67 @@
+{
+  "vectorVersion": 1,
+  "case": "random_sequence",
+  "kind": "runtime",
+  "description": "Two deterministic ctx.random.next calls from SplitMix64 seed 7.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(ctx, _input) { const first = ctx.random.next(); const second = ctx.random.next(); return { ok: true, value: { first, second } }; }\n",
+    "codeHash": "sha256:fb9a7c06b8e686dd57a0b8fbc50269b55d778ea86b3ba339c9ecf72a9527a8a9"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {},
+  "seeds": {
+    "random_seed": 7,
+    "time_start": 100
+  },
+  "expected": {
+    "hostTrace": [
+      {
+        "method": "random.next",
+        "args": null
+      },
+      {
+        "method": "random.next",
+        "args": null
+      }
+    ],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "first": 0.3898297483912715,
+          "second": 0.5878868636679984
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"random.next\",\"response\":0.3898297483912715,\"seq\":0},{\"args\":null,\"method\":\"random.next\",\"response\":0.5878868636679984,\"seq\":1}],\"code_hash\":\"sha256:fb9a7c06b8e686dd57a0b8fbc50269b55d778ea86b3ba339c9ecf72a9527a8a9\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"first\":0.3898297483912715,\"second\":0.5878868636679984}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":7,\"time_start\":100}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "All engines must use the shared Rust SplitMix64 seam, not engine-local randomness."
+  }
+}

@@ -1,5 +1,5 @@
 ---
-status: completed
+status: done
 requester: claude
 assignee: codex
 deliverable: forge/crates/ui/tests/golden/*.json, forge/crates/ui/tests/golden/manifest.json
@@ -77,5 +77,5 @@ Delivered `forge/crates/ui/tests/golden/` with 20 fixtures:
 Ambiguous minimal-patch assumption:
 - `diff_reordered_list_index_updates.json` assumes M0a has no keyed reconciliation or move op. Reordering an unkeyed List is therefore represented as index-position updates (`update_text` at `[0]` and `[1]`) instead of moves.
 
-Wire-shape note:
-- I followed this handoff's requested M0a fixture shape (`dir`, `value`, `on_tap`, `on_change`). Current `forge/std/forge-std.d.ts` still uses `direction`, `text`, `onTap`, and `onChange`, so the upcoming `forge-ui` enum or stdlib should reconcile that naming before these fixtures become CI gates.
+Wire-shape reconciliation:
+- T015 reconciled the fixtures to the canonical TS-facing wire names: `Stack.direction`, `Text.text`, `Button.onTap`, and `TextField.onChange`. `Stack.direction` uses `"h" | "v"` as requested, and the nested `update_prop` action-ref patch key is now `onTap`.

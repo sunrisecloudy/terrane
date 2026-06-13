@@ -1,0 +1,60 @@
+{
+  "vectorVersion": 1,
+  "case": "pure_compute",
+  "kind": "runtime",
+  "description": "Pure deterministic computation with no host calls.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(_ctx, input) { return { ok: true, value: { sum: input.a + input.b } }; }\n",
+    "codeHash": "sha256:56285941819709a74e9cc1802c57ec1f9c28aa141e7967eba747cbead1fd15fd"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {
+    "a": 2,
+    "b": 5
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "sum": 7
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:56285941819709a74e9cc1802c57ec1f9c28aa141e7967eba747cbead1fd15fd\",\"input\":{\"a\":2,\"b\":5},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"sum\":7}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "No engine-specific behavior expected."
+  }
+}

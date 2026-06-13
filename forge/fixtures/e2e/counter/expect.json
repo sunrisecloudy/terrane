@@ -1,0 +1,31 @@
+{
+  "stage": "run",
+  "random_seed": 11,
+  "time_start": 1000,
+  "result": {
+    "ok": true,
+    "value": {
+      "key": "app/counter",
+      "previous": 0,
+      "next": 1,
+      "keys": [
+        "app/counter"
+      ]
+    }
+  },
+  "records": [],
+  "storage": {
+    "app/counter": "1"
+  },
+  "ui_contains": [
+    "Text:Counter",
+    "Text:Count: 1"
+  ],
+  "host_call_methods": [
+    "storage.get",
+    "storage.set",
+    "storage.list",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

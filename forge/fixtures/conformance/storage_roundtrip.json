@@ -1,0 +1,77 @@
+{
+  "vectorVersion": 1,
+  "case": "storage_roundtrip",
+  "kind": "runtime",
+  "description": "ctx.storage.set followed by ctx.storage.get.",
+  "source": {
+    "language": "js",
+    "body": "export async function main(ctx, input) { await ctx.storage.set(\"app/value\", input.value); const value = await ctx.storage.get(\"app/value\"); return { ok: true, value: { value } }; }\n",
+    "codeHash": "sha256:e4c1ba637608b357fcbc3d160048990091640be6d4756d23f12f8595f6f3d738"
+  },
+  "manifest": {
+    "entrypoint": "inline.js",
+    "min_api": "forge-api@0.1",
+    "deterministic": true,
+    "capabilities": {
+      "storage": {
+        "read": [
+          "app/*"
+        ],
+        "write": [
+          "app/*"
+        ]
+      },
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "limits": {
+      "wall_ms": 3000,
+      "fuel": 10000000,
+      "memory_bytes": 67108864,
+      "max_host_calls": 100,
+      "storage_bytes": 1048576,
+      "log_bytes": 65536
+    }
+  },
+  "input": {
+    "value": "hello"
+  },
+  "seeds": {
+    "random_seed": 2,
+    "time_start": 100
+  },
+  "expected": {
+    "hostTrace": [
+      {
+        "method": "storage.set",
+        "args": [
+          "app/value",
+          "hello"
+        ]
+      },
+      {
+        "method": "storage.get",
+        "args": [
+          "app/value"
+        ]
+      }
+    ],
+    "outcome": {
+      "status": "completed",
+      "result": {
+        "ok": true,
+        "value": {
+          "value": "hello"
+        }
+      }
+    },
+    "replayFingerprint": "{\"calls\":[{\"args\":[\"app/value\",\"hello\"],\"method\":\"storage.set\",\"response\":null,\"seq\":0},{\"args\":[\"app/value\"],\"method\":\"storage.get\",\"response\":\"hello\",\"seq\":1}],\"code_hash\":\"sha256:e4c1ba637608b357fcbc3d160048990091640be6d4756d23f12f8595f6f3d738\",\"input\":{\"value\":\"hello\"},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"value\":\"hello\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[\"app/*\"],\"write\":[\"app/*\"]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":2,\"time_start\":100}"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "Storage host responses are recorded by the shared HostBridge layer."
+  }
+}

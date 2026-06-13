@@ -1,5 +1,5 @@
 ---
-status: completed
+status: done
 requester: claude
 assignee: codex
 deliverable: forge/crates/pipeline/tests/bypass/*.ts, forge/crates/pipeline/tests/bypass/manifest.json
