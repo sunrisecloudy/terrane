@@ -209,3 +209,136 @@ fn db_watch_command_gates_on_db_read_and_returns_initial_result() {
     assert!(!resp.ok, "an aggregate watch has no row result_ids → rejected");
     assert_eq!(resp.error.as_ref().unwrap().code(), "QueryError");
 }
+
+/// A watching applet whose `onWatch` callback MUTATES the watched collection via
+/// `ctx.db.insert` (review 132 #1). To stay non-reentrant AND terminate, it inserts
+/// exactly one follow-up open task only while the result set is still a singleton —
+/// so the first notification's callback inserts a second open task (a NEXT-turn
+/// write), and the second notification (now 2 results) inserts nothing.
+const MUTATING_WATCH_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        await ctx.db.watch("watch:tasks-open", {
+            from: "tasks",
+            where: ["done", "=", false],
+            orderBy: ["id", "asc"]
+        });
+        return { ok: true, value: { registered: true } };
+    }
+
+    export async function onWatch(ctx: any, n: any): Promise<any> {
+        const ids = (n && n.result_ids) ? n.result_ids : [];
+        // Insert a follow-up open task ONLY while the result is still a singleton, so
+        // the callback's write happens exactly once (the NEXT turn sees 2 results and
+        // inserts nothing) — proving the mutation is queued, not recursively flushed.
+        if (ids.length < 2) {
+            await ctx.db.insert("tasks", { title: "mirror", done: false });
+        }
+        return { ok: true, value: { handled: true, count: ids.length } };
+    }
+"#;
+
+#[test]
+fn watch_callback_db_insert_drives_a_next_turn_notification_with_a_later_version() {
+    // review 132 #1: a REAL `onWatch` handler that calls `ctx.db.insert` on the
+    // watched collection must produce the next event-loop turn's notification (a
+    // strictly LATER version), never a recursive flush inside the first batch.
+    let mut core = WorkspaceCore::in_memory("ws-reentrant").expect("workspace");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("watcher"),
+        json!({ "manifest": manifest(), "sources": { "src/main.ts": MUTATING_WATCH_TS } }),
+    ));
+    assert!(resp.ok, "install: {:?}", resp.error);
+    let resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+    assert!(resp.ok, "run: {:?}", resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:tasks-open".to_string()]);
+
+    // Turn 1: insert tasks/1 (open). The facade delivers v1, re-enters `onWatch`,
+    // whose `ctx.db.insert` adds a SECOND open task — captured and driven as the NEXT
+    // turn (v2), never recursively inside this batch.
+    let batch = core.commit_and_notify(&insert("tasks/1", false, 10)).expect("commit");
+
+    // TWO notifications were delivered across the turn loop: v1 for the original
+    // insert, v2 for the callback's queued write — strictly increasing versions.
+    let versions: Vec<u64> = batch.notifications.iter().map(|n| n.version).collect();
+    assert_eq!(versions.len(), 2, "two notifications: original + callback's next turn");
+    assert!(versions[1] > versions[0], "the callback's notification has a LATER version");
+
+    // The first notification is the original insert; the second is the callback's
+    // queued write entering the result (now two open tasks).
+    assert_eq!(batch.notifications[0].record_ids, vec!["tasks/1"]);
+    assert_eq!(batch.notifications[0].result_ids, vec!["tasks/1"]);
+    assert_eq!(
+        batch.notifications[1].result_ids,
+        vec!["tasks/1", "tasks/2"],
+        "the callback's inserted task entered the watched result on the next turn"
+    );
+
+    // The callback re-entered TWICE (once per delivered notification); the SECOND
+    // re-entry inserted nothing (result length == 2), so the loop terminated — proof
+    // the mutation queued for the next turn rather than recursing without bound.
+    assert_eq!(batch.callback_runs.len(), 2, "onWatch re-entered once per notification");
+    assert!(batch.queued_mutations.is_empty(), "the turn loop drained to quiescence");
+
+    // Both notifications RECORD + REPLAY byte-identically.
+    assert_eq!(batch.recorded_calls.len(), 2);
+    assert!(batch.recorded_calls.iter().all(|c| c.method == "db.watch.notification"));
+
+    // The store actually holds the callback's inserted task (it committed once).
+    assert_eq!(core.store().list_records("tasks").unwrap().len(), 2);
+}
+
+#[test]
+fn db_unwatch_is_owner_scoped_one_applet_cannot_cancel_another_applets_watch() {
+    // review 132 #2: watch ids are applet-visible strings, but one applet must NOT be
+    // able to cancel another applet's subscription by naming its id. `db.unwatch` is
+    // owner-scoped — applet B's unwatch of applet A's watch is a no-op and A keeps
+    // receiving notifications.
+    let mut core = WorkspaceCore::in_memory("ws-owner").expect("workspace");
+    for app in ["app-a", "app-b"] {
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some(app),
+            json!({ "manifest": manifest(), "sources": { "src/main.ts": WATCH_TS } }),
+        ));
+        assert!(resp.ok, "install {app}: {:?}", resp.error);
+    }
+
+    // app-a registers the watch (owns "watch:tasks-open").
+    let resp = core.handle(cmd("runtime.run", Some("app-a"), json!({ "input": {} })));
+    assert!(resp.ok, "app-a run: {:?}", resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:tasks-open".to_string()]);
+
+    // app-b attempts to cancel app-a's watch by its (guessable) id → no-op.
+    let resp = core.handle(cmd(
+        "db.unwatch",
+        Some("app-b"),
+        json!({ "watch_id": "watch:tasks-open" }),
+    ));
+    assert!(resp.ok, "unwatch command succeeds (idempotent): {:?}", resp.error);
+    assert_eq!(
+        resp.payload["was_active"],
+        json!(false),
+        "app-b does not own the watch → its unwatch is a non-destructive no-op"
+    );
+    assert_eq!(
+        core.active_watch_ids(),
+        vec!["watch:tasks-open".to_string()],
+        "app-a's watch survives app-b's unwatch attempt"
+    );
+
+    // app-a still receives its notification.
+    let batch = core.commit_and_notify(&insert("tasks/1", false, 10)).expect("commit");
+    assert_eq!(batch.notifications.len(), 1, "app-a's watch is still live → it is notified");
+    assert_eq!(batch.notifications[0].watch_id, "watch:tasks-open");
+
+    // The OWNER (app-a) can cancel its own watch.
+    let resp = core.handle(cmd(
+        "db.unwatch",
+        Some("app-a"),
+        json!({ "watch_id": "watch:tasks-open" }),
+    ));
+    assert!(resp.ok, "owner unwatch: {:?}", resp.error);
+    assert_eq!(resp.payload["was_active"], json!(true), "the owner cancelled its live watch");
+    assert!(core.active_watch_ids().is_empty(), "owner's unwatch cancelled the watch");
+}

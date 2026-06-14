@@ -32,7 +32,10 @@ use forge_runtime::{
     FileSystem, HostBridge, HttpClient, InMemoryFileSystem, InMemorySecretStore, NetRequest,
     NetResponse, SecretStore,
 };
-use forge_storage::{AggregateResult, IndexManager, Mutation, Query, QueryResult, Store};
+use forge_storage::{
+    AggregateResult, IndexManager, Mutation, Query, QueryResult, ResultSnapshot, Store,
+    WatchRegistry,
+};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -161,6 +164,21 @@ pub struct StorageHostBridge<'a> {
     /// (DL-16). The facade drains this after the run and applies it to the
     /// workspace [`WatchRegistry`](forge_storage::WatchRegistry).
     pub watch_intents: Vec<WatchIntent>,
+    /// Every record-mutating write this run COMMITTED through the CRDT path, in
+    /// apply order, EACH paired with the watch result membership snapshot taken
+    /// IMMEDIATELY BEFORE that write (DL-16). A write already lands in the store when
+    /// captured here; the facade drains these and drives ONE live-query notification
+    /// turn per write, using the captured pre-write `before` snapshot so the
+    /// enter/leave/changed filter is correct even for an UPDATE/PATCH/DELETE that
+    /// removes a record from the watched result (the post-write store can no longer
+    /// reveal the pre-write membership). When no watch registry was injected (a run
+    /// with no live watches) the snapshot is empty — a cheap no-op.
+    pub applied_mutations: Vec<(Mutation, ResultSnapshot)>,
+    /// The live watch registry, rebuilt from the workspace sessions at run START and
+    /// injected by the spine (DL-16). The bridge snapshots it before each `ctx.db`
+    /// write to capture the pre-write result membership. `None` ⇒ no live watches, so
+    /// each write's `before` snapshot is empty (no notification has anywhere to fire).
+    watch_registry: Option<forge_storage::WatchRegistry>,
     /// Every log line captured this run.
     pub logs: Vec<String>,
     /// The injectable HTTP client backing `ctx.net.fetch` (prd-merged/07 SC-5,
@@ -228,6 +246,8 @@ impl<'a> StorageHostBridge<'a> {
             prev_ui: None,
             ui_renders: Vec::new(),
             watch_intents: Vec::new(),
+            applied_mutations: Vec::new(),
+            watch_registry: None,
             logs: Vec::new(),
             http,
             // Fail-closed default: empty store ⇒ any secret_ref header is denied
@@ -268,10 +288,40 @@ impl<'a> StorageHostBridge<'a> {
         self
     }
 
+    /// Inject the live [`WatchRegistry`](forge_storage::WatchRegistry) (rebuilt from
+    /// the workspace sessions at run start) so the bridge captures the watch result
+    /// membership IMMEDIATELY BEFORE each `ctx.db` write (DL-16). Without this the
+    /// bridge has no watches to snapshot and every write's `before` is empty — fine
+    /// for a run with no live watches, wrong for an update/patch/delete that should
+    /// fire a leave/changed notification. Builder style; the spine wires this on
+    /// every `runtime.run`/`ui.dispatch_event`.
+    pub fn with_watch_registry(mut self, registry: WatchRegistry) -> Self {
+        self.watch_registry = Some(registry);
+        self
+    }
+
     /// Advance and return the next logical timestamp for a write.
     fn tick(&mut self) -> LogicalTimestamp {
         self.logical = self.logical.next();
         self.logical
+    }
+
+    /// Capture the watch result membership snapshot RIGHT NOW (before the calling
+    /// write lands) so the live-query notification turn can apply the correct
+    /// enter/leave/changed filter (DL-16). `None`/no registry ⇒ an empty snapshot
+    /// (no live watch to observe). Pairs with [`record_committed`](Self::record_committed).
+    fn snapshot_watches(&self) -> ResultSnapshot {
+        match &self.watch_registry {
+            Some(reg) => reg.snapshot(self.store).unwrap_or_default(),
+            None => ResultSnapshot::default(),
+        }
+    }
+
+    /// Record a write the bridge just COMMITTED through the CRDT path, paired with
+    /// the pre-write watch snapshot, so the spine drives its live-query notification
+    /// turn (DL-16). Call AFTER the write lands with the snapshot taken BEFORE it.
+    fn record_committed(&mut self, mutation: Mutation, before: ResultSnapshot) {
+        self.applied_mutations.push((mutation, before));
     }
 
     /// Validate the JSON `record` an applet passed to `ctx.db.insert` and return
@@ -288,6 +338,100 @@ impl<'a> StorageHostBridge<'a> {
             ))),
         }
     }
+
+    /// Allocate the next deterministic `<collection>/<n>` id for an INSERT, seeding
+    /// the per-run counter from the records already in the collection on first use
+    /// (so a run's ids never collide with a prior run's writes). Shared by
+    /// [`db_insert`](Self::db_insert) and the `transact` leaf builder.
+    fn next_insert_id(&mut self, collection: &str) -> Result<String> {
+        let next = match self.db_counter.get(collection) {
+            Some(n) => n + 1,
+            None => self.store.list_records(collection)?.len() as u64 + 1,
+        };
+        self.db_counter.insert(collection.to_string(), next);
+        Ok(format!("{collection}/{next}"))
+    }
+
+    /// Parse a `ctx.db.transact(ops)` JSON array into ordered storage [`Mutation`]
+    /// leaves (DL-17). Each leaf is `{op, collection, id?, fields?}`: an `insert`
+    /// without an id gets a fresh deterministic `<collection>/<n>`; `update`/`patch`/
+    /// `delete` require a string `id`. The logical clock advances per leaf so the
+    /// group's writes are ordered. A nested `transact` is rejected (the applet API is
+    /// a flat group).
+    fn transact_items(&mut self, ops: &serde_json::Value) -> Result<Vec<Mutation>> {
+        let leaves = ops.as_array().ok_or_else(|| {
+            CoreError::ValidationError("ctx.db.transact(ops) must be an array of leaves".into())
+        })?;
+        let mut items = Vec::with_capacity(leaves.len());
+        for leaf in leaves {
+            let op = leaf.get("op").and_then(|v| v.as_str()).ok_or_else(|| {
+                CoreError::ValidationError("ctx.db.transact leaf requires a string `op`".into())
+            })?;
+            let collection = leaf
+                .get("collection")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    CoreError::ValidationError(
+                        "ctx.db.transact leaf requires a string `collection`".into(),
+                    )
+                })?
+                .to_string();
+            let id = leaf.get("id").and_then(|v| v.as_str()).map(str::to_string);
+            let fields = leaf
+                .get("fields")
+                .cloned()
+                .map(Self::record_fields)
+                .transpose()?
+                .unwrap_or_default();
+            let at = self.tick().0 as i64;
+            let mutation = match op {
+                "insert" => {
+                    let id = match id {
+                        Some(id) => id,
+                        None => self.next_insert_id(&collection)?,
+                    };
+                    Mutation::Insert {
+                        collection,
+                        id: Some(id),
+                        fields,
+                        logical_at: Some(at),
+                    }
+                }
+                "update" => Mutation::Update {
+                    collection,
+                    id: require_leaf_id(id, "update")?,
+                    fields,
+                    logical_at: Some(at),
+                },
+                "patch" => Mutation::Patch {
+                    collection,
+                    id: require_leaf_id(id, "patch")?,
+                    fields,
+                    logical_at: Some(at),
+                },
+                "delete" => Mutation::Delete {
+                    collection,
+                    id: require_leaf_id(id, "delete")?,
+                    logical_at: Some(at),
+                },
+                other => {
+                    return Err(CoreError::ValidationError(format!(
+                        "ctx.db.transact leaf has unknown op `{other}`"
+                    )))
+                }
+            };
+            items.push(mutation);
+        }
+        Ok(items)
+    }
+}
+
+/// The required string `id` for a non-insert `transact` leaf (`update`/`patch`/
+/// `delete` name an existing record), else a `ValidationError`.
+fn require_leaf_id(id: Option<String>, op: &str) -> Result<String> {
+    id.ok_or_else(|| {
+        CoreError::ValidationError(format!("ctx.db.transact `{op}` leaf requires a string `id`"))
+    })
 }
 
 impl HostBridge for StorageHostBridge<'_> {
@@ -325,15 +469,7 @@ impl HostBridge for StorageHostBridge<'_> {
         // would otherwise restart at 1 and clobber `<collection>/1`). The id is
         // captured into the recorded trace, so replay (which serves the recorded
         // response) reproduces it without re-running this generator.
-        let next = match self.db_counter.get(collection) {
-            Some(n) => n + 1,
-            None => {
-                let existing = self.store.list_records(collection)?.len() as u64;
-                existing + 1
-            }
-        };
-        self.db_counter.insert(collection.to_string(), next);
-        let id = format!("{collection}/{next}");
+        let id = self.next_insert_id(collection)?;
         let at = self.tick();
         // THE SQLite write link of the spine — now the CRDT-backed write path
         // (DL-4): the insert becomes a Loro op on the collection's RecordsDoc, the
@@ -350,8 +486,94 @@ impl HostBridge for StorageHostBridge<'_> {
             fields,
             logical_at: Some(at.0 as i64),
         };
+        // Snapshot the watched result membership BEFORE the write lands, then apply.
+        let before = self.snapshot_watches();
         self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
+        // Capture the committed write + its pre-write snapshot so the live spine (and
+        // a NOTIFICATION callback's `ctx.db` mutation) drives the next notification
+        // turn (non-reentrant, DL-16 T047 (a)). The write already landed; the facade
+        // computes its dirty set from this captured mutation without re-applying it.
+        self.record_committed(mutation, before);
         Ok(id)
+    }
+
+    fn db_update(
+        &mut self,
+        collection: &str,
+        id: &str,
+        record: serde_json::Value,
+    ) -> Result<String> {
+        let fields = Self::record_fields(record)?;
+        let at = self.tick();
+        // REPLACE the record's display fields through the CRDT write path (DL-17):
+        // the update becomes a Loro op + chunk + oplog row, and the projection row is
+        // re-materialized — all in one SQLite transaction. A missing record is a
+        // `QueryError` (the mutation applier requires the record to exist).
+        let mutation = Mutation::Update {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            fields,
+            logical_at: Some(at.0 as i64),
+        };
+        let before = self.snapshot_watches();
+        self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
+        // Capture the committed write + its pre-write snapshot so the live spine drives
+        // its live-query notification turn — the snapshot lets the leave/changed filter
+        // see this record's PRE-update membership (DL-16) — mirrors `db_insert`.
+        self.record_committed(mutation, before);
+        Ok(id.to_string())
+    }
+
+    fn db_patch(
+        &mut self,
+        collection: &str,
+        id: &str,
+        partial: serde_json::Value,
+    ) -> Result<String> {
+        let fields = Self::record_fields(partial)?;
+        let at = self.tick();
+        // MERGE the supplied fields, preserving omitted/unknown fields (DL-9/DL-17),
+        // through the same atomic CRDT write path. A missing record is a `QueryError`.
+        let mutation = Mutation::Patch {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            fields,
+            logical_at: Some(at.0 as i64),
+        };
+        let before = self.snapshot_watches();
+        self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
+        self.record_committed(mutation, before);
+        Ok(id.to_string())
+    }
+
+    fn db_delete(&mut self, collection: &str, id: &str) -> Result<()> {
+        let at = self.tick();
+        // Tombstone the record (DL-4/DL-17): the record vanishes from the projection
+        // and the tombstone rides in Loro history. A missing record is a `QueryError`.
+        let mutation = Mutation::Delete {
+            collection: collection.to_string(),
+            id: id.to_string(),
+            logical_at: Some(at.0 as i64),
+        };
+        let before = self.snapshot_watches();
+        self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
+        self.record_committed(mutation, before);
+        Ok(())
+    }
+
+    fn db_transact(&mut self, ops: serde_json::Value) -> Result<u64> {
+        // Parse the JSON `ops` array into ordered mutation leaves, then apply the
+        // whole group ATOMICALLY through the CRDT write path (DL-17): all leaves
+        // commit in ONE SQLite transaction (a failure rolls the whole group back).
+        // The group is captured as a SINGLE `Mutation::Transact` so the live spine
+        // computes ONE coalesced dirty set / notification turn for it (DL-16), never
+        // one per leaf.
+        let items = self.transact_items(&ops)?;
+        let group = Mutation::Transact { items: items.clone() };
+        let before = self.snapshot_watches();
+        self.store.transact_mutations_crdt(&items, &self.indexes)?;
+        self.record_committed(group, before);
+        Ok(items.len() as u64)
     }
 
     fn db_get(&mut self, collection: &str, id: &str) -> Result<serde_json::Value> {
@@ -585,6 +807,86 @@ mod tests {
         assert_eq!(id1, "tasks/1");
         assert_eq!(id2, "tasks/2", "second run must not clobber the first record");
         assert_eq!(s.list_records("tasks").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn db_update_replaces_fields_and_captures_the_mutation() {
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        b.db_insert("tasks", serde_json::json!({ "title": "old", "done": false })).unwrap();
+        // Update REPLACES the display fields (DL-17).
+        let id = b
+            .db_update("tasks", "tasks/1", serde_json::json!({ "title": "new", "done": true }))
+            .unwrap();
+        assert_eq!(id, "tasks/1");
+        // Two writes captured for the live-spine notification turn (insert + update).
+        assert_eq!(b.applied_mutations.len(), 2);
+        // Each capture is `(Mutation, pre-write ResultSnapshot)`; assert on the mutation.
+        assert!(matches!(b.applied_mutations[1].0, Mutation::Update { .. }));
+        drop(b);
+        let env = s.get_record("tasks", "tasks/1").unwrap().unwrap();
+        assert_eq!(env.fields["title"], serde_json::json!("new"));
+        assert_eq!(env.fields["done"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn db_patch_merges_fields_preserving_omitted() {
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        b.db_insert("tasks", serde_json::json!({ "title": "keep", "done": false })).unwrap();
+        // Patch MERGES — `title` is preserved, only `done` changes (DL-9).
+        b.db_patch("tasks", "tasks/1", serde_json::json!({ "done": true })).unwrap();
+        assert!(matches!(b.applied_mutations[1].0, Mutation::Patch { .. }));
+        drop(b);
+        let env = s.get_record("tasks", "tasks/1").unwrap().unwrap();
+        assert_eq!(env.fields["title"], serde_json::json!("keep"));
+        assert_eq!(env.fields["done"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn db_delete_tombstones_and_captures_the_mutation() {
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        b.db_insert("tasks", serde_json::json!({ "t": 1 })).unwrap();
+        b.db_delete("tasks", "tasks/1").unwrap();
+        assert!(matches!(b.applied_mutations[1].0, Mutation::Delete { .. }));
+        drop(b);
+        assert!(s.get_record("tasks", "tasks/1").unwrap().is_none(), "record tombstoned");
+    }
+
+    #[test]
+    fn db_transact_applies_a_group_atomically_as_one_captured_mutation() {
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        // A group: insert one task and (after seeding) patch it — captured as ONE
+        // `Mutation::Transact` so the live spine computes one coalesced notification.
+        b.db_insert("tasks", serde_json::json!({ "title": "seed", "done": false })).unwrap();
+        let count = b
+            .db_transact(serde_json::json!([
+                { "op": "insert", "collection": "tasks", "fields": { "title": "a", "done": false } },
+                { "op": "patch", "collection": "tasks", "id": "tasks/1", "fields": { "done": true } }
+            ]))
+            .unwrap();
+        assert_eq!(count, 2, "two leaves applied");
+        // insert (seed) + one transact group captured.
+        assert_eq!(b.applied_mutations.len(), 2);
+        assert!(matches!(b.applied_mutations[1].0, Mutation::Transact { .. }));
+        drop(b);
+        // The transact's fresh insert got the next deterministic id (`tasks/2`).
+        assert!(s.get_record("tasks", "tasks/2").unwrap().is_some());
+        // The patch landed on the seed record.
+        let seed = s.get_record("tasks", "tasks/1").unwrap().unwrap();
+        assert_eq!(seed.fields["done"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn db_update_on_missing_record_errors() {
+        let mut s = store();
+        let mut b = StorageHostBridge::new(&mut s, "app1");
+        let err = b
+            .db_update("tasks", "tasks/missing", serde_json::json!({ "x": 1 }))
+            .unwrap_err();
+        assert_eq!(err.code(), "QueryError");
     }
 
     #[test]

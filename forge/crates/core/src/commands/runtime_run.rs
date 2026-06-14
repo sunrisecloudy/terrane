@@ -110,6 +110,11 @@ impl WorkspaceCore {
         // performs a capability-checked, confined read/write at the host edge.
         // Default = empty (no granted root → every ctx.files op fails closed).
         let file_system = (self.file_system_factory)();
+        // The live watch registry (rebuilt from the persisted sessions) injected into
+        // the bridge so each `ctx.db` write captures the pre-write watch membership for
+        // its live-query notification turn (DL-16). Built BEFORE the bridge borrows
+        // `&mut self.store` (the rebuild borrows `&self`).
+        let watch_registry = self.watch_sessions.to_registry()?;
 
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
@@ -125,7 +130,8 @@ impl WorkspaceCore {
             http_client,
         )
         .with_secret_store(secret_store)
-        .with_file_system(file_system);
+        .with_file_system(file_system)
+        .with_watch_registry(watch_registry);
         let mut run = record_run(
             &program,
             &installed.manifest,
@@ -142,6 +148,10 @@ impl WorkspaceCore {
         // the borrow is released.
         let ui_renders = std::mem::take(&mut bridge.ui_renders);
         let watch_intents = std::mem::take(&mut bridge.watch_intents);
+        // The record-mutating writes the run COMMITTED through `ctx.db` (already
+        // applied to the store). We drive their live-query notifications AFTER the
+        // borrow is released, so a watch fires on a real applet mutation (DL-16).
+        let applied_mutations = std::mem::take(&mut bridge.applied_mutations);
         drop(bridge);
 
         // Override the runtime's deterministic run_id with the unique per-core
@@ -177,8 +187,19 @@ impl WorkspaceCore {
         // live-query registry (DL-16) and persist, so a watch an applet registered
         // during its run is live for subsequent committed mutations. A failed run
         // still folds the intents it issued before failing (the run's effects up to
-        // the failure already committed through the live bridge).
+        // the failure already committed through the live bridge). This runs BEFORE we
+        // notify the run's own writes, so a watch the run registered in `main` sees
+        // a record `main` then inserted in the same run (registration precedes the
+        // write's notification turn).
         self.apply_watch_intents(applet_id.as_str(), &watch_intents)?;
+
+        // Deliver live-query notifications for the record writes the run committed
+        // through `ctx.db` (DL-16): each captured write is driven as a committed-
+        // transaction notification turn (its own monotone version, in apply order),
+        // a watch's `onWatch` callback is re-entered, and any callback mutation is
+        // queued as the next turn (non-reentrant). The writes already landed; this
+        // computes their notifications without re-applying them.
+        self.notify_committed_mutations(applet_id.as_str(), &applied_mutations)?;
 
         // Emit a ui.patch event per render (the UI tree patch link).
         for (i, render) in ui_renders.iter().enumerate() {

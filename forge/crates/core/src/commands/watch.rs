@@ -26,7 +26,15 @@
 
 use forge_domain::{CoreError, RecordedCall, Result, RunRecord};
 use forge_runtime::{record_notification, RunRecorder};
-use forge_storage::{DirtyChanges, DirtySet, Mutation, WatchNotification};
+use forge_storage::{DirtyChanges, DirtySet, Mutation, ResultSnapshot, WatchNotification};
+
+/// One committed write paired with the watch result membership snapshot taken
+/// IMMEDIATELY BEFORE it landed (DL-16). The pre-write snapshot is what lets a turn
+/// apply the correct enter/leave/changed filter for an update/patch/delete that
+/// removes a record from a watched result — the post-write store can no longer reveal
+/// the pre-write membership. Produced by the [`StorageHostBridge`](crate::StorageHostBridge)
+/// for every live `ctx.db` write and drained by the spine / callback turn loop.
+pub type CommittedWrite = (Mutation, ResultSnapshot);
 
 use super::super::auth::require_db_read;
 use super::super::persistence::META_NS;
@@ -34,9 +42,12 @@ use super::super::watch::{store_watch_sessions, WatchSubscription};
 use super::super::WorkspaceCore;
 use super::require_applet_id;
 
-/// A mutation a watch callback requested, tagged with the owning applet id, to be
-/// applied as the NEXT event-loop turn (non-reentrant delivery, T047 (a)).
-type QueuedMutation = (String, Mutation);
+/// A mutation a watch callback COMMITTED, tagged with the owning applet id and the
+/// watch result membership snapshot taken IMMEDIATELY BEFORE that callback write, to
+/// be delivered as the NEXT event-loop turn (non-reentrant delivery, T047 (a)). The
+/// pre-write snapshot keeps the leave/changed filter correct for a callback that
+/// updates/deletes a watched record.
+type QueuedMutation = (String, Mutation, ResultSnapshot);
 
 /// One delivered notification batch for a single committed mutation transaction:
 /// the canonical notifications (in watch registration order), the trace calls
@@ -168,28 +179,44 @@ impl WorkspaceCore {
     /// `db.unwatch` — cancel a live query (DL-16). Idempotent: unwatching an unknown
     /// id is a no-op. After it commits the watch receives no further notifications.
     ///
-    /// Payload: `{ watch_id, applet_id? }`. Gated on the same read-capable roles as
+    /// Payload: `{ watch_id, applet_id }`. Gated on the same read-capable roles as
     /// `db.watch` (a caller that could never read could never have watched); the
     /// cancellation itself reads no collection data.
+    ///
+    /// OWNER-SCOPED (review 132 #2): the cancel binds to the calling `applet_id` — it
+    /// removes the watch ONLY when that applet OWNS it. Watch ids are applet-visible
+    /// strings, so one applet must not be able to stop another applet's subscription
+    /// by naming its id; `was_active` reflects whether THIS applet's own watch was
+    /// cancelled, so cancelling an id owned by a different applet is a no-op that
+    /// reports `was_active: false` (and leaves that subscription live).
     pub(in crate::workspace) fn cmd_db_unwatch(
         &mut self,
         cmd: &forge_domain::CoreCommand,
     ) -> Result<serde_json::Value> {
+        let applet_id = require_applet_id(cmd)?;
         let watch_id = cmd
             .payload
             .get("watch_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| CoreError::ValidationError("db.unwatch requires a `watch_id`".into()))?
             .to_string();
-        let was_active = self.watch_sessions.active_watch_ids().contains(&watch_id);
-        self.watch_sessions.unregister(&watch_id);
+        // Owner-scoped: removes the watch only when `applet_id` owns it; a foreign /
+        // unknown id is a non-destructive no-op (`was_active = false`).
+        let was_active = self
+            .watch_sessions
+            .unregister_owned(applet_id.as_str(), &watch_id);
         self.persist_watch_sessions()?;
         self.events.emit(
-            None,
+            Some(applet_id.clone()),
             "db.watch.unregistered",
-            serde_json::json!({ "watch_id": watch_id, "was_active": was_active }),
+            serde_json::json!({
+                "applet_id": applet_id,
+                "watch_id": watch_id,
+                "was_active": was_active,
+            }),
         );
         Ok(serde_json::json!({
+            "applet_id": applet_id,
             "watch_id": watch_id,
             "active": false,
             "was_active": was_active,
@@ -338,23 +365,120 @@ impl WorkspaceCore {
             }
         }
 
-        // (3) Commit the dirty changes to the registry → version + dirty set +
-        // notifications. The registry was rebuilt from the persisted sessions, so its
-        // `next_version` is the workspace's monotone version.
-        let mut registry = self.watch_sessions.to_registry()?;
+        // (3) The FIRST turn: commit this mutation's dirty changes → version + dirty
+        // set + notifications, RECORD + DISPATCH each. The `DeliveredBatch.dirty` is
+        // this first turn's dirty set (the one the caller pins). The shared driver
+        // then drains any callback-queued mutation as the NEXT turn (a later version).
         let changes = DirtyChanges::from_mutations(std::slice::from_ref(mutation));
-        let (dirty, notifications) = registry.commit(changes, &before, &self.store)?;
+        let mut batch = DeliveredBatch::default();
+        let dirty = self.run_notify_turn(changes, &before, &mut batch)?;
+        batch.dirty = Some(dirty);
+        self.drain_callback_turns(&mut batch)?;
 
-        // (5, part 1) The registry consumed the next version; persist the bumped
-        // version so the sequence is monotone across reopen.
+        Ok(batch)
+    }
+
+    /// Deliver live-query notifications for mutations a LIVE applet run/dispatch
+    /// already COMMITTED through `ctx.db` (DL-16). The bridge applied each write
+    /// directly through the CRDT path (one atomic write per call) and captured it in
+    /// [`StorageHostBridge::applied_mutations`](crate::StorageHostBridge); the run/
+    /// dispatch spine drains those and hands them here so registered watches FIRE on
+    /// the real applet mutation — recorded for replay, callback re-entered.
+    ///
+    /// This is the NOTIFICATION-ONLY counterpart to [`commit_and_notify`]: the writes
+    /// already landed (we do NOT re-apply them), so each mutation is driven as one
+    /// committed-transaction notification turn (its own monotone version, in apply
+    /// order), and any callback-queued mutation is then drained as a later turn (the
+    /// non-reentrant next-turn loop, T047 (a)). Returns the aggregate
+    /// [`DeliveredBatch`] across every turn (its `dirty` is the FIRST turn's dirty
+    /// set, like `commit_and_notify`).
+    ///
+    /// `_applet_id` names the applet that issued the writes (for symmetry with the
+    /// callback path); ownership of the affected watches is resolved per-notification
+    /// from the registry, so a write by one applet correctly notifies a watch owned
+    /// by another (the workspace is the single observer).
+    pub(in crate::workspace) fn notify_committed_mutations(
+        &mut self,
+        _applet_id: &str,
+        writes: &[CommittedWrite],
+    ) -> Result<DeliveredBatch> {
+        let mut batch = DeliveredBatch::default();
+        if writes.is_empty() {
+            return Ok(batch);
+        }
+        // Each captured write was applied as its OWN atomic write (one `ctx.db` call =
+        // one CRDT transaction), so it is one committed-transaction turn with its own
+        // version, in apply order. The writes already landed; each carries the watch
+        // membership snapshot taken IMMEDIATELY BEFORE it, so the enter/leave/changed
+        // filter is correct even for an update/patch/delete that removed a record from
+        // the watched result (the post-write store can no longer reveal the pre-write
+        // membership). The turn computes the dirty set + notifications WITHOUT
+        // re-applying the write.
+        for (i, (mutation, before)) in writes.iter().enumerate() {
+            let changes = DirtyChanges::from_mutations(std::slice::from_ref(mutation));
+            let dirty = self.run_notify_turn(changes, before, &mut batch)?;
+            // The aggregate `dirty` pins the FIRST turn's dirty set (the caller's
+            // first observed transaction), matching `commit_and_notify`.
+            if i == 0 {
+                batch.dirty = Some(dirty);
+            }
+            // Drain any callback-queued mutation from THIS turn before the next
+            // applet write's turn, so versions stay in committed order.
+            self.drain_callback_turns(&mut batch)?;
+        }
+        Ok(batch)
+    }
+
+    /// The TURN LOOP (non-reentrant, T047 (a)): a callback that mutated through
+    /// `ctx.db` committed an already-applied write captured in
+    /// `batch.queued_mutations`. Drive each as the NEXT event-loop turn — a SEPARATE
+    /// registry commit that gets a strictly LATER version, never a recursive flush
+    /// inside the current batch. The captured mutations already landed in the store,
+    /// so the turn computes their dirty set + notifications WITHOUT re-applying them.
+    /// Each follow-up turn may itself queue more mutations, so loop until quiescent.
+    fn drain_callback_turns(&mut self, batch: &mut DeliveredBatch) -> Result<()> {
+        while !batch.queued_mutations.is_empty() {
+            let queued = std::mem::take(&mut batch.queued_mutations);
+            // Each queued callback write carries the watch membership snapshot taken
+            // IMMEDIATELY BEFORE it landed (captured by the callback's bridge), so the
+            // leave/changed filter is correct even for a callback that updated/deleted
+            // a watched record — not just the insert case. Drive each as its OWN turn
+            // in commit order (its own later version).
+            for (_applet, mutation, before) in queued {
+                let changes = DirtyChanges::from_mutations(std::slice::from_ref(&mutation));
+                self.run_notify_turn(changes, &before, batch)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run ONE notification turn: commit `changes` to the registry against the
+    /// `before` snapshot (assigning the next monotone version), RECORD each resulting
+    /// notification as a `db.watch.notification` envelope, DISPATCH it into the
+    /// watching applet's callback (capturing any callback mutation into
+    /// `batch.queued_mutations` for the NEXT turn), and persist the bumped version.
+    /// Returns the turn's [`DirtySet`].
+    ///
+    /// This is the shared body of every turn the loop drives — the FIRST turn (the
+    /// caller's mutation) and every CALLBACK-queued follow-up turn — so the version
+    /// monotonicity, recording, and dispatch are identical across turns.
+    fn run_notify_turn(
+        &mut self,
+        changes: DirtyChanges,
+        before: &ResultSnapshot,
+        batch: &mut DeliveredBatch,
+    ) -> Result<DirtySet> {
+        // Commit the dirty changes to a registry rebuilt from the persisted sessions
+        // (its `next_version` is the workspace's monotone version) → version + dirty
+        // set + one notification per affected watch.
+        let mut registry = self.watch_sessions.to_registry()?;
+        let (dirty, notifications) = registry.commit(changes, before, &self.store)?;
+
+        // The registry consumed the next version; persist the bumped version so the
+        // sequence is monotone across reopen.
         self.watch_sessions.next_version = registry.next_version();
         self.persist_watch_sessions()?;
 
-        // (4) Record + dispatch each notification.
-        let mut batch = DeliveredBatch {
-            dirty: Some(dirty),
-            ..Default::default()
-        };
         for notification in notifications {
             // RECORD the notification into the run/session record (a
             // `db.watch.notification` envelope) so REPLAY serves the recorded
@@ -385,7 +509,7 @@ impl WorkspaceCore {
             batch.notifications.push(notification);
         }
 
-        Ok(batch)
+        Ok(dirty)
     }
 
     /// Re-enter the watching applet's callback for one delivered notification, when
@@ -439,13 +563,18 @@ impl WorkspaceCore {
         let file_system = (self.file_system_factory)();
         let actor = forge_domain::ActorContext::owner("watch-callback");
 
+        // The live watch registry (rebuilt from the persisted sessions) so a callback
+        // that itself mutates through `ctx.db` captures the pre-write watch membership
+        // for the NEXT turn's leave/changed filter (DL-16).
+        let watch_registry = self.watch_sessions.to_registry()?;
         let mut bridge = crate::StorageHostBridge::with_http_client(
             &mut self.store,
             &applet_id,
             http_client,
         )
         .with_secret_store(secret_store)
-        .with_file_system(file_system);
+        .with_file_system(file_system)
+        .with_watch_registry(watch_registry);
         let run = record_notification(
             &program,
             &installed.manifest,
@@ -456,9 +585,14 @@ impl WorkspaceCore {
             time_start,
             &mut bridge,
         )?;
-        // Drain the callback's captured watch intents (a callback that itself
-        // watched/unwatched) BEFORE dropping the bridge releases the &mut Store.
+        // Drain the callback's captured UI renders, watch intents (a callback that
+        // itself watched/unwatched) AND the record-mutating writes it COMMITTED through
+        // `ctx.db` (already applied to the store) BEFORE dropping the bridge releases
+        // the &mut Store. The captured writes drive the NEXT event-loop turn's
+        // notification (non-reentrant, T047 (a)); the facade does not re-apply them.
+        let ui_renders = std::mem::take(&mut bridge.ui_renders);
         let watch_intents = std::mem::take(&mut bridge.watch_intents);
+        let applied_mutations = std::mem::take(&mut bridge.applied_mutations);
         drop(bridge);
 
         // Persist the callback's run (replay source) under a unique per-execution id.
@@ -468,21 +602,47 @@ impl WorkspaceCore {
         self.store_program(&installed)?;
         self.store.save_run(&run)?;
 
+        // A notification callback re-renders the watching applet's view (the reactive
+        // loop's whole point). Emit a `ui.patch` per captured render — the SAME link a
+        // `runtime.run`/`ui.dispatch_event` emits — so a subscribed renderer advances
+        // the live tree when a notification arrives, and persist the callback's LAST
+        // render as the applet's next diff base (UI-4) so a subsequent UI event diffs
+        // against the notification-rendered view.
+        for (i, render) in ui_renders.iter().enumerate() {
+            self.events.emit(
+                Some(forge_domain::AppletId::new(applet_id.clone())),
+                "ui.patch",
+                serde_json::json!({
+                    "applet_id": applet_id,
+                    "watch_id": notification.watch_id,
+                    "run_id": run.run_id,
+                    "render_index": i,
+                    "tree": render.tree,
+                    "patches": render.patches,
+                }),
+            );
+        }
+        if let Some(last) = ui_renders.last() {
+            self.store_ui_tree(&applet_id, &last.tree)?;
+        }
+
         // Fold the callback's own watch/unwatch intents into the workspace registry
         // (a callback may register/cancel a watch), then persist.
         self.apply_watch_intents(&applet_id, &watch_intents)?;
 
         // A callback that mutates does so through `ctx.db`, which the live bridge
         // applied as a committed write DURING this dispatch. Those writes already
-        // landed in the store, so the NEXT-turn notification for them is produced by
-        // the caller re-invoking the loop — but to keep delivery NON-REENTRANT, the
-        // facade does not compute their notifications inside this batch. The data-
-        // driven conformance harness models a callback's effect as an explicit
-        // next-turn mutation; a real callback's `ctx.db` writes are observed by the
-        // next `commit_and_notify` the turn loop runs. We return no queued mutation
-        // here because the writes already committed; the turn loop's next call
-        // observes them via a fresh snapshot.
-        Ok(Some((run.run_id, Vec::new())))
+        // landed in the store; to keep delivery NON-REENTRANT we DO NOT compute their
+        // notifications inside this batch. Instead we hand the applied mutations back
+        // to the turn loop ([`commit_and_notify`]), which drives them as the NEXT
+        // event-loop turn — a separate registry commit with a strictly LATER version
+        // (T047 (a)). The dirty set is computed from these captured mutations without
+        // re-applying them (they already committed).
+        let queued: Vec<QueuedMutation> = applied_mutations
+            .into_iter()
+            .map(|(m, before)| (applet_id.clone(), m, before))
+            .collect();
+        Ok(Some((run.run_id, queued)))
     }
 
     /// Apply a run/callback's captured live-query subscription intents
@@ -516,7 +676,11 @@ impl WorkspaceCore {
                     });
                 }
                 crate::bridge::WatchIntent::Unwatch { watch_id } => {
-                    self.watch_sessions.unregister(watch_id);
+                    // OWNER-SCOPED cancel (review 132 #2): an applet may cancel ONLY
+                    // its own watch. A cancel for an id owned by a different applet (or
+                    // unknown) is a silent no-op — one applet must not be able to stop
+                    // another applet's subscription by guessing its watch id.
+                    self.watch_sessions.unregister_owned(applet_id, watch_id);
                 }
             }
         }

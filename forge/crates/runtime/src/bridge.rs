@@ -40,6 +40,34 @@ pub trait HostBridge {
 
     /// `ctx.db.insert(collection, record)` → the inserted record's id.
     fn db_insert(&mut self, collection: &str, record: serde_json::Value) -> Result<String>;
+    /// `ctx.db.update(collection, id, record)` — REPLACE a record's display fields
+    /// (DL-17). Errors if the record does not exist. The **default** echoes the id
+    /// without writing (the in-memory test double has no CRDT update path); the real
+    /// Store-backed bridge (forge-core) overrides this to apply a `Mutation::Update`
+    /// through the CRDT write path AND capture it for live-query notification.
+    fn db_update(&mut self, _collection: &str, id: &str, _record: serde_json::Value) -> Result<String> {
+        Ok(id.to_string())
+    }
+    /// `ctx.db.patch(collection, id, partial)` — MERGE the supplied fields into a
+    /// record, preserving omitted fields (DL-9/DL-17). Errors if the record does not
+    /// exist. The **default** echoes the id; the real bridge overrides it.
+    fn db_patch(&mut self, _collection: &str, id: &str, _partial: serde_json::Value) -> Result<String> {
+        Ok(id.to_string())
+    }
+    /// `ctx.db.delete(collection, id)` — tombstone a record (DL-4/DL-17). Errors if
+    /// the record does not exist. The **default** is a no-op; the real bridge
+    /// overrides it.
+    fn db_delete(&mut self, _collection: &str, _id: &str) -> Result<()> {
+        Ok(())
+    }
+    /// `ctx.db.transact(ops)` — apply a group of mutations atomically (DL-17). `ops`
+    /// is the JSON array of `{op, collection, id?, fields?}` leaves. The **default**
+    /// is a no-op echoing the count; the real bridge overrides it to drive one atomic
+    /// `Mutation::Transact` through the CRDT write path and capture it for one
+    /// coalesced live-query notification turn.
+    fn db_transact(&mut self, _ops: serde_json::Value) -> Result<u64> {
+        Ok(0)
+    }
     /// `ctx.db.get(collection, id)` → the record JSON, or `null` if absent.
     fn db_get(&mut self, collection: &str, id: &str) -> Result<serde_json::Value>;
     /// `ctx.db.list(collection)` → all records in the collection.
@@ -492,6 +520,18 @@ impl HostBridge for NullBridge {
     }
     fn db_insert(&mut self, _collection: &str, _record: serde_json::Value) -> Result<String> {
         Err(null_violation("db.insert"))
+    }
+    fn db_update(&mut self, _collection: &str, _id: &str, _record: serde_json::Value) -> Result<String> {
+        Err(null_violation("db.update"))
+    }
+    fn db_patch(&mut self, _collection: &str, _id: &str, _partial: serde_json::Value) -> Result<String> {
+        Err(null_violation("db.patch"))
+    }
+    fn db_delete(&mut self, _collection: &str, _id: &str) -> Result<()> {
+        Err(null_violation("db.delete"))
+    }
+    fn db_transact(&mut self, _ops: serde_json::Value) -> Result<u64> {
+        Err(null_violation("db.transact"))
     }
     fn db_get(&mut self, _collection: &str, _id: &str) -> Result<serde_json::Value> {
         Err(null_violation("db.get"))

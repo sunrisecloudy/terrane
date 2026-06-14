@@ -99,8 +99,32 @@ impl WatchSessions {
 
     /// Cancel a watch (DL-16 `db.unwatch`). Idempotent: removing an unknown id is a
     /// no-op. After it returns the watch receives no further notifications.
+    ///
+    /// This is the TRUSTED in-process cancel (no owner check) — the workspace owner
+    /// already holds a `WorkspaceCore`. An APPLET-originated cancel MUST use
+    /// [`unregister_owned`](Self::unregister_owned) so one applet cannot stop
+    /// another's subscription (review 132 #2).
     pub fn unregister(&mut self, watch_id: &str) {
         self.subscriptions.retain(|s| s.watch_id != watch_id);
+    }
+
+    /// Owner-scoped cancel (DL-16 `db.unwatch` from an applet, review 132 #2): remove
+    /// `watch_id` ONLY when it is owned by `applet_id`. Returns `true` when a watch
+    /// was removed, `false` when the id is unknown OR is owned by a DIFFERENT applet
+    /// (idempotent + non-destructive of another applet's subscription). Watch ids are
+    /// applet-visible strings, so an applet that guesses another's id must not be able
+    /// to cancel it; binding the cancel to the owner upholds the CR-3 capability-scoped
+    /// subscription-ownership model.
+    pub fn unregister_owned(&mut self, applet_id: &str, watch_id: &str) -> bool {
+        let owned = self
+            .subscriptions
+            .iter()
+            .any(|s| s.watch_id == watch_id && s.applet_id == applet_id);
+        if owned {
+            self.subscriptions
+                .retain(|s| !(s.watch_id == watch_id && s.applet_id == applet_id));
+        }
+        owned
     }
 }
 
@@ -175,6 +199,27 @@ mod tests {
         let mut bad = WatchSessions::default();
         bad.register(sub("agg", json!({ "from": "tasks", "aggregate": { "count": true } })));
         assert!(bad.to_registry().is_err());
+    }
+
+    #[test]
+    fn unregister_owned_only_removes_the_owning_applets_watch() {
+        // review 132 #2: an applet may cancel ONLY its own watch.
+        let mut s = WatchSessions::default();
+        s.register(WatchSubscription {
+            watch_id: "w1".into(),
+            applet_id: "app-a".into(),
+            callback: "onWatch".into(),
+            query: json!({ "from": "tasks" }),
+        });
+        // A different applet cannot cancel it.
+        assert!(!s.unregister_owned("app-b", "w1"), "non-owner cancel is a no-op");
+        assert_eq!(s.active_watch_ids(), vec!["w1".to_string()], "watch survives foreign unwatch");
+        // An unknown id is a no-op too.
+        assert!(!s.unregister_owned("app-a", "missing"));
+        // The owner can cancel it (and the cancel is idempotent).
+        assert!(s.unregister_owned("app-a", "w1"), "owner cancels its own watch");
+        assert!(s.active_watch_ids().is_empty());
+        assert!(!s.unregister_owned("app-a", "w1"), "idempotent: already gone");
     }
 
     #[test]

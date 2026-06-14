@@ -841,6 +841,82 @@ fn install_ctx<'js>(
         )?;
         db.set("insert", f)?;
     }
+    // --- db.update(collection, id, record) -> id (DL-17) ------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>,
+                  coll: Value<'js>,
+                  id: Value<'js>,
+                  rec: Value<'js>|
+                  -> rquickjs::Result<Value<'js>> {
+                let coll = value_to_string(&cx, &coll)?;
+                let id = value_to_string(&cx, &id)?;
+                let json = QuickJsEngine::js_to_json(&cx, rec)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let r = unsafe { host.get() }
+                    .db_update(&coll, &id, json)
+                    .map(|id| serde_json::json!(id));
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("update", f)?;
+    }
+    // --- db.patch(collection, id, partial) -> id (DL-17) -----------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>,
+                  coll: Value<'js>,
+                  id: Value<'js>,
+                  partial: Value<'js>|
+                  -> rquickjs::Result<Value<'js>> {
+                let coll = value_to_string(&cx, &coll)?;
+                let id = value_to_string(&cx, &id)?;
+                let json = QuickJsEngine::js_to_json(&cx, partial)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let r = unsafe { host.get() }
+                    .db_patch(&coll, &id, json)
+                    .map(|id| serde_json::json!(id));
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("patch", f)?;
+    }
+    // --- db.delete(collection, id) -> null (DL-17) -----------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, coll: Value<'js>, id: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let coll = value_to_string(&cx, &coll)?;
+                let id = value_to_string(&cx, &id)?;
+                let r = unsafe { host.get() }
+                    .db_delete(&coll, &id)
+                    .map(|()| serde_json::Value::Null);
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("delete", f)?;
+    }
+    // --- db.transact(ops) -> leaf_count (DL-17) --------------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, ops: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let json = QuickJsEngine::js_to_json(&cx, ops)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let r = unsafe { host.get() }
+                    .db_transact(json)
+                    .map(|n| serde_json::json!(n));
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("transact", f)?;
+    }
     // --- db.get(collection, id) -> record | null -------------------------
     {
         let host_error = host_error.clone();

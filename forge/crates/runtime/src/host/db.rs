@@ -53,6 +53,103 @@ impl HostContext<'_> {
         Ok(resp.as_str().unwrap_or("").to_string())
     }
 
+    /// `ctx.db.update(collection, id, record)` — REPLACE a record's display fields
+    /// (DL-17). Gated on `db.write` for `collection` and recorded exactly like
+    /// `db.insert`: in record mode the call + the returned id are appended as a
+    /// `RecordedCall`; on replay the recorded id is served (the live store is never
+    /// re-written), so replay stays byte-identical.
+    pub fn db_update(
+        &mut self,
+        collection: &str,
+        id: &str,
+        record: serde_json::Value,
+    ) -> Result<String> {
+        let args = serde_json::json!([collection, id, record]);
+        self.check_or_record_denial(
+            &HostCall::Db { op: Access::Write, collection: collection.to_string() },
+            "db.update",
+            &args,
+        )?;
+        let bridge = &mut *self.bridge;
+        let c = collection.to_string();
+        let i = id.to_string();
+        let r = record.clone();
+        let resp = self.recorder.host_call("db.update", args, || {
+            Ok(serde_json::json!(bridge.db_update(&c, &i, r)?))
+        })?;
+        Ok(resp.as_str().unwrap_or("").to_string())
+    }
+
+    /// `ctx.db.patch(collection, id, partial)` — MERGE the supplied fields into a
+    /// record, preserving omitted fields (DL-9/DL-17). Gated on `db.write` and
+    /// recorded like `db.update`.
+    pub fn db_patch(
+        &mut self,
+        collection: &str,
+        id: &str,
+        partial: serde_json::Value,
+    ) -> Result<String> {
+        let args = serde_json::json!([collection, id, partial]);
+        self.check_or_record_denial(
+            &HostCall::Db { op: Access::Write, collection: collection.to_string() },
+            "db.patch",
+            &args,
+        )?;
+        let bridge = &mut *self.bridge;
+        let c = collection.to_string();
+        let i = id.to_string();
+        let p = partial.clone();
+        let resp = self.recorder.host_call("db.patch", args, || {
+            Ok(serde_json::json!(bridge.db_patch(&c, &i, p)?))
+        })?;
+        Ok(resp.as_str().unwrap_or("").to_string())
+    }
+
+    /// `ctx.db.delete(collection, id)` — tombstone a record (DL-4/DL-17). Gated on
+    /// `db.write` and recorded; the call returns `null`.
+    pub fn db_delete(&mut self, collection: &str, id: &str) -> Result<()> {
+        let args = serde_json::json!([collection, id]);
+        self.check_or_record_denial(
+            &HostCall::Db { op: Access::Write, collection: collection.to_string() },
+            "db.delete",
+            &args,
+        )?;
+        let bridge = &mut *self.bridge;
+        let c = collection.to_string();
+        let i = id.to_string();
+        self.recorder.host_call("db.delete", args, || {
+            bridge.db_delete(&c, &i).map(|()| serde_json::Value::Null)
+        })?;
+        Ok(())
+    }
+
+    /// `ctx.db.transact(ops)` — apply a group of mutations atomically (DL-17). `ops`
+    /// is the JSON array of `{op, collection, id?, fields?}` leaves. Gated on
+    /// `db.write` for EACH leaf's collection (so a group cannot write a collection the
+    /// applet lacks `db.write` on) and recorded once; the call returns the applied
+    /// leaf count.
+    pub fn db_transact(&mut self, ops: serde_json::Value) -> Result<u64> {
+        // Gate every leaf's collection BEFORE the bridge applies anything, so an
+        // atomic group is denied as a whole when ANY leaf touches an ungranted
+        // collection (no partial write). The denial is recorded once under the first
+        // offending leaf's collection, mirroring the single-op write gate.
+        for collection in transact_collections(&ops)? {
+            let args = serde_json::json!([collection]);
+            self.check_or_record_denial(
+                &HostCall::Db { op: Access::Write, collection: collection.clone() },
+                "db.transact",
+                &args,
+            )?;
+        }
+        let args = serde_json::json!([ops]);
+        let bridge = &mut *self.bridge;
+        let o = ops.clone();
+        let resp = self.recorder.host_call("db.transact", args, || {
+            Ok(serde_json::json!(bridge.db_transact(o)?))
+        })?;
+        Ok(resp.as_u64().unwrap_or(0))
+    }
+
     pub fn db_get(&mut self, collection: &str, id: &str) -> Result<serde_json::Value> {
         let args = serde_json::json!([collection, id]);
         self.check_or_record_denial(
@@ -171,6 +268,35 @@ impl HostContext<'_> {
         })?;
         Ok(())
     }
+}
+
+/// The distinct collections a `ctx.db.transact(ops)` group touches, in first-touch
+/// order (DL-17). `ops` is the JSON array of `{op, collection, …}` leaves; each leaf
+/// must name a string `collection`. Used to gate `db.write` on EVERY collection a
+/// group touches before any leaf is applied, so an atomic group is denied as a whole
+/// when any leaf targets an ungranted collection (no partial write).
+fn transact_collections(ops: &serde_json::Value) -> Result<Vec<String>> {
+    let leaves = ops.as_array().ok_or_else(|| {
+        forge_domain::CoreError::QueryError(
+            "ctx.db.transact(ops) requires an array of mutation leaves".into(),
+        )
+    })?;
+    let mut collections: Vec<String> = Vec::new();
+    for leaf in leaves {
+        let collection = leaf
+            .get("collection")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                forge_domain::CoreError::QueryError(
+                    "ctx.db.transact leaf requires a string 'collection'".into(),
+                )
+            })?
+            .to_string();
+        if !collections.contains(&collection) {
+            collections.push(collection);
+        }
+    }
+    Ok(collections)
 }
 
 /// The watched collection for a `db.watch` query value: its required string `from`

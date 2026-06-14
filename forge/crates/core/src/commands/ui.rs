@@ -318,6 +318,10 @@ impl WorkspaceCore {
         // the "same engine/host path as a run" promise (UI-4) for interactive applets
         // with file-backed handler state (review 112). Default = empty (fail-closed).
         let file_system = (self.file_system_factory)();
+        // The live watch registry injected into the bridge so a `ctx.db` write the
+        // handler makes captures the pre-write watch membership for its notification
+        // turn (DL-16). Built BEFORE the bridge borrows `&mut self.store`.
+        let watch_registry = self.watch_sessions.to_registry()?;
 
         // Re-enter the handler over the SAME engine path as a run: record mode,
         // live Store-backed bridge, manifest-gated `ctx.*`. `record_dispatch` runs
@@ -330,7 +334,8 @@ impl WorkspaceCore {
             http_client,
         )
         .with_secret_store(secret_store)
-        .with_file_system(file_system);
+        .with_file_system(file_system)
+        .with_watch_registry(watch_registry);
         let mut run = record_dispatch(
             &program,
             &installed.manifest,
@@ -346,6 +351,9 @@ impl WorkspaceCore {
         // dropping the bridge so the `&mut Store` borrow is released.
         let final_render = bridge.ui_renders.last().map(|r| r.tree.clone());
         let watch_intents = std::mem::take(&mut bridge.watch_intents);
+        // The record writes the handler COMMITTED through `ctx.db` (already applied);
+        // we drive their live-query notifications after releasing the borrow (DL-16).
+        let applied_mutations = std::mem::take(&mut bridge.applied_mutations);
         drop(bridge);
 
         // Fold any `ctx.db.watch`/`unwatch` the handler issued into the workspace
@@ -353,6 +361,14 @@ impl WorkspaceCore {
         // already committed through the live bridge, so a watch it registered is live
         // regardless of how the dispatch finished).
         self.apply_watch_intents(applet_id.as_str(), &watch_intents)?;
+
+        // Deliver live-query notifications for the record writes the handler committed
+        // through `ctx.db` (DL-16), on EVERY dispatch path: the handler's writes
+        // already landed through the live bridge, so a watch must fire regardless of
+        // whether the dispatch then succeeded, threw, or rendered nothing. Each
+        // captured write is one committed-transaction notification turn (its own
+        // version, in apply order); the writes are NOT re-applied.
+        self.notify_committed_mutations(applet_id.as_str(), &applied_mutations)?;
 
         run.run_id = unique_run_id(&run.code_hash, invocation);
 
