@@ -96,6 +96,25 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
             Role::Viewer,
             Role::Auditor,
         ]),
+        // Reading a record's DL-20 change feed (`db.history`) is a data-READ
+        // operation — the `file.history` analog in `forge/spec/commands.md` carries
+        // the read-membership roles (Owner, Maintainer, Editor, Viewer, Auditor), so
+        // it shares the same read-capable roles as `query.execute`, plus the
+        // collection-scoped `db.read` grant enforced in the handler.
+        "db.history" => Some(&[
+            Role::Owner,
+            Role::Maintainer,
+            Role::Editor,
+            Role::Viewer,
+            Role::Auditor,
+        ]),
+        // A non-destructive restore (`db.restore`) appends a NEW record version, i.e.
+        // it is a record WRITE (DL-20). `forge/spec/commands.md`'s `file.restore_version`
+        // (the file-level analog) and the `record.put`/`record.patch`/`record.delete`
+        // writers carry the data-write roles: Owner, Maintainer, Editor. A read-only
+        // Viewer / oversight Auditor or an execution-only Runner cannot restore; the
+        // handler then enforces the collection-scoped `db.write` grant.
+        "db.restore" => Some(&[Role::Owner, Role::Maintainer, Role::Editor]),
         // Schema evolution (commands.md: schema.apply_change → Owner, Maintainer;
         // DL-8). An additive schema change mutates workspace state, so it is a
         // maintainer+ operation — a Viewer/Editor/Auditor cannot apply one.
@@ -231,29 +250,131 @@ fn reject_payload_self_escalation(cmd: &CoreCommand, trusted_scope: Option<&[Str
 /// Parse a payload-supplied `db.read` scope from `payload.grants.db.read`, if
 /// present. `Ok(None)` means no scope was supplied; `Ok(Some(scopes))` is the
 /// (untrusted) list of collection names (`"*"` = read-all). A malformed `grants`
-/// shape is a `ValidationError` rather than a silently-ignored grant.
+/// shape is a `ValidationError` rather than a silently-ignored grant. Thin wrapper
+/// over [`payload_db_scope`] (shared with the `db.write` self-escalation check).
 fn payload_db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
+    payload_db_scope(cmd, "read")
+}
+
+/// True iff `role` carries the `db.write` capability at the command level.
+///
+/// `forge/spec/commands.md` lists the data-WRITE membership roles — the `record.put`
+/// / `record.patch` / `record.delete` writers and the `file.restore_version` analog
+/// of `db.restore`: Owner, Maintainer, Editor. A read-only `Viewer` / oversight
+/// `Auditor`, the execution-only `Runner`, and the code-review `Reviewer` are NOT
+/// data writers, so they lack `db.write` even though a `Viewer`/`Auditor` may read.
+/// This mirrors the manifest `db.write` grant the runtime enforces per `ctx.db.*`
+/// call, lifted to the workspace command.
+fn role_has_db_write(role: Role) -> bool {
+    matches!(role, Role::Owner | Role::Maintainer | Role::Editor)
+}
+
+/// Collection-scoped `db.write` capability gate for `db.restore` (DL-20; the write
+/// counterpart of [`require_db_read`]). A non-destructive restore appends a new
+/// record version, i.e. it is a record WRITE, so `forge/spec/commands.md`'s
+/// "Role plus db.write capability" + `forge/spec/capabilities.md:23` `db.write`
+/// (`resource: collection:<name>`) gate it identically to a record write.
+///
+/// Two independent checks, both required:
+///
+///   1. **Role** — the actor's role must carry `db.write` ([`role_has_db_write`]).
+///      A `Viewer`/`Auditor`/`Runner` fails here with `PermissionDenied`.
+///   2. **Scope** — the target `collection` must be within the caller's granted
+///      `db.write` scope. `trusted_scope` is the workspace-side grant for this actor
+///      (`Some(&["tasks"])`, `Some(&["*"])` for write-all, or `Some(&[])` for "no
+///      collection granted"), resolved by the caller from the TRUSTED grant table —
+///      **never** from the request payload (review 048/050). A collection outside the
+///      granted scope is `CapabilityRequired` naming `db.write collection:<name>`.
+///
+/// Back-compat: an actor with **no** trusted grant entry (`None`) defaults to the
+/// role-derived write scope (write-all for a `db.write`-capable role), so the
+/// owner-permits-all spine — which provisions no grants — keeps working. Configure a
+/// narrowed scope through [`WorkspaceCore::grant_db_write`].
+///
+/// Defense in depth: a payload-supplied `grants.db.write` scope is untrusted input.
+/// It can only ever *narrow* the trusted grant, and a payload grant that tries to
+/// exceed the trusted scope is rejected as a `PermissionDenied` self-escalation.
+pub(super) fn require_db_write(
+    cmd: &CoreCommand,
+    collection: &str,
+    trusted_scope: Option<&[String]>,
+) -> Result<()> {
+    // Layer 1: role.
+    if !role_has_db_write(cmd.actor.role) {
+        return Err(CoreError::PermissionDenied(format!(
+            "actor role {:?} lacks the db.write capability required to restore in {collection:?} (forge/spec/commands.md: db.restore = Role plus db.write)",
+            cmd.actor.role
+        )));
+    }
+
+    // A payload-supplied `grants.db.write` is untrusted: validate its shape and
+    // ensure it does not attempt to exceed the trusted grant. It is NEVER the
+    // authorization source.
+    reject_payload_write_self_escalation(cmd, trusted_scope)?;
+
+    // Layer 2: collection-scoped grant, evaluated against the TRUSTED scope only.
+    match trusted_scope {
+        None => Ok(()),
+        Some(scope) if scope_grants(scope, collection) => Ok(()),
+        Some(_) => Err(CoreError::CapabilityRequired(format!(
+            "db.write collection:{collection} is not within the caller's granted db.write scope (forge/spec/capabilities.md: db.write is collection-scoped)"
+        ))),
+    }
+}
+
+/// Reject a request whose payload `grants.db.write` tries to grant the caller MORE
+/// than its trusted scope (a self-escalation). The write counterpart of
+/// [`reject_payload_self_escalation`]; the payload grant is never used to authorize.
+fn reject_payload_write_self_escalation(
+    cmd: &CoreCommand,
+    trusted_scope: Option<&[String]>,
+) -> Result<()> {
+    let payload_scope = match payload_db_scope(cmd, "write")? {
+        None => return Ok(()),
+        Some(scope) => scope,
+    };
+    let Some(trusted) = trusted_scope else {
+        return Ok(());
+    };
+    if trusted.iter().any(|s| s == "*") {
+        return Ok(());
+    }
+    for entry in &payload_scope {
+        if !scope_grants(trusted, entry) {
+            return Err(CoreError::PermissionDenied(format!(
+                "db.restore payload requested db.write collection:{entry} beyond the actor's trusted grant; the db.write scope is set by the workspace, not the request (review 048)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Parse a payload-supplied `db.<action>` scope from `payload.grants.db.<action>`,
+/// if present. The shared parser behind [`payload_db_read_scope`] and the
+/// `db.write` self-escalation check. `Ok(None)` means no scope was supplied;
+/// `Ok(Some(scopes))` is the (untrusted) list of collection names (`"*"` =
+/// all). A malformed `grants` shape is a `ValidationError`.
+fn payload_db_scope(cmd: &CoreCommand, action: &str) -> Result<Option<Vec<String>>> {
     let grants = match cmd.payload.get("grants") {
         None => return Ok(None),
         Some(g) => g,
     };
-    // `grants.db.read` — absent at any level means "no db.read scope supplied".
-    let read = grants.get("db").and_then(|db| db.get("read"));
-    let read = match read {
+    let scoped = grants.get("db").and_then(|db| db.get(action));
+    let scoped = match scoped {
         None => return Ok(None),
         Some(r) => r,
     };
-    let arr = read.as_array().ok_or_else(|| {
-        CoreError::ValidationError(
-            "query.execute `grants.db.read` must be an array of collection names".into(),
-        )
+    let arr = scoped.as_array().ok_or_else(|| {
+        CoreError::ValidationError(format!(
+            "`grants.db.{action}` must be an array of collection names"
+        ))
     })?;
     let mut scopes = Vec::with_capacity(arr.len());
     for entry in arr {
         let s = entry.as_str().ok_or_else(|| {
-            CoreError::ValidationError(
-                "query.execute `grants.db.read` entries must be collection-name strings".into(),
-            )
+            CoreError::ValidationError(format!(
+                "`grants.db.{action}` entries must be collection-name strings"
+            ))
         })?;
         scopes.push(s.to_string());
     }
@@ -261,7 +382,7 @@ fn payload_db_read_scope(cmd: &CoreCommand) -> Result<Option<Vec<String>>> {
 }
 
 /// True iff `collection` is granted by `scope` — either an exact collection-name
-/// match or the read-all wildcard `"*"`.
+/// match or the all wildcard `"*"`.
 fn scope_grants(scope: &[String], collection: &str) -> bool {
     scope.iter().any(|s| s == "*" || s == collection)
 }

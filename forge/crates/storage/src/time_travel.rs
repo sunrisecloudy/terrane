@@ -87,18 +87,23 @@ impl Store {
     /// itself gate (review 048/050).
     pub fn record_history(&self, collection: &str, id: &str) -> Result<Vec<HistoryEntry>> {
         let doc_id = collection_doc_id(collection);
-        // Chunks in write order (created_at, chunk_id): the replay source of truth.
         let chunks = self.get_chunks(&doc_id)?;
         // Oplog rows in deterministic (lamport, op_id) order: the WHO/WHEN/WHAT feed.
         let ops = self.list_ops()?;
 
+        // Reconstruct each entry's state from ALL chunks with frontier ≤ that entry's
+        // version — by FRONTIER order, not `get_chunks` write order (review 166). After
+        // DL-19/DL-20 retention compaction a `compact-NNNN` BASE chunk is written with a
+        // fresh `created_at` AFTER the retained suffix it summarizes, so `get_chunks`
+        // (ordered by `created_at`) returns it LAST (`chunk-0004, chunk-0005,
+        // compact-0003`). A running `created_at`-prefix accumulator would then replay
+        // v4/v5 WITHOUT their compact base and report `state=None` for a live retained
+        // change — silently tombstoning the retained 90-day who/when/what feed. Filtering
+        // by frontier ≤ version makes the base part of every retained entry's replay set
+        // regardless of when it was written. (A frontier `≤ v` set is order/duplication
+        // independent — Loro dedupes by version — so the result is stable.)
         let mut entries: Vec<HistoryEntry> = Vec::new();
-        // Accumulate chunk payloads up to and including each version, so the state
-        // reconstruction at version `v` replays exactly the chunks ≤ `v` — in the
-        // same write order get_chunks returns.
-        let mut replayed: Vec<Vec<u8>> = Vec::new();
         for chunk in &chunks {
-            replayed.push(chunk.payload.clone());
             let version = chunk_frontier(&chunk.chunk_id);
             // Find the oplog row for THIS chunk (op_id = "{doc_id}#{chunk_id}"). A
             // compact snapshot chunk has a `history.compact` row that names no
@@ -112,7 +117,14 @@ impl Store {
             if !meta.record_ids.iter().any(|r| r == id) {
                 continue; // this change did not touch our record
             }
-            // Reconstruct the record state AS OF this version: replay chunks ≤ v.
+            // Reconstruct the record state AS OF this version: replay every chunk with
+            // frontier ≤ v (so a compact base summarizing folded history is included even
+            // when it was WRITTEN after this entry's chunk — the retention case).
+            let replayed: Vec<Vec<u8>> = chunks
+                .iter()
+                .filter(|c| chunk_frontier(&c.chunk_id) <= version)
+                .map(|c| c.payload.clone())
+                .collect();
             let state = reconstruct_record_at(self.crdt_peer_id(), &replayed, id)?;
             entries.push(HistoryEntry {
                 version,
@@ -125,6 +137,11 @@ impl Store {
                 state,
             });
         }
+        // The feed reads oldest-to-newest by VERSION. `get_chunks` write order matches
+        // this for an uncompacted doc, but after compaction the compact base lands last
+        // in `created_at` order; sort by `version` so the (already-skipped) base never
+        // reorders the retained suffix and the feed stays monotone.
+        entries.sort_by_key(|e| e.version);
         Ok(entries)
     }
 
@@ -554,5 +571,62 @@ mod tests {
         let t2 = s.record_history("tasks", "t2").unwrap();
         assert_eq!(t2.len(), 1);
         assert_eq!(t2[0].version, 2);
+    }
+
+    /// Review 166 (P1 regression): a RETAINED within-window change-feed entry must
+    /// keep its WHO/WHEN/WHAT — its `state` and `logical_at` — AFTER retention
+    /// compaction folds the older suffix into a `compact-NNNN` base. Compaction writes
+    /// that base with a fresh `created_at` AFTER the retained suffix, so `get_chunks`
+    /// (ordered by `created_at`) returns `chunk-0004, chunk-0005, compact-0003`. A
+    /// naive `created_at`-prefix replay would reconstruct v4/v5 WITHOUT the compact base
+    /// and report `state=None` / `logical_at=None` — silently tombstoning live retained
+    /// changes. The frontier-ordered reconstruction includes the base for every entry,
+    /// so the retained feed survives compaction intact.
+    #[test]
+    fn retained_change_feed_survives_compaction_with_state_intact() {
+        use crate::{CompactionOptions, RetentionPolicy};
+        let mut s = store();
+        let idx = IndexManager::new();
+        for (n, title) in [(1, "A"), (2, "B"), (3, "C"), (4, "D"), (5, "E")] {
+            let m = if n == 1 {
+                insert("tasks", "t1", json!({ "title": title }), n)
+            } else {
+                patch("tasks", "t1", json!({ "title": title }), n)
+            };
+            s.apply_mutation_crdt(&m, &idx).unwrap();
+        }
+
+        // Compact with a 2-version retention window: v4/v5 are PROTECTED, v1/v2 may be
+        // folded into a compact base (with a later `created_at`).
+        let opts = CompactionOptions::all_peers_acked().with_retention(RetentionPolicy::new(2));
+        s.compact_history(&opts, &idx).unwrap();
+
+        // Sanity: the substrate is ordered like `..., compact-NNNN` LAST (created_at).
+        let chunk_ids: Vec<String> = s
+            .get_chunks(&collection_doc_id("tasks"))
+            .unwrap()
+            .iter()
+            .map(|c| c.chunk_id.clone())
+            .collect();
+        assert!(
+            chunk_ids.iter().any(|c| c.starts_with("compact-")),
+            "compaction produced a compact base: {chunk_ids:?}"
+        );
+
+        // The retained within-window entries keep their title + logical_at (NOT None).
+        let feed = s.record_history("tasks", "t1").unwrap();
+        let v4 = feed.iter().find(|e| e.version == 4).expect("v4 retained");
+        assert_eq!(v4.state.as_ref().unwrap().fields["title"], json!("D"));
+        assert_eq!(v4.logical_at, Some(4), "v4 keeps its logical_at after compaction");
+        let v5 = feed.iter().find(|e| e.version == 5).expect("v5 retained");
+        assert_eq!(v5.state.as_ref().unwrap().fields["title"], json!("E"));
+        assert_eq!(v5.logical_at, Some(5), "v5 keeps its logical_at after compaction");
+
+        // The feed reads oldest-to-newest by version regardless of the compact base's
+        // late `created_at`.
+        let versions: Vec<u64> = feed.iter().map(|e| e.version).collect();
+        let mut sorted = versions.clone();
+        sorted.sort_unstable();
+        assert_eq!(versions, sorted, "the feed is monotone by version: {versions:?}");
     }
 }

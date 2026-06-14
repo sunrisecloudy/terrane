@@ -63,6 +63,16 @@ use forge_storage::{IndexManager, Store};
 /// reopening the workspace file instead of fail-opening to read-all (review 050).
 const DB_READ_GRANTS_KEY: &str = "db_read_grants";
 
+/// The KV key (within [`META_NS`]) holding the persisted trusted `db.write` grant
+/// table (actor id → writable collections). The write counterpart of
+/// [`DB_READ_GRANTS_KEY`] — the authorization source for `db.restore` (DL-20: a
+/// non-destructive restore is a record WRITE), set only through the trusted
+/// [`grant_db_write`](WorkspaceCore::grant_db_write) seam and persisted so a scoped
+/// grant survives reopening the workspace file (mirrors the `db.read` table, review
+/// 050). An actor with no entry falls back to its role-derived write scope, so the
+/// existing owner-permits-all spine is unaffected.
+const DB_WRITE_GRANTS_KEY: &str = "db_write_grants";
+
 /// The KV key (within [`META_NS`]) holding the persisted SS-7 sync membership
 /// table: the receiver's TRUSTED role + collection grants for each remote sync
 /// peer, keyed by the peer's sync source id (`peer:<loro_id>`). This is the
@@ -140,6 +150,16 @@ pub struct WorkspaceCore {
     /// finding 1). An actor with NO entry falls back to its role-derived read
     /// scope, so the existing owner-permits-all spine is unaffected.
     db_read_grants: std::collections::BTreeMap<String, Vec<String>>,
+    /// Trusted `db.write` grant table: actor id → the collections that actor may
+    /// write (`"*"` = write-all). The write counterpart of `db_read_grants`: the
+    /// SOURCE OF TRUTH for the collection-scoped `db.write` capability that
+    /// `db.restore` (DL-20) requires — a non-destructive restore appends a new record
+    /// version, i.e. it is a record WRITE. Set only through the trusted
+    /// [`grant_db_write`](WorkspaceCore::grant_db_write) seam (workspace configuration
+    /// / membership), never from a request payload (review 048/050). An actor with NO
+    /// entry falls back to its role-derived write scope, so the existing
+    /// owner-permits-all spine is unaffected.
+    db_write_grants: std::collections::BTreeMap<String, Vec<String>>,
     /// SS-7 sync membership table: the receiver's TRUSTED role + collection grants
     /// for each remote sync peer, keyed by the peer's sync **source id**
     /// (`peer:<loro_id>` — the authenticated session identity that reaches the apply
@@ -255,6 +275,7 @@ impl WorkspaceCore {
     /// entry point loads identical state.
     fn from_store(store: Store, workspace_id: impl Into<String>) -> Result<Self> {
         let db_read_grants = load_db_read_grants(&store)?;
+        let db_write_grants = load_db_write_grants(&store)?;
         let sync_membership = load_sync_membership(&store)?;
         let run_policy = load_run_policy(&store)?;
         let registry = load_schema_registry(&store)?;
@@ -267,6 +288,7 @@ impl WorkspaceCore {
             events: EventSink::new(),
             workspace_id: workspace_id.into(),
             db_read_grants,
+            db_write_grants,
             sync_membership,
             run_policy,
             watch_sessions,
@@ -374,6 +396,32 @@ impl WorkspaceCore {
             .map_err(|e| CoreError::StorageError(format!("serialize db.read grants: {e}")))?;
         self.store
             .kv_set(META_NS, DB_READ_GRANTS_KEY, &bytes, "application/json")?;
+        Ok(())
+    }
+
+    /// Configure the TRUSTED `db.write` grant scope for `actor` (workspace
+    /// membership / capability provisioning). The write counterpart of
+    /// [`grant_db_read`](Self::grant_db_read): `scope` is the list of collections the
+    /// actor may write; `"*"` grants write-all. This is the only way a caller's
+    /// `db.write` scope is set — `db.restore` (DL-20) reads it from here, never from
+    /// the request payload, so a shell cannot widen its own write scope by editing the
+    /// command body (review 048/050). Passing an empty `scope` provisions an actor
+    /// that holds the write role but is granted NO collection.
+    ///
+    /// The grant table is **persisted** to the workspace file: a scoped actor stays
+    /// scoped after `open(...)`, instead of silently reverting to role-derived
+    /// write-all (a fail-open regression).
+    pub fn grant_db_write(
+        &mut self,
+        actor: impl Into<String>,
+        scope: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<()> {
+        self.db_write_grants
+            .insert(actor.into(), scope.into_iter().map(Into::into).collect());
+        let bytes = serde_json::to_vec(&self.db_write_grants)
+            .map_err(|e| CoreError::StorageError(format!("serialize db.write grants: {e}")))?;
+        self.store
+            .kv_set(META_NS, DB_WRITE_GRANTS_KEY, &bytes, "application/json")?;
         Ok(())
     }
 
@@ -640,6 +688,22 @@ impl WorkspaceCore {
     /// public accessors).
     pub fn rebuild_projection(&mut self) -> Result<()> {
         self.store.rebuild_projection(&self.indexes)
+    }
+
+    /// Compact this workspace's CRDT history (DL-19), optionally enforcing the DL-20
+    /// retention window carried on `opts` ([`forge_storage::CompactionOptions::with_retention`]):
+    /// fold safely-folded chunks into a compact snapshot while PROTECTING the
+    /// most-recent `window` logical versions of the change-feed/oplog from pruning
+    /// (`forge/spec/time-travel.md` §4). The projection is unchanged (the DL-19
+    /// invariant); only the standalone change-feed entries beyond the window are
+    /// pruned. The disjoint borrow of `store` + `indexes` is internal to the facade
+    /// (mirrors [`rebuild_projection`](Self::rebuild_projection)). Returns the
+    /// compaction report (chunks folded, oplog rows removed).
+    pub fn compact_history(
+        &mut self,
+        opts: &forge_storage::CompactionOptions,
+    ) -> Result<forge_storage::CompactionReport> {
+        self.store.compact_history(opts, &self.indexes)
     }
 
     /// In-process CRDT sync (SS-1/SS-2, M0b): converge this workspace with
@@ -1460,6 +1524,21 @@ fn load_db_read_grants(
     match store.kv_get(META_NS, DB_READ_GRANTS_KEY)? {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
             CoreError::StorageError(format!("deserialize db.read grants: {e}"))
+        }),
+        None => Ok(std::collections::BTreeMap::new()),
+    }
+}
+
+/// Load the persisted trusted `db.write` grant table from the workspace file (the
+/// write counterpart of [`load_db_read_grants`]). Absent / empty → an empty table
+/// (no configured scopes), which preserves the owner-permits-all M0a default for
+/// actors with no grant entry.
+fn load_db_write_grants(
+    store: &Store,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    match store.kv_get(META_NS, DB_WRITE_GRANTS_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::StorageError(format!("deserialize db.write grants: {e}"))
         }),
         None => Ok(std::collections::BTreeMap::new()),
     }

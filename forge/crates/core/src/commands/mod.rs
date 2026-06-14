@@ -35,6 +35,7 @@ pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
 pub(super) mod test_hooks;
+pub(super) mod time_travel;
 pub(super) mod ui;
 pub(super) mod watch;
 pub(super) mod workspace_export;
@@ -86,6 +87,13 @@ const COMMANDS: &[(&str, Handler)] = &[
     // `db.read` grant as `query.execute`; `db.unwatch` is idempotent.
     ("db.watch", WorkspaceCore::cmd_db_watch),
     ("db.unwatch", WorkspaceCore::cmd_db_unwatch),
+    // File-level time travel (DL-20, commands/time_travel.rs): read a record's
+    // change feed (`db.history`, gated by collection-scoped `db.read`) and perform a
+    // NON-DESTRUCTIVE restore that appends a new version (`db.restore`, gated by
+    // collection-scoped `db.write`). Both scope the grant from the trusted context,
+    // never the request payload.
+    ("db.history", WorkspaceCore::cmd_db_history),
+    ("db.restore", WorkspaceCore::cmd_db_restore),
     ("schema.apply_change", WorkspaceCore::cmd_schema_apply_change),
     (
         "schema.validate_compatibility",

@@ -17,6 +17,10 @@
     "all_peers_acked": true,
     "expect_retained_versions": [4, 5],
     "expect_pruned_versions": [1, 2],
-    "expect_current_fields": { "title": "E" }
+    "expect_current_fields": { "title": "E" },
+    "expect_retained_state": [
+      { "version": 4, "logical_at": 4, "state_fields": { "title": "D" } },
+      { "version": 5, "logical_at": 5, "state_fields": { "title": "E" } }
+    ]
   }
 }
