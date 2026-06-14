@@ -75,7 +75,9 @@ pub use warnings::{FullScanReason, PlannedQuery, PlannerWarning};
 // `crate::query::<name>`. Re-exported here so those paths stay stable after the
 // directory split (/simplify #8); not part of the public API.
 pub(crate) use guard::validate_index_ident;
-pub(crate) use json_path::{field_id_json_path, quote_json_path_key};
+// `quote_json_path_key` stays module-private (used inside `ast`/`json_path`); only
+// `field_id_json_path` is reached from a sibling storage module (`index`).
+pub(crate) use json_path::field_id_json_path;
 
 #[cfg(test)]
 mod tests {

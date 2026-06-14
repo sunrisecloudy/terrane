@@ -4,10 +4,10 @@
 //! (review 088 #1 / 090 #3 / 092 #1/#2).
 
 use super::chunk_storage::OptionalRow;
-use super::oplog::{append_op_tx, chunk_id_lamport};
+use super::oplog::{append_op_tx, chunk_id_lamport, OplogPayload};
 use super::rebuild::rebuild_projection_tx;
 use crate::index::IndexManager;
-use crate::{map_json, map_sql, now_ms, Store};
+use crate::{map_sql, now_ms, Store};
 use forge_domain::{CoreError, Result};
 use rusqlite::params;
 
@@ -150,14 +150,17 @@ pub(crate) fn import_remote_chunk_tx(
     let op_id = format!("{doc_id}#{chunk_id}");
     let lamport = chunk_id_lamport(chunk_id);
     let original_author = author_actor_id.as_deref().unwrap_or(source);
-    let op_payload = serde_json::to_vec(&serde_json::json!({
-        "doc_id": doc_id,
-        "chunk_id": chunk_id,
-        "kind": "record.remote_import",
-        "source": original_author,
-        "record_ids": record_ids,
-    }))
-    .map_err(|e| map_json("remote oplog payload encode", e))?;
+    // Same `OplogPayload` builder as the local write path so the payload schema
+    // cannot skew across the two sites; the remote variant carries `source` (the
+    // original author) and no `collection`, preserving the prior shape exactly.
+    let op_payload = OplogPayload::remote_import(
+        doc_id,
+        chunk_id,
+        "record.remote_import",
+        original_author,
+        record_ids.clone(),
+    )
+    .encode("remote oplog payload encode")?;
     append_op_tx(
         tx,
         &op_id,

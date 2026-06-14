@@ -157,6 +157,39 @@ mod tests {
     }
 
     #[test]
+    fn oplog_payload_bytes_are_pinned_for_local_and_remote_paths() {
+        // The unified `OplogPayload` builder (oplog.rs) must reproduce the prior
+        // hand-built JSON byte-for-byte. The two shapes legitimately differ — a
+        // LOCAL write carries `collection` and no `source`; a REMOTE import carries
+        // `source` (the original author) and no `collection` — and serialize in
+        // alphabetical key order (serde_json `Map`/BTreeMap). These goldens are the
+        // pre-dedup bytes; the sync seam + SS-7 relay-hop recovery read these keys.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let local = String::from_utf8(src.list_ops().unwrap()[0].payload.clone()).unwrap();
+        assert_eq!(
+            local,
+            r#"{"chunk_id":"chunk-0001","collection":"tasks","doc_id":"collection/tasks","kind":"record.insert","record_ids":["t1"]}"#,
+            "local oplog payload bytes drifted"
+        );
+
+        let doc_id = collection_doc_id("tasks");
+        let mut chunk = one_chunk(&src, &doc_id);
+        chunk.author_actor_id = Some("peer:C".to_string());
+        chunk.record_ids = vec!["t1".to_string()];
+        let mut dst = store();
+        dst.apply_remote_chunks(&[chunk], "peer:A", &idx).unwrap();
+        let remote = String::from_utf8(dst.list_ops().unwrap()[0].payload.clone()).unwrap();
+        assert_eq!(
+            remote,
+            r#"{"chunk_id":"chunk-0001","doc_id":"collection/tasks","kind":"record.remote_import","record_ids":["t1"],"source":"peer:C"}"#,
+            "remote-import oplog payload bytes drifted"
+        );
+    }
+
+    #[test]
     fn insert_materializes_stable_field_ids() {
         // The CRDT insert path must preserve the review 045/046/049 field_id
         // materialization so indexes keyed on the stable id still see the record.
