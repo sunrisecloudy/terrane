@@ -10,14 +10,14 @@
 //! every transformed record, the oplog op, and the indexes left exactly as they
 //! were). See `forge/spec/migrations.md` §3–4.
 
-use forge_domain::{CoreError, RecordEnvelope, Result};
-use forge_schema::{migrate_record, MigrationDescriptor};
+use forge_domain::{CoreError, Result};
+use forge_schema::MigrationDescriptor;
 use rusqlite::params;
 
+use crate::crdt_write::migrate_collection_records_crdt_tx;
 use crate::errors::{map_json, map_sql};
 use crate::index::IndexManager;
 use crate::kv::{kv_get_tx, kv_set_tx};
-use crate::records::put_record_tx;
 use crate::store::{now_ms, Store};
 
 /// The KV namespace holding workspace metadata (mirrors the core's `__forge/meta`).
@@ -68,19 +68,22 @@ impl Store {
     ///    `to_schema_version`, return the idempotent no-op (`applied: false`)
     ///    without touching anything. If it does not equal `from_schema_version`,
     ///    reject with [`CoreError::SchemaCompatibilityError`] (precondition unmet).
-    /// 2. Apply [`migrate_record`] to every record of the collection (ordered by
-    ///    id). The first record that cannot be transformed (e.g. a lossy narrow)
-    ///    propagates its typed error out of the closure.
-    /// 3. Write each migrated record back to the projection.
+    /// 2. Apply the transform to every record of the collection by rewriting the
+    ///    CRDT **source of truth** (chunks), persisting one immutable migration
+    ///    chunk on the collection doc. The first record that cannot be transformed
+    ///    (e.g. a lossy narrow) propagates its typed error out of the closure.
+    /// 3. Materialize each migrated record into the derived `records` projection.
     /// 4. Append one `schema.migration` op to the oplog.
     /// 5. Bump the persisted `schema_version` to `to_schema_version`.
     /// 6. Rebuild active indexes from the migrated projection.
     ///
     /// Because all six run in the single transaction, ANY failure rolls back the
-    /// whole migration — `schema_version`, every transformed record, the oplog op,
-    /// and the indexes are left exactly as before. `records` is a projection; the
-    /// canonical CRDT chunks are untouched, so a rollback reproduces the
-    /// pre-migration state.
+    /// whole migration — the CRDT chunk, `schema_version`, every transformed record,
+    /// the oplog op, and the indexes are left exactly as before. Crucially the
+    /// migration lives in the same CRDT stream a DL-6
+    /// [`rebuild_projection`](Store::rebuild_projection) replays, so a rebuild
+    /// reproduces the MIGRATED values with zero diff rather than restoring the
+    /// pre-migration state (review 138 P1).
     pub fn apply_migration(
         &mut self,
         descriptor: &MigrationDescriptor,
@@ -88,7 +91,8 @@ impl Store {
     ) -> Result<MigrationOutcome> {
         // Structural validation up front (pure; independent of any record).
         descriptor.validate()?;
-        self.transact(|tx| apply_migration_tx(tx, descriptor, indexes))
+        let peer_id = self.crdt_peer_id();
+        self.transact(|tx| apply_migration_tx(tx, descriptor, peer_id, indexes))
     }
 }
 
@@ -98,6 +102,7 @@ impl Store {
 fn apply_migration_tx(
     tx: &rusqlite::Transaction<'_>,
     descriptor: &MigrationDescriptor,
+    peer_id: u64,
     indexes: &IndexManager,
 ) -> Result<MigrationOutcome> {
     let current = read_schema_version_tx(tx)?;
@@ -119,15 +124,12 @@ fn apply_migration_tx(
         )));
     }
 
-    // (2)+(3) Transform every record of the collection and write it back. A record
-    // that cannot be transformed propagates its error, rolling the tx back.
-    let priors = list_collection_records_tx(tx, &descriptor.collection)?;
-    let mut record_ids = Vec::with_capacity(priors.len());
-    for prior in &priors {
-        let migrated = migrate_record(prior, descriptor)?;
-        write_migrated_record_tx(tx, &migrated, indexes)?;
-        record_ids.push(prior.entity_id.as_str().to_string());
-    }
+    // (2)+(3) Transform every record of the collection by rewriting the CRDT
+    // **source of truth** (chunks), not just the derived projection — so a DL-6
+    // rebuild reproduces the migrated values instead of restoring the pre-migration
+    // state (review 138 P1). The pure transform runs per record; a non-coercible
+    // value propagates its typed error, rolling the whole tx back.
+    let record_ids = migrate_collection_records_crdt_tx(tx, descriptor, peer_id, indexes)?;
     let migrated_records = record_ids.len();
 
     // (4) Record the migration in the oplog (DL-13 "migrations are oplog ops").
@@ -145,38 +147,6 @@ fn apply_migration_tx(
         schema_version: descriptor.to_schema_version,
         migrated_records,
     })
-}
-
-/// Read every record of `collection` from the projection inside the tx, ordered by
-/// id (deterministic), as envelopes.
-fn list_collection_records_tx(
-    tx: &rusqlite::Transaction<'_>,
-    collection: &str,
-) -> Result<Vec<RecordEnvelope>> {
-    let mut stmt = tx
-        .prepare("SELECT data FROM records WHERE collection = ?1 ORDER BY id")
-        .map_err(map_sql)?;
-    let rows = stmt
-        .query_map(params![collection], |row| row.get::<_, String>(0))
-        .map_err(map_sql)?;
-    let mut out = Vec::new();
-    for r in rows {
-        let json = r.map_err(map_sql)?;
-        out.push(serde_json::from_str(&json).map_err(|e| map_json("migration list", e))?);
-    }
-    Ok(out)
-}
-
-/// Write a migrated record back to the projection and refresh active FTS rows in
-/// the same tx (DL-5), so the search shadow follows the migrated value.
-fn write_migrated_record_tx(
-    tx: &rusqlite::Transaction<'_>,
-    env: &RecordEnvelope,
-    indexes: &IndexManager,
-) -> Result<()> {
-    let data = serde_json::to_string(env).map_err(|e| map_json("migration write", e))?;
-    put_record_tx(tx, env)?;
-    indexes.sync_fts_for_record(tx, env.collection.as_str(), env.entity_id.as_str(), &data)
 }
 
 /// Append the `schema.migration` oplog op recording this migration (DL-13). The
@@ -257,29 +227,50 @@ fn parse_schema_version(bytes: &[u8]) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_domain::{CollectionId, LogicalTimestamp, RecordId};
+    use crate::Mutation;
     use forge_schema::{FieldTransform, FieldType};
-    use std::collections::BTreeMap;
 
-    /// A store with one `expenses` record carrying an int `f_amount` and a display
-    /// `amount`, plus an active expression index over `f_amount`.
+    /// Seed one `expenses` record through the CRDT mutation path (DL-4) so the value
+    /// lands in `crdt_chunks` — the source of truth the migration rewrites and a
+    /// DL-6 rebuild replays. A projection-only `put_record` would be invisible to
+    /// the migration (review 138 P1). The display `amount` materializes the stable
+    /// id `f_amount = <value>`.
+    fn seed_amount(store: &mut Store, indexes: &IndexManager, id: &str, value: serde_json::Value) {
+        let mut fields = serde_json::Map::new();
+        fields.insert("amount".into(), value);
+        store
+            .apply_mutation_crdt(
+                &Mutation::Insert {
+                    collection: "expenses".into(),
+                    id: Some(id.into()),
+                    fields,
+                    logical_at: Some(1),
+                },
+                indexes,
+            )
+            .unwrap();
+    }
+
+    /// A store with two `expenses` records (`amount` 10/20) seeded through the CRDT
+    /// path, plus an active expression index over `f_amount`.
     fn seeded_store() -> (Store, IndexManager) {
-        let store = Store::open_in_memory().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
         let mut indexes = IndexManager::new();
-        for (id, amount) in [("e1", 10i64), ("e2", 20)] {
-            let mut env = RecordEnvelope::new(
-                CollectionId::new("expenses"),
-                RecordId::new(id),
-                BTreeMap::from([("amount".to_string(), serde_json::json!(amount))]),
-                LogicalTimestamp(1),
-            );
-            env.field_ids.insert("f_amount".into(), serde_json::json!(amount));
-            store.put_record(&env).unwrap();
-        }
+        seed_amount(&mut store, &indexes, "e1", serde_json::json!(10));
+        seed_amount(&mut store, &indexes, "e2", serde_json::json!(20));
         indexes
             .create_index(store.connection(), "expenses", "f_amount", crate::CreateIndexKind::Value)
             .unwrap();
         (store, indexes)
+    }
+
+    /// Count the rows in `crdt_chunks` (the source of truth) — used by the
+    /// fault-injection test to prove a rolled-back migration appends NO chunk.
+    fn chunk_count(store: &Store) -> i64 {
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM crdt_chunks", [], |row| row.get(0))
+            .unwrap()
     }
 
     fn widen_amount_to_float() -> MigrationDescriptor {
@@ -289,6 +280,7 @@ mod tests {
             to_schema_version: 2,
             transforms: vec![FieldTransform::WidenField {
                 field_id: "f_amount".into(),
+                name: "amount".into(),
                 to: FieldType::FloatNum,
             }],
         }
@@ -363,17 +355,11 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let indexes = IndexManager::new();
         // e1: integral float (coerces fine). e2: fractional float (fails to narrow).
-        for (id, amount) in [("e1", 10.0f64), ("e2", 12.5)] {
-            let mut env = RecordEnvelope::new(
-                CollectionId::new("expenses"),
-                RecordId::new(id),
-                BTreeMap::new(),
-                LogicalTimestamp(1),
-            );
-            env.field_ids.insert("f_amount".into(), serde_json::json!(amount));
-            store.put_record(&env).unwrap();
-        }
+        // Seeded through the CRDT path so the values are in the source of truth.
+        seed_amount(&mut store, &indexes, "e1", serde_json::json!(10.0));
+        seed_amount(&mut store, &indexes, "e2", serde_json::json!(12.5));
         let before_e1 = store.get_record("expenses", "e1").unwrap().unwrap();
+        let chunks_before = chunk_count(&store);
 
         // A descriptor that narrows float → int. e1 (10.0) coerces, but e2 (12.5)
         // fails mid-migration.
@@ -383,6 +369,7 @@ mod tests {
             to_schema_version: 2,
             transforms: vec![FieldTransform::WidenField {
                 field_id: "f_amount".into(),
+                name: "amount".into(),
                 to: FieldType::IntNum,
             }],
         };
@@ -395,10 +382,17 @@ mod tests {
         let after_e1 = store.get_record("expenses", "e1").unwrap().unwrap();
         assert_eq!(after_e1, before_e1, "the first record must be rolled back, not half-migrated");
         assert!(after_e1.field_ids["f_amount"].is_f64());
-        // ...and no migration op was committed.
+        // ...no migration op was committed...
         assert!(
             store.list_ops().unwrap().iter().all(|o| o.kind != MIGRATION_OP_KIND),
             "no migration op may survive a rolled-back migration"
+        );
+        // ...and NO migration chunk was appended to the source of truth, so a DL-6
+        // rebuild reproduces the pre-migration state exactly.
+        assert_eq!(
+            chunk_count(&store),
+            chunks_before,
+            "no CRDT migration chunk may survive a rolled-back migration"
         );
     }
 
@@ -410,6 +404,43 @@ mod tests {
         store.apply_migration(&widen_amount_to_float(), &indexes).unwrap();
         // The manager's rebuild_active ran on the connection; re-create to confirm
         // the projection holds the migrated values the index would build from.
+        indexes
+            .create_index(store.connection(), "expenses", "f_amount", crate::CreateIndexKind::Value)
+            .unwrap();
+        let env = store.get_record("expenses", "e1").unwrap().unwrap();
+        assert_eq!(env.field_ids["f_amount"].as_f64(), Some(10.0));
+    }
+
+    #[test]
+    fn migration_survives_dl6_projection_rebuild() {
+        // Review 138 P1 regression: a migration must be durable in the CRDT source
+        // of truth, so a DL-6 rebuild (which drops the projection and rematerializes
+        // it from `crdt_chunks`) reproduces the MIGRATED values — not the pre-
+        // migration ones — while schema_version and the oplog stay advanced.
+        let (mut store, mut indexes) = seeded_store();
+        store.apply_migration(&widen_amount_to_float(), &indexes).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+
+        // Drop and rebuild the whole projection purely from the CRDT chunks.
+        store.rebuild_projection(&indexes).unwrap();
+
+        // The migrated (float) values survive the rebuild...
+        for id in ["e1", "e2"] {
+            let env = store.get_record("expenses", id).unwrap().unwrap();
+            assert!(
+                env.field_ids["f_amount"].is_f64(),
+                "{id} must still be a float after a CRDT rebuild (migration durable)"
+            );
+            assert!(env.fields["amount"].is_f64(), "{id} display projection migrated too");
+        }
+        // ...schema_version is unchanged by the rebuild...
+        assert_eq!(store.schema_version().unwrap(), 2, "schema_version stays advanced");
+        // ...the migration oplog op is intact...
+        assert_eq!(
+            store.list_ops().unwrap().iter().filter(|o| o.kind == MIGRATION_OP_KIND).count(),
+            1
+        );
+        // ...and an index rebuilt from the projection sees the migrated values.
         indexes
             .create_index(store.connection(), "expenses", "f_amount", crate::CreateIndexKind::Value)
             .unwrap();

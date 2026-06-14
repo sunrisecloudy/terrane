@@ -15,10 +15,7 @@
 //! stored record (no faking).
 
 use forge_schema::{FieldTransform, FieldType, MigrationDescriptor};
-use forge_storage::{IndexManager, Store, MIGRATION_OP_KIND};
-
-use forge_domain::{CollectionId, LogicalTimestamp, RecordEnvelope, RecordId};
-use std::collections::BTreeMap;
+use forge_storage::{IndexManager, Mutation, Store, MIGRATION_OP_KIND};
 
 /// Load a migration fixture by file name from `forge/fixtures/migrations/`.
 fn load_migration(name: &str) -> serde_json::Value {
@@ -30,16 +27,24 @@ fn load_migration(name: &str) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse migration fixture {name}: {e}"))
 }
 
-/// Seed one `expenses` record carrying `value` at stable id `f_amount`.
-fn seed_amount(store: &Store, id: &str, value: serde_json::Value) {
-    let mut env = RecordEnvelope::new(
-        CollectionId::new("expenses"),
-        RecordId::new(id),
-        BTreeMap::from([("amount".to_string(), value.clone())]),
-        LogicalTimestamp(1),
-    );
-    env.field_ids.insert("f_amount".into(), value);
-    store.put_record(&env).unwrap();
+/// Seed one `expenses` record carrying `value` at display `amount` through the CRDT
+/// mutation path (DL-4), so the value lands in the `crdt_chunks` source of truth the
+/// migration rewrites — a projection-only `put_record` would be invisible to the
+/// durable migration (review 138 P1). The insert materializes `f_amount = <value>`.
+fn seed_amount(store: &mut Store, indexes: &IndexManager, id: &str, value: serde_json::Value) {
+    let mut fields = serde_json::Map::new();
+    fields.insert("amount".into(), value);
+    store
+        .apply_mutation_crdt(
+            &Mutation::Insert {
+                collection: "expenses".into(),
+                id: Some(id.into()),
+                fields,
+                logical_at: Some(1),
+            },
+            indexes,
+        )
+        .unwrap();
 }
 
 /// Extract the `to` target type of the last `widen_field` change in a fixture, as
@@ -54,7 +59,7 @@ fn widen_target(fx: &serde_json::Value) -> Option<FieldType> {
     serde_json::from_value(widen.get("to")?.clone()).ok()
 }
 
-/// A descriptor that widens `expenses.f_amount` to `to` (v1 → v2).
+/// A descriptor that widens `expenses.f_amount` (display `amount`) to `to` (v1 → v2).
 fn widen_descriptor(to: FieldType) -> MigrationDescriptor {
     MigrationDescriptor {
         collection: "expenses".into(),
@@ -62,6 +67,7 @@ fn widen_descriptor(to: FieldType) -> MigrationDescriptor {
         to_schema_version: 2,
         transforms: vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to,
         }],
     }
@@ -120,7 +126,7 @@ fn dl13_record_transform_fixtures_apply_atomically() {
 
         let mut store = Store::open_in_memory().unwrap();
         let indexes = IndexManager::new();
-        seed_amount(&store, "e1", case.seed.clone());
+        seed_amount(&mut store, &indexes, "e1", case.seed.clone());
         let before = store.get_record("expenses", "e1").unwrap().unwrap();
         assert_eq!(store.schema_version().unwrap(), 1);
 
@@ -141,6 +147,12 @@ fn dl13_record_transform_fixtures_apply_atomically() {
                     "fixture {}: migrated value mismatch",
                     case.file
                 );
+                // The display projection migrated in lockstep with the stable id.
+                assert_eq!(
+                    &after.fields["amount"], expected,
+                    "fixture {}: display projection must migrate too",
+                    case.file
+                );
                 // int→float specifically must change the JSON number type.
                 if expected.is_f64() {
                     assert!(
@@ -153,6 +165,22 @@ fn dl13_record_transform_fixtures_apply_atomically() {
                 assert!(
                     store.list_ops().unwrap().iter().any(|o| o.kind == MIGRATION_OP_KIND),
                     "fixture {}: a migration must be recorded in the oplog",
+                    case.file
+                );
+                // DURABILITY (review 138 P1): the migration is in the CRDT source of
+                // truth, so a DL-6 rebuild reproduces the migrated value (not the
+                // pre-migration one) and leaves schema_version advanced.
+                store.rebuild_projection(&indexes).unwrap();
+                let rebuilt = store.get_record("expenses", "e1").unwrap().unwrap();
+                assert_eq!(
+                    &rebuilt.field_ids["f_amount"], expected,
+                    "fixture {}: migrated value must survive a CRDT rebuild",
+                    case.file
+                );
+                assert_eq!(
+                    store.schema_version().unwrap(),
+                    2,
+                    "fixture {}: schema_version stays advanced after rebuild",
                     case.file
                 );
             }
@@ -202,9 +230,9 @@ fn dl13_multi_record_migration_rolls_back_on_any_failure() {
     let mut store = Store::open_in_memory().unwrap();
     let indexes = IndexManager::new();
     // Three records: two coercible (10.0, 20.0) and one not (7.25).
-    seed_amount(&store, "e1", serde_json::json!(10.0));
-    seed_amount(&store, "e2", serde_json::json!(20.0));
-    seed_amount(&store, "e3", serde_json::json!(7.25));
+    seed_amount(&mut store, &indexes, "e1", serde_json::json!(10.0));
+    seed_amount(&mut store, &indexes, "e2", serde_json::json!(20.0));
+    seed_amount(&mut store, &indexes, "e3", serde_json::json!(7.25));
     let before: Vec<_> = ["e1", "e2", "e3"]
         .iter()
         .map(|id| store.get_record("expenses", id).unwrap().unwrap())

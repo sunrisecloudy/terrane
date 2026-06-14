@@ -37,17 +37,35 @@ pub enum FieldTransform {
         name: String,
         default: serde_json::Value,
     },
-    /// DL-7: change only the display-name projection. The stable `field_id` value
-    /// is untouched, so a record that carries the value by id needs no value move.
-    RenameField { field_id: String, name: String },
-    /// Drop the field's value from both the stable-id map and the display
-    /// projection. This is the *data* side of a deprecate (DL-8 keeps the schema
-    /// field); it is recorded in the oplog, never a destructive DDL.
-    DropField { field_id: String },
-    /// Coerce the stored value to the wider type `to`. Only a widening relation is
-    /// legal; a narrowing — or a value that cannot be losslessly widened — is a
-    /// typed error.
-    WidenField { field_id: String, to: FieldType },
+    /// DL-7: change only the display-name projection from `from_name` to `to_name`.
+    /// The stable `field_id` value is authoritative and untouched, so the record's
+    /// merge identity never moves; only the display projection's key changes (a
+    /// move of `fields[from_name]` → `fields[to_name]`). Both names are explicit so
+    /// the rename is exact for schema-minted ids (review 138 P2).
+    RenameField {
+        field_id: String,
+        from_name: String,
+        to_name: String,
+    },
+    /// Drop the field's value from both the stable-id map (`field_id`) and the
+    /// display projection (`name`). This is the *data* side of a deprecate (DL-8
+    /// keeps the schema field); it is recorded in the oplog, never a destructive
+    /// DDL. Both the stable id and the prior display `name` are carried explicitly
+    /// so the drop is exact for schema-minted ids like `f_alice_1` (display `note`):
+    /// guessing the display name by stripping `f_` would wrongly leave `note`
+    /// behind while removing a non-existent `alice_1` (review 138 P2).
+    DropField { field_id: String, name: String },
+    /// Coerce the stored value to the wider type `to`, rewriting both the stable-id
+    /// map (`field_id`) and the display projection (`name`). Only a widening
+    /// relation is legal; a narrowing — or a value that cannot be losslessly
+    /// widened — is a typed error. The prior display `name` is explicit so the
+    /// projection is updated exactly for schema-minted ids (review 138 P2), never an
+    /// `f_`-strip guess.
+    WidenField {
+        field_id: String,
+        name: String,
+        to: FieldType,
+    },
 }
 
 impl FieldTransform {
@@ -56,7 +74,7 @@ impl FieldTransform {
         match self {
             FieldTransform::AddField { field_id, .. }
             | FieldTransform::RenameField { field_id, .. }
-            | FieldTransform::DropField { field_id }
+            | FieldTransform::DropField { field_id, .. }
             | FieldTransform::WidenField { field_id, .. } => field_id,
         }
     }
@@ -77,8 +95,10 @@ pub struct MigrationDescriptor {
 impl MigrationDescriptor {
     /// Structural validation independent of any record: the version must advance
     /// (`to > from`), the collection must be named, and no two transforms may be a
-    /// duplicate `add_field` for the same id. Pure; the storage layer also checks
-    /// the *runtime* precondition (current version == `from`).
+    /// duplicate `add_field` for the same id (two adds with different defaults would
+    /// make the result order-dependent on which add ran first, breaking the
+    /// determinism contract — §2). Pure; the storage layer also checks the *runtime*
+    /// precondition (current version == `from`).
     pub fn validate(&self) -> Result<()> {
         if self.collection.trim().is_empty() {
             return Err(CoreError::ValidationError(
@@ -90,6 +110,19 @@ impl MigrationDescriptor {
                 "migration must advance the schema version (from {} to {})",
                 self.from_schema_version, self.to_schema_version
             )));
+        }
+        // Reject a duplicate `add_field` for the same stable id: the engine is order
+        // sensitive (`add_field` is fill-if-missing), so two adds for one id would
+        // silently let the first win — a foot-gun that hides a mistaken descriptor.
+        let mut seen_adds = std::collections::BTreeSet::new();
+        for transform in &self.transforms {
+            if let FieldTransform::AddField { field_id, .. } = transform {
+                if !seen_adds.insert(field_id.as_str()) {
+                    return Err(CoreError::ValidationError(format!(
+                        "migration has duplicate add_field for field_id {field_id:?}"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -140,38 +173,53 @@ fn apply_transform(record: &mut RecordEnvelope, transform: &FieldTransform) -> R
                 .or_insert_with(|| default.clone());
             Ok(())
         }
-        FieldTransform::RenameField { field_id: _, name } => {
-            // DL-7: a rename changes only the display name. The stable-id value is
-            // authoritative and untouched; there is nothing to move in the
-            // record's value maps. The display projection is a derived view the
-            // registry rename already updated, so a record migration has no value
-            // work here — the transform is recorded for replay completeness.
-            let _ = name;
-            Ok(())
-        }
-        FieldTransform::DropField { field_id } => {
-            // Drop the value side from both maps. The schema field is retained via
-            // deprecate (DL-8); only the stored value is removed, replayably.
-            record.field_ids.remove(field_id);
-            // The display projection has no stable-id key, so we cannot map id →
-            // name without the registry. Storage materializes `f_<name>` ids, so a
-            // dropped `f_<name>` id removes its matching display field too.
-            if let Some(name) = field_id.strip_prefix("f_") {
-                record.fields.remove(name);
+        FieldTransform::RenameField {
+            field_id: _,
+            from_name,
+            to_name,
+        } => {
+            // DL-7: a rename changes only the display projection's key. The stable-id
+            // value is authoritative and untouched (so merge identity never moves);
+            // we move `fields[from_name]` → `fields[to_name]` so the materialized
+            // record reflects the new display name. A record that does not carry the
+            // old display name is a no-op (idempotent: re-applying after the move
+            // finds nothing under `from_name`).
+            if from_name != to_name {
+                if let Some(value) = record.fields.remove(from_name) {
+                    record.fields.insert(to_name.clone(), value);
+                }
             }
             Ok(())
         }
-        FieldTransform::WidenField { field_id, to } => {
-            widen_value(record, field_id, to)
+        FieldTransform::DropField { field_id, name } => {
+            // Drop the value side from both maps. The schema field is retained via
+            // deprecate (DL-8); only the stored value is removed, replayably. Both
+            // the stable id and the prior display `name` are explicit in the
+            // descriptor (review 138 P2), so the drop is exact for a schema-minted
+            // id like `f_alice_1` whose display name is `note` — no `f_`-strip guess
+            // that would wrongly remove `alice_1` and leave `note` behind.
+            record.field_ids.remove(field_id);
+            record.fields.remove(name);
+            Ok(())
         }
+        FieldTransform::WidenField {
+            field_id,
+            name,
+            to,
+        } => widen_value(record, field_id, name, to),
     }
 }
 
-/// Coerce a record's stored value at `field_id` to the wider type `to`,
-/// rewriting both the stable-id map and (when present) the display projection.
-/// A missing value is a no-op (nothing to widen). A value that cannot be
-/// losslessly represented in `to` is a [`CoreError::SchemaCompatibilityError`].
-fn widen_value(record: &mut RecordEnvelope, field_id: &str, to: &FieldType) -> Result<()> {
+/// Coerce a record's stored value at `field_id` to the wider type `to`, rewriting
+/// both the stable-id map and (when present) the display projection at `name`. A
+/// missing value is a no-op (nothing to widen). A value that cannot be losslessly
+/// represented in `to` is a [`CoreError::SchemaCompatibilityError`].
+fn widen_value(
+    record: &mut RecordEnvelope,
+    field_id: &str,
+    name: &str,
+    to: &FieldType,
+) -> Result<()> {
     // Widen the authoritative stable-id value first; reuse the coerced value for
     // the display projection so the two never diverge.
     let coerced = match record.field_ids.get(field_id) {
@@ -180,10 +228,10 @@ fn widen_value(record: &mut RecordEnvelope, field_id: &str, to: &FieldType) -> R
     };
     if let Some(coerced) = coerced {
         record.field_ids.insert(field_id.to_string(), coerced.clone());
-        if let Some(name) = field_id.strip_prefix("f_") {
-            if let Some(slot) = record.fields.get_mut(name) {
-                *slot = coerced;
-            }
+        // The display projection is keyed by the prior display name (explicit in
+        // the descriptor — review 138 P2), not an `f_`-strip guess.
+        if let Some(slot) = record.fields.get_mut(name) {
+            *slot = coerced;
         }
     }
     Ok(())
@@ -310,6 +358,27 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_validate_rejects_duplicate_add_field() {
+        // Two adds for the same id make the result order-dependent on which add ran
+        // first (add_field is fill-if-missing), so it is rejected up front.
+        let d = desc(vec![
+            FieldTransform::AddField {
+                field_id: "f_currency".into(),
+                name: "currency".into(),
+                default: serde_json::json!("USD"),
+            },
+            FieldTransform::AddField {
+                field_id: "f_currency".into(),
+                name: "currency".into(),
+                default: serde_json::json!("EUR"),
+            },
+        ]);
+        let err = d.validate().unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("f_currency"), "{err}");
+    }
+
+    #[test]
     fn add_field_fills_default_only_when_missing() {
         let d = desc(vec![FieldTransform::AddField {
             field_id: "f_currency".into(),
@@ -331,13 +400,18 @@ mod tests {
     fn widen_int_to_float_rewrites_value_type() {
         let d = desc(vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to: FieldType::FloatNum,
         }]);
-        let r = rec(&[("f_amount", serde_json::json!(5))]);
+        let mut r = rec(&[("f_amount", serde_json::json!(5))]);
+        r.fields.insert("amount".into(), serde_json::json!(5));
         let out = migrate_record(&r, &d).unwrap();
-        // 5 → 5.0: the stored JSON is now a float.
+        // 5 → 5.0: the stored JSON is now a float, in BOTH the stable-id map and the
+        // display projection (kept in lockstep — review 138 P2).
         assert!(out.field_ids["f_amount"].is_f64(), "int must widen to float");
         assert_eq!(out.field_ids["f_amount"].as_f64(), Some(5.0));
+        assert!(out.fields["amount"].is_f64(), "display projection must widen too");
+        assert_eq!(out.fields["amount"].as_f64(), Some(5.0));
     }
 
     #[test]
@@ -345,6 +419,7 @@ mod tests {
         // Any concrete scalar widens to scalar verbatim.
         let d_scalar = desc(vec![FieldTransform::WidenField {
             field_id: "f_body".into(),
+            name: "body".into(),
             to: FieldType::Scalar,
         }]);
         let r = rec(&[("f_body", serde_json::json!("hello"))]);
@@ -355,6 +430,7 @@ mod tests {
         // T → nullable(T): a present value is unchanged; a null passes through.
         let d_null = desc(vec![FieldTransform::WidenField {
             field_id: "f_estimate".into(),
+            name: "estimate".into(),
             to: FieldType::nullable(FieldType::IntNum),
         }]);
         let r_present = rec(&[("f_estimate", serde_json::json!(3))]);
@@ -375,6 +451,7 @@ mod tests {
         // float cannot be coerced to int_num → SchemaCompatibilityError.
         let d = desc(vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to: FieldType::IntNum,
         }]);
         let r = rec(&[("f_amount", serde_json::json!(12.5))]);
@@ -388,6 +465,7 @@ mod tests {
         // 5.0 IS integral, so the value-level lossiness check passes (5.0 → 5).
         let d = desc(vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to: FieldType::IntNum,
         }]);
         let r = rec(&[("f_amount", serde_json::json!(5.0))]);
@@ -399,7 +477,10 @@ mod tests {
     fn drop_field_removes_value_from_both_maps() {
         let mut r = rec(&[("f_old", serde_json::json!("x")), ("f_keep", serde_json::json!(1))]);
         r.fields.insert("old".into(), serde_json::json!("x"));
-        let d = desc(vec![FieldTransform::DropField { field_id: "f_old".into() }]);
+        let d = desc(vec![FieldTransform::DropField {
+            field_id: "f_old".into(),
+            name: "old".into(),
+        }]);
         let out = migrate_record(&r, &d).unwrap();
         assert!(!out.field_ids.contains_key("f_old"));
         assert!(!out.fields.contains_key("old"));
@@ -408,15 +489,37 @@ mod tests {
     }
 
     #[test]
-    fn rename_preserves_stable_id_value() {
-        let r = rec(&[("f_alice_0", serde_json::json!("hi"))]);
+    fn drop_field_uses_explicit_display_name_not_f_strip() {
+        // Review 138 P2: a schema-minted id `f_alice_1` whose display name is `note`
+        // must clean BOTH maps. The old `f_`-strip guess removed a non-existent
+        // `alice_1` and left `note` behind. The explicit `name` removes `note`.
+        let mut r = rec(&[("f_alice_1", serde_json::json!("x"))]);
+        r.fields.insert("note".into(), serde_json::json!("x"));
+        let d = desc(vec![FieldTransform::DropField {
+            field_id: "f_alice_1".into(),
+            name: "note".into(),
+        }]);
+        let out = migrate_record(&r, &d).unwrap();
+        assert!(!out.field_ids.contains_key("f_alice_1"), "stable id must be dropped");
+        assert!(!out.fields.contains_key("note"), "display value must be dropped, not left behind");
+        assert!(!out.fields.contains_key("alice_1"), "must not invent an `alice_1` key");
+    }
+
+    #[test]
+    fn rename_moves_display_name_and_preserves_stable_id_value() {
+        let mut r = rec(&[("f_alice_0", serde_json::json!("hi"))]);
+        r.fields.insert("label".into(), serde_json::json!("hi"));
         let d = desc(vec![FieldTransform::RenameField {
             field_id: "f_alice_0".into(),
-            name: "label".into(),
+            from_name: "label".into(),
+            to_name: "title".into(),
         }]);
         let out = migrate_record(&r, &d).unwrap();
         // DL-7: the stable id value never moves on a rename.
         assert_eq!(out.field_ids["f_alice_0"], serde_json::json!("hi"));
+        // The display projection's key moves old → new (review 138 P2).
+        assert!(!out.fields.contains_key("label"), "old display name must be gone");
+        assert_eq!(out.fields["title"], serde_json::json!("hi"));
     }
 
     #[test]
@@ -425,6 +528,7 @@ mod tests {
         r.unknown_fields.insert("f_future".into(), serde_json::json!({"x": 1}));
         let d = desc(vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to: FieldType::FloatNum,
         }]);
         let out = migrate_record(&r, &d).unwrap();
@@ -437,7 +541,11 @@ mod tests {
         let mut r = rec(&[("f_amount", serde_json::json!(5)), ("f_z", serde_json::json!(true))]);
         r.field_ids.insert("f_a".into(), serde_json::json!("first"));
         let d = desc(vec![
-            FieldTransform::WidenField { field_id: "f_amount".into(), to: FieldType::FloatNum },
+            FieldTransform::WidenField {
+                field_id: "f_amount".into(),
+                name: "amount".into(),
+                to: FieldType::FloatNum,
+            },
             FieldTransform::AddField {
                 field_id: "f_currency".into(),
                 name: "currency".into(),
@@ -454,6 +562,7 @@ mod tests {
         let r = rec(&[("f_amount", serde_json::json!(5))]);
         let d = desc(vec![FieldTransform::WidenField {
             field_id: "f_amount".into(),
+            name: "amount".into(),
             to: FieldType::FloatNum,
         }]);
         let out = migrate_record(&r, &d).unwrap();
@@ -473,9 +582,20 @@ mod tests {
                 name: "currency".into(),
                 default: serde_json::json!("USD"),
             },
-            FieldTransform::WidenField { field_id: "f_a".into(), to: FieldType::FloatNum },
-            FieldTransform::DropField { field_id: "f_old".into() },
-            FieldTransform::RenameField { field_id: "f_a".into(), name: "amount".into() },
+            FieldTransform::WidenField {
+                field_id: "f_a".into(),
+                name: "a".into(),
+                to: FieldType::FloatNum,
+            },
+            FieldTransform::DropField {
+                field_id: "f_old".into(),
+                name: "old".into(),
+            },
+            FieldTransform::RenameField {
+                field_id: "f_a".into(),
+                from_name: "a".into(),
+                to_name: "amount".into(),
+            },
         ]);
         let s = serde_json::to_string(&d).unwrap();
         assert!(s.contains("\"op\":\"add_field\""), "{s}");

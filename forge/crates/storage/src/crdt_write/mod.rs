@@ -48,6 +48,12 @@ pub use remote::RemoteChunk;
 // API. (`import_remote_chunk_tx` stays `pub(crate)` in `remote` for its sibling
 // `apply_remote_chunks`; nothing imports it through this facade.)
 pub(crate) use rebuild::rebuild_projection_tx;
+// The DL-13 migration durability seam (review 138 P1): the migration driver in
+// `crate::migration` rewrites the CRDT source of truth (chunks), not just the
+// projection, so a DL-6 rebuild reproduces the migrated values. Encapsulated here
+// because it composes the same load-doc/export-chunk/materialize primitives the
+// mutation path uses.
+pub(crate) use mutation::migrate_collection_records_crdt_tx;
 
 #[cfg(test)]
 mod tests {

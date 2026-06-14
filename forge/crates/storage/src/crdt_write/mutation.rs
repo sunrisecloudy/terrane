@@ -11,6 +11,7 @@ use crate::index::IndexManager;
 use crate::{Mutation, Store};
 use forge_crdt::RecordsDoc;
 use forge_domain::{CollectionId, CoreError, RecordEnvelope, RecordId, Result};
+use forge_schema::{migrate_record, MigrationDescriptor};
 
 /// The append-only chunk format tag written into `crdt_chunks.format`. Loro
 /// incremental updates; matches the fixtures' `chunk_format: "loro"`.
@@ -368,4 +369,67 @@ fn write_collection_bucket_tx(
         materialize_record_into_projection(tx, &doc, collection, id, indexes)?;
     }
     Ok(())
+}
+
+/// Apply a DL-13 [`MigrationDescriptor`] to **every** record of its collection by
+/// rewriting the CRDT **source of truth** (not just the derived `records`
+/// projection), inside an already-open transaction `tx`. Returns the ids of the
+/// records transformed (in deterministic doc order), which the caller records in
+/// the `schema.migration` oplog op.
+///
+/// This is the durability seam for review 138 P1: the migration must live in the
+/// same `crdt_chunks` stream that DL-6 [`rebuild_projection`](Store::rebuild_projection)
+/// replays, or a rebuild would restore the PRE-migration values while
+/// `schema_version` stayed advanced. So we:
+/// 1. Load the collection doc from chunks (source of truth) and capture `before`.
+/// 2. For each record id in the doc, read its envelope, apply [`migrate_record`]
+///    (the pure transform — a non-coercible value propagates its typed error and
+///    rolls the whole transaction back), and write the migrated envelope back into
+///    the doc.
+/// 3. Commit once and export exactly the new ops as ONE incremental chunk, appended
+///    immutably (so the migration rides Loro history and survives rebuild/sync).
+/// 4. Materialize each transformed record into the projection (FTS-synced).
+///
+/// A record whose value the transform leaves byte-identical still re-exports as a
+/// no-op delta; only genuinely changed records add ops, keeping the chunk minimal
+/// and rebuild byte-equal.
+pub(crate) fn migrate_collection_records_crdt_tx(
+    tx: &rusqlite::Transaction<'_>,
+    descriptor: &MigrationDescriptor,
+    peer_id: u64,
+    indexes: &IndexManager,
+) -> Result<Vec<String>> {
+    let collection = descriptor.collection.as_str();
+    let doc_id = collection_doc_id(collection);
+
+    let doc = load_doc_tx(tx, &doc_id, peer_id)?;
+    let before = doc.version();
+
+    // Deterministic order: list_record_ids is sorted, so the chunk/oplog the
+    // migration produces is byte-stable across runs (the DL-13 determinism
+    // contract carried through to the source of truth).
+    let mut record_ids = doc.list_record_ids();
+    record_ids.sort();
+
+    for id in &record_ids {
+        let Some(prior) = envelope_from_doc(&doc, id)? else {
+            continue; // CRDT-deleted between listing and read — nothing to migrate.
+        };
+        let migrated = migrate_record(&prior, descriptor)?;
+        write_envelope_to_doc(&doc, &migrated)?;
+    }
+    doc.commit();
+
+    // Export and persist the migration as ONE immutable chunk on the collection doc.
+    let chunk_payload = doc.export_updates_since(&before)?;
+    let chunk_id = next_chunk_id(tx, &doc_id)?;
+    put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
+
+    // Materialize every transformed record into the projection from the migrated
+    // CRDT state (FTS-synced), so the maintained projection matches a from-scratch
+    // rebuild byte-for-byte.
+    for id in &record_ids {
+        materialize_record_into_projection(tx, &doc, collection, id, indexes)?;
+    }
+    Ok(record_ids)
 }
