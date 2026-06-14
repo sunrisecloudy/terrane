@@ -14,9 +14,10 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Caller-supplied horizon for safe history compaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CompactionSafeHorizon {
     /// Safest default: retain all history.
+    #[default]
     RetainAll,
     /// No tracked peer needs incremental history, so each doc may compact through
     /// its latest local chunk.
@@ -24,12 +25,6 @@ pub enum CompactionSafeHorizon {
     /// Per-doc oldest acknowledged chunk sequence among still-tracked peers.
     /// Missing docs default to `0` and are not compacted.
     Frontiers(BTreeMap<String, u64>),
-}
-
-impl Default for CompactionSafeHorizon {
-    fn default() -> Self {
-        Self::RetainAll
-    }
 }
 
 impl CompactionSafeHorizon {
