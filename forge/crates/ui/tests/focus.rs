@@ -9,7 +9,7 @@
 //!   - UI-6 unknown: the container is not itself focusable, but its focusable
 //!     KNOWN descendants stay in the order, in source order.
 
-use forge_ui::{from_str, FocusStop, Node, StackDir};
+use forge_ui::{from_str, FocusStop, FocusStopKind, Node, StackDir};
 
 /// Convenience: the `(path, role, name)` triples of an order, for compact asserts.
 fn order_triples(node: &Node) -> Vec<(Vec<usize>, String, Option<String>)> {
@@ -143,10 +143,42 @@ fn tabs_focus_order_is_tablist_then_active_panel_only() {
     let names: Vec<_> = triples.iter().filter_map(|t| t.2.clone()).collect();
     assert!(names.contains(&"InSecondPanel".to_string()), "{names:?}");
     assert!(!names.contains(&"InFirstPanel".to_string()), "{names:?}");
-    // The active panel's stop is addressed past the tabs (offset by tab count).
-    let panel_stop = triples.last().unwrap();
-    assert_eq!(panel_stop.1, "button");
-    assert_eq!(panel_stop.0, vec![3]); // 2 tabs + active index 1
+    // The active panel's stop is addressed at its REAL render index `[active]`,
+    // matching the accessibility annotation path for that panel — not offset
+    // past the tab count.
+    let stops = tabs.focus_order().stops;
+    let panel_stop = stops.last().unwrap();
+    assert_eq!(panel_stop.role.as_str(), "button");
+    assert_eq!(panel_stop.path, vec![1]); // active panel index 1, render-consistent
+    assert_eq!(panel_stop.kind, FocusStopKind::Element);
+}
+
+#[test]
+fn tabs_tab_and_panel_paths_are_disambiguated_by_kind_not_collision() {
+    // Regression: tab descriptors are NOT render nodes. A tab and the first
+    // rendered panel child can share numeric path `[0]`; the `kind` tag (Tab vs
+    // Element) is what disambiguates them, so a renderer resolves each against
+    // the right array. Active panel index 0 here makes the collision concrete.
+    let tabs = from_str(
+        r#"{"type":"Tabs","activeTab":0,
+            "tabs":[{"label":"Alpha"},{"label":"Beta"}],
+            "panels":[
+                {"type":"Button","label":"InAlpha"},
+                {"type":"Button","label":"InBeta"}
+            ]}"#,
+    )
+    .unwrap();
+    let stops = tabs.focus_order().stops;
+    // First tab and the active panel's button both sit at numeric path [0]...
+    assert_eq!(stops[0].path, vec![0]);
+    assert_eq!(stops[0].kind, FocusStopKind::Tab);
+    assert_eq!(stops[0].name.as_deref(), Some("Alpha"));
+    let panel = stops.last().unwrap();
+    assert_eq!(panel.path, vec![0]);
+    // ...but they are different KINDS, so they never actually collide.
+    assert_eq!(panel.kind, FocusStopKind::Element);
+    assert_eq!(panel.name.as_deref(), Some("InAlpha"));
+    assert_ne!(stops[0].kind, panel.kind);
 }
 
 #[test]

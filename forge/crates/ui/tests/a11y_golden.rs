@@ -80,6 +80,7 @@ fn focus_order_json(node: &Node) -> Value {
         "initial_focus": order.initial_focus,
         "stops": order.stops.iter().map(|s| json!({
             "path": s.path,
+            "kind": format!("{:?}", s.kind),
             "role": s.role.as_str(),
             "name": s.name,
         })).collect::<Vec<_>>(),

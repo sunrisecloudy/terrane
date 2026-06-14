@@ -29,7 +29,7 @@ mod patch;
 pub use accessibility::{
     validate_accessibility, Accessibility, AxNameSource, AxRole,
 };
-pub use focus::{FocusOrder, FocusStop};
+pub use focus::{FocusOrder, FocusStop, FocusStopKind};
 pub use node::{ActionRef, BaseNode, Node, StackDir};
 pub use patch::{apply, diff, Patch, Path};
 

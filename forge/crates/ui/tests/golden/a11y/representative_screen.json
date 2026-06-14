@@ -42,6 +42,7 @@
       ],
       "stops": [
         {
+          "kind": "Element",
           "name": "Cancel",
           "path": [
             1
@@ -49,6 +50,7 @@
           "role": "button"
         },
         {
+          "kind": "Element",
           "name": "Delete",
           "path": [
             2
@@ -143,6 +145,7 @@
       ],
       "stops": [
         {
+          "kind": "Tab",
           "name": "Overview",
           "path": [
             1,
@@ -151,6 +154,7 @@
           "role": "tab"
         },
         {
+          "kind": "Tab",
           "name": "Settings",
           "path": [
             1,
@@ -159,14 +163,16 @@
           "role": "tab"
         },
         {
+          "kind": "Element",
           "name": "Refresh",
           "path": [
             1,
-            2
+            0
           ],
           "role": "button"
         },
         {
+          "kind": "Element",
           "name": "Search",
           "path": [
             2,
@@ -175,6 +181,7 @@
           "role": "textbox"
         },
         {
+          "kind": "Element",
           "name": "Clear",
           "path": [
             2,

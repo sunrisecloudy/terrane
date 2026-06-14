@@ -32,16 +32,46 @@
 use crate::accessibility::AxRole;
 use crate::node::Node;
 
+/// What a [`FocusStop`]'s `path` addresses, so a render-tree element stop is
+/// never confused with a Tabs tab descriptor (which is not a render node).
+///
+/// Tabs are the one focusable thing in the catalog that is NOT itself a
+/// renderable [`Node`]: a `tab` lives in the Tabs node's verbatim `tabs`
+/// descriptor array, not in its rendered `children`/`panels`. Tagging the stop
+/// kind keeps every `path` unambiguous — an [`Element`](FocusStopKind::Element)
+/// path resolves against the render tree exactly like a diff/patch
+/// [`Path`](crate::Path); a [`Tab`](FocusStopKind::Tab) path resolves the
+/// `tabs` descriptor array of the Tabs node at the path's parent. Without this
+/// tag a tab at `[1,0]` would collide with the first rendered panel child at
+/// `[1,0]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusStopKind {
+    /// A rendered [`Node`] (Button/TextField/focusable Scroll region/...). Its
+    /// `path` is the render-tree index path (same addressing as the diff/patch
+    /// layer and the accessibility annotations).
+    #[default]
+    Element,
+    /// A Tabs `tab` descriptor. Its `path` indexes the owning Tabs node's
+    /// verbatim `tabs` array (parent path = the Tabs node, last index = the tab),
+    /// NOT a rendered child — so it never collides with a panel child path.
+    Tab,
+}
+
 /// One stop in a tree's focus order: a focusable element addressed by its index
 /// path from the focus root, with the role + accessible name it exposes.
 ///
-/// The `path` is the same `[]`/`[0]`/`[0,2]` index addressing used by the
-/// diff/patch layer ([`crate::Path`]), making the order deterministic and
-/// directly comparable against a committed golden.
+/// For an [`Element`](FocusStopKind::Element) stop the `path` is the same
+/// `[]`/`[0]`/`[0,2]` index addressing used by the diff/patch layer
+/// ([`crate::Path`]) and the accessibility annotations, making the order
+/// deterministic and directly comparable against a committed golden. For a
+/// [`Tab`](FocusStopKind::Tab) stop the `path` indexes the owning Tabs node's
+/// `tabs` descriptor array (see [`FocusStopKind`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusStop {
     /// Index path of this stop from the root the order was computed for.
     pub path: Vec<usize>,
+    /// What `path` addresses — a render-tree element, or a Tabs tab descriptor.
+    pub kind: FocusStopKind,
     /// The ARIA role this stop exposes (mirrors [`Node::accessibility`]).
     pub role: AxRole,
     /// The accessible name this stop exposes, if any.
@@ -62,6 +92,11 @@ pub struct FocusOrder {
     /// focusable child, or the container itself when it has no focusable child
     /// (the spec's "first focusable child or the dialog title" rule for Modal).
     /// `None` when the order is empty and the container is not itself focusable.
+    ///
+    /// This mirrors `stops.first().map(|s| s.path)` for a non-empty order (read
+    /// `stops[0].kind` to disambiguate a [`Tab`](FocusStopKind::Tab) entry from a
+    /// rendered element); the standalone value carries the Modal's
+    /// focus-the-dialog-itself target (root path `[]`) that has no `stops` entry.
     pub initial_focus: Option<Vec<usize>>,
 }
 
@@ -180,6 +215,14 @@ fn ordered_children(node: &Node) -> Vec<Node> {
 /// verbatim arrays on the UI-6 fallback; the active index is `activeTab`/`active`
 /// (default 0). Inactive panels are intentionally skipped (`spec`: "inactive
 /// panels are not in the tab order").
+///
+/// Addressing is render-tree-consistent: panels are the Tabs node's *rendered*
+/// children, so the active panel's focusables are addressed at `[..tabs, active]`
+/// — exactly the path the accessibility annotations give that panel. Tab
+/// descriptors are NOT rendered nodes, so their stops are tagged
+/// [`FocusStopKind::Tab`] and addressed by their index in the `tabs` array; the
+/// kind tag is what keeps a tab at `[..tabs, 0]` from colliding with the first
+/// panel child at `[..tabs, 0]`.
 fn descend_tabs(
     node: &Node,
     path: &mut Vec<usize>,
@@ -189,28 +232,32 @@ fn descend_tabs(
     let Node::Unknown { props, .. } = node else {
         return;
     };
-    // Each declared tab is a focusable stop in the tablist, addressed under the
-    // `tabs` array so the path stays deterministic.
+    // Each declared tab is a focusable stop in the tablist, addressed by its
+    // index in the `tabs` descriptor array (kind = Tab so it never collides with
+    // a rendered panel child at the same numeric path).
     let tabs = unknown_child_nodes(props, &["tabs"]);
     for (i, tab) in tabs.iter().enumerate() {
         path.push(i);
         out.push(tab_stop(tab, path));
         path.pop();
     }
-    // Then only the active panel's focusables. Panels are addressed after the
-    // tabs (offset by tab count) so paths never collide.
+    // Then only the active panel's focusables. Panels ARE the Tabs node's
+    // rendered children, so the active panel is addressed at its real render
+    // index `[..tabs, active]` — matching the accessibility annotation path for
+    // that panel — not offset past the tab count.
     let panels = unknown_child_nodes(props, &["panels", "children"]);
     if panels.is_empty() {
         return;
     }
     let active = active_tab_index(props).min(panels.len().saturating_sub(1));
-    path.push(tabs.len() + active);
+    path.push(active);
     visit(&panels[active], path, out);
     path.pop();
 }
 
 /// A focus stop for a Tabs `tab` descriptor: tabs always expose the `tab` role,
-/// named by their `label`/`title`/`ariaLabel` (required per spec).
+/// named by their `label`/`title`/`ariaLabel` (required per spec). Tagged
+/// [`FocusStopKind::Tab`] because a tab is not a rendered node.
 fn tab_stop(tab: &Node, path: &[usize]) -> FocusStop {
     let name = match tab {
         Node::Unknown { props, .. } => ["label", "title", "ariaLabel"]
@@ -221,17 +268,20 @@ fn tab_stop(tab: &Node, path: &[usize]) -> FocusStop {
     };
     FocusStop {
         path: path.to_vec(),
+        kind: FocusStopKind::Tab,
         role: AxRole::from("tab"),
         name,
     }
 }
 
 /// Build a [`FocusStop`] from a focusable node at `path`, taking its role + name
-/// from the single accessibility source of truth ([`Node::accessibility`]).
+/// from the single accessibility source of truth ([`Node::accessibility`]). A
+/// rendered element stop, so [`FocusStopKind::Element`].
 fn stop_for(node: &Node, path: &[usize]) -> FocusStop {
     let ax = node.accessibility();
     FocusStop {
         path: path.to_vec(),
+        kind: FocusStopKind::Element,
         role: ax.role,
         name: ax.name,
     }
