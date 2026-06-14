@@ -52,6 +52,13 @@ it rather than attribute it to the relay: a relay must not be able to launder a
 write whose author it cannot prove by having the receiver fall back to the relay's
 own (trusted) identity.
 
+Every remote import — whether a batch apply or a single-chunk import API — writes
+its `record.remote_import` row through one shared engine that takes the original
+author and touched record ids as inputs. There is no second import path that can
+write a provenance-poor remote-import row (no original author, no record ids):
+losing provenance at import would reintroduce exactly the relay-laundering this
+boundary forbids (`review 095`).
+
 ## M0b scope
 
 M0b validates authorization at apply time in the receiving store. Full server

@@ -553,9 +553,14 @@ pub struct RemoteChunk {
 /// row tagged with the remote `source` (DL-4 remote parity). Returns `true` iff a
 /// new chunk (and its oplog row) was written; an identical re-import is an
 /// idempotent `false` no-op, and a conflicting payload under an existing chunk id
-/// trips the append-only history-rewrite guard. The transaction-scoped twin of
-/// [`Store::put_chunk_from_remote`].
-fn import_remote_chunk_tx(
+/// trips the append-only history-rewrite guard.
+///
+/// This is the SINGLE remote-import code path: both [`Store::apply_remote_chunks`]
+/// and the legacy [`Store::put_chunk_from_remote`] funnel through it, so neither can
+/// emit a provenance-poor `record.remote_import` row (`review 095`). The original
+/// author and touched record ids ride on the [`RemoteChunk`], never on a divergent
+/// inline insert.
+pub(crate) fn import_remote_chunk_tx(
     tx: &rusqlite::Transaction<'_>,
     chunk: &RemoteChunk,
     source: &str,
@@ -1037,6 +1042,94 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&op.payload).unwrap();
         assert_eq!(payload["source"], json!("peer:C"), "payload source is the original author");
         assert_eq!(payload["record_ids"], json!(["t1"]), "the touched record id is preserved");
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_preserves_forwarded_provenance() {
+        // review 095: the still-public single-chunk import escape hatch must funnel
+        // through the SAME provenance-preserving engine as `apply_remote_chunks`, so
+        // it CANNOT emit a provenance-poor `record.remote_import`. When the caller
+        // supplies the chunk's ORIGINAL author + touched record ids, the oplog row is
+        // stamped with the original author (not the relay `source`) and the record ids.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut relay = store();
+        // Importing source is the RELAY (peer:A); original author is peer:C.
+        let imported = relay
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &["t1"],
+            )
+            .unwrap();
+        assert!(imported, "a fresh chunk is newly imported");
+
+        let ops = relay.list_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        let op = &ops[0];
+        assert_eq!(op.kind, "record.remote_import");
+        assert_eq!(op.actor_id, "peer:C", "oplog attributes the ORIGINAL author, not the relay");
+        let payload: serde_json::Value = serde_json::from_slice(&op.payload).unwrap();
+        assert_eq!(payload["source"], json!("peer:C"), "payload source is the original author");
+        assert_eq!(
+            payload["record_ids"],
+            json!(["t1"]),
+            "the touched record id is preserved (never a provenance-poor empty list)"
+        );
+
+        // Idempotent: a second identical import adds no oplog row.
+        let again = relay
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &["t1"],
+            )
+            .unwrap();
+        assert!(!again, "re-importing a present chunk is an idempotent no-op");
+        assert_eq!(relay.list_ops().unwrap().len(), 1, "no duplicate oplog row");
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_first_hop_attributes_its_source() {
+        // The non-forwarded control: with no original author supplied, the importing
+        // `source` IS the author, so the oplog records it (unchanged direct-import
+        // behavior) — but still carries the touched record ids.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t9", json!({"title": "X"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        dst.put_chunk_from_remote(
+            &doc_id,
+            &row.chunk_id,
+            &row.format,
+            &row.payload,
+            "peer:origin",
+            None,
+            &["t9"],
+        )
+        .unwrap();
+        let ops = dst.list_ops().unwrap();
+        assert_eq!(ops[0].actor_id, "peer:origin");
+        let payload: serde_json::Value = serde_json::from_slice(&ops[0].payload).unwrap();
+        assert_eq!(payload["source"], json!("peer:origin"));
+        assert_eq!(payload["record_ids"], json!(["t9"]));
     }
 
     #[test]
