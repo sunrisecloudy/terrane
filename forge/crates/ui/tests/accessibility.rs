@@ -247,6 +247,72 @@ fn textfield_requires_label_placeholder_does_not_count() {
         on_change: None,
     };
     assert!(validate_accessibility(&good).is_ok());
+
+    // Form Label-Presence Rule: an `ariaLabel`-only TextField (no proper `label`)
+    // is REJECTED — `ariaLabel` does not satisfy the six required-label controls.
+    let aria_only = Node::TextField {
+        base: forge_ui::BaseNode::default(),
+        value: String::new(),
+        label: None,
+        aria_label: Some("Search".into()),
+        placeholder: None,
+        on_change: None,
+    };
+    let err = validate_accessibility(&aria_only).unwrap_err();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("TextField"), "{err}");
+    assert!(err.to_string().contains("label"), "{err}");
+}
+
+#[test]
+fn label_required_controls_reject_aria_label_only_and_accept_a_proper_label() {
+    // Form Label-Presence Rule (`spec/accessibility.md`): TextField, TextArea,
+    // Select, MultiSelect, Slider, DatePicker REQUIRE a proper `label`. An
+    // `ariaLabel`-only instance (no `label`) is REJECTED; the same control with a
+    // proper `label` is ACCEPTED. (TextField is also covered as a typed node in
+    // `textfield_requires_label_placeholder_does_not_count`; included here for the
+    // full partition.)
+    for ty in [
+        "TextField",
+        "TextArea",
+        "Select",
+        "MultiSelect",
+        "Slider",
+        "DatePicker",
+    ] {
+        // ariaLabel-only → rejected with a clear, component-named error.
+        let aria_only =
+            from_str(&format!(r#"{{"type":"{ty}","ariaLabel":"Field"}}"#)).unwrap();
+        let err = validate_accessibility(&aria_only)
+            .expect_err(&format!("{ty} ariaLabel-only must be rejected"));
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains(ty), "{err}");
+        assert!(err.to_string().contains("label"), "{err}");
+
+        // proper label → accepted.
+        let labelled =
+            from_str(&format!(r#"{{"type":"{ty}","label":"Field"}}"#)).unwrap();
+        assert!(
+            validate_accessibility(&labelled).is_ok(),
+            "{ty} with a proper label must pass"
+        );
+    }
+}
+
+#[test]
+fn checkbox_switch_button_still_accept_aria_label_only() {
+    // The label-OR-ariaLabel controls are NOT part of the required-`label`
+    // partition: Checkbox, Switch, and Button still pass with ariaLabel-only.
+    for json in [
+        r#"{"type":"Checkbox","ariaLabel":"Subscribe"}"#,
+        r#"{"type":"Switch","ariaLabel":"Dark mode"}"#,
+    ] {
+        let node = from_str(json).unwrap();
+        assert!(validate_accessibility(&node).is_ok(), "{json} should pass");
+    }
+    // Button (typed) with an ariaLabel-only (icon-only) name passes.
+    let button = Node::button("", None).with_aria_label("Menu");
+    assert!(validate_accessibility(&button).is_ok());
 }
 
 #[test]

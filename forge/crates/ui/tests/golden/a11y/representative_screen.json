@@ -37,9 +37,14 @@
       }
     ],
     "focus_order": {
-      "initial_focus": [
-        1
-      ],
+      "initial_focus": {
+        "kind": "Element",
+        "name": "Cancel",
+        "path": [
+          1
+        ],
+        "role": "button"
+      },
       "stops": [
         {
           "kind": "Element",
@@ -120,10 +125,15 @@
       }
     ],
     "focus_order": {
-      "initial_focus": [
-        1,
-        1
-      ],
+      "initial_focus": {
+        "kind": "Element",
+        "name": "Cancel",
+        "path": [
+          1,
+          1
+        ],
+        "role": "button"
+      },
       "stops": [
         {
           "kind": "Element",
@@ -225,10 +235,15 @@
       }
     ],
     "focus_order": {
-      "initial_focus": [
-        1,
-        0
-      ],
+      "initial_focus": {
+        "kind": "Tab",
+        "name": "Overview",
+        "path": [
+          1,
+          0
+        ],
+        "role": "tab"
+      },
       "stops": [
         {
           "kind": "Tab",

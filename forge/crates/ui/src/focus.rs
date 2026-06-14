@@ -97,11 +97,14 @@ pub struct FocusOrder {
     /// (the spec's "first focusable child or the dialog title" rule for Modal).
     /// `None` when the order is empty and the container is not itself focusable.
     ///
-    /// This mirrors `stops.first().map(|s| s.path)` for a non-empty order (read
-    /// `stops[0].kind` to disambiguate a [`Tab`](FocusStopKind::Tab) entry from a
-    /// rendered element); the standalone value carries the Modal's
-    /// focus-the-dialog-itself target (root path `[]`) that has no `stops` entry.
-    pub initial_focus: Option<Vec<usize>>,
+    /// This is the full [`FocusStop`] (not a bare path) so it is **unambiguous**:
+    /// a Tab at `[1,0]` and a rendered element at `[1,0]` share a numeric path,
+    /// and a renderer must know which to focus — so the stop carries its
+    /// [`FocusStopKind`]. For a non-empty order it equals `stops.first()`; the
+    /// standalone value carries the Modal's focus-the-dialog-itself target (an
+    /// [`Element`](FocusStopKind::Element) at the Modal's root path, with the
+    /// dialog's `dialog` role + title) that has no `stops` entry.
+    pub initial_focus: Option<FocusStop>,
 }
 
 impl Node {
@@ -152,8 +155,12 @@ impl Node {
             // carry the Modal's own path prefix when it is nested).
             collect_descendants(&modal, &mut modal_path.clone(), &mut stops);
             // Focus moves to the first focusable child, else the dialog itself
-            // (named by its title) — the spec's Modal entry rule.
-            let initial_focus = stops.first().map(|s| s.path.clone()).or(Some(modal_path));
+            // (a stop at the Modal's path, named by its title) — the spec's Modal
+            // entry rule. The stop carries its kind so the target is unambiguous.
+            let initial_focus = stops
+                .first()
+                .cloned()
+                .or_else(|| Some(stop_for(&modal, &modal_path)));
             return FocusOrder {
                 stops,
                 traps_focus: true,
@@ -163,7 +170,7 @@ impl Node {
 
         let mut stops = Vec::new();
         collect(self, &mut Vec::new(), &mut stops);
-        let initial_focus = stops.first().map(|s| s.path.clone());
+        let initial_focus = stops.first().cloned();
         FocusOrder {
             stops,
             traps_focus: false,

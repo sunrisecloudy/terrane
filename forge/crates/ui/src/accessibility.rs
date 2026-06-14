@@ -354,7 +354,8 @@ fn is_decorative(props: &serde_json::Map<String, serde_json::Value>) -> bool {
 /// - Button: `label` or `ariaLabel` required; an icon-only (blank-label) Button
 ///   MUST provide `ariaLabel`.
 /// - TextField / TextArea / Select / MultiSelect / Slider / DatePicker:
-///   `label` required (`placeholder` never counts).
+///   proper `label` required — `ariaLabel` does NOT satisfy these, and
+///   `placeholder` never counts.
 /// - Checkbox / Switch: `label` or `ariaLabel` required.
 /// - Icon: must declare `decorative: true` or supply an informative
 ///   `ariaLabel`.
@@ -425,22 +426,24 @@ fn validate_node(node: &Node) -> Result<()> {
             Ok(())
         }
         Node::TextField {
-            label,
-            aria_label,
-            placeholder,
-            ..
+            label, placeholder, ..
         } => {
-            if non_blank(label.as_deref()).is_some() || non_blank(aria_label.as_deref()).is_some() {
+            // Form Label-Presence Rule: TextField REQUIRES a proper `label`.
+            // `ariaLabel` does NOT satisfy it, and `placeholder` never counts.
+            if non_blank(label.as_deref()).is_some() {
                 return Ok(());
             }
-            // Placeholder explicitly never counts as a label.
             if non_blank(placeholder.as_deref()).is_some() {
                 return Err(name_err(
                     "TextField",
-                    "requires a `label` (or `ariaLabel`); `placeholder` is not a label",
+                    "requires a `label`; `placeholder` is not a label (and `ariaLabel` \
+                     does not satisfy it)",
                 ));
             }
-            Err(name_err("TextField", "requires a `label` (or `ariaLabel`)"))
+            Err(name_err(
+                "TextField",
+                "requires a `label` (`ariaLabel` does not satisfy it)",
+            ))
         }
         Node::Unknown { type_name, props } => validate_unknown(type_name, props),
         // Stack / Text / List have no required accessible name.
@@ -495,20 +498,35 @@ fn validate_unknown(
                 ))
             }
         }
-        // Form controls requiring `label` (placeholder/value never counts).
-        "TextArea" | "Select" | "MultiSelect" | "Slider" | "DatePicker" | "Badge" | "Stat" => {
-            if has("label") || has("ariaLabel") {
+        // Form Label-Presence Rule (`spec/accessibility.md`): these six controls
+        // REQUIRE a proper `label`. `ariaLabel` does NOT satisfy them (and
+        // `placeholder`/`value` never count) — only `label`.
+        "TextArea" | "Select" | "MultiSelect" | "Slider" | "DatePicker" => {
+            if has("label") {
                 Ok(())
             } else {
-                Err(name_err(type_name, "requires a `label`"))
+                Err(name_err(
+                    type_name,
+                    "requires a `label` (`ariaLabel` and `placeholder` do not satisfy it)",
+                ))
             }
         }
-        // Controls requiring `label` OR `ariaLabel`.
+        // Checkbox / Switch require `label` OR `ariaLabel` (per the Form
+        // Label-Presence Rule, these — like Button — accept either).
         "Checkbox" | "Switch" => {
             if has("label") || has("ariaLabel") {
                 Ok(())
             } else {
                 Err(name_err(type_name, "requires a `label` or `ariaLabel`"))
+            }
+        }
+        // Badge / Stat are status text, not form controls in the Label-Presence
+        // partition; they keep label-or-ariaLabel (a separate P2 follow-up).
+        "Badge" | "Stat" => {
+            if has("label") || has("ariaLabel") {
+                Ok(())
+            } else {
+                Err(name_err(type_name, "requires a `label`"))
             }
         }
         // Other unknown types use the UI-6 fallback group and impose no

@@ -75,15 +75,20 @@ fn child_nodes(node: &Node) -> Vec<Node> {
 /// Serialize a focus order to a stable JSON shape for the golden.
 fn focus_order_json(node: &Node) -> Value {
     let order = node.focus_order();
-    json!({
-        "traps_focus": order.traps_focus,
-        "initial_focus": order.initial_focus,
-        "stops": order.stops.iter().map(|s| json!({
+    // `initial_focus` is the full stop (path + kind + role + name) so a colliding
+    // Tab vs Element target is unambiguous — serialize it the same shape as a stop.
+    let stop_json = |s: &forge_ui::FocusStop| {
+        json!({
             "path": s.path,
             "kind": format!("{:?}", s.kind),
             "role": s.role.as_str(),
             "name": s.name,
-        })).collect::<Vec<_>>(),
+        })
+    };
+    json!({
+        "traps_focus": order.traps_focus,
+        "initial_focus": order.initial_focus.as_ref().map(stop_json),
+        "stops": order.stops.iter().map(stop_json).collect::<Vec<_>>(),
     })
 }
 

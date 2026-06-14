@@ -49,8 +49,11 @@ fn stack_focus_order_follows_child_source_order() {
     assert_eq!(triples[1].1, "textbox");
     assert_eq!(triples[1].2.as_deref(), Some("Email"));
 
-    // initial_focus is the first stop.
-    assert_eq!(tree.focus_order().initial_focus, Some(vec![1]));
+    // initial_focus is the full first stop (path + kind), not a bare path.
+    let initial = tree.focus_order().initial_focus.unwrap();
+    assert_eq!(initial.path, vec![1]);
+    assert_eq!(initial.kind, FocusStopKind::Element);
+    assert_eq!(initial, tree.focus_order().stops[0]);
     assert!(!tree.focus_order().traps_focus);
 }
 
@@ -220,8 +223,12 @@ fn modal_traps_focus_and_reports_initial_focus_on_first_focusable_child() {
         .filter_map(|s| s.name.clone())
         .collect();
     assert_eq!(names, vec!["Cancel".to_string(), "Delete".to_string()]);
-    // Initial focus is the first focusable child.
-    assert_eq!(order.initial_focus, Some(vec![1]));
+    // Initial focus is the first focusable child (the full stop, kind-tagged).
+    let initial = order.initial_focus.clone().unwrap();
+    assert_eq!(initial.path, vec![1]);
+    assert_eq!(initial.kind, FocusStopKind::Element);
+    assert_eq!(initial.name.as_deref(), Some("Cancel"));
+    assert_eq!(initial, order.stops[0]);
     // The dialog box itself is NOT a tab stop in its own order.
     assert!(order.stops.iter().all(|s| s.path != Vec::<usize>::new()));
 }
@@ -238,7 +245,13 @@ fn modal_with_no_focusable_child_moves_initial_focus_to_the_dialog_itself() {
     let order = modal.focus_order();
     assert!(order.traps_focus);
     assert!(order.stops.is_empty());
-    assert_eq!(order.initial_focus, Some(Vec::<usize>::new()));
+    // Focus moves to the dialog itself: a stop at the Modal's root path, carrying
+    // the dialog role + title (so a renderer focuses the dialog box, not nothing).
+    let initial = order.initial_focus.unwrap();
+    assert_eq!(initial.path, Vec::<usize>::new());
+    assert_eq!(initial.kind, FocusStopKind::Element);
+    assert_eq!(initial.role.as_str(), "dialog");
+    assert_eq!(initial.name.as_deref(), Some("Notice"));
 }
 
 #[test]
@@ -272,8 +285,12 @@ fn nested_open_modal_contains_focus_and_excludes_elements_behind_it() {
     // The "Open" button BEHIND the modal is excluded entirely.
     let names: Vec<_> = triples.iter().filter_map(|t| t.2.clone()).collect();
     assert!(!names.contains(&"Open".to_string()), "{names:?}");
-    // Initial focus is the dialog's first focusable child, at its real path.
-    assert_eq!(order.initial_focus, Some(vec![1, 1]));
+    // Initial focus is the dialog's first focusable child, at its real path,
+    // carrying its kind so the [1,1] target is unambiguous.
+    let initial = order.initial_focus.clone().unwrap();
+    assert_eq!(initial.path, vec![1, 1]);
+    assert_eq!(initial.kind, FocusStopKind::Element);
+    assert_eq!(initial, order.stops[0]);
 }
 
 #[test]
