@@ -63,6 +63,26 @@ pub fn code_hash(code: &str) -> String {
     out
 }
 
+/// Canonical content hash of arbitrary bytes: `"sha256:" + lowercase-hex(sha256(bytes))`.
+///
+/// The byte-oriented sibling of [`code_hash`] (which hashes a `&str`). The
+/// DL-22 attachment store keys deduplicated blobs by this value: identical bytes
+/// always yield the same string (so the same attachment is stored once and
+/// refcounted), and any one-byte difference yields a different string. Same
+/// algorithm + `"sha256:"` prefix as [`code_hash`], so the output always
+/// satisfies [`is_canonical_code_hash`]. Pure-Rust `sha2`, no I/O — stays
+/// wasm-clean.
+pub fn content_hash(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(CODE_HASH_PREFIX.len() + digest.len() * 2);
+    out.push_str(CODE_HASH_PREFIX);
+    for byte in digest {
+        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
+    }
+    out
+}
+
 /// True iff `s` is shaped like a value produced by [`code_hash`]: the literal
 /// [`CODE_HASH_PREFIX`] followed by exactly [`CODE_HASH_HEX_LEN`] lowercase-hex
 /// chars.
@@ -127,6 +147,22 @@ mod tests {
             code_hash(""),
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    /// `content_hash` (the byte-oriented DL-22 attachment hash) matches `code_hash`
+    /// for the same bytes — they share one algorithm — and is itself canonical.
+    /// Identical bytes hash identically (the dedup key) and a one-byte change differs.
+    #[test]
+    fn content_hash_matches_code_hash_and_is_canonical() {
+        assert_eq!(content_hash(b"hello"), code_hash("hello"));
+        assert_eq!(
+            content_hash(b""),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        // Determinism + collision-sensitivity: the dedup contract.
+        assert_eq!(content_hash(b"same bytes"), content_hash(b"same bytes"));
+        assert_ne!(content_hash(b"a"), content_hash(b"b"));
+        assert!(is_canonical_code_hash(&content_hash(b"any attachment payload")));
     }
 
     /// The function is byte-for-byte identical to what the pipeline previously

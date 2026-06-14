@@ -1,0 +1,16 @@
+{
+  "case": "config_override_is_trusted_state",
+  "prd": "DL-22",
+  "describe": "CONFIG IS TRUSTED STATE: with no override the const DEFAULT applies (1 GiB workspace / 100 MiB applet / 0.8 threshold); a persisted override is read back as the effective policy; an invalid override (zero limit) is rejected",
+  "assert": {
+    "kind": "policy",
+    "expect_default": {
+      "workspace_limit": 1073741824,
+      "per_applet_limit": 104857600,
+      "approaching_threshold": 0.8
+    },
+    "override": { "workspace_limit": 8192 },
+    "expect_after_override": { "workspace_limit": 8192 },
+    "invalid_override_rejected": { "workspace_limit": 0 }
+  }
+}

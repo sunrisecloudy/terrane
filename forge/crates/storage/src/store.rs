@@ -108,6 +108,21 @@ CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_log(decision);
 CREATE INDEX IF NOT EXISTS idx_audit_resource_type ON audit_log(resource_type);
+
+-- DL-22 content-addressed attachment store. An attachment is stored ONCE per
+-- content hash (the primary key): putting identical bytes a second time only
+-- bumps `refcount`, so the `bytes` blob — and the storage it accounts for — is
+-- counted once no matter how many records reference it (dedup). `byte_len` is the
+-- exact payload length, materialized so quota accounting sums it without re-reading
+-- every blob. There is no in-place rewrite of `bytes` for an existing hash: the
+-- hash IS the content, so a row's bytes are immutable once written.
+CREATE TABLE IF NOT EXISTS attachments (
+    content_hash TEXT PRIMARY KEY,
+    bytes        BLOB NOT NULL,
+    byte_len     INTEGER NOT NULL,
+    refcount     INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER
+);
 "#;
 
 /// How long a contended write waits for the SQLite writer lock before giving up

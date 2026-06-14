@@ -1,0 +1,25 @@
+{
+  "case": "over_per_applet_limit_rejects",
+  "prd": "DL-22",
+  "describe": "a write that fits the workspace + category budgets but exceeds the per-applet collection limit (100 MB default) is REJECTED on the per-applet scope",
+  "assert": {
+    "kind": "decision",
+    "usage": {
+      "workspace_total_bytes": 950,
+      "per_applet": [{ "applet": "tasks", "collections_bytes": 950 }],
+      "per_category": { "attachments": 0, "run_logs": 0, "retained_chunks": 950, "snapshots": 0, "cache": 0 }
+    },
+    "policy": { "workspace_limit": 100000, "per_applet_limit": 1000, "retained_chunks_cap": 100000, "approaching_threshold": 0.8 },
+    "category": "retained_chunks",
+    "applet": "tasks",
+    "write_bytes": 100,
+    "expect": {
+      "decision": "over_quota",
+      "scope": "applet",
+      "applet": "tasks",
+      "projected": 1050,
+      "limit": 1000,
+      "error_code": "ResourceLimitExceeded"
+    }
+  }
+}

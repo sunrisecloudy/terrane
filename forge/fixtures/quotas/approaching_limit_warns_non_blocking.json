@@ -1,0 +1,18 @@
+{
+  "case": "approaching_limit_warns_non_blocking",
+  "prd": "DL-22",
+  "describe": "a write that still fits but lands at/above the 80% threshold surfaces a NON-BLOCKING approaching-limit warning (distinct from a hard rejection)",
+  "assert": {
+    "kind": "decision",
+    "usage": {
+      "workspace_total_bytes": 700,
+      "per_applet": [{ "applet": "tasks", "collections_bytes": 700 }],
+      "per_category": { "attachments": 0, "run_logs": 0, "retained_chunks": 700, "snapshots": 0, "cache": 0 }
+    },
+    "policy": { "workspace_limit": 1000, "per_applet_limit": 1000, "retained_chunks_cap": 1000, "approaching_threshold": 0.8 },
+    "category": "retained_chunks",
+    "applet": "tasks",
+    "write_bytes": 150,
+    "expect": { "decision": "approaching_limit", "scope": "workspace", "projected": 850, "limit": 1000 }
+  }
+}

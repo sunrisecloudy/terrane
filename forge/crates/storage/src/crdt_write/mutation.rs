@@ -363,6 +363,16 @@ fn write_collection_bucket_tx(
     // 7. Export exactly the new ops as one incremental update.
     let chunk_payload = doc.export_updates_since(&before)?;
 
+    // 7a. DL-22 quota enforcement at the REAL write boundary, inside this same
+    //     transaction. The durable growth of a records write is the new chunk it
+    //     appends, so the chunk payload size is the write size charged against the
+    //     workspace/per-applet/retained-chunks limits. An over-quota write returns a
+    //     typed `ResourceLimitExceeded` error here, which rolls the WHOLE transaction
+    //     back — the chunk, oplog row, and projection are never written and existing
+    //     data is left byte-for-byte intact (reject-not-delete; the usage is read off
+    //     `tx`, so it is the real persisted state).
+    crate::quota::enforce_records_write_tx(tx, collection, chunk_payload.len() as u64)?;
+
     // 8. Append one immutable chunk (per collection doc).
     let chunk_id = next_chunk_id(tx, &doc_id)?;
     put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;

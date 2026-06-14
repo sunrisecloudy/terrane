@@ -58,6 +58,15 @@ pub use compaction::{
 pub mod time_travel;
 pub use time_travel::HistoryEntry;
 
+// DL-22 workspace quotas: deterministic size accounting, a trusted policy
+// (const default + persisted override), reject-not-delete enforcement, and the
+// content-hash-deduplicated attachment store.
+pub mod quota;
+pub use quota::{
+    applet_of_collection, decide_quota, AppletUsage, AttachmentPut, CategoryUsage, QuotaCategory,
+    QuotaDecision, QuotaPolicy, QuotaScope, QuotaUsage, GIB, MIB, QUOTA_META_NS, QUOTA_POLICY_KEY,
+};
+
 pub mod export;
 pub use export::{
     bundle_meta, is_local_only_namespace, ExportOptions, RunLogPolicy, EXPORT_FORMAT_VERSION,
