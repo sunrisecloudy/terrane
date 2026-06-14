@@ -22,6 +22,9 @@
 #[path = "auth.rs"]
 mod auth;
 use auth::*;
+#[path = "persistence.rs"]
+mod persistence;
+use persistence::*;
 use crate::bridge::StorageHostBridge;
 use crate::determinism::*;
 use crate::event::EventSink;
@@ -41,18 +44,6 @@ use forge_storage::{
     CreateIndexKind, ExportOptions, IndexDef, IndexManager, IndexState, RunLogPolicy, Store,
     EXPORT_FORMAT_VERSION,
 };
-
-/// Reserved KV namespace prefix for core-owned metadata (applet manifests +
-/// compiled programs + workspace meta). Applet `ctx.storage` namespaces are
-/// `applet/<id>` (see [`StorageHostBridge`]), which never collide with this
-/// `__forge/...` prefix.
-const META_NS: &str = "__forge/meta";
-
-/// The KV key (within [`META_NS`]) holding the workspace's monotone run counter.
-/// Bumped once per `runtime.run` to mint a unique per-execution `run_id` while
-/// the replay *seeds* stay a deterministic function of `(code_hash, input)`
-/// (review 031 finding 2 / CR-9 "every execution persists").
-const RUN_COUNTER_KEY: &str = "run_counter";
 
 /// The KV key (within [`META_NS`]) holding the persisted trusted `db.read` grant
 /// table (actor id → readable collections). Persisted so a scoped grant survives
@@ -75,27 +66,6 @@ const SYNC_MEMBERSHIP_KEY: &str = "sync_membership";
 /// [`in_memory`](WorkspaceCore::in_memory) the same way the `db.read` grant table
 /// is (it mirrors [`load_db_read_grants`]).
 const SCHEMA_REGISTRY_KEY: &str = "schema_registry";
-
-/// KV key prefix (within [`META_NS`]) for an applet's **last-known UI tree** — the
-/// most recent tree the applet rendered through this facade (`runtime.run`'s last
-/// `ui.render`, then each accepted `ui.dispatch_event`). This is the DIFF BASE for
-/// the next event: `ui.dispatch_event` re-enters the applet's handler in a fresh
-/// one-shot realm, captures the handler's new tree, and diffs it against THIS
-/// stored tree to produce the next UI patch (UI-4/CR-6). Keyed per applet so two
-/// applets' interactive sessions never share a diff base; persisted so the loop
-/// survives reopening the workspace. The full key is `ui_tree/<applet_id>`.
-const UI_TREE_KEY_PREFIX: &str = "ui_tree/";
-
-/// KV key prefix (within [`META_NS`]) for an applet's **dispatch lifecycle** — the
-/// receiver-side flag that decides whether an applet may be re-entered by a UI
-/// event. An applet is `active` by default; a workspace can SUSPEND it through the
-/// trusted [`set_applet_lifecycle`](WorkspaceCore::set_applet_lifecycle) seam, after
-/// which `ui.dispatch_event` rejects every event with a typed `ui.applet_not
-/// _dispatchable` error BEFORE any handler runs and with no state change (the T034
-/// `suspended_applet_rejected` vector). Set only through the trusted seam (never a
-/// request payload), mirroring the `db.read` grant table; persisted so a suspended
-/// applet stays suspended after reopen. The full key is `lifecycle/<applet_id>`.
-const APPLET_LIFECYCLE_KEY_PREFIX: &str = "lifecycle/";
 
 /// The compiled, installed form of an applet: its manifest plus the transpiled
 /// JS the runtime executes and the canonical `code_hash` the pipeline produced.
@@ -473,22 +443,14 @@ impl WorkspaceCore {
         applet_id: impl AsRef<str>,
         lifecycle: AppletLifecycle,
     ) -> Result<()> {
-        let key = applet_lifecycle_key(applet_id.as_ref());
-        let bytes = serde_json::to_vec(&lifecycle)
-            .map_err(|e| CoreError::StorageError(format!("serialize applet lifecycle: {e}")))?;
-        self.store.kv_set(META_NS, &key, &bytes, "application/json")
+        set_applet_lifecycle(&mut self.store, applet_id, lifecycle)
     }
 
     /// An applet's dispatch lifecycle, defaulting to [`AppletLifecycle::Active`] for
     /// an applet that was never explicitly suspended. Read-only access for tests /
     /// the `ui.dispatch_event` gate.
     pub fn applet_lifecycle(&self, applet_id: &str) -> Result<AppletLifecycle> {
-        match self.store.kv_get(META_NS, &applet_lifecycle_key(applet_id))? {
-            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                CoreError::StorageError(format!("deserialize applet lifecycle: {e}"))
-            }),
-            None => Ok(AppletLifecycle::Active),
-        }
+        get_applet_lifecycle(&self.store, applet_id)
     }
 
     /// The event sink (observability): all `run.*` / `ui.patch` events land here.
@@ -2010,25 +1972,14 @@ impl WorkspaceCore {
     /// accepted `ui.dispatch_event` — so the interactive loop's diff base survives
     /// reopening the workspace (UI-4/CR-6).
     fn store_ui_tree(&mut self, applet_id: &str, tree: &serde_json::Value) -> Result<()> {
-        let bytes = serde_json::to_vec(tree)
-            .map_err(|e| CoreError::StorageError(format!("ui tree serialize failed: {e}")))?;
-        self.store
-            .kv_set(META_NS, &ui_tree_key(applet_id), &bytes, "application/json")
+        store_ui_tree(&mut self.store, applet_id, tree)
     }
 
     /// Load the applet's last-known UI tree (the diff base) as a [`forge_ui::Node`],
     /// if one was recorded. `None` ⇒ the applet has not rendered through this facade
     /// yet, so the next render's diff is a single root replace (UI-1).
     fn load_ui_tree(&self, applet_id: &str) -> Result<Option<forge_ui::Node>> {
-        match self.store.kv_get(META_NS, &ui_tree_key(applet_id))? {
-            Some(bytes) => {
-                let node = forge_ui::from_str(std::str::from_utf8(&bytes).map_err(|e| {
-                    CoreError::StorageError(format!("ui tree is not utf-8: {e}"))
-                })?)?;
-                Ok(Some(node))
-            }
-            None => Ok(None),
-        }
+        load_ui_tree(&self.store, applet_id)
     }
 
     /// Load an installed applet by id, if present.
@@ -2131,7 +2082,7 @@ impl WorkspaceCore {
     /// number — the second transaction observes the first's committed value — so no
     /// audit record is silently replaced via a `run_id` collision.
     fn next_run_counter(&mut self) -> Result<u64> {
-        self.store.next_counter(META_NS, RUN_COUNTER_KEY)
+        next_run_counter(&mut self.store)
     }
 }
 
@@ -2503,18 +2454,6 @@ fn bool_field(cmd: &CoreCommand, field: &str) -> Result<bool> {
 /// KV key for an applet's installed record within [`META_NS`].
 fn applet_key(applet_id: &str) -> String {
     format!("applet/{applet_id}")
-}
-
-/// KV key for an applet's last-known UI tree (the interactive diff base) within
-/// [`META_NS`]. See [`UI_TREE_KEY_PREFIX`].
-fn ui_tree_key(applet_id: &str) -> String {
-    format!("{UI_TREE_KEY_PREFIX}{applet_id}")
-}
-
-/// KV key for an applet's dispatch lifecycle flag within [`META_NS`]. See
-/// [`APPLET_LIFECYCLE_KEY_PREFIX`].
-fn applet_lifecycle_key(applet_id: &str) -> String {
-    format!("{APPLET_LIFECYCLE_KEY_PREFIX}{applet_id}")
 }
 
 /// Classify a `ui.dispatch_event` rejection into its **renderer-facing error
