@@ -1,7 +1,7 @@
 //! The query DSL AST: operators, field references, filter tree, aggregate,
 //! ordering, text search, and the top-level [`Query`] (DL-15/16/17).
 
-use super::json_path::quote_json_path_key;
+use super::json_path::{field_id_json_path, quote_json_path_key};
 
 /// A comparison/membership operator over a single field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +66,10 @@ impl FieldRef {
     pub(crate) fn json_path(&self) -> String {
         match self {
             FieldRef::Name(s) => format!("$.fields.{}", quote_json_path_key(s)),
-            FieldRef::Id(s) => format!("$.field_ids.{}", quote_json_path_key(s)),
+            // Delegate the `$.field_ids."<id>"` construction to the single helper
+            // the index DDL / FTS population / text-search scan also use, so the
+            // stable-id path quoting is byte-identical on every surface.
+            FieldRef::Id(s) => field_id_json_path(s),
         }
     }
 }

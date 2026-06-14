@@ -5,7 +5,9 @@
 //!   1. policy/capability check (forge-policy [`PolicyEngine`], prd-merged/01
 //!      CR-4 call-time checks);
 //!   2. the deterministic record/replay recorder (prd-merged/01 CR-8/CR-11);
-//!   3. log/storage byte budgets (prd-merged/01 CR-5).
+//!   3. log/storage byte budgets + per-namespace host-call counters, all routed
+//!      through the single [`HostBudgets`] source of truth (prd-merged/01 CR-5,
+//!      prd-merged/07 SC-2).
 //!
 //! Keeping this target-independent (no QuickJS) means the policy + record/replay
 //! seam is testable and `wasm32`-clean; the engine only marshals JS values to
@@ -29,6 +31,7 @@ use forge_policy::PolicyEngine;
 //   * `db`      — the `ctx.db.*` collection effects (incl. query `from` pinning);
 //   * `net`     — `ctx.net.fetch` + the SC-5/SC-13 egress projections/redaction;
 //   * `files`   — `ctx.files.read`/`write` + the CR-3 confinement/cap helpers.
+mod budget;
 mod db;
 mod files;
 mod log;
@@ -38,21 +41,19 @@ mod storage;
 mod time;
 mod ui;
 
+use budget::HostBudgets;
+
 /// The hub shared (via interior mutability in the engine) by all `ctx.*`
 /// forwarders for the duration of a single run.
 pub struct HostContext<'b> {
     policy: PolicyEngine,
     recorder: RunRecorder,
     bridge: &'b mut dyn HostBridge,
-    limits: Limits,
-    /// Bytes appended to the log so far (against `Limits::log_bytes`).
-    log_bytes_used: u64,
-    /// Bytes written to storage so far (against `Limits::storage_bytes`).
-    storage_bytes_used: u64,
-    /// `ctx.log` calls so far (against `Limits::max_host_calls`, review 009 P2):
-    /// a flood of empty-string logs costs zero bytes, so the byte budget alone
-    /// can't stop it — count the *calls* against the host-call cap too.
-    log_calls_used: u64,
+    /// The single source of truth for the CR-5 byte budgets and the SC-2
+    /// per-namespace host-call counters: every effect that consumes a budget
+    /// routes its `saturating_add` + limit comparison through a `check_*` method
+    /// here, so the budget arithmetic lives in exactly one place.
+    budgets: HostBudgets,
     /// The full network egress allowlist for `ctx.net.fetch` (prd-merged/07
     /// SC-5/SC-8), with **every** SC-5 constraint intact (request + response).
     /// Derived from the policy's permission snapshot at construction so it tracks
@@ -71,11 +72,6 @@ pub struct HostContext<'b> {
     /// the real response is in hand. Built once at construction so each fetch is
     /// allocation-free on this path.
     net_allowlist_request_phase: NetGrant,
-    /// `ctx.net.fetch` calls so far (against `Limits::max_host_calls`). `net` is
-    /// gated by the [`NetPolicy`] decision rather than the [`PolicyEngine`]
-    /// `HostCall` categories, so — like `ctx.log` — it counts its own calls
-    /// against the host-call flood cap (SC-2) here.
-    net_calls_used: u64,
     /// The full handle-scoped filesystem grant for `ctx.files` (prd-merged/01
     /// CR-3, `forge/spec/files.md`). Like [`net_allowlist`](Self::net_allowlist)
     /// it is derived from the policy's permission **snapshot** at construction, so
@@ -84,11 +80,6 @@ pub struct HostContext<'b> {
     /// decision deterministic across replay (review 009 P1 CR-9). Empty ⇒ no file
     /// access (the default for every applet).
     files_grant: FilesGrant,
-    /// `ctx.files.read`/`ctx.files.write` calls so far (against
-    /// `Limits::max_host_calls`). Like `net`, files is gated by its own grant
-    /// (not the [`PolicyEngine`] `HostCall` categories), so it counts its own
-    /// calls against the host-call flood cap (SC-2) here.
-    files_calls_used: u64,
     /// Captured log lines (mirrored into the RunRecord).
     logs: Vec<String>,
 }
@@ -136,15 +127,10 @@ impl<'b> HostContext<'b> {
             policy,
             recorder,
             bridge,
-            limits,
-            log_bytes_used: 0,
-            storage_bytes_used: 0,
-            log_calls_used: 0,
+            budgets: HostBudgets::new(limits),
             net_allowlist,
             net_allowlist_request_phase,
-            net_calls_used: 0,
             files_grant,
-            files_calls_used: 0,
             logs: Vec::new(),
         }
     }

@@ -9,7 +9,7 @@
 //! the shared `storage_bytes` budget (CR-5).
 
 use super::HostContext;
-use forge_domain::{CoreError, Result};
+use forge_domain::Result;
 use forge_policy::{Access, HostCall};
 
 impl HostContext<'_> {
@@ -37,13 +37,7 @@ impl HostContext<'_> {
         )?;
         // Account the written bytes against the storage byte budget (CR-5).
         let value_bytes = serde_json::to_vec(&value).map(|v| v.len()).unwrap_or(0) as u64;
-        self.storage_bytes_used = self.storage_bytes_used.saturating_add(value_bytes);
-        if self.storage_bytes_used > self.limits.storage_bytes {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "storage byte budget exceeded: storage_bytes = {} reached",
-                self.limits.storage_bytes
-            )));
-        }
+        self.budgets.check_storage_bytes(value_bytes)?;
         let bridge = &mut *self.bridge;
         let k = key.to_string();
         let v = value.clone();

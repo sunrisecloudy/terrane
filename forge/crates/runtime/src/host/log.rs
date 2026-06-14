@@ -7,7 +7,7 @@
 //! empty-string log flood — which costs zero bytes — still trips a limit.
 
 use super::HostContext;
-use forge_domain::{CoreError, Result};
+use forge_domain::Result;
 
 impl HostContext<'_> {
     /// `ctx.log(line)` — there is no capability gate for logging (it is an
@@ -20,21 +20,10 @@ impl HostContext<'_> {
     ///     counter. Counting log calls here closes that flood hole.
     pub fn log(&mut self, line: &str) -> Result<()> {
         // Call-count budget first: a flood of empty logs must trip even though it
-        // adds no bytes (review 009 P2).
-        self.log_calls_used = self.log_calls_used.saturating_add(1);
-        if self.log_calls_used > self.limits.max_host_calls {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "host-call limit exceeded: max_host_calls = {} reached (ctx.log flood)",
-                self.limits.max_host_calls
-            )));
-        }
-        self.log_bytes_used = self.log_bytes_used.saturating_add(line.len() as u64);
-        if self.log_bytes_used > self.limits.log_bytes {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "log byte budget exceeded: log_bytes = {} reached",
-                self.limits.log_bytes
-            )));
-        }
+        // adds no bytes (review 009 P2). Then the byte budget. Both route through
+        // the single `HostBudgets` source of truth.
+        self.budgets.check_log_call()?;
+        self.budgets.check_log_bytes(line.len() as u64)?;
         let args = serde_json::json!([line]);
         let bridge = &mut *self.bridge;
         let l = line.to_string();

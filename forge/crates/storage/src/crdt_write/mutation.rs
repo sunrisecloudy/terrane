@@ -5,10 +5,10 @@
 
 use super::chunk_storage::{next_chunk_id, put_chunk_tx};
 use super::crdt_encoding::{envelope_from_doc, load_doc_tx, write_envelope_to_doc};
-use super::oplog::{append_op_tx, chunk_id_lamport, oplog_kind};
+use super::oplog::{append_op_tx, chunk_id_lamport, oplog_kind, OplogPayload};
 use super::rebuild::materialize_record_into_projection;
 use crate::index::IndexManager;
-use crate::{map_json, Mutation, Store};
+use crate::{Mutation, Store};
 use forge_crdt::RecordsDoc;
 use forge_domain::{CollectionId, CoreError, RecordEnvelope, RecordId, Result};
 
@@ -274,16 +274,18 @@ impl Store {
             let chunk_id = next_chunk_id(tx, &doc_id)?;
             put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
 
-            // 9. Append one oplog row identifying the logical mutation + chunk.
+            // 9. Append one oplog row identifying the logical mutation + chunk. The
+            //    payload schema is owned by `OplogPayload` (shared with the remote
+            //    import path) so the two cannot skew.
             let op_id = format!("{doc_id}#{chunk_id}");
-            let op_payload = serde_json::to_vec(&serde_json::json!({
-                "doc_id": doc_id,
-                "chunk_id": chunk_id,
-                "collection": collection,
-                "kind": kind,
-                "record_ids": touched.iter().map(|(_, id)| id).collect::<Vec<_>>(),
-            }))
-            .map_err(|e| map_json("oplog payload encode", e))?;
+            let op_payload = OplogPayload::local(
+                &doc_id,
+                &chunk_id,
+                &collection,
+                kind,
+                touched.iter().map(|(_, id)| id.to_string()).collect(),
+            )
+            .encode("oplog payload encode")?;
             append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;
 
             // 10. Materialize each touched record into the projection from the

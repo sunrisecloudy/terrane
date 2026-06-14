@@ -303,12 +303,11 @@ impl Store {
     /// so the rows are still correct (records are canonical) while the planner
     /// surfaces the `fts_not_available` warning.
     fn text_search_scan(&self, q: &Query, ts: &query::TextSearch) -> Result<Vec<String>> {
-        // Use the same double-quoted JSON path the planner/index DDL emit, so a
-        // dotted field id resolves to the literal key (not a nested path).
-        let path = match &ts.field {
-            query::FieldRef::Id(id) => query::field_id_json_path(id),
-            query::FieldRef::Name(n) => format!("$.fields.{}", query::quote_json_path_key(n)),
-        };
+        // Use the SAME canonical JSON path the planner/index DDL emit, so a dotted
+        // field id resolves to the literal key (not a nested path). One source of
+        // truth — `FieldRef::json_path` — keys both the `$.fields.<name>` and the
+        // `$.field_ids."<id>"` quoting here and in `compile`, so they can't skew.
+        let path = ts.field.json_path();
         let sql = "SELECT id, json_extract(data, ?1) FROM records \
                    WHERE collection = ?2 AND json_extract(data, '$.deleted') IS NOT 1";
         let mut stmt = self.conn.prepare(sql).map_err(map_sql)?;
