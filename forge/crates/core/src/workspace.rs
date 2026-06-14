@@ -49,6 +49,7 @@ use commands::Registry;
 // root (and the conformance harness) can drive the reactive loop end to end.
 pub use commands::watch::{replay_notification_stream, DeliveredBatch};
 use crate::event::EventSink;
+use crate::run_policy::RunPolicy;
 use crate::sync_rbac::{
     authorize_remote_op, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuthDecision,
     TrustedMembership,
@@ -83,6 +84,15 @@ const SYNC_MEMBERSHIP_KEY: &str = "sync_membership";
 /// transaction (review 143): if the two crates spelled this key differently, a synced
 /// registry change would land under a key the open-time loader never reads.
 const SCHEMA_REGISTRY_KEY: &str = forge_storage::SCHEMA_REGISTRY_KEY;
+
+/// The KV key (within [`META_NS`]) holding the persisted trusted SC-10 run policy
+/// — the workspace/run/platform inputs the live workspace-policy / run-profile /
+/// platform-permission gates read (`forge/spec/policy-gates.md`, gates 2/4/5;
+/// T037). Persisted like [`DB_READ_GRANTS_KEY`] / [`SYNC_MEMBERSHIP_KEY`] so a
+/// configured policy survives reopening the workspace file, and read ONLY from
+/// here at the run boundary, never from a request payload (review 048/050). Absent
+/// ⇒ un-provisioned ⇒ the permissive `AllowAll` baseline (the M0a spine default).
+const RUN_POLICY_KEY: &str = "run_policy";
 
 /// An applet's dispatch lifecycle for the interactive UI loop (UI-4/CR-6).
 ///
@@ -142,6 +152,21 @@ pub struct WorkspaceCore {
     /// to the workspace file so a seeded membership survives reopen. A peer with NO
     /// entry is UNKNOWN and every op it sends is denied (fail-closed).
     sync_membership: std::collections::BTreeMap<String, TrustedMembership>,
+    /// Trusted SC-10 run policy: the workspace/run/platform inputs the LIVE
+    /// workspace-policy / run-profile / platform-permission gates read on every
+    /// `ctx.*` host call (`forge/spec/policy-gates.md`, gates 2/4/5; T037). This is
+    /// the SOURCE OF TRUTH for those three gates and is set ONLY through the trusted
+    /// [`set_run_policy`](WorkspaceCore::set_run_policy) seam (workspace
+    /// configuration), never a request payload (review 048/050). Persisted to the
+    /// workspace file so a configured policy survives reopen (mirrors
+    /// `db_read_grants` / `sync_membership`).
+    ///
+    /// `None` ⇒ un-provisioned: the run installs the permissive `AllowAll` context
+    /// (the M0a spine baseline — the demo and existing applets are unaffected). When
+    /// `Some`, [`decision_context_for_run`](WorkspaceCore::decision_context_for_run)
+    /// builds a real `ComposedDecisionContext` so a configured deny actually blocks
+    /// the live command.
+    run_policy: Option<RunPolicy>,
     /// Live-query (`db.watch`) session state (DL-16, `forge/spec/live-queries.md`):
     /// the registered watches (owning applet + callback handler + query) plus the
     /// workspace's monotone notification `version`. Loaded from `__forge/meta`
@@ -231,6 +256,7 @@ impl WorkspaceCore {
     fn from_store(store: Store, workspace_id: impl Into<String>) -> Result<Self> {
         let db_read_grants = load_db_read_grants(&store)?;
         let sync_membership = load_sync_membership(&store)?;
+        let run_policy = load_run_policy(&store)?;
         let registry = load_schema_registry(&store)?;
         let indexes = rebuild_indexes_from_registry(&store, &registry)?;
         let watch_sessions = load_watch_sessions(&store, META_NS)?;
@@ -242,6 +268,7 @@ impl WorkspaceCore {
             workspace_id: workspace_id.into(),
             db_read_grants,
             sync_membership,
+            run_policy,
             watch_sessions,
             // Fail-closed default: no live network. A host/shell opts in by
             // calling `set_http_client_factory` (review: keep the network seam
@@ -488,6 +515,60 @@ impl WorkspaceCore {
     /// if any. Read-only access for tests / diagnostics.
     pub fn peer_membership(&self, peer: &str) -> Option<&TrustedMembership> {
         self.sync_membership.get(peer)
+    }
+
+    /// Configure the TRUSTED SC-10 [`RunPolicy`] for this workspace — the
+    /// workspace/run/platform inputs the LIVE workspace-policy / run-profile /
+    /// platform-permission gates read on every `ctx.*` host call
+    /// (`forge/spec/policy-gates.md`, gates 2/4/5; T037).
+    ///
+    /// This is the ONLY way those three gates are configured: `runtime.run` /
+    /// `ui.dispatch_event` / live-query delivery read the policy from here, never
+    /// from a request payload, so an applet (or a shell) cannot widen its own
+    /// grants by editing the command body (review 048/050). The policy is
+    /// **persisted** to the workspace file (mirrors
+    /// [`grant_db_read`](Self::grant_db_read) /
+    /// [`set_peer_membership`](Self::set_peer_membership)), so a configured policy
+    /// survives `open(...)`.
+    ///
+    /// Until this is called the workspace is un-provisioned and the run installs
+    /// the permissive `AllowAll` context — the M0a spine baseline (the demo and
+    /// existing applets are unaffected). Once set, a configured deny actually blocks
+    /// the live command (the gate is consulted on the real decision path, not a
+    /// tested-but-disconnected library).
+    pub fn set_run_policy(&mut self, policy: RunPolicy) -> Result<()> {
+        let bytes = serde_json::to_vec(&policy)
+            .map_err(|e| CoreError::StorageError(format!("serialize run policy: {e}")))?;
+        self.store
+            .kv_set(META_NS, RUN_POLICY_KEY, &bytes, "application/json")?;
+        self.run_policy = Some(policy);
+        Ok(())
+    }
+
+    /// The trusted SC-10 [`RunPolicy`] configured for this workspace, if any.
+    /// Read-only access for tests / diagnostics. `None` ⇒ un-provisioned (the
+    /// permissive `AllowAll` baseline).
+    pub fn run_policy(&self) -> Option<&RunPolicy> {
+        self.run_policy.as_ref()
+    }
+
+    /// Build the live [`DecisionContext`](forge_runtime::DecisionContext) to install
+    /// on this run's record entry point — the SC-10 workspace-policy / run-profile /
+    /// platform-permission gates (T037).
+    ///
+    /// When a [`RunPolicy`] is provisioned this returns a real
+    /// [`ComposedDecisionContext`](forge_runtime::ComposedDecisionContext) reading
+    /// the trusted workspace/run/platform state, so a configured deny blocks the
+    /// live command. When un-provisioned it returns the permissive `AllowAll`
+    /// default (the M0a spine baseline). The context reads ONLY trusted state, never
+    /// the request payload (review 048/050). The same context is used by `runtime.run`,
+    /// `ui.dispatch_event`, and live-query notification delivery so every live `ctx.*`
+    /// path is gated identically.
+    fn decision_context_for_run(&self) -> Box<dyn forge_runtime::DecisionContext> {
+        match &self.run_policy {
+            Some(policy) => policy.to_decision_context(),
+            None => Box::new(forge_runtime::AllowAll),
+        }
     }
 
     /// Set an applet's TRUSTED dispatch lifecycle (UI-4/CR-6): `Active` (the
@@ -1302,6 +1383,20 @@ fn load_sync_membership(
             CoreError::StorageError(format!("deserialize sync membership: {e}"))
         }),
         None => Ok(std::collections::BTreeMap::new()),
+    }
+}
+
+/// Load the persisted trusted SC-10 run policy from the workspace file (T037).
+/// Absent → `None` (un-provisioned): the run installs the permissive `AllowAll`
+/// context, preserving the M0a spine baseline. A present policy is materialized
+/// into a real `ComposedDecisionContext` at run time. Mirrors
+/// [`load_sync_membership`] / [`load_db_read_grants`].
+fn load_run_policy(store: &Store) -> Result<Option<RunPolicy>> {
+    match store.kv_get(META_NS, RUN_POLICY_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| CoreError::StorageError(format!("deserialize run policy: {e}"))),
+        None => Ok(None),
     }
 }
 

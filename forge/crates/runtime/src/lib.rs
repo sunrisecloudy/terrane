@@ -52,8 +52,19 @@ mod runner;
 pub use engine::QuickJsEngine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{
-    record_dispatch, record_notification, record_run, replay, replay_dispatch, replay_notification,
-    run_once,
+    record_dispatch, record_dispatch_with_context, record_notification,
+    record_notification_with_context, record_run, record_run_with_context, replay, replay_dispatch,
+    replay_notification, run_once,
+};
+
+// Re-export the SC-10 trusted-source gate types so a caller (forge-core) can build
+// the live `ComposedDecisionContext` and install it on the record entry points
+// without depending on forge-policy directly (T037). These are the workspace-policy
+// / run-profile / platform-permission gates that read TRUSTED workspace/run/platform
+// state, never the request payload (review 048/050).
+pub use forge_policy::{
+    AllowAll, Category as PolicyCategory, ComposedDecisionContext, DecisionContext,
+    PlatformPermissions, RunProfile, WorkspacePolicy,
 };
 
 /// A unit of executable code handed to the engine: the transpiled JS plus the

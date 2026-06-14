@@ -22,7 +22,7 @@ use forge_domain::{
     ActorContext, AppResult, CoreError, Manifest, PermissionSnapshot, Result, RunId, RunOutcome,
     RunRecord,
 };
-use forge_policy::PolicyEngine;
+use forge_policy::{AllowAll, DecisionContext, PolicyEngine};
 
 /// Run `program` under `manifest` in **record mode** and produce a
 /// [`RunRecord`]. `actor` gates capabilities (owner-permits-all in M0a);
@@ -42,12 +42,50 @@ pub fn record_run(
     time_start: u64,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
+    // The permissive M0a default: the three trusted-source SC-10 gates allow.
+    // A caller that holds real workspace/run/platform state installs it via
+    // [`record_run_with_context`] so a real workspace-policy/run-profile/platform
+    // deny actually blocks this live run (T037 FIX ROUND 2).
+    record_run_with_context(
+        program,
+        manifest,
+        actor,
+        Box::new(AllowAll),
+        input,
+        seed,
+        time_start,
+        bridge,
+    )
+}
+
+/// Like [`record_run`], but with an explicit [`DecisionContext`] — the
+/// workspace-policy / run-profile / platform-permission SC-10 gates
+/// ([`forge_policy::ComposedDecisionContext`]) read from **trusted** workspace /
+/// run / platform state (never the request payload, review 048/050).
+///
+/// This is the **live** decision path forge-core's `runtime.run` wires when the
+/// workspace has provisioned a real run policy: the gates are evaluated on every
+/// `ctx.*` host call this run makes, so a real workspace/run/platform deny blocks
+/// the live command (T037 FIX ROUND 2). The gate *outcomes* are recorded, so
+/// replay (which re-installs [`AllowAll`] via [`PolicyEngine::from_snapshot`])
+/// stays byte-identical without re-consulting the live sources.
+#[allow(clippy::too_many_arguments)]
+pub fn record_run_with_context(
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    context: Box<dyn DecisionContext>,
+    input: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
     manifest.validate()?;
     let recorder = RunRecorder::recording(seed, time_start);
-    // `PolicyEngine::new` now validates the manifest's storage glob grants
+    // `PolicyEngine::with_context` validates the manifest's storage glob grants
     // (forge-policy review 006 P2); a bare `*`/malformed grant fails closed here
     // as a ValidationError rather than being silently accepted.
-    let policy = PolicyEngine::new(manifest, actor)?;
+    let policy = PolicyEngine::with_context(manifest, actor, context)?;
     finish_run(
         program,
         policy,
@@ -87,9 +125,41 @@ pub fn record_dispatch(
     time_start: u64,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
+    // Permissive M0a default (see [`record_run`]); the trusted-context variant is
+    // [`record_dispatch_with_context`].
+    record_dispatch_with_context(
+        program,
+        manifest,
+        actor,
+        Box::new(AllowAll),
+        action_ref,
+        payload,
+        seed,
+        time_start,
+        bridge,
+    )
+}
+
+/// Like [`record_dispatch`], but with an explicit [`DecisionContext`] — the live
+/// SC-10 workspace-policy / run-profile / platform-permission gates for a UI event
+/// dispatch (T037 FIX ROUND 2). A UI event re-enters the handler over the SAME
+/// gated host path as a run, so a real workspace/run/platform deny blocks the
+/// handler's `ctx.*` calls exactly as it would in [`record_run_with_context`].
+#[allow(clippy::too_many_arguments)]
+pub fn record_dispatch_with_context(
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    context: Box<dyn DecisionContext>,
+    action_ref: &str,
+    payload: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
     manifest.validate()?;
     let recorder = RunRecorder::recording(seed, time_start);
-    let policy = PolicyEngine::new(manifest, actor)?;
+    let policy = PolicyEngine::with_context(manifest, actor, context)?;
     finish_dispatch(
         program,
         policy,
@@ -176,9 +246,41 @@ pub fn record_notification(
     time_start: u64,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
+    // Permissive M0a default (see [`record_run`]); the trusted-context variant is
+    // [`record_notification_with_context`].
+    record_notification_with_context(
+        program,
+        manifest,
+        actor,
+        Box::new(AllowAll),
+        action_ref,
+        notification,
+        seed,
+        time_start,
+        bridge,
+    )
+}
+
+/// Like [`record_notification`], but with an explicit [`DecisionContext`] — the
+/// live SC-10 workspace-policy / run-profile / platform-permission gates for a
+/// live-query notification delivery (T037 FIX ROUND 2). The watch callback runs
+/// over the SAME gated host path as a dispatch, so a real workspace/run/platform
+/// deny blocks its `ctx.*` calls.
+#[allow(clippy::too_many_arguments)]
+pub fn record_notification_with_context(
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    context: Box<dyn DecisionContext>,
+    action_ref: &str,
+    notification: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
     manifest.validate()?;
     let recorder = RunRecorder::recording(seed, time_start);
-    let policy = PolicyEngine::new(manifest, actor)?;
+    let policy = PolicyEngine::with_context(manifest, actor, context)?;
     finish_drive(
         program,
         policy,

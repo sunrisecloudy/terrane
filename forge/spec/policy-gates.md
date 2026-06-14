@@ -88,6 +88,29 @@ cannot widen its own grants by asserting them in the request; the policy
 decision is made only against state the host trusts. Incoming claims may
 *narrow* the trusted state but must never widen it.
 
+### Live wiring (the gates are on the real decision path)
+
+The three gates are **wired into the live runtime decision path**, not merely a
+tested library. `forge-core` holds the trusted SC-10 inputs as a persisted
+`RunPolicy`, set ONLY through the trusted `WorkspaceCore::set_run_policy` seam
+(workspace configuration, mirroring `db_read_grants` / `sync_membership`) and
+read only at the run boundary — never from a command's `payload`. On every
+`runtime.run`, `ui.dispatch_event`, and live-query notification delivery,
+`WorkspaceCore` builds a `ComposedDecisionContext` from that trusted state and
+installs it on the run via the runtime's `record_run_with_context` /
+`record_dispatch_with_context` / `record_notification_with_context` entry points,
+so the gates are consulted on the run's actual `ctx.*` host calls. A configured
+deny therefore **blocks a live command** (proven end-to-end in
+`crates/core/tests/policy_gates_live.rs`, driving the real `WorkspaceCore::handle`
+path).
+
+An **un-provisioned** workspace (no `RunPolicy` set) installs the permissive
+`AllowAll` context — the M0a spine baseline, so the demo and existing applets are
+unaffected. A **provisioned** policy only ever *adds* gate denials relative to
+that baseline: a gate the admin leaves unspecified defaults to permitting all
+categories, so configuring a single deny (e.g. forbid `db`) restricts exactly
+that gate (shells tighten, never loosen).
+
 ## Fail-closed default
 
 Every gate denies when its input is **missing or ambiguous** — it never silently

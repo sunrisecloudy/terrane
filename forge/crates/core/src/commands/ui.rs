@@ -5,7 +5,7 @@
 //! shape/patch-chain helpers, and their co-located unit tests.
 
 use forge_domain::{AppletId, CoreError, Result, RunRecord};
-use forge_runtime::{record_dispatch, Program as RuntimeProgram};
+use forge_runtime::{record_dispatch_with_context, Program as RuntimeProgram};
 
 use crate::determinism::{derive_seeds, unique_run_id};
 use crate::StorageHostBridge;
@@ -327,6 +327,13 @@ impl WorkspaceCore {
         // silently dropped after the dispatch (review 135 #1).
         let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(applet_id.as_str());
 
+        // The LIVE SC-10 decision context from TRUSTED workspace/run/platform state
+        // (T037): a UI event re-enters the handler over the SAME gated host path as a
+        // run, so a configured workspace/run/platform deny blocks the handler's
+        // `ctx.*` calls exactly as it would a `runtime.run`. Built BEFORE the bridge
+        // borrows `&mut self.store`; reads ONLY trusted state, never the event payload.
+        let decision_context = self.decision_context_for_run();
+
         // Re-enter the handler over the SAME engine path as a run: record mode,
         // live Store-backed bridge, manifest-gated `ctx.*`. `record_dispatch` runs
         // the handler named `action_ref` and records the `ui.dispatch_event`
@@ -341,10 +348,11 @@ impl WorkspaceCore {
         .with_file_system(file_system)
         .with_watch_registry(watch_registry)
         .with_foreign_watch_ids(foreign_watch_ids);
-        let mut run = record_dispatch(
+        let mut run = record_dispatch_with_context(
             &program,
             &installed.manifest,
             &cmd.actor,
+            decision_context,
             &action_ref,
             &event_payload,
             random_seed,

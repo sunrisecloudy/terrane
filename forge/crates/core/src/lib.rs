@@ -25,11 +25,13 @@
 mod bridge;
 mod determinism;
 mod event;
+mod run_policy;
 mod sync_rbac;
 mod workspace;
 
 pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender, WatchIntent};
 pub use event::EventSink;
+pub use run_policy::{Capability, RunPolicy};
 pub use sync_rbac::{
     authorize_remote_op, IncomingClaim, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuditRecord,
     SyncAuthDecision, TrustedMembership,

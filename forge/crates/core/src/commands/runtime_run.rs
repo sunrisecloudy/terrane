@@ -3,7 +3,7 @@
 //! plus its response-shaping helpers ([`outcome_fields`] / [`run_summary`]).
 
 use forge_domain::{CoreError, Result, RunRecord};
-use forge_runtime::{record_run, Program as RuntimeProgram};
+use forge_runtime::{record_run_with_context, Program as RuntimeProgram};
 
 use crate::determinism::{derive_seeds, run_seed_override, unique_run_id};
 use crate::StorageHostBridge;
@@ -121,6 +121,15 @@ impl WorkspaceCore {
         // owner-scoped intent fold (review 135 #1).
         let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(applet_id.as_str());
 
+        // Build the LIVE SC-10 decision context from TRUSTED workspace/run/platform
+        // state (T037): the workspace-policy / run-profile / platform-permission gates
+        // are evaluated on every `ctx.*` host call this run makes, so a configured
+        // workspace/run/platform deny actually blocks the live command. Un-provisioned
+        // ⇒ the permissive `AllowAll` baseline. Built BEFORE the bridge borrows
+        // `&mut self.store` (the builder borrows `&self`), and reads ONLY trusted
+        // state — never `cmd.payload` (review 048/050).
+        let decision_context = self.decision_context_for_run();
+
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
         // each ctx.* call against the manifest policy BEFORE the bridge runs —
@@ -138,10 +147,11 @@ impl WorkspaceCore {
         .with_file_system(file_system)
         .with_watch_registry(watch_registry)
         .with_foreign_watch_ids(foreign_watch_ids);
-        let mut run = record_run(
+        let mut run = record_run_with_context(
             &program,
             &installed.manifest,
             &cmd.actor,
+            decision_context,
             &input,
             random_seed,
             time_start,

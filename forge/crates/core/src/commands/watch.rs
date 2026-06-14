@@ -25,7 +25,7 @@
 //! is purely the workspace ORCHESTRATION + persistence + record/replay seam.
 
 use forge_domain::{CoreError, RecordedCall, Result, RunRecord};
-use forge_runtime::{record_notification, RunRecorder};
+use forge_runtime::{record_notification_with_context, RunRecorder};
 use forge_storage::{DirtyChanges, DirtySet, Mutation, ResultSnapshot, WatchNotification};
 
 /// One committed write paired with the watch result membership snapshot taken
@@ -590,6 +590,11 @@ impl WorkspaceCore {
         // issues for a foreign-owned id is rejected at host-call time (review 135 #1) —
         // the callback path uses the SAME host-call denial as a run/dispatch.
         let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(&applet_id);
+        // The LIVE SC-10 decision context from TRUSTED workspace/run/platform state
+        // (T037): the watch callback runs over the SAME gated host path as a dispatch,
+        // so a configured workspace/run/platform deny blocks its `ctx.*` calls. Built
+        // BEFORE the bridge borrows `&mut self.store`; reads ONLY trusted state.
+        let decision_context = self.decision_context_for_run();
         let mut bridge = crate::StorageHostBridge::with_http_client(
             &mut self.store,
             &applet_id,
@@ -599,10 +604,11 @@ impl WorkspaceCore {
         .with_file_system(file_system)
         .with_watch_registry(watch_registry)
         .with_foreign_watch_ids(foreign_watch_ids);
-        let run = record_notification(
+        let run = record_notification_with_context(
             &program,
             &installed.manifest,
             &actor,
+            decision_context,
             &callback,
             &payload,
             random_seed,
