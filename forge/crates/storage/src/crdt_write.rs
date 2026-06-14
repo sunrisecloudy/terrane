@@ -1133,6 +1133,111 @@ mod tests {
     }
 
     #[test]
+    fn legacy_put_chunk_from_remote_rejects_empty_record_ids_without_touching_store() {
+        // review 096: the public single-chunk import API must REJECT provenance-poor
+        // input rather than write a record.remote_import row that names no record.
+        // `record_ids = &[]` errors, and — because the guard runs BEFORE the
+        // transaction — leaves the store completely unchanged (no chunk, no oplog row).
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        let chunks_before = total_chunk_rows(&dst);
+        let ops_before = dst.list_ops().unwrap().len();
+
+        let err = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &[], // no touched record id -> provenance-poor, must be rejected
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "empty record_ids is rejected");
+        assert!(
+            err.to_string().contains("no touched record id"),
+            "error names the missing record id: {err}"
+        );
+
+        // The store is byte-for-byte unchanged: no chunk and no oplog row leaked in.
+        assert_eq!(total_chunk_rows(&dst), chunks_before, "no chunk row was appended");
+        assert_eq!(dst.list_ops().unwrap().len(), ops_before, "no oplog row was appended");
+        assert!(
+            dst.get_chunk(&doc_id, &row.chunk_id).unwrap().is_none(),
+            "the rejected chunk did not land"
+        );
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_rejects_blank_record_id_entries() {
+        // The blank-entry twin: `&[""]` (or whitespace-only ids) is just as
+        // provenance-poor as `&[]`, so it is rejected the same way — no `&[""]`
+        // loophole past the floor.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        let err = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &["   "], // whitespace-only id is not a real record identity
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "blank record id is rejected");
+        assert_eq!(total_chunk_rows(&dst), 0, "no chunk landed for a blank record id");
+        assert!(dst.list_ops().unwrap().is_empty(), "no oplog row for a blank record id");
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_rejects_blank_author_without_touching_store() {
+        // The author-floor twin: a blank effective original author (blank `source` and
+        // no `author_actor_id`) would write a remote-import row attributable to no one,
+        // so it is rejected before any store mutation.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        let err = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "   ", // blank importing source
+                None,  // and no forwarded original author
+                &["t1"],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "blank author/source is rejected");
+        assert!(
+            err.to_string().contains("no original author/source"),
+            "error names the missing author: {err}"
+        );
+        assert_eq!(total_chunk_rows(&dst), 0, "no chunk landed for a blank author");
+        assert!(dst.list_ops().unwrap().is_empty(), "no oplog row for a blank author");
+    }
+
+    #[test]
     fn first_hop_import_attributes_the_importing_source_as_author() {
         // The non-forwarded control: a chunk with no `author_actor_id` is a first-hop
         // import where the importing `source` IS the author. The oplog records that

@@ -1203,6 +1203,27 @@ impl Store {
     ///   so a later hop's authorization envelope still names a concrete record
     ///   (`review 092 #2`) instead of failing closed on dropped record identity.
     ///
+    /// PROVENANCE IS VALIDATED AT THIS BOUNDARY (`review 096`). The spec forbids any
+    /// import path from writing a provenance-poor `record.remote_import` row
+    /// (`forge/spec/sync-rbac.md`), so this public API REJECTS provenance-poor input
+    /// BEFORE opening a transaction — the store is left completely unchanged on
+    /// failure (no chunk, no oplog row):
+    ///
+    /// - the effective original author (`author_actor_id` when forwarded, else
+    ///   `source`) must be a non-blank, trimmed peer id — a blank actor would yield a
+    ///   `record.remote_import` row attributable to no one;
+    /// - at least one non-blank touched record id must be supplied — a record import
+    ///   that names no record would make the next relay hop recover an envelope core
+    ///   policy must deny as missing a record id (`forge/crates/core/src/sync_rbac.rs`
+    ///   envelope-metadata gate). Blank entries are rejected too, so `&[""]` is no
+    ///   loophole.
+    ///
+    /// The batch path [`apply_remote_chunks`](Self::apply_remote_chunks) is fed only by
+    /// the trusted internal sync seam (`forge_sync`), whose generic transact-group /
+    /// unknown-op chunks legitimately carry an empty `record_ids` and are gated by the
+    /// core authorization envelope instead; this single-chunk API is the public,
+    /// caller-supplied surface, so the provenance floor is enforced here.
+    ///
     /// Returns `true` if the chunk (and its oplog row) was newly written, `false`
     /// if it was already present (idempotent no-op).
     #[allow(clippy::too_many_arguments)]
@@ -1216,6 +1237,26 @@ impl Store {
         author_actor_id: Option<&str>,
         record_ids: &[&str],
     ) -> Result<bool> {
+        // Reject provenance-poor input BEFORE touching the store (review 096): the
+        // effective original author must be a non-blank peer id, and a record import
+        // must name at least one non-blank touched record id. Validating here — ahead
+        // of `transact` — means a rejected call leaves NO chunk and NO oplog row.
+        let original_author = author_actor_id.unwrap_or(source).trim();
+        if original_author.is_empty() {
+            return Err(CoreError::ValidationError(
+                "put_chunk_from_remote: remote import has no original author/source \
+                 (would write a provenance-poor record.remote_import)"
+                    .into(),
+            ));
+        }
+        if !record_ids.iter().any(|id| !id.trim().is_empty()) {
+            return Err(CoreError::ValidationError(
+                "put_chunk_from_remote: remote import names no touched record id \
+                 (would write a provenance-poor record.remote_import)"
+                    .into(),
+            ));
+        }
+
         // Build the same content + provenance unit the batch path imports, so the
         // remote-import oplog row is byte-for-byte identical to the real sync apply
         // (one code path: `import_remote_chunk_tx`).

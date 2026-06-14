@@ -59,6 +59,18 @@ write a provenance-poor remote-import row (no original author, no record ids):
 losing provenance at import would reintroduce exactly the relay-laundering this
 boundary forbids (`review 095`).
 
+The public single-chunk import API additionally **validates provenance at the
+import boundary**, BEFORE any store mutation: the effective original author (the
+forwarded author when set, else the importing source) must be a non-blank peer id,
+and a record import must name at least one non-blank touched record id. A call that
+fails either check is rejected and leaves the store completely unchanged — no chunk
+and no oplog row. This keeps a caller-supplied import from writing a provenance-poor
+row whose author or record identity is empty, which the next relay hop would
+recover as an envelope the authorizer must deny as missing a record id (`review
+096`). The internal batch path is fed only by the trusted sync seam, whose generic
+transact-group / unknown-op chunks legitimately carry no single record id and are
+gated by the receiver's authorization envelope instead.
+
 ## M0b scope
 
 M0b validates authorization at apply time in the receiving store. Full server
