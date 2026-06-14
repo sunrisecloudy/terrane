@@ -4,7 +4,10 @@
 //! helpers they (and the open-time index reconstruction in `workspace.rs`) share.
 
 use forge_domain::{CoreError, Result};
-use forge_schema::{CollectionDef, FieldDef, FieldType, SchemaChange, SchemaRegistry};
+use forge_schema::{
+    CollectionDef, FieldDef, FieldTransform, FieldType, MigrationDescriptor, SchemaChange,
+    SchemaRegistry,
+};
 use forge_storage::{CreateIndexKind, IndexDef, IndexState};
 
 use super::super::persistence::META_NS;
@@ -29,6 +32,31 @@ impl WorkspaceCore {
     /// `field_id` ([`Store::create_index`]) so the dynamic index follows the
     /// schema. A `Text` field gets an FTS5 shadow table; any other type gets a
     /// JSON1 expression (`Value`) index.
+    ///
+    /// DL-13: a schema change that EVOLVES an existing field's data (a `widen_field`,
+    /// a `deprecate_field`, or an `add_field` carrying a `default`) is paired with a
+    /// companion **record migration** so the stored records are carried forward to
+    /// match the registry evolution (`forge/spec/migrations.md`: the registry change
+    /// decides *what the schema is*; the migration decides *how existing data is
+    /// carried forward*). The migration is driven through the durable
+    /// [`Store::apply_migration`] engine — it rewrites the CRDT source of truth (so a
+    /// DL-6 rebuild reproduces the migrated values) and bumps the persisted
+    /// `schema_version`, all in ONE transaction.
+    ///
+    /// ATOMICITY (the lifecycle/lockstep lesson): the registry evolution + its record
+    /// migration + the version advance are ONE unit. The migration runs BEFORE the
+    /// registry is persisted, and because [`Store::apply_migration`] is all-or-nothing
+    /// (a non-coercible value — a lossy narrow — rolls back the records, the
+    /// `schema_version`, the migration chunk, and the oplog), a failed migration
+    /// returns its typed error here with the registry NEVER persisted. So after a
+    /// rejected change NOTHING is persisted: registry, records, and `schema_version`
+    /// are all unchanged.
+    ///
+    /// VERSION LOCKSTEP: the storage `schema_version` is the single source of version
+    /// truth and advances by exactly one per accepted change. A data-affecting change
+    /// advances it via [`Store::apply_migration`] (one bump, inside the migration); a
+    /// no-record-transform change (`add_collection`, `enforce_required`, a defaultless
+    /// `add_field`) advances it directly. Never double-bumped.
     pub(in crate::workspace) fn cmd_schema_apply_change(
         &mut self,
         cmd: &forge_domain::CoreCommand,
@@ -66,9 +94,34 @@ impl WorkspaceCore {
             }
         }
 
-        // The index (if any) was created successfully — now durably commit the
-        // evolved registry. Persist BEFORE swapping the in-memory copy so the
-        // durable schema and the in-memory one never diverge.
+        // DL-13: advance the workspace schema_version in lockstep and carry existing
+        // records forward. The storage `schema_version` is the single version source
+        // of truth; this change advances it from `current` to `current + 1`.
+        //
+        // A data-affecting change (widen / deprecate / add_field-with-default) builds
+        // its companion MigrationDescriptor against the CANDIDATE registry (so display
+        // names resolve to the post-change registry) and drives the DURABLE migration,
+        // which rewrites the CRDT source of truth, materializes the projection, bumps
+        // the version, and rebuilds active indexes — atomically. Run it BEFORE
+        // persisting the registry: a failed (non-coercible) migration rolls itself
+        // fully back and returns its typed error here, so the registry is never
+        // persisted and nothing changed. A no-record-transform change advances the
+        // version directly (a single bump, never two).
+        let current = self.store.schema_version()?;
+        let migrated = match migration_for_change(&change, &next, cmd, current)? {
+            Some(descriptor) => {
+                let outcome = self.store.apply_migration(&descriptor, &self.indexes)?;
+                outcome.migrated_records
+            }
+            None => {
+                self.store.advance_schema_version(current + 1)?;
+                0
+            }
+        };
+
+        // The index (if any) was created and the migration committed successfully —
+        // now durably commit the evolved registry. Persist BEFORE swapping the
+        // in-memory copy so the durable schema and the in-memory one never diverge.
         self.persist_registry(&next)?;
         self.registry = next;
 
@@ -82,6 +135,8 @@ impl WorkspaceCore {
             "op": change_op(&change),
             "registry": registry_summary(&self.registry),
             "created_index": created_index,
+            "schema_version": current + 1,
+            "migrated_records": migrated,
         }))
     }
 
@@ -265,6 +320,141 @@ fn indexed_field_to_create(
         return None;
     }
     Some((field.field_id().to_string(), index_kind_for(field)))
+}
+
+/// Build the companion DL-13 [`MigrationDescriptor`] for a schema `change` that
+/// evolves an existing field's stored data, or `None` for a change that touches
+/// only the registry/validation surface (`add_collection`, `enforce_required`, a
+/// defaultless `add_field`). The descriptor is built against the CANDIDATE registry
+/// `next` (the post-change state) so display `name`s resolve to the evolved schema,
+/// and migrates `from = current` `to = current + 1` so the version advances in
+/// lockstep (`forge/spec/migrations.md`).
+///
+/// The supported-transforms mapping is normative (`forge/spec/migrations.md` §1):
+/// - `widen_field{field_id, to}` → [`FieldTransform::WidenField`] (coerce the
+///   stored value to the wider type, e.g. `5` → `5.0`).
+/// - `deprecate_field{field_id}` → [`FieldTransform::DropField`]: deprecate's data
+///   side drops the record VALUE while the schema field is retained via the
+///   `deprecated` flag (DL-8 "deprecate + retain at the schema level"). The
+///   `deprecate_field_ok` fixture pins only the registry-level retention
+///   (`deprecated: true`), so dropping the value is consistent with both the spec
+///   table and the fixture.
+/// - `add_field` → [`FieldTransform::AddField`] (fill-if-missing) ONLY when the
+///   command carries a `default`; without a default the new field is simply absent
+///   on existing records until written, so no record is rewritten.
+///
+/// `add_collection` and `enforce_required` map to no transform.
+///
+/// **Record-key resolution (M0a stand-in).** A transform must target the
+/// `field_id` the **records actually carry**. The M0a DL-4 mutation surface keys a
+/// display field `<name>` under the projection stand-in `f_<name>`
+/// (`forge_storage`'s `materialize_field_ids`: storage has no registry, so it has
+/// no schema name→id map and writes the `f_<name>` stand-in), so a record written
+/// before the change carries `f_<name>`, NOT the registry's actor-scoped
+/// `f_<actor>_<seq>`. The schema change references the registry id; we resolve that
+/// id to its display `name` in the candidate registry, then key the record
+/// transform by the matching stand-in [`record_field_id`] so the migration rewrites
+/// the value the record really holds (mirroring the `forge_storage` migration tests,
+/// which target `f_<name>`). The display `name` is carried explicitly so both the
+/// stable-id map and the display projection are rewritten exactly (review 138 P2).
+fn migration_for_change(
+    change: &SchemaChange,
+    next: &SchemaRegistry,
+    cmd: &forge_domain::CoreCommand,
+    current: u64,
+) -> Result<Option<MigrationDescriptor>> {
+    let transform = match change {
+        SchemaChange::WidenField { collection, field_id, to } => {
+            let name = resolve_display_name(next, collection, field_id)?;
+            Some((
+                collection.clone(),
+                FieldTransform::WidenField {
+                    field_id: record_field_id(&name),
+                    name,
+                    to: to.clone(),
+                },
+            ))
+        }
+        SchemaChange::DeprecateField { collection, field_id } => {
+            let name = resolve_display_name(next, collection, field_id)?;
+            Some((
+                collection.clone(),
+                FieldTransform::DropField { field_id: record_field_id(&name), name },
+            ))
+        }
+        SchemaChange::AddField { collection, .. } => {
+            // A default (an optional companion to `change` in the command payload) is
+            // filled into existing records that lack the freshly minted field. The
+            // schema crate mints the id when applying the change, so resolve the new
+            // field from the CANDIDATE registry: it is the last field of `collection`.
+            // The record-side fill targets the `f_<name>` stand-in (the key records
+            // carry) so a later read sees the default under the same id.
+            match cmd.payload.get("default") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(default) => {
+                    let name = next
+                        .collection(collection)
+                        .and_then(|col| col.fields().last())
+                        .map(|f| f.name().to_string())
+                        .ok_or_else(|| {
+                            CoreError::ValidationError(format!(
+                                "schema.apply_change: add_field default for unknown collection {collection:?}"
+                            ))
+                        })?;
+                    Some((
+                        collection.clone(),
+                        FieldTransform::AddField {
+                            field_id: record_field_id(&name),
+                            name,
+                            default: default.clone(),
+                        },
+                    ))
+                }
+            }
+        }
+        // Registry-only / validation-only changes carry no record transform.
+        SchemaChange::AddCollection { .. }
+        | SchemaChange::RenameField { .. }
+        | SchemaChange::EnforceRequired { .. } => None,
+    };
+
+    Ok(transform.map(|(collection, transform)| MigrationDescriptor {
+        collection,
+        from_schema_version: current,
+        to_schema_version: current + 1,
+        transforms: vec![transform],
+    }))
+}
+
+/// Resolve a field's current display name from the (candidate) registry by its
+/// stable `field_id` (DL-7). The migration transform carries the display `name`
+/// EXPLICITLY so the record's display projection is updated exactly (never an
+/// `f_`-strip guess — review 138 P2). An unknown field is a `ValidationError`
+/// (the change just minted/targeted it, so it must resolve).
+fn resolve_display_name(
+    registry: &SchemaRegistry,
+    collection: &str,
+    field_id: &str,
+) -> Result<String> {
+    registry
+        .collection(collection)
+        .and_then(|col| col.field(field_id))
+        .map(|f| f.name().to_string())
+        .ok_or_else(|| {
+            CoreError::ValidationError(format!(
+                "schema.apply_change: field {field_id:?} not found in collection {collection:?}"
+            ))
+        })
+}
+
+/// The stable `field_id` a record carries for display field `name` in the M0a
+/// mutation surface: the `f_<name>` stand-in. This mirrors `forge_storage`'s
+/// `materialize_field_ids` (kept in lockstep): storage has no schema name→id map,
+/// so a record written through the DL-4 path keys its value under `f_<name>`. A
+/// record migration must target the SAME key to rewrite the value the record
+/// actually holds, so the companion descriptor keys by this stand-in.
+fn record_field_id(name: &str) -> String {
+    format!("f_{name}")
 }
 
 /// The serde `op` tag for a [`SchemaChange`] (for the response/event payload).

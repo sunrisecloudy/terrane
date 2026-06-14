@@ -60,6 +60,29 @@ impl Store {
         }
     }
 
+    /// Advance the persisted `schema_version` to `to` (DL-13) for a schema change
+    /// that evolves the registry but rewrites **no** record (an `add_collection`,
+    /// an `enforce_required`, or a defaultless `add_field`). The version is the
+    /// single migration-ordering anchor (`forge/spec/migrations.md` §5), so a
+    /// no-record-transform change still advances it in lockstep with the
+    /// record-rewriting changes that drive [`apply_migration`].
+    ///
+    /// `to` must strictly advance the current version (`to > current`); a
+    /// non-advancing target is a [`CoreError::SchemaCompatibilityError`] (the same
+    /// monotone guard `apply_migration`'s precondition enforces). The read-bump-write
+    /// runs in ONE [`Store::transact`] so the version never half-advances.
+    pub fn advance_schema_version(&mut self, to: u64) -> Result<()> {
+        self.transact(|tx| {
+            let current = read_schema_version_tx(tx)?;
+            if to <= current {
+                return Err(CoreError::SchemaCompatibilityError(format!(
+                    "schema_version must advance: current {current}, requested {to}"
+                )));
+            }
+            write_schema_version_tx(tx, to)
+        })
+    }
+
     /// Apply a migration (DL-13) to every record of `descriptor.collection`,
     /// atomically and all-or-nothing.
     ///
@@ -290,6 +313,25 @@ mod tests {
     fn fresh_store_starts_at_schema_version_one() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.schema_version().unwrap(), INITIAL_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn advance_schema_version_bumps_monotonically_and_rejects_non_advance() {
+        // The no-record-transform version bump (driven by `schema.apply_change` for
+        // an add_collection / enforce_required / defaultless add_field): it advances
+        // the version by one and rejects a non-advancing target (the same monotone
+        // guard `apply_migration`'s precondition enforces).
+        let mut store = Store::open_in_memory().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 1);
+        store.advance_schema_version(2).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+        store.advance_schema_version(3).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 3);
+        // A non-advancing target is rejected and leaves the version untouched.
+        let err = store.advance_schema_version(3).unwrap_err();
+        assert_eq!(err.code(), "SchemaCompatibilityError");
+        assert_eq!(store.advance_schema_version(1).unwrap_err().code(), "SchemaCompatibilityError");
+        assert_eq!(store.schema_version().unwrap(), 3, "a rejected advance must not change the version");
     }
 
     #[test]

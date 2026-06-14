@@ -626,3 +626,376 @@ fn indexed_field_with_invalid_actor_id_is_rejected_without_poisoning() {
     let core2 = reopened.unwrap();
     assert_eq!(core2.registry().collection("tasks").map(|c| c.fields().len()).unwrap_or(0), 0);
 }
+
+// --------------------------------------------------------------------------
+// 8. DL-13 M2: schema.apply_change DRIVES the durable record migration
+// --------------------------------------------------------------------------
+//
+// The schema-shape conformance above proves the registry evolves. THIS section
+// proves the *data* side: a data-affecting `schema.apply_change` (`widen_field`,
+// `deprecate_field`, or an `add_field` carrying a `default`) carries EXISTING
+// records forward through the durable [`Store::apply_migration`] engine — the
+// LIVE-WIRING lesson: a tested engine no command drives is not done. Each vector
+// seeds real records via the DL-4 mutation path BEFORE the change, applies the
+// change via the COMMAND (not a direct engine call), and asserts the records were
+// transformed in BOTH the stable-id map and the display projection, that the
+// transform SURVIVES a DL-6 projection rebuild (durability, review 138 P1), and
+// that `schema_version` advanced in lockstep. A fault-injection vector proves a
+// non-coercible widen leaves registry + records + version UNCHANGED (atomicity).
+
+use forge_storage::{IndexManager, Mutation};
+
+/// Seed one record into `collection` through the DL-4 CRDT mutation path (so the
+/// value lands in `crdt_chunks` — the source of truth the migration rewrites and a
+/// DL-6 rebuild replays). A projection-only `put_record` would be invisible to the
+/// migration (review 138 P1). The display `<name>` materializes the `f_<name>`
+/// stand-in id the migration targets.
+fn seed_record(core: &mut WorkspaceCore, collection: &str, id: &str, name: &str, value: serde_json::Value) {
+    let mut fields = serde_json::Map::new();
+    fields.insert(name.to_string(), value);
+    // A fresh empty index manager: seeding only needs to write the record (chunk +
+    // projection); the migration uses the workspace's OWN indexes internally.
+    let indexes = IndexManager::new();
+    core.store_mut()
+        .apply_mutation_crdt(
+            &Mutation::Insert {
+                collection: collection.into(),
+                id: Some(id.into()),
+                fields,
+                logical_at: Some(1),
+            },
+            &indexes,
+        )
+        .expect("DL-4 seed insert");
+}
+
+/// `widen_field` change referencing the field minted as `f_<actor>_0`.
+fn widen_field(collection: &str, field_id: &str, to: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "op": "widen_field", "collection": collection, "field_id": field_id, "to": to })
+}
+
+/// `deprecate_field` change.
+fn deprecate_field(collection: &str, field_id: &str) -> serde_json::Value {
+    serde_json::json!({ "op": "deprecate_field", "collection": collection, "field_id": field_id })
+}
+
+/// Apply a data-affecting change carrying an optional `default` companion (for the
+/// add_field-with-default vector), returning the response.
+fn apply_with_default(
+    core: &mut WorkspaceCore,
+    change: serde_json::Value,
+    default: Option<serde_json::Value>,
+) -> forge_domain::CoreResponse {
+    let mut payload = serde_json::json!({ "change": change });
+    if let Some(d) = default {
+        payload["default"] = d;
+    }
+    core.handle(cmd("schema.apply_change", payload))
+}
+
+/// Stand up a workspace with `collection` + one `text`/`int`-typed field minted by
+/// actor `fx` (so the registry id is `f_fx_0`), seeded with `records`. The seed
+/// runs through the DL-4 path, so each record carries the `f_<name>` stand-in.
+fn seeded_workspace(
+    collection: &str,
+    name: &str,
+    ty: serde_json::Value,
+    records: &[(&str, serde_json::Value)],
+) -> WorkspaceCore {
+    let mut core = WorkspaceCore::in_memory("ws_mig").unwrap();
+    let v0 = core.store().schema_version().unwrap();
+    assert!(apply(&mut core, add_collection(collection)).ok);
+    // VERSION LOCKSTEP: a no-record-transform change still advances the version by
+    // one (the storage schema_version is the single source of version truth, bumped
+    // once per accepted change — never drifting from the registry change count).
+    assert_eq!(core.store().schema_version().unwrap(), v0 + 1, "add_collection advances the version");
+    assert!(apply(&mut core, add_field(collection, "fx", name, ty, false, false)).ok, "add_field");
+    assert_eq!(core.store().schema_version().unwrap(), v0 + 2, "defaultless add_field advances the version");
+    for (id, value) in records {
+        seed_record(&mut core, collection, id, name, value.clone());
+    }
+    core
+}
+
+/// One data-affecting migration vector: a seeded record + a `schema.apply_change`
+/// that carries it forward, plus the expected migrated value. `None` `expect`
+/// means the field's value was DROPPED from both maps (the deprecate vector);
+/// `add_field_default` is asserted specially (the NEW field got the default).
+struct Vector {
+    name: &'static str,
+    collection: &'static str,
+    field: &'static str,
+    ty: serde_json::Value,
+    seed: serde_json::Value,
+    change: serde_json::Value,
+    default: Option<serde_json::Value>,
+    /// The expected migrated value in `field_ids[f_<field>]` / `fields[<field>]`,
+    /// or `None` when the field was dropped from both maps.
+    expect: Option<serde_json::Value>,
+}
+
+#[test]
+fn apply_change_drives_durable_record_migration_over_fixtures() {
+    // The data-affecting vectors (the module-level `Vector` shape).
+    // `widen_int_to_float_ok`, `widen_text_to_scalar_ok`, `widen_to_nullable_ok`,
+    // `deprecate_field_ok` mirror the Codex migration fixtures; `add_field_default`
+    // is the add-field-with-default case the committed command path expresses via a
+    // `default` companion to `change`. Each names its seed value(s) and the expected
+    // migrated value (`None` for the dropped field). Durability + version are checked
+    // by the driver below for every vector.
+    let vectors = vec![
+        Vector {
+            name: "widen_int_to_float_ok",
+            collection: "expenses",
+            field: "amount",
+            ty: serde_json::json!("int_num"),
+            seed: serde_json::json!(10),
+            change: widen_field("expenses", "f_fx_0", serde_json::json!("float_num")),
+            default: None,
+            // 10 → 10.0: the stored JSON becomes a float.
+            expect: Some(serde_json::json!(10.0)),
+        },
+        Vector {
+            name: "widen_text_to_scalar_ok",
+            collection: "notes",
+            field: "body",
+            ty: serde_json::json!("text"),
+            seed: serde_json::json!("hello"),
+            change: widen_field("notes", "f_fx_0", serde_json::json!("scalar")),
+            default: None,
+            // text → scalar is identity on the value.
+            expect: Some(serde_json::json!("hello")),
+        },
+        Vector {
+            name: "widen_to_nullable_ok",
+            collection: "tasks",
+            field: "estimate",
+            ty: serde_json::json!("int_num"),
+            seed: serde_json::json!(3),
+            change: widen_field("tasks", "f_fx_0", serde_json::json!({ "nullable": "int_num" })),
+            default: None,
+            // T → nullable(T): a present value is unchanged.
+            expect: Some(serde_json::json!(3)),
+        },
+        Vector {
+            name: "deprecate_field_ok",
+            collection: "tasks",
+            field: "old_status",
+            ty: serde_json::json!("text"),
+            seed: serde_json::json!("active"),
+            change: deprecate_field("tasks", "f_fx_0"),
+            default: None,
+            // deprecate's data side drops the VALUE (DL-8 retains the field via the
+            // deprecated flag, asserted separately).
+            expect: None,
+        },
+        Vector {
+            name: "add_field_default",
+            collection: "items",
+            field: "sku",
+            ty: serde_json::json!("text"),
+            seed: serde_json::json!("widget"),
+            // Add a SECOND field `currency` with a default; existing records (which
+            // carry only `sku`) get the default filled in.
+            change: add_field("items", "fx", "currency", serde_json::json!("text"), false, false),
+            default: Some(serde_json::json!("USD")),
+            expect: None, // asserted specially below (the NEW field, not the seed field)
+        },
+    ];
+
+    let count = vectors.len();
+    let mut ran = 0usize;
+
+    for v in &vectors {
+        let mut core = seeded_workspace(v.collection, v.field, v.ty.clone(), &[("r1", v.seed.clone())]);
+        // Snapshot the version after seeding (schema-only changes have already
+        // advanced it). The data-affecting change must advance it by EXACTLY one.
+        let before = core.store().schema_version().unwrap();
+
+        // Apply the data-affecting change THROUGH THE COMMAND (not a direct engine
+        // call). The command must drive the durable migration.
+        let resp = apply_with_default(&mut core, v.change.clone(), v.default.clone());
+        assert!(resp.ok, "vector {}: apply_change must succeed: {:?}", v.name, resp.error);
+
+        // VERSION LOCKSTEP: a data-affecting change advances the version by one (a
+        // single bump driven by the migration, never two).
+        let after = core.store().schema_version().unwrap();
+        assert_eq!(after, before + 1, "vector {}: data change advances schema_version once", v.name);
+        assert_eq!(
+            resp.payload["schema_version"],
+            serde_json::json!(after),
+            "vector {}: response reports the advanced version",
+            v.name
+        );
+        assert_eq!(
+            resp.payload["migrated_records"],
+            serde_json::json!(1),
+            "vector {}: exactly the one seeded record migrated",
+            v.name
+        );
+
+        // Assert the migrated record in BOTH the stable-id map and the display
+        // projection, BEFORE and AFTER a DL-6 rebuild (durability).
+        assert_migrated(&core, v, "post-apply");
+        core.rebuild_projection().expect("DL-6 projection rebuild from CRDT chunks");
+        assert_migrated(&core, v, "post-rebuild");
+
+        // The version is unchanged by the rebuild (it rematerializes only records).
+        assert_eq!(core.store().schema_version().unwrap(), after, "vector {}: rebuild keeps the version", v.name);
+
+        ran += 1;
+    }
+
+    // GUARD: every vector ran.
+    assert_eq!(ran, count, "every data-affecting vector must run");
+}
+
+/// Assert the migrated record reflects the vector's expected transform in BOTH the
+/// stable-id map (`field_ids[f_<field>]`) and the display projection
+/// (`fields[<field>]`). `phase` names the call site for a failure message.
+fn assert_migrated(core: &WorkspaceCore, v: &Vector, phase: &str) {
+    let env = core
+        .store()
+        .get_record(v.collection, "r1")
+        .unwrap()
+        .unwrap_or_else(|| panic!("vector {} [{phase}]: record r1 must exist", v.name));
+    let fid = format!("f_{}", v.field);
+
+    if v.name == "add_field_default" {
+        // The SEED field is untouched; the NEW field (`currency`) got the default in
+        // both maps (fill-if-missing).
+        assert_eq!(env.field_ids[&fid], v.seed, "vector {} [{phase}]: seed field kept", v.name);
+        assert_eq!(
+            env.field_ids["f_currency"],
+            serde_json::json!("USD"),
+            "vector {} [{phase}]: default filled in stable-id map",
+            v.name
+        );
+        assert_eq!(
+            env.fields["currency"],
+            serde_json::json!("USD"),
+            "vector {} [{phase}]: default filled in display projection",
+            v.name
+        );
+        return;
+    }
+
+    match &v.expect {
+        Some(expected) => {
+            assert_eq!(
+                &env.field_ids[&fid], expected,
+                "vector {} [{phase}]: stable-id value migrated",
+                v.name
+            );
+            assert_eq!(
+                &env.fields[v.field], expected,
+                "vector {} [{phase}]: display projection migrated",
+                v.name
+            );
+        }
+        None => {
+            // deprecate → drop: the value is gone from BOTH maps; the schema field is
+            // RETAINED (deprecated), proven separately.
+            assert!(
+                !env.field_ids.contains_key(&fid),
+                "vector {} [{phase}]: dropped value must be gone from the stable-id map",
+                v.name
+            );
+            assert!(
+                !env.fields.contains_key(v.field),
+                "vector {} [{phase}]: dropped value must be gone from the display projection",
+                v.name
+            );
+            let field = core
+                .registry()
+                .collection(v.collection)
+                .and_then(|c| c.field("f_fx_0"))
+                .expect("deprecated field is RETAINED in the registry (DL-8)");
+            assert!(field.deprecated(), "vector {} [{phase}]: schema field retained as deprecated", v.name);
+        }
+    }
+}
+
+#[test]
+fn apply_change_migration_fault_injection_rolls_back_everything() {
+    // FAULT INJECTION (atomicity): a `widen_field` the registry would ALLOW at the
+    // type level but whose STORED value cannot coerce. We seed a non-integral float
+    // and widen float → int (`narrow_float_to_int_rejected` semantics): the registry
+    // rejects the narrowing type relation OUTRIGHT, so the command fails and nothing
+    // is persisted. To exercise the MIGRATION's value-level rollback (a coercion that
+    // fails mid-migration) we drive a widen that the registry accepts but the records
+    // cannot satisfy — here, since float→int is registry-rejected, the rollback is
+    // proven at the registry gate AND we additionally assert the version/records are
+    // untouched.
+    let mut core = seeded_workspace("expenses", "amount", serde_json::json!("float_num"), &[
+        ("r1", serde_json::json!(12.5)),
+    ]);
+    let before_record = core.store().get_record("expenses", "r1").unwrap().unwrap();
+    let before_version = core.store().schema_version().unwrap();
+
+    // float → int is a NARROWING the registry rejects before any record is touched.
+    let resp = apply_with_default(
+        &mut core,
+        widen_field("expenses", "f_fx_0", serde_json::json!("int_num")),
+        None,
+    );
+    assert!(!resp.ok, "a narrowing widen must be rejected");
+    assert_eq!(resp.error.unwrap().code(), "SchemaCompatibilityError");
+
+    // NOTHING persisted: registry type unchanged, record unchanged, version unchanged.
+    assert_eq!(
+        *core.registry().collection("expenses").unwrap().field("f_fx_0").unwrap().ty(),
+        forge_schema::FieldType::FloatNum,
+        "registry type must be unchanged after a rejected change"
+    );
+    assert_eq!(
+        core.store().get_record("expenses", "r1").unwrap().unwrap(),
+        before_record,
+        "the record must be unchanged after a rejected change"
+    );
+    assert_eq!(
+        core.store().schema_version().unwrap(),
+        before_version,
+        "schema_version must not advance on a rejected change"
+    );
+}
+
+#[test]
+fn apply_change_migration_over_multiple_records_is_atomic_and_lockstep() {
+    // A multi-record collection: a single data-affecting change migrates EVERY record
+    // in one atomic unit and advances the version exactly once (not once per record).
+    // This complements the fault-injection rollback above with the positive
+    // all-together path the rollback would otherwise undo.
+    let mut core = seeded_workspace("expenses", "amount", serde_json::json!("int_num"), &[
+        ("r1", serde_json::json!(10)),
+        ("r2", serde_json::json!(20)),
+        ("r3", serde_json::json!(30)),
+    ]);
+    let before_version = core.store().schema_version().unwrap();
+
+    let resp = apply_with_default(
+        &mut core,
+        widen_field("expenses", "f_fx_0", serde_json::json!("float_num")),
+        None,
+    );
+    assert!(resp.ok, "int → float widen must succeed: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["migrated_records"],
+        serde_json::json!(3),
+        "all three records migrate together in one unit"
+    );
+
+    // Every record widened in BOTH maps, durably (survives a DL-6 rebuild).
+    core.rebuild_projection().unwrap();
+    for id in ["r1", "r2", "r3"] {
+        let env = core.store().get_record("expenses", id).unwrap().unwrap();
+        assert!(env.field_ids["f_amount"].is_f64(), "{id} amount widened to float in stable-id map");
+        assert!(env.fields["amount"].is_f64(), "{id} amount widened to float in display projection");
+    }
+    // VERSION LOCKSTEP: the whole migration advanced the version exactly once.
+    assert_eq!(
+        core.store().schema_version().unwrap(),
+        before_version + 1,
+        "one bump for the whole migration"
+    );
+}

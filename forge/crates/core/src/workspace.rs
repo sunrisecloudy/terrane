@@ -439,6 +439,19 @@ impl WorkspaceCore {
         &mut self.store
     }
 
+    /// Rebuild the derived `records` projection purely from the CRDT source of
+    /// truth (DL-6): drop the projection and rematerialize it from `crdt_chunks`
+    /// against this workspace's own index manager. Used by in-process tooling and
+    /// tests to prove a durable write (e.g. a DL-13 record migration) survives a
+    /// rematerialization — the migration mutates the chunk stream, so a rebuild
+    /// reproduces the migrated values rather than the pre-migration state. The
+    /// disjoint borrow of `store` + `indexes` is internal to the facade (the two
+    /// are private fields, so a caller cannot borrow both at once through the
+    /// public accessors).
+    pub fn rebuild_projection(&mut self) -> Result<()> {
+        self.store.rebuild_projection(&self.indexes)
+    }
+
     /// In-process CRDT sync (SS-1/SS-2, M0b): converge this workspace with
     /// `other` by exchanging the chunk sets their two [`Store`]s hold, then
     /// rebuilding both projections — the local CI seam before WebSocket transport
