@@ -215,29 +215,67 @@ enum Entry {
     Handler(String),
 }
 
+/// The outcome of resolving an [`Entry`] into a callable: the function to call,
+/// plus an optional `action_suffix` to merge into the event payload. The suffix is
+/// only ever `Some` for a list-item dispatch (`base:suffix`) that resolved by
+/// stripping the trailing `:suffix` off the `action_ref` (UI-4 stable-key list
+/// addressing); a normal/exact match carries `None`.
+struct Resolved<'js> {
+    callable: Function<'js>,
+    action_suffix: Option<String>,
+}
+
 impl Entry {
     /// The global the realm exposes the chosen callable under: `__forge_main` for
     /// the entrypoint, or a lookup into `__forge_handlers` for a named handler.
-    /// Returns the resolved [`Function`], or a typed [`Stop`] when the handler is
-    /// missing/not callable (an unknown `action_ref` is a clean error, not a panic).
-    fn resolve<'js>(&self, ctx: &Ctx<'js>) -> Result<Function<'js>, Stop> {
+    /// Returns the resolved [`Function`] (+ any list-item `action_suffix`), or a
+    /// typed [`Stop`] when the handler is missing/not callable (an unknown
+    /// `action_ref` is a clean error, not a panic).
+    fn resolve<'js>(&self, ctx: &Ctx<'js>) -> Result<Resolved<'js>, Stop> {
         match self {
-            Entry::Main => ctx.globals().get("__forge_main").map_err(|_| {
-                Stop::Runtime("program does not export an async function main(ctx, input)".into())
-            }),
+            Entry::Main => ctx
+                .globals()
+                .get("__forge_main")
+                .map(|callable| Resolved {
+                    callable,
+                    action_suffix: None,
+                })
+                .map_err(|_| {
+                    Stop::Runtime(
+                        "program does not export an async function main(ctx, input)".into(),
+                    )
+                }),
             Entry::Handler(action_ref) => {
-                let handlers: Object = ctx.globals().get("__forge_handlers").map_err(|e| {
-                    Stop::Runtime(format!("handler registry missing: {e}"))
-                })?;
-                match handlers.get::<_, Function>(action_ref.as_str()) {
-                    Ok(f) => Ok(f),
-                    // A missing/non-function action ref is a typed engine error
-                    // (UI-4/CR-6), surfaced as a ValidationError so the dispatch
-                    // path reports "no such handler" rather than panicking.
-                    Err(_) => Err(Stop::Validation(format!(
-                        "no UI handler registered for action ref {action_ref:?}"
-                    ))),
+                let handlers: Object = ctx
+                    .globals()
+                    .get("__forge_handlers")
+                    .map_err(|e| Stop::Runtime(format!("handler registry missing: {e}")))?;
+                // 1. Exact match on the full (possibly dotted/free-form) action ref.
+                if let Ok(f) = handlers.get::<_, Function>(action_ref.as_str()) {
+                    return Ok(Resolved {
+                        callable: f,
+                        action_suffix: None,
+                    });
                 }
+                // 2. List-item-by-stable-key fallback (UI-4): an `onTap` like
+                //    `todo.toggle:b` addresses the `todo.toggle` handler for the item
+                //    keyed `b`. Split on the LAST `:` into (base, suffix); if `base`
+                //    is a registered handler, dispatch it and surface the `suffix` to
+                //    the handler through the event payload (merged as `actionSuffix`).
+                if let Some((base, suffix)) = action_ref.rsplit_once(':') {
+                    if let Ok(f) = handlers.get::<_, Function>(base) {
+                        return Ok(Resolved {
+                            callable: f,
+                            action_suffix: Some(suffix.to_string()),
+                        });
+                    }
+                }
+                // A missing/non-function action ref is a typed engine error
+                // (UI-4/CR-6), surfaced as a ValidationError so the dispatch
+                // path reports "no such handler" rather than panicking.
+                Err(Stop::Validation(format!(
+                    "no UI handler registered for action ref {action_ref:?}"
+                )))
             }
         }
     }
@@ -344,17 +382,36 @@ fn run_inner(
 
         // Resolve the chosen callable: `main` for a run, or the handler named by
         // the action ref for a UI dispatch (an unknown action ref is a typed
-        // ValidationError Stop, never a panic).
-        let callable: Function = match entry.resolve(&ctx) {
-            Ok(f) => f,
+        // ValidationError Stop, never a panic). A list-item dispatch (`base:suffix`)
+        // additionally yields the `action_suffix` to fold into the event payload.
+        let Resolved {
+            callable,
+            action_suffix,
+        } = match entry.resolve(&ctx) {
+            Ok(r) => r,
             Err(stop) => return stop,
         };
 
         // Marshal the arg (run input / event payload) and the ctx object, then
-        // call callable(ctx, arg).
+        // call callable(ctx, arg). For a list-item dispatch, merge the addressed
+        // item's stable-key `action_suffix` into the event payload object (the
+        // handler reads `event.actionSuffix` to know which item fired) before
+        // marshalling, so the suffix travels with the event over the same path.
         let ctx_obj: Object = match ctx.globals().get("ctx") {
             Ok(o) => o,
             Err(e) => return Stop::Runtime(format!("ctx object missing: {e}")),
+        };
+        let arg_with_suffix;
+        let arg = match action_suffix {
+            Some(suffix) => {
+                let mut merged = arg.clone();
+                if let serde_json::Value::Object(map) = &mut merged {
+                    map.insert("actionSuffix".into(), serde_json::Value::String(suffix));
+                }
+                arg_with_suffix = merged;
+                &arg_with_suffix
+            }
+            None => arg,
         };
         let arg_js = match QuickJsEngine::json_to_js(&ctx, arg) {
             Ok(v) => v,
@@ -534,13 +591,22 @@ fn classify_failure(
 /// evaluation: the program runs as a global script and assigns `main`.
 ///
 /// In addition to `main`, we synthesize a **handler registry** (prd-merged/05
-/// UI-4, prd-merged/01 CR-6): every `export`ed named function in the source is
-/// registered into `globalThis.__forge_handlers` keyed by its name (the
-/// `ActionRef` the rendered tree's `onTap`/`onChange` carries). This is the
-/// wrap-time half of [`run_handler`]: a UI event is dispatched by addressing the
-/// function whose name equals the action ref. The registry is keyed by the
-/// exported name precisely so the dispatch key (`ActionRef`, a `String`) and the
-/// handler name are the same identifier — no separate mapping table to drift.
+/// UI-4, prd-merged/01 CR-6) addressable by a free-form `ActionRef` string. Two
+/// sources feed it, in order:
+///
+/// 1. every `export`ed named function is registered keyed by its name, so a bare
+///    identifier ref (`increment`, `setLabel`) addresses the same-named function —
+///    the dispatch key and the handler name are the same identifier, no mapping to
+///    drift; and
+/// 2. an exported `handlers` OBJECT literal (`export const handlers = { "counter.
+///    increment": fn, "profile.name.change": fn, "todo.toggle": fn }`) whose KEYS
+///    are arbitrary ActionRef strings is folded in by key → function, so a
+///    dotted/suffixed ref that is NOT a valid bare JS identifier is still
+///    addressable. The object pass runs second (an explicit entry wins).
+///
+/// This is the wrap-time half of [`run_handler`]: a UI event is dispatched by
+/// looking the action ref up in `__forge_handlers` (with a `base:suffix`
+/// list-item fallback in [`Entry::resolve`]).
 fn wrap_program(source: &str) -> String {
     let stripped = strip_exports(source);
     // Collect every exported binding name so each becomes an addressable handler
@@ -555,6 +621,27 @@ fn wrap_program(source: &str) -> String {
         registry.push_str(&format!(
             ";if (typeof {name} === 'function') {{ globalThis.__forge_handlers[{name:?}] = {name}; }}\n"
         ));
+    }
+    // Free-form ActionRef registry (UI-4/CR-6): an applet may also export a
+    // `handlers` OBJECT whose KEYS are arbitrary ActionRef strings — dotted /
+    // suffixed refs like `"counter.increment"`, `"profile.name.change"`,
+    // `"todo.toggle"` that are NOT valid bare JS identifiers and so cannot be the
+    // name of an `export function`. We fold every own-enumerable key of that
+    // object into `__forge_handlers` keyed by the free-form string → its function.
+    // This runs AFTER the bare-name pass, so an explicit `handlers` entry wins over
+    // a same-named exported function; and it is guarded behind `typeof handlers`
+    // so an applet without one is unaffected (the existing bare-name path stands).
+    if names.iter().any(|n| n == "handlers") {
+        // One leading `;` guards against the stripped source not ending in a
+        // statement terminator; the rest is a plain JS block (NO per-line `;`,
+        // which would break mid-expression continuations).
+        registry.push_str(
+            ";if (handlers && typeof handlers === 'object') { \
+             for (var __k in handlers) { \
+             if (Object.prototype.hasOwnProperty.call(handlers, __k) \
+             && typeof handlers[__k] === 'function') { \
+             globalThis.__forge_handlers[__k] = handlers[__k]; } } }\n",
+        );
     }
     // Expose `main` as `__forge_main` ONLY when the program actually declares it.
     // A bare `globalThis.__forge_main = main;` throws `ReferenceError: main is not
@@ -1140,6 +1227,41 @@ mod tests {
         assert!(
             wrapped.contains("if (typeof main === 'function')"),
             "main assignment guarded for handler-only applets: {wrapped}"
+        );
+    }
+
+    /// An exported `handlers` OBJECT literal whose keys are free-form (dotted)
+    /// ActionRef strings is folded into `__forge_handlers` by key. The wrap emits
+    /// the key-copy loop guarded behind `typeof handlers === 'object'`, so dotted
+    /// refs that are not valid bare identifiers become addressable.
+    #[test]
+    fn wrap_program_folds_exported_handlers_object_by_free_form_key() {
+        let wrapped = wrap_program(
+            "export const handlers = { \"counter.increment\": (ctx, e) => e };\n",
+        );
+        assert!(
+            wrapped.contains("if (handlers && typeof handlers === 'object')"),
+            "handlers-object fold guarded behind typeof: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[__k] = handlers[__k]"),
+            "each handlers-object key is copied into the registry: {wrapped}"
+        );
+    }
+
+    /// An applet WITHOUT an exported `handlers` object does not get the object-fold
+    /// loop emitted — only the bare-name registry pass runs (keeps the existing
+    /// runtime tests' identifier handlers working, no behavior change for them).
+    #[test]
+    fn wrap_program_omits_object_fold_when_no_handlers_export() {
+        let wrapped = wrap_program("export async function increment(ctx, e) {}\n");
+        assert!(
+            !wrapped.contains("for (var __k in handlers)"),
+            "no handlers-object fold loop when the applet has no handlers export: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[\"increment\"] = increment"),
+            "the bare-name registry pass still registers the identifier handler: {wrapped}"
         );
     }
 }

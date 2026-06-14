@@ -492,3 +492,113 @@ fn state_persists_across_dispatches_only_through_storage() {
     .unwrap();
     assert_eq!(bridge.peek_storage("app/count"), Some(&serde_json::json!("3")));
 }
+
+/// An applet may export a `handlers` OBJECT keyed by FREE-FORM ActionRef strings —
+/// dotted refs like `counter.increment` that are NOT valid bare JS identifiers and
+/// so cannot be the name of an `export function`. Dispatching the exact dotted ref
+/// addresses its function over the same path (UI-4/CR-6 free-form registry).
+#[test]
+fn dispatch_resolves_a_dotted_action_ref_from_an_exported_handlers_object() {
+    let prog = program(
+        r#"
+        async function bump(ctx, event) {
+            const raw = await ctx.storage.get("app/count");
+            const next = (raw === null ? 0 : Number(raw)) + (event.by ?? 1);
+            await ctx.storage.set("app/count", String(next));
+            ctx.ui.render({ type: "Text", testId: "v", text: String(next) });
+            return { ok: true, value: next };
+        }
+        export const handlers = { "counter.increment": bump };
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "counter.increment",
+        &serde_json::json!({ "by": 4 }),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(record.is_completed(), "dotted ref must dispatch: {:?}", record.outcome);
+    assert_eq!(bridge.peek_storage("app/count"), Some(&serde_json::json!("4")));
+    let last = bridge.last_ui().expect("the handler rendered a tree");
+    assert_eq!(last["text"], serde_json::json!("4"));
+}
+
+/// A suffixed list-item ActionRef (`base:suffix`) with NO exact registry match
+/// falls back to its BASE handler, and the stripped `suffix` is surfaced to the
+/// handler through the event payload as `actionSuffix` (UI-4 stable-key list
+/// addressing) — so a single `todo.toggle` handler can serve every keyed item.
+#[test]
+fn dispatch_splits_a_suffixed_action_ref_and_passes_the_suffix_to_the_handler() {
+    let prog = program(
+        r#"
+        async function toggle(ctx, event) {
+            // The addressed item's stable key arrives as event.actionSuffix.
+            await ctx.storage.set("app/toggled", String(event.actionSuffix));
+            ctx.ui.render({ type: "Text", testId: "v", text: "toggled " + event.actionSuffix });
+            return { ok: true, value: event.actionSuffix };
+        }
+        export const handlers = { "todo.toggle": toggle };
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "todo.toggle:b",
+        &serde_json::json!({ "id": "b" }),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(record.is_completed(), "suffixed ref must dispatch its base: {:?}", record.outcome);
+    // The base handler ran and saw the stripped suffix `b` as event.actionSuffix.
+    assert_eq!(bridge.peek_storage("app/toggled"), Some(&serde_json::json!("b")));
+    let last = bridge.last_ui().expect("the handler rendered a tree");
+    assert_eq!(last["text"], serde_json::json!("toggled b"));
+    // The recorded dispatch envelope keeps the ORIGINAL (suffixed) action ref.
+    let dispatch = record.calls.last().expect("a recorded call exists");
+    assert_eq!(dispatch.method, "ui.dispatch_event");
+    assert_eq!(dispatch.args[0], serde_json::json!("todo.toggle:b"));
+}
+
+/// A suffixed ref whose BASE is not registered (and no exact match) is still a
+/// clean typed `ValidationError`, never a panic — the split is a fallback, not a
+/// way to reach an unregistered handler.
+#[test]
+fn dispatch_of_a_suffixed_ref_with_unknown_base_is_a_clean_validation_error() {
+    use forge_domain::RunOutcome;
+
+    let prog = program(
+        r#"
+        async function toggle(ctx, event) { return { ok: true, value: 1 }; }
+        export const handlers = { "todo.toggle": toggle };
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "other.action:x",
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match record.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "ValidationError", "{error}");
+            assert!(error.to_string().contains("other.action:x"), "{error}");
+        }
+        other => panic!("an unknown suffixed base must fail typed, got {other:?}"),
+    }
+}

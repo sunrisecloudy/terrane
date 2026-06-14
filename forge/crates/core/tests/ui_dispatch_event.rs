@@ -38,12 +38,25 @@ use forge_ui::{apply, diff, from_str, Node};
 // (the db-write-before-render vector), and renders it. The rejection handlers
 // throw / validate so the error vectors are exercised through the same command.
 //
-// The handlers are addressed by ActionRef (their exported name):
-//   * `step`        — render the next queued tree (the dispatch/replay vectors);
-//   * `stepDb`      — db.insert then render the next queued tree;
-//   * `setLabel`    — validate the change payload is a string, else reject
-//                     (the invalid-payload vector);
-//   * `boom`        — throw (the handler-throws vector).
+// Handlers are addressed by their REAL ActionRef — the exact string each vector's
+// `events[].action` carries, including dotted/suffixed refs. Because those refs
+// (`counter.increment`, `profile.name.change`, `todo.toggle`) are NOT valid bare
+// JS identifiers, the applet exports a `handlers` OBJECT keyed by the free-form
+// ActionRef string (the engine folds its keys into the dispatch registry, UI-4):
+//   * `counter.increment`    — step: render the next queued tree (counter / seq /
+//                              replay vectors);
+//   * `profile.name.change`  — validate the change payload's `value` is a string
+//                              (rejects the invalid-payload vector), else step;
+//   * `tasks.add`            — db.insert a `tasks` record, then step (the
+//                              db-write-before-render vector);
+//   * `todo.toggle`          — step; addressed by the suffixed ref `todo.toggle:b`
+//                              (the engine strips `:b` and merges it as
+//                              `event.actionSuffix`), so the handler can read which
+//                              list item fired (list-item-by-stable-key vector);
+//   * `noop`                 — step (the identical-tree empty-patch vector);
+//   * `explode`              — throw "boom" (the handler-throws vector).
+// `counter.delete_everything` is intentionally ABSENT so the unknown-action vector
+// resolves to a typed ValidationError.
 const PLAYER_TS: &str = r#"
     async function cursor(ctx) {
         const raw = await ctx.storage.get("app/cursor");
@@ -55,6 +68,11 @@ const PLAYER_TS: &str = r#"
         await ctx.storage.set("app/cursor", String(i + 1));
         return raw === null ? null : JSON.parse(raw);
     }
+    async function step(ctx) {
+        const tree = await nextTree(ctx);
+        ctx.ui.render(tree);
+        return { ok: true, value: tree };
+    }
     export async function main(ctx, input) {
         // Queue the per-event next trees, reset the cursor, render the initial tree.
         const queue = (input && input.queue) ? input.queue : [];
@@ -65,28 +83,25 @@ const PLAYER_TS: &str = r#"
         ctx.ui.render(input.tree);
         return { ok: true, value: input.tree };
     }
-    export async function step(ctx, _event) {
-        const tree = await nextTree(ctx);
-        ctx.ui.render(tree);
-        return { ok: true, value: tree };
-    }
-    export async function stepDb(ctx, event) {
-        await ctx.db.insert("tasks", { title: (event && event.title) ? event.title : "", done: false });
-        const tree = await nextTree(ctx);
-        ctx.ui.render(tree);
-        return { ok: true, value: tree };
-    }
-    export async function setLabel(ctx, event) {
-        if (typeof event.value !== "string") {
-            throw new Error("invalid event payload: value must be a string");
-        }
-        const tree = await nextTree(ctx);
-        ctx.ui.render(tree);
-        return { ok: true, value: tree };
-    }
-    export async function boom(ctx, _event) {
-        throw new Error("boom");
-    }
+    // Free-form ActionRef registry: keys are the exact refs the vectors declare.
+    export const handlers = {
+        "counter.increment": async (ctx, _event) => step(ctx),
+        "noop": async (ctx, _event) => step(ctx),
+        "todo.toggle": async (ctx, _event) => step(ctx),
+        "tasks.add": async (ctx, event) => {
+            await ctx.db.insert("tasks", { title: (event && event.title) ? event.title : "", done: false });
+            return step(ctx);
+        },
+        "profile.name.change": async (ctx, event) => {
+            if (typeof event.value !== "string") {
+                throw new Error("invalid event payload: value must be a string");
+            }
+            return step(ctx);
+        },
+        "explode": async (_ctx, _event) => {
+            throw new Error("boom");
+        },
+    };
 "#;
 
 /// A permissive manifest (db + storage + ui + the player's needs) so the player's
@@ -231,28 +246,23 @@ fn run_dispatch_vector(name: &str, vector: &serde_json::Value) {
 
     render_initial(&mut core, &applet_id, initial_json, &queue);
 
-    // The chosen handler: the db-write vector routes through `stepDb` so the run's
-    // trace carries the db.insert; every other dispatch/replay vector uses `step`.
-    let handler = if vector["case"] == serde_json::json!("db_write_then_render") {
-        "stepDb"
-    } else {
-        "step"
-    };
-
     let is_replay_kind = vector["kind"] == serde_json::json!("replay");
     let mut run_ids: Vec<String> = Vec::new();
     for (i, event) in events.iter().enumerate() {
         let payload = event.get("payload").cloned().unwrap_or(serde_json::json!({}));
-        let resp = dispatch(
-            &mut core,
-            &applet_id,
-            serde_json::json!(handler),
-            payload,
-        );
+        // Dispatch the event's OWN ActionRef (the real, possibly dotted/suffixed
+        // ref the vector declares — e.g. `counter.increment`, `tasks.add`,
+        // `todo.toggle:b`), NOT a generic harness handler. The applet's `handlers`
+        // object registers each of these; a suffixed ref resolves to its base.
+        let action_ref = event["action"].clone();
+        let resp = dispatch(&mut core, &applet_id, action_ref.clone(), payload);
         assert!(resp.ok, "{name} event #{i} must dispatch: {:?}", resp.error);
 
-        // The command returns { action_ref, tree, patches }.
-        assert_eq!(resp.payload["action_ref"], serde_json::json!(handler));
+        // The command echoes back the SAME (real) action_ref it dispatched.
+        assert_eq!(
+            resp.payload["action_ref"], action_ref,
+            "{name} event #{i}: the command dispatches the vector's own ActionRef"
+        );
         run_ids.push(resp.payload["run_id"].as_str().unwrap().to_string());
         let produced_patches: Vec<forge_ui::Patch> =
             serde_json::from_value(resp.payload["patches"].clone()).unwrap();
@@ -288,6 +298,42 @@ fn run_dispatch_vector(name: &str, vector: &serde_json::Value) {
             // re-dispatch (rendering the SAME tree) yields an empty patch.
             // (We verify the empty-patch property below for the noop vector.)
         }
+    }
+
+    // FIX 3 — the `db_write_then_render` vector pins a `db_writes` entry; assert the
+    // handler actually recorded the `db.insert` (collection + fields) into the run's
+    // trace, so the db-write-BEFORE-render contract is exercised, not just the patch.
+    // (The recorded STORAGE id is the runtime's deterministic `tasks/<n>`; the
+    // vector's `task-1` is the applet's own logical row id baked into the rendered
+    // tree — a distinct concern, so we assert the fields, not the id string.)
+    if let Some(db_writes) = vector["expect"]["results"][0]["db_writes"].as_array() {
+        let want = &db_writes[0];
+        let saved = core
+            .store()
+            .load_run(&run_ids[0])
+            .unwrap()
+            .expect("the db-write dispatch run was saved");
+        let insert = saved
+            .calls
+            .iter()
+            .find(|c| c.method == "db.insert")
+            .unwrap_or_else(|| panic!("{name}: the run trace must record a db.insert"));
+        assert_eq!(
+            insert.args[0], want["collection"],
+            "{name}: db.insert targets the vector's collection"
+        );
+        assert_eq!(
+            insert.args[1], want["fields"],
+            "{name}: db.insert records the vector's pinned fields"
+        );
+        assert!(
+            insert
+                .response
+                .as_str()
+                .map(|id| !id.is_empty())
+                .unwrap_or(false),
+            "{name}: db.insert recorded a deterministic id in the trace"
+        );
     }
 
     // A `ui.patch` event was emitted per accepted dispatch (UI-1/UI-4 link).
@@ -335,34 +381,22 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
     let expect = &vector["expect"]["results"][0];
     let want_code = expect["error"]["code"].as_str();
 
-    let (action_ref, payload, suspended) = match name {
-        // ActionRef missing from the applet's handler registry → typed
-        // ValidationError carrying the (dotted) ref.
-        "unknown_action_rejected" => (
-            event["action"].clone(),
-            event.get("payload").cloned().unwrap_or(serde_json::json!({})),
-            false,
-        ),
-        // A non-string TextField change payload → the handler rejects it.
-        "invalid_payload_rejected" => (
-            serde_json::json!("setLabel"),
-            event.get("payload").cloned().unwrap_or(serde_json::json!({})),
-            false,
-        ),
-        // The handler throws.
-        "handler_throws_prior_tree_intact" => (
-            serde_json::json!("boom"),
-            serde_json::json!({}),
-            false,
-        ),
-        // The applet is suspended → rejected before any dispatch.
-        "suspended_applet_rejected" => (
-            serde_json::json!("step"),
-            serde_json::json!({}),
-            true,
-        ),
-        other => panic!("unhandled error vector {other}"),
-    };
+    // Every error vector is now driven by the event's OWN ActionRef + payload (the
+    // real ref the vector declares), so the rejection is exercised through the exact
+    // dispatch the contract describes — not a stand-in harness handler:
+    //   * `unknown_action_rejected`  — `counter.delete_everything` (absent from the
+    //                                  registry → ValidationError carrying the ref);
+    //   * `invalid_payload_rejected` — `profile.name.change` with `value: 42` (the
+    //                                  handler rejects the non-string payload);
+    //   * `handler_throws_…`         — `explode` (the handler throws "boom");
+    //   * `suspended_applet_rejected`— `counter.increment`, rejected by the lifecycle
+    //                                  gate BEFORE the handler runs (suspended).
+    let action_ref = event["action"].clone();
+    let payload = event
+        .get("payload")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let suspended = name == "suspended_applet_rejected";
 
     if suspended {
         core.set_applet_lifecycle(&applet_id, AppletLifecycle::Suspended)
@@ -550,14 +584,14 @@ fn sequential_dispatches_advance_the_diff_base() {
     });
     render_initial(&mut core, "vec.seq", &initial, &[t1.clone(), t2.clone()]);
 
-    let r1 = dispatch(&mut core, "vec.seq", serde_json::json!("step"), serde_json::json!({}));
+    let r1 = dispatch(&mut core, "vec.seq", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(r1.ok);
     // First event diffs against the initial tree → update_text "0" -> "1" at [0].
     let p1: Vec<forge_ui::Patch> = serde_json::from_value(r1.payload["patches"].clone()).unwrap();
     let want1 = diff(Some(&from_str(&initial.to_string()).unwrap()), &from_str(&t1.to_string()).unwrap());
     assert_eq!(p1, want1);
 
-    let r2 = dispatch(&mut core, "vec.seq", serde_json::json!("step"), serde_json::json!({}));
+    let r2 = dispatch(&mut core, "vec.seq", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(r2.ok);
     // Second event diffs against t1 (NOT the initial), so it is "1" -> "2".
     let p2: Vec<forge_ui::Patch> = serde_json::from_value(r2.payload["patches"].clone()).unwrap();
@@ -577,7 +611,7 @@ fn dispatched_event_is_recorded_and_replays_identically() {
     let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "b" });
     render_initial(&mut core, "vec.rec", &initial, std::slice::from_ref(&t1));
 
-    let resp = dispatch(&mut core, "vec.rec", serde_json::json!("step"), serde_json::json!({}));
+    let resp = dispatch(&mut core, "vec.rec", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(resp.ok, "{:?}", resp.error);
     let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
 
@@ -646,7 +680,7 @@ fn recorded_event_session_replays_byte_identically() {
     let mut session = vec![initial_run_id];
     let mut recorded_patches: Vec<serde_json::Value> = Vec::new();
     for _ in 0..3 {
-        let resp = dispatch(&mut core, "vec.session", serde_json::json!("step"), serde_json::json!({}));
+        let resp = dispatch(&mut core, "vec.session", serde_json::json!("counter.increment"), serde_json::json!({}));
         assert!(resp.ok, "event must dispatch: {:?}", resp.error);
         session.push(resp.payload["run_id"].as_str().unwrap().to_string());
         recorded_patches.push(resp.payload["patches"].clone());
@@ -718,8 +752,8 @@ fn session_replay_is_order_sensitive_over_the_patch_chain() {
     let t2 = serde_json::json!({ "type": "Text", "testId": "t", "text": "c" });
     let initial_run_id = render_initial_run_id(&mut core, "vec.order", &t0, &[t1, t2.clone()]);
 
-    let e1 = dispatch(&mut core, "vec.order", serde_json::json!("step"), serde_json::json!({}));
-    let e2 = dispatch(&mut core, "vec.order", serde_json::json!("step"), serde_json::json!({}));
+    let e1 = dispatch(&mut core, "vec.order", serde_json::json!("counter.increment"), serde_json::json!({}));
+    let e2 = dispatch(&mut core, "vec.order", serde_json::json!("counter.increment"), serde_json::json!({}));
     let id1 = e1.payload["run_id"].as_str().unwrap().to_string();
     let id2 = e2.payload["run_id"].as_str().unwrap().to_string();
 
@@ -790,7 +824,7 @@ fn unknown_action_ref_is_typed_noop_state_unchanged() {
         core.events().events_of_kind("ui.patch").count(),
         "a rejected unknown-ref event emits no ui.patch (tree unchanged)"
     );
-    let ok = dispatch(&mut core, "vec.unknown", serde_json::json!("step"), serde_json::json!({}));
+    let ok = dispatch(&mut core, "vec.unknown", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(ok.ok, "{:?}", ok.error);
     let tree: Node = from_str(&ok.payload["tree"].to_string()).unwrap();
     assert_eq!(tree, from_str(&t1.to_string()).unwrap(), "state was not advanced by the rejected event");
@@ -817,7 +851,7 @@ fn throwing_handler_leaves_prior_tree_intact() {
     render_initial(&mut core, "vec.throw", &t0, std::slice::from_ref(&t1));
 
     let patches_before = core.events().events_of_kind("ui.patch").count();
-    let resp = dispatch(&mut core, "vec.throw", serde_json::json!("boom"), serde_json::json!({}));
+    let resp = dispatch(&mut core, "vec.throw", serde_json::json!("explode"), serde_json::json!({}));
     assert!(!resp.ok, "a throwing handler must be a typed error");
     assert_eq!(resp.error.unwrap().code(), "RuntimeError");
     assert_eq!(
@@ -827,7 +861,7 @@ fn throwing_handler_leaves_prior_tree_intact() {
     );
 
     // The prior tree is the diff base: the next valid `step` diffs t0 -> t1.
-    let ok = dispatch(&mut core, "vec.throw", serde_json::json!("step"), serde_json::json!({}));
+    let ok = dispatch(&mut core, "vec.throw", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(ok.ok, "{:?}", ok.error);
     let produced: Vec<forge_ui::Patch> = serde_json::from_value(ok.payload["patches"].clone()).unwrap();
     let want = diff(Some(&from_str(&t0.to_string()).unwrap()), &from_str(&t1.to_string()).unwrap());
@@ -846,7 +880,7 @@ fn identical_tree_yields_empty_patch_and_replays() {
     let same = serde_json::json!({ "type": "Text", "testId": "t", "text": "same" });
     let initial_run_id = render_initial_run_id(&mut core, "vec.same", &same, std::slice::from_ref(&same));
 
-    let resp = dispatch(&mut core, "vec.same", serde_json::json!("step"), serde_json::json!({}));
+    let resp = dispatch(&mut core, "vec.same", serde_json::json!("counter.increment"), serde_json::json!({}));
     assert!(resp.ok, "{:?}", resp.error);
     let patches: Vec<forge_ui::Patch> = serde_json::from_value(resp.payload["patches"].clone()).unwrap();
     assert!(patches.is_empty(), "an identical re-render is an empty patch (no spurious diff): {patches:?}");
@@ -912,12 +946,12 @@ fn session_replay_rejects_malformed_session_shape() {
     let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "b" });
     let t2 = serde_json::json!({ "type": "Text", "testId": "t", "text": "c" });
     let head1 = render_initial_run_id(&mut core, "vec.shape", &t0, &[t1.clone(), t2.clone()]);
-    let e1 = dispatch(&mut core, "vec.shape", serde_json::json!("step"), serde_json::json!({}))
+    let e1 = dispatch(&mut core, "vec.shape", serde_json::json!("counter.increment"), serde_json::json!({}))
         .payload["run_id"]
         .as_str()
         .unwrap()
         .to_string();
-    let e2 = dispatch(&mut core, "vec.shape", serde_json::json!("step"), serde_json::json!({}))
+    let e2 = dispatch(&mut core, "vec.shape", serde_json::json!("counter.increment"), serde_json::json!({}))
         .payload["run_id"]
         .as_str()
         .unwrap()
