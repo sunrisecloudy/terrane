@@ -36,3 +36,8 @@ test-hooks = []
 forge-core = { path = ".", features = ["test-hooks"] }
 tempfile.workspace = true
 base64.workspace = true
+# TEST-ONLY signer for the review-170 regression: the library `forge-signing` only
+# VERIFIES (wasm-clean, no signing key material), so the signed-compatibility bind
+# tests sign a package in-test from the fixture's TEST-ONLY Ed25519 seed. Dev-only,
+# so the release verifier/library never gains a private-key path.
+ed25519-dalek = "2"

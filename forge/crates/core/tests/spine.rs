@@ -2982,6 +2982,204 @@ fn install_with_a_malformed_signature_block_is_a_validation_error() {
     assert!(!run.ok, "nothing was installed");
 }
 
+// --- review 170 regression: the signed MP-8 compatibility floor is BOUND to the
+// install manifest. The fixtures' signed manifests carry no `compatibility`, and a
+// valid signature is over the WHOLE manifest (manifestHash), so to exercise a signed
+// `compatibility.required_features` we re-sign a package in-test from the fixture's
+// TEST-ONLY Ed25519 seed (`forge-signing` only verifies). Without the bind, a signed
+// package whose `required_features` names a feature THIS client cannot support could
+// still install by stripping `compatibility` from the top-level install manifest: the
+// MP-8 negotiation runs against the stripped (default) compatibility and passes, while
+// the signature stays valid over the signed package whose compatibility is never
+// re-checked. The bind closes that bypass.
+
+/// Re-sign a `valid_signature`-shaped package, overriding its manifest
+/// `compatibility` (review 170). Recomputes the four canonical component hashes and
+/// the `terrane/sig/v1` preimage over the EDITED manifest, then signs with the
+/// fixture seed so crypto + integrity both pass and the bind is the only thing left
+/// to decide. Returns the `applet.install` `signature` block.
+fn resign_with_compatibility(compatibility: serde_json::Value) -> serde_json::Value {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    // The fixture's signed package gives us a valid base manifest + signed file.
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut manifest = fixture["package"]["manifest"].clone();
+    manifest["compatibility"] = compatibility;
+
+    // The one signed file becomes the install source (so the sources bind passes).
+    let files: Vec<forge_signing::PackageFile> = fixture["package"]["files"]
+        .as_array()
+        .expect("files array")
+        .iter()
+        .map(|f| forge_signing::PackageFile {
+            path: f["path"].as_str().expect("path").to_string(),
+            content: f["content"].as_str().expect("content").to_string(),
+            sha256: forge_signing::file_digest(f["content"].as_str().expect("content")),
+        })
+        .collect();
+
+    // Recompute every component hash over the EDITED manifest so integrity passes.
+    let hashes = forge_signing::PackageHashes {
+        manifest_hash: forge_signing::manifest_hash(&manifest).expect("manifest hash"),
+        content_hash: forge_signing::content_hash(&files),
+        permissions_hash: forge_signing::permissions_hash(&manifest).expect("permissions hash"),
+        policy_hash: forge_signing::policy_hash(&manifest).expect("policy hash"),
+    };
+    let package = forge_signing::Package { manifest, files, hashes };
+
+    // Sign the canonical preimage with the fixture's TEST-ONLY seed (the seed in
+    // fixtures/signing/test-keypair.json; its verifying key is the fixture
+    // public_key_pem, so the live verifier accepts this signature).
+    let seed_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    let mut seed = [0u8; 32];
+    for i in 0..32 {
+        seed[i] = u8::from_str_radix(&seed_hex[i * 2..i * 2 + 2], 16).expect("seed hex");
+    }
+    let signing_key = SigningKey::from_bytes(&seed);
+    let preimage = forge_signing::package_preimage(&package).expect("preimage");
+    let signature = signing_key.sign(&preimage);
+
+    serde_json::json!({
+        "package": serde_json::to_value(&package).expect("package json"),
+        "signature": format!("ed25519:{}", B64.encode(signature.to_bytes())),
+        "public_key": fixture["public_key_pem"].clone(),
+    })
+}
+
+/// The `signed_fixture_manifest()` boundary plus a `compatibility` block — the
+/// install manifest a faithful caller ships for a signed package that declares a
+/// compatibility floor.
+fn signed_manifest_with_compatibility(compatibility: serde_json::Value) -> serde_json::Value {
+    let mut manifest = signed_fixture_manifest();
+    manifest["compatibility"] = compatibility;
+    manifest
+}
+
+#[test]
+fn a_signed_required_feature_the_client_lacks_cannot_be_installed_by_stripping_compatibility() {
+    // review 170 (the bypass): a signed package declares
+    // `compatibility.required_features` = a FUTURE feature this client does not
+    // support. The attacker ships a top-level install manifest with EMPTY/default
+    // compatibility, so the MP-8 negotiation (which runs on the top-level manifest)
+    // has nothing to refuse — yet the signature is valid over the signed package.
+    // Binding the signed compatibility to the install manifest catches the strip:
+    // the install's (empty) compatibility differs from the signed package's, so the
+    // install is REFUSED and nothing is stored.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let signature = resign_with_compatibility(serde_json::json!({
+        "required_features": [
+            { "feature_id": "ctx.timetravel.v2", "min_version": "9.0.0" }
+        ]
+    }));
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            // The STRIPPED top-level manifest: no compatibility, so the negotiation
+            // gate on the top-level manifest finds nothing to refuse.
+            "manifest": signed_fixture_manifest(),
+            "sources": sources_from_fixture(&load_signing_fixture("valid_signature.json")),
+            "signature": signature,
+        }),
+    ));
+
+    assert!(
+        !resp.ok,
+        "a signed package whose required_features the client lacks must NOT install via a stripped top-level manifest"
+    );
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string()
+            .contains("install manifest does not match the signed package manifest")
+            && err.to_string().contains("compatibility"),
+        "the stripped compatibility mismatch is surfaced: {err}"
+    );
+    assert!(
+        err.to_string().contains("ctx.timetravel.v2"),
+        "the bind names the signed required feature that was stripped: {err}"
+    );
+
+    // Nothing was installed: the stripped install never reached the store.
+    let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
+    assert!(!run.ok, "the rejected install stored nothing");
+}
+
+#[test]
+fn a_signed_required_feature_the_client_lacks_is_refused_even_when_declared_honestly() {
+    // review 170 (the MP-8 gate, now run against the signed floor): even an HONEST
+    // install that copies the signed `required_features` into the top-level manifest
+    // must be refused when the client cannot support the feature — because the
+    // top-level manifest is now negotiated AND it equals the signed floor, the gate
+    // runs against the genuine (signed) compatibility. The refusal is the MP-8
+    // negotiation, naming the unsupported feature.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let compat = serde_json::json!({
+        "required_features": [
+            { "feature_id": "ctx.timetravel.v2", "min_version": "9.0.0" }
+        ]
+    });
+    let signature = resign_with_compatibility(compat.clone());
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            // The HONEST top-level manifest carries the same compatibility floor.
+            "manifest": signed_manifest_with_compatibility(compat),
+            "sources": sources_from_fixture(&load_signing_fixture("valid_signature.json")),
+            "signature": signature,
+        }),
+    ));
+
+    assert!(!resp.ok, "an unsupported required feature must be refused even when declared honestly");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("applet.install refused")
+            && err.to_string().contains("ctx.timetravel.v2"),
+        "the MP-8 negotiation refuses naming the unsupported feature: {err}"
+    );
+}
+
+#[test]
+fn a_signed_required_feature_the_client_supports_installs() {
+    // review 170 positive: the signed package declares a `required_features` the
+    // client DOES support (a live capability surface from the deterministic
+    // registry). With the install manifest carrying the SAME compatibility floor,
+    // the negotiation passes AND the signed/install compatibility bind matches, so
+    // the install proceeds and records Signed trust — proving the bind rejects only
+    // a mismatch, not every signed compatibility.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let compat = serde_json::json!({
+        "min_app_version": "1.0.0",
+        "required_features": [
+            { "feature_id": "ctx.db.query", "min_version": "1.0.0" }
+        ]
+    });
+    let signature = resign_with_compatibility(compat.clone());
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            "manifest": signed_manifest_with_compatibility(compat),
+            "sources": sources_from_fixture(&load_signing_fixture("valid_signature.json")),
+            "signature": signature,
+        }),
+    ));
+
+    assert!(resp.ok, "a signed package whose required_features the client supports must install: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["trust"]["status"],
+        serde_json::json!("signed"),
+        "it records Signed trust"
+    );
+
+    // And the signed applet actually runs (the install was real).
+    let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "the verified applet runs: {:?}", run.error);
+}
+
 // ---------------------------------------------------------------------------
 // 11. ctx.files (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12,
 //     forge/spec/files.md, T028): the applet-facing sandboxed file capability

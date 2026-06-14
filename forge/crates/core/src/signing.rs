@@ -231,6 +231,14 @@ fn bind_signature_to_sources(
 ///     `resourceBudget` declares must equal the install's; a limit the signed
 ///     budget OMITS must equal the runtime default, so a signed install cannot
 ///     widen an unstated budget (review 083 #2);
+///   - the MP-8 `compatibility` floor (`required_features` + `min_app_version`) —
+///     the install's must EQUAL the signed package's (review 170). The install
+///     manifest's compatibility is negotiated against the trusted client feature
+///     registry BEFORE the install is accepted, but the signature covers only THIS
+///     signed manifest; binding them equal means the negotiation that ran on the
+///     install floor also vouches for the SIGNED floor, so a signed package
+///     declaring a future `required_features` cannot be installed under a STRIPPED
+///     top-level manifest that bypasses the gate;
 ///   - the runnable `entrypoint`. For a single-file signed package the entrypoint
 ///     must be that one file; a signed MULTI-FILE package is rejected because the
 ///     signed manifest does not (yet) carry an entrypoint to pin which file runs
@@ -419,6 +427,33 @@ fn bind_signature_to_manifest(
                 "limits.{name} {install_value} differs from the signed {signed_value}"
             ));
         }
+    }
+
+    // --- compatibility / required_features: the signed MP-8 floor must be bound
+    //     to the install (review 170). `cmd_applet_install` negotiates the install
+    //     `manifest.compatibility.required_features` (+ `min_app_version`) against
+    //     the TRUSTED client feature registry BEFORE accepting the install, but the
+    //     signature does NOT cover that top-level manifest — only this signed
+    //     `package.manifest` does. Without binding it, a signed package whose
+    //     `compatibility.required_features` names a FUTURE feature this client does
+    //     not support could still install: the caller sends a top-level manifest with
+    //     EMPTY/weaker `compatibility`, the negotiation runs against the STRIPPED
+    //     compatibility and passes, and the signature stays valid over the signed
+    //     package (whose compatibility it never re-checked) — bypassing MP-8. Bind it
+    //     fail-closed like every other policy-bearing field: the install's
+    //     `compatibility` must EQUAL the signed package's. Because the negotiation
+    //     already ran on the install `compatibility` and it must now equal the signed
+    //     one, the MP-8 gate effectively ran against the SIGNED (non-strippable)
+    //     compatibility — a signed install that strips or weakens the declared floor
+    //     is rejected, and a signed FUTURE feature only installs when the client
+    //     genuinely supports it.
+    let signed_compat = signed_compatibility(signed)?;
+    if signed_compat != install.compatibility {
+        return reject(format!(
+            "compatibility {:?} differs from the signed {:?}",
+            describe_compatibility(&install.compatibility),
+            describe_compatibility(&signed_compat)
+        ));
     }
 
     // --- entrypoint: the runnable entrypoint must be bound to the signed package
@@ -744,6 +779,44 @@ fn signed_file_rules(
         out.insert(NormalizedFileRule::from_rule(&rule));
     }
     Ok(out)
+}
+
+/// The signed package's MP-8 compatibility floor
+/// (`manifest.compatibility.{min_app_version, required_features}`) as a
+/// forge-domain [`Compatibility`](forge_domain::Compatibility), so the signed and
+/// install sides compare through the SAME type the negotiation gate uses (review
+/// 170). An ABSENT signed `compatibility` is the default (no floor) — matching a
+/// manifest that declares none — so a signed package with no compatibility binds
+/// to an install with no compatibility. A malformed signed `compatibility` is a
+/// typed rejection, never a panic.
+fn signed_compatibility(signed: &serde_json::Value) -> Result<forge_domain::Compatibility> {
+    match signed.get("compatibility") {
+        None | Some(serde_json::Value::Null) => Ok(forge_domain::Compatibility::default()),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            CoreError::ValidationError(format!(
+                "signed package manifest `compatibility` is malformed: {e}"
+            ))
+        }),
+    }
+}
+
+/// A stable, readable description of a [`Compatibility`](forge_domain::Compatibility)
+/// for the bind rejection message: the `min_app_version` floor (if any) plus each
+/// required feature as `id>=min`, so a stripped/weakened install floor names what
+/// differs from the signed one.
+fn describe_compatibility(compat: &forge_domain::Compatibility) -> String {
+    let mut parts = Vec::new();
+    if let Some(min_app) = &compat.min_app_version {
+        parts.push(format!("min_app_version={min_app}"));
+    }
+    for req in &compat.required_features {
+        parts.push(format!("{}>={}", req.feature_id, req.min_version));
+    }
+    if parts.is_empty() {
+        "<none>".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 /// A sorted, readable `Vec` view of a normalized files-rule set, for a stable
