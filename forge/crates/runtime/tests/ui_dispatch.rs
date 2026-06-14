@@ -14,7 +14,9 @@
 mod common;
 
 use common::{owner, program, spine_manifest};
-use forge_runtime::{record_dispatch, replay_dispatch, HostBridge, MemoryHostBridge, NullBridge};
+use forge_runtime::{
+    record_dispatch, record_run, replay_dispatch, HostBridge, MemoryHostBridge, NullBridge,
+};
 
 /// An interactive applet (the JS the committed TS fixture
 /// `forge/fixtures/ui-events/applet/applet.ts` transpiles to): `main` renders the
@@ -124,6 +126,76 @@ fn dispatch_invokes_handler_by_action_ref_with_effects_and_render() {
         serde_json::json!(["increment", { "by": 3 }]),
         "the envelope records (action_ref, payload)"
     );
+}
+
+/// A **handler-only applet** (one that exports event handlers but no `main`) can
+/// still be dispatched: the realm exposes handlers by ActionRef independent of the
+/// entrypoint, so the absence of `main` must not make a dispatch fail to load. (The
+/// naive wrap unconditionally bound `globalThis.__forge_main = main`, which threw
+/// `ReferenceError: main is not defined` at load for such applets and turned every
+/// dispatch into a load failure — UI-4/CR-6.)
+#[test]
+fn handler_only_applet_without_main_can_be_dispatched() {
+    let prog = program(
+        r#"
+        export async function bump(ctx, event) {
+            await ctx.storage.set("app/x", String(event.by ?? 1));
+            ctx.ui.render({ type: "Text", testId: "x", text: "bumped" });
+            return { ok: true, value: { bumped: true } };
+        }
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "bump",
+        &serde_json::json!({ "by": 9 }),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(
+        record.is_completed(),
+        "a handler-only applet (no main) must dispatch: {:?}",
+        record.outcome
+    );
+    assert_eq!(bridge.peek_storage("app/x"), Some(&serde_json::json!("9")));
+}
+
+/// Guarding `__forge_main` behind `typeof main === 'function'` (the handler-only
+/// fix above) must NOT mask a genuinely missing `main` on the *run* path: running a
+/// program that exports no `main` still fails with the clean
+/// "does not export ... main" runtime error, not a silent success.
+#[test]
+fn run_on_a_main_less_program_still_reports_missing_main() {
+    use forge_domain::RunOutcome;
+
+    let prog = program(
+        r#"
+        export async function bump(ctx, event) { return { ok: true, value: 1 }; }
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match record.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "RuntimeError", "{error}");
+            assert!(error.to_string().contains("main"), "{error}");
+        }
+        other => panic!("a main-less run must fail with the missing-main error, got {other:?}"),
+    }
 }
 
 /// Dispatching an unknown ActionRef is a clean, typed engine error

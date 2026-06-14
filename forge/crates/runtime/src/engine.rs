@@ -556,7 +556,17 @@ fn wrap_program(source: &str) -> String {
             ";if (typeof {name} === 'function') {{ globalThis.__forge_handlers[{name:?}] = {name}; }}\n"
         ));
     }
-    format!("{stripped}\n;globalThis.__forge_main = main;\n{registry}")
+    // Expose `main` as `__forge_main` ONLY when the program actually declares it.
+    // A bare `globalThis.__forge_main = main;` throws `ReferenceError: main is not
+    // defined` at load for a **handler-only applet** (one that exports event
+    // handlers but no `main`), which would make every dispatch fail to load even
+    // though the handler it addresses exists (UI-4/CR-6). Guarding with
+    // `typeof main` lets such an applet load: `__forge_main` is simply left unset,
+    // and the [`Entry::Main`] resolve path then reports the missing-`main` run
+    // error cleanly, while [`Entry::Handler`] dispatch works regardless.
+    format!(
+        "{stripped}\n;if (typeof main === 'function') {{ globalThis.__forge_main = main; }}\n{registry}"
+    )
 }
 
 /// Strip leading `export ` module syntax (invalid in a global script) from every
