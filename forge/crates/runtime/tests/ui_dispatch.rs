@@ -228,6 +228,92 @@ fn unknown_action_ref_is_a_clean_validation_error() {
     }
 }
 
+/// The wrap that exposes handlers must not corrupt the applet's source. An earlier
+/// `strip_exports` did a whole-source substring replace (`"export function " ->
+/// "function "`, etc.), so an applet whose source merely *contained* the text
+/// `export function` inside a string literal, a comment, or an object key had that
+/// text silently rewritten — the value the handler rendered/returned diverged from
+/// what the author wrote. The keyword is now stripped only when it begins a
+/// statement line (where the transpiler actually emits it), so an embedded
+/// occurrence survives byte-for-byte. (Dispatch-substrate correctness, UI-4/CR-6.)
+#[test]
+fn export_keyword_inside_a_string_literal_is_not_mangled() {
+    let prog = program(
+        r#"
+        export async function echo(ctx, event) {
+            // The phrase below contains the literal text "export function"; an
+            // unanchored strip would mangle it. Render + return it verbatim.
+            const doc = "to export function foo() you declare export const x = 1";
+            ctx.ui.render({ type: "Text", testId: "doc", text: doc });
+            return { ok: true, value: doc };
+        }
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "echo",
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    assert!(record.is_completed(), "dispatch should complete: {:?}", record.outcome);
+    let verbatim = serde_json::json!("to export function foo() you declare export const x = 1");
+    // The handler returned the string unmangled...
+    if let forge_domain::RunOutcome::Completed { result } = &record.outcome {
+        assert_eq!(result.value, verbatim, "string literal must survive the wrap unmangled");
+    }
+    // ...and rendered it unmangled.
+    let last = bridge.last_ui().expect("the handler rendered a tree");
+    assert_eq!(last["text"], verbatim, "rendered string literal must be unmangled");
+}
+
+/// A handler can only be addressed if the applet **exported** it: a non-exported
+/// internal helper is absent from the `__forge_handlers` registry, so dispatching
+/// its name is a clean `ValidationError`, never a way to call private helpers.
+/// (Confirms the line-anchored wrap still registers exactly the exported set.)
+#[test]
+fn non_exported_helper_is_not_addressable_as_a_handler() {
+    use forge_domain::RunOutcome;
+
+    let prog = program(
+        r#"
+        async function secretHelper(ctx, event) {
+            ctx.ui.render({ type: "Text", testId: "leak", text: "leaked" });
+            return { ok: true, value: "leaked" };
+        }
+        export async function main(ctx, input) {
+            return { ok: true, value: "ok" };
+        }
+        "#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_dispatch(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        "secretHelper",
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    match record.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "ValidationError", "{error}");
+            assert!(error.to_string().contains("secretHelper"), "{error}");
+        }
+        other => panic!("a non-exported helper must not be dispatchable, got {other:?}"),
+    }
+    // The helper never ran, so nothing was rendered.
+    assert!(bridge.last_ui().is_none(), "a non-exported helper must not produce effects");
+}
+
 /// Record-then-replay of a single event is byte-identical (the jewel's
 /// interactive link). The recorder serves the recorded `ctx.*` responses (the live
 /// bridge is a `NullBridge` that refuses every effect) and the recorded

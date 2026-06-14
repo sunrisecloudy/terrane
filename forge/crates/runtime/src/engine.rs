@@ -569,19 +569,42 @@ fn wrap_program(source: &str) -> String {
     )
 }
 
-/// Strip leading `export ` module syntax (invalid in a global script) from every
-/// exported declaration so each binding is a plain top-level declaration the
+/// Strip the leading `export ` module keyword (invalid in a global script) from
+/// every exported declaration so each binding is a plain top-level declaration the
 /// engine can reach. Covers the forms the transpiler emits: `export [default]
 /// [async] function NAME` and `export const/let/var NAME`.
+///
+/// **Line-anchored** (review: dispatch-substrate correctness). An earlier version
+/// did a whole-source `str::replace("export function ", "function ")` etc., which
+/// matched the substring *anywhere* — including inside a string literal, a comment,
+/// or an object key — so an applet whose source merely contained the text
+/// `"… export function …"` had that text silently mangled (the body the handler
+/// rendered/returned diverged from what the author wrote). The transpiler emits
+/// every real `export` declaration at the start of a line (after indentation), so
+/// we only strip the keyword when `export ` begins a statement line. This mirrors
+/// [`exported_names`], which is already line-anchored, keeping the two lexical
+/// scans symmetric, and leaves the original indentation/formatting intact.
 fn strip_exports(source: &str) -> String {
-    source
-        .replace("export default async function ", "async function ")
-        .replace("export default function ", "function ")
-        .replace("export async function ", "async function ")
-        .replace("export function ", "function ")
-        .replace("export const ", "const ")
-        .replace("export let ", "let ")
-        .replace("export var ", "var ")
+    let mut out = String::with_capacity(source.len());
+    // `split_inclusive` keeps each line's own trailing '\n', so re-joining the
+    // rewritten lines reproduces the source byte-for-byte except for the removed
+    // keyword(s) — no whitespace/line-ending normalization.
+    for line in source.split_inclusive('\n') {
+        // Preserve the line's leading whitespace, then strip a leading `export `
+        // (and an immediately following `default `) only at the statement start.
+        let indent_len = line.len() - line.trim_start().len();
+        let (indent, stmt) = line.split_at(indent_len);
+        let stripped = match stmt.strip_prefix("export ") {
+            // `export default …` → drop both keywords: `default async function …`
+            // / `default function …` is a valid global `async function …` /
+            // `function …` once `export default` is removed.
+            Some(rest) => rest.strip_prefix("default ").unwrap_or(rest),
+            None => stmt,
+        };
+        out.push_str(indent);
+        out.push_str(stripped);
+    }
+    out
 }
 
 /// Best-effort scan of `source` for the names of exported declarations
@@ -1033,4 +1056,90 @@ fn store_and_throw<'js>(
             .map(Value::from_string)
             .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `export` form the transpiler emits at the start of a (possibly
+    /// indented) statement line has its keyword stripped, and the leading
+    /// whitespace is preserved.
+    #[test]
+    fn strip_exports_removes_leading_keyword_and_keeps_indentation() {
+        let src = "    export async function main(ctx, i) {}\n\
+                   export function f() {}\n\
+                   export default async function d() {}\n\
+                   export default function g() {}\n\
+                   export const c = 1;\n\
+                   export let l = 2;\n\
+                   export var v = 3;\n";
+        let out = strip_exports(src);
+        assert_eq!(
+            out,
+            "    async function main(ctx, i) {}\n\
+             function f() {}\n\
+             async function d() {}\n\
+             function g() {}\n\
+             const c = 1;\n\
+             let l = 2;\n\
+             var v = 3;\n",
+            "strip removes only the leading export[/default] keyword, preserving indentation"
+        );
+    }
+
+    /// The keyword is anchored to the statement start: `export ` appearing *inside*
+    /// a line (a string literal, a comment, an object key) is NOT stripped. This is
+    /// the regression the dispatch-substrate fix closes — the old whole-source
+    /// substring replace silently mangled embedded occurrences.
+    #[test]
+    fn strip_exports_does_not_touch_mid_line_occurrences() {
+        let src = "const a = \"to export function foo\";\n\
+                   const b = { note: \"export const x\" }; // export var y\n";
+        // Nothing begins with `export `, so the source passes through untouched.
+        assert_eq!(strip_exports(src), src);
+    }
+
+    /// A `\r\n` line ending is preserved (the keyword sits between the indent and
+    /// the line body; `split_inclusive('\n')` keeps the trailing bytes intact).
+    #[test]
+    fn strip_exports_preserves_crlf_line_endings() {
+        let src = "export function f() {}\r\nexport const x = 1;\r\n";
+        assert_eq!(strip_exports(src), "function f() {}\r\nconst x = 1;\r\n");
+    }
+
+    /// `exported_names` is the registry's key source: it collects exactly the
+    /// exported binding names (and dedups), ignoring non-exported and embedded text.
+    #[test]
+    fn exported_names_collects_only_exported_bindings() {
+        let src = "export async function main(ctx, i) {}\n\
+                   export function increment(ctx, e) {}\n\
+                   async function helper() {}\n\
+                   const note = \"export function decoy\";\n\
+                   export const tag = 1;\n";
+        let names = exported_names(src);
+        assert_eq!(names, vec!["main", "increment", "tag"]);
+        assert!(!names.iter().any(|n| n == "helper"), "non-exported helper excluded");
+        assert!(!names.iter().any(|n| n == "decoy"), "string-literal text excluded");
+    }
+
+    /// `wrap_program` synthesizes the handler registry from the exported names and
+    /// guards the `__forge_main` assignment behind `typeof main === 'function'`, so
+    /// a handler-only applet (no `main`) wraps without a `ReferenceError`.
+    #[test]
+    fn wrap_program_registers_handlers_and_guards_main() {
+        let wrapped = wrap_program("export async function bump(ctx, e) {}\n");
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers = {}"),
+            "registry initialized: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[\"bump\"] = bump"),
+            "exported handler registered by name: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("if (typeof main === 'function')"),
+            "main assignment guarded for handler-only applets: {wrapped}"
+        );
+    }
 }
