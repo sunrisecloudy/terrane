@@ -120,9 +120,28 @@ fn modal_tree() -> Node {
     .unwrap()
 }
 
+/// A page with an OPEN Modal nested inside it (not the focus root). Locks the
+/// containment rule: the focus order traps and holds only the dialog's
+/// focusables, path-prefixed by the Modal, with the "Open" button behind the
+/// scrim excluded — even though the annotation walk still lists every node.
+fn nested_modal_tree() -> Node {
+    from_str(
+        r#"{"type":"Stack","direction":"v","children":[
+            {"type":"Button","label":"Open"},
+            {"type":"Modal","title":"Confirm","children":[
+                {"type":"Text","text":"Sure?"},
+                {"type":"Button","label":"Cancel"},
+                {"type":"Button","label":"Delete"}
+            ]}
+        ]}"#,
+    )
+    .unwrap()
+}
+
 fn computed() -> Value {
     let page = page_tree();
     let modal = modal_tree();
+    let nested_modal = nested_modal_tree();
     json!({
         "page": {
             "annotations": annotations(&page),
@@ -131,6 +150,10 @@ fn computed() -> Value {
         "modal": {
             "annotations": annotations(&modal),
             "focus_order": focus_order_json(&modal),
+        },
+        "nested_modal": {
+            "annotations": annotations(&nested_modal),
+            "focus_order": focus_order_json(&nested_modal),
         }
     })
 }
@@ -140,6 +163,7 @@ fn representative_screen_matches_committed_a11y_golden() {
     // The tree itself must satisfy the spec's required-name rules.
     assert!(validate_accessibility(&page_tree()).is_ok());
     assert!(validate_accessibility(&modal_tree()).is_ok());
+    assert!(validate_accessibility(&nested_modal_tree()).is_ok());
 
     let computed = computed();
 

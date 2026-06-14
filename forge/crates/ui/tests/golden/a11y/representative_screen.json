@@ -61,6 +61,92 @@
       "traps_focus": true
     }
   },
+  "nested_modal": {
+    "annotations": [
+      {
+        "focusable": false,
+        "name": null,
+        "path": [],
+        "role": "group",
+        "type": "Stack"
+      },
+      {
+        "focusable": true,
+        "name": "Open",
+        "path": [
+          0
+        ],
+        "role": "button",
+        "type": "Button"
+      },
+      {
+        "focusable": false,
+        "name": "Confirm",
+        "path": [
+          1
+        ],
+        "role": "dialog",
+        "type": "Modal"
+      },
+      {
+        "focusable": false,
+        "name": "Sure?",
+        "path": [
+          1,
+          0
+        ],
+        "role": "text",
+        "type": "Text"
+      },
+      {
+        "focusable": true,
+        "name": "Cancel",
+        "path": [
+          1,
+          1
+        ],
+        "role": "button",
+        "type": "Button"
+      },
+      {
+        "focusable": true,
+        "name": "Delete",
+        "path": [
+          1,
+          2
+        ],
+        "role": "button",
+        "type": "Button"
+      }
+    ],
+    "focus_order": {
+      "initial_focus": [
+        1,
+        1
+      ],
+      "stops": [
+        {
+          "kind": "Element",
+          "name": "Cancel",
+          "path": [
+            1,
+            1
+          ],
+          "role": "button"
+        },
+        {
+          "kind": "Element",
+          "name": "Delete",
+          "path": [
+            1,
+            2
+          ],
+          "role": "button"
+        }
+      ],
+      "traps_focus": true
+    }
+  },
   "page": {
     "annotations": [
       {

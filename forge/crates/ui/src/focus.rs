@@ -17,10 +17,14 @@
 //!   children in source order.
 //! - **Tabs** — the tablist is reached first, then the *active* panel's
 //!   focusables; inactive panels are NOT in the tab order.
-//! - **Modal** — focus is **contained**: the order holds only the dialog's own
-//!   focusable descendants, focus moves to the first focusable child (or the
-//!   dialog itself when it has none), and [`FocusOrder::traps_focus`] is set so
-//!   a renderer wraps Tab/Shift-Tab inside the dialog.
+//! - **Modal** — an *open* Modal **contains** focus wherever it sits in the
+//!   tree (root OR nested): the whole order holds only that dialog's own
+//!   focusable descendants (addressed by their real render path, so a nested
+//!   dialog keeps its Modal-path prefix), focus moves to the first focusable
+//!   child (or the dialog itself when it has none), and
+//!   [`FocusOrder::traps_focus`] is set so a renderer wraps Tab/Shift-Tab inside
+//!   the dialog. Focusables *behind* the modal scrim are excluded. A Modal with
+//!   `open: false` is closed — it traps nothing and hides its descendants.
 //! - **UI-6 unknown fallback** — an unrecognized component is itself NOT a tab
 //!   stop, but its focusable *known* descendants stay in the order (in source
 //!   order), so accessibility is never lost.
@@ -124,21 +128,32 @@ impl Node {
     /// The returned [`FocusOrder`] lists every focusable descendant (and `self`
     /// when it is itself focusable) in keyboard-traversal order per the spec's
     /// per-container rules, addressed by index [`Path`](crate::Path) from `self`.
-    /// For a Modal the order is focus-trapped and reports its initial focus
-    /// target (containment).
+    ///
+    /// **Modal containment.** Per `spec/accessibility.md` an *open* Modal "moves
+    /// focus into the dialog ... and traps focus while open". So whenever the
+    /// tree contains an open Modal — whether it *is* the root or sits anywhere
+    /// below it — the emitted order is **contained to that Modal**: it holds only
+    /// the dialog's own focusable descendants (addressed by their real
+    /// render-tree path from `self`, so a nested dialog's stops keep the Modal's
+    /// path prefix), [`FocusOrder::traps_focus`] is `true`, and
+    /// [`FocusOrder::initial_focus`] targets the dialog's first focusable child
+    /// (or the dialog box itself when it has none). Focusables *outside* the
+    /// dialog are intentionally excluded — they are behind the modal scrim and
+    /// must not be reachable by Tab. The topmost (first, pre-order) open Modal
+    /// wins. A Modal with `open: false` is closed and traps nothing; absent
+    /// `open` is treated as open (a Modal present in a rendered tree is shown).
     pub fn focus_order(&self) -> FocusOrder {
-        // A Modal/dialog is a focus container: its order is contained and traps.
-        if is_modal(self) {
+        // An open Modal anywhere captures focus for the whole screen. Find the
+        // topmost one and contain the order to it (path-prefixed from `self`).
+        if let Some((modal, modal_path)) = find_open_modal(self, &mut Vec::new()) {
             let mut stops = Vec::new();
-            // The dialog itself is not a tab stop; collect its focusable
-            // descendants in source order.
-            collect_descendants(self, &mut Vec::new(), &mut stops);
+            // The dialog box itself is not a tab stop; collect its focusable
+            // descendants in source order, addressed from `self` (so the stops
+            // carry the Modal's own path prefix when it is nested).
+            collect_descendants(&modal, &mut modal_path.clone(), &mut stops);
             // Focus moves to the first focusable child, else the dialog itself
             // (named by its title) — the spec's Modal entry rule.
-            let initial_focus = stops
-                .first()
-                .map(|s| s.path.clone())
-                .or(Some(Vec::new()));
+            let initial_focus = stops.first().map(|s| s.path.clone()).or(Some(modal_path));
             return FocusOrder {
                 stops,
                 traps_focus: true,
@@ -154,6 +169,53 @@ impl Node {
             traps_focus: false,
             initial_focus,
         }
+    }
+}
+
+/// Find the topmost (first, pre-order) **open** Modal at or below `node`,
+/// returning an owned copy of the Modal node plus its index path from the search
+/// root. `None` when the tree has no open Modal.
+///
+/// An open Modal short-circuits the search: a modal nested inside another open
+/// modal is already contained by the outer one, which wins. The search honors
+/// the same reachable-children view focus traversal uses (so a Tabs only exposes
+/// its active panel — a modal in an inactive, off-screen panel is not "open" on
+/// screen and is correctly skipped).
+fn find_open_modal(node: &Node, path: &mut Vec<usize>) -> Option<(Node, Vec<usize>)> {
+    if is_open_modal(node) {
+        return Some((node.clone(), path.clone()));
+    }
+    for (i, child) in reachable_children(node) {
+        path.push(i);
+        if let Some(found) = find_open_modal(&child, path) {
+            return Some(found);
+        }
+        path.pop();
+    }
+    None
+}
+
+/// The `(render_index, child)` pairs focus traversal would actually descend
+/// into, in order. A Tabs exposes only its **active panel** at its real render
+/// index (its tab descriptors are not containers, so they cannot hold a modal);
+/// every other container exposes its [`ordered_children`] at their natural
+/// indices. Returning the real index keeps a modal found inside an active Tabs
+/// panel addressed at the same render path the focus order and annotations use.
+fn reachable_children(node: &Node) -> Vec<(usize, Node)> {
+    if is_tabs(node) {
+        match node {
+            Node::Unknown { props, .. } => {
+                let panels = unknown_child_nodes(props, &["panels", "children"]);
+                if panels.is_empty() {
+                    return Vec::new();
+                }
+                let active = active_tab_index(props).min(panels.len().saturating_sub(1));
+                vec![(active, panels[active].clone())]
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        ordered_children(node).into_iter().enumerate().collect()
     }
 }
 
@@ -181,6 +243,14 @@ fn descend(
     out: &mut Vec<FocusStop>,
     visit: fn(&Node, &mut Vec<usize>, &mut Vec<FocusStop>),
 ) {
+    // A CLOSED Modal (`open: false`) is off-screen: its descendants are not
+    // reachable and must not enter the focus order. (An *open* Modal never
+    // reaches this normal traversal — `focus_order` contains the whole order to
+    // it before descending.)
+    if is_closed_modal(node) {
+        return;
+    }
+
     // Tabs: the tablist comes first (its tabs are focusable stops within the
     // tablist), then ONLY the active panel's focusables; inactive panels are
     // excluded from the tab order entirely.
@@ -321,9 +391,32 @@ fn unknown_is_focusable(
             .unwrap_or(false)
 }
 
-/// Whether `node` is a Modal/dialog (focus container that traps focus).
-fn is_modal(node: &Node) -> bool {
-    matches!(node, Node::Unknown { type_name, .. } if type_name == "Modal")
+/// Whether `node` is an **open** Modal/dialog — the focus container that traps
+/// focus (`spec/accessibility.md`: focus is trapped "while open").
+///
+/// A Modal is open unless it carries `open: false`. Absent `open` is treated as
+/// open, because a Modal that is present in a *rendered* tree is being shown
+/// (and the M0a goldens/tests omit the flag). An explicitly closed Modal
+/// (`open: false`) traps nothing and its descendants are not in the focus order.
+fn is_open_modal(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::Unknown { type_name, props }
+            if type_name == "Modal"
+                && props.get("open").and_then(|v| v.as_bool()).unwrap_or(true)
+    )
+}
+
+/// Whether `node` is a Modal explicitly closed (`open: false`) — off-screen, so
+/// its descendants are excluded from the focus order. (A Modal with absent/true
+/// `open` is open; see [`is_open_modal`].)
+fn is_closed_modal(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::Unknown { type_name, props }
+            if type_name == "Modal"
+                && !props.get("open").and_then(|v| v.as_bool()).unwrap_or(true)
+    )
 }
 
 /// Whether `node` is a Tabs container.

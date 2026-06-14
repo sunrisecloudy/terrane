@@ -241,6 +241,90 @@ fn modal_with_no_focusable_child_moves_initial_focus_to_the_dialog_itself() {
     assert_eq!(order.initial_focus, Some(Vec::<usize>::new()));
 }
 
+#[test]
+fn nested_open_modal_contains_focus_and_excludes_elements_behind_it() {
+    // Regression: a Modal nested in a page (not the focus root) must STILL trap
+    // focus and contain the order to itself — focusables behind the scrim (the
+    // "Open" button) must NOT be reachable. The dialog's stops keep the Modal's
+    // render-tree path prefix `[1, _]`, matching the annotation paths.
+    let page = from_str(
+        r#"{"type":"Stack","direction":"v","children":[
+            {"type":"Button","label":"Open"},
+            {"type":"Modal","title":"Confirm","children":[
+                {"type":"Text","text":"Sure?"},
+                {"type":"Button","label":"Cancel"},
+                {"type":"Button","label":"Delete"}
+            ]}
+        ]}"#,
+    )
+    .unwrap();
+    let order = page.focus_order();
+    assert!(order.traps_focus, "an open nested Modal must trap focus");
+    let triples = order_triples(&page);
+    // Only the dialog's two buttons, path-prefixed by the Modal at index [1].
+    assert_eq!(
+        triples,
+        vec![
+            (vec![1, 1], "button".to_string(), Some("Cancel".to_string())),
+            (vec![1, 2], "button".to_string(), Some("Delete".to_string())),
+        ]
+    );
+    // The "Open" button BEHIND the modal is excluded entirely.
+    let names: Vec<_> = triples.iter().filter_map(|t| t.2.clone()).collect();
+    assert!(!names.contains(&"Open".to_string()), "{names:?}");
+    // Initial focus is the dialog's first focusable child, at its real path.
+    assert_eq!(order.initial_focus, Some(vec![1, 1]));
+}
+
+#[test]
+fn closed_modal_traps_nothing_and_hides_its_descendants() {
+    // A Modal with `open: false` is off-screen: it does not trap, and its
+    // children are NOT in the page focus order — only the page button remains.
+    let page = from_str(
+        r#"{"type":"Stack","direction":"v","children":[
+            {"type":"Button","label":"Open"},
+            {"type":"Modal","title":"Confirm","open":false,"children":[
+                {"type":"Button","label":"Cancel"},
+                {"type":"Button","label":"Delete"}
+            ]}
+        ]}"#,
+    )
+    .unwrap();
+    let order = page.focus_order();
+    assert!(!order.traps_focus, "a closed Modal must not trap");
+    let names: Vec<_> = order_triples(&page)
+        .iter()
+        .filter_map(|t| t.2.clone())
+        .collect();
+    assert_eq!(names, vec!["Open".to_string()]);
+}
+
+#[test]
+fn open_modal_inside_active_tabs_panel_is_found_at_its_real_render_path() {
+    // A Modal opened inside the ACTIVE tab panel still traps, addressed at the
+    // panel's real render index (not offset), so its stops match annotations.
+    let tabs = from_str(
+        r#"{"type":"Tabs","activeTab":1,
+            "tabs":[{"label":"A"},{"label":"B"}],
+            "panels":[
+                {"type":"Button","label":"InA"},
+                {"type":"Modal","title":"Pick","children":[
+                    {"type":"Button","label":"Choose"}
+                ]}
+            ]}"#,
+    )
+    .unwrap();
+    let order = tabs.focus_order();
+    assert!(order.traps_focus, "modal in active panel traps");
+    let triples = order_triples(&tabs);
+    // Only the modal's button, at panel index [1] then child [0].
+    assert_eq!(
+        triples,
+        vec![(vec![1, 0], "button".to_string(), Some("Choose".to_string()))]
+    );
+    assert_eq!(triples[0].0, vec![1, 0]);
+}
+
 // --- UI-6 unknown-component fallback focus behavior ------------------------
 
 #[test]
