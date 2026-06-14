@@ -23,6 +23,7 @@
 //! [`forge_runtime::HostBridge`] that backs `ctx.*` with the real `Store`.
 
 mod bridge;
+mod determinism;
 mod event;
 mod sync_rbac;
 mod workspace;
