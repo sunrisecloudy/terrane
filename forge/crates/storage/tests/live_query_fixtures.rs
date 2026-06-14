@@ -20,6 +20,7 @@
 //!
 //! prd-merged/02-data-layer-prd.md DL-16; spec `forge/spec/live-queries.md`.
 
+use forge_schema::{FieldType, SchemaChange, SchemaRegistry};
 use forge_storage::{
     DirtyChanges, IndexManager, Mutation, Query, Store, WatchNotification, WatchRegistry,
 };
@@ -614,24 +615,141 @@ fn t047_replay_session_notifications_byte_identical() {
 
 #[test]
 fn t047_schema_change_on_watched_collection_defined_behavior() {
-    // Substrate-visible part: additive schema changes emit NO db.watch.notification
-    // and keep watches active; a destructive drop is rejected. The schema engine
-    // owns the accept/reject; the watch substrate's contribution is that NO dirty
-    // set / notification is produced by a schema op, and the watch stays active and
-    // still sees its initial result.
+    // Pinned contract (T047 (c)): on a WATCHED collection, an ADDITIVE schema
+    // change is accepted, emits NO db.watch.notification, and keeps the watch
+    // active; a DESTRUCTIVE drop is REJECTED with SchemaCompatibilityError BEFORE
+    // any watch invalidation. The schema engine owns accept/reject; the watch
+    // substrate's contribution is that a schema op produces NO dirty set / NO
+    // notification and the watch stays active with its initial result.
     let fx = load(T047, "schema_change_on_watched_collection_defined_behavior.json");
     let mut runner = Runner::new(next_version_of(&fx["given"]));
     seed_given(&mut runner, &fx["given"]);
 
+    // Drive the declared schema ops through the REAL schema engine and assert the
+    // fixture's per-op accept/reject results (so the destructive-drop rejection is
+    // actually proven, not merely asserted-away).
+    let mut registry = seed_schema(&fx["given"]["schema"]);
+    let want_results = fx["expect"]["schema_results"].as_array().unwrap();
+    for (op, want) in fx["when"]["schema_ops"].as_array().unwrap().iter().zip(want_results) {
+        // The watch must still be active when the op is evaluated (rejection
+        // happens BEFORE watch invalidation), so no schema op ever removes a watch.
+        let before_watches = runner.reg.active_watch_ids();
+        let result = apply_schema_op(&mut registry, op);
+        match want["result"].as_str().unwrap() {
+            "accepted" => {
+                result.unwrap_or_else(|e| panic!("op {op} must be accepted: {e}"));
+            }
+            "rejected" => {
+                let err = result.expect_err("destructive op must be rejected");
+                assert_eq!(
+                    err.code(),
+                    want["error_kind"].as_str().unwrap(),
+                    "rejected op {op} error kind"
+                );
+            }
+            other => panic!("unknown schema result {other}"),
+        }
+        // A schema op (accepted or rejected) never produces a dirty set or a
+        // notification, and never invalidates a watch.
+        assert!(runner.notifications.is_empty(), "schema op emits no notification");
+        assert_eq!(
+            runner.reg.active_watch_ids(),
+            before_watches,
+            "watch state is unchanged by schema op {op}"
+        );
+        assert_eq!(want["watch_state"].as_str().unwrap(), "active");
+    }
+
     // No mutation transaction is committed for a schema op, so the substrate
-    // produces no notifications and no dirty set.
+    // produces no dirty set (and consumed no version).
     assert!(fx["expect"]["dirty_set"].is_null());
     assert!(runner.notifications.is_empty());
+    assert_eq!(runner.reg.next_version(), next_version_of(&fx["given"]));
     // The watch stays active and its initial result is unchanged.
     assert_eq!(runner.reg.active_watch_ids(), vec!["watch:tasks-open".to_string()]);
     for (watch_id, want) in fx["expect"]["watch_initial_result_ids"].as_object().unwrap() {
         let got = runner.reg.watch_result_ids(&runner.store, watch_id).unwrap().unwrap();
         assert_eq!(&json!(got), want, "watch {watch_id} stays active with its result");
+    }
+}
+
+/// Build a [`SchemaRegistry`] from a fixture `given.schema` block
+/// (`{collection: [{id, name, type}, …]}`). Field ids are taken verbatim from the
+/// fixture so a later `validate_compatibility` check keys off the same ids.
+fn seed_schema(schema: &Value) -> SchemaRegistry {
+    let mut registry = SchemaRegistry::new();
+    let Some(cols) = schema.as_object() else {
+        return registry;
+    };
+    for (collection, fields) in cols {
+        registry
+            .apply_change(SchemaChange::AddCollection { name: collection.clone() })
+            .expect("seed add_collection");
+        for field in fields.as_array().unwrap() {
+            // The seed `id` is a fixed display id; the engine mints its own stable
+            // id, so we add by name and let the engine own the id. Compatibility
+            // checks below operate on the engine's registry, not the fixture id.
+            registry
+                .apply_change(SchemaChange::AddField {
+                    collection: collection.clone(),
+                    actor: forge_domain::ActorId::new("seed"),
+                    name: field["name"].as_str().unwrap().into(),
+                    ty: field_type(field["type"].as_str().unwrap()),
+                    indexed: false,
+                    required: false,
+                })
+                .expect("seed add_field");
+        }
+    }
+    registry
+}
+
+/// Apply one fixture schema op to the registry, returning the engine's result.
+///
+/// `add_field` is an additive [`SchemaChange`] the engine accepts. `drop_collection`
+/// has NO API surface in the additive-only engine (DL-8): the destructive intent is
+/// modeled as a forward-compatibility check against a registry with the collection
+/// removed, which the engine rejects with `SchemaCompatibilityError` — exactly the
+/// "destructive drop rejected before watch invalidation" the fixture pins.
+fn apply_schema_op(registry: &mut SchemaRegistry, op: &Value) -> forge_domain::Result<()> {
+    match op["op"].as_str().unwrap() {
+        "add_field" => {
+            let field = &op["field"];
+            registry.apply_change(SchemaChange::AddField {
+                collection: op["collection"].as_str().unwrap().into(),
+                actor: forge_domain::ActorId::new("schema-evo"),
+                name: field["name"].as_str().unwrap().into(),
+                ty: field_type(field["type"].as_str().unwrap()),
+                indexed: false,
+                required: field.get("required").and_then(|r| r.as_bool()).unwrap_or(false),
+            })
+        }
+        "drop_collection" => {
+            let collection = op["collection"].as_str().unwrap();
+            // A drop is the registry WITHOUT that collection; validating the
+            // dropped registry as a forward evolution of the current one rejects
+            // (DL-8 destructive-removal guard). Build it by re-deserializing the
+            // current registry with the collection removed.
+            let mut without = serde_json::to_value(&*registry).unwrap();
+            without["collections"].as_object_mut().unwrap().remove(collection);
+            let dropped: SchemaRegistry = serde_json::from_value(without).unwrap();
+            dropped.validate_compatibility(registry)
+        }
+        other => panic!("unknown schema op {other}"),
+    }
+}
+
+/// Map a fixture field-type token (`"Text"`, `"Bool"`, …) to a [`FieldType`]. The
+/// fixtures use PascalCase tokens; the engine's serde form is snake_case, so this
+/// mapping is explicit.
+fn field_type(token: &str) -> FieldType {
+    match token {
+        "Text" => FieldType::Text,
+        "Bool" => FieldType::Bool,
+        "IntNum" => FieldType::IntNum,
+        "FloatNum" => FieldType::FloatNum,
+        "Scalar" => FieldType::Scalar,
+        other => panic!("unknown fixture field type {other}"),
     }
 }
 

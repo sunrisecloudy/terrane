@@ -14,3 +14,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Live-query fixtures pin the schema-change behavior on a watched collection
+# (T047 `schema_change_on_watched_collection_defined_behavior`): an additive
+# change is accepted, a destructive drop is rejected (SchemaCompatibilityError).
+# The conformance test drives the real schema engine to assert that contract.
+# Dev-only — forge-schema depends solely on forge-domain, so there is no cycle.
+forge-schema.workspace = true

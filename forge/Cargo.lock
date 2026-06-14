@@ -680,6 +680,7 @@ version = "0.1.0"
 dependencies = [
  "forge-crdt",
  "forge-domain",
+ "forge-schema",
  "rusqlite",
  "serde",
  "serde_json",
