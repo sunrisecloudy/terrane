@@ -660,15 +660,19 @@ fn recorded_event_session_replays_byte_identically() {
     ));
     assert!(replay.ok, "session replay must succeed: {:?}", replay.error);
 
-    // The composite session fingerprint is the SINGLE byte-identity claim.
+    // `replays_identically: true` is the SERVER-SIDE byte-identity claim: the
+    // command itself asserts the per-run trace fingerprints, the ordered per-event
+    // patch chain, AND the converged final tree all reproduce exactly (it errors
+    // otherwise), so this flag is load-bearing, not something only the test checks.
     assert_eq!(
         replay.payload["replays_identically"],
         serde_json::json!(true),
         "the recorded event session must replay byte-identically"
     );
 
-    // Every per-event patch the replay re-derived equals the originally recorded
-    // patch (not just the host-call trace — the actual UI patches match).
+    // Every per-event patch the command re-derived (and already verified equal to
+    // the recorded chain server-side) also equals the LIVE recorded patch here —
+    // i.e. the command's derivation matches the live `ui.dispatch_event` loop.
     let replayed_patches = replay.payload["event_patches"].as_array().unwrap();
     assert_eq!(replayed_patches.len(), recorded_patches.len(), "one patch per event");
     for (i, (got, want)) in replayed_patches.iter().zip(&recorded_patches).enumerate() {

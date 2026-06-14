@@ -1078,17 +1078,14 @@ impl WorkspaceCore {
             ));
         }
 
-        // Replay each run in order, accumulating (original, replayed) pairs and the
-        // per-event re-derived patches. `prev_tree` walks the replayed final trees so
-        // each event's patch diffs against the PRIOR replayed tree — the same diff
-        // base the live `ui.dispatch_event` loop used (UI-4).
+        // Replay each run in order, accumulating (original, replayed) pairs. We keep
+        // BOTH chains so the byte-identity claim is derived AND checked here, not just
+        // returned for a test to assert.
         let mut originals: Vec<RunRecord> = Vec::with_capacity(run_ids.len());
         let mut replayeds: Vec<RunRecord> = Vec::with_capacity(run_ids.len());
-        let mut prev_tree: Option<forge_ui::Node> = None;
-        let mut event_patches: Vec<serde_json::Value> = Vec::new();
         let mut applet_id: Option<AppletId> = None;
 
-        for (step, run_id) in run_ids.iter().enumerate() {
+        for run_id in &run_ids {
             let (original, replayed) = self.replay_run_by_id(run_id, &cmd.actor)?;
             // Every run in one session must belong to the SAME applet — a session is
             // one applet's interactive loop. A mixed-applet `run_ids` list is a
@@ -1103,48 +1100,50 @@ impl WorkspaceCore {
                 }
                 Some(_) => {}
             }
-
-            // The replayed run's final UI tree (its last recorded `ui.render`), if any.
-            let next_tree = replayed_final_tree(&replayed)?;
-            // For each EVENT (every run after the initial) re-derive the patch against
-            // the prior replayed tree and assert it equals the originally recorded
-            // patch, so the session reproduces every patch byte-identically.
-            if step > 0 {
-                if let Some(tree) = &next_tree {
-                    let patches = forge_ui::diff(prev_tree.as_ref(), tree);
-                    let patches_json = serde_json::to_value(&patches).map_err(|e| {
-                        CoreError::ValidationError(format!(
-                            "replay_session patch serialize failed: {e}"
-                        ))
-                    })?;
-                    event_patches.push(patches_json);
-                } else {
-                    // A handler that rendered nothing leaves the view unchanged → an
-                    // empty patch over the prior tree (the identical-tree edge).
-                    event_patches.push(serde_json::json!([]));
-                }
-            }
-            if next_tree.is_some() {
-                prev_tree = next_tree;
-            }
             originals.push(original);
             replayeds.push(replayed);
         }
 
-        // The composite session identity: fold each record's per-run fingerprint in
-        // order. Equal composites ⇒ the whole ordered event sequence replayed
-        // byte-identically (per-run AND order). Divergence is a RuntimeError.
+        // Derive the ordered per-event patch chain + final tree from BOTH the recorded
+        // (`originals`) and the replayed (`replayeds`) record sequences, walking each
+        // run's final render against the PRIOR run's render — the same diff base the
+        // live `ui.dispatch_event` loop used (UI-4). The two walks must be byte-equal:
+        // that is the real session byte-identity claim (recorded patches == replayed
+        // patches == recorded final tree == replayed final tree).
         let original_refs: Vec<&RunRecord> = originals.iter().collect();
         let replayed_refs: Vec<&RunRecord> = replayeds.iter().collect();
+        let (recorded_patches, recorded_final) = derive_session_patch_chain(&original_refs)?;
+        let (event_patches, replayed_final) = derive_session_patch_chain(&replayed_refs)?;
+
+        // The composite session identity: fold each record's per-run fingerprint in
+        // order. Equal composites ⇒ each run replayed byte-identically to its recorded
+        // counterpart, in order. Divergence is a RuntimeError.
         let session_fingerprint = RunRecord::session_fingerprint(&replayed_refs);
-        let replays_identically =
+        let runs_replay_identically =
             RunRecord::session_replays_identically(&original_refs, &replayed_refs);
-        if !replays_identically {
+        if !runs_replay_identically {
             return Err(CoreError::RuntimeError(format!(
                 "session replay diverged from the recorded session ({} run(s); composite fingerprints differ)",
                 run_ids.len()
             )));
         }
+        // Beyond the per-run trace fingerprint, the OBSERVABLE session output — the
+        // ordered patch chain and the converged final tree — must reproduce exactly.
+        // This is checked server-side so a caller's `replays_identically: true` is a
+        // load-bearing claim, not something only the test asserts.
+        if event_patches != recorded_patches {
+            return Err(CoreError::RuntimeError(format!(
+                "session replay diverged: re-derived event patch chain ({} event(s)) differs from the recorded one",
+                event_patches.len()
+            )));
+        }
+        if replayed_final != recorded_final {
+            return Err(CoreError::RuntimeError(
+                "session replay diverged: re-derived final tree differs from the recorded one"
+                    .to_string(),
+            ));
+        }
+        let replays_identically = runs_replay_identically;
 
         if let Some(applet_id) = &applet_id {
             self.events.emit(
@@ -1163,14 +1162,12 @@ impl WorkspaceCore {
             "ok": true,
             "run_ids": run_ids,
             // The per-event re-derived UI patches (one list per dispatched event, in
-            // order); the harness asserts each equals the originally recorded patch.
+            // order). Already asserted byte-equal to the recorded chain above, so a
+            // caller receives the verified patch sequence.
             "event_patches": event_patches,
-            // The session's final rendered tree (the last replayed render), so a
-            // caller can assert the session converged to the same view.
-            "final_tree": prev_tree
-                .as_ref()
-                .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
-                .unwrap_or(serde_json::Value::Null),
+            // The session's final rendered tree (the last replayed render, `null` if
+            // nothing rendered). Already asserted equal to the recorded final tree.
+            "final_tree": replayed_final,
             "session_fingerprint": session_fingerprint,
             "replays_identically": replays_identically,
         }))
@@ -3536,6 +3533,58 @@ fn replayed_final_tree(run: &RunRecord) -> Result<Option<forge_ui::Node>> {
     }
 }
 
+/// Walk an ordered **event session** (`records[0]` is the initial `runtime.run`,
+/// `records[1..]` are the dispatched `ui.dispatch_event` runs in order) and derive
+/// the OBSERVABLE session output the live `ui.dispatch_event` loop produced: the
+/// ordered per-event UI patch chain and the converged final tree (UI-4).
+///
+/// Each event's patch is `forge_ui::diff(prior_render, this_render)` — diffing this
+/// run's final render against the PRIOR run's render, the same diff base the live
+/// loop used. A run that rendered nothing leaves the view unchanged: it contributes
+/// an empty patch and does NOT advance the diff base (so the next event still diffs
+/// against the last real render). The head run contributes no patch (its render is
+/// only the base for event #1). Returns `(event_patches, final_tree_json)` where
+/// `final_tree_json` is `null` if nothing rendered across the whole session.
+///
+/// Driving BOTH the recorded and the replayed record sequences through this single
+/// walk and asserting the two outputs are byte-equal is the session byte-identity
+/// check in [`cmd_runtime_replay_session`](WorkspaceCore::cmd_runtime_replay_session):
+/// equal recorded/replayed walks ⇒ every patch and the final tree reproduced exactly.
+fn derive_session_patch_chain(
+    records: &[&RunRecord],
+) -> Result<(Vec<serde_json::Value>, serde_json::Value)> {
+    let mut prev_tree: Option<forge_ui::Node> = None;
+    let mut event_patches: Vec<serde_json::Value> = Vec::new();
+    for (step, run) in records.iter().enumerate() {
+        let next_tree = replayed_final_tree(run)?;
+        if step > 0 {
+            // Every run after the head is a dispatched event. Diff its render against
+            // the prior render to the event's patch; a non-rendering run is an empty
+            // patch over the unchanged view.
+            let patches = match &next_tree {
+                Some(tree) => forge_ui::diff(prev_tree.as_ref(), tree),
+                None => Vec::new(),
+            };
+            let patches_json = serde_json::to_value(&patches).map_err(|e| {
+                CoreError::ValidationError(format!("replay_session patch serialize failed: {e}"))
+            })?;
+            event_patches.push(patches_json);
+        }
+        // Only advance the diff base when this run actually rendered, so a
+        // non-rendering event does not blank out the prior tree.
+        if next_tree.is_some() {
+            prev_tree = next_tree;
+        }
+    }
+    let final_tree = match prev_tree {
+        Some(tree) => serde_json::to_value(&tree).map_err(|e| {
+            CoreError::ValidationError(format!("replay_session final tree serialize failed: {e}"))
+        })?,
+        None => serde_json::Value::Null,
+    };
+    Ok((event_patches, final_tree))
+}
+
 /// `(ok, app_result_json)` for a run's outcome.
 fn outcome_fields(run: &RunRecord) -> (bool, serde_json::Value) {
     use forge_domain::RunOutcome;
@@ -3618,6 +3667,128 @@ mod seed_override_tests {
         })))
         .unwrap();
         assert_eq!(ok, Some((1, i64::MAX as u64)));
+    }
+}
+
+#[cfg(test)]
+mod session_patch_chain_tests {
+    use super::*;
+    use forge_domain::{AppResult, RecordedCall, RunOutcome};
+
+    /// A minimal `RunRecord` whose only relevant trace is a single `ui.render` of
+    /// `tree` (or no render at all when `tree` is `None`) — enough to exercise the
+    /// session patch-chain walk without standing up the engine.
+    fn rendered(tree: Option<serde_json::Value>) -> RunRecord {
+        let calls = match tree {
+            Some(t) => vec![RecordedCall {
+                seq: 0,
+                method: "ui.render".into(),
+                args: serde_json::json!([t]),
+                response: serde_json::json!(null),
+            }],
+            None => Vec::new(),
+        };
+        RunRecord {
+            run_id: forge_domain::RunId::new("r"),
+            applet_id: AppletId::new("app"),
+            code_hash: forge_domain::hash::code_hash("body"),
+            input: serde_json::json!(null),
+            random_seed: 0,
+            time_start: 0,
+            calls,
+            logs: Vec::new(),
+            permissions: forge_domain::PermissionSnapshot::default(),
+            outcome: RunOutcome::Completed {
+                result: AppResult { ok: true, value: serde_json::json!(null) },
+            },
+        }
+    }
+
+    fn text(t: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "Text", "testId": "t", "text": t })
+    }
+
+    /// The head run contributes NO patch (its render is only the diff base); each
+    /// subsequent run is an event whose patch diffs its render against the prior
+    /// render. The final tree is the last render.
+    #[test]
+    fn head_is_base_and_events_diff_against_prior_render() {
+        let records = [&rendered(Some(text("a"))), &rendered(Some(text("b")))];
+        let (patches, final_tree) = derive_session_patch_chain(&records).unwrap();
+        assert_eq!(patches.len(), 1, "one event after the head");
+        let want = forge_ui::diff(
+            Some(&forge_ui::from_str(&text("a").to_string()).unwrap()),
+            &forge_ui::from_str(&text("b").to_string()).unwrap(),
+        );
+        assert_eq!(patches[0], serde_json::to_value(&want).unwrap());
+        assert_eq!(final_tree, text("b"));
+    }
+
+    /// A non-rendering event contributes an EMPTY patch and does NOT advance the
+    /// diff base, so the NEXT event still diffs against the last real render.
+    #[test]
+    fn non_rendering_event_is_empty_patch_and_does_not_advance_base() {
+        let records = [
+            &rendered(Some(text("a"))),
+            &rendered(None),           // event #1 renders nothing
+            &rendered(Some(text("c"))), // event #2 diffs c against a, not against "nothing"
+        ];
+        let (patches, final_tree) = derive_session_patch_chain(&records).unwrap();
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0], serde_json::json!([]), "non-rendering event = empty patch");
+        let want = forge_ui::diff(
+            Some(&forge_ui::from_str(&text("a").to_string()).unwrap()),
+            &forge_ui::from_str(&text("c").to_string()).unwrap(),
+        );
+        assert_eq!(patches[1], serde_json::to_value(&want).unwrap(), "next event still diffs against \"a\"");
+        assert_eq!(final_tree, text("c"));
+    }
+
+    /// An identical re-render is an EMPTY patch (no spurious diff).
+    #[test]
+    fn identical_rerender_is_empty_patch() {
+        let records = [&rendered(Some(text("same"))), &rendered(Some(text("same")))];
+        let (patches, _) = derive_session_patch_chain(&records).unwrap();
+        assert_eq!(patches[0], serde_json::json!([]));
+    }
+
+    /// The walk is ORDER-sensitive: swapping two distinct events yields a different
+    /// patch chain and a different final tree — the property the command relies on
+    /// to enforce recorded event order.
+    #[test]
+    fn walk_is_order_sensitive() {
+        let head = rendered(Some(text("a")));
+        let e_b = rendered(Some(text("b")));
+        let e_c = rendered(Some(text("c")));
+        let (ordered, ordered_final) =
+            derive_session_patch_chain(&[&head, &e_b, &e_c]).unwrap();
+        let (swapped, swapped_final) =
+            derive_session_patch_chain(&[&head, &e_c, &e_b]).unwrap();
+        assert_ne!(ordered, swapped, "swapped order = different patch chain");
+        assert_ne!(ordered_final, swapped_final, "swapped order = different final tree");
+    }
+
+    /// Two byte-identical record sequences produce byte-identical chains — the
+    /// equality the command asserts between the recorded and replayed walks. This
+    /// is the building block of the server-side `replays_identically` claim.
+    #[test]
+    fn identical_record_sequences_produce_identical_chains() {
+        let a = [&rendered(Some(text("a"))), &rendered(Some(text("b")))];
+        let b = [&rendered(Some(text("a"))), &rendered(Some(text("b")))];
+        assert_eq!(
+            derive_session_patch_chain(&a).unwrap(),
+            derive_session_patch_chain(&b).unwrap()
+        );
+    }
+
+    /// A single-run session (just the head) has no events: an empty patch chain and
+    /// the head's render as the final tree.
+    #[test]
+    fn single_run_session_has_no_event_patches() {
+        let (patches, final_tree) =
+            derive_session_patch_chain(&[&rendered(Some(text("only")))]).unwrap();
+        assert!(patches.is_empty());
+        assert_eq!(final_tree, text("only"));
     }
 }
 
