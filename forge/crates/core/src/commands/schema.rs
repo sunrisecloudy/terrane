@@ -108,7 +108,7 @@ impl WorkspaceCore {
         // persisted and nothing changed. A no-record-transform change advances the
         // version directly (a single bump, never two).
         let current = self.store.schema_version()?;
-        let migrated = match migration_for_change(&change, &next, cmd, current)? {
+        let migrated = match migration_for_change(&change, &self.registry, &next, cmd, current)? {
             Some(descriptor) => {
                 let outcome = self.store.apply_migration(&descriptor, &self.indexes)?;
                 outcome.migrated_records
@@ -326,9 +326,10 @@ fn indexed_field_to_create(
 /// evolves an existing field's stored data, or `None` for a change that touches
 /// only the registry/validation surface (`add_collection`, `enforce_required`, a
 /// defaultless `add_field`). The descriptor is built against the CANDIDATE registry
-/// `next` (the post-change state) so display `name`s resolve to the evolved schema,
-/// and migrates `from = current` `to = current + 1` so the version advances in
-/// lockstep (`forge/spec/migrations.md`).
+/// `next` (the post-change state) so display `name`s resolve to the evolved schema;
+/// the PRE-change registry `prev` is read for a `rename_field`'s OLD display name
+/// (which `next` has already overwritten). The migration runs `from = current`
+/// `to = current + 1` so the version advances in lockstep (`forge/spec/migrations.md`).
 ///
 /// The supported-transforms mapping is normative (`forge/spec/migrations.md` §1):
 /// - `widen_field{field_id, to}` → [`FieldTransform::WidenField`] (coerce the
@@ -339,26 +340,45 @@ fn indexed_field_to_create(
 ///   `deprecate_field_ok` fixture pins only the registry-level retention
 ///   (`deprecated: true`), so dropping the value is consistent with both the spec
 ///   table and the fixture.
+/// - `rename_field{field_id, name}` → [`FieldTransform::RenameField`]: move the
+///   display projection key from the OLD name (read from `prev`) to the NEW `name`.
+///   The stable-id value never moves (DL-7), so this is display-only (review 140 P2:
+///   previously `rename_field` only bumped the version + registry and left existing
+///   records keyed under the old display name).
 /// - `add_field` → [`FieldTransform::AddField`] (fill-if-missing) ONLY when the
 ///   command carries a `default`; without a default the new field is simply absent
 ///   on existing records until written, so no record is rewritten.
 ///
 /// `add_collection` and `enforce_required` map to no transform.
 ///
-/// **Record-key resolution (M0a stand-in).** A transform must target the
-/// `field_id` the **records actually carry**. The M0a DL-4 mutation surface keys a
-/// display field `<name>` under the projection stand-in `f_<name>`
-/// (`forge_storage`'s `materialize_field_ids`: storage has no registry, so it has
-/// no schema name→id map and writes the `f_<name>` stand-in), so a record written
-/// before the change carries `f_<name>`, NOT the registry's actor-scoped
-/// `f_<actor>_<seq>`. The schema change references the registry id; we resolve that
-/// id to its display `name` in the candidate registry, then key the record
-/// transform by the matching stand-in [`record_field_id`] so the migration rewrites
-/// the value the record really holds (mirroring the `forge_storage` migration tests,
-/// which target `f_<name>`). The display `name` is carried explicitly so both the
-/// stable-id map and the display projection are rewritten exactly (review 138 P2).
+/// **Record-key resolution (M0a stand-in vs registry id — review 140 P1).** A
+/// transform must target the `field_id` the **records actually carry**. The M0a DL-4
+/// mutation surface keys a display field `<name>` under the projection stand-in
+/// `f_<name>` (`forge_storage`'s `materialize_field_ids`: storage has no registry,
+/// so it has no schema name→id map and writes the `f_<name>` stand-in), so a record
+/// written before the change carries `f_<name>`, NOT the registry's actor-scoped
+/// `f_<actor>_<seq>`. So `widen`/`deprecate` over an EXISTING display field, and a
+/// `add_field` default whose field is NOT indexed, key by the stand-in
+/// [`record_field_id`].
+///
+/// An **indexed** `add_field`-with-default is the exception: the facade creates the
+/// storage index over the registry-minted stable id ([`indexed_field_to_create`] →
+/// `field.field_id()`, e.g. `f_fx_1`). If the default-fill keyed the brand-new field
+/// by its `f_<name>` stand-in, the migrated rows would live under `field_ids.f_<name>`
+/// while the index reads `field_ids.f_<name>`'s SIBLING `field_ids.f_fx_1` — an empty
+/// index (review 140 P1). Since the field is brand-new (no prior record carries any
+/// id for it), we fill the default under the SAME registry stable id the index is
+/// built over, so the index serves the defaulted rows and a query by the registry
+/// field id uses it. The display `name` is still mirrored into `fields[name]` so reads
+/// stay readable; a later DL-4 display write of the same name is a fill-if-missing
+/// no-op on the value side.
+///
+/// The display `name` (and `from_name`/`to_name` for a rename) is carried explicitly
+/// so both the stable-id map and the display projection are rewritten exactly (review
+/// 138 P2) — never an `f_`-strip guess.
 fn migration_for_change(
     change: &SchemaChange,
+    prev: &SchemaRegistry,
     next: &SchemaRegistry,
     cmd: &forge_domain::CoreCommand,
     current: u64,
@@ -382,29 +402,59 @@ fn migration_for_change(
                 FieldTransform::DropField { field_id: record_field_id(&name), name },
             ))
         }
-        SchemaChange::AddField { collection, .. } => {
+        SchemaChange::RenameField { collection, field_id, name } => {
+            // Review 140 P2: a rename must MOVE the display projection key on existing
+            // records, not only the registry. The OLD display name lives in `prev`
+            // (`next` already renamed it); the NEW name is the change's `name`. The
+            // stable-id value never moves (DL-7), so the transform is display-only. A
+            // same-name rename (idempotent registry no-op) carries no record change.
+            let from_name = resolve_display_name(prev, collection, field_id)?;
+            if &from_name == name {
+                None
+            } else {
+                Some((
+                    collection.clone(),
+                    FieldTransform::RenameField {
+                        // The stable id is informational here (RenameField is keyed by
+                        // display name); carry the record-side stand-in for fidelity.
+                        field_id: record_field_id(&from_name),
+                        from_name,
+                        to_name: name.clone(),
+                    },
+                ))
+            }
+        }
+        SchemaChange::AddField { collection, indexed, .. } => {
             // A default (an optional companion to `change` in the command payload) is
             // filled into existing records that lack the freshly minted field. The
             // schema crate mints the id when applying the change, so resolve the new
             // field from the CANDIDATE registry: it is the last field of `collection`.
-            // The record-side fill targets the `f_<name>` stand-in (the key records
-            // carry) so a later read sees the default under the same id.
             match cmd.payload.get("default") {
                 None | Some(serde_json::Value::Null) => None,
                 Some(default) => {
-                    let name = next
+                    let field = next
                         .collection(collection)
                         .and_then(|col| col.fields().last())
-                        .map(|f| f.name().to_string())
                         .ok_or_else(|| {
                             CoreError::ValidationError(format!(
                                 "schema.apply_change: add_field default for unknown collection {collection:?}"
                             ))
                         })?;
+                    let name = field.name().to_string();
+                    // Review 140 P1: an INDEXED new field is indexed over its registry
+                    // stable id (`indexed_field_to_create`), so fill the default under
+                    // that SAME id (not the `f_<name>` stand-in) — otherwise the index
+                    // is empty. A non-indexed field keeps the stand-in so a later DL-4
+                    // display write sees the default under the same key.
+                    let record_id = if *indexed {
+                        field.field_id().to_string()
+                    } else {
+                        record_field_id(&name)
+                    };
                     Some((
                         collection.clone(),
                         FieldTransform::AddField {
-                            field_id: record_field_id(&name),
+                            field_id: record_id,
                             name,
                             default: default.clone(),
                         },
@@ -413,9 +463,7 @@ fn migration_for_change(
             }
         }
         // Registry-only / validation-only changes carry no record transform.
-        SchemaChange::AddCollection { .. }
-        | SchemaChange::RenameField { .. }
-        | SchemaChange::EnforceRequired { .. } => None,
+        SchemaChange::AddCollection { .. } | SchemaChange::EnforceRequired { .. } => None,
     };
 
     Ok(transform.map(|(collection, transform)| MigrationDescriptor {

@@ -999,3 +999,106 @@ fn apply_change_migration_over_multiple_records_is_atomic_and_lockstep() {
         "one bump for the whole migration"
     );
 }
+
+#[test]
+fn apply_change_indexed_add_field_with_default_populates_the_created_index() {
+    // Review 140 P1: an `add_field` that is BOTH `indexed: true` AND carries a
+    // `default` must fill the default under the SAME stable id the created index is
+    // built over. The facade indexes a new field over its registry-minted id
+    // (`f_fx_1`); if the default-fill keyed the brand-new field by its `f_<name>`
+    // stand-in instead, the migrated rows would live under `field_ids.f_priority`
+    // while the advertised index `idx_records_items_f_fx_1` read the (absent)
+    // `field_ids.f_fx_1` — an empty index that misses every defaulted row. A
+    // non-text (`int_num`) field gets a `Value` expression index the planner uses
+    // for an equality query.
+    let mut core = WorkspaceCore::in_memory("ws_idx").unwrap();
+    assert!(apply(&mut core, add_collection("items")).ok);
+    // First field `sku` (f_fx_0), seeded into an existing record via the DL-4 path.
+    assert!(apply(&mut core, add_field("items", "fx", "sku", serde_json::json!("text"), false, false)).ok);
+    seed_record(&mut core, "items", "r1", "sku", serde_json::json!("widget"));
+
+    // Add an INDEXED `priority` field (f_fx_1) carrying a default. The command must
+    // (a) create the index over the registry id and (b) fill the default under that
+    // same id so the index is populated.
+    let resp = apply_with_default(
+        &mut core,
+        add_field("items", "fx", "priority", serde_json::json!("int_num"), true, false),
+        Some(serde_json::json!(0)),
+    );
+    assert!(resp.ok, "indexed add_field with default must succeed: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["created_index"],
+        serde_json::json!("idx_records_items_f_fx_1"),
+        "the index is created over the registry stable id"
+    );
+    assert_eq!(
+        resp.payload["migrated_records"],
+        serde_json::json!(1),
+        "the one existing record is back-filled with the default"
+    );
+
+    // The defaulted row carries the value under the REGISTRY stable id (so the index
+    // serves it) AND under the display name (so reads stay readable) — durably, after
+    // a DL-6 rebuild from the CRDT chunks.
+    core.rebuild_projection().expect("DL-6 rebuild");
+    let env = core.store().get_record("items", "r1").unwrap().unwrap();
+    assert_eq!(env.field_ids["f_fx_1"], serde_json::json!(0), "default under the registry stable id");
+    assert_eq!(env.fields["priority"], serde_json::json!(0), "default mirrored into the display projection");
+    // The seed field is untouched (still its stand-in).
+    assert_eq!(env.field_ids["f_sku"], serde_json::json!("widget"));
+
+    // A query on the indexed field by its REGISTRY id uses the created index and the
+    // defaulted row is visible (the index was rebuilt from the migrated projection).
+    let q = forge_storage::Query::from_fixture_value(&serde_json::json!({
+        "from": "items",
+        "where": [{ "field_id": "f_fx_1", "op": "eq", "value": 0 }]
+    }))
+    .unwrap();
+    let planned = core.store().query_planned(&q, core.indexes()).unwrap();
+    assert!(planned.uses_index, "a query on the indexed defaulted field must use the index");
+    assert_eq!(planned.index_id.as_deref(), Some("idx_records_items_f_fx_1"));
+    let ids = core.store().query(&q).unwrap().ids();
+    assert_eq!(ids, vec!["r1".to_string()], "the back-filled row is found by the advertised field id");
+}
+
+#[test]
+fn apply_change_rename_field_moves_existing_record_display_projection() {
+    // Review 140 P2: `schema.apply_change(rename_field)` must MOVE the display
+    // projection key on existing records, not only bump the version + registry. A
+    // record seeded under the old display name `label` must read under the new name
+    // `title` after the rename — and survive a DL-6 rebuild. The stable-id VALUE is
+    // authoritative and never moves (DL-7).
+    let mut core = WorkspaceCore::in_memory("ws_rename").unwrap();
+    assert!(apply(&mut core, add_collection("tasks")).ok);
+    assert!(apply(&mut core, add_field("tasks", "fx", "label", serde_json::json!("text"), false, false)).ok);
+    seed_record(&mut core, "tasks", "r1", "label", serde_json::json!("hi"));
+    let before_version = core.store().schema_version().unwrap();
+
+    // Rename `label` → `title` (the field id `f_fx_0` is unchanged).
+    let resp = apply(
+        &mut core,
+        serde_json::json!({ "op": "rename_field", "collection": "tasks", "field_id": "f_fx_0", "name": "title" }),
+    );
+    assert!(resp.ok, "rename_field must succeed: {:?}", resp.error);
+    // The registry field is renamed (id stable).
+    assert_eq!(core.registry().collection("tasks").unwrap().field("f_fx_0").unwrap().name(), "title");
+    // VERSION LOCKSTEP: a rename advances the version exactly once.
+    assert_eq!(core.store().schema_version().unwrap(), before_version + 1);
+    assert_eq!(
+        resp.payload["migrated_records"],
+        serde_json::json!(1),
+        "the one existing record's display projection moved"
+    );
+
+    // The display projection moved old → new in BOTH the live read and after a DL-6
+    // rebuild (durable); the stable-id stand-in value is untouched (DL-7).
+    for phase in ["post-apply", "post-rebuild"] {
+        if phase == "post-rebuild" {
+            core.rebuild_projection().expect("DL-6 rebuild");
+        }
+        let env = core.store().get_record("tasks", "r1").unwrap().unwrap();
+        assert!(!env.fields.contains_key("label"), "[{phase}] old display name must be gone");
+        assert_eq!(env.fields["title"], serde_json::json!("hi"), "[{phase}] value reads under the new name");
+        assert_eq!(env.field_ids["f_label"], serde_json::json!("hi"), "[{phase}] stable-id value never moves (DL-7)");
+    }
+}
