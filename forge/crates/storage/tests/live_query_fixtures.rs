@@ -408,7 +408,9 @@ fn t047_no_op_patch_still_dirties_watched_row() {
 
 /// The T047 fixtures whose `when.mutation` is a single committed transaction
 /// (single op or one `transact` group, possibly spanning collections): assert
-/// dirty_set + notifications.
+/// dirty_set + notifications. A multi-collection `transact` commits through the
+/// REAL atomic `transact_mutations_crdt` path (review 129 #1), not a split-write
+/// fake — so a mixed tasks+notes group is one genuine atomic SQLite transaction.
 fn run_e2e_single_transact(name: &str) {
     let fx = load(T047, name);
     let case = fx["case"].as_str().unwrap();
@@ -416,15 +418,11 @@ fn run_e2e_single_transact(name: &str) {
     seed_given(&mut runner, &fx["given"]);
 
     let mutation = op_to_mutation(&fx["when"]["mutation"], runner.next_clock(8));
-    let before = runner.reg.snapshot(&runner.store).expect("snapshot");
-    write_transaction(&mut runner, &mutation);
-    let changes = DirtyChanges::from_mutations(std::slice::from_ref(&mutation));
-    let (dirty, mut notifs) = runner.reg.commit(changes, &before, &runner.store).expect("commit");
-    runner.notifications.append(&mut notifs);
+    let dirty = runner.apply_committed_dirty(&mutation);
 
     if let Some(expect_dirty) = fx["expect"].get("dirty_set") {
         if !expect_dirty.is_null() {
-            assert_eq!(dirty.to_json(), *expect_dirty, "case {case}: dirty set mismatch");
+            assert_eq!(dirty, *expect_dirty, "case {case}: dirty set mismatch");
         }
     }
     assert_notifications(case, &runner, &fx["expect"]);
@@ -439,64 +437,16 @@ fn t047_monotonic_versions_and_shared_transaction_version() {
     seed_given(&mut runner, &fx["given"]);
     for txn in fx["when"]["transactions"].as_array().unwrap() {
         let m = op_to_mutation(&txn["mutation"], runner.next_clock(2));
-        // A two-collection "transaction" still commits as ONE registry commit; the
-        // CRDT path is per-collection, so apply each collection's writes then make a
-        // single dirty set spanning both for the one commit.
-        apply_multi_collection_committed(&mut runner, &m);
+        // The middle transaction spans two collections; it commits through the REAL
+        // atomic `transact_mutations_crdt` path as ONE registry commit, so its two
+        // notifications genuinely share one transaction version (review 129 #1).
+        runner.apply_committed(&m);
     }
     assert_notifications("monotonic_versions_and_shared_transaction_version", &runner, &fx["expect"]);
     // Versions: 100, 101, 101, 102 (the middle transaction's two notifications
     // share 101).
     let v: Vec<u64> = runner.notifications.iter().map(|n| n.version).collect();
     assert_eq!(v, vec![100, 101, 101, 102]);
-}
-
-/// Apply a (possibly multi-collection) committed transaction as ONE registry
-/// commit. The CRDT write path is single-collection per call, so a transact group
-/// spanning collections is written as one CRDT write per collection, but the
-/// dirty set + version assignment treat the whole thing as one transaction.
-fn apply_multi_collection_committed(runner: &mut Runner, mutation: &Mutation) {
-    let before = runner.reg.snapshot(&runner.store).expect("snapshot");
-    write_transaction(runner, mutation);
-    let changes = DirtyChanges::from_mutations(std::slice::from_ref(mutation));
-    let (_dirty, mut notifs) = runner.reg.commit(changes, &before, &runner.store).expect("commit");
-    runner.notifications.append(&mut notifs);
-}
-
-/// Write a transaction (single op or a `transact` group, possibly spanning
-/// collections) through the CRDT path. The CRDT write path is single-collection
-/// per call, so a multi-collection group is split into one CRDT write per
-/// collection — but the caller's dirty set + version assignment treat the whole
-/// thing as one logical transaction (one registry commit).
-fn write_transaction(runner: &mut Runner, mutation: &Mutation) {
-    match mutation {
-        Mutation::Transact { items } => {
-            let mut by_collection: std::collections::BTreeMap<String, Vec<Mutation>> = Default::default();
-            for it in items {
-                by_collection.entry(leaf_collection(it)).or_default().push(it.clone());
-            }
-            for (_c, group) in by_collection {
-                if group.len() == 1 {
-                    runner.store.apply_mutation_crdt(&group[0], &runner.idx).expect("single");
-                } else {
-                    runner.store.transact_mutations_crdt(&group, &runner.idx).expect("group");
-                }
-            }
-        }
-        single => {
-            runner.store.apply_mutation_crdt(single, &runner.idx).expect("single");
-        }
-    }
-}
-
-fn leaf_collection(m: &Mutation) -> String {
-    match m {
-        Mutation::Insert { collection, .. }
-        | Mutation::Update { collection, .. }
-        | Mutation::Patch { collection, .. }
-        | Mutation::Delete { collection, .. } => collection.clone(),
-        Mutation::Transact { .. } => panic!("nested transact leaf"),
-    }
 }
 
 #[test]

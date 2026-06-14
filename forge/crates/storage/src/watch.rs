@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use forge_domain::Result;
+use forge_domain::{CoreError, Result};
 
 use crate::query::{Mutation, Query, QueryResult};
 use crate::store::Store;
@@ -394,14 +394,24 @@ impl WatchRegistry {
         self.watches.iter().map(|w| w.watch_id.clone()).collect()
     }
 
-    /// Register a watch over `query` under `watch_id` (DL-16 `db.watch`).
+    /// Register a watch over `query` under `watch_id` (DL-16 `db.watch`), rejecting
+    /// a non-watchable query.
     ///
     /// Re-registering an existing `watch_id` REPLACES its query in place
     /// (keeping its registration position) so a re-`watch` is not a duplicate.
     /// A watch registered after a mutation has no history — it is simply added,
     /// and the just-committed transaction does not notify it (the caller does not
     /// re-run [`commit`](Self::commit) for a past transaction).
-    pub fn register(&mut self, watch_id: impl Into<String>, query: Query) {
+    ///
+    /// An aggregate (`aggregate:{…}`) or `groupBy` query is REJECTED with a
+    /// `QueryError`: its result is a scalar/group bundle, not a row id list, so the
+    /// notification payload (which pins `result_ids` as ordered row ids) has no
+    /// defined shape for it, and the dirty-set→result-membership filter the
+    /// notification computation relies on does not apply (review 129 #2). A watch
+    /// must observe a *row* result; an applet needing a reactive count watches the
+    /// underlying rows and reduces in its callback.
+    pub fn try_register(&mut self, watch_id: impl Into<String>, query: Query) -> Result<()> {
+        reject_non_row_watch(&query)?;
         let watch_id = watch_id.into();
         let collection = query.from.clone();
         let watch = Watch {
@@ -414,19 +424,29 @@ impl WatchRegistry {
         } else {
             self.watches.push(watch);
         }
+        Ok(())
+    }
+
+    /// Register a watch over a query already known to be a watchable row query
+    /// (the internal happy path / tests). Panics on a non-watchable (aggregate /
+    /// group) query — host-call registration must use the fallible
+    /// [`try_register`](Self::try_register) / [`register_from_value`](Self::register_from_value).
+    pub fn register(&mut self, watch_id: impl Into<String>, query: Query) {
+        self.try_register(watch_id, query)
+            .expect("register() requires a watchable row query; use try_register for untrusted input");
     }
 
     /// Register a watch from a fixture/host-call query value (the `db.watch`
     /// `query` field). Reuses the canonical query parser so the watch plan is the
-    /// same validated AST as `ctx.db.from(...).all()`.
+    /// same validated AST as `ctx.db.from(...).all()`, and rejects a non-row
+    /// (aggregate / group) query with a `QueryError` (review 129 #2).
     pub fn register_from_value(
         &mut self,
         watch_id: impl Into<String>,
         query: &serde_json::Value,
     ) -> Result<()> {
         let q = Query::from_fixture_value(query)?;
-        self.register(watch_id, q);
-        Ok(())
+        self.try_register(watch_id, q)
     }
 
     /// Unregister a watch (DL-16 `db.unwatch`). Idempotent: unwatching an unknown
@@ -524,9 +544,34 @@ impl WatchRegistry {
     }
 }
 
+/// Reject a query that does not produce a watchable ROW result (review 129 #2). A
+/// `db.watch` must observe ordered row ids: an `aggregate` produces a scalar bundle
+/// and a `groupBy` produces group buckets, neither of which fits the notification
+/// payload's `result_ids` (ordered row ids) nor the dirty-id→result-membership
+/// filter. Such a watch would stay active yet never notify, so it is rejected at
+/// registration with a `QueryError` instead of being silently inert.
+fn reject_non_row_watch(query: &Query) -> Result<()> {
+    if query.aggregate.is_some() {
+        return Err(CoreError::QueryError(
+            "db.watch does not support aggregate queries; watch the underlying rows \
+             and reduce in the callback"
+                .into(),
+        ));
+    }
+    if query.group_by.is_some() {
+        return Err(CoreError::QueryError(
+            "db.watch does not support groupBy queries; watch the underlying rows \
+             and group in the callback"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Run a watch's query against `store` and return the ordered result ids (DL-15
-/// row order). Aggregate/group queries are not watchable result sets, so they
-/// yield no ids.
+/// row order). A registered watch is always a row query (aggregate/group queries
+/// are rejected at registration by [`reject_non_row_watch`]); the non-row arms
+/// here are unreachable for a registered watch and yield no ids defensively.
 fn run_watch_ids(store: &Store, query: &Query) -> Result<Vec<String>> {
     match store.query(query)? {
         QueryResult::Rows(rows) => Ok(rows.into_iter().map(|r| r.id).collect()),
@@ -599,6 +644,45 @@ mod tests {
         reg.unregister("w1");
         reg.unregister("w1");
         assert!(reg.active_watch_ids().is_empty());
+    }
+
+    // --- non-row watches (aggregate / groupBy) are rejected (review 129 #2) ---
+
+    #[test]
+    fn aggregate_watch_is_rejected_at_registration() {
+        // An aggregate watch has no row `result_ids`, so registering it must fail
+        // rather than register a watch that can never notify.
+        let mut reg = WatchRegistry::new();
+        let err = reg
+            .register_from_value("watch:count", &json!({"from": "tasks", "aggregate": {"count": true}}))
+            .expect_err("aggregate watch must be rejected");
+        assert_eq!(err.code(), "QueryError");
+        assert!(err.to_string().contains("aggregate"), "error names the unsupported feature: {err}");
+        assert!(reg.active_watch_ids().is_empty(), "the rejected watch is not registered");
+    }
+
+    #[test]
+    fn group_by_watch_is_rejected_at_registration() {
+        let mut reg = WatchRegistry::new();
+        let err = reg
+            .register_from_value("watch:by-status", &json!({"from": "tasks", "groupBy": "status"}))
+            .expect_err("groupBy watch must be rejected");
+        assert_eq!(err.code(), "QueryError");
+        assert!(err.to_string().contains("groupBy"), "error names the unsupported feature: {err}");
+        assert!(reg.active_watch_ids().is_empty(), "the rejected watch is not registered");
+    }
+
+    #[test]
+    fn try_register_rejects_aggregate_and_keeps_prior_watches() {
+        // try_register surfaces the rejection without disturbing already-registered
+        // watches (the registry is unchanged on the error path).
+        let mut reg = WatchRegistry::new();
+        reg.register("w-rows", watch_query(json!({"from": "tasks", "orderBy": ["id", "asc"]})));
+        let err = reg
+            .try_register("w-agg", watch_query(json!({"from": "tasks", "aggregate": {"count": true}})))
+            .expect_err("aggregate rejected");
+        assert_eq!(err.code(), "QueryError");
+        assert_eq!(reg.active_watch_ids(), vec!["w-rows".to_string()], "prior watch survives");
     }
 
     // --- dirty set: deterministic, sorted, deduped ------------------------

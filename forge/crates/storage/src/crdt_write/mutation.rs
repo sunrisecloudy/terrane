@@ -169,6 +169,32 @@ fn leaf_collection(m: &Mutation) -> Result<String> {
     }
 }
 
+/// Partition flattened leaves into per-collection buckets, preserving the order in
+/// which each collection is first touched (so the write order, the per-doc chunk,
+/// and the resulting oplog rows are deterministic across a multi-collection group).
+/// A `RecordsDoc` is per collection (DL-2), so each bucket drives its own doc — but
+/// every bucket is written inside ONE [`Store::transact`], giving a single atomic
+/// boundary for the whole `transact` group (DL-4 / query-dsl.md §transact).
+fn partition_by_collection<'a>(leaves: &[&'a Mutation]) -> Result<Vec<(String, Vec<&'a Mutation>)>> {
+    let mut order: Vec<String> = Vec::new();
+    let mut buckets: std::collections::HashMap<String, Vec<&'a Mutation>> =
+        std::collections::HashMap::new();
+    for m in leaves {
+        let c = leaf_collection(m)?;
+        if !buckets.contains_key(&c) {
+            order.push(c.clone());
+        }
+        buckets.entry(c).or_default().push(m);
+    }
+    Ok(order
+        .into_iter()
+        .map(|c| {
+            let leaves = buckets.remove(&c).expect("bucket for first-touched collection");
+            (c, leaves)
+        })
+        .collect())
+}
+
 impl Store {
     /// The DL-4 CRDT-backed mutation path for a **single** record mutation.
     ///
@@ -218,21 +244,30 @@ impl Store {
     /// the original mutation(s) as the caller sees them (one leaf, or one group);
     /// `kind` is the oplog kind string for the whole logical write.
     ///
-    /// Steps (all inside one `transact`): load-or-rebuild the doc from chunks,
-    /// capture `before_version`, apply every flattened leaf to the doc, commit the
-    /// doc, export the incremental update since `before_version`, append it as one
-    /// immutable chunk, append one oplog row, then re-materialize each touched
-    /// record into the `records` projection (FTS-synced) from the post-mutation
-    /// CRDT state. Returns the leaf count.
+    /// A `RecordsDoc` is per collection (DL-2), so a group that spans collections is
+    /// partitioned into one bucket per collection — each bucket drives its own doc /
+    /// chunk / oplog row. Crucially, EVERY bucket is written inside ONE
+    /// `Store::transact`, so the whole `transact` group is one atomic SQLite
+    /// boundary: if any collection's write fails, the entire group rolls back
+    /// (query-dsl.md §transact, live-queries.md §Dirty Set "one dirty set per
+    /// committed transact"). A single-collection write is the degenerate one-bucket
+    /// case (one chunk + one oplog row, byte-stable with the prior path).
+    ///
+    /// Per bucket, inside the shared transaction: load-or-rebuild the doc from
+    /// chunks, capture `before_version`, apply that bucket's leaves to the doc,
+    /// commit the doc, export the incremental update since `before_version`, append
+    /// it as one immutable chunk, append one oplog row, then re-materialize each
+    /// touched record into the `records` projection (FTS-synced). Returns the total
+    /// leaf count across all buckets.
     fn write_group_crdt(
         &mut self,
         top: &[Mutation],
         kind: &str,
         indexes: &IndexManager,
     ) -> Result<usize> {
-        // Flatten to leaves up front and validate the doc is single-collection:
-        // a `RecordsDoc` is per collection (DL-2), so a group spanning collections
-        // would need multiple docs — out of scope for M0a's one-doc transact.
+        // Flatten to leaves, then partition into per-collection buckets (first-touch
+        // order). A multi-collection `transact` produces several buckets; all are
+        // written under one transaction below.
         let mut leaves: Vec<&Mutation> = Vec::new();
         for m in top {
             flatten_leaves(m, &mut leaves);
@@ -240,60 +275,72 @@ impl Store {
         if leaves.is_empty() {
             return Ok(0);
         }
-        let collection = leaf_collection(leaves[0])?;
-        for m in &leaves {
-            let c = leaf_collection(m)?;
-            if c != collection {
-                return Err(CoreError::QueryError(format!(
-                    "a single CRDT transact group must target one collection; \
-                     found both '{collection}' and '{c}'"
-                )));
-            }
-        }
-        let doc_id = collection_doc_id(&collection);
-        let touched = touched_ids(&leaves);
+        let buckets = partition_by_collection(&leaves)?;
         let leaf_count = leaves.len();
         let peer_id = self.crdt_peer_id();
 
         self.transact(|tx| {
-            // 1-4. Load/reconstruct the doc and capture the pre-mutation version.
-            let doc = load_doc_tx(tx, &doc_id, peer_id)?;
-            let before = doc.version();
-
-            // 5. Apply every leaf to the doc.
-            for m in &leaves {
-                apply_leaf_to_doc(&doc, m)?;
-            }
-            // 6. One commit for the whole group.
-            doc.commit();
-
-            // 7. Export exactly the new ops as one incremental update.
-            let chunk_payload = doc.export_updates_since(&before)?;
-
-            // 8. Append one immutable chunk.
-            let chunk_id = next_chunk_id(tx, &doc_id)?;
-            put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
-
-            // 9. Append one oplog row identifying the logical mutation + chunk. The
-            //    payload schema is owned by `OplogPayload` (shared with the remote
-            //    import path) so the two cannot skew.
-            let op_id = format!("{doc_id}#{chunk_id}");
-            let op_payload = OplogPayload::local(
-                &doc_id,
-                &chunk_id,
-                &collection,
-                kind,
-                touched.iter().map(|(_, id)| id.to_string()).collect(),
-            )
-            .encode("oplog payload encode")?;
-            append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;
-
-            // 10. Materialize each touched record into the projection from the
-            //     post-mutation CRDT state (FTS-synced so indexes stay correct).
-            for (_, id) in &touched {
-                materialize_record_into_projection(tx, &doc, &collection, id, indexes)?;
+            for (collection, bucket) in &buckets {
+                write_collection_bucket_tx(tx, collection, bucket, kind, peer_id, indexes)?;
             }
             Ok(leaf_count)
         })
     }
+}
+
+/// Apply ONE collection's leaves to its `RecordsDoc` and persist the chunk + oplog
+/// row + projection rows, inside an already-open transaction `tx`. Called once per
+/// collection bucket by [`Store::write_group_crdt`]; sharing `tx` across buckets is
+/// what makes a multi-collection group atomic (a failure here rolls the whole
+/// transaction back). `kind` is the oplog kind for the whole logical write.
+fn write_collection_bucket_tx(
+    tx: &rusqlite::Transaction<'_>,
+    collection: &str,
+    leaves: &[&Mutation],
+    kind: &str,
+    peer_id: u64,
+    indexes: &IndexManager,
+) -> Result<()> {
+    let doc_id = collection_doc_id(collection);
+    let touched = touched_ids(leaves);
+
+    // 1-4. Load/reconstruct the doc and capture the pre-mutation version.
+    let doc = load_doc_tx(tx, &doc_id, peer_id)?;
+    let before = doc.version();
+
+    // 5. Apply every leaf to the doc.
+    for m in leaves {
+        apply_leaf_to_doc(&doc, m)?;
+    }
+    // 6. One commit for this collection's slice of the group.
+    doc.commit();
+
+    // 7. Export exactly the new ops as one incremental update.
+    let chunk_payload = doc.export_updates_since(&before)?;
+
+    // 8. Append one immutable chunk (per collection doc).
+    let chunk_id = next_chunk_id(tx, &doc_id)?;
+    put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
+
+    // 9. Append one oplog row identifying the logical mutation + chunk. The payload
+    //    schema is owned by `OplogPayload` (shared with the remote import path) so
+    //    the two cannot skew. The op_id is `(doc_id)#(chunk_id)`, unique per doc, so
+    //    distinct collections in one group never collide.
+    let op_id = format!("{doc_id}#{chunk_id}");
+    let op_payload = OplogPayload::local(
+        &doc_id,
+        &chunk_id,
+        collection,
+        kind,
+        touched.iter().map(|(_, id)| id.to_string()).collect(),
+    )
+    .encode("oplog payload encode")?;
+    append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;
+
+    // 10. Materialize each touched record into the projection from the post-mutation
+    //     CRDT state (FTS-synced so indexes stay correct).
+    for (_, id) in &touched {
+        materialize_record_into_projection(tx, &doc, collection, id, indexes)?;
+    }
+    Ok(())
 }

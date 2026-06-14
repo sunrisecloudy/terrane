@@ -304,6 +304,77 @@ mod tests {
         assert_eq!(s.get_record("tasks", "t2").unwrap().unwrap().fields["title"], json!("B"));
     }
 
+    // --- DL-4 transact group spanning collections: ONE atomic boundary -----
+
+    #[test]
+    fn transact_group_spanning_collections_commits_atomically() {
+        // review 129 #1: a single `transact` group that spans collections commits as
+        // ONE atomic transaction. Each collection gets its own doc/chunk/oplog row
+        // (a `RecordsDoc` is per collection), but they all land together.
+        let mut s = store();
+        let idx = IndexManager::new();
+        let items = vec![
+            insert("tasks", "t1", json!({"title": "A", "done": false}), 1),
+            insert("notes", "n1", json!({"body": "hi"}), 2),
+            patch("tasks", "t1", json!({"done": true}), 3),
+        ];
+        let n = s.transact_mutations_crdt(&items, &idx).unwrap();
+        assert_eq!(n, 3, "three leaves across two collections");
+
+        // Both collections materialized in one go.
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["done"], json!(true));
+        assert_eq!(s.get_record("notes", "n1").unwrap().unwrap().fields["body"], json!("hi"));
+        // One chunk + one oplog row PER collection doc (kind record.transact for the
+        // whole logical group on both).
+        assert_eq!(s.get_chunks(&collection_doc_id("tasks")).unwrap().len(), 1);
+        assert_eq!(s.get_chunks(&collection_doc_id("notes")).unwrap().len(), 1);
+        let ops = s.list_ops().unwrap();
+        assert_eq!(ops.len(), 2, "one oplog row per collection in the group");
+        assert!(ops.iter().all(|o| o.kind == "record.transact"));
+    }
+
+    #[test]
+    fn failed_multi_collection_group_rolls_back_every_collection() {
+        // The atomicity proof: a cross-collection group whose LAST leaf (in a second
+        // collection, after the first collection's chunk/oplog/projection already
+        // wrote within the same open transaction) fails must roll the WHOLE group
+        // back — neither collection may keep a chunk, an oplog row, or a projection
+        // row. This is the boundary the prior split-write test harness faked.
+        let mut s = store();
+        let idx = IndexManager::new();
+        // Prior good history in tasks that must survive untouched.
+        s.apply_mutation_crdt(&insert("tasks", "keep", json!({"v": 1}), 1), &idx)
+            .unwrap();
+        let tasks_chunks_before = s.get_chunks(&collection_doc_id("tasks")).unwrap().len();
+        let ops_before = s.list_ops().unwrap().len();
+
+        // Group: insert tasks/t2 (commits its doc inside the txn), then patch a
+        // MISSING notes record -> the whole transaction must roll back.
+        let items = vec![
+            insert("tasks", "t2", json!({"v": 2}), 2),
+            patch("notes", "missing", json!({"v": 3}), 3),
+        ];
+        let err = s.transact_mutations_crdt(&items, &idx).unwrap_err();
+        assert_eq!(err.code(), "QueryError");
+
+        // tasks: t2 not materialized, no new chunk/op; the prior `keep` untouched.
+        assert!(s.get_record("tasks", "t2").unwrap().is_none(), "t2 rolled back");
+        assert_eq!(
+            s.get_chunks(&collection_doc_id("tasks")).unwrap().len(),
+            tasks_chunks_before,
+            "no new tasks chunk for the failed group"
+        );
+        assert_eq!(s.get_record("tasks", "keep").unwrap().unwrap().fields["v"], json!(1));
+        // notes: nothing leaked in — no chunk row at all for the doc.
+        assert!(
+            s.get_chunks(&collection_doc_id("notes")).unwrap().is_empty(),
+            "no notes chunk for the failed group"
+        );
+        assert!(s.get_record("notes", "missing").unwrap().is_none());
+        // No oplog row from the failed group on either collection.
+        assert_eq!(s.list_ops().unwrap().len(), ops_before, "no oplog row for the failed group");
+    }
+
     // --- apply_remote_chunks: atomic per-store remote apply (review 088 #1) --
 
     /// Count `crdt_chunks` rows across every doc (a substrate-level total).
