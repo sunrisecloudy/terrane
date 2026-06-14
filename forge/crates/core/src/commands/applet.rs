@@ -184,7 +184,21 @@ impl WorkspaceCore {
         // a signed install must enforce the SIGNED capability boundary — the same
         // app id, every resource limit, the full net rule, and the entrypoint —
         // not a broader one. `Unsigned` when the install carries no signature.
-        let trust = verify_install_signature(cmd, &applet_id, &manifest, sources)?;
+        //
+        // SC-12 live wiring (`forge/spec/audit-log.md`): a signed-install REFUSAL is a
+        // security-relevant deny decision, so when verification rejects we persist a
+        // durable `package.install.refused` audit row through THIS real install path
+        // (before returning the error, before any state is touched) so a refused
+        // package is queryable, not merely a transient validation error. We never fail
+        // OPEN on an audit-persistence error — the refusal is the security signal — so
+        // the original `Err` is always returned even if the durable append itself fails.
+        let trust = match verify_install_signature(cmd, &applet_id, &manifest, sources) {
+            Ok(trust) => trust,
+            Err(error) => {
+                let _ = self.persist_signed_install_refusal(cmd, &applet_id, &error);
+                return Err(error);
+            }
+        };
 
         // Compile every source so a forbidden construct in ANY file rejects the
         // whole install (CR-13: the static policy scan is layer one). Capture
@@ -317,6 +331,74 @@ impl WorkspaceCore {
             // crypto + integrity, and the policy layer when enforced).
             "trust": trust.to_json(),
         }))
+    }
+
+    /// Append a `package.install.refused` audit row to the durable SC-12 log when an
+    /// `applet.install` signature verification REJECTS (`forge/spec/audit-log.md`,
+    /// the `audit-log-e2e` `signed_install_refusal_unknown_field` vector). Called from
+    /// the live install path the instant [`verify_install_signature`] returns `Err`,
+    /// so a refused signed package lands a queryable deny row, not merely a transient
+    /// validation error.
+    ///
+    /// The row is `producer = signing`, `action = package.install.refused`,
+    /// `decision = deny`, `resource_type = package`, `resource_id = <applet id>`. The
+    /// `reason` is the verification error (the failing layer + reason); the `metadata`
+    /// carries the install `command` plus whatever signature provenance the install
+    /// payload's `signature` object named (`key_id`, `signed_at`) and the structured
+    /// refusal context (`field`, `error_kind`). No secret value / body is present, so
+    /// redaction is a no-op. `logical_time` is the EventSink clock so the durable row
+    /// replays deterministically.
+    fn persist_signed_install_refusal(
+        &mut self,
+        cmd: &forge_domain::CoreCommand,
+        applet_id: &forge_domain::AppletId,
+        error: &CoreError,
+    ) -> Result<()> {
+        let reason = match error {
+            CoreError::ValidationError(msg) | CoreError::PermissionDenied(msg) => msg.clone(),
+            other => other.to_string(),
+        };
+        // Provenance the install payload carried, if any — never the signed bytes or
+        // any secret material, only the signer key id / timestamp + the structured
+        // refusal context. Absent fields are simply omitted from the metadata. The
+        // `signature.signature` field is the signature STRING, so the signer
+        // provenance is carried alongside it in `signature.signature_meta`
+        // (`{key_id, signed_at}`); the structured refusal context (`field`,
+        // `error_kind`) is carried in `signature.refusal`.
+        let sig = cmd.payload.get("signature");
+        let sig_meta = sig.and_then(|s| s.get("signature_meta"));
+        let refusal = sig.and_then(|s| s.get("refusal"));
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("command".to_string(), serde_json::json!(cmd.name));
+        let mut copy_str = |from: Option<&serde_json::Value>, key: &str| {
+            if let Some(v) = from.and_then(|o| o.get(key)).and_then(|v| v.as_str()) {
+                metadata.insert(key.to_string(), serde_json::json!(v));
+            }
+        };
+        copy_str(sig_meta, "key_id");
+        copy_str(sig_meta, "signed_at");
+        copy_str(refusal, "field");
+        copy_str(refusal, "error_kind");
+        let _ = self.persist_producer_audit(
+            "package.install.refused",
+            serde_json::json!({
+                "decision": "deny",
+                "command": cmd.name,
+                "package_id": applet_id.as_str(),
+                "actor_id": cmd.actor.actor.as_str(),
+                "reason": reason.clone(),
+            }),
+            "signing",
+            "package.install.refused",
+            "deny",
+            cmd.actor.actor.as_str(),
+            "package",
+            Some(applet_id.as_str().to_string()),
+            None,
+            reason,
+            serde_json::Value::Object(metadata),
+        )?;
+        Ok(())
     }
 
     /// Persist an installed applet (manifest + compiled program) in the reserved

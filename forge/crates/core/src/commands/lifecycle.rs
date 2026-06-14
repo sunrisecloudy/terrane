@@ -667,8 +667,30 @@ impl WorkspaceCore {
             }
         }
 
-        self.events.emit(
-            Some(applet_id.clone()),
+        // SC-12 live wiring (`forge/spec/audit-log.md`): an uninstall is a
+        // security-relevant lifecycle decision — for `purge_data` it hard-tombstones
+        // applet-owned records — so it lands a durable, queryable `applet.uninstalled`
+        // audit row through this real command path, not merely a transient event. The
+        // metadata mirrors the `audit-log-e2e` `uninstall_purge_data_audit_row` shape
+        // (the retention policy, how many records were tombstoned, the tombstone
+        // reason, and that run records + replay artifacts are retained); no secret
+        // value / body is present, so redaction is a no-op. The transient event keeps
+        // emitting unchanged; the durable row is ADDED.
+        let mut audit_metadata = serde_json::Map::new();
+        audit_metadata.insert("retention_policy".into(), serde_json::json!(policy.as_str()));
+        audit_metadata.insert("records_tombstoned".into(), serde_json::json!(records_tombstoned));
+        // The tombstone reason is meaningful only for a purge (keep_data tombstones
+        // nothing), so it is recorded only on the purge path — the same string the
+        // staged tombstones carry in their `extensions`.
+        if matches!(policy, RetentionPolicy::PurgeData) {
+            audit_metadata.insert(
+                "tombstone_reason".into(),
+                serde_json::json!("applet.uninstall:purge_data"),
+            );
+        }
+        audit_metadata.insert("run_records_retained".into(), serde_json::json!(true));
+        audit_metadata.insert("replay_artifacts_retained".into(), serde_json::json!(true));
+        self.persist_producer_audit(
             "applet.uninstalled",
             serde_json::json!({
                 "applet_id": applet_id,
@@ -676,7 +698,21 @@ impl WorkspaceCore {
                 "retention_policy": policy.as_str(),
                 "state_after": "uninstalled",
             }),
-        );
+            "lifecycle",
+            "applet.uninstalled",
+            "allow",
+            cmd.actor.actor.as_str(),
+            "applet",
+            Some(applet_id.as_str().to_string()),
+            None,
+            match policy {
+                RetentionPolicy::PurgeData => {
+                    "uninstall purge_data tombstoned applet-owned records"
+                }
+                RetentionPolicy::KeepData => "uninstall keep_data retained applet-owned records",
+            },
+            serde_json::Value::Object(audit_metadata),
+        )?;
 
         Ok(serde_json::json!({
             "applet_id": applet_id,

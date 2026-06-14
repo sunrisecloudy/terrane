@@ -14,6 +14,7 @@
 
 use forge_core::{source_id_for, TrustedMembership, WorkspaceCore};
 use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, Role, WorkspaceId};
+use forge_runtime::{HttpClient, InMemorySecretStore, NetRequest, NetResponse};
 use forge_storage::{AuditQuery, IndexManager, Mutation};
 use serde_json::{json, Value};
 
@@ -275,4 +276,326 @@ fn allowed_command_persists_no_command_rbac_deny_row() {
             .is_empty(),
         "an allowed command writes no command-rbac deny row"
     );
+}
+
+// ===========================================================================
+// The OTHER FIVE producers the audit-log manifest names — secrets, network,
+// lifecycle-purge, signing-refusal, permission grant/revoke — must ALSO persist
+// through real production code, not only the storage-substrate e2e harness.
+// Each test below drives the REAL production path (a `runtime.run` egress, an
+// `applet.uninstall`, a failing `applet.install`, the capability-grant admin API)
+// and proves the durable row landed, is queryable, redacts secret/body material,
+// and re-runs append-only.
+// ===========================================================================
+
+/// An owner command envelope, for the install/uninstall paths.
+fn owner_cmd(name: &str, applet_id: &str, payload: Value) -> CoreCommand {
+    CoreCommand {
+        request_id: RequestId::new("req"),
+        name: name.into(),
+        applet_id: Some(AppletId::new(applet_id)),
+        actor: ActorContext::owner("actor-owner-1"),
+        workspace_id: WorkspaceId::new("ws"),
+        payload,
+    }
+}
+
+/// A network-free [`HttpClient`] double returning a canned response. Used so the
+/// `network.egress` / `secret.use` producers run off a REAL recorded `ctx.net.fetch`
+/// trace without ever touching the live network.
+#[derive(Clone)]
+struct CannedClient {
+    response: NetResponse,
+}
+
+impl HttpClient for CannedClient {
+    fn send(&self, _request: NetRequest) -> forge_domain::Result<NetResponse> {
+        Ok(self.response.clone())
+    }
+}
+
+/// A manifest granting POST egress to `https://api.example.com/*` with a secret
+/// `Authorization` header allowed (SC-13), plus ui. The applet only fetches.
+fn egress_manifest() -> Value {
+    json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "net": [
+                { "method": "POST", "url": "https://api.example.com/*",
+                  "request_content_types": ["application/json"],
+                  "response_content_types": ["application/json"],
+                  "allow_secret_headers": ["Authorization"] }
+            ]
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+/// An applet that POSTs a lead with a SECRET-REF Authorization header and a request
+/// body. The resolved secret value is injected only at the HTTP edge, so the trace
+/// keeps only the `secret_ref`; the body is opaque.
+const EGRESS_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        const resp = await ctx.net.fetch({
+            method: "POST",
+            url: "https://api.example.com/v1/leads",
+            contentType: "application/json",
+            headers: { "Authorization": { secret_ref: "secret_crm" } },
+            body: JSON.stringify({ name: "Ada", email: "ada@example.com" })
+        });
+        return { ok: true, value: { status: resp.status } };
+    }
+"#;
+
+/// Install + run the egress applet through the REAL `applet.install` / `runtime.run`
+/// command path with an injected canned client + secret store, returning the core.
+fn run_egress_applet() -> WorkspaceCore {
+    let mut core = WorkspaceCore::in_memory("ws-egress").unwrap();
+    let response = NetResponse {
+        status: 201,
+        body: Some(r#"{"id":"lead-1"}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    };
+    core.set_http_client_factory(move || Box::new(CannedClient { response: response.clone() }));
+    // The resolved secret value lives ONLY in the injected store; the trace + audit
+    // metadata must never carry it (SC-13 / SC-12 redaction).
+    core.set_secret_store_factory(|| {
+        Box::new(InMemorySecretStore::from_pairs([("secret_crm", "Bearer super-secret-token")]))
+    });
+
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "app.crm",
+        json!({ "manifest": egress_manifest(), "sources": { "src/main.ts": EGRESS_TS } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+    let run = core.handle(owner_cmd("runtime.run", "app.crm", json!({ "input": {} })));
+    assert!(run.ok, "run must succeed: {:?}", run.error);
+    core
+}
+
+#[test]
+fn network_egress_persists_queryable_audit_row_through_live_run() {
+    // A REAL `runtime.run` whose applet `ctx.net.fetch`-es lands a durable
+    // `network.egress` audit row derived from the recorded host-call trace.
+    let core = run_egress_applet();
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_resource_type("network"))
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one network.egress row: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.producer, "net");
+    assert_eq!(row.action, "network.egress");
+    assert_eq!(row.decision, "allow");
+    assert_eq!(row.actor_id, "actor-owner-1");
+    assert_eq!(row.resource_id.as_deref(), Some("https://api.example.com"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("method").unwrap(), "POST");
+    assert_eq!(meta.get("scheme").unwrap(), "https");
+    assert_eq!(meta.get("host").unwrap(), "api.example.com");
+    assert_eq!(meta.get("path").unwrap(), "/v1/leads");
+    assert_eq!(meta.get("status").unwrap(), 201);
+    // REDACTION: bodies are NEVER persisted — only the redaction markers remain.
+    assert!(!meta.contains_key("request_body"), "request body dropped");
+    assert!(!meta.contains_key("response_body"), "response body dropped");
+    assert_eq!(meta.get("request_body_redacted").unwrap(), &json!(true));
+    assert_eq!(meta.get("response_body_redacted").unwrap(), &json!(true));
+    // The body PII never appears anywhere in the persisted bytes.
+    let raw = serde_json::to_string(&row.metadata).unwrap();
+    for leak in ["Ada", "ada@example.com", "lead-1"] {
+        assert!(!raw.contains(leak), "egress row leaks {leak}: {raw}");
+    }
+}
+
+#[test]
+fn secret_use_persists_redacted_audit_row_through_live_run() {
+    // The same real run resolved a `secret_ref` Authorization header → a durable
+    // `secret.use` audit row carrying ONLY the secret_ref, never the value.
+    let core = run_egress_applet();
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one secret.use row: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.producer, "secrets");
+    assert_eq!(row.decision, "allow");
+    assert_eq!(row.actor_id, "actor-owner-1");
+    assert_eq!(row.resource_type, "secret");
+    assert_eq!(row.resource_id.as_deref(), Some("secret_crm"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("secret_ref").unwrap(), "secret_crm");
+    assert_eq!(meta.get("target_host").unwrap(), "api.example.com");
+    assert_eq!(meta.get("target_header").unwrap(), "Authorization");
+    assert_eq!(meta.get("value_redacted").unwrap(), &json!(true));
+    // REDACTION: the resolved secret value never appears in ANY persisted row.
+    let all = core.store().query_audit(&AuditQuery::default()).unwrap();
+    let raw: String = all
+        .iter()
+        .map(|r| serde_json::to_string(&r.metadata).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for leak in ["Bearer super-secret-token", "super-secret-token"] {
+        assert!(!raw.contains(leak), "a persisted audit row leaks the secret: {raw}");
+    }
+}
+
+#[test]
+fn lifecycle_purge_persists_queryable_audit_row_through_live_uninstall() {
+    // A REAL `applet.uninstall` with `purge_data` lands a durable `applet.uninstalled`
+    // audit row through the live command path.
+    let mut core = WorkspaceCore::in_memory("ws-uninstall").unwrap();
+    let manifest = json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": ["tasks"], "write": ["tasks"] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "applet.todo",
+        json!({ "manifest": manifest, "sources": { "src/main.ts": "export async function main(ctx:any,input:any){ return { ok:true }; }" } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+
+    let uninstall = core.handle(owner_cmd(
+        "applet.uninstall",
+        "applet.todo",
+        json!({ "applet_id": "applet.todo", "retention_policy": "purge_data" }),
+    ));
+    assert!(uninstall.ok, "uninstall must succeed: {:?}", uninstall.error);
+
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("applet.uninstalled"))
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one lifecycle purge row: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.producer, "lifecycle");
+    assert_eq!(row.decision, "allow");
+    assert_eq!(row.actor_id, "actor-owner-1");
+    assert_eq!(row.resource_type, "applet");
+    assert_eq!(row.resource_id.as_deref(), Some("applet.todo"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("retention_policy").unwrap(), "purge_data");
+    assert_eq!(meta.get("tombstone_reason").unwrap(), "applet.uninstall:purge_data");
+    assert_eq!(meta.get("run_records_retained").unwrap(), &json!(true));
+}
+
+#[test]
+fn signed_install_refusal_persists_queryable_audit_row_through_live_install() {
+    // A REAL `applet.install` whose signature verification REJECTS lands a durable
+    // `package.install.refused` deny row through the live install path. The signature
+    // is structurally malformed so verification fails fail-closed before any state is
+    // written; the install payload carries the signer provenance + refusal context the
+    // audit row records.
+    let mut core = WorkspaceCore::in_memory("ws-signing").unwrap();
+    let manifest = json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": { "storage": { "read": [], "write": [] }, "db": { "read": [], "write": [] }, "ui": true },
+        "limits": { "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864, "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144 }
+    });
+    // A signature object that fails verification (no real package/keys), carrying the
+    // signer provenance + the structured refusal context the producer records.
+    let resp = core.handle(owner_cmd(
+        "applet.install",
+        "app.unknown-signed-field",
+        json!({
+            "manifest": manifest,
+            "sources": { "src/main.ts": "export async function main(ctx:any,input:any){ return { ok:true }; }" },
+            "signature": {
+                "package": { "manifest": {}, "files": [], "hashes": {} },
+                "signature": "ed25519:not-a-real-signature",
+                "public_key": "ed25519:not-a-real-key",
+                "signature_meta": { "key_id": "test-ed25519-2026-06", "signed_at": "2026-06-13T00:00:00Z" },
+                "refusal": { "field": "capabilities.futureDangerousGrant", "error_kind": "SignaturePolicyError" }
+            }
+        }),
+    ));
+    assert!(!resp.ok, "the malformed signature must refuse the install");
+
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("package.install.refused"))
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one signing refusal row: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.producer, "signing");
+    assert_eq!(row.decision, "deny");
+    assert_eq!(row.actor_id, "actor-owner-1");
+    assert_eq!(row.resource_type, "package");
+    assert_eq!(row.resource_id.as_deref(), Some("app.unknown-signed-field"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("command").unwrap(), "applet.install");
+    assert_eq!(meta.get("key_id").unwrap(), "test-ed25519-2026-06");
+    assert_eq!(meta.get("field").unwrap(), "capabilities.futureDangerousGrant");
+    assert_eq!(meta.get("error_kind").unwrap(), "SignaturePolicyError");
+    // The refused package was NOT installed (the refusal preceded any state write).
+    assert!(core.store().query_audit(&AuditQuery::by_decision("allow")).unwrap().is_empty());
+}
+
+#[test]
+fn permission_grant_revoke_persists_ordered_rows_through_live_admin_api() {
+    // The REAL capability-grant admin API (a workspace-membership provisioning seam)
+    // lands ordered `permission.grant` then `permission.revoke` rows with strictly
+    // increasing seq.
+    let mut core = WorkspaceCore::in_memory("ws-perm").unwrap();
+    let grant = core
+        .grant_capability("actor-owner-1", "actor-editor-1", "db", "write", "collection:tasks")
+        .unwrap();
+    let revoke = core
+        .revoke_capability("actor-owner-1", "actor-editor-1", "db", "write", "collection:tasks")
+        .unwrap();
+    assert!(revoke.seq > grant.seq, "revoke seq strictly after grant");
+
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_resource_id("db.write:collection:tasks"))
+        .unwrap();
+    assert_eq!(rows.len(), 2, "grant + revoke rows: {rows:?}");
+    assert_eq!(rows[0].action, "permission.grant");
+    assert_eq!(rows[0].decision, "allow");
+    assert_eq!(rows[0].actor_id, "actor-owner-1");
+    assert_eq!(rows[0].resource_type, "capability");
+    assert_eq!(rows[0].collection.as_deref(), Some("tasks"));
+    let g_meta = rows[0].metadata.as_object().unwrap();
+    assert_eq!(g_meta.get("target_actor_id").unwrap(), "actor-editor-1");
+    assert_eq!(g_meta.get("namespace").unwrap(), "db");
+    assert_eq!(g_meta.get("capability_action").unwrap(), "write");
+    assert_eq!(rows[1].action, "permission.revoke");
+    assert!(rows[1].seq > rows[0].seq, "grant row precedes revoke row");
+
+    // APPEND-ONLY: re-running grant→revoke appends two MORE rows; prior ones untouched.
+    let first_ids: Vec<String> = rows.iter().map(|r| r.audit_id.clone()).collect();
+    core.grant_capability("actor-owner-1", "actor-editor-1", "db", "write", "collection:tasks")
+        .unwrap();
+    core.revoke_capability("actor-owner-1", "actor-editor-1", "db", "write", "collection:tasks")
+        .unwrap();
+    let after = core
+        .store()
+        .query_audit(&AuditQuery::by_resource_id("db.write:collection:tasks"))
+        .unwrap();
+    assert_eq!(after.len(), 4, "the re-run appended two more rows");
+    assert_eq!(after[0].audit_id, first_ids[0], "prior rows untouched (append-only)");
+    assert_eq!(after[1].audit_id, first_ids[1]);
 }

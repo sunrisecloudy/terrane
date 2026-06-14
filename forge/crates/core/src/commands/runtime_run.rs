@@ -189,6 +189,17 @@ impl WorkspaceCore {
         // re-validates the canonical code_hash.
         self.store.save_run(&run)?;
 
+        // SC-12 live wiring (`forge/spec/audit-log.md`): the security-relevant
+        // capability USES this real run made — each `ctx.net.fetch` egress and each
+        // `secret_ref` header it resolved — land durable, queryable `network.egress` /
+        // `secret.use` audit rows, derived from the recorded host-call trace. The trace
+        // already keeps only the `secret_ref` (never the resolved value), and the
+        // persistence layer redacts request/response bodies, so no secret value or body
+        // is ever written. Best-effort: an audit-persistence error never fails the run
+        // (the run + its effects already committed) — we never lose the run over its
+        // audit trail.
+        let _ = self.persist_run_egress_audit(applet_id.as_str(), &cmd.actor, &run);
+
         // Fold any `ctx.db.watch`/`unwatch` the run issued into the workspace
         // live-query registry (DL-16) and persist, so a watch an applet registered
         // during its run is live for subsequent committed mutations. A failed run
@@ -256,6 +267,126 @@ impl WorkspaceCore {
         }))
     }
 
+    /// Persist the SC-12 `network.egress` + `secret.use` audit rows for a real run's
+    /// recorded `ctx.net.fetch` host calls (`forge/spec/audit-log.md`; the
+    /// `audit-log-e2e` `network_egress_metadata_no_body` / `secret_access_redacted`
+    /// vectors). Walks the run's recorded host-call trace in call order and, for each
+    /// `net.fetch`, appends:
+    ///
+    ///   - one `network.egress` row — `resource_type = network`,
+    ///     `resource_id = scheme://host`, metadata `{method, scheme, host, path, status,
+    ///     request_body_redacted, response_body_redacted}`. The request/response
+    ///     bodies are handed to the persistence layer, which REDACTS them (the
+    ///     `request_body`/`response_body` keys are dropped + the `*_redacted` markers
+    ///     stamped), so no body is ever stored;
+    ///   - one `secret.use` row PER `secret_ref` header the request carried —
+    ///     `resource_type = secret`, `resource_id = <secret_ref>`, metadata
+    ///     `{secret_ref, target_host, target_header, value_redacted}`. The recorded
+    ///     trace already keeps only the `secret_ref` (the resolved value is injected at
+    ///     the HTTP edge and never recorded), so no secret value can be present.
+    ///
+    /// Deterministic: each row's `logical_time` is the EventSink clock; the rows
+    /// derive purely from the recorded trace, so a replayed run reproduces them
+    /// byte-identically. Append-only; a re-run appends fresh rows.
+    fn persist_run_egress_audit(
+        &mut self,
+        applet_id: &str,
+        actor: &forge_domain::ActorContext,
+        run: &RunRecord,
+    ) -> Result<()> {
+        let actor_id = actor.actor.as_str().to_string();
+        for call in &run.calls {
+            if call.method != "net.fetch" {
+                continue;
+            }
+            let request = &call.args;
+            let method = request
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let url = request.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let (scheme, host, path) = split_url(url);
+            let status = call
+                .response
+                .get("status")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            // One secret.use row PER secret_ref header the request carried. The trace
+            // holds the secret_ref name only; we pass `value_redacted` so the row
+            // records that a value was withheld (no value is present to redact).
+            if let Some(headers) = request.get("headers").and_then(|v| v.as_object()) {
+                for (header_name, header_value) in headers {
+                    let secret_ref = header_value
+                        .get("secret_ref")
+                        .and_then(|v| v.as_str());
+                    if let Some(secret_ref) = secret_ref {
+                        self.persist_producer_audit(
+                            "secret.used",
+                            serde_json::json!({
+                                "decision": "allow",
+                                "applet_id": applet_id,
+                                "actor_id": actor_id,
+                                "secret_ref": secret_ref,
+                            }),
+                            "secrets",
+                            "secret.use",
+                            "allow",
+                            actor_id.clone(),
+                            "secret",
+                            Some(secret_ref.to_string()),
+                            None,
+                            "secret_ref injected into allowlisted header",
+                            serde_json::json!({
+                                "secret_ref": secret_ref,
+                                "target_host": host,
+                                "target_header": header_name,
+                                "value_redacted": true,
+                            }),
+                        )?;
+                    }
+                }
+            }
+
+            // One network.egress row for the fetch. The request/response BODIES are
+            // handed in raw and DROPPED by the persistence redaction layer (no body is
+            // ever stored); method/scheme/host/path/status survive.
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("method".into(), serde_json::json!(method));
+            metadata.insert("scheme".into(), serde_json::json!(scheme));
+            metadata.insert("host".into(), serde_json::json!(host));
+            metadata.insert("path".into(), serde_json::json!(path));
+            metadata.insert("status".into(), serde_json::json!(status));
+            if let Some(body) = request.get("body") {
+                metadata.insert("request_body".into(), body.clone());
+            }
+            if let Some(body) = call.response.get("body") {
+                metadata.insert("response_body".into(), body.clone());
+            }
+            self.persist_producer_audit(
+                "network.egress",
+                serde_json::json!({
+                    "decision": "allow",
+                    "applet_id": applet_id,
+                    "actor_id": actor_id,
+                    "method": method,
+                    "host": host,
+                }),
+                "net",
+                "network.egress",
+                "allow",
+                actor_id.clone(),
+                "network",
+                Some(format!("{scheme}://{host}")),
+                None,
+                "network policy allowed request",
+                serde_json::Value::Object(metadata),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Emit a `runtime.run.rejected` audit event for a run denied by the lifecycle
     /// gate BEFORE any user code ran (CR-7). Carries the stable lifecycle
     /// `error_code` marker plus the typed error message so a host/auditor can react
@@ -276,6 +407,23 @@ impl WorkspaceCore {
                 "message": error.to_string(),
             }),
         );
+    }
+}
+
+/// Split an absolute request URL into `(scheme, host, path)` for the SC-12
+/// `network.egress` audit metadata. `https://api.example.com/v1/leads` →
+/// `("https", "api.example.com", "/v1/leads")`; a URL with no path component yields
+/// an empty `host`-suffix path of `"/"`. Best-effort parsing for audit metadata
+/// only (the SC-5 policy already validated the URL before the fetch ran), so a
+/// malformed URL degrades to empty parts rather than erroring.
+fn split_url(url: &str) -> (String, String, String) {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_string(), r),
+        None => (String::new(), url),
+    };
+    match rest.split_once('/') {
+        Some((host, path)) => (scheme, host.to_string(), format!("/{path}")),
+        None => (scheme, rest.to_string(), "/".to_string()),
     }
 }
 

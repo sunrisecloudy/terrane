@@ -2,14 +2,29 @@
 //! (`forge/fixtures/audit-log-e2e/`, manifest `count = 10`).
 //!
 //! The 10 case JSONs are the BEHAVIORAL contract for the persisted audit log: each
-//! pins the starting `next_seq` + `logical_time`, the rows a producer appends (with
-//! their EXACT redacted metadata shape), the query that reads them back, and — for
-//! the secret / network cases — the substrings that must NEVER appear in the stored
-//! bytes. This harness drives the REAL storage substrate
-//! ([`forge_storage::Store::append_audit_tx`] / `query_audit` / the redaction
-//! helper), feeding each producer the RAW operation context (resolved secret value,
-//! request/response bodies) so the redaction is genuinely exercised — not merely
-//! replayed from the already-redacted expectation.
+//! pins the starting `next_seq` + `logical_time`, the EXACT redacted row shape a
+//! producer appends, the query that reads them back, and — for the secret / network
+//! cases — the substrings that must NEVER appear in the stored bytes. This harness
+//! pins the STORAGE-SUBSTRATE half of that contract end to end: the exact byte shape
+//! of every persisted row (seq/audit_id/logical_time/producer/action/decision/
+//! resource/collection/metadata), the deterministic ordering key, the query filters,
+//! the append-only re-run, the deterministic replay, and the redaction chokepoint —
+//! feeding the secret / network cases the RAW operation context (resolved secret
+//! value, request/response bodies) so redaction is genuinely exercised, not replayed
+//! from an already-redacted expectation. Because it pins the EXACT `seq` +
+//! `logical_time` each vector declares, it drives `append_audit` directly (a real
+//! producer mints its own EventSink clock, which cannot reproduce a fixed fixture
+//! clock byte-for-byte).
+//!
+//! The PRODUCTION LIVE-WIRING half — that each of the seven named producers
+//! (sync-RBAC, command-RBAC, secrets, network, lifecycle-purge, signing-refusal,
+//! permission grant/revoke) actually persists its row through real production code,
+//! not a tested-but-disconnected library — is proven in `audit_log_live.rs`, which
+//! drives the PUBLIC `WorkspaceCore` surfaces (a denied sync/command, a real
+//! `runtime.run` egress, an `applet.uninstall`, a failing `applet.install`, the
+//! capability-grant admin API) and reads the durable log back. The two suites are
+//! complementary: this one pins the row/query/redaction CONTRACT byte-for-byte; that
+//! one proves the production CODE PATHS emit through it.
 //!
 //! A `ran == manifest.count` guard means a dropped / misnamed / unhandled vector
 //! FAILS the suite rather than silently passing.
@@ -129,7 +144,10 @@ fn raw_input_metadata(kind: &str, when: &Value, given: &Value) -> Option<Value> 
         }
         // sync-rbac / command-rbac / permission / lifecycle / signing all persist
         // already body/secret-free metadata; the expected row's metadata IS the
-        // producer's input (redaction is a no-op there).
+        // producer's input (redaction is a no-op there), so this storage-substrate
+        // harness appends it verbatim. The PROOF that the real production paths emit
+        // these rows lives in `audit_log_live.rs` (driving the live `WorkspaceCore`
+        // surfaces); here we pin the exact persisted row shape + query contract.
         _ => None,
     }
 }

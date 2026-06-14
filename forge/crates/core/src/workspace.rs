@@ -350,6 +350,110 @@ impl WorkspaceCore {
         Ok(())
     }
 
+    /// Record an OWNER-approved capability GRANT to `target_actor` and persist a
+    /// durable `permission.grant` audit row (SC-12, the `audit-log-e2e`
+    /// `permission_grant_revoke_ordered_rows` vector). This is the real
+    /// permission-management admin seam (a workspace-membership provisioning
+    /// operation, alongside [`grant_db_read`](Self::grant_db_read) /
+    /// [`set_peer_membership`](Self::set_peer_membership)): an owner approves a
+    /// capability for an actor and the decision lands an append-only, queryable audit
+    /// row through this live path, not merely a transient event.
+    ///
+    /// `(namespace, action, resource)` names the capability, e.g.
+    /// `("db", "write", "collection:tasks")`; the audit row's `resource_id` is the
+    /// canonical `"<namespace>.<action>:<resource>"` (`db.write:collection:tasks`) and
+    /// its `collection` is parsed from a `collection:<name>` resource. Returns the
+    /// persisted (seq-assigned, redacted) row.
+    pub fn grant_capability(
+        &mut self,
+        owner_actor: impl Into<String>,
+        target_actor: impl Into<String>,
+        namespace: &str,
+        action: &str,
+        resource: &str,
+    ) -> Result<forge_storage::AuditRecord> {
+        self.persist_capability_decision(
+            owner_actor.into(),
+            target_actor.into(),
+            namespace,
+            action,
+            resource,
+            true,
+        )
+    }
+
+    /// Record an OWNER-approved capability REVOKE from `target_actor` and persist a
+    /// durable `permission.revoke` audit row (the mirror of
+    /// [`grant_capability`](Self::grant_capability); SC-12). Re-running grant→revoke
+    /// appends new rows with fresh seq/audit_id and never mutates prior history.
+    pub fn revoke_capability(
+        &mut self,
+        owner_actor: impl Into<String>,
+        target_actor: impl Into<String>,
+        namespace: &str,
+        action: &str,
+        resource: &str,
+    ) -> Result<forge_storage::AuditRecord> {
+        self.persist_capability_decision(
+            owner_actor.into(),
+            target_actor.into(),
+            namespace,
+            action,
+            resource,
+            false,
+        )
+    }
+
+    /// Shared body for [`grant_capability`] / [`revoke_capability`]: build and persist
+    /// the `permission.grant` / `permission.revoke` audit row. `grant = true` selects
+    /// the grant action/reason, `false` the revoke. The metadata carries the target
+    /// actor + the capability namespace/action (no secret material), so redaction is a
+    /// no-op.
+    fn persist_capability_decision(
+        &mut self,
+        owner_actor: String,
+        target_actor: String,
+        namespace: &str,
+        action: &str,
+        resource: &str,
+        grant: bool,
+    ) -> Result<forge_storage::AuditRecord> {
+        let resource_id = format!("{namespace}.{action}:{resource}");
+        // A `collection:<name>` resource carries the collection name in the audit row.
+        let collection = resource
+            .strip_prefix("collection:")
+            .map(|name| name.to_string());
+        let (audit_action, event_kind, reason) = if grant {
+            ("permission.grant", "permission.granted", "owner approved capability grant")
+        } else {
+            ("permission.revoke", "permission.revoked", "owner revoked capability grant")
+        };
+        self.persist_producer_audit(
+            event_kind,
+            serde_json::json!({
+                "decision": "allow",
+                "owner_actor": owner_actor,
+                "target_actor_id": target_actor,
+                "namespace": namespace,
+                "capability_action": action,
+                "resource": resource,
+            }),
+            "permission-manager",
+            audit_action,
+            "allow",
+            owner_actor,
+            "capability",
+            Some(resource_id),
+            collection,
+            reason,
+            serde_json::json!({
+                "target_actor_id": target_actor,
+                "namespace": namespace,
+                "capability_action": action,
+            }),
+        )
+    }
+
     /// Seed/replace the TRUSTED SS-7 membership row for a remote sync `peer`
     /// (workspace membership provisioning). `peer` is the peer's sync **source id**
     /// — `peer:<loro_id>`, the form the apply boundary sees (see
@@ -707,6 +811,51 @@ impl WorkspaceCore {
             serde_json::Value::Object(metadata),
         );
         self.store.append_audit(&record).map(|_| ())
+    }
+
+    /// Append ONE producer audit row to the durable SC-12 log through the live path
+    /// (`forge/spec/audit-log.md`), stamping the `logical_time` the EventSink minted
+    /// for `event_kind`+`event_payload` so the transient event and the persisted row
+    /// share one deterministic clock — no wall clock on the replayable path. This is
+    /// the shared seam the NON-RBAC producers (secrets, network, lifecycle purge,
+    /// signing refusal, permission grant/revoke) emit through: each builds its row
+    /// (resource type, decision, redactable metadata) and hands it here, so the
+    /// append + redaction chokepoint is identical across producers. Redaction runs at
+    /// persistence ([`Store::append_audit`] → `redact_metadata`), so a secret value or
+    /// a request/response body the caller leaves in `metadata` is still dropped.
+    ///
+    /// Append-only: this never updates or deletes a prior row; re-running a producer
+    /// mints a fresh `seq`/`audit_id`. Returns the persisted (redacted, seq-assigned)
+    /// row so the caller can echo or assert it.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::workspace) fn persist_producer_audit(
+        &mut self,
+        event_kind: &str,
+        event_payload: serde_json::Value,
+        producer: &str,
+        action: impl Into<String>,
+        decision: &'static str,
+        actor_id: impl Into<String>,
+        resource_type: &str,
+        resource_id: Option<String>,
+        collection: Option<String>,
+        reason: impl Into<String>,
+        metadata: serde_json::Value,
+    ) -> Result<forge_storage::AuditRecord> {
+        let logical_time = emit_event_logical_time(&mut self.events, event_kind, event_payload);
+        let record = forge_storage::AuditRecord::new(
+            logical_time,
+            producer,
+            action,
+            decision,
+            actor_id,
+            resource_type,
+            resource_id,
+            collection,
+            reason,
+            metadata,
+        );
+        self.store.append_audit(&record)
     }
 
     // ---------------------------------------------------------------- commands
