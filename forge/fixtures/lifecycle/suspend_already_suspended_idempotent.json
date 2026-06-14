@@ -1,0 +1,43 @@
+{
+  "case": "suspend_already_suspended_idempotent",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "suspended",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "suspended_reason": "owner-paused"
+    }
+  },
+  "when": {
+    "command": "applet.suspend",
+    "payload": {
+      "applet_id": "applet.todo",
+      "reason": "owner-paused"
+    }
+  },
+  "expect": {
+    "response": {
+      "applet_id": "applet.todo",
+      "state": "suspended",
+      "changed": false,
+      "idempotent": true
+    },
+    "active_applet": {
+      "version": 1,
+      "state": "suspended",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "suspended_reason": "owner-paused"
+    },
+    "user_code_started": false,
+    "events": [
+      {
+        "kind": "applet.suspend.noop",
+        "applet_id": "applet.todo",
+        "state_before": "suspended",
+        "state_after": "suspended"
+      }
+    ]
+  }
+}

@@ -34,4 +34,15 @@ In `## Result`, flag how upgrade stays atomic w.r.t. recorded runs (a recorded r
 against its own code_hash, not the new active version).
 
 ## Result
-(codex fills this in)
+Delivered `forge/spec/applet-lifecycle.md` and `forge/fixtures/lifecycle/` with 13 semantic JSON vectors plus `manifest.json`.
+
+Contract decisions encoded:
+
+- A successful first `applet.install` creates an enabled v1 applet (`install_generation = 1`, `version = 1`).
+- `runtime.run` and `ui.dispatch_event` require an enabled active applet; suspended applets reject dispatch with `ui.applet_not_dispatchable` before handler execution, matching T034.
+- `applet.enable` is the explicit re-enable transition T036 needs even though it is not yet in `forge/spec/commands.md`; the lifecycle spec calls out that the command catalog should add it before wiring.
+- `applet.upgrade` is atomic: the active pointer moves to v2 only after validation/compile/schema work commits, and a staged failure leaves active v1, schema, records, and versions unchanged.
+- Recorded runs stay pinned to their own per-run program artifact and recorded `code_hash`; replay after upgrade must use the run's v1 code hash, not the new active v2 code hash.
+- `applet.uninstall` supports `keep_data` and `purge_data`; keep-data preserves applet-owned records, while purge-data tombstones them with `applet.uninstall:purge_data`.
+- Reinstalling the same manifest/source/code hash over the active applet is an idempotent no-op, not a new version; reinstall after uninstall starts a fresh install generation.
+- Implementation note: current `cmd_applet_install` in `forge/crates/core/src/workspace.rs` bumps the version on any reinstall; T036 intentionally pins the future lifecycle behavior where same-payload reinstall is a no-op and different active payloads flow through `applet.upgrade`.

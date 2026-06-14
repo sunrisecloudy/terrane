@@ -1,0 +1,93 @@
+{
+  "case": "upgrade_atomic_success",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "enabled",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "manifest_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "versions": [
+      {
+        "version": 1,
+        "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "active"
+      }
+    ],
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "deleted": false
+      }
+    ]
+  },
+  "when": {
+    "command": "applet.upgrade",
+    "payload": {
+      "applet_id": "applet.todo",
+      "manifest_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sources_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "schema_additions": [
+        {
+          "collection": "tasks",
+          "field": "priority",
+          "type": "integer",
+          "default": 0
+        }
+      ]
+    }
+  },
+  "expect": {
+    "response": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "previous_version": 1,
+      "version": 2,
+      "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "state": "enabled"
+    },
+    "active_applet": {
+      "version": 2,
+      "state": "enabled",
+      "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "versions": [
+      {
+        "version": 1,
+        "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "retained"
+      },
+      {
+        "version": 2,
+        "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "status": "active"
+      }
+    ],
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "deleted": false
+      }
+    ],
+    "atomic": {
+      "active_pointer_switched_after_compile_and_schema_commit": true,
+      "prior_version_retained": true
+    },
+    "events": [
+      {
+        "kind": "applet.upgraded",
+        "from_version": 1,
+        "to_version": 2,
+        "from_code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "to_code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ]
+  }
+}

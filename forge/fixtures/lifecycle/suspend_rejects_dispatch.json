@@ -1,0 +1,60 @@
+{
+  "case": "suspend_rejects_dispatch",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "enabled",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "current_tree": {
+      "type": "Button",
+      "testId": "add-task",
+      "label": "Add task",
+      "onTap": "todo.add"
+    }
+  },
+  "when": {
+    "ops": [
+      {
+        "command": "applet.suspend",
+        "payload": {
+          "applet_id": "applet.todo",
+          "reason": "owner-paused"
+        }
+      },
+      {
+        "command": "ui.dispatch_event",
+        "payload": {
+          "applet_id": "applet.todo",
+          "action": "todo.add",
+          "event_type": "tap",
+          "payload": {}
+        }
+      }
+    ]
+  },
+  "expect": {
+    "active_applet": {
+      "state": "suspended",
+      "version": 1
+    },
+    "dispatch": {
+      "accepted": false,
+      "error": {
+        "code": "ui.applet_not_dispatchable",
+        "message_contains": "suspended"
+      },
+      "dispatch_attempted": false,
+      "handler_invoked": false,
+      "state_unchanged": true,
+      "tree_unchanged": true,
+      "patches": []
+    },
+    "events": [
+      {"kind": "applet.suspended", "state_before": "enabled", "state_after": "suspended"},
+      {"kind": "ui.dispatch_event.rejected", "error_code": "ui.applet_not_dispatchable"}
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "case": "run_uninstalled_rejected",
+  "given": {
+    "active_applet": null,
+    "uninstall_audit": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "retention_policy": "keep_data"
+    },
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "deleted": false
+      }
+    ]
+  },
+  "when": {
+    "command": "runtime.run",
+    "payload": {
+      "applet_id": "applet.todo",
+      "input": {
+        "mode": "boot"
+      }
+    }
+  },
+  "expect": {
+    "accepted": false,
+    "error": {
+      "code": "lifecycle.applet_not_installed",
+      "message_contains": "not installed"
+    },
+    "user_code_started": false,
+    "host_calls": [],
+    "ui_patches": [],
+    "records_unchanged": true,
+    "events": [
+      {
+        "kind": "runtime.run.rejected",
+        "applet_id": "applet.todo",
+        "error_code": "lifecycle.applet_not_installed"
+      }
+    ]
+  }
+}

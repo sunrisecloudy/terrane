@@ -1,0 +1,84 @@
+{
+  "case": "uninstall_then_install_fresh_generation",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 3,
+      "state": "enabled",
+      "code_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "versions": [
+      {
+        "install_generation": 1,
+        "version": 1,
+        "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "retained"
+      },
+      {
+        "install_generation": 1,
+        "version": 2,
+        "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "status": "retained"
+      },
+      {
+        "install_generation": 1,
+        "version": 3,
+        "code_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "status": "active"
+      }
+    ],
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/old",
+        "owner_applet_id": "applet.todo",
+        "deleted": false
+      }
+    ]
+  },
+  "when": {
+    "ops": [
+      {
+        "command": "applet.uninstall",
+        "payload": {
+          "applet_id": "applet.todo",
+          "retention_policy": "keep_data"
+        }
+      },
+      {
+        "command": "applet.install",
+        "payload": {
+          "applet_id": "applet.todo",
+          "manifest_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sources_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      }
+    ]
+  },
+  "expect": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 2,
+      "version": 1,
+      "state": "enabled",
+      "code_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "fresh_generation": true,
+    "old_versions_retained_for_audit": true,
+    "retained_records_still_not_active_install_state": true,
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/old",
+        "owner_applet_id": "applet.todo",
+        "deleted": false
+      }
+    ],
+    "events": [
+      {"kind": "applet.uninstalled", "install_generation": 1, "retention_policy": "keep_data"},
+      {"kind": "applet.installed", "install_generation": 2, "version": 1, "state_after": "enabled"}
+    ]
+  }
+}

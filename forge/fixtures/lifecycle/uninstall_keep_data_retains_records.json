@@ -1,0 +1,65 @@
+{
+  "case": "uninstall_keep_data_retains_records",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "enabled",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "fields": {
+          "title": "keep me"
+        },
+        "deleted": false
+      }
+    ],
+    "run_records": [
+      {
+        "run_id": "run-v1-0001",
+        "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ]
+  },
+  "when": {
+    "command": "applet.uninstall",
+    "payload": {
+      "applet_id": "applet.todo",
+      "retention_policy": "keep_data"
+    }
+  },
+  "expect": {
+    "active_applet": null,
+    "retention": {
+      "policy": "keep_data",
+      "records_retained": 1,
+      "records_tombstoned": 0,
+      "run_records_retained": true,
+      "replay_artifacts_retained": true
+    },
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "fields": {
+          "title": "keep me"
+        },
+        "deleted": false
+      }
+    ],
+    "events": [
+      {
+        "kind": "applet.uninstalled",
+        "applet_id": "applet.todo",
+        "retention_policy": "keep_data",
+        "state_after": "uninstalled"
+      }
+    ]
+  }
+}

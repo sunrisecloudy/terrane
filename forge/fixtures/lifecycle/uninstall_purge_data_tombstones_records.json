@@ -1,0 +1,63 @@
+{
+  "case": "uninstall_purge_data_tombstones_records",
+  "given": {
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "enabled",
+      "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "fields": {
+          "title": "purge me"
+        },
+        "deleted": false
+      }
+    ],
+    "run_records": [
+      {
+        "run_id": "run-v1-0001",
+        "code_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ]
+  },
+  "when": {
+    "command": "applet.uninstall",
+    "payload": {
+      "applet_id": "applet.todo",
+      "retention_policy": "purge_data"
+    }
+  },
+  "expect": {
+    "active_applet": null,
+    "retention": {
+      "policy": "purge_data",
+      "records_retained": 0,
+      "records_tombstoned": 1,
+      "run_records_retained": true,
+      "replay_artifacts_retained": true
+    },
+    "records": [
+      {
+        "collection": "tasks",
+        "id": "tasks/1",
+        "owner_applet_id": "applet.todo",
+        "deleted": true,
+        "tombstone_reason": "applet.uninstall:purge_data"
+      }
+    ],
+    "events": [
+      {
+        "kind": "applet.uninstalled",
+        "applet_id": "applet.todo",
+        "retention_policy": "purge_data",
+        "state_after": "uninstalled"
+      }
+    ]
+  }
+}
