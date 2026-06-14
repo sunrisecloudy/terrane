@@ -15,6 +15,15 @@
 //! BEFORE any row is read, and that denial itself lands a command-RBAC audit row
 //! through the live `WorkspaceCore::handle` path — so an attempt to read the audit
 //! log is itself auditable.
+//!
+//! Both OUTCOMES of an `audit.query` are therefore traceable (review 150): a denied
+//! read lands the command-RBAC deny row (above), and a SUCCESSFUL read lands its own
+//! `audit.query` ALLOW row (`producer = audit`, `resource_type/_id = audit_log`)
+//! through the live producer seam. That self-audit row records ONLY the filter
+//! keys/ranges the query carried — never the returned row contents — so reading the
+//! log can never leak a persisted actor/resource via the row that records the read,
+//! and it cannot recurse (the append writes one row directly, never re-entering
+//! `cmd_audit_query`).
 
 use forge_domain::{CoreError, Result};
 use forge_storage::AuditQuery;
@@ -51,10 +60,84 @@ impl WorkspaceCore {
         cmd: &forge_domain::CoreCommand,
     ) -> Result<serde_json::Value> {
         let filter = audit_filter_from_payload(cmd)?;
+        // Read the matching rows FIRST, then append the `audit.query` allow row. The
+        // returned `rows` are the snapshot taken BEFORE this read's own audit row
+        // lands, so a successful read never returns its own freshly-appended
+        // self-audit row — the read of the audit log is recorded WITHOUT the row
+        // becoming part of the result it is recording (review 150 recursion guard).
         let rows = self.store.query_audit(&filter)?;
-        let rows: Vec<serde_json::Value> = rows.iter().map(audit_row_to_json).collect();
-        Ok(serde_json::json!({ "rows": rows }))
+        let json_rows: Vec<serde_json::Value> = rows.iter().map(audit_row_to_json).collect();
+
+        // SC-12 review 150: a SUCCESSFUL privileged read of the security trail is
+        // itself a security event — reading "who did what" is privileged (the role
+        // gate already restricted it to the oversight roles), so the read must be
+        // traceable like every other audited decision. Persist an `audit.query`
+        // ALLOW row through the live producer seam (`persist_producer_audit` →
+        // `append_audit` → `redact_metadata`). The metadata is built from ONLY the
+        // filter keys/ranges this query carried — NEVER the returned row contents —
+        // so reading the log can never leak a persisted actor/resource through the
+        // self-audit row, and the row stays bounded regardless of result size.
+        //
+        // No code-level recursion: this append writes one row directly to the store;
+        // it does NOT re-enter `WorkspaceCore::handle` or `cmd_audit_query`, so there
+        // is no audit-of-the-audit loop. The append is best-effort with respect to
+        // the read's success — the rows were already read and are returned even if
+        // the self-audit append errors — but it never fails open: it can only ADD an
+        // allow row, never suppress a deny or alter a result.
+        let metadata = filter_metadata(&filter);
+        let actor_id = cmd.actor.actor.as_str().to_string();
+        let _ = self.persist_producer_audit(
+            "audit.query",
+            serde_json::json!({
+                "decision": "allow",
+                "actor_id": actor_id,
+                "action": "audit.query",
+            }),
+            "audit",
+            "audit.query",
+            "allow",
+            actor_id,
+            "audit_log",
+            Some("audit_log".to_string()),
+            None,
+            "audit log read authorized for oversight role",
+            metadata,
+        );
+
+        Ok(serde_json::json!({ "rows": json_rows }))
     }
+}
+
+/// Build the `audit.query` allow row's `metadata` from ONLY the query's filter
+/// predicates (review 150) — the set exact-match keys and the inclusive `seq` /
+/// `logical_time` range bounds. This deliberately records WHAT was queried, never
+/// the rows that were RETURNED: echoing result contents into the self-audit row
+/// would leak persisted actor/resource ids and grow unbounded with the result set.
+/// An all-`None` filter (a whole-log read) yields an empty object, which still
+/// records that an unfiltered read happened.
+fn filter_metadata(filter: &AuditQuery) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    let mut put_str = |key: &str, value: &Option<String>| {
+        if let Some(v) = value {
+            map.insert(key.to_string(), serde_json::json!(v));
+        }
+    };
+    put_str("actor_id", &filter.actor_id);
+    put_str("action", &filter.action);
+    put_str("decision", &filter.decision);
+    put_str("resource_type", &filter.resource_type);
+    put_str("resource_id", &filter.resource_id);
+    put_str("collection", &filter.collection);
+    let mut put_u64 = |key: &str, value: Option<u64>| {
+        if let Some(v) = value {
+            map.insert(key.to_string(), serde_json::json!(v));
+        }
+    };
+    put_u64("seq_gte", filter.seq_gte);
+    put_u64("seq_lte", filter.seq_lte);
+    put_u64("logical_time_gte", filter.logical_time_gte);
+    put_u64("logical_time_lte", filter.logical_time_lte);
+    serde_json::Value::Object(map)
 }
 
 /// Build an [`AuditQuery`] from the command's `payload.filter` object (SC-12 query

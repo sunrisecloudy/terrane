@@ -19,6 +19,7 @@
 
 use forge_core::WorkspaceCore;
 use forge_domain::{ActorContext, AppletId, CoreCommand, CoreResponse, RequestId, Role, WorkspaceId};
+use forge_storage::AuditQuery;
 use serde_json::{json, Value};
 
 /// A `runtime.run` command for `actor` at `role` — denied for read-only roles, so it
@@ -128,7 +129,11 @@ fn audit_query_filters_by_actor_action_and_sequence_range() {
     ));
     assert_eq!(audit_ids(&by_range), vec!["audit-000002", "audit-000003"]);
 
-    // No filter → every row, seq-ordered.
+    // No filter → every row, seq-ordered. The three command-RBAC deny rows (seq
+    // 1..=3) come FIRST, then the SELF-AUDIT `audit.query` allow rows that each prior
+    // successful read appended (`by_actor` → seq 4, `by_action` → seq 5, `by_range` →
+    // seq 6; review 150). The unfiltered read returns the snapshot BEFORE its own
+    // allow row lands, so seq 7 (this read's row) is not in the result.
     let all = core.handle(CoreCommand {
         request_id: RequestId::new("req-all"),
         name: "audit.query".into(),
@@ -139,8 +144,30 @@ fn audit_query_filters_by_actor_action_and_sequence_range() {
     });
     assert_eq!(
         audit_ids(&all),
-        vec!["audit-000001", "audit-000002", "audit-000003"]
+        vec![
+            "audit-000001",
+            "audit-000002",
+            "audit-000003",
+            "audit-000004",
+            "audit-000005",
+            "audit-000006",
+        ]
     );
+    // The first three are the runtime.run denials; the rest are the audit.query
+    // self-audit allow rows.
+    let all_rows = rows(&all);
+    for deny in &all_rows[0..3] {
+        assert_eq!(deny["action"], "command.runtime.run");
+        assert_eq!(deny["decision"], "deny");
+    }
+    for allow in &all_rows[3..6] {
+        assert_eq!(allow["producer"], "audit");
+        assert_eq!(allow["action"], "audit.query");
+        assert_eq!(allow["decision"], "allow");
+        assert_eq!(allow["resource_type"], "audit_log");
+        assert_eq!(allow["resource_id"], "audit_log");
+        assert_eq!(allow["actor_id"], "owner");
+    }
 }
 
 #[test]
@@ -206,6 +233,114 @@ fn audit_query_is_privileged_and_a_denied_read_is_itself_audited() {
             .handle(audit_query("actor-runner-1", Role::Runner, json!({})))
             .ok,
         "a Runner cannot read the audit log"
+    );
+}
+
+#[test]
+fn a_successful_audit_query_records_its_own_allow_row_queryable_afterward() {
+    // Review 150: a SUCCESSFUL privileged read of the security trail is itself an
+    // audited security event. The read records an `audit.query` ALLOW row that a
+    // LATER read can find — but the recording read does NOT return its own row (the
+    // result is the snapshot taken before its self-audit row lands, so there is no
+    // audit-of-the-audit recursion).
+    let mut core = WorkspaceCore::in_memory("ws-audit-self").unwrap();
+
+    // A privileged Auditor reads the (empty) log, filtering for the self-audit row's
+    // action. The result is empty: this very read's allow row has not landed yet.
+    let first = core.handle(audit_query(
+        "actor-auditor-1",
+        Role::Auditor,
+        json!({ "action": "audit.query" }),
+    ));
+    assert!(
+        rows(&first).is_empty(),
+        "a read does not return its own freshly-appended self-audit row"
+    );
+
+    // A SECOND privileged read now finds the FIRST read's allow row (seq 1).
+    let second = core.handle(audit_query(
+        "actor-maintainer-1",
+        Role::Maintainer,
+        json!({ "action": "audit.query" }),
+    ));
+    let found = rows(&second);
+    assert_eq!(
+        found.len(),
+        1,
+        "the first successful read left exactly one queryable allow row: {found:?}"
+    );
+    let row = &found[0];
+    assert_eq!(row["producer"], "audit");
+    assert_eq!(row["action"], "audit.query");
+    assert_eq!(row["decision"], "allow");
+    assert_eq!(row["actor_id"], "actor-auditor-1");
+    assert_eq!(row["resource_type"], "audit_log");
+    assert_eq!(row["resource_id"], "audit_log");
+    assert_eq!(row["seq"], 1);
+    // The metadata records ONLY the filter keys the query carried — never the
+    // returned rows. The first read filtered by `action`, so that key (and nothing
+    // resembling a returned row's contents) is present.
+    assert_eq!(row["metadata"]["action"], "audit.query");
+    assert!(
+        row["metadata"].get("actor_id").is_none(),
+        "the filter carried no actor_id predicate, so the row records none: {row:?}"
+    );
+    assert!(row["logical_time"].as_u64().is_some(), "logical_time present");
+}
+
+#[test]
+fn a_whole_log_read_records_an_empty_filter_metadata_object() {
+    // An unfiltered (whole-log) successful read still records that a read happened —
+    // its self-audit allow row carries an EMPTY filter-metadata object (review 150),
+    // never the contents of the rows it returned.
+    let mut core = WorkspaceCore::in_memory("ws-audit-wholelog").unwrap();
+    assert!(core.handle(audit_query("owner", Role::Owner, json!({}))).ok);
+
+    let read = core.handle(audit_query(
+        "owner",
+        Role::Owner,
+        json!({ "action": "audit.query" }),
+    ));
+    let found = rows(&read);
+    assert_eq!(found.len(), 1, "the prior whole-log read left one row: {found:?}");
+    assert_eq!(found[0]["metadata"], json!({}));
+}
+
+#[test]
+fn a_denied_audit_query_records_only_its_command_rbac_deny_row() {
+    // Review 150 boundary: the self-audit allow row is appended ONLY on a SUCCESSFUL
+    // read. A DENIED read records its command-RBAC deny row (unchanged) and NO
+    // `audit.query` allow row — a deny is never recorded as an allow.
+    let mut core = WorkspaceCore::in_memory("ws-audit-deny-only").unwrap();
+
+    // An Editor is denied the privileged read.
+    let denied = core.handle(audit_query("actor-editor-1", Role::Editor, json!({})));
+    assert!(!denied.ok, "an Editor cannot read the audit log");
+
+    // Inspect the durable log directly (the raw store path appends NOTHING, unlike a
+    // command `audit.query`): the denied read left EXACTLY its command-RBAC deny row
+    // and NO `audit.query` allow row — a deny is never recorded as an allow.
+    let all = core.store().query_audit(&AuditQuery::default()).unwrap();
+    assert_eq!(
+        all.len(),
+        1,
+        "the denied read lands exactly one row (the command-RBAC deny): {all:?}"
+    );
+    assert_eq!(all[0].producer, "command-rbac");
+    assert_eq!(all[0].decision, "deny");
+    assert_eq!(all[0].resource_type, "command");
+    assert_eq!(all[0].resource_id.as_deref(), Some("audit.query"));
+    let audit_allows = core
+        .store()
+        .query_audit(&AuditQuery {
+            decision: Some("allow".into()),
+            resource_type: Some("audit_log".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        audit_allows.is_empty(),
+        "a denied read appends no audit.query allow row: {audit_allows:?}"
     );
 }
 
