@@ -10,7 +10,11 @@ This note is the semantic contract for the vectors in
 > permits it ∧ platform permission granted ∧ resource matches allowlist ∧
 > rate/resource limit available. Decisions are evaluated in the Rust policy
 > engine on **every command and every remote sync op (SS-7)**; shells may
-> **tighten, never loosen**.
+> **tighten, never loosen**. All seven gates apply on every command/run; a
+> **remote sync op** is a passive chunk import (not a run) and evaluates only the
+> **sync-applicable** gates — SS-7 RBAC role/membership + the workspace-policy
+> capability gate per category (DECISIONS I3; see "Live wiring at the remote-sync
+> boundary" below).
 
 A run (a `ctx.*` host call, or a remote sync op) is allowed **only if all seven
 gates pass**. The decision is a conjunction: one failing gate denies the whole
@@ -114,30 +118,42 @@ that gate (shells tighten, never loosen).
 
 ### Live wiring at the remote-sync boundary (SS-7)
 
-SC-10 is evaluated on **every command and every remote sync op (SS-7)**, so the
-trusted `RunPolicy` also gates incoming remote ops, not just local `ctx.*` calls.
+SC-10 is evaluated on **every command and every remote sync op (SS-7)**, but a
+remote sync op is a **passive chunk import, not a run**, so only the
+**sync-applicable** gates apply there: the SS-7 RBAC role/membership decision and
+the workspace-policy capability gate (DECISIONS I3). The receiver's trusted
+`RunPolicy` therefore gates incoming remote ops in addition to local `ctx.*` calls.
 `WorkspaceCore::sync_with` runs the receiver's `authorize_incoming_op` for every
-staged chunk before it is imported; that gate now evaluates the **workspace-policy
+staged chunk before it is imported; that gate evaluates the **workspace-policy
 gate** (gate 2) for the receiver's own trusted `RunPolicy` *before* the membership
-RBAC decision. A remote record write is a `Db`-category op, so a receiver whose
-policy forbids `db` **skips the chunk even when its `sync_membership` would allow
-it** — the chunk is not imported, the receiver's CRDT history and projection are
-unchanged, and a `permission_denied` audit row (tagged `gate: "workspace-policy"`)
-is persisted in the same import transaction. The gate runs first, so a
-workspace-policy deny is the surfaced reason over a concurrent membership-RBAC
-denial (first-failing-gate wins).
+RBAC decision, for the **chunk's capability category** (review 165, not a hardcoded
+`Db`) via `sync_op_policy_category`. A remote record write is a `Db`-category op, so
+a receiver whose policy forbids `db` **skips the chunk even when its
+`sync_membership` would allow it** — and a policy denying a *different* category
+does **not** skip a `Db` chunk. A skipped chunk is not imported, the receiver's CRDT
+history and projection are unchanged, and a `permission_denied` audit row (tagged
+`gate: "workspace-policy"`) is persisted in the same import transaction. The gate
+runs first, so a workspace-policy deny is the surfaced reason over a concurrent
+membership-RBAC denial (first-failing-gate wins).
 
-Only the **workspace-policy** gate applies at the sync boundary: it is a workspace
-admin decision over capability *categories*, independent of any one applet, so it
-governs an imported peer's already-authored op the same way it governs a local
-write. The **run-profile** (gate 4) and **platform-permission** (gate 5) gates are
-properties of *executing* a run on this host (a per-run profile, the OS-granted
-capability set) and have no meaning for importing a peer's CRDT op, so they are not
-consulted there. As with the command path, an un-provisioned receiver imposes no
-SC-10 deny (default-open; the M0b sync spine is unaffected), and the gate reads
-only trusted workspace state — never the incoming op's payload (review 048/050).
-This wiring is pinned by `crates/core/tests/sync_rbac_enforced.rs` (a
-`workspace_denied: [Db]` receiver skips an otherwise RBAC-allowed chunk).
+Only the **workspace-policy** gate (plus the SS-7 RBAC membership decision) applies
+at the sync boundary: it is a workspace admin decision over capability *categories*,
+independent of any one applet, so it governs an imported peer's already-authored op
+the same way it governs a local write. The **run-profile** (gate 4),
+**platform-permission** (gate 5), **manifest** (gate 3), **resource-allowlist**
+(gate 6), and **rate/resource-limit** (gate 7) gates are RUN-scoped — properties of
+*executing* a run on this host (a per-run profile, the OS-granted capability set, an
+applet's signed manifest + scopes, the host-call budget) — and have no meaning for
+importing a peer's CRDT op, so they are not consulted there. A DL-13 schema-migration
+chunk's schema authority is gated by the membership `schema_write` RBAC grant (the
+sync-applicable schema gate, review 143), and its underlying record rewrite is gated
+as the `Db` category here too. As with the command path, an un-provisioned receiver
+imposes no SC-10 deny (default-open; the M0b sync spine is unaffected), and the gate
+reads only trusted workspace state — never the incoming op's payload (review
+048/050). This wiring is pinned by `crates/core/tests/sync_rbac_enforced.rs` (a
+`workspace_denied: [Db]` receiver skips an otherwise RBAC-allowed record chunk AND an
+otherwise-authorized migration chunk, while a `workspace_denied: [Storage]` receiver
+still imports a `Db` chunk).
 
 ## Fail-closed default
 

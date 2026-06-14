@@ -1186,17 +1186,25 @@ pub fn source_id_for(loro_peer_id: u64) -> String {
 /// EventSink minted for this decision, so the transient event and the durable row
 /// share one deterministic clock.
 ///
-/// SC-10 workspace-policy gate at the sync boundary (T037 / review 164): SC-10 is
-/// "evaluated on every command AND every remote sync op (SS-7)". The receiver's
-/// trusted `run_policy` therefore gates an incoming op the SAME way it gates a local
-/// `ctx.*` call: a remote record write is a `Db`-category op, so a receiver whose
-/// `RunPolicy` forbids the `db` category SKIPS the chunk even when its `sync_membership`
-/// would allow it. The gate runs BEFORE membership resolution so a workspace-policy
-/// deny is the first failing gate (SC-10 order: workspace-policy precedes the
-/// role/grant checks membership RBAC plays). Only the workspace-policy gate applies
-/// here — the run-profile / platform-permission gates are properties of executing a
-/// run on this host, not of importing a peer's already-authored op (see
-/// [`RunPolicy::workspace_policy_gate`](crate::RunPolicy::workspace_policy_gate)).
+/// SC-10 workspace-policy gate at the sync boundary (T037 / reviews 164/165): the
+/// remote-sync boundary evaluates the SYNC-APPLICABLE SC-10 gates — the SS-7 RBAC
+/// role/membership decision PLUS the receiver's trusted workspace-policy capability
+/// gate per category. The receiver's `run_policy` gates an incoming op for the
+/// CHUNK'S category (review 165, [`sync_op_policy_category`]): a remote record write
+/// is a `Db`-category op, so a receiver whose `RunPolicy` forbids that category SKIPS
+/// the chunk even when its `sync_membership` would allow it — and a policy denying a
+/// DIFFERENT category does NOT skip it. The gate runs BEFORE membership resolution so
+/// a workspace-policy deny is the first failing gate (SC-10 order: workspace-policy
+/// precedes the role/grant checks membership RBAC plays).
+///
+/// The run-profile, platform-permission, manifest, resource-allowlist, and
+/// rate/resource-limit gates are RUN-scoped: a passive chunk import is NOT a run — it
+/// has no run profile, requests no manifest capability, and uses no OS platform
+/// permission — so those gates do not apply here (normative carve-out in
+/// `prd-merged/07-security-prd.md` SC-10 / `prd-merged/DECISIONS.md`; see
+/// [`RunPolicy::workspace_policy_gate`](crate::RunPolicy::workspace_policy_gate)). A
+/// DL-13 migration chunk's schema authority is gated by the membership `schema_write`
+/// RBAC (review 143), the sync-applicable gate for the schema dimension.
 fn authorize_incoming_op(
     membership: &std::collections::BTreeMap<String, TrustedMembership>,
     run_policy: Option<&RunPolicy>,
@@ -1239,10 +1247,13 @@ fn authorize_incoming_op(
         return false;
     }
     // SC-10 workspace-policy gate (gate 2), evaluated FIRST so a workspace-policy deny
-    // wins over a membership-RBAC denial (first-failing-gate order). A record chunk is
-    // a `Db`-category op; an un-provisioned receiver (`None`) imposes no SC-10 deny.
+    // wins over a membership-RBAC denial (first-failing-gate order). The gate runs for
+    // the CHUNK'S capability category (review 165) — a record write is a `Db`-category
+    // op — so a receiver whose policy forbids a category skips an incoming chunk of THAT
+    // category, not only `Db`. An un-provisioned receiver (`None`) imposes no SC-10 deny.
     if let Some(policy) = run_policy {
-        if let Err(reason) = policy.workspace_policy_gate(crate::Capability::Db) {
+        let category = sync_op_policy_category(envelope);
+        if let Err(reason) = policy.workspace_policy_gate(category) {
             let logical_time = emit_event_logical_time(
                 events,
                 "sync.permission_denied",
@@ -1334,6 +1345,35 @@ fn envelope_action(envelope: &forge_sync::SyncOpEnvelope) -> &'static str {
         }
         forge_sync::SyncRecordOp::Patch => "sync.record.patch",
         forge_sync::SyncRecordOp::Delete => "sync.record.delete",
+    }
+}
+
+/// The SC-10 workspace-policy capability **category** for one incoming chunk
+/// (review 165): the category the receiver's `RunPolicy` workspace-policy gate
+/// (gate 2) decides over for THIS op — not a hardcoded `Db`. The gate then skips an
+/// incoming chunk whose category the receiver's policy forbids, for EVERY category
+/// the chunk boundary carries, not only `Db`.
+///
+/// Mapping (`prd-merged/07-security-prd.md` SC-10 sync carve-out):
+/// - a record write (insert/patch/delete, or a generic transact write) targets the
+///   workspace **database**, so it is a [`Db`](crate::Capability::Db)-category op;
+/// - a DL-13 **migration** chunk is a SCHEMA-affecting op. The workspace-policy gate
+///   has no separate `Schema` category, and schema-change authority is already gated
+///   by the membership-RBAC `schema_write` check (review 143) — the SYNC-APPLICABLE
+///   gate for the schema dimension. Its underlying record rewrite is still gated as
+///   the `Db` category here, so a receiver that forbids `db` skips a migration chunk
+///   too, and the `schema_write` RBAC remains the schema-authority gate on top.
+///
+/// M0b chunk sync carries only [`Record`](forge_sync::SyncResource::Record) ops, so
+/// every chunk maps to `Db` today; the `match` is written over the resource so a
+/// future non-record chunk category routes to its own gate rather than silently
+/// reusing `Db`.
+fn sync_op_policy_category(envelope: &forge_sync::SyncOpEnvelope) -> crate::Capability {
+    match envelope.resource_type {
+        // Record writes (and migration chunks, whose schema authority is the
+        // membership `schema_write` RBAC, not a workspace-policy category) gate as
+        // the `Db` capability — the workspace database the op touches.
+        forge_sync::SyncResource::Record => crate::Capability::Db,
     }
 }
 

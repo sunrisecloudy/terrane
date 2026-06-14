@@ -428,6 +428,109 @@ fn workspace_policy_allowing_db_still_imports_remote_op() {
 }
 
 #[test]
+fn workspace_policy_db_deny_skips_incoming_migration_chunk() {
+    // Review 165 (per-category gate, SECOND op kind): the workspace-policy gate runs for
+    // the CHUNK'S capability category, not only a plain record insert. A DL-13 MIGRATION
+    // chunk is a schema-affecting op whose underlying record rewrite is a `Db`-category op
+    // (the workspace-policy gate has no separate `Schema` category; schema authority is the
+    // membership `schema_write` RBAC, review 143). So a receiver whose workspace policy
+    // forbids `db` SKIPS the incoming migration chunk too — exactly as it skips a plain
+    // record insert — even though the sender is a Maintainer WITH schema_write that RBAC
+    // would otherwise allow.
+    let (mut sender, mut receiver) = cores_with_membership(membership_full(
+        "actor-maintainer",
+        Role::Maintainer,
+        &["expenses"],
+        true,
+    ));
+    seed_and_widen_expenses(&mut sender);
+    assert_eq!(receiver.store().schema_version().unwrap(), 1, "receiver starts at v1");
+
+    // The receiver's trusted workspace admin policy forbids the `db` capability category.
+    receiver
+        .set_run_policy(RunPolicy {
+            workspace_denied: vec![Capability::Db],
+            ..RunPolicy::default()
+        })
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    // EVERY `expenses` chunk (the plain inserts AND the migration) is a `Db`-category op,
+    // so the db-deny skips them all: nothing imports.
+    assert!(report.chunks_denied > 0, "the db-deny skips the expenses chunks: {report:?}");
+    assert_eq!(report.chunks_a_to_b, 0, "no expenses chunk imported under a db-deny");
+
+    // The migration's effect is rejected: no records, no version advance, no registry.
+    assert!(
+        query_collection(&mut receiver, "expenses").is_empty(),
+        "no expenses record imported under a db-deny"
+    );
+    assert_eq!(
+        receiver.store().schema_version().unwrap(),
+        1,
+        "the schema_version must NOT advance for a chunk the workspace-policy gate skipped"
+    );
+    assert!(
+        receiver.registry().collection("expenses").is_none(),
+        "the registry must NOT evolve for a chunk the workspace-policy gate skipped"
+    );
+
+    // The surfaced denial names the workspace-policy gate (it runs first), and a durable
+    // `gate: "workspace-policy"` audit row was persisted — same shape as the plain-record case.
+    let denial = receiver
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .find(|e| {
+            e.payload["collection"] == json!("expenses")
+                && e.payload["reason"].as_str().is_some_and(|r| r.contains("workspace policy"))
+        })
+        .expect("a workspace-policy denial naming the expenses migration chunk was audited");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+    let rows = receiver
+        .store()
+        .query_audit(&forge_storage::AuditQuery::by_decision("deny"))
+        .unwrap();
+    assert!(
+        rows.iter().any(|r| r.metadata["gate"] == json!("workspace-policy")),
+        "a durable workspace-policy deny audit row was persisted for the migration chunk: {rows:?}"
+    );
+}
+
+#[test]
+fn workspace_policy_denying_unrelated_category_still_imports_db_chunk() {
+    // Review 165 (the gate is PER-CATEGORY, not a blanket deny): the gate keys on the
+    // chunk's OWN category, so a receiver that forbids a category the chunk does NOT belong
+    // to must STILL import it. A record write is a `Db`-category op; a policy that denies
+    // ONLY `Storage` (an unrelated category the chunk boundary never carries) leaves the
+    // `Db` chunk untouched — proving the skip in the db-deny tests was the matching-category
+    // forbid, not the mere presence of a denied category.
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+    receiver
+        .set_run_policy(RunPolicy {
+            // `db` is left unspecified (→ permitted); only `storage` is forbidden.
+            workspace_denied: vec![Capability::Storage],
+            ..RunPolicy::default()
+        })
+        .unwrap();
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(&insert("task-5", json!({ "title": "db chunk, storage denied" }), 1), &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(
+        report.chunks_denied, 0,
+        "denying an UNRELATED category (storage) must not skip a db chunk: {report:?}"
+    );
+    let rows = query_tasks(&mut receiver);
+    assert_eq!(rows.len(), 1, "the db chunk imported despite a storage-only deny");
+    assert_eq!(rows[0].0, "task-5");
+}
+
+#[test]
 fn forwarded_chunk_is_authorized_against_original_author_not_relay() {
     // review 092 #1: a three-peer relay regression. C writes; A imports C's chunk
     // (A is only a relay); A then syncs to B. B trusts A as an owner but does NOT
