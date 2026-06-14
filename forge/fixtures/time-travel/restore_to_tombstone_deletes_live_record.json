@@ -1,0 +1,19 @@
+{
+  "case": "restore_to_tombstone_deletes_live_record",
+  "prd": "DL-20",
+  "describe": "restoring a tombstone version onto a live record removes it as a new version",
+  "collection": "tasks",
+  "record": "t1",
+  "seed": [
+    { "op": "insert", "id": "t1", "fields": { "title": "A" }, "logical_at": 1 },
+    { "op": "delete", "id": "t1", "logical_at": 2 },
+    { "op": "insert", "id": "t1", "fields": { "title": "Z" }, "logical_at": 3 }
+  ],
+  "assert": {
+    "kind": "restore",
+    "to_version": 2,
+    "restored_logical_at": 4,
+    "expect_new_version": 4,
+    "expect_current_absent": true
+  }
+}

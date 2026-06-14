@@ -44,6 +44,55 @@ impl CompactionSafeHorizon {
     }
 }
 
+/// The DL-20 default change-feed retention window: ~90 days, expressed as a count
+/// of logical versions (the per-doc chunk frontier IS the logical clock of the
+/// chunk stream — a logical clock, never a wall clock, so retention stays
+/// replay-deterministic). The spec defaults to 90 days "configurable"; M0a models
+/// the window as logical versions and the caller supplies the configured value.
+pub const DEFAULT_RETENTION_WINDOW: u64 = 90;
+
+/// DL-20 change-feed retention: the window of recent history the per-record change
+/// feed (the oplog rows powering undo/audit) must NOT be pruned within, even when
+/// the DL-19 safe horizon would otherwise fold those chunks away.
+///
+/// The window is a count of LOGICAL VERSIONS (the per-doc chunk frontier, e.g.
+/// `chunk-0007 → 7`), NOT a wall-clock duration — the replayable path uses only the
+/// logical clock, so retention is deterministic (the SC-12/audit determinism
+/// lesson). Compaction is handed the externally-supplied `now_version` (the current
+/// frontier, a logical clock); a chunk/oplog row whose frontier is within
+/// `[now_version - window, now_version]` is PROTECTED from pruning. Entries beyond
+/// the window may be pruned (subject also to the DL-19 peer safe horizon — both
+/// floors apply, the lower one wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    /// How many recent logical versions of change-feed/oplog history to protect from
+    /// pruning. Defaults to [`DEFAULT_RETENTION_WINDOW`] (~90 days).
+    pub window: u64,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            window: DEFAULT_RETENTION_WINDOW,
+        }
+    }
+}
+
+impl RetentionPolicy {
+    /// A policy with an explicit window (count of logical versions).
+    pub fn new(window: u64) -> Self {
+        Self { window }
+    }
+
+    /// The oldest version still PROTECTED by this policy given the current logical
+    /// frontier `now_version`: a chunk/oplog entry at a frontier `>= protected_floor`
+    /// must not be pruned. With `now_version <= window` everything is protected
+    /// (floor `0`). Saturating so an early-life workspace never underflows.
+    fn protected_floor(&self, now_version: u64) -> u64 {
+        now_version.saturating_sub(self.window).saturating_add(1)
+    }
+}
+
 /// Options for [`Store::compact_history`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactionOptions {
@@ -53,6 +102,13 @@ pub struct CompactionOptions {
     /// has not acknowledged it. This models the "peer reset / full-state resync"
     /// opt-in from DL-19.
     pub allow_peer_reset: bool,
+    /// DL-20 change-feed retention: when set, the most-recent `window` logical
+    /// versions of change-feed/oplog history are PROTECTED from pruning even when
+    /// the safe horizon (and `allow_peer_reset`) would otherwise fold them away.
+    /// `None` keeps the prior DL-19-only behavior (no retention floor). The window
+    /// is a logical-version count — no wall clock — so compaction stays
+    /// replay-deterministic.
+    pub retention: Option<RetentionPolicy>,
 }
 
 impl CompactionOptions {
@@ -60,6 +116,7 @@ impl CompactionOptions {
         Self {
             safe_horizon: CompactionSafeHorizon::AllPeersAcked,
             allow_peer_reset: false,
+            retention: None,
         }
     }
 
@@ -67,7 +124,16 @@ impl CompactionOptions {
         Self {
             safe_horizon: CompactionSafeHorizon::Frontiers(frontiers),
             allow_peer_reset: false,
+            retention: None,
         }
+    }
+
+    /// Attach a DL-20 retention policy, returning `self` for builder-style use. The
+    /// most-recent `policy.window` logical versions of the change feed are then
+    /// protected from pruning regardless of the safe horizon.
+    pub fn with_retention(mut self, policy: RetentionPolicy) -> Self {
+        self.retention = Some(policy);
+        self
     }
 }
 
@@ -153,11 +219,25 @@ fn compact_doc_tx(
     if latest == 0 {
         return Ok(());
     }
-    let compact_to = if opts.allow_peer_reset {
+    let mut compact_to = if opts.allow_peer_reset {
         latest
     } else {
         opts.safe_horizon.compact_to(doc_id, latest)
     };
+    // DL-20 retention: never fold/prune change-feed history within the configured
+    // window. The window is a logical-version count off the current frontier
+    // (`latest`), so the protected floor is deterministic (no wall clock). Clamp the
+    // compaction boundary to just BELOW the protected floor: a chunk at or above the
+    // floor keeps its standalone oplog row (the change feed for the last `window`
+    // versions stays intact and powers undo/audit). Both floors apply — the DL-19
+    // safe horizon and the DL-20 retention floor — and the lower boundary wins.
+    if let Some(retention) = opts.retention {
+        let protected_floor = retention.protected_floor(latest);
+        // Versions strictly below the floor may still compact; the floor itself and
+        // everything newer is retained, so cap `compact_to` at `floor - 1`.
+        let retention_cap = protected_floor.saturating_sub(1);
+        compact_to = compact_to.min(retention_cap);
+    }
     if compact_to == 0 {
         return Ok(());
     }
@@ -557,6 +637,7 @@ mod tests {
         let opts = CompactionOptions {
             safe_horizon: CompactionSafeHorizon::from_doc_frontier(collection_doc_id("tasks"), 1),
             allow_peer_reset: false,
+            retention: None,
         };
         let report = s.compact_history(&opts, &idx).unwrap();
 
@@ -594,6 +675,7 @@ mod tests {
         let opts = CompactionOptions {
             safe_horizon: CompactionSafeHorizon::from_doc_frontier(collection_doc_id("tasks"), 1),
             allow_peer_reset: false,
+            retention: None,
         };
         let report = s.compact_history(&opts, &idx).unwrap();
 
@@ -604,6 +686,71 @@ mod tests {
             "delete chunk remains available for the peer that has not acked it"
         );
         assert!(s.get_record("tasks", "t1").unwrap().is_none());
+    }
+
+    #[test]
+    fn retention_window_keeps_within_window_change_feed_and_prunes_beyond() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        // Five versions of t1: chunk-0001..chunk-0005 (frontier 1..5).
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+            .unwrap();
+        for (n, at) in [("B", 2), ("C", 3), ("D", 4), ("E", 5)] {
+            s.apply_mutation_crdt(&patch("tasks", "t1", json!({"title": n}), at), &idx)
+                .unwrap();
+        }
+
+        // All peers acked (DL-19 would fold the whole history), BUT a DL-20 retention
+        // window of 2 versions must protect the last two versions' change feed
+        // (frontier 4 and 5). The current frontier is 5, so protected_floor = 4.
+        let opts =
+            CompactionOptions::all_peers_acked().with_retention(RetentionPolicy::new(2));
+        s.compact_history(&opts, &idx).unwrap();
+
+        // The standalone oplog rows WITHIN the window survive (the change feed for the
+        // last two versions powers undo/audit), and the ones beyond it are pruned.
+        let op_ids: Vec<String> = s.list_ops().unwrap().into_iter().map(|o| o.op_id).collect();
+        let doc = collection_doc_id("tasks");
+        assert!(
+            op_ids.contains(&format!("{doc}#chunk-0004")),
+            "within-window change-feed entry (v4) must be retained"
+        );
+        assert!(
+            op_ids.contains(&format!("{doc}#chunk-0005")),
+            "within-window change-feed entry (v5) must be retained"
+        );
+        assert!(
+            !op_ids.contains(&format!("{doc}#chunk-0001")),
+            "beyond-window change-feed entry (v1) may be pruned"
+        );
+        assert!(
+            !op_ids.contains(&format!("{doc}#chunk-0002")),
+            "beyond-window change-feed entry (v2) may be pruned"
+        );
+        // The projection is unchanged by compaction (DL-19 invariant).
+        assert_eq!(
+            s.get_record("tasks", "t1").unwrap().unwrap().fields["title"],
+            json!("E")
+        );
+    }
+
+    #[test]
+    fn retention_window_larger_than_history_protects_everything() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&patch("tasks", "t1", json!({"title": "B"}), 2), &idx)
+            .unwrap();
+
+        // A window wider than all history (default 90) protects every entry: nothing
+        // is folded even though all peers acked.
+        let opts = CompactionOptions::all_peers_acked()
+            .with_retention(RetentionPolicy::default());
+        let report = s.compact_history(&opts, &idx).unwrap();
+        assert_eq!(report.chunks_removed, 0, "full window protects all history");
+        assert_eq!(report.oplog_rows_removed, 0);
+        assert_eq!(s.list_ops().unwrap().len(), 2);
     }
 
     #[test]
@@ -630,6 +777,7 @@ mod tests {
         let opts = CompactionOptions {
             safe_horizon: CompactionSafeHorizon::from_doc_frontier(doc_id.clone(), 1),
             allow_peer_reset: false,
+            retention: None,
         };
         src.compact_history(&opts, &idx).unwrap();
 

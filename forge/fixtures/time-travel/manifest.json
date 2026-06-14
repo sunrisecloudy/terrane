@@ -1,0 +1,28 @@
+{
+  "suite": "time-travel-fixtures",
+  "prd": ["DL-20"],
+  "spec": "forge/spec/time-travel.md",
+  "describe": "DL-20 file-level time travel: per-record change feed (who/when/what) + non-destructive restore + retention. Driven by forge-storage/tests/time_travel_fixtures.rs.",
+  "assert_kinds": {
+    "history": "record_history must equal the listed entries (version/actor/logical_at/op_kind/state) in order",
+    "state_at": "record_state_at must reconstruct the listed fields (or absence) at each version",
+    "restore": "restore_record appends a new version; current state + prior-intact + history-growth as listed",
+    "deterministic": "history reads are byte-stable and restore replays deterministically",
+    "retention": "compact_history with a RetentionPolicy keeps within-window change-feed entries and prunes beyond"
+  },
+  "count": 12,
+  "cases": [
+    { "case": "history_lists_who_when_what_in_order",        "kind": "history",       "file": "history_lists_who_when_what_in_order.json" },
+    { "case": "history_scoped_to_named_record",              "kind": "history",       "file": "history_scoped_to_named_record.json" },
+    { "case": "history_records_a_delete",                    "kind": "history",       "file": "history_records_a_delete.json" },
+    { "case": "state_at_each_version_reconstructs",          "kind": "state_at",      "file": "state_at_each_version_reconstructs.json" },
+    { "case": "restore_creates_new_version_equal_to_prior",  "kind": "restore",       "file": "restore_creates_new_version_equal_to_prior.json" },
+    { "case": "restore_keeps_prior_versions_intact",         "kind": "restore",       "file": "restore_keeps_prior_versions_intact.json" },
+    { "case": "restore_a_deleted_record",                    "kind": "restore",       "file": "restore_a_deleted_record.json" },
+    { "case": "restore_to_tombstone_deletes_live_record",    "kind": "restore",       "file": "restore_to_tombstone_deletes_live_record.json" },
+    { "case": "restore_survives_rebuild",                    "kind": "restore",       "file": "restore_survives_rebuild.json" },
+    { "case": "history_and_restore_deterministic",           "kind": "deterministic", "file": "history_and_restore_deterministic.json" },
+    { "case": "retention_keeps_within_window_prunes_beyond", "kind": "retention",     "file": "retention_keeps_within_window_prunes_beyond.json" },
+    { "case": "retention_full_window_protects_all",          "kind": "retention",     "file": "retention_full_window_protects_all.json" }
+  ]
+}

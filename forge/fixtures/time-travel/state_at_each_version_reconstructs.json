@@ -1,0 +1,22 @@
+{
+  "case": "state_at_each_version_reconstructs",
+  "prd": "DL-20",
+  "describe": "record_state_at reconstructs the exact record value as of any past version",
+  "collection": "notes",
+  "record": "n1",
+  "seed": [
+    { "op": "insert", "id": "n1", "fields": { "body": "v1" }, "logical_at": 1 },
+    { "op": "update", "id": "n1", "fields": { "body": "v2" }, "logical_at": 2 },
+    { "op": "update", "id": "n1", "fields": { "body": "v3" }, "logical_at": 3 }
+  ],
+  "assert": {
+    "kind": "state_at",
+    "points": [
+      { "version": 0, "state_absent": true },
+      { "version": 1, "state_fields": { "body": "v1" } },
+      { "version": 2, "state_fields": { "body": "v2" } },
+      { "version": 3, "state_fields": { "body": "v3" } },
+      { "version": 99, "state_fields": { "body": "v3" } }
+    ]
+  }
+}

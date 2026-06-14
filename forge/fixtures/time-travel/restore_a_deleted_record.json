@@ -1,0 +1,18 @@
+{
+  "case": "restore_a_deleted_record",
+  "prd": "DL-20",
+  "describe": "restoring a pre-delete version re-creates the deleted record as a new live version",
+  "collection": "tasks",
+  "record": "t1",
+  "seed": [
+    { "op": "insert", "id": "t1", "fields": { "title": "A" }, "logical_at": 1 },
+    { "op": "delete", "id": "t1", "logical_at": 2 }
+  ],
+  "assert": {
+    "kind": "restore",
+    "to_version": 1,
+    "restored_logical_at": 3,
+    "expect_new_version": 3,
+    "expect_current_fields": { "title": "A" }
+  }
+}

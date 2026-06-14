@@ -1,0 +1,20 @@
+{
+  "case": "history_lists_who_when_what_in_order",
+  "prd": "DL-20",
+  "describe": "the change feed lists who/when/what per version, oldest-to-newest",
+  "collection": "tasks",
+  "record": "t1",
+  "seed": [
+    { "op": "insert", "id": "t1", "fields": { "title": "A" }, "logical_at": 1 },
+    { "op": "patch",  "id": "t1", "fields": { "title": "B" }, "logical_at": 2 },
+    { "op": "patch",  "id": "t1", "fields": { "done": true }, "logical_at": 3 }
+  ],
+  "assert": {
+    "kind": "history",
+    "entries": [
+      { "version": 1, "actor": "local", "logical_at": 1, "op_kind": "record.insert", "state_fields": { "title": "A" } },
+      { "version": 2, "actor": "local", "logical_at": 2, "op_kind": "record.patch",  "state_fields": { "title": "B" } },
+      { "version": 3, "actor": "local", "logical_at": 3, "op_kind": "record.patch",  "state_fields": { "title": "B", "done": true } }
+    ]
+  }
+}

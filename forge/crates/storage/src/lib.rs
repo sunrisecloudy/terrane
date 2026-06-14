@@ -50,7 +50,13 @@ pub mod crdt_write;
 pub use crdt_write::{collection_doc_id, collection_of_doc, RemoteChunk, CHUNK_FORMAT, LOCAL_PEER_ID};
 
 pub mod compaction;
-pub use compaction::{CompactionOptions, CompactionReport, CompactionSafeHorizon};
+pub use compaction::{
+    CompactionOptions, CompactionReport, CompactionSafeHorizon, RetentionPolicy,
+    DEFAULT_RETENTION_WINDOW,
+};
+
+pub mod time_travel;
+pub use time_travel::HistoryEntry;
 
 pub mod export;
 pub use export::{
