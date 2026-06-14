@@ -362,7 +362,13 @@ impl SchemaRegistry {
         // least-upper-bound, so it never rolls a wider local field back (147) and
         // never drops a local-only field that the carried entry lacks (159).
         let merged = match self.collections.get(name) {
-            Some(local) => merge_collection_def(local, &carried),
+            // A genuinely incompatible shared-field type pair (no additive common
+            // supertype) fails the join, so the whole merge fails closed here —
+            // the receiver keeps its local entry and the import rolls back rather
+            // than narrowing a branch (review 160).
+            Some(local) => {
+                merge_collection_def(local, &carried).map_err(CoreError::SchemaCompatibilityError)?
+            }
             None => carried,
         };
         // Validate the merged CANDIDATE before mutating `self`, so a genuine merge
@@ -545,18 +551,25 @@ impl SchemaRegistry {
 
 /// Deterministically merge two definitions of the SAME logical collection from two
 /// divergent registry branches into their **least-upper-bound** (the DL-11 CRDT
-/// registry merge, review 159): a field-id union where a field present on only one
-/// side is preserved, a field present on BOTH is resolved wider-type-wins with
-/// deterministic tie-breaks, and each actor's id counter takes the per-actor MAX.
+/// registry merge, review 159/160): a field-id union where a field present on only
+/// one side is preserved, a field present on BOTH is resolved by the field-type
+/// **join** (least common supertype, never narrowing — review 160), and each actor's
+/// id counter takes the per-actor MAX.
 ///
 /// This is the pure convergence primitive [`SchemaRegistry::sync_collection_merge`]
 /// routes the migration-import seam through. It is **commutative** (`merge(a, b) ==
 /// merge(b, a)`) and **idempotent** (`merge(a, a) == a`), so two peers merging the
 /// same pair in either delivery order converge to the SAME collection — the property
 /// that lets concurrent-additive divergence (159) converge to the union while a stale
-/// older chunk (147) never rolls a wider field back. Delegates to the encapsulated
-/// [`CollectionDef::merge_with`] (the internals are private — review 005 P2).
-pub fn merge_collection_def(local: &CollectionDef, carried: &CollectionDef) -> CollectionDef {
+/// older chunk (147) never rolls a wider field back. Returns `Err` (fails closed)
+/// only when a shared field's two types have no additive common supertype, so the
+/// caller rejects the merge instead of narrowing — this rejection is itself
+/// order-independent. Delegates to the encapsulated [`CollectionDef::merge_with`]
+/// (the internals are private — review 005 P2).
+pub fn merge_collection_def(
+    local: &CollectionDef,
+    carried: &CollectionDef,
+) -> std::result::Result<CollectionDef, String> {
     local.merge_with(carried)
 }
 
@@ -1355,13 +1368,13 @@ mod tests {
         // same collection, and re-merging the same entry is a no-op (DL-11).
         let alice = tasks_with_one_field("alice", FieldType::Text);
         let bob = tasks_with_one_field("bob", FieldType::Bool);
-        let ab = merge_collection_def(&alice, &bob);
-        let ba = merge_collection_def(&bob, &alice);
+        let ab = merge_collection_def(&alice, &bob).unwrap();
+        let ba = merge_collection_def(&bob, &alice).unwrap();
         assert_eq!(ab, ba, "merge must be commutative");
         // Idempotent: re-merging either side, or the union with itself, changes nothing.
-        assert_eq!(merge_collection_def(&ab, &bob), ab);
-        assert_eq!(merge_collection_def(&ab, &alice), ab);
-        assert_eq!(merge_collection_def(&ab, &ab), ab, "merge must be idempotent");
+        assert_eq!(merge_collection_def(&ab, &bob).unwrap(), ab);
+        assert_eq!(merge_collection_def(&ab, &alice).unwrap(), ab);
+        assert_eq!(merge_collection_def(&ab, &ab).unwrap(), ab, "merge must be idempotent");
     }
 
     #[test]
@@ -1449,17 +1462,48 @@ mod tests {
     }
 
     #[test]
-    fn merge_resolves_incompatible_shared_type_deterministically() {
-        // Two branches independently typed the SAME stable id with INCOMPATIBLE types
-        // (Bool vs Text — neither widens to the other). The merge must pick the SAME
-        // type regardless of order (the order_key tie-break), never diverge.
+    fn merge_resolves_distinct_scalars_to_their_common_supertype() {
+        // Two branches independently typed the SAME stable id with distinct scalars
+        // (Bool vs Text — neither widens to the OTHER directly). review 160: the merge
+        // must resolve to their JOIN — the universal `Scalar` top, a genuine supertype
+        // of BOTH — not the order_key-larger Text (which would NARROW the Bool branch).
+        // The result is commutative regardless of delivery order.
         let bool_col = amount_registry(FieldType::Bool).collection("m").unwrap().clone();
         let text_col = amount_registry(FieldType::Text).collection("m").unwrap().clone();
-        let ab = merge_collection_def(&bool_col, &text_col);
-        let ba = merge_collection_def(&text_col, &bool_col);
-        assert_eq!(ab, ba, "incompatible-type resolution must be commutative");
-        // The winner is the larger order_key (Text > Bool), deterministically.
-        assert_eq!(*ab.field("f_alice_0").unwrap().ty(), FieldType::Text);
+        let ab = merge_collection_def(&bool_col, &text_col).unwrap();
+        let ba = merge_collection_def(&text_col, &bool_col).unwrap();
+        assert_eq!(ab, ba, "scalar-join resolution must be commutative");
+        assert_eq!(
+            *ab.field("f_alice_0").unwrap().ty(),
+            FieldType::Scalar,
+            "Bool join Text = Scalar (the common supertype), never a narrowing to either"
+        );
+    }
+
+    #[test]
+    fn merge_joins_divergent_widening_to_a_supertype_of_both() {
+        // THE review-160 case: from an IntNum base, peer A widened the shared field to
+        // FloatNum and peer B widened it to Nullable(IntNum). Neither directly widens to
+        // the other; the OLD order_key tie-break picked Nullable(IntNum), which is NOT a
+        // supertype of FloatNum — silently narrowing the float branch. The join is
+        // Nullable(FloatNum), a real supertype of BOTH, regardless of delivery order.
+        let float_col = amount_registry(FieldType::FloatNum).collection("m").unwrap().clone();
+        let nullint_col = amount_registry(FieldType::nullable(FieldType::IntNum))
+            .collection("m")
+            .unwrap()
+            .clone();
+        let ab = merge_collection_def(&float_col, &nullint_col).unwrap();
+        let ba = merge_collection_def(&nullint_col, &float_col).unwrap();
+        assert_eq!(ab, ba, "divergent-widening join must be commutative");
+        assert_eq!(
+            *ab.field("f_alice_0").unwrap().ty(),
+            FieldType::nullable(FieldType::FloatNum),
+            "join is Nullable(FloatNum) — a supertype of both FloatNum and Nullable(IntNum)"
+        );
+        // The merged type really is an upper bound of BOTH inputs (no branch narrowed).
+        let merged_ty = ab.field("f_alice_0").unwrap().ty();
+        assert!(FieldType::FloatNum.can_widen_to(merged_ty));
+        assert!(FieldType::nullable(FieldType::IntNum).can_widen_to(merged_ty));
     }
 
     #[test]
@@ -1476,13 +1520,13 @@ mod tests {
             })
             .unwrap();
         let flagged = flagged_reg.collection("tasks").unwrap().clone();
-        let merged = merge_collection_def(&plain, &flagged);
+        let merged = merge_collection_def(&plain, &flagged).unwrap();
         assert!(
             merged.field("f_alice_0").unwrap().deprecated(),
             "deprecate is one-way; the union keeps it set"
         );
         // Commutative for the flag union too.
-        assert_eq!(merge_collection_def(&flagged, &plain), merged);
+        assert_eq!(merge_collection_def(&flagged, &plain).unwrap(), merged);
     }
 
     #[test]

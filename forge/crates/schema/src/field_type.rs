@@ -55,37 +55,41 @@ impl FieldType {
         }
     }
 
-    /// A **total, deterministic ordering** over field types, used only as the
-    /// commutative tie-break when a CRDT registry merge encounters two genuinely
-    /// *incompatible* types for the same stable id (neither widens to the other —
-    /// e.g. `Bool` vs `Text`). The widen relation ([`Self::can_widen_to`]) is a
-    /// partial order, so it cannot break such a tie; this key gives a single,
-    /// order-independent winner so two peers merging in either delivery order
-    /// converge to the SAME type (DL-11). The exact numbering is arbitrary but
-    /// **stable** — it must never change once two peers can disagree on it. The
-    /// nullable wrapper sorts after every non-nullable peer (outer rank 5) and is
-    /// then broken by its inner type's rank, so `Nullable(T)` vs `Nullable(U)`
-    /// orders by `T` vs `U` and `Nullable(Nullable(T))` by the peeled core.
+    /// The **least upper bound** (join) of two field types over the widen
+    /// lattice ([`Self::can_widen_to`]): the *narrowest* type both `self` and
+    /// `other` widen to, or `None` when no additive common supertype exists.
     ///
-    /// This is a pure, deterministic key — it imposes NO data-compatibility
-    /// meaning; it is purely the convergence anchor for the incompatible case.
-    pub(crate) fn order_key(&self) -> (u8, u8) {
-        fn rank(t: &FieldType) -> u8 {
-            match t {
-                FieldType::IntNum => 0,
-                FieldType::FloatNum => 1,
-                FieldType::Bool => 2,
-                FieldType::Text => 3,
-                FieldType::Scalar => 4,
-                FieldType::Nullable(_) => 5,
-            }
-        }
-        match self {
-            // Nullable sorts last; its inner *core* (all null layers peeled) breaks
-            // ties among nullables deterministically.
-            FieldType::Nullable(_) => (5, rank(self.inner())),
-            other => (rank(other), 0),
-        }
+    /// This is the type-merge primitive the CRDT registry union relies on
+    /// (DL-11 review 160). When two divergent branches widened the SAME stable
+    /// field id in different directions — e.g. an `IntNum` base that peer A
+    /// widened to `FloatNum` and peer B widened to `Nullable(IntNum)` — both
+    /// directions are legal individually, but neither directly widens to the
+    /// other, so a `order_key` "larger wins" tie-break could pick a type that is
+    /// NOT a supertype of the loser and thereby silently *narrow* the loser's
+    /// branch. The join instead returns the genuine common supertype
+    /// (`Nullable(FloatNum)` for that example), so the merged schema can still
+    /// describe every value either branch admitted.
+    ///
+    /// The join is a true semilattice meet-from-below over the widen partial
+    /// order — **commutative**, **associative**, and **idempotent** — so the
+    /// registry merge converges to the same type regardless of delivery order.
+    /// For every `Some(j)` it returns, both `self.can_widen_to(&j)` and
+    /// `other.can_widen_to(&j)` hold (it is an upper bound of both inputs);
+    /// `None` means there is genuinely no additive common supertype (e.g.
+    /// `Bool` vs `Text`), and the caller must fail closed (reject / keep local)
+    /// rather than narrow.
+    ///
+    /// Rules (all derived from [`Self::can_widen_to`]):
+    /// - `T` join `T` = `T` (idempotent);
+    /// - `IntNum` join `FloatNum` = `FloatNum` (numeric widening);
+    /// - any two *distinct* concrete scalars whose only common supertype is the
+    ///   universal top join to `Scalar` (`Bool` join `Text` = `Scalar`, etc.);
+    /// - nullable absorbs: `Nullable(T)` join `U` = `Nullable(T join U)` on
+    ///   either side, so adding a null layer on one branch keeps the result
+    ///   nullable (e.g. `FloatNum` join `Nullable(IntNum)` = `Nullable(FloatNum)`,
+    ///   `Scalar` join `Nullable(T)` = `Nullable(Scalar)`).
+    pub fn join(&self, other: &FieldType) -> Option<FieldType> {
+        field_type_join(self, other)
     }
 
     /// Whether a field of `self` may be **widened** to `target` without
@@ -130,6 +134,48 @@ impl FieldType {
             ) => true,
             _ => false,
         }
+    }
+}
+
+/// Least upper bound (join) of two field types over the widen lattice — the
+/// narrowest type both inputs widen to, or `None` when there is no additive
+/// common supertype. See [`FieldType::join`] for the contract; this is the
+/// commutative/associative/idempotent semilattice operation the CRDT registry
+/// union merge uses to resolve a divergently-widened shared field (DL-11 review
+/// 160) without ever narrowing either branch.
+pub(crate) fn field_type_join(a: &FieldType, b: &FieldType) -> Option<FieldType> {
+    // Split each side into (nullable?, non-null core). `inner()` peels EVERY
+    // nullable layer, so the cores are always non-nullable and the result is
+    // re-wrapped at most ONCE — keeping the join canonical (a single null layer)
+    // so it stays associative regardless of grouping (`Nullable(Nullable(T))`
+    // can never leak in).
+    let nullable = a.is_nullable() || b.is_nullable();
+    let core = scalar_join(a.inner(), b.inner())?;
+    Some(if nullable { FieldType::nullable(core) } else { core })
+}
+
+/// Join of two NON-nullable cores over the scalar widen chain. Returns `None`
+/// only when there is genuinely no additive common supertype (not reachable for
+/// the current scalar-only type set, where `Scalar` is the universal top, but
+/// kept as the fail-closed seam for future non-scalar types).
+fn scalar_join(a: &FieldType, b: &FieldType) -> Option<FieldType> {
+    use FieldType::*;
+    debug_assert!(!a.is_nullable() && !b.is_nullable(), "scalar_join expects non-null cores");
+    match (a, b) {
+        // Identity / one directly widens to the other: the wider one is the lub
+        // (covers T join T and IntNum→FloatNum / scalar→Scalar in either order).
+        _ if a == b => Some(a.clone()),
+        _ if a.can_widen_to(b) => Some(b.clone()),
+        _ if b.can_widen_to(a) => Some(a.clone()),
+        // Two distinct numeric cores share `FloatNum` (the narrower widening).
+        (IntNum | FloatNum, IntNum | FloatNum) => Some(FloatNum),
+        // Any other distinct scalar pair tops out at the universal `Scalar`.
+        (
+            IntNum | FloatNum | Bool | Text | Scalar,
+            IntNum | FloatNum | Bool | Text | Scalar,
+        ) => Some(Scalar),
+        // No additive common supertype (future non-scalar types fall here).
+        _ => None,
     }
 }
 
@@ -205,32 +251,111 @@ mod tests {
         assert!(!FieldType::Text.can_widen_to(&FieldType::IntNum));
     }
 
-    #[test]
-    fn order_key_is_total_and_stable() {
-        // A deterministic total order: distinct types get distinct keys, and the
-        // key is order-independent (the same value always maps to the same key) so
-        // it is a sound commutative tie-break for the incompatible-merge case.
-        let types = [
+    // A small, representative type universe for the join algebra properties.
+    fn join_universe() -> Vec<FieldType> {
+        vec![
             FieldType::IntNum,
             FieldType::FloatNum,
             FieldType::Bool,
             FieldType::Text,
             FieldType::Scalar,
             FieldType::nullable(FieldType::IntNum),
-            FieldType::nullable(FieldType::Text),
-        ];
-        for t in &types {
-            assert_eq!(t.order_key(), t.clone().order_key(), "{t:?} key must be stable");
+            FieldType::nullable(FieldType::FloatNum),
+            FieldType::nullable(FieldType::Bool),
+            FieldType::nullable(FieldType::Scalar),
+        ]
+    }
+
+    #[test]
+    fn join_idempotent_on_identity() {
+        // T join T = T.
+        for t in join_universe() {
+            assert_eq!(t.join(&t), Some(t.clone()), "{t:?} join itself must be itself");
         }
-        // Bool and Text are incompatible (neither widens to the other) yet get a
-        // deterministic, distinct ordering — the tie-break the merge relies on.
-        assert_ne!(FieldType::Bool.order_key(), FieldType::Text.order_key());
-        assert!(FieldType::Bool.order_key() < FieldType::Text.order_key());
-        // Distinct nullables order by their inner core.
-        assert_ne!(
-            FieldType::nullable(FieldType::IntNum).order_key(),
-            FieldType::nullable(FieldType::Text).order_key()
+    }
+
+    #[test]
+    fn join_numeric_widening() {
+        // IntNum join FloatNum = FloatNum (the numeric widening direction).
+        assert_eq!(FieldType::IntNum.join(&FieldType::FloatNum), Some(FieldType::FloatNum));
+        assert_eq!(FieldType::FloatNum.join(&FieldType::IntNum), Some(FieldType::FloatNum));
+    }
+
+    #[test]
+    fn join_distinct_scalars_top_out_at_scalar() {
+        // Two unrelated concrete scalars (no direct widening) join to the
+        // universal `Scalar` top — never None, since Scalar admits any value.
+        assert_eq!(FieldType::Bool.join(&FieldType::Text), Some(FieldType::Scalar));
+        assert_eq!(FieldType::IntNum.join(&FieldType::Bool), Some(FieldType::Scalar));
+        // Any concrete scalar joined with Scalar is Scalar (Scalar is the top).
+        for t in [FieldType::IntNum, FieldType::FloatNum, FieldType::Bool, FieldType::Text] {
+            assert_eq!(t.join(&FieldType::Scalar), Some(FieldType::Scalar), "{t:?} join Scalar");
+        }
+    }
+
+    #[test]
+    fn join_adds_nullable_when_either_side_is_nullable() {
+        // T join Nullable(T) = Nullable(T) (adding null tolerance is additive).
+        assert_eq!(
+            FieldType::IntNum.join(&FieldType::nullable(FieldType::IntNum)),
+            Some(FieldType::nullable(FieldType::IntNum))
         );
+        // Scalar join Nullable(T) = Nullable(Scalar) — null layer absorbs, core
+        // tops out at Scalar.
+        assert_eq!(
+            FieldType::Scalar.join(&FieldType::nullable(FieldType::Bool)),
+            Some(FieldType::nullable(FieldType::Scalar))
+        );
+    }
+
+    #[test]
+    fn join_divergent_widening_keeps_a_supertype_of_both() {
+        // THE review-160 case: an IntNum base that peer A widened to FloatNum and
+        // peer B widened to Nullable(IntNum). Neither directly widens to the other,
+        // but the join is Nullable(FloatNum) — a genuine supertype of BOTH (not the
+        // order_key-larger Nullable(IntNum), which would narrow the float branch).
+        let a = FieldType::FloatNum;
+        let b = FieldType::nullable(FieldType::IntNum);
+        let j = a.join(&b).expect("a common supertype exists");
+        assert_eq!(j, FieldType::nullable(FieldType::FloatNum));
+        assert!(a.can_widen_to(&j), "join must be an upper bound of FloatNum");
+        assert!(b.can_widen_to(&j), "join must be an upper bound of Nullable(IntNum)");
+    }
+
+    #[test]
+    fn join_is_commutative_idempotent_and_an_upper_bound() {
+        // Property-ish over the small universe: for every pair, the join (when it
+        // exists) is commutative AND an upper bound of both inputs.
+        let types = join_universe();
+        for a in &types {
+            for b in &types {
+                let ab = a.join(b);
+                let ba = b.join(a);
+                assert_eq!(ab, ba, "join must be commutative: {a:?} vs {b:?}");
+                if let Some(j) = ab {
+                    assert!(
+                        a.can_widen_to(&j) && b.can_widen_to(&j),
+                        "join {j:?} must be an upper bound of {a:?} and {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn join_is_associative() {
+        // (a join b) join c == a join (b join c) wherever both sides exist — the
+        // semilattice law that makes the registry merge order-independent.
+        let types = join_universe();
+        for a in &types {
+            for b in &types {
+                for c in &types {
+                    let left = a.join(b).and_then(|ab| ab.join(c));
+                    let right = b.join(c).and_then(|bc| a.join(&bc));
+                    assert_eq!(left, right, "join must be associative: {a:?}, {b:?}, {c:?}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -102,16 +102,23 @@ impl FieldDef {
 
     /// Deterministically merge two definitions of the SAME stable `field_id` from
     /// two divergent registry branches into their least-upper-bound (DL-11 review
-    /// 159). Both inputs must share `field_id` (the caller keys the union by it);
-    /// the result is **commutative** (`merge(a, b) == merge(b, a)`) and
+    /// 159/160). Both inputs must share `field_id` (the caller keys the union by
+    /// it); the result is **commutative** (`merge(a, b) == merge(b, a)`) and
     /// **idempotent** (`merge(a, a) == a`), so two peers converge regardless of
     /// delivery order. Each component is resolved monotonically:
     ///
-    /// - **type**: the WIDER of the two under [`FieldType::can_widen_to`] (so a
-    ///   narrower carried field never rolls the local one back — review 147); if
-    ///   the two are genuinely incompatible (neither widens to the other) the
-    ///   deterministic [`FieldType::order_key`] tie-break picks the larger key, so
-    ///   both peers land on the same type instead of diverging;
+    /// - **type**: the field-type **join** (least upper bound) of the two under
+    ///   the widen lattice ([`FieldType::join`]). The join is the *narrowest*
+    ///   common supertype, so it never rolls a wider local field back (review
+    ///   147) AND never silently narrows a divergent widening (review 160): when
+    ///   peer A widened an `IntNum` to `FloatNum` while peer B widened the same
+    ///   field to `Nullable(IntNum)`, the join is `Nullable(FloatNum)` — a real
+    ///   supertype of BOTH — not the `order_key`-larger `Nullable(IntNum)`, which
+    ///   would describe the float branch with a narrower type. When the two types
+    ///   are genuinely incompatible (no additive common supertype, e.g. `Bool` vs
+    ///   `Text`) the join is `None`; this merge then **fails closed** (`Err`) so
+    ///   the caller rejects the whole collection merge / keeps local rather than
+    ///   narrowing either branch (commutative: both delivery orders reject);
     /// - **name**: a rename only touches the display name (DL-7), so two branches
     ///   may carry different names; pick the lexicographically larger one
     ///   deterministically (a later duplicate-name collision is caught by
@@ -119,27 +126,30 @@ impl FieldDef {
     /// - **indexed / deprecated / required / enforced**: each is a one-way
     ///   additive flag (turning it on is the only legal transition — DL-8/DL-12),
     ///   so the merge ORs them: once either branch set it, the union keeps it set.
-    fn merge_with(&self, other: &FieldDef) -> FieldDef {
+    fn merge_with(&self, other: &FieldDef) -> Result<FieldDef, String> {
         debug_assert_eq!(self.field_id, other.field_id, "merge_with requires the same field_id");
-        // WIDER-WINS type resolution, commutative by construction.
-        let ty = if self.ty.can_widen_to(&other.ty) {
-            // self widens to other => other is at least as wide. (Covers equality.)
-            other.ty.clone()
-        } else if other.ty.can_widen_to(&self.ty) {
-            self.ty.clone()
-        } else {
-            // Genuinely incompatible: neither widens to the other. Pick by the
-            // stable, total order_key so both delivery orders agree.
-            if other.ty.order_key() > self.ty.order_key() {
-                other.ty.clone()
-            } else {
-                self.ty.clone()
-            }
-        };
+        // JOIN (least-upper-bound) type resolution: commutative, associative, and
+        // idempotent over the widen lattice, so it converges regardless of order
+        // and is always an upper bound of BOTH inputs (no silent narrowing).
+        let ty = self.ty.join(&other.ty).ok_or_else(|| {
+            format!(
+                "field {:?}: incompatible types {:?} and {:?} have no common supertype \
+                 (no additive widening join)",
+                self.field_id, self.ty, other.ty
+            )
+        })?;
+        // The join is an upper bound of both inputs: every value either branch
+        // admitted is still describable by the merged type (no branch narrowed).
+        debug_assert!(
+            self.ty.can_widen_to(&ty) && other.ty.can_widen_to(&ty),
+            "field-type join {ty:?} must be an upper bound of {:?} and {:?}",
+            self.ty,
+            other.ty
+        );
         // Deterministic display-name resolution: larger name wins (rename only
         // changes the display name; the stable id is shared).
         let name = if other.name > self.name { other.name.clone() } else { self.name.clone() };
-        FieldDef {
+        Ok(FieldDef {
             field_id: self.field_id.clone(),
             name,
             ty,
@@ -148,7 +158,7 @@ impl FieldDef {
             deprecated: self.deprecated || other.deprecated,
             required: self.required || other.required,
             enforced: self.enforced || other.enforced,
-        }
+        })
     }
 }
 
@@ -262,34 +272,44 @@ impl CollectionDef {
     ///
     /// - **fields**: union keyed by stable `field_id`. A field present in only one
     ///   side is kept as-is; a field present in BOTH is resolved per
-    ///   [`FieldDef::merge_with`] (wider type wins, never narrows; one-way flags
-    ///   OR; deterministic name + incompatible-type tie-break). The result is
-    ///   emitted in a canonical `field_id`-sorted order so the merge is independent
-    ///   of either side's declaration order;
+    ///   [`FieldDef::merge_with`] (field-type **join** / least-upper-bound, never
+    ///   narrows; one-way flags OR; deterministic name). The result is emitted in
+    ///   a canonical `field_id`-sorted order so the merge is independent of either
+    ///   side's declaration order. If a shared field's two types have no additive
+    ///   common supertype (e.g. `Bool` vs `Text`), the merge **fails closed**
+    ///   (`Err`) so the caller rejects the import / keeps local rather than
+    ///   silently narrowing either branch — commutative, since both delivery
+    ///   orders hit the same incompatible pair;
     /// - **actor counters**: the per-actor MAX of the two `next_field_seq` maps, so
     ///   no actor's counter ever regresses (DL-7 — ids are never reused) and the
     ///   merged counters dominate every field id present on either side.
     ///
     /// The collection `name` is taken from `self` (the caller merges same-named
-    /// collections; `carried.name` is expected to match). The result still passes
-    /// [`Self::validate_invariants`] *unless* the two branches genuinely conflict
-    /// (e.g. two live fields renamed onto the same display name) — the caller
-    /// re-validates so such a conflict fails closed rather than corrupting the
-    /// schema.
+    /// collections; `carried.name` is expected to match). A successful merge still
+    /// passes [`Self::validate_invariants`] *unless* the two branches genuinely
+    /// conflict on structure (e.g. two live fields renamed onto the same display
+    /// name) — the caller re-validates so such a conflict also fails closed rather
+    /// than corrupting the schema.
     ///
     /// Pure and deterministic: `merge(a, b) == merge(b, a)` for convergent content
     /// and `merge(a, a) == a`, so a re-merge of the same carried entry is a no-op.
-    pub(crate) fn merge_with(&self, carried: &CollectionDef) -> CollectionDef {
+    pub(crate) fn merge_with(&self, carried: &CollectionDef) -> Result<CollectionDef, String> {
         // Union the fields keyed by stable field_id. Start from the local fields,
         // then fold each carried field in: present-in-both resolves via
-        // FieldDef::merge_with, carried-only is added.
+        // FieldDef::merge_with (which fails closed on an incompatible type pair),
+        // carried-only is added.
         let mut by_id: BTreeMap<&str, FieldDef> =
             self.fields.iter().map(|f| (f.field_id(), f.clone())).collect();
         for cf in &carried.fields {
-            by_id
-                .entry(cf.field_id())
-                .and_modify(|local| *local = local.merge_with(cf))
-                .or_insert_with(|| cf.clone());
+            match by_id.get(cf.field_id()) {
+                Some(local) => {
+                    let merged = local.merge_with(cf)?;
+                    by_id.insert(cf.field_id(), merged);
+                }
+                None => {
+                    by_id.insert(cf.field_id(), cf.clone());
+                }
+            }
         }
         // Canonical, order-independent field order: by stable field_id (BTreeMap
         // already iterates in sorted key order).
@@ -302,7 +322,7 @@ impl CollectionDef {
             *entry = (*entry).max(*seq);
         }
 
-        CollectionDef { name: self.name.clone(), fields, next_field_seq }
+        Ok(CollectionDef { name: self.name.clone(), fields, next_field_seq })
     }
 
     /// Re-validate structural invariants after deserialization (review 005 P2):
