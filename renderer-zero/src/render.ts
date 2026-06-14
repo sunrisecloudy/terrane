@@ -211,12 +211,19 @@ const CATALOG: Record<string, CatalogSpec> = {
 function renderUnknown(node: UnknownNode): DomElement {
   const spec = CATALOG[node.type];
   if (spec === undefined) {
-    // True UI-6 fallback: a labelled group, never the raw JSON.
+    // True UI-6 fallback (a `type` in NEITHER the typed nor the extended
+    // catalog): the spec's "Unknown Component Fallback" — a labelled `group`
+    // reading "Unsupported component <Type>", NEVER the raw payload JSON. The
+    // fallback still PRESERVES the subtree: any KNOWN descendant the unknown
+    // carries under `children`/`items` is rendered so accessibility/content is
+    // never lost behind the placeholder (mirrors the focus.rs traversal that
+    // re-parses an unknown's verbatim child arrays).
     const el = doc.createElement("div");
     el.setAttribute("data-forge-type", node.type);
     el.setAttribute("data-forge-unknown", "true");
     el.setAttribute("role", "group");
     el.setAttribute("aria-label", `Unsupported component ${node.type}`);
+    appendUnknownChildren(el, node, ["children", "items"]);
     return el;
   }
   const el = doc.createElement(spec.tag);
@@ -241,18 +248,23 @@ function renderUnknown(node: UnknownNode): DomElement {
     }
   }
   // Recurse into declared child arrays so known descendants still render.
-  if (spec.childKeys) {
-    for (const key of spec.childKeys) {
-      const arr = node[key];
-      if (Array.isArray(arr)) {
-        for (const child of arr) {
-          if (isNodeLike(child)) el.appendChild(render(child as Node));
-        }
-        break;
+  if (spec.childKeys) appendUnknownChildren(el, node, spec.childKeys);
+  return el;
+}
+
+/** Render the known descendants an unknown node carries under the first present
+ * array among `keys`, appending them to `el`. Non-node entries are skipped
+ * (tolerant per UI-6). */
+function appendUnknownChildren(el: DomElement, node: UnknownNode, keys: string[]): void {
+  for (const key of keys) {
+    const arr = node[key];
+    if (Array.isArray(arr)) {
+      for (const child of arr) {
+        if (isNodeLike(child)) el.appendChild(render(child as Node));
       }
+      return;
     }
   }
-  return el;
 }
 
 function isNodeLike(v: unknown): v is Node {

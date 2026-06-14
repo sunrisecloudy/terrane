@@ -34,13 +34,21 @@ renderer-zero/
     render.ts         the renderer: every typed node + the full @forge/std catalog
     patch.ts          the patch applier: 5 ops, index-path addressing, DOM sync
     canonical.ts      canonical wire serialization + structural tree equality
+    events.ts         event EMISSION: a gesture on a rendered control emits
+                      { action, payload } to a host dispatch callback (UI-4/CR-6)
+    focus.ts          UI-7 focus order: compute + apply tabindex / initial focus,
+                      ported 1:1 from forge/crates/ui/src/focus.rs
     dom.ts            a minimal, deterministic, dependency-free DOM shim
     index.ts          public barrel
   test/
     fixtures.ts       loads the REAL committed forge fixtures by path
     golden.test.ts    drives forge/crates/ui/tests/golden/* (roundtrip/diff/unknown)
     a11y.test.ts      drives .../golden/a11y/representative_screen.json (roles/names)
+    focus.test.ts     drives .../golden/a11y/representative_screen.json focus_order
+                      (stops/kind/initial focus/traps_focus) + tabindex application
     events.test.ts    drives forge/fixtures/ui-events/* (event dispatch -> patches)
+    emit.test.ts      drives forge/fixtures/ui-events/* (gesture -> EMITTED event)
+    fallback.test.ts  drives .../golden/unknown_*.json (UI-6 fallback render)
     patch.test.ts     unit coverage of every op + every validation error path
 ```
 
@@ -132,15 +140,45 @@ manifest is cross-checked against the files on disk.
 |----------------------------------------------------------|----------|---------------------------------------------------------|
 | `forge/crates/ui/tests/golden/roundtrip_*.json`          | 7        | parse → canonical wire form round-trips; render is stable & typed |
 | `forge/crates/ui/tests/golden/diff_*.json`               | 10       | render `old`, apply `expect_patches`, equals `new` (tree + DOM) |
-| `forge/crates/ui/tests/golden/unknown_*.json`            | 3        | UI-6 fallback renders & preserves unknown payload verbatim |
-| `forge/crates/ui/tests/golden/a11y/representative_screen.json` | 1 (3 screens, 18 annotations) | rendered roles/names match the a11y golden |
-| `forge/fixtures/ui-events/*.json`                         | 12       | event ActionRef → expected patches → final tree (dispatch/error/replay) |
+| `forge/crates/ui/tests/golden/unknown_*.json`            | 3        | UI-6 fallback renders a safe placeholder, preserves the known subtree, never leaks raw JSON, round-trips verbatim |
+| `forge/crates/ui/tests/golden/a11y/representative_screen.json` (roles/names) | 1 (3 screens, 18 annotations) | rendered roles/names match the a11y golden |
+| `forge/crates/ui/tests/golden/a11y/representative_screen.json` (focus order) | 1 (3 screens) | computed `focus_order` matches the golden stop-for-stop (path/kind/role/name), `initial_focus` + `traps_focus` match, and `applyFocus` writes `tabindex` / initial focus onto the DOM |
+| `forge/fixtures/ui-events/*.json` (patch application)    | 12       | event ActionRef → expected patches → final tree (dispatch/error/replay) |
+| `forge/fixtures/ui-events/*.json` (event emission)       | 12       | a gesture on the rendered control EMITS `{ action, payload }` to the host dispatch — exactly the vector's event; rejection/throwing is the core's job after this faithful emit |
 
-**20** golden UI fixtures + the a11y screen golden + **12** ui-event vectors =
-**33 committed fixture files** driving the suite (**53** test cases total,
-including unit/regression coverage of the patch ops, the decorative-Icon a11y
-rule, UI-6 verbatim nesting, and UI-6 verbatim `type` fidelity for
-non-string/absent `type`), all green.
+**20** golden UI fixtures + the a11y screen golden (driven twice: roles/names
+*and* focus order) + **12** ui-event vectors (driven twice: patch application
+*and* event emission) = **33 committed fixture files** driving the suite
+(**82** test cases total, including unit/regression coverage of the patch ops,
+the decorative-Icon a11y rule, UI-6 verbatim nesting, UI-6 verbatim `type`
+fidelity for non-string/absent `type`, and the renderer/core layering of
+emission vs dispatch), all green.
+
+### The three loops this renderer closes (UI-4 / UI-6 / UI-7)
+
+1. **Event emission (UI-4 / CR-6)** — `src/events.ts`. `fireEvent` / `bindEvents`
+   turn a `tap`/`change` gesture on a rendered Button/TextField into a serialized
+   `{ action: ActionRef, payload }` handed to a host dispatch callback. A control
+   with no matching ActionRef (a Text, a Button with no `onTap`, or an action
+   absent from the tree) emits **nothing** — never an error, never a `null`-action
+   emit. The renderer only *serializes and routes* the event; whether the action
+   is then accepted, payload-validated, or the handler throws is the **core's**
+   concern, which is why the renderer still emits faithfully for the
+   `invalid_payload` / `handler_throws` vectors and lets the core reject.
+2. **UI-6 unknown fallback** — `src/render.ts`. An unrecognized `type` renders the
+   spec's "Unknown Component Fallback": a labelled `group` reading
+   `Unsupported component <Type>`, never the raw JSON — and it **preserves the
+   subtree**, rendering any KNOWN descendant under `children`/`items` so
+   accessibility/content is never lost behind the placeholder. A non-string or
+   absent `type` never crashes the renderer.
+3. **A11y + focus (UI-7)** — `src/focus.ts`, ported 1:1 from `focus.rs`. The
+   renderer emits role / `aria-label` / `alt` (Image) onto each DOM node, and the
+   focus layer computes the deterministic focus order — Stack/Grid source order,
+   Tabs tablist-then-active-panel, open-Modal containment (`traps_focus` + initial
+   focus on the first focusable child) — with each stop kind-tagged (`Element` vs
+   `Tab`) so a tab and a rendered child at the same numeric path never collide.
+   `applyFocus` writes a roving `tabindex` (`0` on the initial focus, `-1`
+   elsewhere) and marks the initial focus / focus trap on the DOM.
 
 ## Relationship to the Rust ground truth
 
@@ -149,6 +187,10 @@ non-string/absent `type`), all green.
 - `patch.ts` mirrors `patch.rs` (the five ops, index-path resolution, the exact
   validation-error conditions).
 - `render.ts` role/name emission mirrors `accessibility.rs`.
+- `focus.ts` mirrors `focus.rs` (the per-container focus-order rules, Modal
+  containment, the `FocusStopKind` Element/Tab disambiguation).
+- `events.ts` realizes the renderer half of UI-4/CR-6: emission of the wire
+  `Button.onTap` / `TextField.onChange` ActionRef to a host dispatcher.
 
 If the Rust contract changes, these files are the single place to update, and the
 fixtures will tell you immediately.

@@ -107,6 +107,24 @@ test("genuinely-unknown component renders the UI-6 fallback group, never raw JSO
   assert.ok(!el.textContent.includes("Heatmap"), "raw payload leaked into fallback render");
 });
 
+test("a11y attributes land on the DOM: role + aria-label + alt (Image) onto elements", () => {
+  // Image's accessible name comes from `alt` (accessibility.rs AxNameSource::Alt);
+  // it must surface on the rendered element as the accessible name.
+  const img = render(parse({ type: "Image", alt: "A grey cat" }) as Node);
+  assert.equal(img.getAttribute("role"), "img");
+  assert.equal(img.getAttribute("aria-label"), "A grey cat", "alt did not become the accessible name");
+
+  // A named TextField carries its label as aria-label on the rendered <input>.
+  const field = render(parse({ type: "TextField", value: "", label: "Email" }) as Node);
+  assert.equal(field.getAttribute("role"), "textbox");
+  assert.equal(field.getAttribute("aria-label"), "Email");
+
+  // A labelled Card becomes a named region; the role + name both land on the DOM.
+  const card = render(parse({ type: "Card", ariaLabel: "Profile" }) as Node);
+  assert.equal(card.getAttribute("role"), "region");
+  assert.equal(card.getAttribute("aria-label"), "Profile");
+});
+
 interface Annotation {
   type: string;
   role: string;
