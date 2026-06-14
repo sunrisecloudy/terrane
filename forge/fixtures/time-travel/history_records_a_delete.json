@@ -1,7 +1,7 @@
 {
   "case": "history_records_a_delete",
   "prd": "DL-20",
-  "describe": "a delete appears in the feed with no surviving state (tombstone)",
+  "describe": "a delete appears in the feed with no surviving state (tombstone), but still reports its own logical_at — the delete's mutation timestamp survives on the oplog row (DL-20 review 169) so the monotone restore clock counts it",
   "collection": "tasks",
   "record": "t1",
   "seed": [
@@ -12,7 +12,7 @@
     "kind": "history",
     "entries": [
       { "version": 1, "actor": "local", "logical_at": 1, "op_kind": "record.insert", "state_fields": { "title": "A" } },
-      { "version": 2, "actor": "local", "logical_at": null, "op_kind": "record.delete", "state_absent": true }
+      { "version": 2, "actor": "local", "logical_at": 2, "op_kind": "record.delete", "state_absent": true }
     ]
   }
 }

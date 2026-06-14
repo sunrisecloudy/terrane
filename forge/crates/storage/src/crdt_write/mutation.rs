@@ -157,6 +157,25 @@ fn touched_ids(leaves: &[&Mutation]) -> Vec<(String, String)> {
     seen
 }
 
+/// The logical timestamp (`logical_at`) to carry on the oplog row as `mutation_at`
+/// for a DELETE (DL-20 review 169). A delete tombstones the record, so no surviving
+/// envelope records its WHEN — the change feed + monotone restore clock recover it
+/// from this row instead. Returns the LATEST (max) delete `logical_at` among the
+/// leaves (so a group ending in a delete still surfaces a non-`None` WHEN), or `None`
+/// when the write touched no delete — leaving an insert/update/patch row's bytes
+/// unchanged (whose WHEN is read off the surviving envelope). The timestamp is
+/// clamped to a non-negative value, mirroring how `apply_leaf_to_doc` clamps the
+/// envelope's logical clock.
+fn delete_mutation_at(leaves: &[&Mutation]) -> Option<i64> {
+    leaves
+        .iter()
+        .filter_map(|m| match m {
+            Mutation::Delete { logical_at, .. } => Some(logical_at.unwrap_or(0).max(0)),
+            _ => None,
+        })
+        .max()
+}
+
 /// Extract the collection a leaf mutation targets (the doc selector).
 fn leaf_collection(m: &Mutation) -> Result<String> {
     match m {
@@ -351,7 +370,10 @@ fn write_collection_bucket_tx(
     // 9. Append one oplog row identifying the logical mutation + chunk. The payload
     //    schema is owned by `OplogPayload` (shared with the remote import path) so
     //    the two cannot skew. The op_id is `(doc_id)#(chunk_id)`, unique per doc, so
-    //    distinct collections in one group never collide.
+    //    distinct collections in one group never collide. A delete carries its
+    //    `mutation_at` (DL-20 review 169) so the tombstoned version's WHEN survives in
+    //    the change feed even though no envelope does; non-delete writes pass `None`
+    //    (their WHEN is read off the surviving envelope) and the row stays byte-stable.
     let op_id = format!("{doc_id}#{chunk_id}");
     let op_payload = OplogPayload::local(
         &doc_id,
@@ -359,6 +381,7 @@ fn write_collection_bucket_tx(
         collection,
         kind,
         touched.iter().map(|(_, id)| id.to_string()).collect(),
+        delete_mutation_at(leaves),
     )
     .encode("oplog payload encode")?;
     append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;

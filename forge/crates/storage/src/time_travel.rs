@@ -55,8 +55,11 @@ pub struct HistoryEntry {
     pub source: Option<String>,
     /// WHEN, as the externally-supplied LOGICAL timestamp (`logical_at`) carried on
     /// the record envelope's `updated_at`. NOT a wall clock — the replayable path
-    /// uses only the logical clock, so history is deterministic. `None` for a
-    /// delete (no surviving envelope to read it from).
+    /// uses only the logical clock, so history is deterministic. A delete leaves no
+    /// surviving envelope, so its WHEN is recovered from the delete's `mutation_at`
+    /// oplog field instead (DL-20 review 169), keeping the tombstoned version dated so
+    /// the monotone restore clock counts it. `None` only for a (legacy/remote) delete
+    /// row that carries no `mutation_at`.
     pub logical_at: Option<u64>,
     /// WHAT: the oplog `kind` string (`record.insert`, `record.update`,
     /// `record.patch`, `record.delete`, `schema.migration`).
@@ -130,9 +133,16 @@ impl Store {
                 version,
                 actor: op.actor_id.clone(),
                 source: meta.source,
-                // WHEN: the envelope's logical updated_at (the supplied logical_at).
-                // A delete has no surviving envelope, so its logical_at is None.
-                logical_at: state.as_ref().map(|e| e.updated_at.0),
+                // WHEN: the envelope's logical updated_at (the supplied logical_at). A
+                // delete tombstones the record, so no envelope survives to read it from;
+                // fall back to the delete's `mutation_at` recovered from the oplog row
+                // (DL-20 review 169) so the tombstoned version still reports a WHEN — and
+                // the monotone restore clock counts the delete in its frontier, never
+                // stamping a restore BEFORE the delete it undid.
+                logical_at: state
+                    .as_ref()
+                    .map(|e| e.updated_at.0)
+                    .or(meta.mutation_at),
                 kind: op.kind.clone(),
                 state,
             });
@@ -286,12 +296,19 @@ fn reconstruct_record_at(
 }
 
 /// The decoded subset of an oplog row's JSON payload the change feed needs: the
-/// touched `record_ids` (so we know which rows touched our record) and the optional
-/// remote-import `source` (provenance). Mirrors how the sync seam reads the same
-/// fields back by key (`crate::crdt_write::oplog`), so the two cannot skew.
+/// touched `record_ids` (so we know which rows touched our record), the optional
+/// remote-import `source` (provenance), and the optional `mutation_at` (a DELETE's
+/// logical timestamp — the only WHEN that survives a tombstone, DL-20 review 169).
+/// Mirrors how the sync seam reads the same fields back by key
+/// (`crate::crdt_write::oplog`), so the two cannot skew.
 struct OpMeta {
     record_ids: Vec<String>,
     source: Option<String>,
+    /// The mutation's logical timestamp, present ONLY on a delete row
+    /// (`OplogPayload::local` emits `mutation_at` for deletes — DL-20 review 169). It
+    /// is the change feed's only WHEN source for a tombstoned version, since the delete
+    /// leaves no envelope.
+    mutation_at: Option<u64>,
 }
 
 /// Decode an oplog row payload into the change-feed metadata. A row whose payload
@@ -312,7 +329,18 @@ fn decode_op_meta(payload: &[u8]) -> OpMeta {
         .get("source")
         .and_then(|s| s.as_str())
         .map(str::to_string);
-    OpMeta { record_ids, source }
+    // A delete row carries `mutation_at` (DL-20 review 169): the tombstoned version's
+    // only surviving WHEN. Clamp a negative-but-present value to 0 (logical clocks are
+    // non-negative); absent on every non-delete row.
+    let mutation_at = value
+        .get("mutation_at")
+        .and_then(|m| m.as_i64())
+        .map(|m| m.max(0) as u64);
+    OpMeta {
+        record_ids,
+        source,
+        mutation_at,
+    }
 }
 
 /// A chunk's frontier = its zero-padded sequence number (`chunk-0007 → 7`,
@@ -506,8 +534,66 @@ mod tests {
         assert_eq!(feed[0].kind, "record.insert");
         assert_eq!(feed[1].kind, "record.delete");
         assert!(feed[1].state.is_none(), "the delete version has no surviving state");
+        // The tombstoned version still reports its WHEN (the delete's own logical_at,
+        // recovered from the oplog `mutation_at` field — DL-20 review 169), even though
+        // no envelope survives to read updated_at from.
+        assert_eq!(feed[1].logical_at, Some(2), "delete WHEN survives the tombstone");
         assert_eq!(feed[2].kind, "record.insert");
         assert_eq!(feed[2].state.as_ref().unwrap().fields["title"], json!("A"));
+    }
+
+    /// DL-20 review 169: a delete's WHEN survives the tombstone — `record_history`
+    /// reports the delete version's `logical_at` from the delete's own mutation
+    /// timestamp (carried on the oplog row as `mutation_at`), not `None`. Without this,
+    /// the monotone default restore clock — `max(logical_at) + 1` — could not see a
+    /// late delete and would stamp a restore BEFORE the delete it undid.
+    #[test]
+    fn delete_version_reports_its_logical_at_from_the_mutation_timestamp() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&patch("tasks", "t1", json!({"title": "B"}), 2), &idx)
+            .unwrap();
+        // A LATE delete: its logical_at (100) jumps well past the live-state frontier.
+        s.apply_mutation_crdt(&delete("tasks", "t1", 100), &idx).unwrap();
+
+        let feed = s.record_history("tasks", "t1").unwrap();
+        assert_eq!(feed.len(), 3);
+        let del = feed.iter().find(|e| e.kind == "record.delete").unwrap();
+        assert!(del.state.is_none(), "the delete tombstones the record");
+        assert_eq!(
+            del.logical_at,
+            Some(100),
+            "the delete version surfaces its own logical_at, so the data frontier counts it"
+        );
+        // The max logical_at across the whole feed (the monotone-clock frontier) now
+        // reflects the delete, not just the max live-state version (2).
+        let frontier = feed.iter().filter_map(|e| e.logical_at).max().unwrap();
+        assert_eq!(frontier, 100, "the delete is in the monotone-clock frontier");
+
+        // The delete oplog row physically carries `mutation_at` (the source of the WHEN).
+        let delete_op = s
+            .list_ops()
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "record.delete")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&delete_op.payload).unwrap();
+        assert_eq!(payload["mutation_at"], json!(100), "delete row carries mutation_at");
+        // An insert/patch row never carries `mutation_at` (its WHEN is the envelope), so
+        // those payload bytes are unchanged.
+        let insert_op = s
+            .list_ops()
+            .unwrap()
+            .into_iter()
+            .find(|o| o.kind == "record.insert")
+            .unwrap();
+        let insert_payload: serde_json::Value = serde_json::from_slice(&insert_op.payload).unwrap();
+        assert!(
+            insert_payload.get("mutation_at").is_none(),
+            "non-delete rows omit mutation_at (byte-stable)"
+        );
     }
 
     /// "Restoring" a tombstone state on a currently-live record removes it as a new

@@ -184,6 +184,14 @@ impl WorkspaceCore {
     /// at `1`. This is a logical clock derived from the record's own history — NOT the
     /// EventSink event counter, which starts independently at 0 and could collide with /
     /// precede the record's seeded timestamps.
+    ///
+    /// A DELETE counts in the frontier too (DL-20 review 169): the deleted version
+    /// tombstones the record, so no envelope carries its WHEN, but the delete's
+    /// `logical_at` is recovered onto its `HistoryEntry` from the oplog `mutation_at`
+    /// field — so restoring `to_version=v1` after a `delete@100` (with the timestamp
+    /// omitted) stamps `101`, strictly after the delete it undid, not `max(non-delete) +
+    /// 1`. Without surfacing the delete's WHEN the default could land BEFORE the very
+    /// delete the restore reverses, violating the monotone contract.
     fn monotone_restore_clock(&self, collection: &str, id: &str) -> Result<i64> {
         let frontier = self
             .store

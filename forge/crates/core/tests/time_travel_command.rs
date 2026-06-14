@@ -156,7 +156,9 @@ fn run_history(case: &str, fx: &Value) {
         assert_eq!(entry["version"], exp["version"], "{case}: version");
         assert_eq!(entry["actor"], exp["actor"], "{case}: actor");
         assert_eq!(entry["kind"], exp["op_kind"], "{case}: op_kind");
-        // WHEN: logical_at may be null (a delete).
+        // WHEN: logical_at is the envelope's updated_at, or — for a delete (no surviving
+        // envelope) — the delete's own mutation timestamp recovered from the oplog row
+        // (DL-20 review 169). `null` only for a delete row carrying no mutation timestamp.
         let expected_at = exp["logical_at"].clone();
         assert_eq!(entry["logical_at"], expected_at, "{case}: logical_at");
         // STATE: the fields, or asserted absent (a tombstone => null state).
@@ -733,5 +735,65 @@ fn live_db_restore_omitted_clock_is_strictly_greater_than_prior_timestamp() {
     assert!(
         restored["logical_at"].as_i64().unwrap() > prior_frontier,
         "the restore entry's logical_at exceeds every prior version's"
+    );
+}
+
+/// LIVE (review 169): the monotone default `restored_logical_at` must account for a
+/// DELETE's timestamp. `insert@1 -> patch@2 -> delete@100`, then restore-to-v1 with an
+/// OMITTED clock: the data frontier's max non-delete logical_at is 2, but the delete
+/// happened at 100 — so the default must be STRICTLY GREATER than 100 (the change it
+/// undid), not `max(non-delete) + 1 == 3`. A delete leaves no surviving envelope, so its
+/// WHEN is recovered from the delete's own mutation timestamp (carried on the oplog
+/// row) and surfaced on the change feed, which is what lets the monotone clock see it.
+#[test]
+fn live_db_restore_omitted_clock_is_strictly_greater_than_a_late_delete() {
+    let mut core = WorkspaceCore::in_memory("ws-restore-monotone-delete").unwrap();
+    let idx = IndexManager::new();
+    apply_seed(&mut core, &idx, "tasks", &json!({ "op": "insert", "id": "t1", "fields": { "title": "A" }, "logical_at": 1 }));
+    apply_seed(&mut core, &idx, "tasks", &json!({ "op": "patch", "id": "t1", "fields": { "title": "B" }, "logical_at": 2 }));
+    // A LATE delete: its logical_at (100) jumps well past the live-state frontier (2).
+    apply_seed(&mut core, &idx, "tasks", &json!({ "op": "delete", "id": "t1", "logical_at": 100 }));
+    assert!(core.store_mut().get_record("tasks", "t1").unwrap().is_none(), "deleted");
+
+    // The change feed must surface the delete's WHEN (100), so the monotone frontier is
+    // the delete timestamp, not just the max live-state version (2).
+    let feed_before = entries(&history(&mut core, owner(), "tasks", "t1"));
+    let delete_entry = feed_before
+        .iter()
+        .find(|e| e["kind"] == json!("record.delete"))
+        .expect("delete in the change feed");
+    assert_eq!(
+        delete_entry["logical_at"].as_i64(),
+        Some(100),
+        "the delete version reports its own logical_at (review 169)"
+    );
+
+    // Restore to version 1 (a live state, over the tombstone) WITHOUT pinning the clock.
+    let resp = core.handle(cmd(
+        owner(),
+        "db.restore",
+        json!({ "collection": "tasks", "id": "t1", "to_version": 1 }),
+    ));
+    assert!(resp.ok, "db.restore should succeed without a pinned clock: {:?}", resp.error);
+
+    // The default stamp is STRICTLY GREATER than the delete it undid (100) — NOT 3
+    // (max non-delete logical_at + 1), which would precede the delete.
+    let stamped = resp.payload["restored_logical_at"].as_i64().unwrap();
+    assert!(
+        stamped > 100,
+        "the omitted-clock restore must stamp a logical_at strictly greater than the delete \
+         it undid (100), got {stamped}"
+    );
+
+    // The record came back (restore-to-v1 reinserts over the tombstone), and the restore
+    // entry carries that monotone WHEN — still after the delete — in the change feed.
+    let now = core.store_mut().get_record("tasks", "t1").unwrap().unwrap();
+    assert_eq!(now.fields["title"], json!("A"), "the record is restored to v1");
+    let feed_after = entries(&history(&mut core, owner(), "tasks", "t1"));
+    let restored = feed_after.last().unwrap();
+    assert_eq!(restored["logical_at"].as_i64().unwrap(), stamped);
+    assert!(
+        restored["logical_at"].as_i64().unwrap() > 100,
+        "the restore entry's logical_at exceeds the delete it reversed"
     );
 }

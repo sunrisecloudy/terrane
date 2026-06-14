@@ -61,18 +61,34 @@ pub(super) struct OplogPayload {
     /// marked schema-affecting but its `to` is unrecoverable, rather than importing
     /// migrated data as a plain record write that never advances the next hop's schema.
     remote_is_migration: bool,
+    /// The mutation's LOGICAL timestamp (the supplied `logical_at`), carried on the
+    /// oplog row ONLY for a **delete** (DL-20 review 169). A delete tombstones the
+    /// record, so no surviving envelope carries its WHEN — yet the change feed must
+    /// still report when the delete happened (`HistoryEntry::logical_at`) and the
+    /// monotone restore clock must count the delete in its frontier, or a restore that
+    /// omits `restored_logical_at` could stamp a version BEFORE the delete it undid
+    /// (the non-monotone bug). Populated from the delete leaf's `logical_at`; `None`
+    /// for an insert/update/patch (whose WHEN is read off the surviving envelope) so
+    /// those rows stay byte-identical to before. Emitted as `mutation_at`.
+    mutation_at: Option<i64>,
 }
 
 impl OplogPayload {
     /// The payload for a LOCAL group write: `{chunk_id, collection, doc_id, kind,
     /// record_ids}` (alphabetical on the wire). No `source` key — preserving the
     /// prior local-path shape exactly.
+    ///
+    /// `mutation_at` is the delete's logical timestamp, carried ONLY for a delete
+    /// (DL-20 review 169) so the tombstoned version's WHEN survives in the change
+    /// feed even though no envelope does; `None` for insert/update/patch keeps those
+    /// rows byte-identical to before (the `mutation_at` key is then omitted).
     pub(super) fn local(
         doc_id: &str,
         chunk_id: &str,
         collection: &str,
         kind: &str,
         record_ids: Vec<String>,
+        mutation_at: Option<i64>,
     ) -> Self {
         OplogPayload {
             doc_id: doc_id.to_string(),
@@ -84,6 +100,7 @@ impl OplogPayload {
             migration: None,
             registry_collection: None,
             remote_is_migration: false,
+            mutation_at,
         }
     }
 
@@ -121,6 +138,7 @@ impl OplogPayload {
             migration: Some((from, to)),
             registry_collection,
             remote_is_migration: false,
+            mutation_at: None,
         }
     }
 
@@ -157,13 +175,18 @@ impl OplogPayload {
             migration: schema_version.map(|to| (0, to)),
             registry_collection,
             remote_is_migration: schema_version.is_some(),
+            // The remote-import path does not (yet) recover the original delete's
+            // mutation timestamp through sync metadata, so it never emits `mutation_at`
+            // (DL-20 review 169 scopes the fix to the LOCAL oplog). Keeping it `None`
+            // preserves the remote-import row bytes exactly.
+            mutation_at: None,
         }
     }
 
     /// Encode to the `oplog.payload` bytes. Builds a `serde_json::Value` map (so the
     /// keys land in BTreeMap/alphabetical order, byte-identical to the prior inline
     /// `serde_json::json!`) and only emits the keys the variant carries
-    /// (`collection`/`source`/`from`/`to`).
+    /// (`collection`/`source`/`from`/`to`/`mutation_at`).
     pub(super) fn encode(&self, context: &'static str) -> Result<Vec<u8>> {
         let mut map = serde_json::Map::new();
         map.insert("doc_id".into(), self.doc_id.as_str().into());
@@ -188,6 +211,13 @@ impl OplogPayload {
             // a migration even when it carried no `registry_collection`, and the sync seam
             // can FAIL CLOSED if the marker is set but `to` is unrecoverable.
             map.insert("is_migration".into(), true.into());
+        }
+        if let Some(mutation_at) = self.mutation_at {
+            // The delete's logical timestamp (DL-20 review 169): the tombstoned
+            // version leaves no envelope to read the WHEN from, so the change feed +
+            // monotone restore clock recover it here. Emitted ONLY for a delete; an
+            // insert/update/patch row omits the key, byte-identical to before.
+            map.insert("mutation_at".into(), mutation_at.into());
         }
         if let Some(registry_collection) = &self.registry_collection {
             // The affected collection's evolved registry entry; the sync seam reads it

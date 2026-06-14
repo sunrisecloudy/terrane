@@ -40,7 +40,7 @@ by version), so the result is stable.
   "version": 2,                 // the chunk frontier this entry advanced the record TO
   "actor": "local",             // WHO — oplog actor_id (a synced write carries the original author)
   "source": null,               // WHO (provenance) — remote-import origin when forwarded; null if local
-  "logical_at": 2,              // WHEN — the supplied LOGICAL timestamp (envelope.updated_at); null for a delete
+  "logical_at": 2,              // WHEN — the supplied LOGICAL timestamp (envelope.updated_at; for a delete, the delete's own logical_at)
   "kind": "record.patch",       // WHAT — the oplog op kind
   "state": { /* RecordEnvelope as of v2 */ }   // the record's full state here; null when tombstoned
 }
@@ -53,7 +53,9 @@ by version), so the result is stable.
 - **WHEN** — `logical_at` is the record envelope's `updated_at`, i.e. the
   externally-supplied `logical_at` of the mutation. It is a **logical** timestamp;
   the replayable path never reads a wall clock. A delete leaves no surviving
-  envelope, so its `logical_at` is `null`.
+  envelope, so its WHEN is recovered from the delete's own `logical_at`, carried on
+  the oplog row (the `mutation_at` field) — the tombstoned version stays dated so the
+  monotone restore clock (§3) counts it (DL-20 review 169).
 - **WHAT** — `kind` is the oplog op kind: `record.insert`, `record.update`,
   `record.patch`, `record.delete`, or `schema.migration` (a migration that rewrote
   the record IS a change to it and appears in the feed). `state` is the record's

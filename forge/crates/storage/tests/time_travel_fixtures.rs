@@ -119,7 +119,9 @@ fn run_history(case: &str, fx: &Value) {
             exp["op_kind"].as_str().unwrap(),
             "{case}: op_kind"
         );
-        // WHEN: logical_at may be null (a delete).
+        // WHEN: logical_at is the envelope's updated_at, or — for a delete (no surviving
+        // envelope) — the delete's own mutation timestamp recovered from the oplog row
+        // (DL-20 review 169). `null` only for a delete row carrying no mutation timestamp.
         let expected_at = exp["logical_at"].as_u64();
         assert_eq!(entry.logical_at, expected_at, "{case}: logical_at");
         // STATE: either the fields, or asserted absent (a tombstone).
