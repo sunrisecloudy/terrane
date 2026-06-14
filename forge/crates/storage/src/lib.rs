@@ -70,6 +70,10 @@ pub use rusqlite::Transaction;
 
 mod kv;
 pub use kv::{kv_delete_tx, kv_get_tx, kv_set_tx};
+mod migration;
+pub use migration::{
+    MigrationOutcome, INITIAL_SCHEMA_VERSION, MIGRATION_OP_KIND, SCHEMA_VERSION_KEY,
+};
 mod mutations;
 mod query_exec;
 mod records;
