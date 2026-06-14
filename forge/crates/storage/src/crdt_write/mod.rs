@@ -472,6 +472,99 @@ mod tests {
     }
 
     #[test]
+    fn deny_only_apply_appends_audit_row_without_touching_records_or_indexes() {
+        // Review 152: a DENY-ONLY apply (`apply_remote_chunks_with_audit` with an
+        // EMPTY chunk batch + a non-empty `audit_rows`) records the deny audit row(s)
+        // but imports NOTHING — and must therefore leave the receiver's `records`
+        // projection AND its physical indexes BYTE-FOR-BYTE unchanged
+        // (`forge/spec/sync-rbac.md`: a rejected op leaves local state untouched).
+        // Before the fix this path always called `rebuild_projection_tx`, re-issuing
+        // the projection/index DML a rejection is required not to touch.
+        let mut dst = store();
+        let mut dst_idx = IndexManager::new();
+        // The receiver holds a pre-existing record AND an active FTS index over it.
+        dst.apply_mutation_crdt(&insert("tasks", "kept", json!({"title": "stays put"}), 1), &dst_idx)
+            .unwrap();
+        dst.create_index(&mut dst_idx, "tasks", "f_title", CreateIndexKind::Fts)
+            .expect("create receiver fts index");
+
+        // A load-bearing WITNESS that NO rebuild runs: inject a projection-only row
+        // directly into `records` with NO backing chunk in `crdt_chunks`. A
+        // `rebuild_projection_tx` starts with `DELETE FROM records` and re-materializes
+        // ONLY records present in the chunk history — so a needless rebuild would WIPE
+        // this witness (it has no chunk to be rebuilt from). Its survival proves the
+        // projection table was never touched. `projection_snapshot` content alone
+        // could not catch a rebuild-to-identical-state for the real records.
+        dst.connection()
+            .execute(
+                "INSERT INTO records (collection, id, data, updated_at) \
+                 VALUES ('tasks', 'witness', '{\"id\":\"witness\"}', 0)",
+                [],
+            )
+            .unwrap();
+
+        // Snapshot the projection + the physical FTS index state BEFORE the
+        // denied-only apply (the index manager is passed by `&`, so its in-memory
+        // metadata cannot be mutated here; what must not change is the PHYSICAL
+        // index + the records projection a rebuild would re-issue).
+        let projection_before = projection_snapshot(&dst);
+        let fts_before = dst_idx
+            .fts_match(dst.connection(), "tasks", "f_title", "stays")
+            .unwrap();
+        let chunks_before = total_chunk_rows(&dst);
+        let ops_before = dst.list_ops().unwrap().len();
+
+        // A deny audit row for a rejected remote op (the SS-7 gate's `deny` decision).
+        let deny = AuditRecord::new(
+            7,
+            "sync-rbac",
+            "sync.record.insert",
+            "deny",
+            "actor-viewer",
+            "record",
+            Some("rejected".to_string()),
+            Some("tasks".to_string()),
+            "viewer role cannot write records",
+            json!({ "trusted_role": "Viewer", "record_ids": ["rejected"] }),
+        );
+
+        // Deny-only apply: EMPTY chunks, one audit row.
+        let imported = dst
+            .apply_remote_chunks_with_audit(&[], "peer:viewer", &dst_idx, &[deny])
+            .unwrap();
+        assert_eq!(imported, 0, "a deny-only apply imports no chunk");
+
+        // The deny audit row landed durably.
+        let denies = dst.query_audit(&AuditQuery::by_decision("deny")).unwrap();
+        assert_eq!(denies.len(), 1, "the deny audit row is durable: {denies:?}");
+        assert_eq!(denies[0].producer, "sync-rbac");
+        assert_eq!(denies[0].action, "sync.record.insert");
+        assert_eq!(denies[0].seq, 1);
+
+        // ...and the receiver's records + indexes are BYTE-FOR-BYTE unchanged. The
+        // chunk-less `witness` row SURVIVES — load-bearing proof no rebuild ran (a
+        // `rebuild_projection_tx` would `DELETE FROM records` and never re-materialize
+        // `witness`, since it has no backing chunk).
+        let projection_after = projection_snapshot(&dst);
+        assert!(
+            projection_after.contains_key("tasks/witness"),
+            "a denied-only apply must NOT rebuild the projection (the chunk-less witness row \
+             would be wiped by a rebuild): {projection_after:?}"
+        );
+        assert_eq!(
+            projection_after, projection_before,
+            "a denied-only apply must not touch the records projection"
+        );
+        assert_eq!(
+            dst_idx.fts_match(dst.connection(), "tasks", "f_title", "stays").unwrap(),
+            fts_before,
+            "a denied-only apply must not rebuild the physical index"
+        );
+        assert_eq!(total_chunk_rows(&dst), chunks_before, "no chunk row added");
+        assert_eq!(dst.list_ops().unwrap().len(), ops_before, "no oplog row added");
+    }
+
+    #[test]
     fn migration_chunk_advances_receiver_schema_version_monotonically_and_atomically() {
         // Review 139: a RemoteChunk carrying `schema_version` (a DL-13 migration chunk)
         // must advance the RECEIVING store's persisted schema_version on import, in the

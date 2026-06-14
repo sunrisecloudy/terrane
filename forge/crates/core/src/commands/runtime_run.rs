@@ -270,8 +270,16 @@ impl WorkspaceCore {
     /// Persist the SC-12 `network.egress` + `secret.use` audit rows for a real run's
     /// recorded `ctx.net.fetch` host calls (`forge/spec/audit-log.md`; the
     /// `audit-log-e2e` `network_egress_metadata_no_body` / `secret_access_redacted`
-    /// vectors). Walks the run's recorded host-call trace in call order and, for each
-    /// `net.fetch`, appends:
+    /// vectors). Walks the run's recorded host-call trace in call order.
+    ///
+    /// DENY classification (review 151): a fetch the policy DENIED was recorded as
+    /// `{"denied": <CoreError>}` (it never reached the network and was never
+    /// approved). Such a call appends a SINGLE `network.egress` `deny` row carrying
+    /// the denial reason and `{method, scheme, host, path}` metadata — and emits NO
+    /// `allow` egress/secret rows and NO defaulted `status: 0` — so a forbidden egress
+    /// or a disallowed secret header is auditable AS a denial, never as an approval.
+    ///
+    /// For an ALLOWED `net.fetch` (a real `NetResponse` was served) it appends:
     ///
     ///   - one `network.egress` row — `resource_type = network`,
     ///     `resource_id = scheme://host`, metadata `{method, scheme, host, path, status,
@@ -307,6 +315,49 @@ impl WorkspaceCore {
                 .to_string();
             let url = request.get("url").and_then(|v| v.as_str()).unwrap_or("");
             let (scheme, host, path) = split_url(url);
+
+            // DENY classification (review 151). The recorder stores a host call the
+            // policy DENIED before/around the bridge as `{"denied": <CoreError>}` (a
+            // non-allowlisted fetch, a forbidden secret header, a response-leg cap
+            // violation — `runtime/src/recorder.rs::record_denial` /
+            // `redact_last_response`). Such a fetch NEVER reached the live network and
+            // was NEVER approved, so it must NOT mint `allow` `network.egress`/
+            // `secret.use` rows nor default its status to `0/allow`. Instead emit a
+            // SINGLE `network.egress` `deny` row carrying the denial reason (the
+            // request's `secret_ref` headers are still withheld — no value is present
+            // to leak, and a denied fetch resolved no secret), so a forbidden egress
+            // is auditable AS a denial rather than persisted as an approval.
+            if let Some(reason) = denied_reason(&call.response) {
+                self.persist_producer_audit(
+                    "network.egress.denied",
+                    serde_json::json!({
+                        "decision": "deny",
+                        "applet_id": applet_id,
+                        "actor_id": actor_id,
+                        "method": method,
+                        "host": host,
+                    }),
+                    "net",
+                    "network.egress",
+                    "deny",
+                    actor_id.clone(),
+                    "network",
+                    Some(format!("{scheme}://{host}")),
+                    None,
+                    reason,
+                    serde_json::json!({
+                        "method": method,
+                        "scheme": scheme,
+                        "host": host,
+                        "path": path,
+                    }),
+                )?;
+                continue;
+            }
+
+            // The fetch was ALLOWED — it reached the bridge and returned a real
+            // `NetResponse` (always carrying a numeric `status`). Only now do the
+            // `allow` egress/secret producers run.
             let status = call
                 .response
                 .get("status")
@@ -408,6 +459,30 @@ impl WorkspaceCore {
             }),
         );
     }
+}
+
+/// Classify a recorded `net.fetch` response as a policy DENIAL (review 151).
+/// The recorder stores a host call rejected by policy as `{"denied": <CoreError>}`
+/// (`runtime/src/recorder.rs::record_denial` / `redact_last_response`); a real
+/// served response is a full `NetResponse` (always carrying a numeric `status`), so
+/// a lone `denied` key is unambiguously the denial shape. Returns the denial reason
+/// (`"<Code>: <message>"`) when the call was denied, else `None` for an allowed
+/// fetch. The reason is reconstructed from the recorded `CoreError` when it decodes,
+/// else degrades to a generic marker (the row still records that the fetch was
+/// denied), and never carries a body — the recorder already redacted the response.
+fn denied_reason(response: &serde_json::Value) -> Option<String> {
+    // A lone `denied` key (an object of exactly one entry) is the redaction shape; a
+    // real `NetResponse` always carries more fields (at least `status`), so it never
+    // matches here.
+    if response.as_object().is_none_or(|o| o.len() != 1) {
+        return None;
+    }
+    let denied = response.get("denied")?;
+    let reason = match serde_json::from_value::<CoreError>(denied.clone()) {
+        Ok(err) => format!("{}: {err}", err.code()),
+        Err(_) => "network egress denied by policy".to_string(),
+    };
+    Some(reason)
 }
 
 /// Split an absolute request URL into `(scheme, host, path)` for the SC-12

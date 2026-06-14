@@ -62,6 +62,11 @@ impl Store {
     /// skipped chunks too (a deny has no import to be atomic with, but its row must still
     /// land durably), so passing an empty `chunks` slice with a non-empty `audit_rows`
     /// is the supported "record the denial(s) only" shape.
+    ///
+    /// Review 152: a DENY-ONLY apply (empty `chunks`, non-empty `audit_rows`) appends
+    /// the deny row(s) but does NOT rebuild the projection/indexes — a rejection
+    /// imports nothing and must leave the receiver's `records` + indexes
+    /// byte-for-byte unchanged, so even a rebuild-to-identical-state is skipped.
     pub fn apply_remote_chunks_with_audit(
         &mut self,
         chunks: &[RemoteChunk],
@@ -86,10 +91,19 @@ impl Store {
             }
             // Rebuild the projection + active physical indexes from the augmented
             // chunk history INSIDE this transaction, so a rebuild failure rolls the
-            // chunk/oplog inserts back with it (atomic per receiving store). An empty
-            // chunk batch (deny-only) leaves the chunk history untouched, so this is a
-            // pure rebuild-to-identical-state.
-            rebuild_projection_tx(tx, peer_id, indexes)?;
+            // chunk/oplog inserts back with it (atomic per receiving store).
+            //
+            // Review 152: a DENY-ONLY apply (`chunks.is_empty()`, only `audit_rows`
+            // pending) imports nothing, so there is NOTHING to rebuild — and a
+            // rejection must leave the receiver's `records` + indexes BYTE-FOR-BYTE
+            // unchanged (`forge/spec/sync-rbac.md` apply-time decision). Skip the
+            // rebuild entirely in that case: even a rebuild-to-identical-state would
+            // re-issue the projection/index DML the rejection is required not to touch.
+            // When chunks WERE imported, the rebuild runs as before (an idempotent
+            // re-import that newly inserts nothing still rebuilds to the same state).
+            if !chunks.is_empty() {
+                rebuild_projection_tx(tx, peer_id, indexes)?;
+            }
             // SC-12 review 149: append the receiver's authorization audit rows in the
             // SAME transaction as the import they record, so an allowed import and its
             // `allow` row — and every `deny` row — commit or roll back together. The
