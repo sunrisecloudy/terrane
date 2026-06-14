@@ -128,18 +128,48 @@ impl HostContext<'_> {
     /// `db.write` for EACH leaf's collection (so a group cannot write a collection the
     /// applet lacks `db.write` on) and recorded once; the call returns the applied
     /// leaf count.
+    ///
+    /// SCOPE (M0a, prd-merged/02 DL-17): a transact must target a **single**
+    /// collection — a multi-collection group is rejected (it is not sync-safe across
+    /// the SS-7 boundary: each collection's chunk/oplog row syncs and is authorized
+    /// independently, so a peer denied one collection would import a torn half of the
+    /// group; multi-collection atomic-across-the-sync-boundary is future DL-17). The
+    /// storage bridge also rejects a multi-collection group (defense-in-depth), but
+    /// it does so *inside* `bridge.db_transact`, i.e. inside the `host_call` `live`
+    /// closure — which only records the call AFTER the closure succeeds. A rejection
+    /// raised there propagates WITHOUT being recorded, so the run captures no
+    /// `db.transact` event and replay diverges instead of reproducing the rejection
+    /// (db.watch review 137). To make the rejection replayable we PREFLIGHT the
+    /// distinct collection set here and, if it spans more than one collection, record
+    /// the rejection through the same recorded-denial path a policy denial uses (a
+    /// typed `QueryError`) and return it BEFORE `host_call` — so a failed run records
+    /// the rejection and replays to the SAME error byte-identically, never consulting
+    /// the live bridge.
     pub fn db_transact(&mut self, ops: serde_json::Value) -> Result<u64> {
         // Gate every leaf's collection BEFORE the bridge applies anything, so an
         // atomic group is denied as a whole when ANY leaf touches an ungranted
         // collection (no partial write). The denial is recorded once under the first
         // offending leaf's collection, mirroring the single-op write gate.
-        for collection in transact_collections(&ops)? {
+        let collections = transact_collections(&ops)?;
+        for collection in &collections {
             let args = serde_json::json!([collection]);
             self.check_or_record_denial(
                 &HostCall::Db { op: Access::Write, collection: collection.clone() },
                 "db.transact",
                 &args,
             )?;
+        }
+        // Single-collection scope (M0a): a group spanning more than one collection is
+        // rejected here, BEFORE host_call, and the rejection is RECORDED (via the same
+        // denial/error-recording path) so a failed run replays to the same typed error
+        // without the storage bridge raising it unrecorded inside the live closure.
+        if collections.len() > 1 {
+            let args = serde_json::json!([ops]);
+            let rejected = forge_domain::CoreError::QueryError(format!(
+                "transact must target a single collection (M0a), but this group spans {collections:?}"
+            ));
+            self.recorder.record_denial("db.transact", args, &rejected)?;
+            return Err(rejected);
         }
         let args = serde_json::json!([ops]);
         let bridge = &mut *self.bridge;

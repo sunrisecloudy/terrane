@@ -67,7 +67,7 @@ Every record round-trips an envelope: `envelope_version, entity_id, collection, 
 
 - **DL-15** Typed query DSL in `@forge/std`, compiled to SQL over the projection: `db.from('expenses').where(f => f.amount.gt(100)).orderBy('date','desc').limit(50)` — filter/sort/limit/offset/aggregates (count,sum,avg,min,max)/group/text-search/joins on declared reference fields. A SQL-like string form (`query.execute`) with the same validated subset serves the data browser and SDK.
 - **DL-16** Live queries: `db.watch(query, cb)` via SQLite update hooks + dirty sets; p95 notify < 30 ms local.
-- **DL-17** Mutations: `insert/update/patch/delete`; `transact([...])` groups into one CRDT commit (atomic locally, merged as a unit). Raw SQL never exposed to applets; SDK escape hatch is dev-machine-only.
+- **DL-17** Mutations: `insert/update/patch/delete`; `transact([...])` groups into one CRDT commit (atomic locally, merged as a unit). **In M0a a `transact` is scoped to a SINGLE collection — a group spanning more than one collection is rejected with a typed `QueryError` ("transact must target a single collection"), because each collection's CRDT chunk/oplog row syncs and is authorized independently across the SS-7 boundary (no transaction-group id), so a multi-collection group could import as a torn half-transaction on a peer denied one collection.** Multi-collection atomic-ACROSS-THE-SYNC-BOUNDARY (transaction-group metadata + all-or-nothing apply at the receiver) is a future DL-17 extension. Raw SQL never exposed to applets; SDK escape hatch is dev-machine-only.
 - **DL-18** Per-applet scope: grants name collections (row filters v1.x). Per-applet KV (`ctx.storage`) maps to `kv` namespaces.
 
 ## 7. History, tombstones, storage management

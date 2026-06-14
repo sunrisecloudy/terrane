@@ -304,6 +304,134 @@ fn failed_run_replays_identically() {
     assert!(original.replays_identically(&replayed));
 }
 
+/// A SINGLE-collection `ctx.db.transact` group is the happy path: it records one
+/// `db.transact` host call and replays byte-identically (db.watch review 137).
+/// This pins that the multi-collection preflight does not regress the supported
+/// single-collection case.
+#[test]
+fn single_collection_transact_replays_identically() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            const n = await ctx.db.transact([
+                { op: "insert", collection: "tasks", fields: { title: "A" } },
+                { op: "insert", collection: "tasks", fields: { title: "B" } }
+            ]);
+            return { ok: true, value: n };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let original = record_run(
+        &prog,
+        &spine_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    // The group committed; one db.transact call was recorded (not a denial).
+    assert!(matches!(original.outcome, RunOutcome::Completed { .. }));
+    let transact = original
+        .calls
+        .iter()
+        .find(|c| c.method == "db.transact")
+        .expect("a db.transact call was recorded");
+    assert!(
+        transact.response.get("denied").is_none(),
+        "single-collection transact must not be recorded as a denial: {transact:?}"
+    );
+
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &spine_manifest(), &owner(), &mut null).unwrap();
+    assert!(original.replays_identically(&replayed));
+}
+
+/// A MULTI-collection `ctx.db.transact` group is rejected in M0a (DL-17 single-
+/// collection scope). The failed run must RECORD the rejection — via the
+/// denial/error-recording path, BEFORE the storage bridge could raise it unrecorded
+/// inside the live closure — so replaying the recorded run reproduces the SAME
+/// typed `QueryError` byte-identically with no divergence and no live-bridge consult
+/// (db.watch review 137 P1). The manifest grants `db.write` on BOTH collections so
+/// the rejection is the single-collection SCOPE error, not a capability denial.
+#[test]
+fn multi_collection_transact_rejection_is_recorded_and_replays_identically() {
+    use forge_domain::{Capabilities, DbGrant};
+
+    let manifest = {
+        let mut m = spine_manifest();
+        m.capabilities = Capabilities {
+            db: DbGrant {
+                read: vec!["tasks".into(), "notes".into()],
+                write: vec!["tasks".into(), "notes".into()],
+            },
+            ..m.capabilities
+        };
+        m
+    };
+
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            // A group spanning two collections — rejected in M0a (DL-17).
+            const n = await ctx.db.transact([
+                { op: "insert", collection: "tasks", fields: { title: "A" } },
+                { op: "insert", collection: "notes", fields: { body: "B" } }
+            ]);
+            return { ok: true, value: n };
+        }"#,
+    );
+
+    let mut bridge = MemoryHostBridge::new();
+    let original = record_run(
+        &prog,
+        &manifest,
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+
+    // The run failed with the typed single-collection scope QueryError.
+    match &original.outcome {
+        RunOutcome::Failed { error } => {
+            assert_eq!(error.code(), "QueryError", "{error}");
+            assert!(
+                error.to_string().contains("single collection"),
+                "expected single-collection scope error, got: {error}"
+            );
+        }
+        other => panic!("expected a single-collection rejection, got {other:?}"),
+    }
+
+    // The rejection was RECORDED as a denial-shaped db.transact call (so it is part
+    // of the replayable trace, not lost inside the unrecorded live closure).
+    let transact = original
+        .calls
+        .iter()
+        .find(|c| c.method == "db.transact")
+        .expect("the rejected db.transact was recorded");
+    assert!(
+        transact.response.get("denied").is_some(),
+        "the multi-collection rejection must be recorded denial-shaped: {transact:?}"
+    );
+
+    // Replaying re-issues ctx.db.transact; the preflight records the SAME denial,
+    // the recorder serves the recorded error WITHOUT touching the live bridge, and
+    // the replay is byte-identical (no divergence). NullBridge panics if any live
+    // db effect is attempted — proving the bridge is never consulted.
+    let mut null = NullBridge::new();
+    let replayed = replay(&original, &prog, &manifest, &owner(), &mut null).unwrap();
+    assert!(
+        original.replays_identically(&replayed),
+        "multi-collection transact rejection must replay byte-identically:\n original={:#?}\n replayed={:#?}",
+        original.calls,
+        replayed.calls
+    );
+    assert_eq!(original.outcome, replayed.outcome);
+}
+
 /// Reviews 012/013/014: the runtime records the canonical `sha256:` provenance
 /// hash and never the old `fnv1a64:` form; the recorded hash passes the domain's
 /// canonical-hash validator, so a record this engine emits can never carry a
