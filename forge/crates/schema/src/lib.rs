@@ -31,7 +31,7 @@ mod registry;
 pub use collection::{CollectionDef, FieldDef};
 pub use field_type::FieldType;
 pub use migration::{migrate_record, FieldTransform, MigrationDescriptor};
-pub use registry::{SchemaChange, SchemaRegistry, SchemaWarning};
+pub use registry::{merge_collection_def, SchemaChange, SchemaRegistry, SchemaWarning};
 
 #[cfg(test)]
 mod tests {

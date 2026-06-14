@@ -55,6 +55,39 @@ impl FieldType {
         }
     }
 
+    /// A **total, deterministic ordering** over field types, used only as the
+    /// commutative tie-break when a CRDT registry merge encounters two genuinely
+    /// *incompatible* types for the same stable id (neither widens to the other —
+    /// e.g. `Bool` vs `Text`). The widen relation ([`Self::can_widen_to`]) is a
+    /// partial order, so it cannot break such a tie; this key gives a single,
+    /// order-independent winner so two peers merging in either delivery order
+    /// converge to the SAME type (DL-11). The exact numbering is arbitrary but
+    /// **stable** — it must never change once two peers can disagree on it. The
+    /// nullable wrapper sorts after every non-nullable peer (outer rank 5) and is
+    /// then broken by its inner type's rank, so `Nullable(T)` vs `Nullable(U)`
+    /// orders by `T` vs `U` and `Nullable(Nullable(T))` by the peeled core.
+    ///
+    /// This is a pure, deterministic key — it imposes NO data-compatibility
+    /// meaning; it is purely the convergence anchor for the incompatible case.
+    pub(crate) fn order_key(&self) -> (u8, u8) {
+        fn rank(t: &FieldType) -> u8 {
+            match t {
+                FieldType::IntNum => 0,
+                FieldType::FloatNum => 1,
+                FieldType::Bool => 2,
+                FieldType::Text => 3,
+                FieldType::Scalar => 4,
+                FieldType::Nullable(_) => 5,
+            }
+        }
+        match self {
+            // Nullable sorts last; its inner *core* (all null layers peeled) breaks
+            // ties among nullables deterministically.
+            FieldType::Nullable(_) => (5, rank(self.inner())),
+            other => (rank(other), 0),
+        }
+    }
+
     /// Whether a field of `self` may be **widened** to `target` without
     /// invalidating any value already stored as `self` (prd-merged/02 DL-8).
     ///
@@ -170,6 +203,34 @@ mod tests {
     fn unrelated_types_do_not_widen() {
         assert!(!FieldType::Bool.can_widen_to(&FieldType::Text));
         assert!(!FieldType::Text.can_widen_to(&FieldType::IntNum));
+    }
+
+    #[test]
+    fn order_key_is_total_and_stable() {
+        // A deterministic total order: distinct types get distinct keys, and the
+        // key is order-independent (the same value always maps to the same key) so
+        // it is a sound commutative tie-break for the incompatible-merge case.
+        let types = [
+            FieldType::IntNum,
+            FieldType::FloatNum,
+            FieldType::Bool,
+            FieldType::Text,
+            FieldType::Scalar,
+            FieldType::nullable(FieldType::IntNum),
+            FieldType::nullable(FieldType::Text),
+        ];
+        for t in &types {
+            assert_eq!(t.order_key(), t.clone().order_key(), "{t:?} key must be stable");
+        }
+        // Bool and Text are incompatible (neither widens to the other) yet get a
+        // deterministic, distinct ordering — the tie-break the merge relies on.
+        assert_ne!(FieldType::Bool.order_key(), FieldType::Text.order_key());
+        assert!(FieldType::Bool.order_key() < FieldType::Text.order_key());
+        // Distinct nullables order by their inner core.
+        assert_ne!(
+            FieldType::nullable(FieldType::IntNum).order_key(),
+            FieldType::nullable(FieldType::Text).order_key()
+        );
     }
 
     #[test]

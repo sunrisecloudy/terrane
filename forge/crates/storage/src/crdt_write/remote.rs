@@ -308,11 +308,13 @@ pub(crate) fn import_remote_chunk_tx(
 /// Evolve the receiver's persisted `SchemaRegistry` with the affected collection's
 /// EVOLVED entry carried by an authorized DL-13 migration chunk, IN THE caller's
 /// import transaction (review 143). Reads the persisted registry JSON (default empty),
-/// deserializes the carried `CollectionDef`, merges it FORWARD-ONLY via
-/// [`SchemaRegistry::sync_collection_forward_only`] (review 147: apply only when the
-/// carried def is a forward-compatible additive superset of the local entry, else skip
-/// the stale out-of-order chunk and leave the local entry ahead), and writes the merged
-/// registry back under `__forge/meta`/`schema_registry`.
+/// deserializes the carried `CollectionDef`, merges it via the DL-11 field-id UNION
+/// [`SchemaRegistry::sync_collection_merge`] (review 159: the deterministic,
+/// commutative least-upper-bound of the local + carried entries — wider type wins so a
+/// stale older chunk never rolls a field back (review 147), and a concurrently-added
+/// field on EITHER side is preserved so concurrent-additive divergence converges to
+/// the union rather than being skipped), and writes the merged registry back under
+/// `__forge/meta`/`schema_registry`.
 ///
 /// Because this runs inside the same transaction as the chunk insert + the
 /// `schema_version` advance, the registry, the records, and the version commit (or
@@ -360,19 +362,25 @@ fn evolve_registry_collection_tx(
         }
         None => SchemaRegistry::new(),
     };
-    // FORWARD-ONLY merge (review 147): apply the carried entry ONLY when it is a
-    // forward-compatible additive superset of the receiver's local `name` entry. A
-    // delayed OLDER migration chunk — for a collection this peer already evolved PAST
-    // (an out-of-order arrival, or a later migration that converged first) — would
-    // otherwise BLINDLY REPLACE and roll the registry BACKWARD (narrowing/dropping a
-    // field) while the workspace-global `schema_version` stays newer. When the carried
-    // def is stale the merge is SKIPPED and the local entry is left unchanged (it is
-    // already ahead); the records still import and the version still advances, so the
-    // receiver never regresses its schema. A first-seen collection (no local entry) is
-    // always a forward step and inserts. The decision is pure in (local, carried) and
-    // re-validates on apply exactly as before, so a malformed entry still rolls the
-    // whole import back.
-    registry.sync_collection_forward_only(name, collection)?;
+    // DL-11 field-id UNION merge (review 159): merge the carried entry with the
+    // receiver's local `name` entry into their deterministic, commutative least-upper-
+    // bound rather than blind-replacing or gating on a forward-superset check. This
+    // converges the registry-merge thread at once:
+    //   - a normal FORWARD migration merges to the carried (it dominates the base);
+    //   - a delayed OLDER chunk (review 147) is absorbed without rolling the registry
+    //     backward — wider-type-wins keeps the already-applied widening and the union
+    //     retains every local field, so a narrowing/lagging carried def cannot regress
+    //     the schema while `schema_version` stays newer;
+    //   - CONCURRENT-ADDITIVE divergence (review 159) — two offline peers each adding a
+    //     DIFFERENT actor-scoped field from the same base — converges to the union of
+    //     BOTH fields, instead of the carried-only field being SKIPPED as "not a
+    //     superset" (which left migrated data with no registry entry);
+    //   - a first-seen collection (no local entry) inserts (absent ∪ carried == carried).
+    // The merge is commutative + idempotent, so two peers converge regardless of
+    // delivery order and a re-sync stays a no-op. It re-validates on apply exactly as
+    // before, so a malformed carried entry — or a genuine merge conflict — still rolls
+    // the whole import back rather than persisting a corrupt schema.
+    registry.sync_collection_merge(name, collection)?;
 
     let bytes = serde_json::to_vec(&registry).map_err(|e| {
         CoreError::StorageError(format!("serialize schema registry on sync apply: {e}"))

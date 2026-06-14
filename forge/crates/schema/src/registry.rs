@@ -321,67 +321,57 @@ impl SchemaRegistry {
         Ok(())
     }
 
-    /// FORWARD-ONLY variant of [`Self::sync_collection`] for the migration-import
-    /// seam (DL-13 review 147). Migration chunks can arrive OUT OF ORDER: a delayed
-    /// OLDER chunk for a collection the receiver has already evolved PAST (via a later
-    /// migration that converged first, or unrelated schema work) would, under the
-    /// blind-replace [`Self::sync_collection`], roll that collection's registry
-    /// BACKWARD — narrowing a field or dropping one — while the workspace-global
-    /// `schema_version` stays newer. That is the exact data-ahead-of-schema drift the
-    /// review-w9 always-merge fix must not reintroduce.
+    /// CONVERGENT variant of [`Self::sync_collection`] for the migration-import seam:
+    /// the DL-11 deterministic, commutative **field-id union merge** of the receiver's
+    /// local entry with the carried one (review 159). This is the convergence of the
+    /// registry-merge thread (blind-replace → out-of-order rollback 147 → forward-only
+    /// superset → skips additive divergence 159 → this union):
     ///
-    /// So the carried `collection` is applied ONLY when it is a forward-compatible,
-    /// additive superset of the receiver's local entry — every local field still
-    /// present, each field's type only widened (never narrowed), no field removed or
-    /// un-deprecated, and no actor's id counter rolled back — i.e. exactly the
-    /// additive-only relation [`Self::validate_compatibility`] enforces, evaluated as
-    /// a pure predicate over `(local, carried)`. When the receiver has no entry for
-    /// `name` yet, the carried def is simply inserted (any def is a forward evolution
-    /// of "absent").
+    /// - **forward migration**: a carried def that widened/added on top of the local
+    ///   base merges to exactly the carried (the union dominates the local base);
+    /// - **stale OLDER chunk (147)**: a delayed carried def that narrows/lags is
+    ///   absorbed without rolling the local entry backward — wider-wins keeps the
+    ///   already-applied widening, the union still contains every local field;
+    /// - **concurrent additive divergence (159)**: two offline peers each added a
+    ///   DIFFERENT actor-scoped field from the same base — the union contains BOTH,
+    ///   instead of the carried-only field being skipped as "not a superset";
+    /// - **same-version / unrelated (review-w9)**: a first-seen collection inserts
+    ///   (the union with an absent local is the carried def itself).
     ///
-    /// Returns `Ok(true)` when the carried def was applied (inserted or a forward
-    /// merge), `Ok(false)` when it was SKIPPED because the local entry is already
-    /// ahead (a stale out-of-order chunk — the local stays unchanged, never rolled
-    /// back). The decision is a pure function of `(local def, carried def)`, so it is
-    /// deterministic and replay-identical. On apply, the merged registry is
-    /// re-validated exactly as [`Self::sync_collection`] does, so a malformed carried
-    /// entry still rejects (and rolls the receiver's import back) rather than
-    /// persisting a structurally-invalid schema.
-    pub fn sync_collection_forward_only(
-        &mut self,
-        name: &str,
-        collection: CollectionDef,
-    ) -> Result<bool> {
+    /// The merge is **commutative and idempotent** (`merge(local, carried) ==
+    /// merge(carried, local)` for the convergent content, and re-merging the same
+    /// carried entry is a no-op), so two peers converge to the SAME registry
+    /// regardless of delivery order — the property the blind-replace and forward-only
+    /// attempts both lacked. It is a pure function of `(local, carried)`, hence
+    /// deterministic and replay-identical.
+    ///
+    /// When the receiver has no entry for `name`, the carried def is inserted directly
+    /// (`merge(absent, carried) == carried`). On apply the merged registry is
+    /// re-validated exactly as [`Self::sync_collection`] does, so a structurally
+    /// invalid carried entry — or a genuine merge conflict (e.g. two live fields
+    /// renamed onto the same display name) — still rejects and rolls the receiver's
+    /// import back rather than persisting a corrupt schema.
+    pub fn sync_collection_merge(&mut self, name: &str, carried: CollectionDef) -> Result<()> {
         if name.trim().is_empty() {
             return Err(CoreError::ValidationError(
-                "sync_collection_forward_only: empty collection name".into(),
+                "sync_collection_merge: empty collection name".into(),
             ));
         }
-        // Forward-only: skip a carried def that would roll an already-ahead local
-        // collection backward (a delayed older migration chunk). "Absent locally" is
-        // always a forward step, so a first-seen collection inserts.
-        if let Some(local) = self.collections.get(name) {
-            if !Self::is_forward_compatible_superset(local, &collection) {
-                return Ok(false);
-            }
-        }
-        self.sync_collection(name, collection)?;
-        Ok(true)
-    }
-
-    /// True iff `carried` is a forward-compatible, additive-only SUPERSET of `local`:
-    /// every field in `local` is still present in `carried` with a type that only
-    /// widened (never narrowed) and was not un-deprecated, and no actor's per-actor id
-    /// counter went backwards (DL-7/DL-8). This is the same additive relation
-    /// [`Self::check_collection_compatibility`] enforces (reusing the
-    /// [`FieldType::can_widen_to`] ordering: `int_num < float_num`, any scalar
-    /// `<= Scalar`, `T <= Nullable(T)`), surfaced as a pure boolean predicate for the
-    /// forward-only migration merge. Pure in `(local, carried)` — no I/O, deterministic.
-    pub fn is_forward_compatible_superset(local: &CollectionDef, carried: &CollectionDef) -> bool {
-        // `check_collection_compatibility(name, old, new)` proves `new` is an additive
-        // evolution of `old`; here `old = local`, `new = carried`. The `name` only
-        // shapes the error message, which we discard.
-        Self::check_collection_compatibility(local.name(), local, carried).is_ok()
+        // Union-merge with the local entry when present; otherwise the carried def is
+        // the merge result (absent ∪ carried == carried). The merge is the DL-11
+        // least-upper-bound, so it never rolls a wider local field back (147) and
+        // never drops a local-only field that the carried entry lacks (159).
+        let merged = match self.collections.get(name) {
+            Some(local) => merge_collection_def(local, &carried),
+            None => carried,
+        };
+        // Validate the merged CANDIDATE before mutating `self`, so a genuine merge
+        // conflict (e.g. two live fields colliding on one display name) leaves the
+        // local registry untouched rather than half-applied — `sync_collection`'s
+        // re-validation runs AFTER its insert, so pre-checking here keeps the failure
+        // path clean for in-process callers as well as the transactional sync seam.
+        merged.validate_invariants().map_err(CoreError::SchemaCompatibilityError)?;
+        self.sync_collection(name, merged)
     }
 
     // -------------------------------------------------------------- validation
@@ -551,6 +541,23 @@ impl SchemaRegistry {
         // New field ids in `new_col` not present in `old_col` are additive — OK.
         Ok(())
     }
+}
+
+/// Deterministically merge two definitions of the SAME logical collection from two
+/// divergent registry branches into their **least-upper-bound** (the DL-11 CRDT
+/// registry merge, review 159): a field-id union where a field present on only one
+/// side is preserved, a field present on BOTH is resolved wider-type-wins with
+/// deterministic tie-breaks, and each actor's id counter takes the per-actor MAX.
+///
+/// This is the pure convergence primitive [`SchemaRegistry::sync_collection_merge`]
+/// routes the migration-import seam through. It is **commutative** (`merge(a, b) ==
+/// merge(b, a)`) and **idempotent** (`merge(a, a) == a`), so two peers merging the
+/// same pair in either delivery order converge to the SAME collection — the property
+/// that lets concurrent-additive divergence (159) converge to the union while a stale
+/// older chunk (147) never rolls a wider field back. Delegates to the encapsulated
+/// [`CollectionDef::merge_with`] (the internals are private — review 005 P2).
+pub fn merge_collection_def(local: &CollectionDef, carried: &CollectionDef) -> CollectionDef {
+    local.merge_with(carried)
 }
 
 #[cfg(test)]
@@ -1305,7 +1312,7 @@ mod tests {
         assert!(err.to_string().contains("duplicate field name"), "got {err}");
     }
 
-    // -------- review 147: forward-only per-collection migration merge --------
+    // ---- review 159 / 147: DL-11 deterministic field-union registry merge ----
 
     /// A single-collection registry `m` with one field `amount` of type `ty`
     /// (minted by `alice`, so the field id is the stable `f_alice_0`).
@@ -1324,52 +1331,54 @@ mod tests {
         r
     }
 
-    #[test]
-    fn forward_only_superset_predicate_matches_widen_ordering() {
-        let int_col = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
-        let float_col = amount_registry(FieldType::FloatNum).collection("m").unwrap().clone();
-        // int -> float is a forward (additive) widening: float is a superset of int.
-        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &float_col));
-        // float -> int is a NARROWING: int is NOT a forward superset of float.
-        assert!(!SchemaRegistry::is_forward_compatible_superset(&float_col, &int_col));
-        // Identity is trivially forward-compatible.
-        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &int_col));
-        // Dropping a field (carried lacks a local field) is NOT a forward superset.
-        let mut empty = SchemaRegistry::new();
-        empty.apply_change(SchemaChange::AddCollection { name: "m".into() }).unwrap();
-        let empty_col = empty.collection("m").unwrap().clone();
-        assert!(!SchemaRegistry::is_forward_compatible_superset(&int_col, &empty_col));
-        // Adding a field IS a forward superset (additive).
-        let mut grown = amount_registry(FieldType::IntNum);
-        grown
-            .apply_change(SchemaChange::AddField {
-                collection: "m".into(),
-                actor: actor("alice"),
-                name: "note".into(),
-                ty: FieldType::Text,
-                indexed: false,
-                required: false,
-            })
-            .unwrap();
-        let grown_col = grown.collection("m").unwrap().clone();
-        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &grown_col));
+    /// Build a `tasks` collection that, from a shared base (`tasks` with no fields),
+    /// had ONE field added offline by `who` (`f_<who>_0`). The display name is the
+    /// actor name so two branches' fields have distinct names AND distinct ids.
+    fn tasks_with_one_field(who: &str, ty: FieldType) -> CollectionDef {
+        let mut r = SchemaRegistry::new();
+        r.apply_change(SchemaChange::AddCollection { name: "tasks".into() }).unwrap();
+        r.apply_change(SchemaChange::AddField {
+            collection: "tasks".into(),
+            actor: actor(who),
+            name: who.into(),
+            ty,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+        r.collection("tasks").unwrap().clone()
     }
 
     #[test]
-    fn sync_collection_forward_only_inserts_when_absent() {
-        // A first-seen collection has no local entry, so any carried def is a forward
-        // step and is inserted.
+    fn merge_collection_def_is_commutative_and_idempotent() {
+        // CONVERGENCE/DETERMINISM: merging local+carried in either order yields the
+        // same collection, and re-merging the same entry is a no-op (DL-11).
+        let alice = tasks_with_one_field("alice", FieldType::Text);
+        let bob = tasks_with_one_field("bob", FieldType::Bool);
+        let ab = merge_collection_def(&alice, &bob);
+        let ba = merge_collection_def(&bob, &alice);
+        assert_eq!(ab, ba, "merge must be commutative");
+        // Idempotent: re-merging either side, or the union with itself, changes nothing.
+        assert_eq!(merge_collection_def(&ab, &bob), ab);
+        assert_eq!(merge_collection_def(&ab, &alice), ab);
+        assert_eq!(merge_collection_def(&ab, &ab), ab, "merge must be idempotent");
+    }
+
+    #[test]
+    fn sync_collection_merge_inserts_when_absent() {
+        // A first-seen collection has no local entry: absent ∪ carried == carried.
         let mut local = SchemaRegistry::new();
         let carried = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
-        assert!(local.sync_collection_forward_only("m", carried.clone()).unwrap());
+        local.sync_collection_merge("m", carried.clone()).unwrap();
         assert_eq!(local.collection("m").unwrap(), &carried);
     }
 
     #[test]
-    fn sync_collection_forward_only_applies_a_forward_widen() {
+    fn sync_collection_merge_applies_a_forward_widen() {
+        // FORWARD: a normal forward migration (int -> float) merges to the carried.
         let mut local = amount_registry(FieldType::IntNum);
         let float_col = amount_registry(FieldType::FloatNum).collection("m").unwrap().clone();
-        assert!(local.sync_collection_forward_only("m", float_col.clone()).unwrap());
+        local.sync_collection_merge("m", float_col).unwrap();
         assert_eq!(
             *local.collection("m").unwrap().field("f_alice_0").unwrap().ty(),
             FieldType::FloatNum,
@@ -1378,21 +1387,121 @@ mod tests {
     }
 
     #[test]
-    fn sync_collection_forward_only_skips_a_stale_narrowing() {
-        // Local already at float; a STALE older carried def at int must be SKIPPED so
-        // the registry is not rolled back.
+    fn sync_collection_merge_keeps_wider_local_on_stale_narrowing() {
+        // STALE-NARROWING (147): local already widened amount to float; a DELAYED
+        // OLDER chunk carries amount at int. Wider-wins keeps float — the registry is
+        // NOT rolled back, even though the union absorbs the older entry.
         let mut local = amount_registry(FieldType::FloatNum);
         let before = local.collection("m").unwrap().clone();
         let int_col = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
-        assert!(
-            !local.sync_collection_forward_only("m", int_col).unwrap(),
-            "a stale narrowing carried def must be skipped (returns false)"
-        );
+        local.sync_collection_merge("m", int_col).unwrap();
         assert_eq!(
             local.collection("m").unwrap(),
             &before,
-            "the local (ahead) entry stays float — never rolled back to int"
+            "the local (ahead) entry stays float — wider-wins never rolls back to int"
         );
+    }
+
+    #[test]
+    fn sync_collection_merge_converges_concurrent_additive_to_the_union() {
+        // CONCURRENT ADDITIVE (159, the headline fix): the receiver already has a
+        // LOCAL field `f_bob_0`; it imports an authorized migration carrying a
+        // DIFFERENT field `f_alice_0` from the same base. The post-import registry
+        // must contain BOTH — not skip the carried entry as "not a superset" and
+        // strand the migrated data with no registry field.
+        let mut local = SchemaRegistry::new();
+        local.sync_collection_merge("tasks", tasks_with_one_field("bob", FieldType::Bool)).unwrap();
+        // Sanity: receiver starts with only bob's field.
+        assert!(local.collection("tasks").unwrap().field("f_bob_0").is_some());
+        assert!(local.collection("tasks").unwrap().field("f_alice_0").is_none());
+
+        // Import the migration carrying ALICE's field (which lacks f_bob_0).
+        local
+            .sync_collection_merge("tasks", tasks_with_one_field("alice", FieldType::Text))
+            .unwrap();
+
+        let col = local.collection("tasks").unwrap();
+        assert!(col.field("f_bob_0").is_some(), "local-only field must be preserved (159)");
+        assert!(col.field("f_alice_0").is_some(), "carried-only field must be added (159)");
+        // Counters dominate both ids (least-upper-bound), and the merged registry is
+        // structurally valid.
+        assert_eq!(col.next_seq_for(&actor("bob")), 1);
+        assert_eq!(col.next_seq_for(&actor("alice")), 1);
+        assert!(local.clone().validated().is_ok());
+    }
+
+    #[test]
+    fn sync_collection_merge_is_order_independent() {
+        // Delivering the two concurrent-additive branches in EITHER order converges
+        // to the SAME registry (the property forward-only/blind-replace lacked).
+        let alice = tasks_with_one_field("alice", FieldType::Text);
+        let bob = tasks_with_one_field("bob", FieldType::Bool);
+
+        let mut a_then_b = SchemaRegistry::new();
+        a_then_b.sync_collection_merge("tasks", alice.clone()).unwrap();
+        a_then_b.sync_collection_merge("tasks", bob.clone()).unwrap();
+
+        let mut b_then_a = SchemaRegistry::new();
+        b_then_a.sync_collection_merge("tasks", bob).unwrap();
+        b_then_a.sync_collection_merge("tasks", alice).unwrap();
+
+        assert_eq!(a_then_b, b_then_a, "delivery order must not change the merged registry");
+    }
+
+    #[test]
+    fn merge_resolves_incompatible_shared_type_deterministically() {
+        // Two branches independently typed the SAME stable id with INCOMPATIBLE types
+        // (Bool vs Text — neither widens to the other). The merge must pick the SAME
+        // type regardless of order (the order_key tie-break), never diverge.
+        let bool_col = amount_registry(FieldType::Bool).collection("m").unwrap().clone();
+        let text_col = amount_registry(FieldType::Text).collection("m").unwrap().clone();
+        let ab = merge_collection_def(&bool_col, &text_col);
+        let ba = merge_collection_def(&text_col, &bool_col);
+        assert_eq!(ab, ba, "incompatible-type resolution must be commutative");
+        // The winner is the larger order_key (Text > Bool), deterministically.
+        assert_eq!(*ab.field("f_alice_0").unwrap().ty(), FieldType::Text);
+    }
+
+    #[test]
+    fn merge_unions_one_way_flags_monotonically() {
+        // indexed/deprecated/required/enforced are one-way additive flags: the union
+        // is their OR, so a branch that set a flag wins regardless of order.
+        let plain = tasks_registry().collection("tasks").unwrap().clone();
+        let mut flagged_reg = tasks_registry();
+        // Deprecate f_alice_0 and enforce-required f_alice_1 on the other branch.
+        flagged_reg
+            .apply_change(SchemaChange::DeprecateField {
+                collection: "tasks".into(),
+                field_id: "f_alice_0".into(),
+            })
+            .unwrap();
+        let flagged = flagged_reg.collection("tasks").unwrap().clone();
+        let merged = merge_collection_def(&plain, &flagged);
+        assert!(
+            merged.field("f_alice_0").unwrap().deprecated(),
+            "deprecate is one-way; the union keeps it set"
+        );
+        // Commutative for the flag union too.
+        assert_eq!(merge_collection_def(&flagged, &plain), merged);
+    }
+
+    #[test]
+    fn sync_collection_merge_rejects_a_genuine_name_collision() {
+        // A genuine merge conflict (two LIVE fields landing on the same display name)
+        // must fail closed on re-validation — rolling the import back — not corrupt
+        // the schema. Construct a carried def whose only field shares the local
+        // field's display name but a different id.
+        let mut local = SchemaRegistry::new();
+        local.sync_collection_merge("tasks", tasks_with_one_field("bob", FieldType::Text)).unwrap();
+        // A carried branch added a field by a different actor but the SAME display
+        // name "bob" (tamper the deserialized def so add_field's name guard can't stop us).
+        let mut json = serde_json::to_value(tasks_with_one_field("alice", FieldType::Text)).unwrap();
+        json["fields"][0]["name"] = serde_json::json!("bob");
+        let colliding: CollectionDef = serde_json::from_value(json).unwrap();
+        let err = local.sync_collection_merge("tasks", colliding).unwrap_err();
+        assert_eq!(err.code(), "SchemaCompatibilityError");
+        // The local registry still holds only bob's original field — no half-merge.
+        assert!(local.collection("tasks").unwrap().field("f_alice_0").is_none());
     }
 
     #[test]

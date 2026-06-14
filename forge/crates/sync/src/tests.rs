@@ -1299,6 +1299,104 @@ fn normal_forward_migration_chunk_still_applies_evolved_registry() {
     assert_eq!(receiver.schema_version().unwrap(), 2, "the receiver advanced to the target");
 }
 
+/// Review 159 (P1) — CONCURRENT ADDITIVE divergence must converge to the field UNION,
+/// not be skipped. The receiver already knows `expenses` with its OWN actor-scoped
+/// field `f_bob_0` (added offline from the shared base). It imports an authorized
+/// migration carrying a DIFFERENT field `f_alice_0` evolved from the SAME base — a
+/// carried def that does NOT contain `f_bob_0`. The retired forward-only-superset gate
+/// would reject this carried entry as "not a superset" and SKIP it, leaving the
+/// migrated `f_alice_0` data with no registry field. The DL-11 union merge must instead
+/// merge to a registry holding BOTH `f_bob_0` AND `f_alice_0`, with the migrated record
+/// landing.
+#[test]
+fn concurrent_additive_migration_chunk_converges_registry_to_the_field_union() {
+    use forge_domain::ActorId;
+    use forge_schema::{FieldType, SchemaChange, SchemaRegistry};
+    use forge_storage::SCHEMA_REGISTRY_KEY;
+
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // The author writes one `expenses` chunk (carries alice's new field value); its
+    // bytes become the migration chunk body the receiver imports.
+    author
+        .apply_mutation_crdt(&insert("expenses", "e1", json!({"note": "hi"}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("expenses");
+    let chunk = author.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+    // The shared base: `expenses` with no fields (both peers branch from here).
+    let mut base = SchemaRegistry::new();
+    base.apply_change(SchemaChange::AddCollection { name: "expenses".into() }).unwrap();
+
+    // BOB's branch (the receiver's LOCAL state): added field `f_bob_0` (`flag: bool`).
+    let mut bob_registry = base.clone();
+    bob_registry
+        .apply_change(SchemaChange::AddField {
+            collection: "expenses".into(),
+            actor: ActorId::new("bob"),
+            name: "flag".into(),
+            ty: FieldType::Bool,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+    receiver
+        .kv_set(
+            "__forge/meta",
+            SCHEMA_REGISTRY_KEY,
+            &serde_json::to_vec(&bob_registry).unwrap(),
+            "application/json",
+        )
+        .unwrap();
+
+    // ALICE's branch (the carried migration): added a DIFFERENT field `f_alice_0`
+    // (`note: text`) from the SAME base. The carried def lacks bob's field.
+    let mut alice_registry = base.clone();
+    alice_registry
+        .apply_change(SchemaChange::AddField {
+            collection: "expenses".into(),
+            actor: ActorId::new("alice"),
+            name: "note".into(),
+            ty: FieldType::Text,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+
+    // Import alice's migration chunk carrying the alice-only `expenses` entry.
+    let chunk_msg = migration_chunk(&doc_id, &chunk, 2, carried_expenses(&alice_registry));
+    let imported = receiver.apply_remote_chunks(&[chunk_msg], "peer:11", &idx).unwrap();
+    assert_eq!(imported, 1, "the concurrent-additive migration chunk is imported");
+
+    // (registry) The CRUX: the merged `expenses` holds BOTH fields — bob's local field
+    // is NOT dropped (the carried def lacked it) and alice's carried field is added.
+    let persisted = receiver
+        .kv_get("__forge/meta", SCHEMA_REGISTRY_KEY)
+        .unwrap()
+        .expect("the receiver persisted a merged registry");
+    let merged: SchemaRegistry = serde_json::from_slice(&persisted).unwrap();
+    let merged_col = merged.collection("expenses").unwrap();
+    assert!(
+        merged_col.field("f_bob_0").is_some(),
+        "bob's local field must survive — the carried def lacking it must NOT drop it (159)"
+    );
+    assert!(
+        merged_col.field("f_alice_0").is_some(),
+        "alice's carried field must be added — concurrent-additive must converge to the union (159)"
+    );
+    // The merge is a forward evolution of the receiver's prior LOCAL state — no actor
+    // counter regressed, no field lost (it strictly added alice's field).
+    assert!(merged.validate_compatibility(&bob_registry).is_ok());
+
+    // (records) The migrated record landed with alice's `note`.
+    assert_eq!(
+        receiver.get_record("expenses", "e1").unwrap().unwrap().fields["note"],
+        json!("hi")
+    );
+}
+
 /// Review 145 (fail-closed): a `record.remote_import` oplog row MARKED schema-affecting
 /// (`is_migration: true`) but whose `to` target is UNRECOVERABLE must be staged `malformed`
 /// so a relaying peer DENIES it rather than importing migrated data as a plain record write

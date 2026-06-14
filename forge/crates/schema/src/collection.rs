@@ -99,6 +99,57 @@ impl FieldDef {
     pub(crate) fn set_enforced(&mut self, enforced: bool) {
         self.enforced = enforced;
     }
+
+    /// Deterministically merge two definitions of the SAME stable `field_id` from
+    /// two divergent registry branches into their least-upper-bound (DL-11 review
+    /// 159). Both inputs must share `field_id` (the caller keys the union by it);
+    /// the result is **commutative** (`merge(a, b) == merge(b, a)`) and
+    /// **idempotent** (`merge(a, a) == a`), so two peers converge regardless of
+    /// delivery order. Each component is resolved monotonically:
+    ///
+    /// - **type**: the WIDER of the two under [`FieldType::can_widen_to`] (so a
+    ///   narrower carried field never rolls the local one back — review 147); if
+    ///   the two are genuinely incompatible (neither widens to the other) the
+    ///   deterministic [`FieldType::order_key`] tie-break picks the larger key, so
+    ///   both peers land on the same type instead of diverging;
+    /// - **name**: a rename only touches the display name (DL-7), so two branches
+    ///   may carry different names; pick the lexicographically larger one
+    ///   deterministically (a later duplicate-name collision is caught by
+    ///   [`CollectionDef::validate_invariants`] on re-validation);
+    /// - **indexed / deprecated / required / enforced**: each is a one-way
+    ///   additive flag (turning it on is the only legal transition — DL-8/DL-12),
+    ///   so the merge ORs them: once either branch set it, the union keeps it set.
+    fn merge_with(&self, other: &FieldDef) -> FieldDef {
+        debug_assert_eq!(self.field_id, other.field_id, "merge_with requires the same field_id");
+        // WIDER-WINS type resolution, commutative by construction.
+        let ty = if self.ty.can_widen_to(&other.ty) {
+            // self widens to other => other is at least as wide. (Covers equality.)
+            other.ty.clone()
+        } else if other.ty.can_widen_to(&self.ty) {
+            self.ty.clone()
+        } else {
+            // Genuinely incompatible: neither widens to the other. Pick by the
+            // stable, total order_key so both delivery orders agree.
+            if other.ty.order_key() > self.ty.order_key() {
+                other.ty.clone()
+            } else {
+                self.ty.clone()
+            }
+        };
+        // Deterministic display-name resolution: larger name wins (rename only
+        // changes the display name; the stable id is shared).
+        let name = if other.name > self.name { other.name.clone() } else { self.name.clone() };
+        FieldDef {
+            field_id: self.field_id.clone(),
+            name,
+            ty,
+            // One-way additive flags: OR so the union is the least-upper-bound.
+            indexed: self.indexed || other.indexed,
+            deprecated: self.deprecated || other.deprecated,
+            required: self.required || other.required,
+            enforced: self.enforced || other.enforced,
+        }
+    }
 }
 
 /// A logical collection (≈ table): an ordered set of [`FieldDef`]s plus the
@@ -198,6 +249,60 @@ impl CollectionDef {
             enforced: false,
         });
         self.fields.last().expect("just pushed")
+    }
+
+    /// Deterministically merge this collection with a `carried` definition of the
+    /// same logical collection from a divergent registry branch into their
+    /// least-upper-bound (the DL-11 CRDT registry merge, review 159). This is the
+    /// COMMUTATIVE, IDEMPOTENT field-id union that lets two offline peers — who
+    /// each added a different field, or widened the same field independently —
+    /// converge to the union regardless of delivery order, instead of one branch's
+    /// concurrent-additive work being skipped (review 159) or rolled back (review
+    /// 147):
+    ///
+    /// - **fields**: union keyed by stable `field_id`. A field present in only one
+    ///   side is kept as-is; a field present in BOTH is resolved per
+    ///   [`FieldDef::merge_with`] (wider type wins, never narrows; one-way flags
+    ///   OR; deterministic name + incompatible-type tie-break). The result is
+    ///   emitted in a canonical `field_id`-sorted order so the merge is independent
+    ///   of either side's declaration order;
+    /// - **actor counters**: the per-actor MAX of the two `next_field_seq` maps, so
+    ///   no actor's counter ever regresses (DL-7 — ids are never reused) and the
+    ///   merged counters dominate every field id present on either side.
+    ///
+    /// The collection `name` is taken from `self` (the caller merges same-named
+    /// collections; `carried.name` is expected to match). The result still passes
+    /// [`Self::validate_invariants`] *unless* the two branches genuinely conflict
+    /// (e.g. two live fields renamed onto the same display name) — the caller
+    /// re-validates so such a conflict fails closed rather than corrupting the
+    /// schema.
+    ///
+    /// Pure and deterministic: `merge(a, b) == merge(b, a)` for convergent content
+    /// and `merge(a, a) == a`, so a re-merge of the same carried entry is a no-op.
+    pub(crate) fn merge_with(&self, carried: &CollectionDef) -> CollectionDef {
+        // Union the fields keyed by stable field_id. Start from the local fields,
+        // then fold each carried field in: present-in-both resolves via
+        // FieldDef::merge_with, carried-only is added.
+        let mut by_id: BTreeMap<&str, FieldDef> =
+            self.fields.iter().map(|f| (f.field_id(), f.clone())).collect();
+        for cf in &carried.fields {
+            by_id
+                .entry(cf.field_id())
+                .and_modify(|local| *local = local.merge_with(cf))
+                .or_insert_with(|| cf.clone());
+        }
+        // Canonical, order-independent field order: by stable field_id (BTreeMap
+        // already iterates in sorted key order).
+        let fields: Vec<FieldDef> = by_id.into_values().collect();
+
+        // Per-actor MAX of the two counters (least-upper-bound; never regresses).
+        let mut next_field_seq = self.next_field_seq.clone();
+        for (actor, seq) in &carried.next_field_seq {
+            let entry = next_field_seq.entry(actor.clone()).or_insert(0);
+            *entry = (*entry).max(*seq);
+        }
+
+        CollectionDef { name: self.name.clone(), fields, next_field_seq }
     }
 
     /// Re-validate structural invariants after deserialization (review 005 P2):
