@@ -391,7 +391,38 @@ fn t047_different_filters_targeted_notifications() {
 }
 #[test]
 fn t047_transact_three_records_two_collections_coalesces() {
-    run_e2e_single_transact("transact_three_records_two_collections_coalesces.json");
+    // DL-17 / reviews 131/132: a transact that spans MORE THAN ONE collection is
+    // UNSUPPORTED. The substrate REJECTS it at the write boundary with a typed
+    // QueryError BEFORE any state changes (it is not sync-safe across the SS-7
+    // boundary — see `Store::transact_mutations_crdt`), so no dirty set / no
+    // notification / no version is consumed. The full multi-collection-atomic-SYNC is a
+    // separate future feature.
+    let fx = load(T047, "transact_three_records_two_collections_coalesces.json");
+    assert_eq!(fx["unsupported"], json!(true), "fixture is marked unsupported");
+    let mut runner = Runner::new(next_version_of(&fx["given"]));
+    seed_given(&mut runner, &fx["given"]);
+
+    let mutation = op_to_mutation(&fx["when"]["mutation"], runner.next_clock(8));
+    let items = match &mutation {
+        Mutation::Transact { items } => items.clone(),
+        other => panic!("the unsupported case is a transact, got {other:?}"),
+    };
+    let err = runner
+        .store
+        .transact_mutations_crdt(&items, &runner.idx)
+        .expect_err("a cross-collection transact is rejected");
+    assert_eq!(err.code(), fx["expect"]["error_kind"].as_str().unwrap());
+    assert!(
+        err.to_string().contains(fx["expect"]["error_contains"].as_str().unwrap()),
+        "rejection message names the unsupported feature: {err}"
+    );
+    // No registry commit happened: no notification, version untouched.
+    assert!(runner.notifications.is_empty(), "rejected group delivers nothing");
+    assert_eq!(
+        runner.reg.next_version(),
+        fx["expect"]["version_after"].as_u64().unwrap(),
+        "a rejected transact consumes no version"
+    );
 }
 #[test]
 fn t047_filtered_enter_then_leave_same_transaction_no_notify() {
@@ -430,16 +461,18 @@ fn run_e2e_single_transact(name: &str) {
 
 #[test]
 fn t047_monotonic_versions_and_shared_transaction_version() {
-    // when.transactions: three committed transactions; the middle one touches two
-    // collections in ONE transaction so its two notifications share a version.
+    // when.transactions: three committed transactions; the middle one is a
+    // SINGLE-collection transact observed by TWO watches on that collection, so its
+    // two notifications share one transaction version (a transact targets one
+    // collection — DL-17 multi-collection transact is unsupported, reviews 131/132).
     let fx = load(T047, "monotonic_versions_and_shared_transaction_version.json");
     let mut runner = Runner::new(next_version_of(&fx["given"]));
     seed_given(&mut runner, &fx["given"]);
     for txn in fx["when"]["transactions"].as_array().unwrap() {
         let m = op_to_mutation(&txn["mutation"], runner.next_clock(2));
-        // The middle transaction spans two collections; it commits through the REAL
-        // atomic `transact_mutations_crdt` path as ONE registry commit, so its two
-        // notifications genuinely share one transaction version (review 129 #1).
+        // The middle transaction commits through the REAL atomic
+        // `transact_mutations_crdt` path as ONE registry commit, so both watches'
+        // notifications genuinely share one transaction version.
         runner.apply_committed(&m);
     }
     assert_notifications("monotonic_versions_and_shared_transaction_version", &runner, &fx["expect"]);

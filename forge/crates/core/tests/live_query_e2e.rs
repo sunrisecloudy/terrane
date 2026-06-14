@@ -281,6 +281,49 @@ fn run_single_mutation(suite: &str, fx: &Value) {
     let _ = suite;
 }
 
+/// The UNSUPPORTED multi-collection-transact case (DL-17, reviews 131/132): a transact
+/// that spans MORE THAN ONE collection is rejected at the facade write boundary with a
+/// typed `QueryError` BEFORE any state changes — it is not sync-safe across the SS-7
+/// boundary (a peer denied one collection would import a torn half-transaction). The
+/// facade's `commit_and_notify` surfaces the rejection, so no notification is delivered
+/// and the watch version is not consumed. The full multi-collection-atomic-SYNC is a
+/// separate future feature.
+fn run_unsupported_transact(fx: &Value) {
+    let case = fx["case"].as_str().unwrap();
+    assert_eq!(fx["unsupported"], json!(true), "case {case}: fixture marked unsupported");
+    let mut runner = Runner::new(next_version_of(&fx["given"]));
+    runner.seed_given(&fx["given"]);
+    let version_before = runner.core.next_watch_version();
+
+    let mutation = op_to_mutation(&fx["when"]["mutation"], runner.next_clock(8));
+    let err = runner
+        .core
+        .commit_and_notify(&mutation)
+        .expect_err("case {case}: a cross-collection transact is rejected");
+    assert_eq!(
+        err.code(),
+        fx["expect"]["error_kind"].as_str().unwrap(),
+        "case {case}: rejection error kind"
+    );
+    assert!(
+        err.to_string().contains(fx["expect"]["error_contains"].as_str().unwrap()),
+        "case {case}: rejection names the unsupported feature: {err}"
+    );
+    // Nothing delivered or recorded; the version is untouched (no registry commit).
+    assert!(runner.notifications.is_empty(), "case {case}: rejected group delivers nothing");
+    assert!(runner.recorded.is_empty(), "case {case}: rejected group records nothing");
+    assert_eq!(
+        runner.core.next_watch_version(),
+        version_before,
+        "case {case}: a rejected transact consumes no version"
+    );
+    assert_eq!(
+        runner.core.next_watch_version(),
+        fx["expect"]["version_after"].as_u64().unwrap(),
+        "case {case}: version_after"
+    );
+}
+
 // --- T035: live-queries semantic vectors -----------------------------------
 
 const T035: &str = "live-queries";
@@ -361,10 +404,11 @@ fn drive_t047(case: &str, file: &str) {
     let fx = load(T047, file);
     match case {
         "different_filters_targeted_notifications"
-        | "transact_three_records_two_collections_coalesces"
         | "filtered_enter_then_leave_same_transaction_no_notify"
         | "delete_watched_record_result_excludes_deleted"
         | "no_op_patch_still_dirties_watched_row" => run_single_mutation(T047, &fx),
+
+        "transact_three_records_two_collections_coalesces" => run_unsupported_transact(&fx),
 
         "rollback_discards_dirty_set_no_notify" => {
             // A rolled-back transaction produces NO dirty set, NO notification, no
@@ -451,9 +495,11 @@ fn drive_t047(case: &str, file: &str) {
         }
 
         "monotonic_versions_and_shared_transaction_version" => {
-            // when.transactions: three committed transactions; the middle one touches
-            // two collections in ONE transaction so its two notifications share a
-            // version (and the whole group commits atomically, review 129 #1).
+            // when.transactions: three committed transactions; the middle one is a
+            // SINGLE-collection transact observed by TWO watches on that collection, so
+            // its two notifications share one transaction version (a transact targets
+            // one collection — DL-17 multi-collection transact is unsupported, reviews
+            // 131/132).
             let mut runner = Runner::new(next_version_of(&fx["given"]));
             runner.seed_given(&fx["given"]);
             for txn in fx["when"]["transactions"].as_array().unwrap() {

@@ -198,6 +198,16 @@ impl WorkspaceCore {
     /// by naming its id; `was_active` reflects whether THIS applet's own watch was
     /// cancelled, so cancelling an id owned by a different applet is a no-op that
     /// reports `was_active: false` (and leaves that subscription live).
+    ///
+    /// COMMAND-LEVEL (admin) SCOPE — decided explicitly (DL-16 review 131/132): the
+    /// `db.unwatch` COMMAND is owner-scoped for EVERY caller role, including an
+    /// Owner/admin actor. There is intentionally NO admin override that cancels another
+    /// applet's watch by id through this command: the workspace-admin seam is the
+    /// trusted in-process [`unregister_watch`](Self::unregister_watch) (a caller holding
+    /// a `WorkspaceCore` already owns the workspace), so a foreign-applet cancellation
+    /// is a deliberate in-process call, never a `db.unwatch` command that names someone
+    /// else's id. This keeps the command surface uniformly owner-scoped and removes the
+    /// ambiguity of a role-conditional unwatch.
     pub(in crate::workspace) fn cmd_db_unwatch(
         &mut self,
         cmd: &forge_domain::CoreCommand,

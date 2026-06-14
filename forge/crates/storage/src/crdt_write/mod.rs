@@ -304,42 +304,18 @@ mod tests {
         assert_eq!(s.get_record("tasks", "t2").unwrap().unwrap().fields["title"], json!("B"));
     }
 
-    // --- DL-4 transact group spanning collections: ONE atomic boundary -----
+    // --- DL-17 transact scope: multi-collection transact is UNSUPPORTED ----
 
     #[test]
-    fn transact_group_spanning_collections_commits_atomically() {
-        // review 129 #1: a single `transact` group that spans collections commits as
-        // ONE atomic transaction. Each collection gets its own doc/chunk/oplog row
-        // (a `RecordsDoc` is per collection), but they all land together.
-        let mut s = store();
-        let idx = IndexManager::new();
-        let items = vec![
-            insert("tasks", "t1", json!({"title": "A", "done": false}), 1),
-            insert("notes", "n1", json!({"body": "hi"}), 2),
-            patch("tasks", "t1", json!({"done": true}), 3),
-        ];
-        let n = s.transact_mutations_crdt(&items, &idx).unwrap();
-        assert_eq!(n, 3, "three leaves across two collections");
-
-        // Both collections materialized in one go.
-        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["done"], json!(true));
-        assert_eq!(s.get_record("notes", "n1").unwrap().unwrap().fields["body"], json!("hi"));
-        // One chunk + one oplog row PER collection doc (kind record.transact for the
-        // whole logical group on both).
-        assert_eq!(s.get_chunks(&collection_doc_id("tasks")).unwrap().len(), 1);
-        assert_eq!(s.get_chunks(&collection_doc_id("notes")).unwrap().len(), 1);
-        let ops = s.list_ops().unwrap();
-        assert_eq!(ops.len(), 2, "one oplog row per collection in the group");
-        assert!(ops.iter().all(|o| o.kind == "record.transact"));
-    }
-
-    #[test]
-    fn failed_multi_collection_group_rolls_back_every_collection() {
-        // The atomicity proof: a cross-collection group whose LAST leaf (in a second
-        // collection, after the first collection's chunk/oplog/projection already
-        // wrote within the same open transaction) fails must roll the WHOLE group
-        // back — neither collection may keep a chunk, an oplog row, or a projection
-        // row. This is the boundary the prior split-write test harness faked.
+    fn transact_spanning_collections_is_rejected_unsupported() {
+        // reviews 131/132 + DL-17: a single `transact` that spans MORE THAN ONE
+        // collection is REJECTED at the write boundary. It would be LOCALLY atomic,
+        // but it persists one chunk/oplog row PER collection with no transaction-group
+        // id, and `forge-sync` authorizes/applies each chunk INDEPENDENTLY (SS-7), so a
+        // peer denied one collection would import a torn half-transaction. Until the
+        // SS-7 boundary carries transaction-group metadata (DL-17 multi-collection-
+        // atomic-SYNC, a separate future feature), a transact is confined to one
+        // collection. The rejection is fail-closed: NEITHER collection is written.
         let mut s = store();
         let idx = IndexManager::new();
         // Prior good history in tasks that must survive untouched.
@@ -348,31 +324,56 @@ mod tests {
         let tasks_chunks_before = s.get_chunks(&collection_doc_id("tasks")).unwrap().len();
         let ops_before = s.list_ops().unwrap().len();
 
-        // Group: insert tasks/t2 (commits its doc inside the txn), then patch a
-        // MISSING notes record -> the whole transaction must roll back.
+        // A two-collection group is rejected BEFORE any CRDT/SQLite work.
         let items = vec![
-            insert("tasks", "t2", json!({"v": 2}), 2),
-            patch("notes", "missing", json!({"v": 3}), 3),
+            insert("tasks", "t1", json!({"title": "A", "done": false}), 2),
+            insert("notes", "n1", json!({"body": "hi"}), 3),
+            patch("tasks", "t1", json!({"done": true}), 4),
         ];
         let err = s.transact_mutations_crdt(&items, &idx).unwrap_err();
         assert_eq!(err.code(), "QueryError");
+        assert!(
+            err.to_string().contains("multi-collection transact is not supported"),
+            "typed rejection names the unsupported feature: {err}"
+        );
 
-        // tasks: t2 not materialized, no new chunk/op; the prior `keep` untouched.
-        assert!(s.get_record("tasks", "t2").unwrap().is_none(), "t2 rolled back");
+        // Fail-closed: neither collection wrote a record, a chunk, or an oplog row.
+        assert!(s.get_record("tasks", "t1").unwrap().is_none(), "tasks not written");
+        assert!(s.get_record("notes", "n1").unwrap().is_none(), "notes not written");
+        assert!(
+            s.get_chunks(&collection_doc_id("notes")).unwrap().is_empty(),
+            "no notes chunk for the rejected group"
+        );
         assert_eq!(
             s.get_chunks(&collection_doc_id("tasks")).unwrap().len(),
             tasks_chunks_before,
-            "no new tasks chunk for the failed group"
+            "no new tasks chunk for the rejected group"
         );
+        assert_eq!(s.list_ops().unwrap().len(), ops_before, "no oplog row for the rejected group");
+        // The prior single-collection history is untouched.
         assert_eq!(s.get_record("tasks", "keep").unwrap().unwrap().fields["v"], json!(1));
-        // notes: nothing leaked in — no chunk row at all for the doc.
-        assert!(
-            s.get_chunks(&collection_doc_id("notes")).unwrap().is_empty(),
-            "no notes chunk for the failed group"
-        );
-        assert!(s.get_record("notes", "missing").unwrap().is_none());
-        // No oplog row from the failed group on either collection.
-        assert_eq!(s.list_ops().unwrap().len(), ops_before, "no oplog row for the failed group");
+    }
+
+    #[test]
+    fn transact_single_collection_still_commits_atomically() {
+        // The supported case: a single-collection `transact` still commits as ONE
+        // atomic transaction — one doc, one chunk, one oplog row of kind
+        // record.transact (byte-stable with the pre-scope path).
+        let mut s = store();
+        let idx = IndexManager::new();
+        let items = vec![
+            insert("tasks", "t1", json!({"title": "A", "done": false}), 1),
+            insert("tasks", "t2", json!({"title": "B", "done": false}), 2),
+            patch("tasks", "t1", json!({"done": true}), 3),
+        ];
+        let n = s.transact_mutations_crdt(&items, &idx).unwrap();
+        assert_eq!(n, 3, "three leaves in one collection");
+        assert_eq!(s.get_record("tasks", "t1").unwrap().unwrap().fields["done"], json!(true));
+        assert_eq!(s.get_record("tasks", "t2").unwrap().unwrap().fields["title"], json!("B"));
+        assert_eq!(s.get_chunks(&collection_doc_id("tasks")).unwrap().len(), 1);
+        let ops = s.list_ops().unwrap();
+        assert_eq!(ops.len(), 1, "one oplog row for the single-collection group");
+        assert_eq!(ops[0].kind, "record.transact");
     }
 
     // --- apply_remote_chunks: atomic per-store remote apply (review 088 #1) --

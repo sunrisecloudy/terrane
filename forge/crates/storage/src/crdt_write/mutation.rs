@@ -228,6 +228,18 @@ impl Store {
     /// affected projection rows are written in ONE SQLite transaction. All-or-
     /// nothing: any failure rolls back the chunk, op, and projection together.
     ///
+    /// SCOPE (M0a): a `transact` must target a **single collection**. A group that
+    /// spans MORE THAN ONE collection is REJECTED with a [`CoreError::QueryError`]
+    /// ("multi-collection transact is not supported") at the write boundary — see
+    /// [`write_group_crdt`](Store::write_group_crdt). Such a group is locally atomic,
+    /// but it persists one chunk/oplog row PER collection with NO transaction-group id,
+    /// and `forge-sync` authorizes/applies each chunk INDEPENDENTLY (SS-7,
+    /// `sync/src/lib.rs`), so a peer denied one collection would import a TORN half of
+    /// the transaction (reviews 131/132). The full DL-17 multi-collection-atomic-SYNC
+    /// (transaction-group metadata + all-or-nothing apply across the SS-7 boundary) is a
+    /// separate FUTURE feature; until then a transact is confined to one collection so
+    /// the locally-atomic write is also sync-safe.
+    ///
     /// Returns the number of leaf mutations applied (nested groups are flattened).
     pub fn transact_mutations_crdt(
         &mut self,
@@ -244,21 +256,23 @@ impl Store {
     /// the original mutation(s) as the caller sees them (one leaf, or one group);
     /// `kind` is the oplog kind string for the whole logical write.
     ///
-    /// A `RecordsDoc` is per collection (DL-2), so a group that spans collections is
-    /// partitioned into one bucket per collection — each bucket drives its own doc /
-    /// chunk / oplog row. Crucially, EVERY bucket is written inside ONE
-    /// `Store::transact`, so the whole `transact` group is one atomic SQLite
-    /// boundary: if any collection's write fails, the entire group rolls back
-    /// (query-dsl.md §transact, live-queries.md §Dirty Set "one dirty set per
-    /// committed transact"). A single-collection write is the degenerate one-bucket
-    /// case (one chunk + one oplog row, byte-stable with the prior path).
+    /// A `RecordsDoc` is per collection (DL-2). A write that spans MORE THAN ONE
+    /// collection is REJECTED at this boundary (DL-17 multi-collection transact is
+    /// UNSUPPORTED in M0a; see [`Store::transact_mutations_crdt`]): a cross-collection
+    /// group would persist one chunk/oplog row PER collection with NO transaction-group
+    /// id, and `forge-sync` authorizes/applies each chunk INDEPENDENTLY (SS-7,
+    /// `sync/src/lib.rs`), so a peer denied one collection would import a TORN half of
+    /// the transaction (reviews 131/132). Until the SS-7 boundary carries
+    /// transaction-group metadata and applies it all-or-nothing (DL-17
+    /// multi-collection-atomic-SYNC, a separate future feature), a transact is confined
+    /// to ONE collection so the locally-atomic write is also sync-safe.
     ///
-    /// Per bucket, inside the shared transaction: load-or-rebuild the doc from
-    /// chunks, capture `before_version`, apply that bucket's leaves to the doc,
-    /// commit the doc, export the incremental update since `before_version`, append
-    /// it as one immutable chunk, append one oplog row, then re-materialize each
-    /// touched record into the `records` projection (FTS-synced). Returns the total
-    /// leaf count across all buckets.
+    /// A single-collection group writes one chunk + one oplog row inside ONE
+    /// `Store::transact` (byte-stable with the prior path): load-or-rebuild the doc
+    /// from chunks, capture `before_version`, apply the leaves to the doc, commit the
+    /// doc, export the incremental update since `before_version`, append it as one
+    /// immutable chunk, append one oplog row, then re-materialize each touched record
+    /// into the `records` projection (FTS-synced). Returns the leaf count.
     fn write_group_crdt(
         &mut self,
         top: &[Mutation],
@@ -266,8 +280,8 @@ impl Store {
         indexes: &IndexManager,
     ) -> Result<usize> {
         // Flatten to leaves, then partition into per-collection buckets (first-touch
-        // order). A multi-collection `transact` produces several buckets; all are
-        // written under one transaction below.
+        // order). A multi-collection `transact` is rejected below; a single-collection
+        // write is the one-bucket case written under one transaction.
         let mut leaves: Vec<&Mutation> = Vec::new();
         for m in top {
             flatten_leaves(m, &mut leaves);
@@ -276,6 +290,17 @@ impl Store {
             return Ok(0);
         }
         let buckets = partition_by_collection(&leaves)?;
+        // SCOPE: a transact may span only ONE collection (DL-17 multi-collection
+        // transact is unsupported in M0a — it is NOT sync-safe across the SS-7 boundary;
+        // see this function's doc comment and reviews 131/132). Reject a cross-collection
+        // group BEFORE any CRDT/SQLite work, so neither collection is written.
+        if buckets.len() > 1 {
+            let collections: Vec<&str> = buckets.iter().map(|(c, _)| c.as_str()).collect();
+            return Err(CoreError::QueryError(format!(
+                "multi-collection transact is not supported (DL-17): a transact must target a \
+                 single collection, but this group spans {collections:?}"
+            )));
+        }
         let leaf_count = leaves.len();
         let peer_id = self.crdt_peer_id();
 

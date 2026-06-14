@@ -94,6 +94,7 @@ Mutation rules:
 - `patch` merges the supplied fields into the current record.
 - `delete` marks the record tombstoned; hard purge is not in the applet API.
 - `transact([...])` commits all included mutations as one local SQLite transaction and one CRDT commit; failure rolls back the group.
+- `transact([...])` must target a **single collection** (M0a). A group spanning more than one collection is rejected with a typed `QueryError` ("multi-collection transact is not supported"): it would be locally atomic but persists one CRDT chunk/oplog row per collection with no transaction-group id, and `forge-sync` authorizes/applies each chunk independently (SS-7), so a peer denied one collection would import a torn half-transaction. The full DL-17 multi-collection-atomic-SYNC (transaction-group metadata + all-or-nothing apply across the SS-7 boundary) is a separate future feature.
 
 ## Result
 

@@ -1,6 +1,7 @@
 {
   "case": "transact_three_records_two_collections_coalesces",
-  "description": "A transaction touching three records in two collections emits at most one coalesced notification per affected watch.",
+  "description": "A transact that spans MORE THAN ONE collection is UNSUPPORTED (DL-17, reviews 131/132): it is locally atomic but persists one chunk/oplog row per collection with no transaction-group id, and forge-sync authorizes/applies each chunk independently (SS-7), so a peer denied one collection would import a torn half-transaction. The write boundary REJECTS a cross-collection transact with a typed QueryError before any state changes; NO dirty set / NO notification / no version consumed. The full DL-17 multi-collection-atomic-SYNC (transaction-group metadata + all-or-nothing apply across the SS-7 boundary) is a separate future feature.",
+  "unsupported": true,
   "given": {
     "records": [
       {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Existing", "done": false}, "deleted": false},
@@ -23,30 +24,12 @@
     }
   },
   "expect": {
-    "dirty_set": {"version": 20, "collections": {"notes": ["notes/1"], "tasks": ["tasks/1", "tasks/2"]}},
-    "notifications": [
-      {
-        "type": "db.watch.notification",
-        "watch_id": "watch:tasks-all",
-        "version": 20,
-        "collection": "tasks",
-        "record_ids": ["tasks/1", "tasks/2"],
-        "reason": "mixed",
-        "result_ids": ["tasks/1", "tasks/2"],
-        "coalesced": true
-      },
-      {
-        "type": "db.watch.notification",
-        "watch_id": "watch:notes-all",
-        "version": 20,
-        "collection": "notes",
-        "record_ids": ["notes/1"],
-        "reason": "delete",
-        "result_ids": [],
-        "coalesced": false
-      }
-    ],
-    "reason_scope": "per watched collection",
-    "max_notifications_per_watch_per_transaction": 1
+    "rejected": true,
+    "error_kind": "QueryError",
+    "error_contains": "multi-collection transact is not supported",
+    "dirty_set": null,
+    "notifications": [],
+    "version_after": 20,
+    "future_feature": "DL-17 multi-collection-atomic-SYNC (transaction-group metadata + all-or-nothing apply across the SS-7 boundary)"
   }
 }

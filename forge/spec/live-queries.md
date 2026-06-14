@@ -58,6 +58,7 @@ Rules:
 - Record ids are deduplicated and sorted by `entity_id` for deterministic notification bytes.
 - `insert`, `update`, `patch`, and `delete` all dirty their target record id.
 - `transact([...])` produces one dirty set and at most one notification per affected watch.
+- `transact([...])` must target a single collection (M0a); a multi-collection group is rejected with a typed `QueryError` before any state changes, so it produces no dirty set and no notification (it is not sync-safe across the SS-7 boundary — see `query-dsl.md`). The shared-transaction version is therefore demonstrated by multiple watches on one collection observing the same single-collection transaction.
 - Mutations that roll back produce no dirty set and no notifications.
 
 ## Notification Shape
