@@ -80,6 +80,12 @@ mod runs;
 mod oplog;
 pub use oplog::OpRow;
 
+pub mod watch;
+pub use watch::{
+    DirtyChanges, DirtyKind, DirtySet, NotificationReason, ResultSnapshot, Watch, WatchNotification,
+    WatchRegistry,
+};
+
 mod crdt;
 pub use crdt::{ChunkRow, SnapshotRow};
 
