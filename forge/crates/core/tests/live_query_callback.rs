@@ -342,3 +342,72 @@ fn db_unwatch_is_owner_scoped_one_applet_cannot_cancel_another_applets_watch() {
     assert_eq!(resp.payload["was_active"], json!(true), "the owner cancelled its live watch");
     assert!(core.active_watch_ids().is_empty(), "owner's unwatch cancelled the watch");
 }
+
+#[test]
+fn db_watch_registration_is_owner_scoped_one_applet_cannot_replace_another_applets_watch() {
+    // review 133 #2: watch ids are applet-visible strings, but one applet must NOT be
+    // able to REPLACE another applet's subscription (owner/callback/query) by reusing
+    // its id. Registration is owner-scoped — applet B's `db.watch` of applet A's id is
+    // REFUSED, A's subscription stays intact, and notifications keep routing to A.
+    let mut core = WorkspaceCore::in_memory("ws-reg-owner").expect("workspace");
+    for app in ["app-a", "app-b"] {
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some(app),
+            json!({ "manifest": manifest(), "sources": { "src/main.ts": WATCH_TS } }),
+        ));
+        assert!(resp.ok, "install {app}: {:?}", resp.error);
+        // Each applet can read tasks (the db.watch gate); grant the trusted scope.
+        core.grant_db_read(app, vec!["tasks".to_string()]).expect("grant");
+    }
+
+    // app-a registers "watch:open" via the db.watch COMMAND (the owner-scoped path).
+    let resp = core.handle(cmd(
+        "db.watch",
+        Some("app-a"),
+        json!({
+            "watch_id": "watch:open",
+            "callback": "onWatch",
+            "query": { "from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"] }
+        }),
+    ));
+    assert!(resp.ok, "app-a db.watch: {:?}", resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+    // app-b attempts to REGISTER the same id with a different query/callback → DENIED.
+    let resp = core.handle(cmd(
+        "db.watch",
+        Some("app-b"),
+        json!({
+            "watch_id": "watch:open",
+            "callback": "steal",
+            "query": { "from": "tasks" }
+        }),
+    ));
+    assert!(!resp.ok, "app-b cannot register app-a's watch id");
+    assert_eq!(
+        resp.error.as_ref().unwrap().code(),
+        "PermissionDenied",
+        "a foreign-owner watch_id collision is PermissionDenied, got {:?}",
+        resp.error
+    );
+
+    // app-a's subscription is INTACT (same owner + callback) and still the only watch.
+    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+    // Notifications still route to app-a: a committed insert fires its watch, and the
+    // dispatch re-renders app-a's view (proving ownership was never reassigned to B).
+    let batch = core.commit_and_notify(&insert("tasks/1", false, 10)).expect("commit");
+    assert_eq!(batch.notifications.len(), 1, "app-a's watch is still live");
+    assert_eq!(batch.notifications[0].watch_id, "watch:open");
+    let rerendered_a = core
+        .events()
+        .events_of_kind("ui.patch")
+        .any(|e| e.applet_id.as_ref().map(|a| a.as_str()) == Some("app-a"));
+    assert!(rerendered_a, "app-a's onWatch ran (ownership not stolen by app-b)");
+    let rerendered_b = core
+        .events()
+        .events_of_kind("ui.patch")
+        .any(|e| e.applet_id.as_ref().map(|a| a.as_str()) == Some("app-b"));
+    assert!(!rerendered_b, "app-b never owned the watch → its callback never ran");
+}

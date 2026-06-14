@@ -141,13 +141,22 @@ impl WorkspaceCore {
         let mut probe = self.watch_sessions.to_registry()?;
         probe.register_from_value(&watch_id, &query)?;
 
-        // Register (idempotent in place) and persist.
-        self.watch_sessions.register(WatchSubscription {
+        // Register OWNER-SCOPED (review 133 #2): a re-watch by the SAME applet replaces
+        // its subscription in place (idempotent), but a `watch_id` already owned by a
+        // DIFFERENT applet is REFUSED — one applet must not be able to replace another's
+        // owner/callback/query (which would also break the original owner's owner-scoped
+        // `db.unwatch` and reroute its notifications). Denied BEFORE any persist.
+        let registered = self.watch_sessions.register_owned(WatchSubscription {
             watch_id: watch_id.clone(),
             applet_id: applet_id.as_str().to_string(),
             callback: callback.clone(),
             query: query.clone(),
         });
+        if !registered {
+            return Err(CoreError::PermissionDenied(format!(
+                "watch_id `{watch_id}` is already registered by another applet"
+            )));
+        }
         self.persist_watch_sessions()?;
 
         // The watch's current result ids (so the applet renders its initial view).
@@ -668,12 +677,31 @@ impl WorkspaceCore {
                     // The callback handler an applet wires via `ctx.db.watch` is a
                     // conventional `onWatch` name (the runtime surface carries only
                     // (watch_id, query)); a richer callback ref can be threaded later.
-                    self.watch_sessions.register(WatchSubscription {
+                    //
+                    // OWNER-SCOPED register (review 133 #2): a re-watch by THIS applet
+                    // replaces its own subscription in place, but a `watch_id` already
+                    // owned by a DIFFERENT applet is REFUSED — one applet must not be able
+                    // to replace another's subscription by reusing its id. A refused
+                    // collision is a non-destructive no-op that leaves the original owner's
+                    // watch intact; we emit a denial so the attempt is auditable but do not
+                    // abort the rest of this run's intent folding.
+                    let registered = self.watch_sessions.register_owned(WatchSubscription {
                         watch_id: watch_id.clone(),
                         applet_id: applet_id.to_string(),
                         callback: "onWatch".to_string(),
                         query: query.clone(),
                     });
+                    if !registered {
+                        self.events.emit(
+                            Some(forge_domain::AppletId::new(applet_id.to_string())),
+                            "db.watch.denied",
+                            serde_json::json!({
+                                "applet_id": applet_id,
+                                "watch_id": watch_id,
+                                "reason": "watch_id owned by another applet",
+                            }),
+                        );
+                    }
                 }
                 crate::bridge::WatchIntent::Unwatch { watch_id } => {
                     // OWNER-SCOPED cancel (review 132 #2): an applet may cancel ONLY

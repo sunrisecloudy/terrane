@@ -90,10 +90,44 @@ impl WatchSessions {
     /// Register/replace a watch (DL-16 `db.watch`). Idempotent on `watch_id`: a
     /// re-watch replaces the subscription IN PLACE (keeping its registration
     /// position) so a re-`watch` is not a duplicate, matching the storage registry.
+    ///
+    /// This is the TRUSTED in-process register (no owner check) — the workspace owner
+    /// already holds a `WorkspaceCore`. An APPLET-originated register MUST use
+    /// [`register_owned`](Self::register_owned) so one applet cannot REPLACE another
+    /// applet's subscription by reusing its watch id (review 133 #2).
     pub fn register(&mut self, sub: WatchSubscription) {
         match self.subscriptions.iter_mut().find(|s| s.watch_id == sub.watch_id) {
             Some(existing) => *existing = sub,
             None => self.subscriptions.push(sub),
+        }
+    }
+
+    /// Owner-scoped register (DL-16 `db.watch` from an applet, review 133 #2): register
+    /// `sub` ONLY when its `watch_id` is unregistered OR already owned by `sub.applet_id`.
+    /// Returns `true` when registered/replaced, `false` when the id already belongs to a
+    /// DIFFERENT applet (the existing subscription is left intact — the caller surfaces a
+    /// denial).
+    ///
+    /// Watch ids are applet-visible strings, so an applet that reuses another applet's
+    /// id must NOT be able to silently replace that subscription's owner/callback/query
+    /// (which would also break the original owner's owner-scoped `db.unwatch` and reroute
+    /// its notifications). Binding registration to the owner upholds the CR-3
+    /// capability-scoped subscription-ownership model. A same-owner re-watch still
+    /// replaces in place (idempotent), matching [`register`](Self::register).
+    pub fn register_owned(&mut self, sub: WatchSubscription) -> bool {
+        match self.subscriptions.iter_mut().find(|s| s.watch_id == sub.watch_id) {
+            // Foreign owner already holds this id — refuse to clobber it.
+            Some(existing) if existing.applet_id != sub.applet_id => false,
+            // Same owner — replace in place (idempotent re-watch).
+            Some(existing) => {
+                *existing = sub;
+                true
+            }
+            // Unused id — register fresh.
+            None => {
+                self.subscriptions.push(sub);
+                true
+            }
         }
     }
 
@@ -220,6 +254,37 @@ mod tests {
         assert!(s.unregister_owned("app-a", "w1"), "owner cancels its own watch");
         assert!(s.active_watch_ids().is_empty());
         assert!(!s.unregister_owned("app-a", "w1"), "idempotent: already gone");
+    }
+
+    #[test]
+    fn register_owned_refuses_to_replace_another_applets_watch() {
+        // review 133 #2: registration is owner-scoped — applet B cannot replace
+        // applet A's subscription by reusing its watch id.
+        let mut s = WatchSessions::default();
+        assert!(s.register_owned(WatchSubscription {
+            watch_id: "w1".into(),
+            applet_id: "app-a".into(),
+            callback: "onWatch".into(),
+            query: json!({ "from": "tasks", "where": ["done", "=", false] }),
+        }));
+        // app-b reusing the same id is REFUSED, leaving app-a's subscription intact.
+        assert!(!s.register_owned(WatchSubscription {
+            watch_id: "w1".into(),
+            applet_id: "app-b".into(),
+            callback: "steal".into(),
+            query: json!({ "from": "secrets" }),
+        }));
+        assert_eq!(s.callback_for("w1"), Some(("app-a", "onWatch")), "owner unchanged");
+        assert_eq!(s.subscriptions[0].query["from"], json!("tasks"), "query unchanged");
+        // The SAME owner re-watching replaces in place (idempotent), keeping ownership.
+        assert!(s.register_owned(WatchSubscription {
+            watch_id: "w1".into(),
+            applet_id: "app-a".into(),
+            callback: "onTasksV2".into(),
+            query: json!({ "from": "tasks" }),
+        }));
+        assert_eq!(s.active_watch_ids(), vec!["w1".to_string()], "no duplicate");
+        assert_eq!(s.callback_for("w1"), Some(("app-a", "onTasksV2")), "owner re-watch replaced");
     }
 
     #[test]
