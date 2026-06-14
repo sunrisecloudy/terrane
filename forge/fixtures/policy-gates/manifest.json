@@ -1,0 +1,93 @@
+{
+  "suite": "policy-gates-sc10-vectors",
+  "version": 1,
+  "spec": "../../spec/policy-gates.md",
+  "prd": ["SC-10", "SC-2", "SC-8", "SC-11", "SC-21", "CR-3"],
+  "scope": "Semantic decision vectors for the SC-10 seven-gate composition (actor-role, workspace-policy, manifest, run-profile, platform-permission, resource-allowlist, rate/resource-limit). The three trusted-source gates (workspace-policy, run-profile, platform-permission) read TRUSTED workspace/run/platform state, never the request payload (review 048/050).",
+  "trusted_authority": "workspace_policy + run_profile + platform_permissions (host trusted state)",
+  "engine": "forge_policy::PolicyEngine::with_context(ComposedDecisionContext)",
+  "gate_order": [
+    "actor-role",
+    "workspace-policy",
+    "manifest",
+    "run-profile",
+    "platform-permission",
+    "resource-allowlist",
+    "rate-resource-limit"
+  ],
+  "count": 12,
+  "cases": [
+    {
+      "case": "all_gates_pass_allow",
+      "file": "all_gates_pass_allow.json",
+      "expect": "allow",
+      "gate": "none"
+    },
+    {
+      "case": "workspace_policy_denies_capability",
+      "file": "workspace_policy_denies_capability.json",
+      "expect": "deny",
+      "gate": "workspace-policy"
+    },
+    {
+      "case": "run_profile_excludes_capability",
+      "file": "run_profile_excludes_capability.json",
+      "expect": "deny",
+      "gate": "run-profile"
+    },
+    {
+      "case": "platform_permission_unavailable",
+      "file": "platform_permission_unavailable.json",
+      "expect": "deny",
+      "gate": "platform-permission"
+    },
+    {
+      "case": "capability_not_in_manifest_denied",
+      "file": "capability_not_in_manifest_denied.json",
+      "expect": "deny",
+      "gate": "manifest"
+    },
+    {
+      "case": "rbac_role_lacks_permission_denied",
+      "file": "rbac_role_lacks_permission_denied.json",
+      "expect": "deny",
+      "gate": "actor-role"
+    },
+    {
+      "case": "resource_limit_exceeded_denied",
+      "file": "resource_limit_exceeded_denied.json",
+      "expect": "deny",
+      "gate": "rate-resource-limit"
+    },
+    {
+      "case": "resource_outside_allowlist_denied",
+      "file": "resource_outside_allowlist_denied.json",
+      "expect": "deny",
+      "gate": "resource-allowlist"
+    },
+    {
+      "case": "order_workspace_policy_wins_over_manifest",
+      "file": "order_workspace_policy_wins_over_manifest.json",
+      "expect": "deny",
+      "gate": "workspace-policy"
+    },
+    {
+      "case": "order_role_wins_over_workspace_policy",
+      "file": "order_role_wins_over_workspace_policy.json",
+      "expect": "deny",
+      "gate": "actor-role"
+    },
+    {
+      "case": "fail_closed_missing_workspace_policy_input",
+      "file": "fail_closed_missing_workspace_policy_input.json",
+      "expect": "deny",
+      "gate": "workspace-policy"
+    },
+    {
+      "case": "fail_closed_missing_run_profile_input",
+      "file": "fail_closed_missing_run_profile_input.json",
+      "expect": "deny",
+      "gate": "run-profile"
+    }
+  ]
+}

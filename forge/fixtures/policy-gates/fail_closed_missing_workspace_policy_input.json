@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "case": "fail_closed_missing_workspace_policy_input",
+  "coverage": ["SC-10"],
+  "summary": "FAIL-CLOSED: the storage category is absent from BOTH the workspace allow and deny lists (the workspace never positively granted it). Gate 2 denies — a missing gate input denies, never allows.",
+  "actor": { "role": "owner" },
+  "manifest": {
+    "capabilities": { "storage": { "read": ["app/*"], "write": [] } },
+    "limits": { "max_host_calls": 100 }
+  },
+  "workspace_policy": { "allowed": ["db"], "denied": [] },
+  "run_profile": { "name": "default", "permitted": ["storage"] },
+  "platform": { "granted": ["storage"] },
+  "request": { "call": "storage", "op": "read", "key": "app/notes/1" },
+  "expect": {
+    "decision": "deny",
+    "gate": "workspace-policy",
+    "code": "PermissionDenied",
+    "reason_contains": "fail-closed"
+  }
+}

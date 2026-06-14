@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "case": "workspace_policy_denies_capability",
+  "coverage": ["SC-10"],
+  "summary": "The workspace admin policy explicitly forbids the storage capability, so gate 2 (workspace-policy) denies even though the manifest grants the key.",
+  "actor": { "role": "owner" },
+  "manifest": {
+    "capabilities": { "storage": { "read": ["app/*"], "write": [] } },
+    "limits": { "max_host_calls": 100 }
+  },
+  "workspace_policy": { "allowed": [], "denied": ["storage"] },
+  "run_profile": { "name": "default", "permitted": ["storage"] },
+  "platform": { "granted": ["storage"] },
+  "request": { "call": "storage", "op": "read", "key": "app/notes/1" },
+  "expect": {
+    "decision": "deny",
+    "gate": "workspace-policy",
+    "code": "PermissionDenied",
+    "reason_contains": "workspace policy"
+  }
+}

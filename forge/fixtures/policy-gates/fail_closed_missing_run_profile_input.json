@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "case": "fail_closed_missing_run_profile_input",
+  "coverage": ["SC-10", "SC-21"],
+  "summary": "FAIL-CLOSED: the run profile permits nothing (empty bounds), so the storage category is outside its bounds. Gate 4 denies — a missing/empty gate input denies, never allows.",
+  "actor": { "role": "owner" },
+  "manifest": {
+    "capabilities": { "storage": { "read": ["app/*"], "write": [] } },
+    "limits": { "max_host_calls": 100 }
+  },
+  "workspace_policy": { "allowed": ["storage"], "denied": [] },
+  "run_profile": { "name": "empty", "permitted": [] },
+  "platform": { "granted": ["storage"] },
+  "request": { "call": "storage", "op": "read", "key": "app/notes/1" },
+  "expect": {
+    "decision": "deny",
+    "gate": "run-profile",
+    "code": "PermissionDenied",
+    "reason_contains": "fail-closed"
+  }
+}

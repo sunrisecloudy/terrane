@@ -137,13 +137,20 @@ fn role_can_run(role: Role) -> bool {
 // SC-10 gates that are NOT the manifest+resource subcheck (review 006 P1).
 // ---------------------------------------------------------------------------
 
-/// Outcome of a single SC-10 gate hook. A gate either permits the capability
-/// or denies it with a reason that is surfaced as `PermissionDenied`.
+/// Outcome of a single SC-10 gate hook. A gate either permits the capability,
+/// denies it with a reason that is surfaced as `PermissionDenied`, or reports
+/// the capability is *unavailable on this platform* (`PlatformUnavailable`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateDecision {
     Allow,
-    /// Deny, carrying a human-readable reason naming the failing gate.
+    /// Deny, carrying a human-readable reason naming the failing gate. Surfaced
+    /// as [`CoreError::PermissionDenied`].
     Deny(String),
+    /// The host platform does not grant this capability (no camera, no
+    /// clipboard, OS denied the prompt). Surfaced as
+    /// [`CoreError::PlatformUnavailable`] (prd-merged/01 CR-3), distinct from a
+    /// policy denial: the capability is not *refused*, it is *absent*.
+    Unavailable(String),
 }
 
 /// The SC-10 gates that this crate does **not** implement as the
@@ -171,7 +178,11 @@ pub trait DecisionContext: std::fmt::Debug {
     /// **Gate: workspace policy permits capability** (SC-10).
     ///
     /// The workspace admin policy can forbid a capability category outright,
-    /// independent of any single applet's manifest. **M0a stub: AllowAll.**
+    /// independent of any single applet's manifest. The **trusted source** is
+    /// the workspace's own admin policy ([`WorkspacePolicy`]), never the request
+    /// payload (review 048/050). [`ComposedDecisionContext`] implements the real
+    /// evaluation; the permissive default here serves [`AllowAll`] and the
+    /// replay context only.
     fn workspace_policy(&self, _category: Category) -> GateDecision {
         GateDecision::Allow
     }
@@ -179,7 +190,11 @@ pub trait DecisionContext: std::fmt::Debug {
     /// **Gate: run profile permits it** (SC-10).
     ///
     /// The run profile (e.g. a locked-down "review-safety" profile, prd-merged/07
-    /// SC-21) can narrow what a run may do. **M0a stub: AllowAll.**
+    /// SC-21) can narrow what a run may do. The **trusted source** is the run's
+    /// declared profile bounds ([`RunProfile`]), resolved from trusted run state,
+    /// never the request payload. [`ComposedDecisionContext`] implements the real
+    /// evaluation; the permissive default here serves [`AllowAll`] and the
+    /// replay context only.
     fn run_profile(&self, _category: Category) -> GateDecision {
         GateDecision::Allow
     }
@@ -188,7 +203,12 @@ pub trait DecisionContext: std::fmt::Debug {
     /// `PlatformUnavailable`).
     ///
     /// The host platform may not grant a capability (no camera, no clipboard,
-    /// OS denied the prompt). **M0a stub: AllowAll.**
+    /// OS denied the prompt). The **trusted source** is the OS-granted capability
+    /// set ([`PlatformPermissions`]) the host reports, never the request payload.
+    /// A missing platform grant yields [`GateDecision::Unavailable`] →
+    /// [`CoreError::PlatformUnavailable`]. [`ComposedDecisionContext`] implements
+    /// the real evaluation; the permissive default here serves [`AllowAll`] and
+    /// the replay context only.
     fn platform_permission(&self, _category: Category) -> GateDecision {
         GateDecision::Allow
     }
@@ -213,6 +233,185 @@ pub struct AllowAll;
 impl DecisionContext for AllowAll {
     fn clone_box(&self) -> Box<dyn DecisionContext> {
         clone_decision_context(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real trusted-source SC-10 gates (workspace-policy / run-profile /
+// platform-permission). These replace the AllowAll stubs on the *live* decision
+// path; AllowAll stays the default + the replay context (review 006 P1, T037).
+// ---------------------------------------------------------------------------
+//
+// FAIL-CLOSED & TRUSTED-SOURCE (review 048/050): every type below is read from
+// TRUSTED workspace / run / platform state, NEVER the request payload. A gate
+// input that is missing or ambiguous DENIES — it never silently allows.
+
+/// **Trusted source for the workspace-policy gate** (SC-10).
+///
+/// The workspace admin policy is an explicit allow/deny over capability
+/// *categories*, decided by the workspace, not the applet. A category is
+/// permitted only when it is in `allowed` and not in `denied`; `denied` wins on
+/// conflict, and a category in neither set is **denied fail-closed** (the
+/// workspace never positively granted it).
+///
+/// This is trusted workspace state. It is resolved from the workspace's own
+/// policy table at the command boundary, never from the request payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspacePolicy {
+    /// Categories the workspace admin policy explicitly permits.
+    allowed: Vec<Category>,
+    /// Categories the workspace admin policy explicitly forbids. Overrides
+    /// `allowed` on conflict (deny wins).
+    denied: Vec<Category>,
+}
+
+impl WorkspacePolicy {
+    /// Build a workspace policy from explicit allow / deny category lists.
+    pub fn new(allowed: impl IntoIterator<Item = Category>, denied: impl IntoIterator<Item = Category>) -> Self {
+        WorkspacePolicy { allowed: allowed.into_iter().collect(), denied: denied.into_iter().collect() }
+    }
+
+    /// Evaluate the workspace-policy gate fail-closed: an explicit deny denies;
+    /// an absent grant (not in `allowed`) denies; only an explicit allow with no
+    /// overriding deny permits.
+    fn decide(&self, category: Category) -> GateDecision {
+        if self.denied.contains(&category) {
+            return GateDecision::Deny(format!(
+                "workspace policy explicitly forbids the {} capability",
+                category.as_str()
+            ));
+        }
+        if self.allowed.contains(&category) {
+            GateDecision::Allow
+        } else {
+            // FAIL-CLOSED: the workspace never positively granted this category.
+            GateDecision::Deny(format!(
+                "workspace policy does not grant the {} capability (fail-closed: absent from the allow list)",
+                category.as_str()
+            ))
+        }
+    }
+}
+
+/// **Trusted source for the run-profile gate** (SC-10, prd-merged/07 SC-21).
+///
+/// A run executes under a declared profile (e.g. a locked-down "review-safety"
+/// profile) whose bounds *narrow* what the run may do. A capability category is
+/// permitted only when it is within the profile's `permitted` bounds; a category
+/// outside the bounds is **denied fail-closed**.
+///
+/// This is trusted run state resolved from the run's declared profile, never the
+/// request payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunProfile {
+    /// Stable name of the profile (for diagnostics/audit).
+    name: String,
+    /// Capability categories the profile permits this run to exercise.
+    permitted: Vec<Category>,
+}
+
+impl RunProfile {
+    /// Build a run profile from a name and the capability bounds it permits.
+    pub fn new(name: impl Into<String>, permitted: impl IntoIterator<Item = Category>) -> Self {
+        RunProfile { name: name.into(), permitted: permitted.into_iter().collect() }
+    }
+
+    /// Evaluate the run-profile gate fail-closed: a category outside the
+    /// profile's permitted bounds is denied.
+    fn decide(&self, category: Category) -> GateDecision {
+        if self.permitted.contains(&category) {
+            GateDecision::Allow
+        } else {
+            GateDecision::Deny(format!(
+                "run profile {:?} does not permit the {} capability (fail-closed: outside the profile bounds)",
+                self.name,
+                category.as_str()
+            ))
+        }
+    }
+}
+
+/// **Trusted source for the platform-permission gate** (SC-10, prd-merged/01
+/// CR-3 `PlatformUnavailable`).
+///
+/// The host platform grants a set of OS-level capabilities (clipboard, camera,
+/// notifications, …). A capability category the platform has not granted is
+/// **unavailable** — reported as [`GateDecision::Unavailable`] →
+/// [`CoreError::PlatformUnavailable`], distinct from a policy denial. A missing
+/// grant fails closed: the capability is treated as absent, not present.
+///
+/// This is trusted platform state the host reports, never the request payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlatformPermissions {
+    /// Capability categories the host OS has granted to this process.
+    granted: Vec<Category>,
+}
+
+impl PlatformPermissions {
+    /// Build a platform-permission set from the OS-granted capability categories.
+    pub fn new(granted: impl IntoIterator<Item = Category>) -> Self {
+        PlatformPermissions { granted: granted.into_iter().collect() }
+    }
+
+    /// Evaluate the platform-permission gate fail-closed: a category the platform
+    /// has not granted is reported *unavailable* (`PlatformUnavailable`), not
+    /// merely denied.
+    fn decide(&self, category: Category) -> GateDecision {
+        if self.granted.contains(&category) {
+            GateDecision::Allow
+        } else {
+            GateDecision::Unavailable(format!(
+                "the host platform has not granted the {} capability",
+                category.as_str()
+            ))
+        }
+    }
+}
+
+/// The real composed [`DecisionContext`]: evaluates the workspace-policy,
+/// run-profile, and platform-permission gates against **trusted** workspace /
+/// run / platform state (T037, SC-10).
+///
+/// This is what a live command (and every remote sync op, SS-7) installs via
+/// [`PolicyEngine::with_context`] instead of [`AllowAll`]. Each gate is
+/// fail-closed and reads only its trusted source; none reads the request
+/// payload (review 048/050). Replay does **not** use this context — it
+/// re-installs [`AllowAll`] and replays the recorded decisions
+/// ([`PolicyEngine::from_snapshot`]), so the live gate sources are consulted
+/// only during the original run.
+#[derive(Debug, Clone, Default)]
+pub struct ComposedDecisionContext {
+    workspace_policy: WorkspacePolicy,
+    run_profile: RunProfile,
+    platform: PlatformPermissions,
+}
+
+impl ComposedDecisionContext {
+    /// Compose the three trusted gate sources into a live decision context.
+    pub fn new(
+        workspace_policy: WorkspacePolicy,
+        run_profile: RunProfile,
+        platform: PlatformPermissions,
+    ) -> Self {
+        ComposedDecisionContext { workspace_policy, run_profile, platform }
+    }
+}
+
+impl DecisionContext for ComposedDecisionContext {
+    fn clone_box(&self) -> Box<dyn DecisionContext> {
+        clone_decision_context(self)
+    }
+
+    fn workspace_policy(&self, category: Category) -> GateDecision {
+        self.workspace_policy.decide(category)
+    }
+
+    fn run_profile(&self, category: Category) -> GateDecision {
+        self.run_profile.decide(category)
+    }
+
+    fn platform_permission(&self, category: Category) -> GateDecision {
+        self.platform.decide(category)
     }
 }
 
@@ -558,11 +757,20 @@ impl PolicyEngine {
 
 /// Map a [`GateDecision`] from a [`DecisionContext`] hook to a `Result`, naming
 /// the gate and category in the denial so the seam is auditable.
+///
+/// A [`GateDecision::Deny`] is a policy refusal → [`CoreError::PermissionDenied`].
+/// A [`GateDecision::Unavailable`] is a missing platform capability →
+/// [`CoreError::PlatformUnavailable`] (prd-merged/01 CR-3): the run is not
+/// *refused* by policy, the capability simply does not exist on this host.
 fn gate(decision: GateDecision, gate_name: &str, cat: Category) -> Result<()> {
     match decision {
         GateDecision::Allow => Ok(()),
         GateDecision::Deny(reason) => Err(CoreError::PermissionDenied(format!(
             "{gate_name} gate denied {cat} capability: {reason}",
+            cat = cat.as_str(),
+        ))),
+        GateDecision::Unavailable(reason) => Err(CoreError::PlatformUnavailable(format!(
+            "{gate_name} gate: {cat} capability unavailable on this platform: {reason}",
             cat = cat.as_str(),
         ))),
     }
@@ -1058,6 +1266,184 @@ mod tests {
         .unwrap();
         assert!(e.check(&HostCall::Storage { op: Access::Read, key: "app/x".into() }).is_err());
         assert_eq!(e.host_calls(), 0, "a gate denial must not be counted");
+    }
+
+    // --- Real trusted-source SC-10 gates (T037) -----------------------------
+    //
+    // ComposedDecisionContext reads TRUSTED workspace/run/platform state, never
+    // the request payload (review 048/050). Each gate is proven deny + allow +
+    // fail-closed-on-missing-input.
+
+    /// A `ComposedDecisionContext` whose trusted state grants everything the M0a
+    /// host-call categories need, so a single gate can be narrowed per test.
+    fn composed_all_granted() -> ComposedDecisionContext {
+        let all = [
+            Category::Storage,
+            Category::Db,
+            Category::Ui,
+            Category::Time,
+            Category::Random,
+        ];
+        ComposedDecisionContext::new(
+            WorkspacePolicy::new(all, []),
+            RunProfile::new("default", all),
+            PlatformPermissions::new(all),
+        )
+    }
+
+    // workspace-policy gate -------------------------------------------------
+
+    #[test]
+    fn workspace_policy_allows_explicitly_granted_category() {
+        let wp = WorkspacePolicy::new([Category::Storage], []);
+        assert_eq!(wp.decide(Category::Storage), GateDecision::Allow);
+    }
+
+    #[test]
+    fn workspace_policy_denies_explicitly_forbidden_category() {
+        // Deny wins even when also present in the allow list.
+        let wp = WorkspacePolicy::new([Category::Storage], [Category::Storage]);
+        match wp.decide(Category::Storage) {
+            GateDecision::Deny(r) => assert!(r.contains("forbids"), "{r}"),
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_policy_fail_closed_on_missing_input() {
+        // A category absent from BOTH lists is denied fail-closed: the workspace
+        // never positively granted it.
+        let wp = WorkspacePolicy::new([Category::Db], []);
+        match wp.decide(Category::Storage) {
+            GateDecision::Deny(r) => assert!(r.contains("fail-closed"), "{r}"),
+            other => panic!("expected fail-closed deny, got {other:?}"),
+        }
+        // The default (empty) policy denies everything.
+        assert!(matches!(
+            WorkspacePolicy::default().decide(Category::Ui),
+            GateDecision::Deny(_)
+        ));
+    }
+
+    // run-profile gate ------------------------------------------------------
+
+    #[test]
+    fn run_profile_allows_in_bounds_and_denies_out_of_bounds() {
+        let rp = RunProfile::new("review-safety", [Category::Ui, Category::Time]);
+        assert_eq!(rp.decide(Category::Ui), GateDecision::Allow);
+        match rp.decide(Category::Db) {
+            GateDecision::Deny(r) => {
+                assert!(r.contains("review-safety"), "names the profile: {r}");
+                assert!(r.contains("fail-closed"), "{r}");
+            }
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_profile_fail_closed_on_missing_input() {
+        // A profile with empty bounds permits nothing.
+        assert!(matches!(
+            RunProfile::default().decide(Category::Storage),
+            GateDecision::Deny(_)
+        ));
+    }
+
+    // platform-permission gate ----------------------------------------------
+
+    #[test]
+    fn platform_permission_allows_granted_and_reports_unavailable_otherwise() {
+        let pp = PlatformPermissions::new([Category::Ui]);
+        assert_eq!(pp.decide(Category::Ui), GateDecision::Allow);
+        // A capability the OS has not granted is UNAVAILABLE, not merely denied.
+        match pp.decide(Category::Storage) {
+            GateDecision::Unavailable(r) => assert!(r.contains("not granted"), "{r}"),
+            other => panic!("expected unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn platform_permission_fail_closed_maps_to_platform_unavailable() {
+        // Through the engine, a missing platform grant surfaces PlatformUnavailable
+        // (not PermissionDenied) — the capability is absent, not refused.
+        let mut granted = composed_all_granted();
+        granted.platform = PlatformPermissions::new([]); // OS grants nothing
+        let mut e = engine_with(Box::new(granted), caps(&[], &[], &[], &[], true));
+        let err = e.check(&HostCall::Ui).unwrap_err();
+        assert_eq!(err.code(), "PlatformUnavailable", "{err}");
+        assert!(err.to_string().contains("platform permission"), "{err}");
+    }
+
+    // composed live path ----------------------------------------------------
+
+    #[test]
+    fn composed_context_allows_when_all_trusted_sources_permit() {
+        let mut e = engine_with(
+            Box::new(composed_all_granted()),
+            caps(&["app/*"], &[], &[], &[], true),
+        );
+        assert!(e
+            .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .is_ok());
+    }
+
+    #[test]
+    fn composed_workspace_policy_deny_blocks_live_command() {
+        // Prove a real workspace-policy deny actually blocks a live command.
+        let mut ctx = composed_all_granted();
+        ctx.workspace_policy = WorkspacePolicy::new([], [Category::Storage]);
+        let mut e = engine_with(Box::new(ctx), caps(&["app/*"], &[], &[], &[], true));
+        let err = e
+            .check(&HostCall::Storage { op: Access::Read, key: "app/x".into() })
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("workspace policy"), "{err}");
+        assert_eq!(e.host_calls(), 0, "a gate denial is not counted");
+    }
+
+    #[test]
+    fn composed_run_profile_deny_blocks_live_command() {
+        let mut ctx = composed_all_granted();
+        ctx.run_profile = RunProfile::new("review-safety", [Category::Ui]); // no db
+        let mut e = engine_with(Box::new(ctx), caps(&[], &[], &["tasks"], &["tasks"], true));
+        let err = e
+            .check(&HostCall::Db { op: Access::Write, collection: "tasks".into() })
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("run profile"), "{err}");
+    }
+
+    #[test]
+    fn composed_first_failing_gate_wins_workspace_before_manifest() {
+        // ORDER (SC-10): the workspace-policy gate (gate 2) is evaluated before
+        // the manifest+resource subcheck (gate 3). When BOTH would deny — the
+        // workspace forbids storage AND the manifest does not grant the key —
+        // the workspace-policy denial is the one surfaced (first failing wins).
+        let mut ctx = composed_all_granted();
+        ctx.workspace_policy = WorkspacePolicy::new([], [Category::Storage]);
+        // Manifest grants only `app/*`; the call targets `secret/x` (outside it),
+        // so the capability subcheck would ALSO deny — but it never runs.
+        let mut e = engine_with(Box::new(ctx), caps(&["app/*"], &[], &[], &[], true));
+        let err = e
+            .check(&HostCall::Storage { op: Access::Read, key: "secret/x".into() })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("workspace policy"),
+            "first failing gate (workspace policy) must win over the manifest subcheck: {err}"
+        );
+    }
+
+    #[test]
+    fn composed_context_clone_preserves_trusted_denials() {
+        // A clone of a ComposedDecisionContext-scoped engine must make identical
+        // decisions (review 023 P2): no fail-open fallback to AllowAll.
+        let mut ctx = composed_all_granted();
+        ctx.workspace_policy = WorkspacePolicy::new([], [Category::Ui]);
+        let original = engine_with(Box::new(ctx), caps(&[], &[], &[], &[], true));
+        let mut clone = original.clone();
+        let err = clone.check(&HostCall::Ui).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("workspace policy"), "{err}");
     }
 
     // --- Clone preserves the decision context (review 023 P2) ---------------

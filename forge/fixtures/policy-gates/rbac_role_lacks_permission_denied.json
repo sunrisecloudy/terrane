@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "case": "rbac_role_lacks_permission_denied",
+  "coverage": ["SC-10", "SC-11"],
+  "summary": "A Viewer is a read-only/oversight role that cannot run applet code, so gate 1 (actor-role) denies before any other gate is consulted.",
+  "actor": { "role": "viewer" },
+  "manifest": {
+    "capabilities": { "storage": { "read": ["app/*"], "write": [] } },
+    "limits": { "max_host_calls": 100 }
+  },
+  "workspace_policy": { "allowed": ["storage"], "denied": [] },
+  "run_profile": { "name": "default", "permitted": ["storage"] },
+  "platform": { "granted": ["storage"] },
+  "request": { "call": "storage", "op": "read", "key": "app/notes/1" },
+  "expect": {
+    "decision": "deny",
+    "gate": "actor-role",
+    "code": "PermissionDenied",
+    "reason_contains": "role"
+  }
+}

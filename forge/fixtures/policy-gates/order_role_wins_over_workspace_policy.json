@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "case": "order_role_wins_over_workspace_policy",
+  "coverage": ["SC-10", "SC-11"],
+  "summary": "ORDER: both the actor-role gate (1) AND the workspace-policy gate (2) would deny — a Viewer cannot run, and the workspace also forbids storage. The engine surfaces the actor-role denial because gate 1 runs first (first failing gate wins).",
+  "actor": { "role": "viewer" },
+  "manifest": {
+    "capabilities": { "storage": { "read": ["app/*"], "write": [] } },
+    "limits": { "max_host_calls": 100 }
+  },
+  "workspace_policy": { "allowed": [], "denied": ["storage"] },
+  "run_profile": { "name": "default", "permitted": ["storage"] },
+  "platform": { "granted": ["storage"] },
+  "request": { "call": "storage", "op": "read", "key": "app/notes/1" },
+  "expect": {
+    "decision": "deny",
+    "gate": "actor-role",
+    "code": "PermissionDenied",
+    "reason_contains": "role",
+    "order_note": "actor-role (gate 1) wins over the workspace-policy denial (gate 2)"
+  }
+}
