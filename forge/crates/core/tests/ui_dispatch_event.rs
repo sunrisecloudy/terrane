@@ -391,13 +391,64 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
             assert_eq!(err.code(), "ValidationError", "{name}: {err}");
         }
     }
-    if name == "handler_throws_prior_tree_intact" {
-        assert!(err.to_string().contains("boom"), "{name}: {err}");
-    }
-    if name == "invalid_payload_rejected" {
-        assert!(err.to_string().contains("value must be a string"), "{name}: {err}");
-    }
-    let _ = want_code; // the vector's renderer-facing code is documented in the fixture.
+
+    // The CONTRACT's renderer-facing code (`expect.results[0].error.code`) is NOT
+    // discarded: the command surfaces it on the rejection event it emits
+    // (`ui.dispatch_failed` for a post-dispatch failure, `ui.dispatch_rejected` for
+    // the pre-dispatch suspended gate). We pull that event's `code`/`message` and
+    // assert them against the vector. The map from the vector's pinned code to the
+    // code the CORE command can faithfully surface at its boundary:
+    //   - `ui.action_not_found`        -> `ui.action_not_found`        (exact)
+    //   - `ui.applet_not_dispatchable` -> `ui.applet_not_dispatchable` (exact)
+    //   - `runtime.handler_error`      -> `runtime.handler_error`      (exact)
+    //   - `ui.invalid_event_payload`   -> `runtime.handler_error`: an invalid
+    //         payload is signalled by the handler THROWING, which every engine
+    //         surfaces as a runtime error; the handler's validation message
+    //         (`value must be a string`) rides along so a renderer refines the
+    //         throw to `ui.invalid_event_payload`. We assert the command code
+    //         (`runtime.handler_error`) AND the message marker the renderer keys on.
+    let want_code = want_code.expect("every error vector pins expect.results[0].error.code");
+    let want_msg = expect["error"]["message_contains"]
+        .as_str()
+        .expect("every error vector pins expect.results[0].error.message_contains");
+    let command_code = match want_code {
+        "ui.invalid_event_payload" => "runtime.handler_error",
+        other => other,
+    };
+
+    // Find the rejection event the command emitted and read its renderer-facing
+    // code + message. The suspended gate emits `ui.dispatch_rejected`
+    // (dispatch_attempted == false); every other rejection emits
+    // `ui.dispatch_failed` (dispatch_attempted == true).
+    let (reject_kind, want_attempted) = if name == "suspended_applet_rejected" {
+        ("ui.dispatch_rejected", false)
+    } else {
+        ("ui.dispatch_failed", true)
+    };
+    let reject_event = core
+        .events()
+        .events_of_kind(reject_kind)
+        .last()
+        .unwrap_or_else(|| panic!("{name}: the command must emit a {reject_kind} event"));
+    assert_eq!(
+        reject_event.payload["code"], serde_json::json!(command_code),
+        "{name}: the rejection event carries the contract's renderer-facing code"
+    );
+    assert_eq!(
+        reject_event.payload["dispatch_attempted"],
+        serde_json::json!(want_attempted),
+        "{name}: dispatch_attempted reflects whether the handler ran"
+    );
+    let event_msg = reject_event.payload["message"].as_str().unwrap_or("");
+    assert!(
+        event_msg.contains(want_msg),
+        "{name}: the rejection message must contain {want_msg:?}, got {event_msg:?}"
+    );
+    // The same marker is in the typed transport error too.
+    assert!(
+        err.to_string().contains(want_msg),
+        "{name}: the typed error must contain {want_msg:?}, got {err}"
+    );
 
     // Per the contract: no ui.patch was emitted (tree/state unchanged).
     let patches_after = core.events().events_of_kind("ui.patch").count();
@@ -405,15 +456,6 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
         patches_before, patches_after,
         "{name}: a rejected event must emit no ui.patch (tree unchanged)"
     );
-
-    // For unknown-action the error carries the offending ref (the dotted ActionRef).
-    if name == "unknown_action_rejected" {
-        let ref_str = vector["events"][0]["action"].as_str().unwrap();
-        assert!(err.to_string().contains(ref_str), "{name}: {err}");
-    }
-    if name == "suspended_applet_rejected" {
-        assert!(err.to_string().contains("suspended"), "{name}: {err}");
-    }
 }
 
 /// The `no_handler_event_ignored` vector: an event with a NULL action ref (a

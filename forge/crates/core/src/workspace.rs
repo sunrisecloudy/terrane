@@ -1075,11 +1075,27 @@ impl WorkspaceCore {
         // event is rejected BEFORE any handler runs and with NO state change (the
         // `suspended_applet_rejected` vector). The flag is the TRUSTED per-applet
         // lifecycle, read from workspace state — never from the request — so an
-        // applet cannot un-suspend itself by sending an event.
+        // applet cannot un-suspend itself by sending an event. We emit a
+        // `ui.dispatch_rejected` event carrying the renderer-facing code
+        // (`ui.applet_not_dispatchable`) with `dispatch_attempted: false`, so the
+        // pre-dispatch rejection is observable to a renderer/host exactly like the
+        // post-dispatch failure below (T034 `dispatch_attempted` flag).
         if self.applet_lifecycle(applet_id.as_str())? == AppletLifecycle::Suspended {
-            return Err(CoreError::ValidationError(format!(
+            let error = CoreError::ValidationError(format!(
                 "ui.applet_not_dispatchable: applet {applet_id} is suspended; UI events are rejected before dispatch"
-            )));
+            ));
+            self.events.emit(
+                Some(applet_id.clone()),
+                "ui.dispatch_rejected",
+                serde_json::json!({
+                    "applet_id": applet_id,
+                    "action_ref": action_ref,
+                    "dispatch_attempted": false,
+                    "code": dispatch_error_code(&error),
+                    "message": error.to_string(),
+                }),
+            );
+            return Err(error);
         }
 
         let installed = self.load_applet(applet_id.as_str())?.ok_or_else(|| {
@@ -1161,6 +1177,12 @@ impl WorkspaceCore {
             self.store_run_program(run.run_id.as_str(), &installed)?;
             self.store_program(&installed)?;
             self.store.save_run(&run)?;
+            // The event carries BOTH the typed `CoreError` (for transport/audit)
+            // AND the renderer-facing T034 code (`ui.action_not_found` for an
+            // unknown handler, `runtime.handler_error` for a handler throw), so a
+            // host/renderer can react to the stable code without parsing the
+            // English error text. `dispatch_attempted: true` — the handler ran (or
+            // we tried to resolve it), unlike the pre-dispatch suspended rejection.
             self.events.emit(
                 Some(applet_id.clone()),
                 "ui.dispatch_failed",
@@ -1168,6 +1190,9 @@ impl WorkspaceCore {
                     "applet_id": applet_id,
                     "action_ref": action_ref,
                     "run_id": run.run_id,
+                    "dispatch_attempted": true,
+                    "code": dispatch_error_code(&error),
+                    "message": error.to_string(),
                     "error": error,
                 }),
             );
@@ -2239,6 +2264,43 @@ fn ui_tree_key(applet_id: &str) -> String {
 /// [`APPLET_LIFECYCLE_KEY_PREFIX`].
 fn applet_lifecycle_key(applet_id: &str) -> String {
     format!("{APPLET_LIFECYCLE_KEY_PREFIX}{applet_id}")
+}
+
+/// Classify a `ui.dispatch_event` rejection into its **renderer-facing error
+/// code** (the T034 `expect.results[i].error.code` space, `forge/fixtures/ui-
+/// events`). The typed [`CoreError`] is the transport/RBAC error; this is the
+/// stable, renderer-visible code a host surfaces to the UI so it can show the
+/// right affordance without parsing English error text:
+///
+///   - `ui.applet_not_dispatchable` — the applet is suspended; the event was
+///     rejected BEFORE any handler ran (the `suspended_applet_rejected` vector).
+///     Marked by the `ui.applet_not_dispatchable:` prefix the lifecycle gate
+///     writes.
+///   - `ui.action_not_found` — no handler is exported under the dispatched
+///     `ActionRef` (the `unknown_action_rejected` vector). The engine raises a
+///     `ValidationError` whose message is `no UI handler registered for action
+///     ref …` (engine.rs `Entry::resolve`); we key off that exact marker.
+///   - `runtime.handler_error` — the handler ran and threw (the `handler_throws_
+///     prior_tree_intact` and `invalid_payload_rejected` vectors). Every uncaught
+///     JS throw is a `RuntimeError` (engine.rs `classify_failure`); the handler's
+///     own message (e.g. `value must be a string`) rides along in `message` so a
+///     renderer can refine an invalid-payload throw to `ui.invalid_event_payload`.
+///
+/// Anything else (a `PermissionDenied`/`ResourceLimitExceeded`/etc. — e.g. a
+/// `ctx.*` call the manifest did not grant) keeps the typed error's own
+/// [`code`](CoreError::code) so a capability/limit failure is never mislabeled as
+/// a UI/handler error.
+fn dispatch_error_code(error: &CoreError) -> &'static str {
+    match error {
+        CoreError::ValidationError(msg) if msg.contains("ui.applet_not_dispatchable") => {
+            "ui.applet_not_dispatchable"
+        }
+        CoreError::ValidationError(msg) if msg.contains("no UI handler registered") => {
+            "ui.action_not_found"
+        }
+        CoreError::RuntimeError(_) => "runtime.handler_error",
+        other => other.code(),
+    }
 }
 
 /// KV key for a pinned replay program within [`META_NS`], keyed by `code_hash`.
@@ -3350,6 +3412,69 @@ mod seed_override_tests {
         })))
         .unwrap();
         assert_eq!(ok, Some((1, i64::MAX as u64)));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_error_code_tests {
+    use super::*;
+
+    // Pin the T034 renderer-facing classification (`forge/fixtures/ui-events`)
+    // independent of the JS engine path: each rejection family maps to the stable
+    // code a renderer keys on, and an unrelated typed error keeps its own code.
+
+    #[test]
+    fn suspended_gate_maps_to_applet_not_dispatchable() {
+        let e = CoreError::ValidationError(
+            "ui.applet_not_dispatchable: applet x is suspended; UI events are rejected before dispatch".into(),
+        );
+        assert_eq!(dispatch_error_code(&e), "ui.applet_not_dispatchable");
+    }
+
+    #[test]
+    fn unknown_handler_maps_to_action_not_found() {
+        // The engine raises exactly this message for a missing handler
+        // (engine.rs `Entry::resolve`); the classifier keys off the marker.
+        let e = CoreError::ValidationError(
+            "no UI handler registered for action ref \"counter.delete_everything\"".into(),
+        );
+        assert_eq!(dispatch_error_code(&e), "ui.action_not_found");
+    }
+
+    #[test]
+    fn handler_throw_maps_to_runtime_handler_error() {
+        // Every uncaught JS throw (a generic `boom`, or a handler's own
+        // validation throw like `value must be a string`) is a RuntimeError.
+        assert_eq!(
+            dispatch_error_code(&CoreError::RuntimeError("boom".into())),
+            "runtime.handler_error"
+        );
+        assert_eq!(
+            dispatch_error_code(&CoreError::RuntimeError(
+                "invalid event payload: value must be a string".into()
+            )),
+            "runtime.handler_error"
+        );
+    }
+
+    #[test]
+    fn capability_or_limit_failure_keeps_its_own_code() {
+        // A `ctx.*` call the manifest did not grant must NOT be relabeled as a
+        // UI/handler error — it keeps its typed code so an authz/limit failure
+        // stays distinguishable from a missing handler or a handler throw.
+        assert_eq!(
+            dispatch_error_code(&CoreError::PermissionDenied("storage.set".into())),
+            "PermissionDenied"
+        );
+        assert_eq!(
+            dispatch_error_code(&CoreError::ResourceLimitExceeded("fuel".into())),
+            "ResourceLimitExceeded"
+        );
+        // A non-marked ValidationError (not a UI dispatch marker) keeps its kind.
+        assert_eq!(
+            dispatch_error_code(&CoreError::ValidationError("applet x is not installed".into())),
+            "ValidationError"
+        );
     }
 }
 
