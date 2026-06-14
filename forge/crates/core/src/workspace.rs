@@ -1104,13 +1104,26 @@ impl WorkspaceCore {
             replayeds.push(replayed);
         }
 
+        // STRUCTURAL session-shape guard. The patch-chain walk treats `run_ids[0]` as
+        // the session HEAD (the initial `runtime.run` whose render is only the diff
+        // base) and `run_ids[1..]` as the dispatched EVENTS (each diffed against the
+        // prior render). That contract is only meaningful for a well-formed session:
+        // the head must be a non-dispatch run and every tail entry must be a
+        // `ui.dispatch_event` run, with no duplicate ids. Without this guard a caller
+        // could pass an arbitrary same-applet `run_ids` list (a dispatch at the head,
+        // a `runtime.run` mid-session, a duplicated id) and still get a misleading
+        // `replays_identically: true` with a bogus "converged final tree" — because
+        // each run self-replays and the recorded/replayed walks are trivially equal.
+        // Rejecting a malformed shape up front makes the convergence claim load-bearing.
+        let original_refs: Vec<&RunRecord> = originals.iter().collect();
+        assert_well_formed_session(&run_ids, &original_refs)?;
+
         // Derive the ordered per-event patch chain + final tree from BOTH the recorded
         // (`originals`) and the replayed (`replayeds`) record sequences, walking each
         // run's final render against the PRIOR run's render — the same diff base the
         // live `ui.dispatch_event` loop used (UI-4). The two walks must be byte-equal:
         // that is the real session byte-identity claim (recorded patches == replayed
         // patches == recorded final tree == replayed final tree).
-        let original_refs: Vec<&RunRecord> = originals.iter().collect();
         let replayed_refs: Vec<&RunRecord> = replayeds.iter().collect();
         let (recorded_patches, recorded_final) = derive_session_patch_chain(&original_refs)?;
         let (event_patches, replayed_final) = derive_session_patch_chain(&replayed_refs)?;
@@ -3533,6 +3546,56 @@ fn replayed_final_tree(run: &RunRecord) -> Result<Option<forge_ui::Node>> {
     }
 }
 
+/// True iff `run` is a dispatched UI event (its recorded trace carries a
+/// `ui.dispatch_event` envelope). The initial `runtime.run` that opens a session
+/// has none; every `ui.dispatch_event` run has exactly one (recorder.rs). Used to
+/// validate a replay session's SHAPE (head = a run, tail = events).
+fn is_dispatch_run(run: &RunRecord) -> bool {
+    run.calls.iter().any(|c| c.method == "ui.dispatch_event")
+}
+
+/// Reject a malformed `runtime.replay_session` `run_ids` list before the patch-chain
+/// walk derives a (bogus) "converged" session. A well-formed session is exactly the
+/// shape the live `ui.dispatch_event` loop produces and the walk assumes:
+///   - `records[0]` is the session HEAD: the initial `runtime.run`, NOT a dispatch
+///     (its render is only the diff base for event #1);
+///   - every `records[1..]` entry is a dispatched event (a `ui.dispatch_event` run);
+///   - no `run_id` appears twice (a session is a linear ordered trace, not a multiset
+///     — a duplicate would double-apply one event's diff against itself).
+///
+/// Any violation is a typed `ValidationError` naming the offending id, so the
+/// command's `replays_identically: true` / `final_tree` is a load-bearing claim about
+/// a real recorded session, never an artifact of an arbitrary id list.
+fn assert_well_formed_session(run_ids: &[String], records: &[&RunRecord]) -> Result<()> {
+    // Linear trace: no duplicate ids. (`run_ids` and `records` are 1:1 by index.)
+    for i in 0..run_ids.len() {
+        for j in (i + 1)..run_ids.len() {
+            if run_ids[i] == run_ids[j] {
+                return Err(CoreError::ValidationError(format!(
+                    "runtime.replay_session `run_ids` must be a linear session but run {} appears more than once",
+                    run_ids[i]
+                )));
+            }
+        }
+    }
+    // Head must be the opening run, not a dispatched event.
+    if is_dispatch_run(records[0]) {
+        return Err(CoreError::ValidationError(format!(
+            "runtime.replay_session head run {} is a dispatched UI event, but a session must start with the initial runtime.run",
+            run_ids[0]
+        )));
+    }
+    // Every later entry must be a dispatched event (not another initial run spliced in).
+    for (run_id, run) in run_ids[1..].iter().zip(&records[1..]) {
+        if !is_dispatch_run(run) {
+            return Err(CoreError::ValidationError(format!(
+                "runtime.replay_session run {run_id} is not a dispatched UI event, but every run after the head must be a ui.dispatch_event"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Walk an ordered **event session** (`records[0]` is the initial `runtime.run`,
 /// `records[1..]` are the dispatched `ui.dispatch_event` runs in order) and derive
 /// the OBSERVABLE session output the live `ui.dispatch_event` loop produced: the
@@ -3706,6 +3769,85 @@ mod session_patch_chain_tests {
 
     fn text(t: &str) -> serde_json::Value {
         serde_json::json!({ "type": "Text", "testId": "t", "text": t })
+    }
+
+    /// Like [`rendered`] but with a `ui.dispatch_event` envelope appended — the trace
+    /// shape of an accepted `ui.dispatch_event` run (a session EVENT, not the head).
+    /// `id` lets a test give each run a distinct id to exercise the duplicate guard.
+    fn dispatched(id: &str, tree: Option<serde_json::Value>) -> RunRecord {
+        let mut run = rendered(tree);
+        run.run_id = forge_domain::RunId::new(id);
+        run.calls.push(RecordedCall {
+            seq: run.calls.len() as u64,
+            method: "ui.dispatch_event".into(),
+            args: serde_json::json!(["step", {}]),
+            response: serde_json::json!(null),
+        });
+        run
+    }
+
+    /// A head run (an initial `runtime.run`: a plain render, no dispatch envelope)
+    /// with a distinct id.
+    fn head(id: &str, tree: Option<serde_json::Value>) -> RunRecord {
+        let mut run = rendered(tree);
+        run.run_id = forge_domain::RunId::new(id);
+        run
+    }
+
+    /// A well-formed session (head run + dispatched events, distinct ids) is accepted.
+    #[test]
+    fn well_formed_session_is_accepted() {
+        let ids = vec!["h".into(), "e1".into(), "e2".into()];
+        let h = head("h", Some(text("a")));
+        let e1 = dispatched("e1", Some(text("b")));
+        let e2 = dispatched("e2", Some(text("c")));
+        assert_well_formed_session(&ids, &[&h, &e1, &e2]).unwrap();
+    }
+
+    /// A single-run session (just the head) is well-formed.
+    #[test]
+    fn single_head_only_session_is_well_formed() {
+        let ids = vec!["h".into()];
+        let h = head("h", Some(text("a")));
+        assert_well_formed_session(&ids, &[&h]).unwrap();
+    }
+
+    /// A dispatched event at the HEAD is rejected: a session must open with the
+    /// initial `runtime.run`, not a `ui.dispatch_event`.
+    #[test]
+    fn dispatch_at_head_is_rejected() {
+        let ids = vec!["e0".into(), "e1".into()];
+        let e0 = dispatched("e0", Some(text("a")));
+        let e1 = dispatched("e1", Some(text("b")));
+        let err = assert_well_formed_session(&ids, &[&e0, &e1]).unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("head run e0"), "{err}");
+    }
+
+    /// A non-dispatch run spliced into the TAIL is rejected: every run after the head
+    /// must be a dispatched event, not a second initial run.
+    #[test]
+    fn non_dispatch_in_tail_is_rejected() {
+        let ids = vec!["h".into(), "e1".into(), "h2".into()];
+        let h = head("h", Some(text("a")));
+        let e1 = dispatched("e1", Some(text("b")));
+        let h2 = head("h2", Some(text("c"))); // a runtime.run spliced mid-session
+        let err = assert_well_formed_session(&ids, &[&h, &e1, &h2]).unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("run h2"), "{err}");
+    }
+
+    /// A duplicated run id is rejected: a session is a linear ordered trace, not a
+    /// multiset (a duplicate would double-apply one event's diff against itself).
+    #[test]
+    fn duplicate_run_id_is_rejected() {
+        let ids = vec!["h".into(), "e1".into(), "e1".into()];
+        let h = head("h", Some(text("a")));
+        let e1 = dispatched("e1", Some(text("b")));
+        let e1b = dispatched("e1", Some(text("c")));
+        let err = assert_well_formed_session(&ids, &[&h, &e1, &e1b]).unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("appears more than once"), "{err}");
     }
 
     /// The head run contributes NO patch (its render is only the diff base); each

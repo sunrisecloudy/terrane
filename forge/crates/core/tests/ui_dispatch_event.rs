@@ -894,6 +894,81 @@ fn session_replay_rejects_malformed_input() {
     assert_eq!(r.error.unwrap().code(), "ValidationError");
 }
 
+/// A malformed session SHAPE is rejected at the command boundary BEFORE any
+/// "converged final tree" / `replays_identically` claim is made — so that claim is
+/// load-bearing about a real recorded session, not an artifact of an arbitrary id
+/// list. Three malformed shapes, each over real recorded runs:
+///   (a) a dispatched EVENT placed at the head (a session must open with the run);
+///   (b) the initial `runtime.run` spliced into the tail (events only after head);
+///   (c) a duplicated run id (a session is a linear trace, not a multiset).
+#[test]
+fn session_replay_rejects_malformed_session_shape() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.shape");
+
+    // Record TWO independent heads + two events so we have real run ids of each
+    // kind to mis-order. Each head opens its own session with its own queue.
+    let t0 = serde_json::json!({ "type": "Text", "testId": "t", "text": "a" });
+    let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "b" });
+    let t2 = serde_json::json!({ "type": "Text", "testId": "t", "text": "c" });
+    let head1 = render_initial_run_id(&mut core, "vec.shape", &t0, &[t1.clone(), t2.clone()]);
+    let e1 = dispatch(&mut core, "vec.shape", serde_json::json!("step"), serde_json::json!({}))
+        .payload["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e2 = dispatch(&mut core, "vec.shape", serde_json::json!("step"), serde_json::json!({}))
+        .payload["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A SECOND head (its own initial runtime.run) to splice into a tail.
+    let head2 = render_initial_run_id(&mut core, "vec.shape", &t0, std::slice::from_ref(&t1));
+
+    // Sanity: the correct shape replays identically (so the rejections below are
+    // about SHAPE, not about un-replayable runs).
+    let ok = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.shape",
+        serde_json::json!({ "run_ids": [head1.clone(), e1.clone(), e2.clone()] }),
+    ));
+    assert!(ok.ok, "the well-formed session must replay: {:?}", ok.error);
+    assert_eq!(ok.payload["replays_identically"], serde_json::json!(true));
+
+    // (a) a dispatched event at the head.
+    let r = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.shape",
+        serde_json::json!({ "run_ids": [e1.clone(), e2.clone()] }),
+    ));
+    assert!(!r.ok, "a dispatch at the head must be rejected");
+    let err = r.error.unwrap();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("dispatched UI event"), "{err}");
+
+    // (b) the initial runtime.run spliced into the tail.
+    let r = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.shape",
+        serde_json::json!({ "run_ids": [head1.clone(), e1.clone(), head2] }),
+    ));
+    assert!(!r.ok, "a runtime.run in the tail must be rejected");
+    let err = r.error.unwrap();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("must be a ui.dispatch_event"), "{err}");
+
+    // (c) a duplicated run id.
+    let r = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.shape",
+        serde_json::json!({ "run_ids": [head1, e1.clone(), e1] }),
+    ));
+    assert!(!r.ok, "a duplicated run id must be rejected");
+    let err = r.error.unwrap();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("more than once"), "{err}");
+}
+
 /// The named human-facing fixture applet
 /// (`forge/fixtures/e2e/interactive_ui/applet.ts`) binds `Button.onTap` and
 /// `TextField.onChange` to handler names that are the dispatch ActionRefs, and
