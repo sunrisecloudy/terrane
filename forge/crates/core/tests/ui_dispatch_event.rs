@@ -393,28 +393,19 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
     }
 
     // The CONTRACT's renderer-facing code (`expect.results[0].error.code`) is NOT
-    // discarded: the command surfaces it on the rejection event it emits
+    // discarded: the command surfaces it VERBATIM on the rejection event it emits
     // (`ui.dispatch_failed` for a post-dispatch failure, `ui.dispatch_rejected` for
-    // the pre-dispatch suspended gate). We pull that event's `code`/`message` and
-    // assert them against the vector. The map from the vector's pinned code to the
-    // code the CORE command can faithfully surface at its boundary:
-    //   - `ui.action_not_found`        -> `ui.action_not_found`        (exact)
-    //   - `ui.applet_not_dispatchable` -> `ui.applet_not_dispatchable` (exact)
-    //   - `runtime.handler_error`      -> `runtime.handler_error`      (exact)
-    //   - `ui.invalid_event_payload`   -> `runtime.handler_error`: an invalid
-    //         payload is signalled by the handler THROWING, which every engine
-    //         surfaces as a runtime error; the handler's validation message
-    //         (`value must be a string`) rides along so a renderer refines the
-    //         throw to `ui.invalid_event_payload`. We assert the command code
-    //         (`runtime.handler_error`) AND the message marker the renderer keys on.
+    // the pre-dispatch suspended gate). All four pinned codes are produced exactly
+    // by the command — no remapping:
+    //   - `ui.action_not_found`        — unknown handler (engine resolve marker)
+    //   - `ui.applet_not_dispatchable` — suspended lifecycle gate
+    //   - `ui.invalid_event_payload`   — a handler throw carrying the `invalid
+    //         event payload` marker (the payload-validation rejection)
+    //   - `runtime.handler_error`      — any OTHER handler throw
     let want_code = want_code.expect("every error vector pins expect.results[0].error.code");
     let want_msg = expect["error"]["message_contains"]
         .as_str()
         .expect("every error vector pins expect.results[0].error.message_contains");
-    let command_code = match want_code {
-        "ui.invalid_event_payload" => "runtime.handler_error",
-        other => other,
-    };
 
     // Find the rejection event the command emitted and read its renderer-facing
     // code + message. The suspended gate emits `ui.dispatch_rejected`
@@ -431,8 +422,8 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
         .last()
         .unwrap_or_else(|| panic!("{name}: the command must emit a {reject_kind} event"));
     assert_eq!(
-        reject_event.payload["code"], serde_json::json!(command_code),
-        "{name}: the rejection event carries the contract's renderer-facing code"
+        reject_event.payload["code"], serde_json::json!(want_code),
+        "{name}: the rejection event carries the contract's pinned renderer-facing code verbatim"
     );
     assert_eq!(
         reject_event.payload["dispatch_attempted"],
@@ -684,4 +675,17 @@ fn interactive_fixture_applet_drives_through_the_command() {
         core.events().events_of_kind("ui.patch").count(),
         "a rejected event emits no ui.patch"
     );
+    // The rejection carries the contract's dedicated payload-validation code so a
+    // renderer can re-prompt the field rather than show a generic crash — the same
+    // `ui.invalid_event_payload` the `invalid_payload_rejected` vector pins.
+    let reject = core
+        .events()
+        .events_of_kind("ui.dispatch_failed")
+        .last()
+        .expect("a non-string change payload emits ui.dispatch_failed");
+    assert_eq!(
+        reject.payload["code"],
+        serde_json::json!("ui.invalid_event_payload")
+    );
+    assert_eq!(reject.payload["dispatch_attempted"], serde_json::json!(true));
 }

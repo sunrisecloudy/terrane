@@ -2280,11 +2280,18 @@ fn applet_lifecycle_key(applet_id: &str) -> String {
 ///     `ActionRef` (the `unknown_action_rejected` vector). The engine raises a
 ///     `ValidationError` whose message is `no UI handler registered for action
 ///     ref …` (engine.rs `Entry::resolve`); we key off that exact marker.
-///   - `runtime.handler_error` — the handler ran and threw (the `handler_throws_
-///     prior_tree_intact` and `invalid_payload_rejected` vectors). Every uncaught
-///     JS throw is a `RuntimeError` (engine.rs `classify_failure`); the handler's
-///     own message (e.g. `value must be a string`) rides along in `message` so a
-///     renderer can refine an invalid-payload throw to `ui.invalid_event_payload`.
+///   - `ui.invalid_event_payload` — the handler ran but rejected the event PAYLOAD
+///     as malformed (the `invalid_payload_rejected` vector — a TextField `onChange`
+///     whose `value` was not a string). A handler signals this by throwing an
+///     `Error` whose message starts with the `invalid event payload` marker; the
+///     engine surfaces every JS throw as a `RuntimeError`, so we key off that
+///     marker to refine an otherwise-generic handler throw into the contract's
+///     dedicated payload-validation code. This lets a renderer distinguish "your
+///     input was bad" (re-prompt the field) from a general "the handler crashed".
+///   - `runtime.handler_error` — the handler ran and threw for any OTHER reason
+///     (the `handler_throws_prior_tree_intact` vector). Every uncaught JS throw is
+///     a `RuntimeError` (engine.rs `classify_failure`); the handler's own message
+///     (e.g. `boom`) rides along in `message`.
 ///
 /// Anything else (a `PermissionDenied`/`ResourceLimitExceeded`/etc. — e.g. a
 /// `ctx.*` call the manifest did not grant) keeps the typed error's own
@@ -2297,6 +2304,15 @@ fn dispatch_error_code(error: &CoreError) -> &'static str {
         }
         CoreError::ValidationError(msg) if msg.contains("no UI handler registered") => {
             "ui.action_not_found"
+        }
+        // A handler that threw with the `invalid event payload` marker is the
+        // contract's payload-validation rejection, not a generic crash. Match
+        // case-insensitively on the marker so the engine's `entrypoint threw: …`
+        // wrapping (or a capitalized handler message) still classifies.
+        CoreError::RuntimeError(msg)
+            if msg.to_ascii_lowercase().contains("invalid event payload") =>
+        {
+            "ui.invalid_event_payload"
         }
         CoreError::RuntimeError(_) => "runtime.handler_error",
         other => other.code(),
@@ -3443,17 +3459,36 @@ mod dispatch_error_code_tests {
 
     #[test]
     fn handler_throw_maps_to_runtime_handler_error() {
-        // Every uncaught JS throw (a generic `boom`, or a handler's own
-        // validation throw like `value must be a string`) is a RuntimeError.
+        // A generic uncaught JS throw (no marker) is a `runtime.handler_error`.
         assert_eq!(
             dispatch_error_code(&CoreError::RuntimeError("boom".into())),
             "runtime.handler_error"
         );
+        // Even when wrapped by the engine's `entrypoint threw: …` prefix.
+        assert_eq!(
+            dispatch_error_code(&CoreError::RuntimeError("entrypoint threw: boom".into())),
+            "runtime.handler_error"
+        );
+    }
+
+    #[test]
+    fn invalid_payload_throw_maps_to_invalid_event_payload() {
+        // A handler that threw with the `invalid event payload` marker is the
+        // contract's dedicated payload-validation code, NOT a generic crash —
+        // so a renderer can re-prompt the field instead of showing a fatal error.
         assert_eq!(
             dispatch_error_code(&CoreError::RuntimeError(
                 "invalid event payload: value must be a string".into()
             )),
-            "runtime.handler_error"
+            "ui.invalid_event_payload"
+        );
+        // The marker still classifies through the engine's `entrypoint threw: …`
+        // wrapping and is matched case-insensitively.
+        assert_eq!(
+            dispatch_error_code(&CoreError::RuntimeError(
+                "entrypoint threw: Error: Invalid Event Payload: value must be a string".into()
+            )),
+            "ui.invalid_event_payload"
         );
     }
 
