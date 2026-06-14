@@ -1301,6 +1301,80 @@ mod tests {
     }
 
     #[test]
+    fn legacy_put_chunk_from_remote_canonicalizes_persisted_author_and_source() {
+        // review 101: the author-floor only TRIMMED the effective author for the
+        // blank check, then handed the RAW `author_actor_id` and RAW `source` to the
+        // shared import path — so a padded ` peer:C ` / ` peer:A ` passed validation
+        // but persisted NON-canonical provenance as the oplog `actor_id` and the
+        // record.remote_import payload `source`. Both are now trimmed up front, so the
+        // persisted provenance is always canonical.
+
+        // (a) forwarded chunk: a padded original author wins, trimmed in the row.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        dst.put_chunk_from_remote(
+            &doc_id,
+            &row.chunk_id,
+            &row.format,
+            &row.payload,
+            " peer:A ",        // padded first-hop source (the relay)
+            Some(" peer:C "),  // padded forwarded original author
+            &["t1"],
+            &idx,
+        )
+        .unwrap();
+        let ops = dst.list_ops().unwrap();
+        assert_eq!(
+            ops[0].actor_id, "peer:C",
+            "persisted oplog actor_id is the trimmed original author"
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&ops[0].payload).unwrap();
+        assert_eq!(
+            payload["source"],
+            json!("peer:C"),
+            "persisted payload source is the trimmed original author"
+        );
+
+        // (b) first-hop import (no forwarded author): the padded `source` itself is
+        // the author, and it too is persisted in canonical (trimmed) form.
+        let mut src2 = store();
+        src2.apply_mutation_crdt(&insert("tasks", "t9", json!({"title": "X"}), 1), &idx)
+            .unwrap();
+        let doc_id2 = collection_doc_id("tasks");
+        let row2 = src2.get_chunks(&doc_id2).unwrap().into_iter().next().unwrap();
+
+        let mut dst2 = store();
+        dst2.put_chunk_from_remote(
+            &doc_id2,
+            &row2.chunk_id,
+            &row2.format,
+            &row2.payload,
+            " peer:origin ", // padded importing source IS the author
+            None,
+            &["t9"],
+            &idx,
+        )
+        .unwrap();
+        let ops2 = dst2.list_ops().unwrap();
+        assert_eq!(
+            ops2[0].actor_id, "peer:origin",
+            "first-hop padded source is trimmed in the oplog actor_id"
+        );
+        let payload2: serde_json::Value = serde_json::from_slice(&ops2[0].payload).unwrap();
+        assert_eq!(
+            payload2["source"],
+            json!("peer:origin"),
+            "first-hop padded source is trimmed in the payload source"
+        );
+    }
+
+    #[test]
     fn legacy_put_chunk_from_remote_rejects_blank_author_without_touching_store() {
         // The author-floor twin: a blank effective original author (blank `source` and
         // no `author_actor_id`) would write a remote-import row attributable to no one,

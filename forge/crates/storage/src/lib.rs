@@ -1260,7 +1260,16 @@ impl Store {
         // must name a non-empty, blank-free list of touched record ids. Validating
         // here — ahead of the apply — means a rejected call leaves NO chunk and NO
         // oplog row.
-        let original_author = author_actor_id.unwrap_or(source).trim();
+        //
+        // Trim the first-hop `source` and the optional original `author` up front so
+        // the values that flow into the apply path are already canonical (review
+        // 101): `import_remote_chunk_tx` persists `author_actor_id.unwrap_or(source)`
+        // as BOTH the oplog `actor_id` and the payload `source`, so passing a padded
+        // ` peer:A ` / ` peer:C ` would otherwise write non-canonical provenance even
+        // though it passes the non-blank check below.
+        let source = source.trim();
+        let author_actor_id = author_actor_id.map(str::trim);
+        let original_author = author_actor_id.unwrap_or(source);
         if original_author.is_empty() {
             return Err(CoreError::ValidationError(
                 "put_chunk_from_remote: remote import has no original author/source \
@@ -1286,9 +1295,10 @@ impl Store {
         // Build the same content + provenance unit the batch path imports, then
         // delegate to the ONE atomic apply path so the chunk, its oplog row, AND the
         // projection/index rebuild commit or roll back together (review 090 #3 — no
-        // stale-projection escape hatch). The ids are trimmed on the way in so the
-        // persisted RemoteChunk carries the exact canonical record identities a
-        // downstream hop will recover (no surrounding whitespace — review 097).
+        // stale-projection escape hatch). The author, source, and ids are all trimmed
+        // on the way in so the persisted RemoteChunk (and the oplog `actor_id` /
+        // payload `source` derived from it) carries the exact canonical provenance a
+        // downstream hop will recover (no surrounding whitespace — reviews 097, 101).
         let chunk = RemoteChunk {
             doc_id: doc_id.to_string(),
             chunk_id: chunk_id.to_string(),
