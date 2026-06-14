@@ -39,7 +39,7 @@
       }
     }
   },
-  "count": 12,
+  "count": 14,
   "cases": [
     {
       "case": "granted_read_allowed",
@@ -100,6 +100,16 @@
       "case": "absent_files_capability_rejected",
       "expect": "capability_required",
       "file": "absent_files_capability_rejected.json"
+    },
+    {
+      "case": "unsupported_read_encoding_rejected",
+      "expect": "validation_error",
+      "file": "unsupported_read_encoding_rejected.json"
+    },
+    {
+      "case": "unsupported_write_mode_rejected",
+      "expect": "validation_error",
+      "file": "unsupported_write_mode_rejected.json"
     }
   ]
 }

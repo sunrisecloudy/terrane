@@ -1,5 +1,5 @@
 //! Data-driven T028 conformance over the `ctx.files` capability vectors
-//! (`forge/fixtures/files/`, manifest `count = 12`).
+//! (`forge/fixtures/files/`, manifest `count = 14`).
 //!
 //! This proves the **wired** `ctx.files` path of forge-core (CR-3): every op is
 //! driven through the runtime's [`HostContext`](forge_runtime::HostContext) sitting
@@ -28,7 +28,7 @@
 //! so the *reason* (not just the code) matches the spec vector, and a wording
 //! drift on either side fails the test.
 //!
-//! The `ran == 12` guard means a renamed/dropped vector FAILS the test rather than
+//! The `ran == 14` guard means a renamed/dropped vector FAILS the test rather than
 //! silently skipping (it equals the suite manifest's `count`).
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -171,6 +171,7 @@ fn expected_error_code(fx: &Value) -> Option<&'static str> {
             "PermissionDenied" => "PermissionDenied",
             "StorageError" => "StorageError",
             "ResourceLimitExceeded" => "ResourceLimitExceeded",
+            "ValidationError" => "ValidationError",
             other => panic!("unknown error.kind {other:?}"),
         }),
         other => panic!("unknown expect {other:?}"),
@@ -291,7 +292,7 @@ fn files_t028_vectors_match_expected_outcome() {
         ran += 1;
     }
 
-    assert_eq!(ran, 12, "expected exactly 12 files (T028) vectors, ran {ran}");
+    assert_eq!(ran, 14, "expected exactly 14 files (T028) vectors, ran {ran}");
 }
 
 /// Assert a `files.read`/`files.write` response matches the vector's expected

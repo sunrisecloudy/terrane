@@ -553,6 +553,21 @@ impl<'b> HostContext<'b> {
             return Err(err);
         }
 
+        // 1b. Encoding gate (spec/files.md: `base64` is the ONLY read encoding in
+        //     M0a). A request asking for any other encoding (e.g. `utf8`) is
+        //     rejected as a ValidationError BEFORE the grant/confinement gate or any
+        //     filesystem touch — otherwise a recorded read would claim a non-base64
+        //     encoding while still returning `bytes_base64`, an inconsistent trace.
+        //     Recorded as the run's denial so record/replay stay consistent.
+        if request.encoding != "base64" {
+            let err = CoreError::ValidationError(format!(
+                "ctx.files.read encoding {:?} is not supported; only \"base64\" is supported in M0a (spec/files.md)",
+                request.encoding
+            ));
+            self.recorder.record_denial("files.read", args, &err)?;
+            return Err(err);
+        }
+
         // 2. Capability + confinement gate (deterministic, both modes).
         let rel_path = match self.gate_files_op(&request.handle, &request.path, FileAction::Read) {
             Ok(p) => p,
@@ -669,7 +684,23 @@ impl<'b> HostContext<'b> {
             return Err(err);
         }
 
-        // 1b. Decode the payload BEFORE the gate so an invalid base64 body is a
+        // 1b. Write-mode gate (spec/files.md / files.rs: `create_or_truncate` is the
+        //     ONLY write mode in M0a). A request asking for any other mode (e.g.
+        //     `append`) is rejected as a ValidationError BEFORE the payload decode,
+        //     the grant/confinement gate, or any filesystem touch — otherwise an
+        //     `append` request would silently TRUNCATE the file while the recorded
+        //     trace claims `append`. Recorded as the run's denial so record/replay
+        //     stay consistent.
+        if request.mode != "create_or_truncate" {
+            let err = CoreError::ValidationError(format!(
+                "ctx.files.write mode {:?} is not supported; only \"create_or_truncate\" is supported in M0a (spec/files.md)",
+                request.mode
+            ));
+            self.recorder.record_denial("files.write", args, &err)?;
+            return Err(err);
+        }
+
+        // 1c. Decode the payload BEFORE the gate so an invalid base64 body is a
         //     ValidationError (recorded denial), never an fs touch.
         let bytes = match BASE64.decode(request.bytes_base64.as_bytes()) {
             Ok(b) => b,
@@ -2279,6 +2310,84 @@ mod tests {
         assert!(
             bridge.peek_file("workspace_data", "drafts/note.txt").is_none(),
             "a denied write must not touch the filesystem"
+        );
+    }
+
+    /// A read asking for a non-`base64` encoding (`utf8`) is rejected as a
+    /// ValidationError BEFORE the grant/confinement gate, recorded as the run's
+    /// denial, and the filesystem is never touched — even though the path is
+    /// inside the grant and the file exists (spec/files.md: base64 only in M0a).
+    #[test]
+    fn files_read_unsupported_encoding_is_validation_error() {
+        let grant = FilesGrant {
+            read: vec![file_rule("workspace_data", "data/*.json")],
+            write: vec![],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = bridge_with_file(
+            "workspace_data",
+            "/root",
+            "data/settings.json",
+            br#"{"ok":true}"#,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let mut req = read_req("workspace_data", "data/settings.json");
+        req.encoding = "utf8".into();
+        let err = host.files_read(req).unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "{err}");
+        assert!(err.to_string().contains("only \"base64\" is supported"), "{err}");
+        // The denial is recorded so record/replay stays consistent.
+        let (recorder, _logs) = host.finish();
+        let calls = recorder.into_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "files.read");
+        assert!(calls[0].response.get("denied").is_some());
+    }
+
+    /// A write asking for a non-`create_or_truncate` mode (`append`) is rejected
+    /// as a ValidationError BEFORE the payload decode / grant gate / any fs touch,
+    /// recorded as the run's denial, and never truncates the file (spec/files.md:
+    /// create_or_truncate is the only write mode in M0a).
+    #[test]
+    fn files_write_unsupported_mode_is_validation_error() {
+        let grant = FilesGrant {
+            read: vec![file_rule("workspace_data", "drafts/*.txt")],
+            write: vec![file_rule("workspace_data", "drafts/*.txt")],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new().with_file_system(
+            InMemoryFileSystem::new().with_handle_root("workspace_data", "/root"),
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let write = FileWriteRequest {
+            handle: "workspace_data".into(),
+            path: "drafts/note.txt".into(),
+            bytes_base64: BASE64.encode(b"draft v1"),
+            content_type: Some("text/plain".into()),
+            mode: "append".into(),
+        };
+        let err = host.files_write(write).unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "{err}");
+        assert!(err.to_string().contains("only \"create_or_truncate\" is supported"), "{err}");
+        drop(host);
+        // The rejected append never created/truncated the file.
+        assert!(
+            bridge.peek_file("workspace_data", "drafts/note.txt").is_none(),
+            "a rejected write mode must not touch the filesystem"
         );
     }
 
