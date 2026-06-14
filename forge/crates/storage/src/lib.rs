@@ -22,6 +22,9 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod errors;
+use errors::*;
+
 pub mod query;
 
 pub use query::{
@@ -131,59 +134,6 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// whole `BEGIN IMMEDIATE` reservation, so the loser of a race observes the
 /// winner's committed value rather than surfacing `database is locked`.
 const COUNTER_BUSY_RETRIES: u32 = 8;
-
-/// Map any `rusqlite` failure to a stable, displayable `CoreError`.
-fn map_sql(e: rusqlite::Error) -> CoreError {
-    CoreError::StorageError(e.to_string())
-}
-
-/// True iff a `rusqlite` error is a transient SQLite lock contention
-/// (`SQLITE_BUSY` / `SQLITE_LOCKED`), which a serialized retry can resolve — as
-/// opposed to a permanent failure (corruption, constraint, misuse) that must
-/// surface. Used by [`Store::next_counter`]'s bounded retry loop.
-fn is_busy(e: &rusqlite::Error) -> bool {
-    use rusqlite::ErrorCode;
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(err, _)
-            if matches!(err.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
-    )
-}
-
-/// Outcome of one `BEGIN IMMEDIATE` counter reservation: either a retryable
-/// lock-contention (`Busy`, carrying the raw error so the caller can surface it
-/// after exhausting retries) or a permanent failure (`Fatal`, already mapped).
-enum CounterError {
-    Busy(rusqlite::Error),
-    Fatal(CoreError),
-}
-
-impl CounterError {
-    /// Classify a raw `rusqlite` error from the BEGIN/commit boundary: a
-    /// `SQLITE_BUSY`/`SQLITE_LOCKED` is retryable, everything else is fatal.
-    fn from_sql(e: rusqlite::Error) -> Self {
-        if is_busy(&e) {
-            CounterError::Busy(e)
-        } else {
-            CounterError::Fatal(map_sql(e))
-        }
-    }
-}
-
-/// Map a serde_json (de)serialization failure on the storage path.
-fn map_json(ctx: &str, e: serde_json::Error) -> CoreError {
-    CoreError::StorageError(format!("{ctx}: {e}"))
-}
-
-/// Parse a persisted counter value (utf-8 decimal `u64`) for
-/// [`Store::next_counter`], surfacing a `StorageError` on corruption rather than
-/// silently resetting to zero.
-fn parse_counter_value(bytes: &[u8]) -> Result<u64> {
-    let s = std::str::from_utf8(bytes)
-        .map_err(|e| CoreError::StorageError(format!("counter value is not utf-8: {e}")))?;
-    s.parse::<u64>()
-        .map_err(|e| CoreError::StorageError(format!("counter value is malformed: {e}")))
-}
 
 /// Wall-clock milliseconds since the Unix epoch, used for the `updated_at` /
 /// `created_at` substrate columns. This is metadata only; logical ordering for
