@@ -29,7 +29,8 @@
 
 use forge_domain::{CoreError, LogicalTimestamp, Result};
 use forge_runtime::{
-    HostBridge, HttpClient, InMemorySecretStore, NetRequest, NetResponse, SecretStore,
+    FileSystem, HostBridge, HttpClient, InMemoryFileSystem, InMemorySecretStore, NetRequest,
+    NetResponse, SecretStore,
 };
 use forge_storage::{AggregateResult, IndexManager, Mutation, Query, QueryResult, Store};
 use serde::Serialize;
@@ -158,6 +159,24 @@ pub struct StorageHostBridge<'a> {
     /// host-side / shell-side (out of this crate's scope) via
     /// [`with_secret_store`](Self::with_secret_store).
     secret_store: Box<dyn SecretStore>,
+    /// The sandboxed filesystem `ctx.files` resolves handles/paths against
+    /// (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`).
+    /// The runtime's [`HostContext`] consults this ONLY **after** it has
+    /// capability-checked the op against the running applet's manifest
+    /// `files.<read|write>` grant and confined the path to the handle's sandbox
+    /// root — to resolve the per-applet handle root, ask whether a symlink target
+    /// escapes the root, and (in record mode) perform the confined read/write.
+    /// On **replay** the recorder serves the recorded bytes and this is never
+    /// consulted (CR-8: no live filesystem unless a recorded response is served).
+    ///
+    /// The trusted handle → per-applet-root resolution is the **host policy** and
+    /// lives in this filesystem (a handle the host has not granted a root for
+    /// resolves to `None` ⇒ `PermissionDenied`); the manifest never names a native
+    /// root. The default is an EMPTY [`InMemoryFileSystem`] (no granted root ⇒
+    /// every `ctx.files` op fails closed). A host/shell wires a real per-applet
+    /// sandbox filesystem via [`with_file_system`](Self::with_file_system); tests
+    /// inject an in-memory one.
+    file_system: Box<dyn FileSystem>,
 }
 
 impl<'a> StorageHostBridge<'a> {
@@ -190,6 +209,10 @@ impl<'a> StorageHostBridge<'a> {
             // Fail-closed default: empty store ⇒ any secret_ref header is denied
             // until a host/shell injects a real secret store.
             secret_store: Box::new(InMemorySecretStore::new()),
+            // Fail-closed default: empty filesystem ⇒ no handle has a granted root,
+            // so every ctx.files op is PermissionDenied until a host/shell injects a
+            // real per-applet sandbox filesystem.
+            file_system: Box::new(InMemoryFileSystem::new()),
         }
     }
 
@@ -200,6 +223,24 @@ impl<'a> StorageHostBridge<'a> {
     /// Without this the store is empty and every secret_ref fails closed.
     pub fn with_secret_store(mut self, secret_store: Box<dyn SecretStore>) -> Self {
         self.secret_store = secret_store;
+        self
+    }
+
+    /// Inject the sandboxed [`FileSystem`] `ctx.files` resolves handles/paths
+    /// against (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12,
+    /// `forge/spec/files.md`). The filesystem carries the **trusted** handle →
+    /// per-applet-sandbox-root resolution (a handle with no granted root is
+    /// `PermissionDenied`), so the manifest never names a native root. A host/shell
+    /// wires its real per-applet sandbox filesystem here; tests inject an
+    /// [`InMemoryFileSystem`]. Builder style. Without this the filesystem is empty
+    /// (no granted root) and every `ctx.files` op fails closed.
+    ///
+    /// The capability gate is still the runtime's: the injected filesystem is
+    /// consulted only for an *allowed*, *record-mode* op whose path the runtime
+    /// already confined to the handle's root (replay serves the recording; a denied
+    /// or confinement-rejected op never reaches the filesystem).
+    pub fn with_file_system(mut self, file_system: Box<dyn FileSystem>) -> Self {
+        self.file_system = file_system;
         self
     }
 
@@ -410,6 +451,39 @@ impl HostBridge for StorageHostBridge<'_> {
 
     fn secret_store(&self) -> &dyn SecretStore {
         self.secret_store.as_ref()
+    }
+
+    /// The sandboxed filesystem `ctx.files` resolves handles/paths against
+    /// (prd-merged/01 CR-3, `forge/spec/files.md`). The runtime's
+    /// [`HostContext`](forge_runtime::HostContext) consults this ONLY **after** it
+    /// has capability-checked the op against the running applet's manifest
+    /// `files.<read|write>` grant and confined the path to the handle's sandbox
+    /// root (resolving the handle root and the symlink-escape question through
+    /// this seam). On **replay** the recorder serves the recorded bytes and this is
+    /// never consulted (CR-8). The bridge performs no policy itself: it returns the
+    /// injected, host-trusted filesystem.
+    fn file_system(&self) -> &dyn FileSystem {
+        self.file_system.as_ref()
+    }
+
+    /// `ctx.files.write(handle, rel_path, bytes, content_type)` — write a confined
+    /// file through the injected sandbox filesystem (record mode only).
+    ///
+    /// Reached **only after** the runtime's [`HostContext`](forge_runtime::HostContext)
+    /// has capability-checked the write against the manifest `files.write` grant,
+    /// confined the path, enforced the byte/content-type caps, and checked
+    /// parent-/final-target symlink escape — so a denied or escaping write never
+    /// reaches here. On **replay** the recorder serves the recorded write response
+    /// and this is never called (CR-8: replay never writes a live file). The bridge
+    /// performs no policy itself: it delegates to the injected filesystem.
+    fn files_write(
+        &mut self,
+        handle: &str,
+        rel_path: &str,
+        bytes: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<u64> {
+        self.file_system.write(handle, rel_path, bytes, content_type)
     }
 }
 
