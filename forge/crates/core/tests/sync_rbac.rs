@@ -7,7 +7,7 @@
 //! [`forge_core::authorize_remote_op`], and asserts the decision and audit match
 //! `expect` (`forge/spec/sync-rbac.md`). The fixtures are load-bearing: a wrong
 //! role-matrix mapping, a mishandled wildcard grant, or a missed self-escalation
-//! fails here. The `ran == 10` guard means a missing/misnamed fixture FAILS the
+//! fails here. The `ran == 13` guard means a missing/misnamed fixture FAILS the
 //! test rather than silently skipping.
 
 use forge_core::{

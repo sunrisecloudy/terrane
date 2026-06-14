@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "case": "wellformed_read_catchup_allowed",
+  "coverage": ["SS-7"],
+  "note": "A read-only catch-up naming a concrete collection is well-formed; the trusted owner db.read covers it.",
+  "envelope": {
+    "resource_type": "record",
+    "op": "read",
+    "collection": "tasks"
+  },
+  "expect": {
+    "well_formed": true,
+    "decision": "allowed"
+  }
+}

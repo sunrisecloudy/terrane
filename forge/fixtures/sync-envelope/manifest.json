@@ -1,0 +1,66 @@
+{
+  "suite": "sync-envelope-wellformedness-vectors",
+  "version": 1,
+  "spec": "../../spec/sync-rbac.md",
+  "prd": ["SS-7"],
+  "scope": "Envelope-metadata well-formedness vectors for the SS-7 apply boundary (review 092 #2). These are ORTHOGONAL to RBAC: every vector assumes a TRUSTED wildcard owner, so only envelope well-formedness decides the outcome. A well-formed envelope is ALLOWED (the owner grant passes); a malformed one is DENIED fail-closed BEFORE any grant check, with the audit reason naming the structural defect. Document-id parsing (collection/<name>) lives at the sync staging layer and is covered separately by the sync-rbac + sync crate suites; these vectors pin the pure-decision envelope gate.",
+  "trusted_authority": "wildcard_owner",
+  "count": 11,
+  "cases": [
+    {
+      "case": "wellformed_record_insert_allowed",
+      "file": "wellformed_record_insert_allowed.json",
+      "expect": "allowed"
+    },
+    {
+      "case": "wellformed_record_delete_allowed",
+      "file": "wellformed_record_delete_allowed.json",
+      "expect": "allowed"
+    },
+    {
+      "case": "wellformed_schema_change_allowed",
+      "file": "wellformed_schema_change_allowed.json",
+      "expect": "allowed"
+    },
+    {
+      "case": "wellformed_read_catchup_allowed",
+      "file": "wellformed_read_catchup_allowed.json",
+      "expect": "allowed"
+    },
+    {
+      "case": "record_op_missing_collection_rejected",
+      "file": "record_op_missing_collection_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "record_op_missing_record_id_rejected",
+      "file": "record_op_missing_record_id_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "schema_change_missing_schema_id_rejected",
+      "file": "schema_change_missing_schema_id_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "schema_change_missing_version_rejected",
+      "file": "schema_change_missing_version_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "record_resource_with_schema_change_op_rejected",
+      "file": "record_resource_with_schema_change_op_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "schema_resource_with_record_op_rejected",
+      "file": "schema_resource_with_record_op_rejected.json",
+      "expect": "permission_denied"
+    },
+    {
+      "case": "read_op_missing_collection_rejected",
+      "file": "read_op_missing_collection_rejected.json",
+      "expect": "permission_denied"
+    }
+  ]
+}

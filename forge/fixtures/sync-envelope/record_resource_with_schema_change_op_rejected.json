@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "case": "record_resource_with_schema_change_op_rejected",
+  "coverage": ["SS-7"],
+  "note": "A schema_change op carried under a record resource_type is an inconsistent envelope; denied fail-closed before any grant check.",
+  "envelope": {
+    "resource_type": "record",
+    "op": "schema_change",
+    "collection": "tasks",
+    "schema_id": "tasks",
+    "schema_version": 2
+  },
+  "expect": {
+    "well_formed": false,
+    "decision": "permission_denied",
+    "reason_contains": "schema_change op with record resource_type in envelope"
+  }
+}

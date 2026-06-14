@@ -421,6 +421,53 @@ fn malformed_non_collection_doc_chunk_is_denied_before_import() {
 }
 
 #[test]
+fn multi_record_transact_group_applies_and_converges() {
+    // review 092 #2 (positive regression): a MULTI-record transact group is one chunk
+    // that legitimately names SEVERAL records. The wired envelope translation must
+    // thread a concrete record id so the envelope-metadata gate accepts it — before
+    // the fix it dropped the multi-record group to no record id and the gate denied a
+    // legitimate group as "missing record id", silently breaking convergence. The
+    // group must apply (0 denied) and BOTH cores converge with all records present.
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+
+    // One transact group authoring two records into the same collection (one chunk).
+    let group = vec![
+        insert("task-1", json!({ "title": "first" }), 1),
+        insert("task-2", json!({ "title": "second" }), 2),
+    ];
+    sender
+        .store_mut()
+        .transact_mutations_crdt(&group, &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(
+        report.chunks_denied, 0,
+        "a legitimate multi-record transact group must NOT be denied (it names concrete records)"
+    );
+    assert!(report.total_chunks_moved() > 0, "the group chunk moves to the receiver");
+
+    // Both cores hold both records and agree (true convergence).
+    let recv_rows = query_tasks(&mut receiver);
+    let send_rows = query_tasks(&mut sender);
+    assert_eq!(recv_rows, send_rows, "cores converge after a transact group");
+    assert_eq!(recv_rows.len(), 2, "both records imported: {recv_rows:?}");
+    assert_eq!(recv_rows[0].0, "task-1");
+    assert_eq!(recv_rows[1].0, "task-2");
+
+    // The allow audit named a concrete record (the first touched id), not an empty one.
+    let allowed = receiver
+        .events()
+        .events_of_kind("sync.authorized")
+        .next()
+        .expect("the transact group was authorized");
+    assert_eq!(allowed.payload["decision"], json!("allow"));
+    assert_eq!(allowed.payload["collection"], json!("tasks"));
+}
+
+#[test]
 fn seeded_membership_survives_reopen() {
     // The SS-7 membership table is persisted to the workspace file (mirrors the
     // db.read grant table, review 050): a seeded row must survive `open(...)`,

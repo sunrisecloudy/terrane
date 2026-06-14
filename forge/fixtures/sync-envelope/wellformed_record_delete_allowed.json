@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "case": "wellformed_record_delete_allowed",
+  "coverage": ["SS-7"],
+  "note": "A record delete naming a concrete collection + record id is well-formed.",
+  "envelope": {
+    "resource_type": "record",
+    "op": "delete",
+    "collection": "tasks",
+    "record_id": "task-9"
+  },
+  "expect": {
+    "well_formed": true,
+    "decision": "allowed"
+  }
+}

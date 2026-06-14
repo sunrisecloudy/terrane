@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "case": "schema_resource_with_record_op_rejected",
+  "coverage": ["SS-7"],
+  "note": "A record op (insert) carried under a schema resource_type is an inconsistent envelope; denied fail-closed before any grant check.",
+  "envelope": {
+    "resource_type": "schema",
+    "op": "insert",
+    "collection": "tasks",
+    "record_id": "task-1"
+  },
+  "expect": {
+    "well_formed": false,
+    "decision": "permission_denied",
+    "reason_contains": "record op with schema resource_type in envelope"
+  }
+}
