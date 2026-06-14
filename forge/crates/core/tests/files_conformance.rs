@@ -23,6 +23,11 @@
 //!   * `replay_byte_identical` → a recorded read replays its recorded bytes with
 //!     the live filesystem emptied (CR-8).
 //!
+//! For every error vector the harness asserts BOTH the `CoreError` code AND the
+//! vector's `error.detail_contains` substring against the live runtime message —
+//! so the *reason* (not just the code) matches the spec vector, and a wording
+//! drift on either side fails the test.
+//!
 //! The `ran == 12` guard means a renamed/dropped vector FAILS the test rather than
 //! silently skipping (it equals the suite manifest's `count`).
 
@@ -260,13 +265,25 @@ fn files_t028_vectors_match_expected_outcome() {
                     .err()
                     .unwrap_or_else(|| panic!("[{case}] expected {want_code}, op was allowed"));
                 assert_eq!(code, want_code, "[{case}] error code mismatch ({msg})");
-                // The `not_found` vector's detail is a stable runtime string we can
-                // assert directly (the fixture's `detail_contains` is just "not_found").
-                if let Some(detail) = fx["error"].get("detail_contains").and_then(|v| v.as_str()) {
-                    if detail == "not_found" {
-                        assert!(msg.contains("not_found"), "[{case}] not_found detail missing: {msg}");
-                    }
-                }
+                // Pin the vector's `detail_contains` against the LIVE runtime
+                // message for EVERY error vector — not just `not_found` (review:
+                // the harness must assert the reason matches the vector, mirroring
+                // T034's per-vector `message_contains`). The runtime emits the
+                // fixtures' stable error vocabulary (e.g. "is outside granted glob",
+                // "manifest did not request files.<action>", "path traversal is not
+                // allowed", "absolute paths are not allowed", "symlink target
+                // escapes handle root", "not_found"), so a substring match is the
+                // contract between the spec vectors and the runtime, not brittle
+                // prose. A wording drift on either side now FAILS here.
+                let detail = fx["error"]
+                    .get("detail_contains")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("[{case}] error.detail_contains is required"));
+                assert!(
+                    msg.contains(detail),
+                    "[{case}] runtime message must contain the vector's detail_contains.\n  \
+                     want substring: {detail:?}\n  got message:     {msg:?}"
+                );
             }
             other => panic!("[{case}] unknown expect {other:?}"),
         }

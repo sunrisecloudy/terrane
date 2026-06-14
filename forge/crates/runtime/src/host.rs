@@ -787,10 +787,15 @@ impl<'b> HostContext<'b> {
             FileAction::Write => &self.files_grant.write,
         };
         // An empty action list ⇒ the applet never requested this files action ⇒
-        // CapabilityRequired (distinct from a path that matches no rule).
+        // CapabilityRequired (distinct from a path that matches no rule). The
+        // message carries the T028 fixture vocabulary for BOTH absent-capability
+        // shapes a verifier pins: "manifest did not request files.<action>"
+        // (`absent_files_capability_rejected`) and "files.<action> grant required
+        // for <handle>:<path>" (`write_without_write_grant_rejected`).
         if rules.is_empty() {
             return Err(CoreError::CapabilityRequired(format!(
-                "ctx.files.{action} requires a files.{action} grant; the manifest declares none"
+                "ctx.files.{action} denied: manifest did not request files.{action}; \
+                 a files.{action} grant required for {handle}:{path}"
             )));
         }
         // Confine FIRST: a `..`/absolute/URI/drive/NUL path is a PermissionDenied
@@ -801,8 +806,17 @@ impl<'b> HostContext<'b> {
             .iter()
             .any(|r| r.handle == handle && glob_matches(&r.path_glob, &rel_path));
         if !matched {
+            // Report the granted globs for this handle so the denial names what
+            // WAS allowed (T028 `read_outside_grant_rejected`: the path "is
+            // outside granted glob <glob>").
+            let globs: Vec<&str> = rules
+                .iter()
+                .filter(|r| r.handle == handle)
+                .map(|r| r.path_glob.as_str())
+                .collect();
             return Err(CoreError::CapabilityRequired(format!(
-                "ctx.files.{action} denied: no files.{action} grant matches handle {handle:?} path {rel_path:?}"
+                "ctx.files.{action} path {rel_path} is outside granted glob {} for handle {handle:?}",
+                if globs.is_empty() { "(none for this handle)".to_string() } else { globs.join(", ") }
             )));
         }
         Ok(rel_path)

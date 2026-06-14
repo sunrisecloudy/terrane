@@ -232,7 +232,7 @@ pub fn confine_relative_path(path: &str) -> Result<String> {
     // Absolute path: a leading '/' escapes the sandbox root.
     if path.starts_with('/') {
         return Err(CoreError::PermissionDenied(format!(
-            "ctx.files path must be relative, not absolute: {path:?}"
+            "ctx.files absolute paths are not allowed; path must be relative, not absolute: {path:?}"
         )));
     }
 
@@ -245,7 +245,7 @@ pub fn confine_relative_path(path: &str) -> Result<String> {
             // join (spec/files.md: any `..` segment is rejected).
             ".." => {
                 return Err(CoreError::PermissionDenied(format!(
-                    "ctx.files path escapes the handle root via '..': {path:?}"
+                    "ctx.files path traversal is not allowed; path escapes the handle root via '..': {path:?}"
                 )))
             }
             other => segments.push(other),
