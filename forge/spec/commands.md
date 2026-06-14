@@ -26,6 +26,7 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 | runtime.run | applet_id, input, random_seed?, time_start? (both-or-neither; time_start ≤ i64::MAX) | run_id, result, ui patch, logs, host_call_methods | Runner, Editor, Maintainer, Owner plus caps | M0a | CR-A2, CR-8 |
 | runtime.cancel | run_id | cancel status | Runner, Editor, Maintainer, Owner | M0b | CR-A2 |
 | runtime.replay | run_id | run record | replayed result and diff | Auditor, Maintainer, Owner | M0a | CR-A2, CR-9 |
+| runtime.replay_session | run_ids (ordered: initial run + N dispatched events) | session_fingerprint, per-event patches, final tree, replays_identically | Auditor, Maintainer, Owner | M0a | CR-A2, CR-6, CR-8 |
 | runtime.get_logs | run_id, level?, cursor? | log rows | Auditor, Maintainer, Owner, Runner self | M0b | CR-A2 |
 | ai.generate_patch | context, task, model_policy | proposed patch, policy findings | Maintainer, Editor with llm cap | later | CR-A2, LM-8 |
 | ai.apply_patch | patch_id, human_review_id | applied files/ops | Owner, Maintainer | later | CR-A2, LM-8 |

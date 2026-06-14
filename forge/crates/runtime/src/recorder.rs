@@ -234,6 +234,44 @@ impl RunRecorder {
         }
     }
 
+    /// Record (or replay) a **dispatched UI event** (prd-merged/05 UI-4,
+    /// prd-merged/01 CR-6). A UI render is captured as an ordinary effect by
+    /// [`host_call`](Self::host_call); this records the *dispatch itself* — the
+    /// `(action_ref, payload)` that addressed a handler — so a session replays
+    /// the same event sequence byte-identically.
+    ///
+    /// The call is recorded as method `ui.dispatch_event` with
+    /// `args = [action_ref, payload]` and the supplied `result` as its response
+    /// (the engine passes the handler's returned value / final UI tree). In
+    /// record mode the entry is appended; in replay mode the recorded entry must
+    /// line up at the cursor (the same `action_ref`+`payload`), the recorded
+    /// result is served, and a mismatch is a determinism divergence — so a replay
+    /// that dispatched a different event, a different payload, or events in a
+    /// different order fails like any other diverging host call.
+    pub fn dispatch_event(
+        &mut self,
+        action_ref: &str,
+        payload: serde_json::Value,
+        result: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let args = serde_json::json!([action_ref, payload]);
+        match self.mode {
+            Mode::Record => {
+                let seq = self.next_seq();
+                self.produced.push(RecordedCall {
+                    seq,
+                    method: "ui.dispatch_event".to_string(),
+                    args,
+                    response: result.clone(),
+                });
+                Ok(result)
+            }
+            // In replay the recorded dispatch must match at the cursor (same
+            // action_ref + payload); `consume` serves the recorded result.
+            Mode::Replay => self.consume("ui.dispatch_event", args),
+        }
+    }
+
     /// Record (or replay) a host-call attempt that was **denied** by policy
     /// before any live effect ran (review 009 P1 CR-9). Denials used to vanish
     /// from the trace because the policy check returned before
@@ -430,5 +468,76 @@ mod tests {
         let err = r.now().unwrap_err();
         assert_eq!(err.code(), "RuntimeError");
         assert!(err.to_string().contains("extra host call"), "{err}");
+    }
+
+    #[test]
+    fn dispatch_event_is_recorded_as_ui_dispatch_event() {
+        let mut r = RunRecorder::recording(42, 1000);
+        let result = serde_json::json!({ "type": "Text", "text": "count: 1" });
+        let served = r
+            .dispatch_event("increment", serde_json::json!({ "value": "1" }), result.clone())
+            .unwrap();
+        assert_eq!(served, result);
+        let calls = r.into_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "ui.dispatch_event");
+        assert_eq!(
+            calls[0].args,
+            serde_json::json!(["increment", { "value": "1" }])
+        );
+        assert_eq!(calls[0].response, result);
+    }
+
+    #[test]
+    fn replay_serves_recorded_dispatch_event() {
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "ui.dispatch_event".into(),
+            args: serde_json::json!(["increment", { "value": "1" }]),
+            response: serde_json::json!({ "tree": "recorded" }),
+        }];
+        let mut r = RunRecorder::replaying(42, 1000, recorded);
+        let served = r
+            .dispatch_event(
+                "increment",
+                serde_json::json!({ "value": "1" }),
+                // The live result is ignored on replay: the recorded one is served.
+                serde_json::json!({ "tree": "live-must-not-win" }),
+            )
+            .unwrap();
+        assert_eq!(served, serde_json::json!({ "tree": "recorded" }));
+    }
+
+    #[test]
+    fn replay_detects_dispatch_event_action_ref_divergence() {
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "ui.dispatch_event".into(),
+            args: serde_json::json!(["increment", { "value": "1" }]),
+            response: serde_json::Value::Null,
+        }];
+        let mut r = RunRecorder::replaying(42, 1000, recorded);
+        // A different action_ref (decrement) must diverge.
+        let err = r
+            .dispatch_event("decrement", serde_json::json!({ "value": "1" }), serde_json::Value::Null)
+            .unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
+        assert!(err.to_string().contains("divergence"), "{err}");
+    }
+
+    #[test]
+    fn replay_detects_dispatch_event_payload_divergence() {
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "ui.dispatch_event".into(),
+            args: serde_json::json!(["increment", { "value": "1" }]),
+            response: serde_json::Value::Null,
+        }];
+        let mut r = RunRecorder::replaying(42, 1000, recorded);
+        // Same action_ref, different payload → divergence.
+        let err = r
+            .dispatch_event("increment", serde_json::json!({ "value": "9" }), serde_json::Value::Null)
+            .unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
     }
 }

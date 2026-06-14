@@ -1,0 +1,37 @@
+{
+  "stage": "run",
+  "random_seed": 7,
+  "time_start": 100,
+  "result": {
+    "ok": true,
+    "value": {
+      "type": "Stack",
+      "testId": "root",
+      "direction": "v",
+      "gap": "sm",
+      "children": [
+        { "type": "Text", "testId": "value", "text": "Count: 0" },
+        { "type": "Text", "testId": "label", "text": "Label: " },
+        { "type": "Button", "testId": "inc", "label": "+", "onTap": "increment" },
+        { "type": "Button", "testId": "dec", "label": "-", "onTap": "decrement" },
+        { "type": "TextField", "testId": "name", "value": "", "label": "Name", "onChange": "setLabel" },
+        { "type": "Button", "testId": "save", "label": "Save note", "onTap": "saveNote" }
+      ]
+    }
+  },
+  "records": [],
+  "storage": {},
+  "ui_contains": [
+    "Stack",
+    "Text:Count: 0",
+    "Text:Label: ",
+    "Button",
+    "TextField"
+  ],
+  "host_call_methods": [
+    "storage.get",
+    "storage.get",
+    "ui.render"
+  ],
+  "replay_identical": true
+}

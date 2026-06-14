@@ -215,6 +215,34 @@ impl RunRecord {
         self.replay_fingerprint() == other.replay_fingerprint()
     }
 
+    /// A composite fingerprint of an ordered **event session** — an initial
+    /// `runtime.run` record followed by N `ui.dispatch_event` records, in dispatch
+    /// order (prd-merged/05 UI-4, prd-merged/01 CR-6, CR-8). This is the
+    /// session-level analogue of [`replay_fingerprint`](Self::replay_fingerprint):
+    /// two sessions with equal composite fingerprints replayed the same ordered
+    /// event sequence to byte-identical per-run traces.
+    ///
+    /// The composite is built from the per-run [`replay_fingerprint`] of each record
+    /// in order, so it is sensitive to (a) any per-run trace divergence and (b) the
+    /// ORDER the events were applied: swapping two events in the sequence changes the
+    /// composite even when each individual run still fingerprints the same. A session
+    /// replays byte-identically iff its replayed records reproduce this exact value.
+    ///
+    /// `records` is borrowed in dispatch order; an empty session fingerprints to the
+    /// empty-list canonical form (a degenerate but well-defined identity).
+    pub fn session_fingerprint(records: &[&RunRecord]) -> String {
+        let per_run: Vec<String> = records.iter().map(|r| r.replay_fingerprint()).collect();
+        serde_json::json!({ "session": per_run }).to_string()
+    }
+
+    /// True iff two ordered event sessions replay identically: same length and each
+    /// record replay-identical to its counterpart in order. The composite
+    /// [`session_fingerprint`](Self::session_fingerprint) equality is the single
+    /// check (it folds in both per-run identity and ordering).
+    pub fn session_replays_identically(original: &[&RunRecord], replayed: &[&RunRecord]) -> bool {
+        Self::session_fingerprint(original) == Self::session_fingerprint(replayed)
+    }
+
     /// Strict replay check: both records must carry a *canonical* `code_hash`
     /// and be replay-identical (review 010 P1, review 013 P1).
     ///
@@ -470,6 +498,67 @@ mod tests {
         let mut b = sample("run_2");
         b.permissions.max_host_calls = a.permissions.max_host_calls + 1;
         assert!(!a.replays_identically(&b));
+    }
+
+    /// A session of [initial run + N events] fingerprints byte-identically to a
+    /// replay of the same ordered records (UI-4/CR-6 session replay). The composite
+    /// folds in each record's per-run fingerprint in order.
+    #[test]
+    fn session_fingerprint_matches_identical_replay() {
+        let initial_a = sample("run_1");
+        let event_a = sample("run_2");
+        // The replay produces fresh run_ids but byte-identical traces.
+        let initial_b = sample("run_3");
+        let event_b = sample("run_4");
+        let original = [&initial_a, &event_a];
+        let replayed = [&initial_b, &event_b];
+        assert!(RunRecord::session_replays_identically(&original, &replayed));
+        assert_eq!(
+            RunRecord::session_fingerprint(&original),
+            RunRecord::session_fingerprint(&replayed)
+        );
+    }
+
+    /// The session fingerprint is ORDER-sensitive: swapping two otherwise-identical
+    /// records changes the composite even though each record fingerprints the same.
+    /// This is what proves "two events apply in recorded order deterministically".
+    #[test]
+    fn session_fingerprint_is_order_sensitive() {
+        // Two records with DISTINCT traces so order is observable.
+        let first = sample("run_1");
+        let mut second = sample("run_2");
+        second.calls[0].response = serde_json::json!(2000);
+        let in_order = [&first, &second];
+        let swapped = [&second, &first];
+        assert_ne!(
+            RunRecord::session_fingerprint(&in_order),
+            RunRecord::session_fingerprint(&swapped),
+            "swapping event order must change the composite session fingerprint"
+        );
+        assert!(!RunRecord::session_replays_identically(&in_order, &swapped));
+    }
+
+    /// A divergence in ANY record of the session breaks the composite identity (the
+    /// session-level analogue of a single-run trace divergence).
+    #[test]
+    fn session_fingerprint_detects_a_diverged_member() {
+        let a0 = sample("run_1");
+        let a1 = sample("run_2");
+        let b0 = sample("run_3");
+        let mut b1 = sample("run_4");
+        b1.calls[0].response = serde_json::json!(9999); // one event diverges
+        assert!(!RunRecord::session_replays_identically(&[&a0, &a1], &[&b0, &b1]));
+    }
+
+    /// An empty session has a well-defined (degenerate) composite identity.
+    #[test]
+    fn empty_session_fingerprint_is_stable() {
+        let empty: [&RunRecord; 0] = [];
+        assert_eq!(
+            RunRecord::session_fingerprint(&empty),
+            RunRecord::session_fingerprint(&empty)
+        );
+        assert!(RunRecord::session_replays_identically(&empty, &empty));
     }
 
     /// `assert_replay_of` surfaces a genuine trace divergence as a

@@ -51,7 +51,7 @@ mod runner;
 #[cfg(not(target_arch = "wasm32"))]
 pub use engine::QuickJsEngine;
 #[cfg(not(target_arch = "wasm32"))]
-pub use runner::{record_run, replay, run_once};
+pub use runner::{record_dispatch, record_run, replay, replay_dispatch, run_once};
 
 /// A unit of executable code handed to the engine: the transpiled JS plus the
 /// applet identity used for provenance in the run record.

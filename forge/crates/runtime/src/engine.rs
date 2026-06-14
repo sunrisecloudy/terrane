@@ -117,6 +117,10 @@ enum Stop {
     HostError(CoreError),
     Limit(String),
     Runtime(String),
+    /// A typed validation failure (e.g. an unknown UI handler action ref). Maps
+    /// to `CoreError::ValidationError` so a missing handler is a clean error, not
+    /// a runtime fault or a panic (UI-4/CR-6).
+    Validation(String),
 }
 
 impl QuickJsEngine {
@@ -157,26 +161,140 @@ impl JsEngine for QuickJsEngine {
         host: &mut HostContext<'_>,
         limits: &Limits,
     ) -> EngineOutcome {
-        match run_inner(program, input, host, limits) {
-            Ok(result) => EngineOutcome {
-                result: Ok(result),
-                logs: Vec::new(),
-            },
-            Err(e) => EngineOutcome {
-                result: Err(e),
-                logs: Vec::new(),
-            },
+        Self::outcome(run_inner(program, &Entry::Main, input, host, limits))
+    }
+}
+
+impl QuickJsEngine {
+    /// Dispatch a named UI event handler addressed by `action_ref`
+    /// (prd-merged/05 UI-4, prd-merged/01 CR-6), reusing the **same**
+    /// containment / resource-limit / host-bridge path as [`JsEngine::run`]: the
+    /// program is wrapped (which synthesizes the `__forge_handlers` registry, see
+    /// [`wrap_program`]), the realm is built with zero ambient capability, and the
+    /// handler named `action_ref` is called as `handler(ctx, payload)`.
+    ///
+    /// The realm is **one-shot per dispatch** — exactly like `run` — so a handler
+    /// MUST persist any state through `ctx.db`/`ctx.storage`; in-memory globals do
+    /// not survive between dispatches. An unknown/missing `action_ref` (no such
+    /// exported handler) returns a typed [`CoreError::ValidationError`], never a
+    /// panic across the FFI boundary (CR-A4/CR-A5).
+    pub fn run_handler(
+        &self,
+        program: &Program,
+        action_ref: &str,
+        payload: &serde_json::Value,
+        host: &mut HostContext<'_>,
+        limits: &Limits,
+    ) -> EngineOutcome {
+        Self::outcome(run_inner(
+            program,
+            &Entry::Handler(action_ref.to_string()),
+            payload,
+            host,
+            limits,
+        ))
+    }
+
+    /// Fold a `run_inner` result into the public [`EngineOutcome`] shape. Logs are
+    /// carried by the [`HostContext`] (the record/replay layer drains them), so
+    /// the engine leaves `logs` empty here.
+    fn outcome(result: Result<AppResult, CoreError>) -> EngineOutcome {
+        EngineOutcome {
+            result,
+            logs: Vec::new(),
         }
     }
 }
 
-/// Build the runtime/realm, wire the budget and `ctx`, drive `main`, and map the
-/// stop reason to a `CoreError`. Logs are carried by the [`HostContext`] (the
-/// caller drains them), so the returned outcome's `logs` is filled by the
-/// record/replay layer below — `run` itself leaves it empty.
+/// Which entrypoint a realm run should drive: the program's `main(ctx, input)`,
+/// or a named UI event handler `<action_ref>(ctx, payload)` (UI-4/CR-6).
+enum Entry {
+    /// Drive `main`, the program entrypoint (the classic `run` path).
+    Main,
+    /// Drive the exported handler whose name equals this `ActionRef`.
+    Handler(String),
+}
+
+/// The outcome of resolving an [`Entry`] into a callable: the function to call,
+/// plus an optional `action_suffix` to merge into the event payload. The suffix is
+/// only ever `Some` for a list-item dispatch (`base:suffix`) that resolved by
+/// stripping the trailing `:suffix` off the `action_ref` (UI-4 stable-key list
+/// addressing); a normal/exact match carries `None`.
+struct Resolved<'js> {
+    callable: Function<'js>,
+    action_suffix: Option<String>,
+}
+
+impl Entry {
+    /// The global the realm exposes the chosen callable under: `__forge_main` for
+    /// the entrypoint, or a lookup into `__forge_handlers` for a named handler.
+    /// Returns the resolved [`Function`] (+ any list-item `action_suffix`), or a
+    /// typed [`Stop`] when the handler is missing/not callable (an unknown
+    /// `action_ref` is a clean error, not a panic).
+    fn resolve<'js>(&self, ctx: &Ctx<'js>) -> Result<Resolved<'js>, Stop> {
+        match self {
+            Entry::Main => ctx
+                .globals()
+                .get("__forge_main")
+                .map(|callable| Resolved {
+                    callable,
+                    action_suffix: None,
+                })
+                .map_err(|_| {
+                    Stop::Runtime(
+                        "program does not export an async function main(ctx, input)".into(),
+                    )
+                }),
+            Entry::Handler(action_ref) => {
+                let handlers: Object = ctx
+                    .globals()
+                    .get("__forge_handlers")
+                    .map_err(|e| Stop::Runtime(format!("handler registry missing: {e}")))?;
+                // 1. Exact match on the full (possibly dotted/free-form) action ref.
+                if let Ok(f) = handlers.get::<_, Function>(action_ref.as_str()) {
+                    return Ok(Resolved {
+                        callable: f,
+                        action_suffix: None,
+                    });
+                }
+                // 2. List-item-by-stable-key fallback (UI-4): an `onTap` like
+                //    `todo.toggle:b` addresses the `todo.toggle` handler for the item
+                //    keyed `b`. Split on the LAST `:` into (base, suffix); if `base`
+                //    is a registered handler, dispatch it and surface the `suffix` to
+                //    the handler through the event payload (merged as `actionSuffix`).
+                if let Some((base, suffix)) = action_ref.rsplit_once(':') {
+                    if let Ok(f) = handlers.get::<_, Function>(base) {
+                        return Ok(Resolved {
+                            callable: f,
+                            action_suffix: Some(suffix.to_string()),
+                        });
+                    }
+                }
+                // A missing/non-function action ref is a typed engine error
+                // (UI-4/CR-6), surfaced as a ValidationError so the dispatch
+                // path reports "no such handler" rather than panicking.
+                Err(Stop::Validation(format!(
+                    "no UI handler registered for action ref {action_ref:?}"
+                )))
+            }
+        }
+    }
+}
+
+/// Build the runtime/realm, wire the budget and `ctx`, drive the selected
+/// [`Entry`] (`main` or a named UI handler), and map the stop reason to a
+/// `CoreError`. Logs are carried by the [`HostContext`] (the caller drains them),
+/// so the returned outcome's `logs` is filled by the record/replay layer below —
+/// `run`/`run_handler` themselves leave it empty.
+///
+/// `arg` is the second argument passed to the chosen callable: the run `input`
+/// for [`Entry::Main`], or the event `payload` for [`Entry::Handler`]. Both share
+/// the **same** zero-ambient realm, resource limits, and `ctx` host bridge — the
+/// only difference is which captured function is fetched and called (UI-4/CR-6).
 fn run_inner(
     program: &Program,
-    input: &serde_json::Value,
+    entry: &Entry,
+    arg: &serde_json::Value,
     host: &mut HostContext<'_>,
     limits: &Limits,
 ) -> Result<AppResult, CoreError> {
@@ -248,9 +366,10 @@ fn run_inner(
             return Stop::Runtime(format!("failed to install ctx host object: {e}"));
         }
 
-        // Wrap the program so `main` is reachable as a global without relying on
-        // ES-module namespace plumbing: strip a leading `export` from the
-        // entrypoint declaration and assign the function to a known global.
+        // Wrap the program so `main` (and every exported handler) is reachable as
+        // a global without relying on ES-module namespace plumbing: strip a
+        // leading `export` from each declaration, assign `main` to `__forge_main`,
+        // and register every exported function into `__forge_handlers` (UI-4/CR-6).
         let wrapped = wrap_program(&program.source);
         if let Err(e) = ctx.eval::<(), _>(wrapped).catch(&ctx) {
             // A compile/eval error in user code is a runtime error (not a limit
@@ -261,30 +380,48 @@ fn run_inner(
             return Stop::Runtime(format!("program failed to load: {e}"));
         }
 
-        // Fetch the captured `main`.
-        let main: Function = match ctx.globals().get("__forge_main") {
-            Ok(f) => f,
-            Err(_) => {
-                return Stop::Runtime(
-                    "program does not export an async function main(ctx, input)".into(),
-                )
-            }
+        // Resolve the chosen callable: `main` for a run, or the handler named by
+        // the action ref for a UI dispatch (an unknown action ref is a typed
+        // ValidationError Stop, never a panic). A list-item dispatch (`base:suffix`)
+        // additionally yields the `action_suffix` to fold into the event payload.
+        let Resolved {
+            callable,
+            action_suffix,
+        } = match entry.resolve(&ctx) {
+            Ok(r) => r,
+            Err(stop) => return stop,
         };
 
-        // Marshal input and the ctx object, then call main(ctx, input).
+        // Marshal the arg (run input / event payload) and the ctx object, then
+        // call callable(ctx, arg). For a list-item dispatch, merge the addressed
+        // item's stable-key `action_suffix` into the event payload object (the
+        // handler reads `event.actionSuffix` to know which item fired) before
+        // marshalling, so the suffix travels with the event over the same path.
         let ctx_obj: Object = match ctx.globals().get("ctx") {
             Ok(o) => o,
             Err(e) => return Stop::Runtime(format!("ctx object missing: {e}")),
         };
-        let input_js = match QuickJsEngine::json_to_js(&ctx, input) {
+        let arg_with_suffix;
+        let arg = match action_suffix {
+            Some(suffix) => {
+                let mut merged = arg.clone();
+                if let serde_json::Value::Object(map) = &mut merged {
+                    map.insert("actionSuffix".into(), serde_json::Value::String(suffix));
+                }
+                arg_with_suffix = merged;
+                &arg_with_suffix
+            }
+            None => arg,
+        };
+        let arg_js = match QuickJsEngine::json_to_js(&ctx, arg) {
             Ok(v) => v,
             Err(e) => return Stop::Runtime(format!("failed to marshal input: {e}")),
         };
 
-        let value = match main.call::<_, Value>((ctx_obj, input_js)) {
+        let value = match callable.call::<_, Value>((ctx_obj, arg_js)) {
             Ok(v) => v,
             Err(e) => {
-                let msg = format!("main threw: {}", exception_message(&ctx, e));
+                let msg = format!("entrypoint threw: {}", exception_message(&ctx, e));
                 return classify_failure(&budget, &host_error, msg);
             }
         };
@@ -303,6 +440,7 @@ fn run_inner(
         Stop::HostError(e) => Err(e),
         Stop::Limit(msg) => Err(CoreError::ResourceLimitExceeded(msg)),
         Stop::Runtime(msg) => Err(CoreError::RuntimeError(msg)),
+        Stop::Validation(msg) => Err(CoreError::ValidationError(msg)),
     }
 }
 
@@ -451,15 +589,154 @@ fn classify_failure(
 /// `async function main(...)`) is captured as the global `__forge_main`, then
 /// re-exported through a name the engine reads. We do not rely on ES-module
 /// evaluation: the program runs as a global script and assigns `main`.
+///
+/// In addition to `main`, we synthesize a **handler registry** (prd-merged/05
+/// UI-4, prd-merged/01 CR-6) addressable by a free-form `ActionRef` string. Two
+/// sources feed it, in order:
+///
+/// 1. every `export`ed named function is registered keyed by its name, so a bare
+///    identifier ref (`increment`, `setLabel`) addresses the same-named function —
+///    the dispatch key and the handler name are the same identifier, no mapping to
+///    drift; and
+/// 2. an exported `handlers` OBJECT literal (`export const handlers = { "counter.
+///    increment": fn, "profile.name.change": fn, "todo.toggle": fn }`) whose KEYS
+///    are arbitrary ActionRef strings is folded in by key → function, so a
+///    dotted/suffixed ref that is NOT a valid bare JS identifier is still
+///    addressable. The object pass runs second (an explicit entry wins).
+///
+/// This is the wrap-time half of [`run_handler`]: a UI event is dispatched by
+/// looking the action ref up in `__forge_handlers` (with a `base:suffix`
+/// list-item fallback in [`Entry::resolve`]).
 fn wrap_program(source: &str) -> String {
-    // The transpiler emits `export async function main` / `export function main`
-    // / `export const main = ...`. For the spine we strip a leading `export `
-    // (module syntax is invalid in a global script) and capture the binding.
-    let stripped = source.replace("export async function main", "async function main");
-    let stripped = stripped.replace("export function main", "function main");
-    let stripped = stripped.replace("export const main", "const main");
-    let stripped = stripped.replace("export default async function main", "async function main");
-    format!("{stripped}\n;globalThis.__forge_main = main;\n")
+    let stripped = strip_exports(source);
+    // Collect every exported binding name so each becomes an addressable handler
+    // (main included — it is just the entrypoint handler). The registry is built
+    // *after* the stripped declarations so each name is already bound.
+    let names = exported_names(source);
+    let mut registry = String::from(";globalThis.__forge_handlers = {};\n");
+    for name in &names {
+        // `typeof <name> === 'function'` guards a name whose export was a
+        // non-function const (e.g. `export const x = 1;`) so the registry only
+        // holds callable handlers; a non-callable export is simply not addressable.
+        registry.push_str(&format!(
+            ";if (typeof {name} === 'function') {{ globalThis.__forge_handlers[{name:?}] = {name}; }}\n"
+        ));
+    }
+    // Free-form ActionRef registry (UI-4/CR-6): an applet may also export a
+    // `handlers` OBJECT whose KEYS are arbitrary ActionRef strings — dotted /
+    // suffixed refs like `"counter.increment"`, `"profile.name.change"`,
+    // `"todo.toggle"` that are NOT valid bare JS identifiers and so cannot be the
+    // name of an `export function`. We fold every own-enumerable key of that
+    // object into `__forge_handlers` keyed by the free-form string → its function.
+    // This runs AFTER the bare-name pass, so an explicit `handlers` entry wins over
+    // a same-named exported function; and it is guarded behind `typeof handlers`
+    // so an applet without one is unaffected (the existing bare-name path stands).
+    if names.iter().any(|n| n == "handlers") {
+        // One leading `;` guards against the stripped source not ending in a
+        // statement terminator; the rest is a plain JS block (NO per-line `;`,
+        // which would break mid-expression continuations).
+        registry.push_str(
+            ";if (handlers && typeof handlers === 'object') { \
+             for (var __k in handlers) { \
+             if (Object.prototype.hasOwnProperty.call(handlers, __k) \
+             && typeof handlers[__k] === 'function') { \
+             globalThis.__forge_handlers[__k] = handlers[__k]; } } }\n",
+        );
+    }
+    // Expose `main` as `__forge_main` ONLY when the program actually declares it.
+    // A bare `globalThis.__forge_main = main;` throws `ReferenceError: main is not
+    // defined` at load for a **handler-only applet** (one that exports event
+    // handlers but no `main`), which would make every dispatch fail to load even
+    // though the handler it addresses exists (UI-4/CR-6). Guarding with
+    // `typeof main` lets such an applet load: `__forge_main` is simply left unset,
+    // and the [`Entry::Main`] resolve path then reports the missing-`main` run
+    // error cleanly, while [`Entry::Handler`] dispatch works regardless.
+    format!(
+        "{stripped}\n;if (typeof main === 'function') {{ globalThis.__forge_main = main; }}\n{registry}"
+    )
+}
+
+/// Strip the leading `export ` module keyword (invalid in a global script) from
+/// every exported declaration so each binding is a plain top-level declaration the
+/// engine can reach. Covers the forms the transpiler emits: `export [default]
+/// [async] function NAME` and `export const/let/var NAME`.
+///
+/// **Line-anchored** (review: dispatch-substrate correctness). An earlier version
+/// did a whole-source `str::replace("export function ", "function ")` etc., which
+/// matched the substring *anywhere* — including inside a string literal, a comment,
+/// or an object key — so an applet whose source merely contained the text
+/// `"… export function …"` had that text silently mangled (the body the handler
+/// rendered/returned diverged from what the author wrote). The transpiler emits
+/// every real `export` declaration at the start of a line (after indentation), so
+/// we only strip the keyword when `export ` begins a statement line. This mirrors
+/// [`exported_names`], which is already line-anchored, keeping the two lexical
+/// scans symmetric, and leaves the original indentation/formatting intact.
+fn strip_exports(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    // `split_inclusive` keeps each line's own trailing '\n', so re-joining the
+    // rewritten lines reproduces the source byte-for-byte except for the removed
+    // keyword(s) — no whitespace/line-ending normalization.
+    for line in source.split_inclusive('\n') {
+        // Preserve the line's leading whitespace, then strip a leading `export `
+        // (and an immediately following `default `) only at the statement start.
+        let indent_len = line.len() - line.trim_start().len();
+        let (indent, stmt) = line.split_at(indent_len);
+        let stripped = match stmt.strip_prefix("export ") {
+            // `export default …` → drop both keywords: `default async function …`
+            // / `default function …` is a valid global `async function …` /
+            // `function …` once `export default` is removed.
+            Some(rest) => rest.strip_prefix("default ").unwrap_or(rest),
+            None => stmt,
+        };
+        out.push_str(indent);
+        out.push_str(stripped);
+    }
+    out
+}
+
+/// Best-effort scan of `source` for the names of exported declarations
+/// (`export [default] [async] function NAME` and `export const/let/var NAME`).
+/// Used to populate the `__forge_handlers` registry so each exported function is
+/// addressable by name. This is a lexical scan, not a full parse: the static
+/// policy scan (forge-pipeline) already validated the source, and the engine
+/// only needs the *names* to build the registry — an over-broad match is harmless
+/// because the registry guards each entry with a `typeof === 'function'` check.
+fn exported_names(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        // Walk past optional `default`/`async`/`function`/`const`/`let`/`var`
+        // keywords to the identifier that names the binding.
+        let rest = rest
+            .trim_start()
+            .strip_prefix("default ")
+            .unwrap_or(rest)
+            .trim_start();
+        let rest = rest
+            .strip_prefix("async ")
+            .unwrap_or(rest)
+            .trim_start();
+        let after_kw = rest
+            .strip_prefix("function ")
+            .or_else(|| rest.strip_prefix("const "))
+            .or_else(|| rest.strip_prefix("let "))
+            .or_else(|| rest.strip_prefix("var "));
+        let Some(after_kw) = after_kw else {
+            continue;
+        };
+        let name: String = after_kw
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Install the single host object `ctx` into the realm globals. Every method
@@ -933,4 +1210,125 @@ fn store_and_throw<'js>(
             .map(Value::from_string)
             .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `export` form the transpiler emits at the start of a (possibly
+    /// indented) statement line has its keyword stripped, and the leading
+    /// whitespace is preserved.
+    #[test]
+    fn strip_exports_removes_leading_keyword_and_keeps_indentation() {
+        let src = "    export async function main(ctx, i) {}\n\
+                   export function f() {}\n\
+                   export default async function d() {}\n\
+                   export default function g() {}\n\
+                   export const c = 1;\n\
+                   export let l = 2;\n\
+                   export var v = 3;\n";
+        let out = strip_exports(src);
+        assert_eq!(
+            out,
+            "    async function main(ctx, i) {}\n\
+             function f() {}\n\
+             async function d() {}\n\
+             function g() {}\n\
+             const c = 1;\n\
+             let l = 2;\n\
+             var v = 3;\n",
+            "strip removes only the leading export[/default] keyword, preserving indentation"
+        );
+    }
+
+    /// The keyword is anchored to the statement start: `export ` appearing *inside*
+    /// a line (a string literal, a comment, an object key) is NOT stripped. This is
+    /// the regression the dispatch-substrate fix closes — the old whole-source
+    /// substring replace silently mangled embedded occurrences.
+    #[test]
+    fn strip_exports_does_not_touch_mid_line_occurrences() {
+        let src = "const a = \"to export function foo\";\n\
+                   const b = { note: \"export const x\" }; // export var y\n";
+        // Nothing begins with `export `, so the source passes through untouched.
+        assert_eq!(strip_exports(src), src);
+    }
+
+    /// A `\r\n` line ending is preserved (the keyword sits between the indent and
+    /// the line body; `split_inclusive('\n')` keeps the trailing bytes intact).
+    #[test]
+    fn strip_exports_preserves_crlf_line_endings() {
+        let src = "export function f() {}\r\nexport const x = 1;\r\n";
+        assert_eq!(strip_exports(src), "function f() {}\r\nconst x = 1;\r\n");
+    }
+
+    /// `exported_names` is the registry's key source: it collects exactly the
+    /// exported binding names (and dedups), ignoring non-exported and embedded text.
+    #[test]
+    fn exported_names_collects_only_exported_bindings() {
+        let src = "export async function main(ctx, i) {}\n\
+                   export function increment(ctx, e) {}\n\
+                   async function helper() {}\n\
+                   const note = \"export function decoy\";\n\
+                   export const tag = 1;\n";
+        let names = exported_names(src);
+        assert_eq!(names, vec!["main", "increment", "tag"]);
+        assert!(!names.iter().any(|n| n == "helper"), "non-exported helper excluded");
+        assert!(!names.iter().any(|n| n == "decoy"), "string-literal text excluded");
+    }
+
+    /// `wrap_program` synthesizes the handler registry from the exported names and
+    /// guards the `__forge_main` assignment behind `typeof main === 'function'`, so
+    /// a handler-only applet (no `main`) wraps without a `ReferenceError`.
+    #[test]
+    fn wrap_program_registers_handlers_and_guards_main() {
+        let wrapped = wrap_program("export async function bump(ctx, e) {}\n");
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers = {}"),
+            "registry initialized: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[\"bump\"] = bump"),
+            "exported handler registered by name: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("if (typeof main === 'function')"),
+            "main assignment guarded for handler-only applets: {wrapped}"
+        );
+    }
+
+    /// An exported `handlers` OBJECT literal whose keys are free-form (dotted)
+    /// ActionRef strings is folded into `__forge_handlers` by key. The wrap emits
+    /// the key-copy loop guarded behind `typeof handlers === 'object'`, so dotted
+    /// refs that are not valid bare identifiers become addressable.
+    #[test]
+    fn wrap_program_folds_exported_handlers_object_by_free_form_key() {
+        let wrapped = wrap_program(
+            "export const handlers = { \"counter.increment\": (ctx, e) => e };\n",
+        );
+        assert!(
+            wrapped.contains("if (handlers && typeof handlers === 'object')"),
+            "handlers-object fold guarded behind typeof: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[__k] = handlers[__k]"),
+            "each handlers-object key is copied into the registry: {wrapped}"
+        );
+    }
+
+    /// An applet WITHOUT an exported `handlers` object does not get the object-fold
+    /// loop emitted — only the bare-name registry pass runs (keeps the existing
+    /// runtime tests' identifier handlers working, no behavior change for them).
+    #[test]
+    fn wrap_program_omits_object_fold_when_no_handlers_export() {
+        let wrapped = wrap_program("export async function increment(ctx, e) {}\n");
+        assert!(
+            !wrapped.contains("for (var __k in handlers)"),
+            "no handlers-object fold loop when the applet has no handlers export: {wrapped}"
+        );
+        assert!(
+            wrapped.contains("globalThis.__forge_handlers[\"increment\"] = increment"),
+            "the bare-name registry pass still registers the identifier handler: {wrapped}"
+        );
+    }
 }
