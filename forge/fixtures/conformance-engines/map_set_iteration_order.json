@@ -1,0 +1,83 @@
+{
+  "case": "map_set_iteration_order",
+  "description": "Map/Set preserve insertion order on iteration; delete+re-add moves to the end.",
+  "divergenceArea": "Map/Set iteration order",
+  "divergenceRisk": "medium",
+  "equivalence": "required_identical",
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "result": {
+        "ok": true,
+        "value": {
+          "mapEntries": [
+            [
+              "z",
+              1
+            ],
+            [
+              "m",
+              3
+            ],
+            [
+              "a",
+              4
+            ]
+          ],
+          "mapKeys": [
+            "z",
+            "m",
+            "a"
+          ],
+          "setVals": [
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      "status": "completed"
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:1a5eee87c7b148f578fad0481639fe303a80360a98f7e6134574e60bcbc7bff6\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"mapEntries\":[[\"z\",1],[\"m\",3],[\"a\",4]],\"mapKeys\":[\"z\",\"m\",\"a\"],\"setVals\":[3,2,1]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "input": {},
+  "kind": "runtime",
+  "manifest": {
+    "capabilities": {
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "deterministic": true,
+    "entrypoint": "inline.js",
+    "limits": {
+      "fuel": 10000000,
+      "log_bytes": 65536,
+      "max_host_calls": 100,
+      "memory_bytes": 67108864,
+      "storage_bytes": 1048576,
+      "wall_ms": 3000
+    },
+    "min_api": "forge-api@0.1"
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "source": {
+    "body": "export async function main(_ctx, _input) {\n  const m = new Map();\n  m.set('z', 1); m.set('a', 2); m.set('m', 3);\n  m.delete('a'); m.set('a', 4);\n  const s = new Set([3, 1, 2, 1, 3]);\n  s.delete(1); s.add(1);\n  return { ok: true, value: {\n    mapKeys: [...m.keys()], mapEntries: [...m.entries()], setVals: [...s]\n  } };\n}\n",
+    "codeHash": "sha256:1a5eee87c7b148f578fad0481639fe303a80360a98f7e6134574e60bcbc7bff6",
+    "language": "js"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "ECMAScript guarantees Map/Set iterate in insertion order. After delete+re-insert a key appends at the end. Engines must agree on this ordering for a deterministic trace/return."
+  },
+  "vectorVersion": 1
+}

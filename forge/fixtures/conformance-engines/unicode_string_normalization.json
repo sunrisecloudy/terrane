@@ -1,0 +1,66 @@
+{
+  "case": "unicode_string_normalization",
+  "description": "Unicode/UTF-16 string edges: code-unit length vs code points, normalize(), surrogate handling.",
+  "divergenceArea": "string normalization / unicode + WTF-8 edges",
+  "divergenceRisk": "high",
+  "equivalence": "required_identical",
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "result": {
+        "ok": true,
+        "value": {
+          "codePoint": 128512,
+          "loneSurrogate": 1,
+          "nfc": "é",
+          "nfcLen": 1,
+          "points": 1,
+          "units": 2,
+          "upper": "SS"
+        }
+      },
+      "status": "completed"
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:10b167a4d9515b381a54a74bd49a6ffde032276489df5ddf416ae18a43a25ee5\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"codePoint\":128512,\"loneSurrogate\":1,\"nfc\":\"é\",\"nfcLen\":1,\"points\":1,\"units\":2,\"upper\":\"SS\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "input": {},
+  "kind": "runtime",
+  "manifest": {
+    "capabilities": {
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "deterministic": true,
+    "entrypoint": "inline.js",
+    "limits": {
+      "fuel": 10000000,
+      "log_bytes": 65536,
+      "max_host_calls": 100,
+      "memory_bytes": 67108864,
+      "storage_bytes": 1048576,
+      "wall_ms": 3000
+    },
+    "min_api": "forge-api@0.1"
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "source": {
+    "body": "export async function main(_ctx, _input) {\n  const emoji = '\\u{1F600}';\n  const decomposed = 'e\\u0301';\n  return { ok: true, value: {\n    units: emoji.length,\n    points: [...emoji].length,\n    codePoint: emoji.codePointAt(0),\n    nfc: decomposed.normalize('NFC'),\n    nfcLen: decomposed.normalize('NFC').length,\n    upper: '\\u00df'.toUpperCase(),\n    loneSurrogate: '\\uD800'.length\n  } };\n}\n",
+    "codeHash": "sha256:10b167a4d9515b381a54a74bd49a6ffde032276489df5ddf416ae18a43a25ee5",
+    "language": "js"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "String .length is UTF-16 code units; [...s].length counts code points. normalize('NFC') must collapse decomposed sequences identically. Lone surrogates round-trip as escapes; the host marshals strings as WTF-8/UTF-8 — a lone surrogate must be handled identically (replacement or preserved escape) across engines."
+  },
+  "vectorVersion": 1
+}

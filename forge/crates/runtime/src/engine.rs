@@ -1205,6 +1205,56 @@ fn install_ctx<'js>(
 
     // Poison dynamic code evaluation at the engine level (review 009 P1, CR-13).
     disable_dynamic_eval(ctx)?;
+    // Neutralize the realm's non-seeded entropy source so deterministic mode is
+    // deterministic across engines (CR-11/CR-12, T043).
+    disable_nondeterministic_random(ctx)?;
+    Ok(())
+}
+
+/// Neutralize `Math.random` in the deterministic realm (prd-merged/01 CR-11,
+/// CR-12; T043 cross-engine conformance hardening).
+///
+/// The standard-library realm exposes `Math.random`, which QuickJS seeds from
+/// system entropy at realm creation — a *non-seeded*, *non-recordable* source of
+/// randomness. In deterministic mode the ONLY randomness is the recorder's
+/// seeded [`ctx.random.next()`](crate::RunRecorder) seam (SplitMix64 from
+/// `random_seed`), so a `Math.random()` call would (a) produce a different value
+/// on every run/replay — breaking record/replay determinism — and (b) almost
+/// certainly diverge between QuickJS and a second engine (e.g. JavaScriptCore),
+/// which seed their PRNGs differently. Both are exactly the cross-engine
+/// conformance hazards CR-12 forbids.
+///
+/// We replace `Math.random` with a function that throws a deterministic
+/// `RuntimeError`-shaped exception naming the seeded seam, rather than silently
+/// returning a constant: a constant would mask the bug (an applet relying on
+/// randomness would get a degenerate stream), whereas throwing makes the
+/// determinism contract observable and identical on every engine. The property
+/// is redefined non-writable / non-configurable so applet code cannot restore the
+/// original. (The conformance vector `math_determinism_no_random` pins that the
+/// deterministic Math functions stay intact and `Math.random` is the only one
+/// neutralized.)
+fn disable_nondeterministic_random<'js>(ctx: &Ctx<'js>) -> Result<(), rquickjs::Error> {
+    // Done in JS so we redefine the property on the real `Math` object without
+    // marshaling a Rust closure that would need its own host-error plumbing. The
+    // thrown Error message is engine-independent text the applet can normalize.
+    const NEUTRALIZE_MATH_RANDOM: &str = r#"
+        (function () {
+            "use strict";
+            try {
+                Object.defineProperty(Math, "random", {
+                    value: function random() {
+                        throw new Error(
+                            "Math.random is disabled in deterministic mode; use ctx.random.next()"
+                        );
+                    },
+                    writable: false,
+                    enumerable: false,
+                    configurable: false
+                });
+            } catch (e) { /* already locked: best effort */ }
+        })();
+    "#;
+    ctx.eval::<(), _>(NEUTRALIZE_MATH_RANDOM)?;
     Ok(())
 }
 

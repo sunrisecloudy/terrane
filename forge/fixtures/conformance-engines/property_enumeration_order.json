@@ -1,0 +1,109 @@
+{
+  "case": "property_enumeration_order",
+  "description": "Object property enumeration order: integer keys ascending, then string keys in insertion order; symbols excluded.",
+  "divergenceArea": "property enumeration order",
+  "divergenceRisk": "high",
+  "equivalence": "required_identical",
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "result": {
+        "ok": true,
+        "value": {
+          "entries": [
+            [
+              "2",
+              5
+            ],
+            [
+              "5",
+              4
+            ],
+            [
+              "100",
+              2
+            ],
+            [
+              "first",
+              1
+            ],
+            [
+              "second",
+              3
+            ],
+            [
+              "third",
+              6
+            ]
+          ],
+          "forIn": [
+            "2",
+            "5",
+            "100",
+            "first",
+            "second",
+            "third"
+          ],
+          "keys": [
+            "2",
+            "5",
+            "100",
+            "first",
+            "second",
+            "third"
+          ],
+          "spread": [
+            "2",
+            "5",
+            "100",
+            "first",
+            "second",
+            "third"
+          ]
+        }
+      },
+      "status": "completed"
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:16c3fa0d97d0eacd8b1f68c47ba4f4c90210ac1c54aa07473366fc060825ef58\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"entries\":[[\"2\",5],[\"5\",4],[\"100\",2],[\"first\",1],[\"second\",3],[\"third\",6]],\"forIn\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"keys\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"spread\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "input": {},
+  "kind": "runtime",
+  "manifest": {
+    "capabilities": {
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "deterministic": true,
+    "entrypoint": "inline.js",
+    "limits": {
+      "fuel": 10000000,
+      "log_bytes": 65536,
+      "max_host_calls": 100,
+      "memory_bytes": 67108864,
+      "storage_bytes": 1048576,
+      "wall_ms": 3000
+    },
+    "min_api": "forge-api@0.1"
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "source": {
+    "body": "export async function main(_ctx, _input) {\n  const o = {};\n  o.first = 1; o['100'] = 2; o.second = 3; o['5'] = 4; o['2'] = 5; o.third = 6;\n  const keys = Object.keys(o);\n  const forIn = []; for (const k in o) forIn.push(k);\n  const spread = Object.keys({ ...o });\n  return { ok: true, value: { keys, forIn, spread, entries: Object.entries(o) } };\n}\n",
+    "codeHash": "sha256:16c3fa0d97d0eacd8b1f68c47ba4f4c90210ac1c54aa07473366fc060825ef58",
+    "language": "js"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "[[OwnPropertyKeys]] order is spec-defined: array-index keys in ascending numeric order, then other string keys in insertion order. for-in, Object.keys, and spread must all agree. Inherited enumerable props appear in for-in but not Object.keys."
+  },
+  "vectorVersion": 1
+}

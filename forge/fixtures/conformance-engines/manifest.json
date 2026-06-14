@@ -1,0 +1,23 @@
+{
+  "cases": [
+    "number_formatting_edges.json",
+    "date_under_seeded_clock.json",
+    "json_stringify_ordering_escaping.json",
+    "unicode_string_normalization.json",
+    "array_sort_stability.json",
+    "regexp_unicode_lookbehind.json",
+    "map_set_iteration_order.json",
+    "error_message_normalized.json",
+    "try_finally_microtask_order.json",
+    "typed_array_arraybuffer.json",
+    "bigint_arithmetic.json",
+    "property_enumeration_order.json",
+    "parse_int_float_edges.json",
+    "math_determinism_no_random.json",
+    "recursion_stack_limit.json",
+    "string_locale_and_radix.json"
+  ],
+  "description": "CR-12 cross-engine conformance corpus: divergence-prone vectors a second engine (JSC) must run byte-identically.",
+  "format": "../../spec/cross-engine-conformance.md",
+  "version": 1
+}

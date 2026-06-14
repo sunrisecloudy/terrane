@@ -1,0 +1,66 @@
+{
+  "case": "error_message_normalized",
+  "description": "Caught-error shape is NORMALIZED at the applet boundary: only name+message are observed, never .stack.",
+  "divergenceArea": "error .message / .stack shape (NORMALIZED at the host boundary)",
+  "divergenceRisk": "high",
+  "equivalence": "normalized",
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "result": {
+        "ok": true,
+        "value": {
+          "custom": {
+            "message": "boom",
+            "name": "Error"
+          },
+          "rangeErrName": "RangeError",
+          "stackIsHidden": true,
+          "typeErrName": "TypeError"
+        }
+      },
+      "status": "completed"
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:d858934022be5bc0f1cd99b2a6d9237e6953c49a4cbc44167050f8635e364914\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"custom\":{\"message\":\"boom\",\"name\":\"Error\"},\"rangeErrName\":\"RangeError\",\"stackIsHidden\":true,\"typeErrName\":\"TypeError\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "input": {},
+  "kind": "runtime",
+  "manifest": {
+    "capabilities": {
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "deterministic": true,
+    "entrypoint": "inline.js",
+    "limits": {
+      "fuel": 10000000,
+      "log_bytes": 65536,
+      "max_host_calls": 100,
+      "memory_bytes": 67108864,
+      "storage_bytes": 1048576,
+      "wall_ms": 3000
+    },
+    "min_api": "forge-api@0.1"
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "source": {
+    "body": "export async function main(_ctx, _input) {\n  function normalize(e) { return { name: e.name, message: e.message, hasStack: typeof e.stack === 'string' }; }\n  let custom, typeErr, rangeKind;\n  try { throw new Error('boom'); } catch (e) { custom = normalize(e); }\n  try { const x = null; x.y; } catch (e) { typeErr = e.name; }\n  try { (1).toFixed(101); } catch (e) { rangeKind = e.name; }\n  return { ok: true, value: { custom: { name: custom.name, message: custom.message }, stackIsHidden: true, typeErrName: typeErr, rangeErrName: rangeKind } };\n}\n",
+    "codeHash": "sha256:d858934022be5bc0f1cd99b2a6d9237e6953c49a4cbc44167050f8635e364914",
+    "language": "js"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "NORMALIZED: .stack is engine-specific (frames, line/col, formatting) and MUST NOT appear in observable output; a conformant applet returns only error.name + error.message. Built-in error .message text (e.g. TypeError on null access) can itself differ between engines, so vectors normalize to name + a stable applet-authored message, not the raw engine message. See cross-engine-conformance.md §Normalization."
+  },
+  "vectorVersion": 1
+}

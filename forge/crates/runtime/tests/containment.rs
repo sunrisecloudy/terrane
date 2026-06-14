@@ -275,6 +275,67 @@ fn realm_has_no_ambient_capability_globals() {
     );
 }
 
+/// CR-11/CR-12 determinism (T043): `Math.random` is NEUTRALIZED in the
+/// deterministic realm. QuickJS seeds `Math.random` from system entropy at realm
+/// creation — a non-seeded, non-recordable source that would break record/replay
+/// determinism AND diverge from a second engine (JavaScriptCore). The realm
+/// replaces it with a throwing stub, so the ONLY randomness is the seeded
+/// `ctx.random.next()` seam. The property is still a function (`typeof` reports
+/// `"function"`) but calling it throws a catchable `Error`, and it cannot be
+/// redefined back to the entropy source. The deterministic Math functions
+/// (`sqrt`/`round`/…) stay intact.
+#[test]
+fn math_random_is_neutralized_in_deterministic_mode() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            let threw = false, name = "none";
+            try { Math.random(); } catch (e) { threw = true; name = e.name; }
+            let reLockFailed = false;
+            try {
+                // Attempt to restore a live entropy source — must be refused
+                // (the property is non-writable / non-configurable).
+                Object.defineProperty(Math, "random", { value: () => 0.5 });
+                Math.random();
+            } catch (e) { reLockFailed = true; }
+            return { ok: true, value: {
+                typeofRandom: typeof Math.random,
+                threw,
+                name,
+                reLockFailed,
+                // Deterministic Math functions are untouched.
+                sqrt2: Math.sqrt(2),
+                round: Math.round(2.5),
+            } };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &small_limits_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    let value = match rec.outcome {
+        RunOutcome::Completed { result } => result.value,
+        other => panic!("probe should complete, got {other:?}"),
+    };
+    assert_eq!(value["typeofRandom"], serde_json::json!("function"));
+    assert_eq!(value["threw"], serde_json::json!(true), "Math.random() must throw");
+    assert_eq!(value["name"], serde_json::json!("Error"));
+    assert_eq!(
+        value["reLockFailed"],
+        serde_json::json!(true),
+        "Math.random must not be restorable to a live entropy source"
+    );
+    // The deterministic Math surface is unaffected by the neutralization.
+    assert_eq!(value["sqrt2"], serde_json::json!(std::f64::consts::SQRT_2));
+    assert_eq!(value["round"], serde_json::json!(3));
+}
+
 /// The host-call flood guard (SC-2) trips before a tight `ctx.*` loop can run
 /// away: `max_host_calls` is the cap and the run is suspended with
 /// `ResourceLimitExceeded` after exactly that many calls.

@@ -1,0 +1,61 @@
+{
+  "case": "recursion_stack_limit",
+  "description": "Deep recursion must trip the engine stack limit IDENTICALLY: a catchable RangeError, normalized to its name.",
+  "divergenceArea": "recursion/stack-limit (must trip identically)",
+  "divergenceRisk": "high",
+  "equivalence": "normalized",
+  "expected": {
+    "hostTrace": [],
+    "outcome": {
+      "result": {
+        "ok": true,
+        "value": {
+          "caught": true,
+          "errorName": "RangeError"
+        }
+      },
+      "status": "completed"
+    },
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:651062a7c9940188a09e9c58c741976c8c5507faa876bd7e6926eea610ffb4e0\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"caught\":true,\"errorName\":\"RangeError\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+  },
+  "input": {},
+  "kind": "runtime",
+  "manifest": {
+    "capabilities": {
+      "db": {
+        "read": [],
+        "write": []
+      },
+      "storage": {
+        "read": [],
+        "write": []
+      },
+      "ui": true
+    },
+    "deterministic": true,
+    "entrypoint": "inline.js",
+    "limits": {
+      "fuel": 10000000,
+      "log_bytes": 65536,
+      "max_host_calls": 100,
+      "memory_bytes": 67108864,
+      "storage_bytes": 1048576,
+      "wall_ms": 3000
+    },
+    "min_api": "forge-api@0.1"
+  },
+  "seeds": {
+    "random_seed": 1,
+    "time_start": 100
+  },
+  "source": {
+    "body": "export async function main(_ctx, _input) {\n  function recurse(n) { return recurse(n + 1); }\n  let name = 'none', caught = false;\n  try { recurse(0); } catch (e) { caught = true; name = e.name; }\n  return { ok: true, value: { caught, errorName: name } };\n}\n",
+    "codeHash": "sha256:651062a7c9940188a09e9c58c741976c8c5507faa876bd7e6926eea610ffb4e0",
+    "language": "js"
+  },
+  "tolerance": {
+    "mode": "byte_identical",
+    "notes": "NORMALIZED: the exact stack depth at which recursion overflows is engine-specific, so a conformant applet must not branch on a depth count. The portable contract is that unbounded recursion throws a CATCHABLE RangeError (never a host crash) — the applet observes only error.name ('RangeError'), not the depth or the engine message. The runtime caps the C stack so the overflow is a JS RangeError, not an FFI crash."
+  },
+  "vectorVersion": 1
+}
