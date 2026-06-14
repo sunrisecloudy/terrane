@@ -399,6 +399,57 @@ fn form_controls_must_have_labels() {
 }
 
 #[test]
+fn tabs_panels_controls_are_validated_like_any_rendered_child() {
+    // Tabs renders its `panels` as the node's child render-tree (focus.rs +
+    // a11y golden treat panels as rendered children), so a bad control inside a
+    // panel MUST fail validation just like any other descendant.
+    //
+    // bad: the active panel holds an unlabeled TextField.
+    let bad_textfield = from_str(
+        r#"{"type":"Tabs","activeTab":0,"ariaLabel":"Sections",
+            "tabs":[{"label":"Search"}],
+            "panels":[
+                {"type":"TextField","value":"","placeholder":"Email"}
+            ]}"#,
+    )
+    .unwrap();
+    let err = validate_accessibility(&bad_textfield).unwrap_err();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("TextField"), "{err}");
+
+    // bad: a missing-`alt` Image in a panel is also caught (by component name).
+    let bad_image = from_str(
+        r#"{"type":"Tabs","activeTab":0,
+            "tabs":[{"label":"Media"}],
+            "panels":[
+                {"type":"Image","src":"a.png"}
+            ]}"#,
+    )
+    .unwrap();
+    let err = validate_accessibility(&bad_image).unwrap_err();
+    assert!(err.to_string().contains("Image"), "{err}");
+
+    // good: a panel with a properly-labeled control passes.
+    let good = from_str(
+        r#"{"type":"Tabs","activeTab":0,"ariaLabel":"Sections",
+            "tabs":[{"label":"Search"}],
+            "panels":[
+                {"type":"TextField","value":"","label":"Email"}
+            ]}"#,
+    )
+    .unwrap();
+    assert!(validate_accessibility(&good).is_ok());
+
+    // Singular single-child shape (a per-tab/container `child`) is validated too.
+    let bad_singular = from_str(
+        r#"{"type":"Card","child":{"type":"Image","src":"a.png"}}"#,
+    )
+    .unwrap();
+    let err = validate_accessibility(&bad_singular).unwrap_err();
+    assert!(err.to_string().contains("Image"), "{err}");
+}
+
+#[test]
 fn structural_containers_have_optional_names_and_pass_validation_unlabelled() {
     // Spec marks Grid/Card/Scroll/Divider/Tabs names "optional", so an
     // unlabelled instance must NOT be a validation error — and its labelled

@@ -392,17 +392,37 @@ pub fn validate_accessibility(node: &Node) -> Result<()> {
 }
 
 /// Re-parse the nested node arrays an [`Node::Unknown`](crate::Node::Unknown)
-/// carries verbatim (`children`/`items`) into owned [`Node`]s for accessibility
-/// traversal. Non-array / non-node entries are skipped (tolerant per UI-6).
+/// carries verbatim into owned [`Node`]s for accessibility traversal. Non-array
+/// / non-node entries are skipped (tolerant per UI-6).
+///
+/// `panels` is included alongside `children`/`items` because Tabs renders its
+/// `panels` as the node's child render-tree (see `focus.rs`'s `descend_tabs` and
+/// the a11y golden's `child_nodes`): a control inside a Tabs panel — an
+/// unlabeled TextField, a missing-`alt` Image, ... — is a rendered descendant
+/// and so MUST be validated like any other child, keeping validation in step
+/// with annotation/focus. Every panel is validated (not just the active one):
+/// validation is a whole-tree correctness check, so a bad control in any panel
+/// is a violation even if that panel is currently inactive.
+///
+/// `child` covers the catalog's singular single-child container shape (and any
+/// per-tab `child`): a lone child node carried under `child` rather than a
+/// `children` array.
 fn unknown_children(props: &serde_json::Map<String, serde_json::Value>) -> Vec<Node> {
     let mut out = Vec::new();
-    for key in ["children", "items"] {
+    for key in ["children", "items", "panels"] {
         if let Some(serde_json::Value::Array(arr)) = props.get(key) {
             for v in arr {
                 if let Ok(node) = serde_json::from_value::<Node>(v.clone()) {
                     out.push(node);
                 }
             }
+        }
+    }
+    // Singular single-child shape: a lone child node under `child` (the catalog's
+    // single-child containers and a per-tab `child`), not wrapped in an array.
+    if let Some(v) = props.get("child") {
+        if let Ok(node) = serde_json::from_value::<Node>(v.clone()) {
+            out.push(node);
         }
     }
     out
