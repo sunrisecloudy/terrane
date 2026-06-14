@@ -463,11 +463,19 @@ fn live_db_restore_without_pinned_clock_is_replay_safe() {
     assert!(resp.ok, "db.restore should succeed without a pinned clock: {:?}", resp.error);
     assert_eq!(resp.payload["new_version"], json!(3), "restore appends chunk-0003");
     assert_eq!(resp.payload["state"]["fields"]["title"], json!("A"));
-    // The WHEN was drawn from the logical clock (a non-null integer), not a wall clock.
+    // The WHEN was drawn from a MONOTONE logical clock derived from the record's own
+    // data frontier (review 167 P2): the seeded versions stamped logical_at 1 and 2, so
+    // the omitted-clock default must be STRICTLY GREATER than the prior record timestamp
+    // (2) — not merely non-null, and never colliding with / preceding a seeded version.
+    // (A naive EventSink counter would start at 0 and could stamp 1, colliding with the
+    // original insert and PRECEDING the change it undid.)
+    let stamped = resp.payload["restored_logical_at"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("the restore stamps a logical timestamp: {}", resp.payload));
     assert!(
-        resp.payload["restored_logical_at"].as_i64().is_some(),
-        "the restore stamps a logical timestamp: {}",
-        resp.payload
+        stamped > 2,
+        "the omitted-clock restore must stamp a logical_at strictly greater than the prior \
+         record timestamp (2), got {stamped}"
     );
 
     // Replay-safe: a DL-6 rebuild from the CRDT source of truth reproduces the state.
@@ -611,4 +619,119 @@ fn time_travel_commands_validate_their_payload() {
     ));
     assert!(!bad_clock.ok);
     assert_eq!(bad_clock.error.as_ref().unwrap().code(), "ValidationError");
+}
+
+// --------------------------------------------------- review 167 regression proofs
+
+/// The canonical `db.watch.notification` event payloads emitted so far (the observable
+/// notification stream the spine delivered), mirroring `live_query_spine.rs`.
+fn notifications(core: &WorkspaceCore) -> Vec<Value> {
+    core.events()
+        .events_of_kind("db.watch.notification")
+        .map(|e| e.payload.clone())
+        .collect()
+}
+
+/// LIVE (review 167 P1): a `db.watch` registered over the collection receives a real
+/// notification turn AFTER a `db.restore` — proving the restore routes through the SAME
+/// DL-16 committed-mutation notification path as a `ctx.db` write (it did NOT before
+/// this fix: a restore is a new insert/delete that dirties the target id, but the
+/// restore command bypassed the watch loop, so an active watch stayed STALE). The watch
+/// is registered through the trusted in-process seam (a substrate-only watch: no applet
+/// callback to re-enter, but the notification is still computed/emitted/recorded), and
+/// the restore is driven through the live command path — not a faked `commit_and_notify`.
+#[test]
+fn live_db_restore_notifies_an_active_watch_over_the_collection() {
+    let mut core = WorkspaceCore::in_memory("ws-restore-watch").unwrap();
+    let idx = IndexManager::new();
+    // Seed three versions of t1 through the real DL-4 CRDT path.
+    for (n, body) in [(1, "A"), (2, "B"), (3, "C")] {
+        apply_seed(
+            &mut core,
+            &idx,
+            "tasks",
+            &json!({ "op": if n == 1 { "insert" } else { "patch" }, "id": "t1", "fields": { "title": body }, "logical_at": n }),
+        );
+    }
+
+    // Register a live watch over the WHOLE collection (the trusted in-process seam —
+    // no installed applet is needed for a substrate watch's notification to fire).
+    core.register_watch("watcher", "watch:tasks", "onWatch", json!({ "from": "tasks" }))
+        .unwrap();
+    assert_eq!(core.active_watch_ids(), vec!["watch:tasks".to_string()]);
+    assert!(
+        notifications(&core).is_empty(),
+        "no mutation since the watch registered → no notification yet"
+    );
+
+    // Restore t1 to version 1 (title "A") through the live command path.
+    let resp = core.handle(cmd(
+        owner(),
+        "db.restore",
+        json!({ "collection": "tasks", "id": "t1", "to_version": 1, "restored_logical_at": 4 }),
+    ));
+    assert!(resp.ok, "db.restore should succeed: {:?}", resp.error);
+
+    // PROOF the watch FIRED on the restore: exactly one notification, naming the watch +
+    // the restored record id + the post-restore result (the restore is a new insert).
+    let notes = notifications(&core);
+    assert_eq!(notes.len(), 1, "the restore fired exactly one notification: {notes:?}");
+    let n = &notes[0];
+    assert_eq!(n["watch_id"], json!("watch:tasks"));
+    assert_eq!(n["record_ids"], json!(["t1"]));
+    assert_eq!(n["result_ids"], json!(["t1"]));
+    assert_eq!(n["reason"], json!("insert"), "a restore-to-live-state is a re-insert");
+}
+
+/// LIVE (review 167 P2): a `db.restore` with an OMITTED `restored_logical_at` stamps a
+/// MONOTONE default — strictly greater than the prior record timestamp (and thus greater
+/// than the change it undid) — derived from the record's own data frontier, NOT the
+/// EventSink event counter (which starts independently at 0 and would collide with /
+/// precede the seeded timestamps). The seeds stamp logical_at 1 and 2, so the default
+/// must be > 2.
+#[test]
+fn live_db_restore_omitted_clock_is_strictly_greater_than_prior_timestamp() {
+    let mut core = WorkspaceCore::in_memory("ws-restore-monotone").unwrap();
+    let idx = IndexManager::new();
+    apply_seed(&mut core, &idx, "tasks", &json!({ "op": "insert", "id": "t1", "fields": { "title": "A" }, "logical_at": 1 }));
+    apply_seed(&mut core, &idx, "tasks", &json!({ "op": "patch", "id": "t1", "fields": { "title": "B" }, "logical_at": 2 }));
+
+    // The record's current data frontier (max logical_at across its history) is 2.
+    let feed_before = entries(&history(&mut core, owner(), "tasks", "t1"));
+    let prior_frontier = feed_before
+        .iter()
+        .filter_map(|e| e["logical_at"].as_i64())
+        .max()
+        .unwrap();
+    assert_eq!(prior_frontier, 2, "the seeded frontier is 2");
+
+    // Restore to version 1 WITHOUT pinning the clock.
+    let resp = core.handle(cmd(
+        owner(),
+        "db.restore",
+        json!({ "collection": "tasks", "id": "t1", "to_version": 1 }),
+    ));
+    assert!(resp.ok, "db.restore should succeed without a pinned clock: {:?}", resp.error);
+
+    // The default stamp is STRICTLY GREATER than the prior record timestamp (never a
+    // collision with / a value preceding a seeded version).
+    let stamped = resp.payload["restored_logical_at"].as_i64().unwrap();
+    assert!(
+        stamped > prior_frontier,
+        "the omitted-clock restore must stamp a logical_at strictly greater than the prior \
+         record timestamp ({prior_frontier}), got {stamped}"
+    );
+
+    // The new restore entry carries that monotone WHEN in the change feed.
+    let feed_after = entries(&history(&mut core, owner(), "tasks", "t1"));
+    let restored = feed_after.last().unwrap();
+    assert_eq!(
+        restored["logical_at"].as_i64().unwrap(),
+        stamped,
+        "the restore entry reports the monotone default logical_at"
+    );
+    assert!(
+        restored["logical_at"].as_i64().unwrap() > prior_frontier,
+        "the restore entry's logical_at exceeds every prior version's"
+    );
 }

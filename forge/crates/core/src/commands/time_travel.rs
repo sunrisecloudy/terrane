@@ -14,23 +14,25 @@
 //!   - [`cmd_db_restore`](super::super::WorkspaceCore::cmd_db_restore) performs the
 //!     NON-DESTRUCTIVE restore: it appends a NEW version equal to a prior state and
 //!     returns that version. RBAC: the collection-scoped `db.write` capability
-//!     (a restore is a record WRITE), scoped from the TRUSTED grant table.
+//!     (a restore is a record WRITE), scoped from the TRUSTED grant table. Because a
+//!     restore is a committed mutation transaction (a new insert/delete on the target
+//!     id), it drives the SAME DL-16 live-query notification turn as an already-
+//!     committed `ctx.db` write, so an active `db.watch` over the collection observes
+//!     the restore (review 167 P1).
 //!
 //! Determinism (the SC-12/audit-log lesson): the restore's WHEN — the
 //! `restored_logical_at` stamped on the new version — is a LOGICAL clock, never a
 //! wall clock, so the restore replays deterministically. The caller may pin it
-//! explicitly; absent, it is drawn from the workspace's monotone EventSink logical
-//! clock (the same deterministic source the audit rows use), advanced once per
-//! restore so two restores never collide.
+//! explicitly; absent, it is derived as a MONOTONE default strictly greater than the
+//! record's current logical clock / data frontier (the max `logical_at` across its
+//! history), so the restored version is `> every prior change AND > the change it
+//! undid` (review 167 P2). It is NOT the EventSink event counter, which starts
+//! independently at 0 and could collide with / precede the record's seeded timestamps.
 
 use forge_domain::{CoreError, Result};
+use forge_storage::Mutation;
 
 use super::super::auth::{require_db_read, require_db_write};
-// The facade's deterministic event-clock helper: the restore stamps its LOGICAL
-// `restored_logical_at` from the same monotone source the audit rows use (no wall
-// clock on the replayable path). A private item of the parent `workspace` module is
-// visible to this descendant command module.
-use super::super::emit_event_logical_time;
 use super::super::WorkspaceCore;
 use super::take_field;
 
@@ -84,10 +86,27 @@ impl WorkspaceCore {
     ///     ABSENT as a new version (a delete), and restoring a live version onto a
     ///     deleted record reinserts it (DL-21 reinsert).
     ///   - `restored_logical_at` is the LOGICAL timestamp (a logical clock, NOT a wall
-    ///     clock) stamped on the new version's `updated_at`. When omitted it is drawn
-    ///     from the workspace's monotone EventSink logical clock, so the restore is
-    ///     replay-safe and two restores never collide. Recording the host call against
-    ///     this logical clock keeps the WHEN deterministic.
+    ///     clock) stamped on the new version's `updated_at`. When omitted it is derived
+    ///     as a MONOTONE default — strictly greater than the record's current logical
+    ///     clock / data frontier (the max `logical_at` across its history) — so the new
+    ///     version's WHEN is `> every prior change AND > the change it undid` (the
+    ///     monotone restore-timestamp contract, `forge/spec/time-travel.md` §3). It is
+    ///     NOT drawn from the EventSink event counter, which starts independently at 0
+    ///     and could collide with / precede the record's own seeded timestamps (review
+    ///     167 P2). When the caller PINS it, that value is honored verbatim.
+    ///
+    /// LIVE QUERIES (DL-16, review 167 P1): a restore is implemented as a new
+    /// `record.insert` (restoring a live state) or `record.delete` (restoring a
+    /// tombstone), so — like any committed mutation transaction — it dirties the target
+    /// id and an active `db.watch` over the collection MUST be notified. The restore is
+    /// therefore routed through the SAME notification path as an already-committed
+    /// `ctx.db` write ([`notify_committed_mutations`](WorkspaceCore::notify_committed_mutations)):
+    /// snapshot the watch registry BEFORE the restore, apply it through the storage
+    /// time-travel path, then drive ONE committed-transaction notification turn AFTER
+    /// the storage transaction commits (the write already landed; the turn computes its
+    /// dirty set + notifications without re-applying it). A no-op restore (restoring a
+    /// tombstone onto an already-absent record) writes nothing, so it produces no
+    /// notification.
     ///
     /// RBAC (§5): the collection-scoped `db.write` capability ([`require_db_write`]) —
     /// a restore appends a new record version, i.e. it is a record WRITE — resolved
@@ -107,36 +126,39 @@ impl WorkspaceCore {
         let trusted_scope = self.db_write_grants.get(cmd.actor.actor.as_str()).cloned();
         require_db_write(cmd, &collection, trusted_scope.as_deref())?;
 
-        // Determinism: record the restore against the LOGICAL clock. When the caller
-        // did not pin `restored_logical_at`, advance the workspace's monotone EventSink
-        // clock once (a replay-safe source — no wall clock) so the new version's WHEN
-        // is deterministic and two restores never share a timestamp.
+        // Determinism + MONOTONICITY (review 167 P2): the restore stamps a LOGICAL
+        // clock, never a wall clock. When the caller did not pin `restored_logical_at`,
+        // derive a default that is strictly GREATER than the record's current clock /
+        // data frontier — so the new version is `> every prior change AND > the change
+        // it undid`. (The EventSink event counter starts independently at 0 and would
+        // collide with / precede the record's own seeded timestamps.)
         let logical_at = match restored_logical_at {
             Some(at) => at,
-            None => {
-                let at = emit_event_logical_time(
-                    &mut self.events,
-                    "db.restore",
-                    serde_json::json!({
-                        "collection": collection,
-                        "id": id,
-                        "to_version": to_version,
-                    }),
-                );
-                // The EventSink clock is a u64; the storage path takes the LOGICAL
-                // timestamp as an i64 (mirroring the spine's `logical_at`). The clock
-                // never approaches i64::MAX in practice, so the cast is total here.
-                at as i64
-            }
+            None => self.monotone_restore_clock(&collection, &id)?,
         };
 
-        let new_version = self.store.restore_record(
-            &collection,
-            &id,
-            to_version,
-            Some(logical_at),
-            &self.indexes,
-        )?;
+        // DL-16 (review 167 P1): snapshot every registered watch's result ids BEFORE the
+        // restore lands — the enter/leave/changed filter needs the pre-transaction
+        // membership to tell a record that LEFT a watched result from one never in it.
+        let before = self.watch_sessions.to_registry()?.snapshot(&self.store)?;
+        // The ACTUAL mutation the restore appends (insert when restoring a live state,
+        // delete when restoring a tombstone onto a live record, or none when restoring a
+        // tombstone onto an already-absent record). Resolved BEFORE the write so we can
+        // drive its notification turn afterward against the pre-write snapshot.
+        let restore_write = self.resolve_restore_mutation(&collection, &id, to_version, logical_at)?;
+
+        let new_version =
+            self.store
+                .restore_record(&collection, &id, to_version, Some(logical_at), &self.indexes)?;
+
+        // DL-16 (review 167 P1): the restore is a committed mutation transaction, so an
+        // active `db.watch` over the collection must be notified. Drive the SAME turn an
+        // already-committed `ctx.db` write drives — the write already landed, so this
+        // computes the dirty set + notifications (recorded, callback re-entered) WITHOUT
+        // re-applying it. A no-op restore (`None`) wrote nothing and fires nothing.
+        if let Some(mutation) = restore_write {
+            self.notify_committed_mutations(cmd.actor.actor.as_str(), &[(mutation, before)])?;
+        }
 
         let state = self.store.get_record(&collection, &id)?;
         Ok(serde_json::json!({
@@ -150,6 +172,64 @@ impl WorkspaceCore {
                 "fields": env.fields,
             })),
         }))
+    }
+
+    /// The MONOTONE default `restored_logical_at` when the caller did not pin one
+    /// (review 167 P2): strictly greater than the record's current logical clock / data
+    /// frontier, so the restored version's WHEN is `> every prior change AND > the
+    /// change it undid` (`forge/spec/time-travel.md` §3 monotone restore-timestamp
+    /// contract). The frontier is the max `logical_at` across the record's whole history
+    /// feed (every prior version's externally-supplied logical timestamp); `+1` puts the
+    /// restore strictly after it. A record with no logical history yet starts the clock
+    /// at `1`. This is a logical clock derived from the record's own history — NOT the
+    /// EventSink event counter, which starts independently at 0 and could collide with /
+    /// precede the record's seeded timestamps.
+    fn monotone_restore_clock(&self, collection: &str, id: &str) -> Result<i64> {
+        let frontier = self
+            .store
+            .record_history(collection, id)?
+            .iter()
+            .filter_map(|e| e.logical_at)
+            .max()
+            .unwrap_or(0);
+        // The frontier is a u64 logical clock; the storage path takes the LOGICAL
+        // timestamp as an i64 (mirroring the spine's `logical_at`). The clock never
+        // approaches i64::MAX in practice, so the cast is total here.
+        Ok(frontier as i64 + 1)
+    }
+
+    /// Resolve the ACTUAL mutation a restore to `to_version` will append, WITHOUT
+    /// applying it (review 167 P1) — so the caller can drive its DL-16 notification turn
+    /// against the pre-write watch snapshot. This mirrors the kind dispatch inside
+    /// [`Store::restore_record`](forge_storage::Store::restore_record):
+    ///
+    ///   - the target version reconstructs to a LIVE state ⇒ a `record.insert` of its
+    ///     display fields (a full (re)create, even over a tombstone — DL-21 reinsert);
+    ///   - the target version is a TOMBSTONE/pre-history and the record is currently
+    ///     LIVE ⇒ a `record.delete` (the record becomes absent as a new version);
+    ///   - the target is a tombstone and the record is ALREADY absent ⇒ `None`: the
+    ///     restore is a no-op that appends nothing and therefore fires no notification.
+    fn resolve_restore_mutation(
+        &self,
+        collection: &str,
+        id: &str,
+        to_version: u64,
+        logical_at: i64,
+    ) -> Result<Option<Mutation>> {
+        match self.store.record_state_at(collection, id, to_version)? {
+            Some(env) => Ok(Some(Mutation::Insert {
+                collection: collection.to_string(),
+                id: Some(id.to_string()),
+                fields: env.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                logical_at: Some(logical_at),
+            })),
+            None if self.store.get_record(collection, id)?.is_some() => Ok(Some(Mutation::Delete {
+                collection: collection.to_string(),
+                id: id.to_string(),
+                logical_at: Some(logical_at),
+            })),
+            None => Ok(None),
+        }
     }
 }
 
