@@ -2603,6 +2603,36 @@ fn bind_signature_to_manifest(
         ));
     }
 
+    // --- filesystem grants: the WHOLE normalized files rule set must match
+    //     (review 109 #1). Mirrors the net bind exactly: the signed shape is
+    //     `capabilities.files.{read,write}[]`; the install shape is the same. Both
+    //     sides normalize every `FileRule` (handle, path_glob, max_bytes,
+    //     content_types) into [`NormalizedFileRule`] and compare order-independently
+    //     per action, so a signed install that ADDS a grant, WIDENS a glob, raises
+    //     `max_bytes`, or extends `content_types` no longer matches — every CR-3
+    //     confinement the runtime enforces (`forge_runtime::host`) is bound, not
+    //     just the handle. The runtime tolerates unknown `FileRule` fields for
+    //     forward-compat, but `reject_unknown_signed_policy_fields` already rejects
+    //     any unknown signed files key, so the signed/install normalization is total.
+    for action in ["read", "write"] {
+        let signed_files = signed_file_rules(signed_caps, action)?;
+        let install_rules = match action {
+            "read" => &install.capabilities.files.read,
+            _ => &install.capabilities.files.write,
+        };
+        let install_files: std::collections::BTreeSet<NormalizedFileRule> = install_rules
+            .iter()
+            .map(NormalizedFileRule::from_rule)
+            .collect();
+        if signed_files != install_files {
+            return reject(format!(
+                "files.{action} grant {:?} differs from the signed {:?}",
+                sorted_file_rules(&install_files),
+                sorted_file_rules(&signed_files)
+            ));
+        }
+    }
+
     // --- resource limits: EVERY enforced limit must match (review 083 #2). The
     //     runtime enforces wall_ms, memory_bytes, fuel, max_host_calls,
     //     storage_bytes, and log_bytes from the stored top-level manifest, so a
@@ -2694,8 +2724,9 @@ fn signed_string_set<'a>(
 /// for unsigned/already-installed manifests.
 ///
 /// The known-key sets are the exact shapes the rest of this bind interprets:
-///   - `capabilities`: `storage`, `db`, `ui`, `net` (and `storage`/`db` each
-///     carry only `read`/`write`);
+///   - `capabilities`: `storage`, `db`, `ui`, `net`, `files` (and `storage`/`db`
+///     each carry only `read`/`write`; `files` carries `read`/`write` arrays of
+///     [`FileRule`](forge_domain::FileRule)-shaped entries);
 ///   - each `networkPolicy.allow[]` rule: the [`NetRule`](forge_domain::NetRule)
 ///     fields the policy engine enforces;
 ///   - `resourceBudget`: the six enforced limit keys.
@@ -2719,6 +2750,10 @@ fn reject_unknown_signed_policy_fields(
         "response_content_types",
         "allow_secret_headers",
     ];
+    // The CR-3 constraints a `FileRule` carries — kept in lockstep with
+    // `forge_domain::FileRule` so a NEW signed files field forces an update here
+    // (and thus a deliberate enforcement decision) rather than silently passing.
+    const FILE_RULE_KEYS: &[&str] = &["handle", "path_glob", "max_bytes", "content_types"];
     // The resource limits this core actually enforces (mirrors the six-limit
     // bind below and `forge_domain::Limits`).
     const BUDGET_KEYS: &[&str] = &[
@@ -2766,7 +2801,7 @@ fn reject_unknown_signed_policy_fields(
     check_object(
         "capabilities",
         signed_caps,
-        &["storage", "db", "ui", "net"],
+        &["storage", "db", "ui", "net", "files"],
     )?;
     if let Some(caps) = signed_caps {
         for ns in ["storage", "db"] {
@@ -2784,6 +2819,26 @@ fn reject_unknown_signed_policy_fields(
         if let Some(net) = caps.get("net").and_then(serde_json::Value::as_array) {
             for rule in net {
                 check_object("capabilities.net[]", Some(rule), NET_RULE_KEYS)?;
+            }
+        }
+        // capabilities.files.{read,write}[] is policy-bearing and covered by the
+        // signed policy hash, so — exactly like capabilities.net[] — each entry
+        // must carry only known `FileRule` fields. Otherwise a future/tighter
+        // files constraint (a new per-action cap) hidden under the signed grant
+        // would install as Signed but go unenforced (review 109 #1). The
+        // `capabilities.files` object itself may only carry read/write.
+        check_object("capabilities.files", caps.get("files"), &["read", "write"])?;
+        if let Some(files) = caps.get("files") {
+            for action in ["read", "write"] {
+                if let Some(rules) = files.get(action).and_then(serde_json::Value::as_array) {
+                    for rule in rules {
+                        check_object(
+                            &format!("capabilities.files.{action}[]"),
+                            Some(rule),
+                            FILE_RULE_KEYS,
+                        )?;
+                    }
+                }
             }
         }
     }
@@ -2874,6 +2929,78 @@ fn signed_net_rules(
         out.insert(NormalizedNetRule::from_rule(&rule));
     }
     Ok(out)
+}
+
+/// The full, normalized form of one filesystem grant — every CR-3 constraint the
+/// runtime enforces (review 109 #1), not just the handle. Both a signed
+/// `capabilities.files.{read,write}[]` entry and an install
+/// [`FileRule`](forge_domain::FileRule) normalize to this so they compare
+/// order-independently as set elements: the `content_types` list is sorted so
+/// declaration order does not matter. A difference in ANY field — a wider glob, a
+/// bigger `max_bytes`, or an added content type — makes two rules unequal, so the
+/// bind rejects it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NormalizedFileRule {
+    handle: String,
+    path_glob: String,
+    max_bytes: Option<u64>,
+    content_types: Vec<String>,
+}
+
+impl NormalizedFileRule {
+    /// Normalize an install manifest [`FileRule`](forge_domain::FileRule).
+    fn from_rule(rule: &forge_domain::FileRule) -> Self {
+        let mut content_types = rule.content_types.clone();
+        content_types.sort();
+        NormalizedFileRule {
+            handle: rule.handle.clone(),
+            path_glob: rule.path_glob.clone(),
+            max_bytes: rule.max_bytes,
+            content_types,
+        }
+    }
+}
+
+/// The signed filesystem grant for `action` (`read`/`write`) as a set of fully
+/// normalized [`NormalizedFileRule`]s. Each signed entry is deserialized through
+/// the SAME [`FileRule`](forge_domain::FileRule) type the install manifest uses,
+/// so the signed and install sides normalize identically and a missing/extra
+/// constraint is caught. A malformed entry is a typed rejection, never a panic.
+fn signed_file_rules(
+    signed_caps: Option<&serde_json::Value>,
+    action: &str,
+) -> Result<std::collections::BTreeSet<NormalizedFileRule>> {
+    let rules = match signed_caps
+        .and_then(|c| c.get("files"))
+        .and_then(|f| f.get(action))
+        .and_then(serde_json::Value::as_array)
+    {
+        Some(r) => r,
+        None => return Ok(std::collections::BTreeSet::new()),
+    };
+    let mut out = std::collections::BTreeSet::new();
+    for entry in rules {
+        let rule: forge_domain::FileRule = serde_json::from_value(entry.clone()).map_err(|e| {
+            CoreError::ValidationError(format!(
+                "signed package manifest capabilities.files.{action} entry is malformed: {e}"
+            ))
+        })?;
+        out.insert(NormalizedFileRule::from_rule(&rule));
+    }
+    Ok(out)
+}
+
+/// A sorted, readable `Vec` view of a normalized files-rule set, for a stable
+/// rejection message that surfaces the full rule (glob + cap + content types).
+fn sorted_file_rules(set: &std::collections::BTreeSet<NormalizedFileRule>) -> Vec<String> {
+    set.iter()
+        .map(|r| {
+            format!(
+                "{} {} max_bytes<={:?} content_types={:?}",
+                r.handle, r.path_glob, r.max_bytes, r.content_types,
+            )
+        })
+        .collect()
 }
 
 /// A sorted `Vec` view of a `&str` set, for a stable, readable rejection message.

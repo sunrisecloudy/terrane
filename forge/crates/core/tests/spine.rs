@@ -2544,6 +2544,204 @@ fn a_signed_package_with_an_unsupported_net_capability_field_is_refused() {
     );
 }
 
+/// The install manifest that EXACTLY matches the `bind_files_rule` signed
+/// package: empty storage/db/net, `ui`, and ONE files.read grant
+/// (`workspace_data` / `data/*.json`, `max_bytes: 1000`) plus ONE files.write
+/// grant (`workspace_data` / `drafts/*.txt`, `max_bytes: 2000`,
+/// `content_types: ["text/plain"]`). The four limits the signed budget omits keep
+/// the M0a defaults.
+fn files_rule_fixture_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "files": {
+                "read": [
+                    { "handle": "workspace_data", "path_glob": "data/*.json", "max_bytes": 1000 }
+                ],
+                "write": [
+                    { "handle": "workspace_data", "path_glob": "drafts/*.txt", "max_bytes": 2000, "content_types": ["text/plain"] }
+                ]
+            }
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+#[test]
+fn a_signed_files_rule_install_that_matches_the_signed_cap_succeeds() {
+    // review 109 #1 positive baseline: the `bind_files_rule` signed package
+    // blesses EXACTLY one files.read and one files.write grant. An install
+    // carrying those same grants with the SAME glob/cap/content-types must install
+    // as Signed — this proves the fixture is genuinely installable, so the
+    // rejections in the sibling tests are the grant mismatch, not a broken fixture.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("bind_files_rule.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.filenotes"),
+        serde_json::json!({
+            "manifest": files_rule_fixture_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+    assert!(resp.ok, "a files-rule install matching the signed cap must install: {:?}", resp.error);
+    let trust = resp.payload["trust"]["status"].clone();
+    assert_eq!(trust, serde_json::json!("signed"), "it must record Signed trust");
+}
+
+#[test]
+fn a_signature_cannot_add_a_files_grant_the_signed_manifest_omits() {
+    // review 109 #1 (mirrors the empty-allow net direction): the `valid_signature`
+    // signed package blesses NO files grant at all, so an install that ADDS a
+    // top-level files.read grant must be rejected — the signed/install files sets
+    // differ. Without the bind, that broader grant would install as Signed and the
+    // runtime would enforce it from the installed snapshot (host.rs:117).
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut manifest = signed_fixture_manifest();
+    manifest["capabilities"]["files"] = serde_json::json!({
+        "read": [
+            { "handle": "workspace_data", "path_glob": "data/*.json", "max_bytes": 1000 }
+        ],
+        "write": []
+    });
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            "manifest": manifest,
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+
+    assert!(!resp.ok, "adding a files grant the signed manifest never blessed must be rejected");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("files.read grant"),
+        "the files-grant mismatch is surfaced: {err}"
+    );
+}
+
+#[test]
+fn a_signature_with_a_files_rule_cannot_be_loosened() {
+    // review 109 #1: the signed `bind_files_rule` package blesses ONE files.read
+    // (`data/*.json`, `max_bytes: 1000`) and ONE files.write (`drafts/*.txt`,
+    // `max_bytes: 2000`, `content_types: ["text/plain"]`). Each way of LOOSENING a
+    // grant — a wider glob, a bigger cap, or an extra content type — must be
+    // rejected because the FULL normalized FileRule (not just the handle) is bound.
+    let fixture = load_signing_fixture("bind_files_rule.json");
+
+    // (a) a wider read glob than the signed rule blessed.
+    {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = files_rule_fixture_manifest();
+        manifest["capabilities"]["files"]["read"][0]["path_glob"] = serde_json::json!("data/**/*");
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some("app.filenotes"),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "widening a files.read glob past the signed grant must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("files.read grant"), "the read-glob mismatch is surfaced: {err}");
+    }
+
+    // (b) a bigger write max_bytes than the signed rule blessed.
+    {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = files_rule_fixture_manifest();
+        manifest["capabilities"]["files"]["write"][0]["max_bytes"] = serde_json::json!(1_000_000u64);
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some("app.filenotes"),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "raising a files.write max_bytes past the signed grant must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("files.write grant"), "the write-cap mismatch is surfaced: {err}");
+    }
+
+    // (c) an extra content type the publisher never blessed on the write grant.
+    {
+        let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+        let mut manifest = files_rule_fixture_manifest();
+        manifest["capabilities"]["files"]["write"][0]["content_types"] =
+            serde_json::json!(["text/plain", "application/json"]);
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some("app.filenotes"),
+            serde_json::json!({
+                "manifest": manifest,
+                "sources": sources_from_fixture(&fixture),
+                "signature": signature_block_from_fixture(&fixture),
+            }),
+        ));
+        assert!(!resp.ok, "adding an unblessed content type to a signed files grant must be rejected");
+        let err = resp.error.expect("must carry an error");
+        assert_eq!(err.code(), "ValidationError");
+        assert!(
+            err.to_string().contains("files.write grant") && err.to_string().contains("application/json"),
+            "the full files rule (incl. content types) is compared, not just the handle: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_signed_package_with_an_unsupported_files_capability_field_is_refused() {
+    // review 109 #1 (mirrors the net unknown-field test, review 089 #1): the
+    // signed manifest is hashed/signed WHOLE, so a files grant could carry a
+    // future, tighter constraint this core cannot enforce. The
+    // `bind_unknown_files_capability_field` fixture is byte-identical to
+    // `bind_files_rule` EXCEPT its `capabilities.files.read[0]` carries one extra
+    // key (`max_bytes_per_chunk`) outside FILE_RULE_KEYS. The signature,
+    // manifestHash and policyHash are VALID over the edited manifest (crypto and
+    // integrity pass), so the refusal is a compat/permission decision — not tamper
+    // detection. Installing it as Signed would drop a files constraint this core
+    // cannot enforce, so the unknown-signed-field guard must fail closed.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("bind_unknown_files_capability_field.json");
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some("app.filenotes"),
+        serde_json::json!({
+            // The install manifest matches the signed (today-only) shape; the gap
+            // is purely the unknown signed files key, which has no install-side
+            // representation, so the guard fires over the SIGNED manifest.
+            "manifest": files_rule_fixture_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature_block_from_fixture(&fixture),
+        }),
+    ));
+    assert!(!resp.ok, "a signed package declaring an unsupported files field must be refused");
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("capabilities.files") && err.to_string().contains("max_bytes_per_chunk"),
+        "the refusal names the unsupported capabilities.files field: {err}"
+    );
+}
+
 #[test]
 fn a_signed_multi_file_install_is_rejected_until_entrypoint_is_representable() {
     // review 083 #4: the signed manifest carries no entrypoint, so a signed
