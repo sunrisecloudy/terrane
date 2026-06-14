@@ -402,6 +402,7 @@ mod tests {
             payload: c.payload,
             author_actor_id: None,
             record_ids: Vec::new(),
+            schema_version: None,
         }
     }
 
@@ -438,6 +439,96 @@ mod tests {
         assert_eq!(again, 0, "re-applying a present chunk imports nothing");
         assert_eq!(total_chunk_rows(&dst), 1, "no duplicate chunk row");
         assert_eq!(dst.list_ops().unwrap().len(), 1, "no duplicate oplog row");
+    }
+
+    #[test]
+    fn migration_chunk_advances_receiver_schema_version_monotonically_and_atomically() {
+        // Review 139: a RemoteChunk carrying `schema_version` (a DL-13 migration chunk)
+        // must advance the RECEIVING store's persisted schema_version on import, in the
+        // SAME txn as the chunk import + rebuild — and the advance is monotone (never
+        // regresses) and idempotent (a re-import does not double-bump or error).
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("expenses");
+        let mut chunk = one_chunk(&src, &doc_id);
+        // Mark it a migration chunk to v2 (the version the migration advanced to).
+        chunk.record_ids = vec!["e1".to_string()];
+        chunk.schema_version = Some(2);
+
+        let mut dst = store();
+        assert_eq!(dst.schema_version().unwrap(), 1, "a fresh receiver starts at v1");
+        dst.apply_remote_chunks(std::slice::from_ref(&chunk), "peer:7", &idx)
+            .unwrap();
+        assert_eq!(
+            dst.schema_version().unwrap(),
+            2,
+            "importing a migration chunk advances the receiver to its target version"
+        );
+        // The migrated value materialized AND the version advance committed together.
+        assert_eq!(dst.get_record("expenses", "e1").unwrap().unwrap().fields["amount"], json!(10));
+
+        // Idempotent + monotone: re-importing the same chunk is a no-op; a chunk naming
+        // an OLDER target version must NOT regress the receiver.
+        dst.apply_remote_chunks(std::slice::from_ref(&chunk), "peer:7", &idx)
+            .unwrap();
+        assert_eq!(dst.schema_version().unwrap(), 2, "a re-import does not double-bump");
+        let mut older = one_chunk(&src, &doc_id);
+        older.chunk_id = "sha256:older".to_string();
+        older.record_ids = vec!["e1".to_string()];
+        older.schema_version = Some(1);
+        dst.apply_remote_chunks(std::slice::from_ref(&older), "peer:7", &idx)
+            .unwrap();
+        assert_eq!(
+            dst.schema_version().unwrap(),
+            2,
+            "a migration chunk naming an older version must not regress the receiver"
+        );
+    }
+
+    #[test]
+    fn migration_chunk_version_advance_rolls_back_with_a_failed_apply() {
+        // Review 139 (atomicity): the receiver's schema_version advance must be bound to
+        // the SAME txn as the chunk import + rebuild. A batch whose rebuild fails (a
+        // garbage chunk) must roll the version advance back too — never leave the
+        // receiver advanced while the migrated data was rolled out.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("expenses");
+        let mut good = one_chunk(&src, &doc_id);
+        good.chunk_id = "sha256:goodmigration".to_string();
+        good.record_ids = vec!["e1".to_string()];
+        good.schema_version = Some(2);
+        // A garbage chunk for the same doc: it inserts (content-agnostic) but the
+        // in-transaction rebuild rejects it, failing the whole batch.
+        let garbage = RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: "sha256:deadbeef".to_string(),
+            format: CHUNK_FORMAT.to_string(),
+            payload: vec![0xde, 0xad, 0xbe, 0xef],
+            author_actor_id: None,
+            record_ids: Vec::new(),
+            schema_version: None,
+        };
+
+        let mut dst = store();
+        assert_eq!(dst.schema_version().unwrap(), 1);
+        let err = dst
+            .apply_remote_chunks(&[good, garbage], "peer:99", &idx)
+            .unwrap_err();
+        assert_eq!(err.code(), "SyncError", "the garbage chunk fails the rebuild");
+        assert_eq!(
+            dst.schema_version().unwrap(),
+            1,
+            "a rolled-back migration import must NOT leave the receiver advanced"
+        );
+        assert!(
+            dst.get_record("expenses", "e1").unwrap().is_none(),
+            "the migrated record did not leak through a rolled-back apply"
+        );
     }
 
     #[test]
@@ -1017,6 +1108,7 @@ mod tests {
             payload: vec![0xde, 0xad, 0xbe, 0xef],
             author_actor_id: None,
             record_ids: Vec::new(),
+            schema_version: None,
         };
 
         let err = dst

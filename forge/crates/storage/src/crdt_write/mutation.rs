@@ -425,6 +425,38 @@ pub(crate) fn migrate_collection_records_crdt_tx(
     let chunk_id = next_chunk_id(tx, &doc_id)?;
     put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
 
+    // Append the PER-CHUNK oplog row keyed `(doc_id)#(chunk_id)`, the SAME scheme an
+    // ordinary mutation chunk uses (see `write_collection_bucket_tx`). This is what
+    // makes the migration chunk DISCOVERABLE on the sync path (review 139): the sync
+    // seam joins chunks → metadata by `op_id = "{doc_id}#{chunk_id}"`
+    // (`missing_chunks_for_doc`), so without this row a migration chunk fell back to a
+    // generic write with empty `record_ids` and the RBAC gate dropped it at peer sync.
+    // The row carries the migrated `record_ids` (so the chunk authorizes as a record
+    // write against concrete ids) AND the `from`/`to` schema versions (so a receiver
+    // advances its `schema_version` to `to` on import). The separate `schema.migration`
+    // AUDIT row (keyed `migration#<from>-<to>#<collection>`) is still appended by the
+    // caller; only THIS per-chunk row participates in the sync join.
+    let op_id = format!("{doc_id}#{chunk_id}");
+    let op_payload = OplogPayload::migration(
+        &doc_id,
+        &chunk_id,
+        collection,
+        crate::migration::MIGRATION_OP_KIND,
+        record_ids.clone(),
+        descriptor.from_schema_version,
+        descriptor.to_schema_version,
+    )
+    .encode("migration chunk oplog payload encode")?;
+    append_op_tx(
+        tx,
+        &op_id,
+        "local",
+        "local",
+        chunk_id_lamport(&chunk_id),
+        crate::migration::MIGRATION_OP_KIND,
+        &op_payload,
+    )?;
+
     // Materialize every transformed record into the projection from the migrated
     // CRDT state (FTS-synced), so the maintained projection matches a from-scratch
     // rebuild byte-for-byte.

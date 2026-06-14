@@ -90,6 +90,15 @@ pub struct RemoteChunk {
     /// 092 #2` envelope-metadata check), instead of failing closed on a forwarded
     /// chunk whose record identity was dropped at import.
     pub record_ids: Vec<String>,
+    /// `Some(to)` when this chunk is a DL-13 **migration** chunk carrying the
+    /// schema-version advance it authored: the receiver advances its persisted
+    /// `schema_version` to `to` IN THE SAME txn as the chunk import + rebuild, so a
+    /// peer that materializes the migrated record values can never stay behind at the
+    /// old `schema_version` (review 139). `None` for an ordinary record-write chunk,
+    /// which leaves `schema_version` untouched. Recovered by the sync seam from the
+    /// origin's per-chunk migration oplog row; never widens authorization (the chunk
+    /// is still gated as a record write against its `record_ids`).
+    pub schema_version: Option<u64>,
 }
 
 /// Import ONE remote chunk inside an open transaction: append-only insert into
@@ -110,7 +119,15 @@ pub(crate) fn import_remote_chunk_tx(
     chunk: &RemoteChunk,
     source: &str,
 ) -> Result<bool> {
-    let RemoteChunk { doc_id, chunk_id, format, payload, author_actor_id, record_ids } = chunk;
+    let RemoteChunk {
+        doc_id,
+        chunk_id,
+        format,
+        payload,
+        author_actor_id,
+        record_ids,
+        schema_version,
+    } = chunk;
     let existing: Option<(String, Vec<u8>)> = tx
         .query_row(
             "SELECT format, payload FROM crdt_chunks WHERE doc_id = ?1 AND chunk_id = ?2",
@@ -170,5 +187,18 @@ pub(crate) fn import_remote_chunk_tx(
         "record.remote_import",
         &op_payload,
     )?;
+
+    // DL-13 review 139: a MIGRATION chunk carries the schema-version advance it
+    // authored. On its authorized import, bump the RECEIVING store's persisted
+    // `schema_version` to the carried target IN THIS SAME txn (alongside the chunk
+    // insert + the projection/index rebuild the caller runs in the same
+    // `Store::transact`), so a receiver can never materialize migrated record values
+    // while staying behind at the old version. The advance is monotone and
+    // idempotent: a receiver already at or beyond the target is left unchanged (a
+    // converged peer, or one that authored the same migration locally), never an
+    // error — so a re-sync stays a pure no-op.
+    if let Some(to) = schema_version {
+        crate::migration::advance_schema_version_if_newer_tx(tx, *to)?;
+    }
     Ok(true)
 }

@@ -891,6 +891,7 @@ mod remote_envelope_tests {
             record_ids: record_ids.iter().map(|s| s.to_string()).collect(),
             origin_source: None,
             malformed: None,
+            schema_version: None,
         }
     }
 

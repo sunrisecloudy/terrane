@@ -28,10 +28,15 @@ pub(super) struct OplogPayload {
     chunk_id: String,
     kind: String,
     record_ids: Vec<String>,
-    /// Present only on the LOCAL write path (the source collection name).
+    /// Present only on the LOCAL write path AND the MIGRATION path (the source
+    /// collection name).
     collection: Option<String>,
     /// Present only on the REMOTE-import path (the chunk's original author).
     source: Option<String>,
+    /// Present only on the MIGRATION path: the schema-version pair the migration
+    /// chunk advances `from → to` (DL-13). Threaded into the per-chunk oplog row so
+    /// the sync seam can recover the receiver's target `schema_version` (review 139).
+    migration: Option<(u64, u64)>,
 }
 
 impl OplogPayload {
@@ -52,6 +57,34 @@ impl OplogPayload {
             record_ids,
             collection: Some(collection.to_string()),
             source: None,
+            migration: None,
+        }
+    }
+
+    /// The payload for a DL-13 **migration** chunk's per-chunk oplog row, keyed
+    /// `(doc_id)#(chunk_id)` exactly like a local write so the sync seam discovers it
+    /// by the SAME `missing_chunks_for_doc` join (review 139). It carries the migrated
+    /// `record_ids` (so the chunk authorizes as a record write against concrete ids,
+    /// not an empty list the RBAC gate denies) plus the `from`/`to` schema versions
+    /// (so a receiver advances its `schema_version` to `to` on import). Shape on the
+    /// wire: `{chunk_id, collection, doc_id, from, kind, record_ids, to}` (alphabetical).
+    pub(super) fn migration(
+        doc_id: &str,
+        chunk_id: &str,
+        collection: &str,
+        kind: &str,
+        record_ids: Vec<String>,
+        from: u64,
+        to: u64,
+    ) -> Self {
+        OplogPayload {
+            doc_id: doc_id.to_string(),
+            chunk_id: chunk_id.to_string(),
+            kind: kind.to_string(),
+            record_ids,
+            collection: Some(collection.to_string()),
+            source: None,
+            migration: Some((from, to)),
         }
     }
 
@@ -73,12 +106,14 @@ impl OplogPayload {
             record_ids,
             collection: None,
             source: Some(source.to_string()),
+            migration: None,
         }
     }
 
     /// Encode to the `oplog.payload` bytes. Builds a `serde_json::Value` map (so the
     /// keys land in BTreeMap/alphabetical order, byte-identical to the prior inline
-    /// `serde_json::json!`) and only emits `collection`/`source` when set.
+    /// `serde_json::json!`) and only emits the keys the variant carries
+    /// (`collection`/`source`/`from`/`to`).
     pub(super) fn encode(&self, context: &'static str) -> Result<Vec<u8>> {
         let mut map = serde_json::Map::new();
         map.insert("doc_id".into(), self.doc_id.as_str().into());
@@ -89,6 +124,12 @@ impl OplogPayload {
         }
         if let Some(source) = &self.source {
             map.insert("source".into(), source.as_str().into());
+        }
+        if let Some((from, to)) = self.migration {
+            // The schema-version pair the migration chunk advances; the sync seam
+            // reads `to` back to advance a receiver's `schema_version` (review 139).
+            map.insert("from".into(), from.into());
+            map.insert("to".into(), to.into());
         }
         map.insert("record_ids".into(), self.record_ids.clone().into());
         serde_json::to_vec(&serde_json::Value::Object(map)).map_err(|e| map_json(context, e))

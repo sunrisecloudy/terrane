@@ -694,6 +694,7 @@ version = "0.1.0"
 dependencies = [
  "forge-crdt",
  "forge-domain",
+ "forge-schema",
  "forge-storage",
  "serde",
  "serde_json",

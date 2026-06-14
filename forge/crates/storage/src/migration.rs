@@ -129,6 +129,27 @@ pub fn advance_schema_version_tx(tx: &rusqlite::Transaction<'_>, to: u64) -> Res
     write_schema_version_tx(tx, to)
 }
 
+/// Advance the persisted `schema_version` to `to` inside a caller-provided
+/// transaction ONLY when it strictly advances the current version (`to > current`),
+/// returning `Ok(())` as a no-op when the receiver is already at or beyond `to`.
+///
+/// Unlike [`advance_schema_version_tx`], a non-advancing `to` is NOT an error: this
+/// is the MONOTONE, IDEMPOTENT advance the DL-13 sync receiver applies when it
+/// imports a migration chunk (review 139). A peer that already migrated locally, or
+/// already imported the same chunk on a prior sync, is simply left unchanged — so a
+/// re-sync of a converged pair stays a pure no-op and the version never regresses.
+/// Runs in the SAME txn as the chunk import + projection rebuild, so the migrated
+/// values and the version advance commit (or roll back) together — no drift.
+pub(crate) fn advance_schema_version_if_newer_tx(
+    tx: &rusqlite::Transaction<'_>,
+    to: u64,
+) -> Result<()> {
+    if to > read_schema_version_tx(tx)? {
+        write_schema_version_tx(tx, to)?;
+    }
+    Ok(())
+}
+
 /// Apply a migration (DL-13) inside a caller-provided transaction — the tx-scoped
 /// core of [`Store::apply_migration`]. Validates the descriptor, then runs the
 /// six-step migration body in the SAME tx (`peer_id` is the store's Loro peer id,
@@ -389,18 +410,65 @@ mod tests {
     }
 
     #[test]
+    fn migration_writes_syncable_per_chunk_oplog_row() {
+        // Review 139: the migration must write a PER-CHUNK oplog row keyed
+        // `(doc_id)#(chunk_id)` — the SAME scheme an ordinary mutation chunk uses — so
+        // the sync seam's chunk→metadata join discovers it (without it the migration
+        // chunk fell back to a generic write with empty record_ids and was DROPPED at
+        // peer sync). That row must carry the migrated record ids AND the schema-version
+        // pair (`from`/`to`) so a receiver authorizes the chunk and advances its version.
+        let (mut store, indexes) = seeded_store();
+        store.apply_migration(&widen_amount_to_float(), &indexes).unwrap();
+
+        let doc_id = crate::collection_doc_id("expenses");
+        // The migration appended one new chunk; find its per-chunk oplog row by the
+        // `(doc_id)#(chunk_id)` op_id (the join key the sync seam uses).
+        let ops = store.list_ops().unwrap();
+        let per_chunk = ops
+            .iter()
+            .find(|o| o.kind == MIGRATION_OP_KIND && o.op_id.starts_with(&format!("{doc_id}#chunk-")))
+            .expect("a per-chunk migration oplog row keyed (doc_id)#(chunk_id) must exist");
+        let payload: serde_json::Value = serde_json::from_slice(&per_chunk.payload).unwrap();
+        assert_eq!(payload["doc_id"], serde_json::json!(doc_id));
+        assert_eq!(payload["collection"], serde_json::json!("expenses"));
+        assert_eq!(payload["from"], serde_json::json!(1));
+        assert_eq!(payload["to"], serde_json::json!(2));
+        assert_eq!(
+            payload["record_ids"],
+            serde_json::json!(["e1", "e2"]),
+            "the per-chunk row names the migrated records so RBAC authorizes the write"
+        );
+        // The chunk id named in the row exists in crdt_chunks (the join resolves).
+        let chunk_id = payload["chunk_id"].as_str().unwrap();
+        assert!(
+            store.get_chunk(&doc_id, chunk_id).unwrap().is_some(),
+            "the per-chunk row names a real chunk: {chunk_id}"
+        );
+    }
+
+    #[test]
     fn already_applied_migration_is_idempotent_noop() {
         let (mut store, indexes) = seeded_store();
         let desc = widen_amount_to_float();
         assert!(store.apply_migration(&desc, &indexes).unwrap().applied);
-        // Re-apply: already at v2 → no-op, no second oplog op.
+        // One applied migration writes TWO `schema.migration` oplog rows (review 139):
+        // the PER-CHUNK row keyed `collection/<name>#chunk-NNNN` that the sync seam
+        // joins on (so the migration chunk reaches a peer), PLUS the audit row keyed
+        // `migration#<from>-<to>#<collection>`.
+        let count_migration_ops = |store: &Store| {
+            store.list_ops().unwrap().into_iter().filter(|o| o.kind == MIGRATION_OP_KIND).count()
+        };
+        assert_eq!(count_migration_ops(&store), 2, "one migration writes the per-chunk + audit rows");
+        // Re-apply: already at v2 → no-op, NO new oplog op of either kind.
         let again = store.apply_migration(&desc, &indexes).unwrap();
         assert!(!again.applied);
         assert_eq!(again.schema_version, 2);
         assert_eq!(again.migrated_records, 0);
-        let migration_ops =
-            store.list_ops().unwrap().into_iter().filter(|o| o.kind == MIGRATION_OP_KIND).count();
-        assert_eq!(migration_ops, 1, "an already-applied migration adds no oplog op");
+        assert_eq!(
+            count_migration_ops(&store),
+            2,
+            "an already-applied migration adds no oplog op"
+        );
     }
 
     #[test]
@@ -508,10 +576,11 @@ mod tests {
         }
         // ...schema_version is unchanged by the rebuild...
         assert_eq!(store.schema_version().unwrap(), 2, "schema_version stays advanced");
-        // ...the migration oplog op is intact...
+        // ...the migration oplog rows are intact (the syncable per-chunk row + the
+        // audit row, review 139)...
         assert_eq!(
             store.list_ops().unwrap().iter().filter(|o| o.kind == MIGRATION_OP_KIND).count(),
-            1
+            2
         );
         // ...and an index rebuilt from the projection sees the migrated values.
         indexes

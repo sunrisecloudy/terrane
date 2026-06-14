@@ -492,6 +492,78 @@ fn multi_record_transact_group_applies_and_converges() {
 }
 
 #[test]
+fn migration_chunk_is_authorized_and_advances_receiver_schema_version() {
+    // Review 139 (P1): a DL-13 migration chunk must reach a peer through the REAL
+    // SS-7 apply gate and advance the receiver's `schema_version` — NOT be denied.
+    //
+    // Before the fix the migration chunk had no per-chunk oplog row, so the sync seam
+    // fell back to a generic write with EMPTY record_ids, and the wired RBAC gate
+    // (`sync_rbac.rs` envelope-metadata check) denied it fail-closed as "missing
+    // record id" — silently dropping the migration at peer sync. With the per-chunk
+    // row carrying the migrated record ids + the schema-version pair, the chunk
+    // authorizes as a record write against concrete ids and the receiver advances its
+    // version on import. The trusted sender is an editor WITH db.write on `expenses`.
+    use forge_schema::{FieldTransform, FieldType, MigrationDescriptor};
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["expenses"]));
+
+    // The sender authors two `expenses` records (int `amount`) through the CRDT path.
+    let expense = |id: &str, amount: i64, at: i64| Mutation::Insert {
+        collection: "expenses".into(),
+        id: Some(id.into()),
+        fields: json!({ "amount": amount }).as_object().unwrap().clone(),
+        logical_at: Some(at),
+    };
+    sender.store_mut().apply_mutation_crdt(&expense("e1", 10, 1), &idx).unwrap();
+    sender.store_mut().apply_mutation_crdt(&expense("e2", 20, 2), &idx).unwrap();
+
+    // The sender widens `amount` int → float, advancing itself to schema_version 2 and
+    // rewriting the CRDT source of truth (the migration chunk + its per-chunk row).
+    let widen = MigrationDescriptor {
+        collection: "expenses".into(),
+        from_schema_version: 1,
+        to_schema_version: 2,
+        transforms: vec![FieldTransform::WidenField {
+            field_id: "f_amount".into(),
+            name: "amount".into(),
+            to: FieldType::FloatNum,
+        }],
+    };
+    assert!(sender.store_mut().apply_migration(&widen, &idx).unwrap().applied);
+    assert_eq!(sender.store().schema_version().unwrap(), 2);
+    assert_eq!(receiver.store().schema_version().unwrap(), 1, "receiver starts at v1");
+
+    // Sync through the REAL authorization gate. The migration chunk is NOT denied.
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(
+        report.chunks_denied, 0,
+        "the migration chunk must be authorized as a record write, not denied (report {report:?})"
+    );
+    assert!(report.total_chunks_moved() > 0, "the migration chunk moves to the receiver");
+
+    // The receiver holds the MIGRATED (float) values and advanced its schema_version.
+    let rows = query_collection(&mut receiver, "expenses");
+    assert_eq!(rows.len(), 2, "both migrated records imported: {rows:?}");
+    assert_eq!(rows[0].0, "e1");
+    assert_eq!(rows[0].1["amount"], json!(10.0), "e1 migrated to float on the receiver");
+    assert_eq!(rows[1].1["amount"], json!(20.0), "e2 migrated to float on the receiver");
+    assert_eq!(
+        receiver.store().schema_version().unwrap(),
+        2,
+        "the receiver advanced to the migration target version on import (no drift)"
+    );
+
+    // The op was AUDITED as authorized (allow), naming the `expenses` collection.
+    let allowed = receiver
+        .events()
+        .events_of_kind("sync.authorized")
+        .find(|e| e.payload["collection"] == json!("expenses"))
+        .expect("the migration chunk was authorized");
+    assert_eq!(allowed.payload["decision"], json!("allow"));
+}
+
+#[test]
 fn seeded_membership_survives_reopen() {
     // The SS-7 membership table is persisted to the workspace file (mirrors the
     // db.read grant table, review 050): a seeded row must survive `open(...)`,

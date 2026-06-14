@@ -437,6 +437,7 @@ mod tests {
                 payload: row.payload,
                 author_actor_id: None,
                 record_ids: Vec::new(),
+                schema_version: None,
             })
             .collect()
     }
@@ -508,6 +509,7 @@ mod tests {
             payload: old_insert.payload,
             author_actor_id: Some("peer:old".into()),
             record_ids: vec!["t1".into()],
+            schema_version: None,
         };
         s.apply_remote_chunks(&[stale], "peer:relay", &idx).unwrap();
         assert!(

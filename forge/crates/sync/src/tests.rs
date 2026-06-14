@@ -517,6 +517,7 @@ fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
             payload: c.payload,
             author_actor_id: None,
             record_ids: Vec::new(),
+            schema_version: None,
         })
         .collect();
     // The relay imports the chunk with an EMPTY source string: its `record.remote_import`
@@ -808,4 +809,90 @@ fn synced_chunks_are_recorded_in_receiver_oplog_as_remote_and_idempotent() {
     assert_eq!(second.total_chunks_moved(), 0, "converged: no chunks move");
     assert_eq!(a.list_ops().unwrap().len(), 2, "A: no duplicate import op");
     assert_eq!(b.list_ops().unwrap().len(), 2, "B: no duplicate import op");
+}
+
+/// Review 139 (P1) — DL-13 migration chunks must SYNC to peers and advance the
+/// receiver's `schema_version`.
+///
+/// Setup mirrors the existing two-store `sync_stores` tests: peer A seeds two
+/// `expenses` records (`amount` as int) through the DL-4 CRDT path, then applies a
+/// `widen_int_to_float` migration (`Store::apply_migration`) that rewrites the CRDT
+/// source of truth and bumps A to `schema_version 2`. Peer B is a fresh peer at the
+/// initial version. After `sync_stores(A, B)`:
+///   - B holds the MIGRATED (float) record values after its rebuild — the migration
+///     chunk reached B (before review 139 it had no per-chunk oplog row, fell back to
+///     a generic write with empty record_ids, and was DROPPED at the apply gate);
+///   - B's `schema_version == to_schema_version` (2) — the chunk carried the version
+///     it advances, and the receiver bumped to it IN the same import txn (no drift);
+///   - a second sync is a pure no-op (the migration chunk converged, idempotent).
+#[test]
+fn migration_chunk_syncs_to_peer_and_advances_receiver_schema_version() {
+    use forge_schema::{FieldTransform, FieldType, MigrationDescriptor};
+
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // A seeds two int `amount` records through the real CRDT write path, so the
+    // values live in the source of truth the migration rewrites.
+    a.apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10}), 1), &idx)
+        .unwrap();
+    a.apply_mutation_crdt(&insert("expenses", "e2", json!({"amount": 20}), 2), &idx)
+        .unwrap();
+
+    // A widens `amount` int → float; A advances to schema_version 2 and rewrites the
+    // CRDT source of truth (the migration chunk + its per-chunk oplog row).
+    let widen = MigrationDescriptor {
+        collection: "expenses".into(),
+        from_schema_version: 1,
+        to_schema_version: 2,
+        transforms: vec![FieldTransform::WidenField {
+            field_id: "f_amount".into(),
+            name: "amount".into(),
+            to: FieldType::FloatNum,
+        }],
+    };
+    let outcome = a.apply_migration(&widen, &idx).unwrap();
+    assert!(outcome.applied);
+    assert_eq!(a.schema_version().unwrap(), 2);
+    // B is still at the initial version before any sync.
+    assert_eq!(b.schema_version().unwrap(), 1);
+
+    // Converge A → B (and back). The migration chunk now carries a per-chunk oplog row
+    // (discoverable by the chunk→metadata join) with the migrated record ids + the
+    // schema-version pair, so it is staged, NOT denied, and imported.
+    let report = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
+    assert!(report.total_chunks_moved() > 0, "the migration chunk must move A → B");
+
+    // B has the MIGRATED (float) values after its rebuild — the migration reached it.
+    for id in ["e1", "e2"] {
+        let env = b.get_record("expenses", id).unwrap().unwrap();
+        assert!(
+            env.fields["amount"].is_f64(),
+            "B/{id} must hold the migrated float value after sync, got {:?}",
+            env.fields["amount"]
+        );
+    }
+    assert_eq!(b.get_record("expenses", "e1").unwrap().unwrap().fields["amount"], json!(10.0));
+    assert_eq!(b.get_record("expenses", "e2").unwrap().unwrap().fields["amount"], json!(20.0));
+
+    // B advanced to the migration's target version IN the same import txn — no peer
+    // can materialize migrated values while staying behind at the old version.
+    assert_eq!(
+        b.schema_version().unwrap(),
+        2,
+        "B's schema_version must advance to the migration target on import (no drift)"
+    );
+
+    // The migration chunk durably survives B's own DL-6 rebuild (it landed in B's
+    // crdt_chunks, not just its projection), and B's version stays advanced.
+    b.rebuild_projection(&idx).unwrap();
+    assert_eq!(b.get_record("expenses", "e1").unwrap().unwrap().fields["amount"], json!(10.0));
+    assert_eq!(b.schema_version().unwrap(), 2, "B stays at v2 across a CRDT rebuild");
+
+    // A second sync is a pure no-op (the migration chunk converged) and B's version
+    // is unchanged — the receiver advance is monotone + idempotent.
+    let again = sync_stores(&mut a, &idx, &mut b, &idx).unwrap();
+    assert_eq!(again.total_chunks_moved(), 0, "converged: the migration chunk does not re-move");
+    assert_eq!(b.schema_version().unwrap(), 2, "B's version is unchanged on a converged re-sync");
 }

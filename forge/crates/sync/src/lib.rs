@@ -133,6 +133,14 @@ pub struct SyncOpEnvelope {
     /// grant check (`review 092 #2`: the apply path must reject a chunk lacking a
     /// valid record doc id / op metadata rather than guessing a collection).
     pub malformed: Option<String>,
+    /// `Some(to)` when this chunk is a DL-13 **migration** chunk carrying the schema
+    /// version it advances the receiver to (review 139). Recovered from the origin's
+    /// per-chunk migration oplog row and threaded onto the staged [`RemoteChunk`], so
+    /// an authorized import advances the receiver's `schema_version` to `to` in the
+    /// SAME txn as the chunk import — no version drift. It does NOT widen
+    /// authorization: the chunk is still gated as a record write against `record_ids`.
+    /// `None` for an ordinary record-write chunk.
+    pub schema_version: Option<u64>,
 }
 
 /// The resource an incoming chunk targets. M0b chunk sync only carries records.
@@ -219,6 +227,12 @@ struct OplogEntry {
     /// CLOSED (it cannot be attributed to the relay), never be treated as a local
     /// write.
     origin_source: Option<String>,
+    /// `Some(to)` when this chunk is a DL-13 **migration** chunk whose per-chunk
+    /// oplog row named the schema-version pair it advances (the `to` field). Threaded
+    /// onto the staged [`RemoteChunk`] so the receiver advances its `schema_version`
+    /// to `to` on import, never staying behind while it materializes migrated values
+    /// (review 139). `None` for an ordinary record-write chunk.
+    schema_version: Option<u64>,
 }
 
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
@@ -267,6 +281,17 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
         } else {
             None
         };
+        // A DL-13 migration chunk's per-chunk oplog row carries the schema-version
+        // pair it advances; recover the `to` target so the staged chunk can advance a
+        // receiver's `schema_version` on import (review 139). Only the migration kind
+        // names a `to` field, so an ordinary record-write row leaves this `None`.
+        let schema_version = if op.kind == "schema.migration" {
+            payload
+                .as_ref()
+                .and_then(|v| v.get("to").and_then(serde_json::Value::as_u64))
+        } else {
+            None
+        };
         out.insert(
             op.op_id,
             OplogEntry {
@@ -274,6 +299,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
                 record_ids,
                 is_remote_import,
                 origin_source,
+                schema_version,
             },
         );
     }
@@ -309,7 +335,7 @@ fn envelope_for_chunk(
         )),
     };
     let op_id = format!("{doc_id}#{local_id}");
-    let (op, record_ids, origin_source) = match oplog.get(&op_id) {
+    let (op, record_ids, origin_source, schema_version) = match oplog.get(&op_id) {
         Some(entry) => {
             // A relayed chunk whose original author is unrecoverable cannot be
             // attributed to the relay — fail it closed (`review 092 #1`). Only the
@@ -324,9 +350,10 @@ fn envelope_for_chunk(
                 op_from_kind(&entry.kind),
                 entry.record_ids.clone(),
                 entry.origin_source.clone(),
+                entry.schema_version,
             )
         }
-        None => (SyncRecordOp::Write, Vec::new(), None),
+        None => (SyncRecordOp::Write, Vec::new(), None, None),
     };
     SyncOpEnvelope {
         resource_type: SyncResource::Record,
@@ -335,6 +362,7 @@ fn envelope_for_chunk(
         record_ids,
         origin_source,
         malformed,
+        schema_version,
     }
 }
 
@@ -399,6 +427,9 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
                 payload: chunk.payload.clone(),
                 author_actor_id: envelope.origin_source.clone(),
                 record_ids: envelope.record_ids.clone(),
+                // A DL-13 migration chunk carries the version it advances the receiver
+                // to (review 139); an ordinary record-write chunk leaves this `None`.
+                schema_version: envelope.schema_version,
             },
             envelope,
         });

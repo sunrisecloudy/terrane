@@ -24,10 +24,10 @@ A migration is described by a `MigrationDescriptor`:
   "from_schema_version": 1,
   "to_schema_version": 2,
   "transforms": [
-    { "op": "add_field",   "field_id": "f_alice_2", "name": "currency", "default": "USD" },
-    { "op": "rename_field", "field_id": "f_alice_0", "name": "amount_total" },
-    { "op": "drop_field",  "field_id": "f_alice_1" },
-    { "op": "widen_field", "field_id": "f_alice_0", "to": "float_num" }
+    { "op": "add_field",    "field_id": "f_alice_2", "name": "currency", "default": "USD" },
+    { "op": "rename_field", "field_id": "f_alice_0", "from_name": "amount", "to_name": "amount_total" },
+    { "op": "drop_field",   "field_id": "f_alice_1", "name": "note" },
+    { "op": "widen_field",  "field_id": "f_alice_0", "name": "amount", "to": "float_num" }
   ]
 }
 ```
@@ -44,12 +44,18 @@ A migration is described by a `MigrationDescriptor`:
 
 ### Supported transforms
 
+Every transform that touches the display projection carries the prior display
+`name` (or `from_name`/`to_name` for a rename) **explicitly** — never inferred by
+stripping the `f_` stand-in prefix off the `field_id`. A schema-minted id like
+`f_alice_1` has an unrelated display name (e.g. `note`), so a guess would clean the
+wrong key (review 138 P2).
+
 | op             | effect on each record                                                            |
 | -------------- | -------------------------------------------------------------------------------- |
 | `add_field`    | if the record lacks `field_id`, set it to `default` (a constant JSON value); records that already carry the field are left untouched. The display `name` is also written into `fields[name]` so the projection stays readable. |
-| `rename_field` | DL-7: changes only the display `name` projection; the stable `field_id` value is untouched. A record that carries the value by stable id needs no value move. |
-| `drop_field`   | remove the field from both `field_ids[field_id]` and its display projection. This is the *data* side of DL-8 "deprecate + retain at the schema level": the record value is dropped, but the migration is recorded in the oplog so the drop is replayable, never a destructive `ALTER TABLE`. |
-| `widen_field`  | coerce the stored value to the wider type. Only **widening** coercions are legal (`int_num → float_num`, any scalar → `scalar`, `T → nullable(T)`); the value is rewritten to its widened JSON form (e.g. integer `5` → float `5.0`). |
+| `rename_field` | DL-7: move the display projection key from `from_name` to `to_name`; the stable `field_id` value is authoritative and untouched (so merge identity never moves). A record not carrying `from_name` is a no-op. |
+| `drop_field`   | remove the field from both `field_ids[field_id]` and the display projection at `name`. This is the *data* side of DL-8 "deprecate + retain at the schema level": the record value is dropped, but the migration is recorded in the oplog so the drop is replayable, never a destructive `ALTER TABLE`. |
+| `widen_field`  | coerce the stored value to the wider type, in BOTH `field_ids[field_id]` and the display projection at `name`. Only **widening** coercions are legal (`int_num → float_num`, any scalar → `scalar`, `T → nullable(T)`); the value is rewritten to its widened JSON form (e.g. integer `5` → float `5.0`). |
 
 ### Rejected transforms (typed errors)
 
@@ -65,8 +71,15 @@ A migration is described by a `MigrationDescriptor`:
   no variant for; the fixtures mark them `not_expressible_*`. The migration descriptor
   deliberately does NOT add destructive/registry ops — `drop_field` here drops a
   record *value*, it does not remove a *schema* field (DL-8 keeps fields via
-  deprecate). A descriptor that references an unknown `field_id` for a
-  rename/drop/widen is a `ValidationError`.
+  deprecate).
+- **A duplicate `add_field` for the same `field_id`** is a `ValidationError`
+  (`MigrationDescriptor::validate`): `add_field` is fill-if-missing, so two adds for
+  one id would make the result depend on which ran first, breaking the §2 determinism
+  contract. Structural validation (empty collection, non-advancing version, duplicate
+  add) is the only up-front rejection the *pure* descriptor can perform — it has no
+  registry, so a transform that targets a `field_id` no record carries is simply an
+  idempotent **no-op** (nothing to widen/drop/rename), not an error. The *runtime*
+  precondition (current `schema_version == from`) is checked by the storage driver.
 
 ## 2. Deterministic-transform contract
 
@@ -103,23 +116,37 @@ migrate_record(prior: RecordEnvelope, descriptor: &MigrationDescriptor)
    return the **idempotent no-op** (`applied: false`) without touching anything.
    If it does not equal `from_schema_version`, reject with `SchemaCompatibilityError`
    (the migration's precondition is unmet).
-2. For **every** record in `descriptor.collection` (ordered by id), apply
-   `migrate_record`. The first record that cannot be transformed (e.g. a lossy
-   narrow) returns its typed error, which propagates out of the closure.
-3. Write each migrated record back to the projection.
+2. For **every** record in `descriptor.collection` (read from the CRDT doc — the
+   source of truth — in sorted id order), apply `migrate_record` and write the
+   migrated envelope back **into the CRDT doc**. The first record that cannot be
+   transformed (e.g. a lossy narrow) returns its typed error, which propagates out
+   of the closure. The doc is committed once and the new ops are exported as **one
+   immutable `crdt_chunks` row** — so the migration lives in the same CRDT stream a
+   DL-6 rebuild replays.
+3. Materialize each migrated record into the derived `records` projection (FTS-synced).
 4. Append one `schema.migration` op to the oplog (the DL-13 "migrations are oplog
    operations" requirement): `{from, to, collection, transforms, record_ids}`.
 5. Bump the persisted `schema_version` to `to_schema_version`.
 6. Rebuild active indexes from the migrated projection (DL-8 → DL-5/DL-6).
 
-Because all six steps run in the single transaction, **any** failure — a non-coercible
+Because all steps run in the single transaction, **any** failure — a non-coercible
 record at step 2, an index failure at step 6, anything — rolls back the WHOLE
-migration: `schema_version`, every transformed record, the oplog op, and the indexes
-are left **exactly** as they were before the call. There is no partial migration and
-no destructive DDL (`records` is a projection; the canonical CRDT chunks are never
-mutated by a migration, so a rebuild reproduces the pre-migration state on rollback).
-A fault-injection test (`migration_failure_rolls_back_everything`) forces a mid-stream
-failure and asserts the version, the records, and the oplog are unchanged.
+migration: the migration chunk, `schema_version`, every transformed record, the oplog
+op, and the indexes are left **exactly** as they were before the call. There is no
+partial migration and no destructive DDL.
+
+**Durability under rebuild (DL-6).** Crucially the migration mutates the **CRDT
+source of truth**, not just the derived projection. A DL-6
+`rebuild_projection` drops the `records` table and rematerializes it purely from
+`crdt_chunks`; because the migration appended its chunk to that stream, a rebuild
+reproduces the **migrated** values with zero diff — it does not silently restore the
+pre-migration state while leaving `schema_version` advanced (review 138 P1). On a
+rolled-back migration no chunk is appended, so a rebuild reproduces the pre-migration
+state exactly. Two tests pin this: `migration_failure_rolls_back_everything` (forces
+a mid-stream failure and asserts the version, the records, the oplog, AND that no CRDT
+chunk survives) and `migration_survives_dl6_projection_rebuild` (applies a migration,
+rebuilds the projection from chunks, and asserts the migrated values + `schema_version`
++ oplog + indexes remain coherent).
 
 ## 4. Idempotence (already-applied)
 
@@ -136,3 +163,31 @@ The workspace `schema_version` is a single monotone `u64` persisted in the
 workspace starts at schema version 1). It is the migration ordering anchor: a
 migration moves it `from → to`, and the sync envelope's `schema_version` field
 (SS, `sync-rbac.md`) reads it. Migrations only ever advance it.
+
+## 6. Migrations sync to peers (SS, review 139)
+
+A migration chunk is an ordinary append-only `crdt_chunks` row on the collection doc,
+so it rides the SS-1/SS-2 chunk-diff sync seam like any record write — but two extra
+pieces of metadata make it FIRST-CLASS on the sync path rather than dropped at a peer:
+
+1. **A per-chunk oplog row** keyed `collection/<name>#chunk-NNNN` (the SAME scheme an
+   ordinary mutation chunk uses) is written alongside the chunk, carrying the migrated
+   `record_ids` AND the `from`/`to` schema versions. The sync seam joins chunks →
+   metadata by exactly this `{doc_id}#{chunk_id}` op id, so the migration chunk is
+   DISCOVERABLE (`missing_chunks_for_doc`) and AUTHORIZED as a record write against the
+   migrated record ids — not denied as a record-less write. The separate
+   `schema.migration` AUDIT row (keyed `migration#<from>-<to>#<collection>`) is still
+   written; only the per-chunk row participates in the sync join.
+
+2. **The receiver advances its `schema_version`** to the chunk's carried `to` value on
+   an authorized import, IN THE SAME transaction as the chunk insert + projection
+   rebuild (`apply_remote_chunks`). The advance is monotone and idempotent: a receiver
+   already at or beyond `to` is left unchanged (a converged peer, or one that migrated
+   locally), never an error, so a re-sync stays a pure no-op. Because it is bound to the
+   import txn, a receiver can never materialize migrated record values while staying
+   behind at the old `schema_version` — no version drift — and a failed import (e.g. a
+   rebuild rejection) rolls the version advance back with the chunk.
+
+Authorization is NOT weakened: the migration chunk is gated as a record write against
+its migrated `record_ids` (the collection `db.write` grant decides), exactly like any
+other record write — there is no schema-grant escape hatch on the sync path.
