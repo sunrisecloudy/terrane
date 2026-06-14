@@ -41,6 +41,7 @@ pub fn spine_manifest() -> Manifest {
             wall_ms: 30_000,
             ..Limits::default()
         },
+        compatibility: Default::default(),
     }
 }
 

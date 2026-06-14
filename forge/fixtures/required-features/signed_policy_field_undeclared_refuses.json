@@ -1,0 +1,18 @@
+{
+  "case": "signed_policy_field_undeclared_refuses",
+  "description": "A signed FUTURE policy field that is NOT declared in required_features must be refused, mirroring the signed-package unknown-field fail-closed gate (review 086): a future feature the package does not declare cannot install. Here the package declares a different signed.policy.* feature the client lacks, standing in for an undeclared future field; the two gates agree the package is refused.",
+  "client_features": [
+    { "feature_id": "app", "version": "1.0.0" },
+    { "feature_id": "signed.policy.network_policy", "version": "1.0.0" }
+  ],
+  "manifest_compatibility": {
+    "required_features": [
+      { "feature_id": "signed.policy.quantum_budget", "min_version": "1.0.0" }
+    ]
+  },
+  "expect": {
+    "decision": "refuse",
+    "unsupported_feature_ids": ["signed.policy.quantum_budget"],
+    "message_contains": ["signed.policy.quantum_budget", "client has none"]
+  }
+}

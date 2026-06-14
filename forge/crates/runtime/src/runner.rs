@@ -930,6 +930,7 @@ mod denial_guard_tests {
                 ..Capabilities::default()
             },
             limits: Limits { max_host_calls: 99, ..Limits::default() },
+            compatibility: Default::default(),
         };
         let actor = ActorContext::owner("dev");
 

@@ -391,6 +391,7 @@ mod tests {
             deterministic: true,
             capabilities: Capabilities { net, ..Capabilities::default() },
             limits: Limits { max_host_calls, ..Limits::default() },
+            compatibility: Default::default(),
         }
     }
 

@@ -905,6 +905,7 @@ mod tests {
             deterministic: true,
             capabilities: caps,
             limits: Limits { max_host_calls, ..Limits::default() },
+            compatibility: Default::default(),
         }
     }
 

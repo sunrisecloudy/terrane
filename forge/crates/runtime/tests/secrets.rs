@@ -49,6 +49,7 @@ fn manifest_for(allowlist: &serde_json::Value) -> Manifest {
         deterministic: true,
         capabilities: Capabilities { net, ..Capabilities::default() },
         limits: Limits { max_host_calls: 100, ..Limits::default() },
+        compatibility: Default::default(),
     }
 }
 

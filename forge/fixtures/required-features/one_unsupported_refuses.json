@@ -1,0 +1,19 @@
+{
+  "case": "one_unsupported_refuses",
+  "description": "One required feature is not in the client set, so the install is refused naming that feature.",
+  "client_features": [
+    { "feature_id": "app", "version": "1.0.0" },
+    { "feature_id": "ctx.db.query", "version": "1.0.0" }
+  ],
+  "manifest_compatibility": {
+    "required_features": [
+      { "feature_id": "ctx.db.query", "min_version": "1.0.0" },
+      { "feature_id": "ctx.timetravel", "min_version": "1.0.0" }
+    ]
+  },
+  "expect": {
+    "decision": "refuse",
+    "unsupported_feature_ids": ["ctx.timetravel"],
+    "message_contains": ["ctx.timetravel", "client has none"]
+  }
+}

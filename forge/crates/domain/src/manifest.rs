@@ -23,6 +23,15 @@ pub struct Manifest {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub limits: Limits,
+    /// Marketplace compatibility declaration (prd-merged/08 MP-4 / MP-8): the
+    /// `min_app_version` + the `required_features` a client must support before it
+    /// may install this package. Default empty → no compatibility requirements, so
+    /// every existing manifest (the spine demo, the lifecycle fixtures) installs
+    /// unchanged. The capability-negotiation gate
+    /// (`forge/spec/required-features.md`) reads `required_features` and REFUSES the
+    /// install when the client does not support every requirement.
+    #[serde(default)]
+    pub compatibility: Compatibility,
 }
 
 fn default_min_api() -> String {
@@ -42,7 +51,157 @@ impl Manifest {
             )));
         }
         self.limits.validate()?;
+        self.compatibility.validate()?;
         Ok(())
+    }
+}
+
+/// Marketplace compatibility declaration (prd-merged/08 MP-4 / MP-8).
+///
+/// A package declares the host floor it needs to run: the minimum app version
+/// (`min_app_version`) and the set of capability/runtime FEATURES the client must
+/// support (`required_features`). The capability-negotiation gate
+/// (`forge/spec/required-features.md`) refuses an install when the installing
+/// client does not support **every** declared feature at the declared minimum
+/// version — the MP-8 "refuse or limited-mode gracefully" contract.
+///
+/// Both fields default empty so a manifest that declares no compatibility floor
+/// (every existing spine/lifecycle manifest) installs unchanged. The whole object
+/// is preserved verbatim across re-encodings (the CRDT manifest document), so a
+/// future client that adds a feature to its registry can install a package an
+/// older client refused without the package changing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Compatibility {
+    /// The minimum app version this package runs against (prd-merged/08 MP-4).
+    /// `None` (the default) imposes no floor. Compared with the same dotted-numeric
+    /// ordering as a feature's `min_version` (see [`version_at_least`]); the
+    /// capability-negotiation gate can model it as a synthetic `app` feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_app_version: Option<String>,
+    /// The capability/runtime features this package requires the client to support
+    /// (prd-merged/08 MP-8). Empty (the default) → no required features → the
+    /// package installs on any client. Each entry names a feature id + the minimum
+    /// version of that feature the package needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_features: Vec<FeatureRequirement>,
+}
+
+impl Compatibility {
+    /// Validate the declared compatibility floor (prd-merged/01 CR-A4): every
+    /// required feature must name a non-blank id and a well-formed dotted-numeric
+    /// `min_version`, and `min_app_version` (when present) must be well-formed. A
+    /// malformed requirement is a structural manifest error, not a silent pass that
+    /// the negotiation gate would then have to interpret.
+    pub fn validate(&self) -> crate::Result<()> {
+        if let Some(v) = &self.min_app_version {
+            if parse_version(v).is_none() {
+                return Err(crate::CoreError::ValidationError(format!(
+                    "compatibility.min_app_version must be dotted-numeric, got {v:?}"
+                )));
+            }
+        }
+        for req in &self.required_features {
+            req.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// One required capability/runtime feature (prd-merged/08 MP-8): the `feature_id`
+/// the client must support and the `min_version` of it the package needs.
+///
+/// `feature_id` is a stable identifier (e.g. `ctx.db.query`, `ui.tabs`); it is
+/// compared after [`normalize_feature_id`] so a package and a client that spell the
+/// same feature with different case/surrounding whitespace still match. `min_version`
+/// is a dotted-numeric version (`"1"`, `"1.2"`, `"1.2.0"`) compared with
+/// [`version_at_least`] — a client supporting `1.3.0` satisfies a `1.2.0` floor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FeatureRequirement {
+    /// The feature id the client must support. Normalized via
+    /// [`normalize_feature_id`] before comparison.
+    pub feature_id: String,
+    /// The minimum dotted-numeric version of the feature the package needs.
+    /// Default `"0"` → "any supported version" (presence alone satisfies it).
+    #[serde(default = "default_min_version")]
+    pub min_version: String,
+}
+
+fn default_min_version() -> String {
+    "0".to_string()
+}
+
+impl FeatureRequirement {
+    /// The feature id in canonical form for comparison (see [`normalize_feature_id`]).
+    pub fn normalized_id(&self) -> String {
+        normalize_feature_id(&self.feature_id)
+    }
+
+    /// Validate the requirement is well-formed: a non-blank (after normalization)
+    /// feature id and a dotted-numeric `min_version`.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.normalized_id().is_empty() {
+            return Err(crate::CoreError::ValidationError(
+                "compatibility.required_features[].feature_id is empty".into(),
+            ));
+        }
+        if parse_version(&self.min_version).is_none() {
+            return Err(crate::CoreError::ValidationError(format!(
+                "required feature {:?} min_version must be dotted-numeric, got {:?}",
+                self.feature_id, self.min_version
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Canonicalize a feature id for comparison (prd-merged/08 MP-8, the
+/// case/normalization vector): trim surrounding whitespace and lowercase with the
+/// ASCII fold. Feature ids are ASCII identifiers (`ctx.db.query`, `ui.tabs`), so the
+/// fold is deterministic and locale-independent — a package's `CTX.DB.Query` and a
+/// client's `ctx.db.query` name the SAME feature. The same normalization is applied
+/// to BOTH the package's required ids and the client registry's keys so the match
+/// is symmetric.
+pub fn normalize_feature_id(id: &str) -> String {
+    id.trim().to_ascii_lowercase()
+}
+
+/// Parse a dotted-numeric version (`"1"`, `"1.2"`, `"1.2.0"`) into its numeric
+/// components, or `None` when it is empty or carries a non-numeric component. Kept
+/// minimal (no semver pre-release/build metadata) because MP-8 only needs a total
+/// order over the simple feature versions the registry tracks; trailing zeros do
+/// not matter (`1.2` == `1.2.0`) because [`version_at_least`] compares
+/// component-wise and treats a missing component as `0`.
+pub fn parse_version(v: &str) -> Option<Vec<u64>> {
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    v.split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()
+        .filter(|parts| !parts.is_empty())
+}
+
+/// Whether `have` (the client's supported version) is at least `need` (the
+/// package's required `min_version`), comparing dotted-numeric versions
+/// component-wise with a missing component treated as `0` (so `1.2` ≥ `1.2.0` and
+/// `1.3` ≥ `1.2.9`). A version that fails to parse compares as **not** at least the
+/// requirement (fail-closed) — the negotiation gate never accepts an
+/// uninterpretable version. Returns `true` only when both parse and `have ≥ need`.
+pub fn version_at_least(have: &str, need: &str) -> bool {
+    match (parse_version(have), parse_version(need)) {
+        (Some(have), Some(need)) => {
+            let len = have.len().max(need.len());
+            for i in 0..len {
+                let h = have.get(i).copied().unwrap_or(0);
+                let n = need.get(i).copied().unwrap_or(0);
+                if h != n {
+                    return h > n;
+                }
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -325,6 +484,7 @@ mod tests {
             deterministic: true,
             capabilities: Capabilities::default(),
             limits: Limits::default(),
+            compatibility: Compatibility::default(),
         };
         assert!(m.validate().is_ok());
     }
@@ -337,6 +497,7 @@ mod tests {
             deterministic: true,
             capabilities: Capabilities::default(),
             limits: Limits::default(),
+            compatibility: Compatibility::default(),
         };
         assert_eq!(m.validate().unwrap_err().code(), "ValidationError");
     }
@@ -358,6 +519,7 @@ mod tests {
             deterministic: true,
             capabilities: Capabilities::default(),
             limits: Limits::default(),
+            compatibility: Compatibility::default(),
         };
         assert!(m.validate().is_err());
     }
@@ -369,7 +531,84 @@ mod tests {
         assert_eq!(m.min_api, "forge-api@0.1");
         assert!(m.capabilities.ui);
         assert_eq!(m.limits, Limits::default());
+        // An absent `compatibility` is the empty floor: no min app version, no
+        // required features — so the package installs on any client (MP-8).
+        assert!(m.compatibility.min_app_version.is_none());
+        assert!(m.compatibility.required_features.is_empty());
         assert!(m.validate().is_ok());
+    }
+
+    // --- Compatibility / required_features (MP-8) ----------------------------
+
+    #[test]
+    fn compatibility_deserializes_from_manifest() {
+        // A manifest writes `"compatibility": { min_app_version, required_features }`.
+        let json = r#"{
+            "entrypoint": "src/main.ts",
+            "compatibility": {
+                "min_app_version": "1.2.0",
+                "required_features": [
+                    { "feature_id": "ctx.db.query", "min_version": "1.0.0" },
+                    { "feature_id": "ui.tabs" }
+                ]
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.compatibility.min_app_version.as_deref(), Some("1.2.0"));
+        assert_eq!(m.compatibility.required_features.len(), 2);
+        assert_eq!(m.compatibility.required_features[0].feature_id, "ctx.db.query");
+        assert_eq!(m.compatibility.required_features[0].min_version, "1.0.0");
+        // An omitted `min_version` defaults to "0" (any supported version).
+        assert_eq!(m.compatibility.required_features[1].min_version, "0");
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn feature_id_is_normalized_case_insensitively() {
+        // The MP-8 case/normalization rule: surrounding whitespace + ASCII case
+        // fold, applied symmetrically to package + client ids.
+        assert_eq!(normalize_feature_id("  CTX.DB.Query "), "ctx.db.query");
+        let req = FeatureRequirement {
+            feature_id: "UI.Tabs".into(),
+            min_version: "1.0".into(),
+        };
+        assert_eq!(req.normalized_id(), "ui.tabs");
+    }
+
+    #[test]
+    fn version_at_least_is_a_dotted_numeric_total_order() {
+        // Trailing-zero equivalence + component-wise compare; a higher client
+        // version satisfies a lower floor (forward-compat).
+        assert!(version_at_least("1.2", "1.2.0"));
+        assert!(version_at_least("1.2.0", "1.2"));
+        assert!(version_at_least("1.3.0", "1.2.9"));
+        assert!(version_at_least("2.0.0", "1.9.9"));
+        assert!(!version_at_least("1.1.0", "1.2.0"));
+        // A malformed version on either side is fail-closed (never "at least").
+        assert!(!version_at_least("not-a-version", "1.0.0"));
+        assert!(!version_at_least("1.0.0", "also-bad"));
+    }
+
+    #[test]
+    fn malformed_required_feature_is_a_validation_error() {
+        // A blank feature id or a non-numeric min_version is a structural reject.
+        let mut m: Manifest = serde_json::from_str(r#"{"entrypoint":"src/main.ts"}"#).unwrap();
+        m.compatibility.required_features = vec![FeatureRequirement {
+            feature_id: "   ".into(),
+            min_version: "1.0.0".into(),
+        }];
+        assert_eq!(m.validate().unwrap_err().code(), "ValidationError");
+
+        m.compatibility.required_features = vec![FeatureRequirement {
+            feature_id: "ctx.db.query".into(),
+            min_version: "one.two".into(),
+        }];
+        assert_eq!(m.validate().unwrap_err().code(), "ValidationError");
+
+        // A malformed min_app_version is also rejected.
+        let mut m2: Manifest = serde_json::from_str(r#"{"entrypoint":"src/main.ts"}"#).unwrap();
+        m2.compatibility.min_app_version = Some("v1".into());
+        assert_eq!(m2.validate().unwrap_err().code(), "ValidationError");
     }
 
     // --- Net capability allowlist (SC-8) ------------------------------------

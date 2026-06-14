@@ -176,6 +176,21 @@ impl WorkspaceCore {
             ));
         }
 
+        // MP-8 capability negotiation (`forge/spec/required-features.md`,
+        // prd-merged/08): BEFORE accepting an install, refuse it when the package's
+        // `compatibility.required_features` (or `min_app_version`) names anything the
+        // TRUSTED client feature registry does not support at the required min
+        // version. The registry is read from trusted workspace state — never the
+        // request payload (review 048/050) — so a package cannot widen what the
+        // client claims to support. A refusal is a typed `ValidationError`
+        // ENUMERATING every unsupported feature (id + required min + client-has), and
+        // nothing is stored. An empty `required_features` proceeds. This composes
+        // with the signed-install unknown-field fail-closed gate below (review
+        // 086/089): a signed FUTURE policy field is only admissible if it is DECLARED
+        // here AND the client supports it; an undeclared signed future field is
+        // refused by the signature gate — the two gates agree.
+        self.negotiate_required_features(&manifest)?;
+
         // SC-15 / MP-4: verify the package signature when one is carried, BEFORE
         // any state is touched, and BIND it to the actual install sources so a
         // valid signature can only bless the exact code being installed (review
@@ -331,6 +346,30 @@ impl WorkspaceCore {
             // crypto + integrity, and the policy layer when enforced).
             "trust": trust.to_json(),
         }))
+    }
+
+    /// MP-8 capability negotiation: refuse an install whose manifest declares a
+    /// `required_features` (or `min_app_version`) the TRUSTED client feature
+    /// registry does not support (`forge/spec/required-features.md`, prd-merged/08).
+    ///
+    /// Reads the registry from trusted workspace state
+    /// ([`client_feature_registry`](WorkspaceCore::client_feature_registry)) — never
+    /// the request payload — and negotiates the manifest's
+    /// [`Compatibility`](forge_domain::Compatibility). On any unsupported feature it
+    /// returns a typed `ValidationError` whose message ENUMERATES every gap (id +
+    /// required min + what the client has), so the caller refuses the install naming
+    /// ALL of them; an empty `required_features` returns `Ok`. The error is the same
+    /// `ValidationError` kind every other install-refusal uses, so a shell handles it
+    /// uniformly.
+    fn negotiate_required_features(&self, manifest: &Manifest) -> Result<()> {
+        self.client_feature_registry()
+            .negotiate(&manifest.compatibility)
+            .map_err(|unsupported| {
+                CoreError::ValidationError(format!(
+                    "applet.install refused: {}",
+                    unsupported.message()
+                ))
+            })
     }
 
     /// Append a `package.install.refused` audit row to the durable SC-12 log when an

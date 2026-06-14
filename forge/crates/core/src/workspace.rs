@@ -49,6 +49,7 @@ use commands::Registry;
 // root (and the conformance harness) can drive the reactive loop end to end.
 pub use commands::watch::{replay_notification_stream, DeliveredBatch};
 use crate::event::EventSink;
+use crate::features::ClientFeatureRegistry;
 use crate::run_policy::RunPolicy;
 use crate::sync_rbac::{
     authorize_remote_op, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuthDecision,
@@ -103,6 +104,17 @@ const SCHEMA_REGISTRY_KEY: &str = forge_storage::SCHEMA_REGISTRY_KEY;
 /// here at the run boundary, never from a request payload (review 048/050). Absent
 /// ⇒ un-provisioned ⇒ the permissive `AllowAll` baseline (the M0a spine default).
 const RUN_POLICY_KEY: &str = "run_policy";
+
+/// The KV key (within [`META_NS`]) holding the persisted TRUSTED MP-8 client
+/// feature registry — the `feature_id -> supported version` set the install-time
+/// capability-negotiation gate reads (`forge/spec/required-features.md`). Persisted
+/// like [`RUN_POLICY_KEY`] so a host-extended registry survives reopening the
+/// workspace file, and read ONLY from here at the install boundary, never from a
+/// request payload (review 048/050). Absent ⇒ un-provisioned ⇒ the deterministic
+/// built-in baseline ([`ClientFeatureRegistry::current`]) — the features this build
+/// actually supports, so the gate is LIVE by default (the demo installs unchanged
+/// because its manifest declares no required features).
+const CLIENT_FEATURES_KEY: &str = "client_features";
 
 /// An applet's dispatch lifecycle for the interactive UI loop (UI-4/CR-6).
 ///
@@ -187,6 +199,20 @@ pub struct WorkspaceCore {
     /// builds a real `ComposedDecisionContext` so a configured deny actually blocks
     /// the live command.
     run_policy: Option<RunPolicy>,
+    /// TRUSTED MP-8 client feature registry: the `feature_id -> supported version`
+    /// set THIS client supports, the SOURCE OF TRUTH for the install-time
+    /// capability-negotiation gate (`forge/spec/required-features.md`,
+    /// prd-merged/08 MP-8). `cmd_applet_install` reads it from HERE — never the
+    /// request payload (review 048/050) — and REFUSES an install whose manifest
+    /// declares a `required_features` the client does not support at the required
+    /// min version, enumerating every gap. Set only through the trusted
+    /// [`set_client_feature_registry`](WorkspaceCore::set_client_feature_registry)
+    /// seam (workspace configuration), and persisted to the workspace file so a
+    /// host-extended registry survives reopen (mirrors `run_policy`). Defaulted to
+    /// the deterministic built-in baseline ([`ClientFeatureRegistry::current`]) when
+    /// un-provisioned, so the gate is live by default and the decision replays
+    /// identically.
+    client_features: ClientFeatureRegistry,
     /// Live-query (`db.watch`) session state (DL-16, `forge/spec/live-queries.md`):
     /// the registered watches (owning applet + callback handler + query) plus the
     /// workspace's monotone notification `version`. Loaded from `__forge/meta`
@@ -278,6 +304,7 @@ impl WorkspaceCore {
         let db_write_grants = load_db_write_grants(&store)?;
         let sync_membership = load_sync_membership(&store)?;
         let run_policy = load_run_policy(&store)?;
+        let client_features = load_client_features(&store)?;
         let registry = load_schema_registry(&store)?;
         let indexes = rebuild_indexes_from_registry(&store, &registry)?;
         let watch_sessions = load_watch_sessions(&store, META_NS)?;
@@ -291,6 +318,7 @@ impl WorkspaceCore {
             db_write_grants,
             sync_membership,
             run_policy,
+            client_features,
             watch_sessions,
             // Fail-closed default: no live network. A host/shell opts in by
             // calling `set_http_client_factory` (review: keep the network seam
@@ -598,6 +626,40 @@ impl WorkspaceCore {
     /// permissive `AllowAll` baseline).
     pub fn run_policy(&self) -> Option<&RunPolicy> {
         self.run_policy.as_ref()
+    }
+
+    /// Configure the TRUSTED MP-8 [`ClientFeatureRegistry`] for this workspace —
+    /// the `feature_id -> supported version` set the install-time
+    /// capability-negotiation gate reads on every `applet.install`
+    /// (`forge/spec/required-features.md`, prd-merged/08 MP-8).
+    ///
+    /// This is the ONLY way the client's supported-feature set is configured:
+    /// `cmd_applet_install` reads the registry from here, never from a request
+    /// payload, so a package (or a shell) cannot widen what the client claims to
+    /// support by editing the command body (review 048/050). The registry is
+    /// **persisted** to the workspace file (mirrors
+    /// [`set_run_policy`](Self::set_run_policy)), so a host-extended registry
+    /// survives `open(...)`.
+    ///
+    /// Until this is called the workspace uses the deterministic built-in baseline
+    /// ([`ClientFeatureRegistry::current`]) — the features this build actually
+    /// supports — so the gate is LIVE by default (the demo, whose manifest declares
+    /// no required features, installs unchanged).
+    pub fn set_client_feature_registry(&mut self, registry: ClientFeatureRegistry) -> Result<()> {
+        let bytes = serde_json::to_vec(&registry)
+            .map_err(|e| CoreError::StorageError(format!("serialize client features: {e}")))?;
+        self.store
+            .kv_set(META_NS, CLIENT_FEATURES_KEY, &bytes, "application/json")?;
+        self.client_features = registry;
+        Ok(())
+    }
+
+    /// The TRUSTED MP-8 [`ClientFeatureRegistry`] this workspace negotiates installs
+    /// against. Read-only access for the install gate (`cmd_applet_install`) and for
+    /// tests / diagnostics. Defaults to [`ClientFeatureRegistry::current`] when
+    /// un-provisioned.
+    pub fn client_feature_registry(&self) -> &ClientFeatureRegistry {
+        &self.client_features
     }
 
     /// Build the live [`DecisionContext`](forge_runtime::DecisionContext) to install
@@ -1552,6 +1614,20 @@ fn load_run_policy(store: &Store) -> Result<Option<RunPolicy>> {
             .map(Some)
             .map_err(|e| CoreError::StorageError(format!("deserialize run policy: {e}"))),
         None => Ok(None),
+    }
+}
+
+/// Load the persisted TRUSTED MP-8 client feature registry from the workspace file.
+/// Absent → the deterministic built-in baseline
+/// ([`ClientFeatureRegistry::current`]), so the capability-negotiation gate is LIVE
+/// by default with the features this build actually supports — an un-provisioned
+/// workspace still refuses a package that requires a feature this client lacks.
+/// Mirrors [`load_run_policy`] / [`load_db_read_grants`].
+fn load_client_features(store: &Store) -> Result<ClientFeatureRegistry> {
+    match store.kv_get(META_NS, CLIENT_FEATURES_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| CoreError::StorageError(format!("deserialize client features: {e}"))),
+        None => Ok(ClientFeatureRegistry::current()),
     }
 }
 

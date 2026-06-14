@@ -1,0 +1,19 @@
+{
+  "case": "min_app_version_too_low_refuses",
+  "description": "The package requires a min_app_version above the client's app version. The floor is negotiated as the synthetic `app` feature, so the refusal enumerates `app` with the required min and what the client has.",
+  "client_features": [
+    { "feature_id": "app", "version": "1.0.0" },
+    { "feature_id": "ctx.db.query", "version": "1.0.0" }
+  ],
+  "manifest_compatibility": {
+    "min_app_version": "2.0.0",
+    "required_features": [
+      { "feature_id": "ctx.db.query", "min_version": "1.0.0" }
+    ]
+  },
+  "expect": {
+    "decision": "refuse",
+    "unsupported_feature_ids": ["app"],
+    "message_contains": ["app", "required >= 2.0.0", "client has 1.0.0"]
+  }
+}

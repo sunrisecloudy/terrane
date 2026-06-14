@@ -79,6 +79,7 @@ fn manifest_with_files_grant(grant: &Value) -> Manifest {
             storage_bytes: 10_485_760,
             log_bytes: 262_144,
         },
+        compatibility: Default::default(),
     }
 }
 

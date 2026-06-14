@@ -79,6 +79,7 @@ fn manifest(case: &serde_json::Value) -> Manifest {
         deterministic: true,
         capabilities,
         limits: Limits { max_host_calls, ..Limits::default() },
+        compatibility: Default::default(),
     }
 }
 

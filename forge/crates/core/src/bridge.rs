@@ -1086,6 +1086,7 @@ mod tests {
                 ..Capabilities::default()
             },
             limits: Limits { max_host_calls: 100, ..Limits::default() },
+            compatibility: Default::default(),
         }
     }
 
