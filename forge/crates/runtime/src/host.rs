@@ -626,9 +626,26 @@ impl<'b> HostContext<'b> {
             })
         })?;
 
-        serde_json::from_value::<FileReadResponse>(response_json).map_err(|e| {
-            CoreError::RuntimeError(format!("files.read response decode failed: {e}"))
-        })
+        let response =
+            serde_json::from_value::<FileReadResponse>(response_json).map_err(|e| {
+                CoreError::RuntimeError(format!("files.read response decode failed: {e}"))
+            })?;
+
+        // 5. Content-type constraint (spec/files.md per-action constraint). The
+        //    file's content-type is only known once the response is in hand, so —
+        //    like net's response-leg caps — it is checked here on BOTH record and
+        //    replay (a recorded response whose content-type violates the grant is
+        //    denied identically on replay). A violation surfaces as PermissionDenied
+        //    and the body never reaches the applet.
+        Self::check_files_content_type(
+            &self.files_grant.read,
+            &request.handle,
+            &rel_path,
+            FileAction::Read,
+            response.content_type.as_deref(),
+        )?;
+
+        Ok(response)
     }
 
     /// `ctx.files.write(request)` — write a sandboxed file, gated by the CR-3
@@ -680,6 +697,22 @@ impl<'b> HostContext<'b> {
                 self.recorder.record_denial("files.write", args, &err)?;
                 return Err(err);
             }
+        }
+
+        // 2c. Content-type constraint (spec/files.md per-action constraint): the
+        //     write payload's declared content-type must satisfy every matching
+        //     rule that constrains it — enforced on the request before any fs
+        //     touch. A violation is a recorded denial (PermissionDenied), never a
+        //     write.
+        if let Err(err) = Self::check_files_content_type(
+            &self.files_grant.write,
+            &request.handle,
+            &rel_path,
+            FileAction::Write,
+            request.content_type.as_deref(),
+        ) {
+            self.recorder.record_denial("files.write", args, &err)?;
+            return Err(err);
         }
 
         // 3. Host-call budget (SC-2).
@@ -779,6 +812,50 @@ impl<'b> HostContext<'b> {
             .filter(|r| r.handle == handle && glob_matches(&r.path_glob, rel_path))
             .filter_map(|r| r.max_bytes)
             .min()
+    }
+
+    /// Enforce the per-action `content_types` constraint (spec/files.md: "`max_bytes`
+    /// and `content_types` are per-action constraints, not comments. They must be
+    /// enforced before a read response or write payload is accepted").
+    ///
+    /// `content_type` is the actual content-type in hand (the file's, on read; the
+    /// write request's, on write). Every matching rule that *constrains*
+    /// content-types (a non-empty `content_types`) must permit it — the most
+    /// restrictive interpretation, matching how the smallest `max_bytes` is applied.
+    /// A constraint with a missing actual content-type is a fail-closed
+    /// `PermissionDenied`, mirroring net's `content_type_allowed`. Returns
+    /// `PermissionDenied` (spec error vocabulary) on a violation, `Ok(())` otherwise.
+    fn check_files_content_type(
+        rules: &[FileRule],
+        handle: &str,
+        rel_path: &str,
+        action: FileAction,
+        content_type: Option<&str>,
+    ) -> Result<()> {
+        for rule in rules
+            .iter()
+            .filter(|r| r.handle == handle && glob_matches(&r.path_glob, rel_path))
+        {
+            if rule.content_types.is_empty() {
+                continue; // unconstrained rule
+            }
+            match content_type {
+                Some(ct) if rule.content_types.iter().any(|a| a.eq_ignore_ascii_case(ct)) => {}
+                Some(ct) => {
+                    return Err(CoreError::PermissionDenied(format!(
+                        "ctx.files.{action} denied: content-type {ct:?} is not in the grant's allowlisted set {:?} for {rel_path:?}",
+                        rule.content_types
+                    )));
+                }
+                None => {
+                    return Err(CoreError::PermissionDenied(format!(
+                        "ctx.files.{action} denied: the grant constrains content-type to {:?} but {rel_path:?} declares none",
+                        rule.content_types
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     // --- UI (capability-checked, recorded) ------------------------------
@@ -2211,6 +2288,205 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "ResourceLimitExceeded", "{err}");
         assert!(err.to_string().contains("max_bytes"), "{err}");
+    }
+
+    /// A `content_types`-constrained grant: a read of a file whose content-type
+    /// is outside the allowlisted set is denied (PermissionDenied) and the bytes
+    /// are not served (spec/files.md per-action content-type constraint).
+    #[test]
+    fn files_read_wrong_content_type_is_permission_denied() {
+        let grant = FilesGrant {
+            read: vec![FileRule {
+                handle: "workspace_data".into(),
+                path_glob: "data/*.json".into(),
+                max_bytes: Some(65536),
+                content_types: vec!["application/json".into()],
+            }],
+            write: vec![],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        // The seeded file is text/html — outside the grant's application/json set.
+        let fs = InMemoryFileSystem::new()
+            .with_handle_root("workspace_data", "/root")
+            .with_file("workspace_data", "data/page.json", b"<html></html>".to_vec(), Some("text/html"));
+        let mut bridge = MemoryHostBridge::new().with_file_system(fs);
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .files_read(read_req("workspace_data", "data/page.json"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "{err}");
+        assert!(err.to_string().contains("content-type"), "{err}");
+    }
+
+    /// A `content_types`-constrained read whose file matches the allowlisted set is
+    /// served unchanged: the content-type check must not over-deny a compliant
+    /// response (positive control).
+    #[test]
+    fn files_read_matching_content_type_is_allowed() {
+        let grant = FilesGrant {
+            read: vec![FileRule {
+                handle: "workspace_data".into(),
+                path_glob: "data/*.json".into(),
+                max_bytes: Some(65536),
+                content_types: vec!["application/json".into()],
+            }],
+            write: vec![],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = bridge_with_file(
+            "workspace_data",
+            "/root",
+            "data/settings.json",
+            br#"{"ok":true}"#,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let resp = host
+            .files_read(read_req("workspace_data", "data/settings.json"))
+            .unwrap();
+        assert_eq!(resp.content_type.as_deref(), Some("application/json"));
+    }
+
+    /// A write whose declared content-type is outside the grant's allowlisted set
+    /// is denied (PermissionDenied) and never touches the filesystem.
+    #[test]
+    fn files_write_wrong_content_type_is_permission_denied() {
+        let grant = FilesGrant {
+            read: vec![],
+            write: vec![FileRule {
+                handle: "workspace_data".into(),
+                path_glob: "drafts/*.txt".into(),
+                max_bytes: Some(65536),
+                content_types: vec!["text/plain".into()],
+            }],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new().with_file_system(
+            InMemoryFileSystem::new().with_handle_root("workspace_data", "/root"),
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let write = FileWriteRequest {
+            handle: "workspace_data".into(),
+            path: "drafts/note.txt".into(),
+            bytes_base64: BASE64.encode(b"<html>"),
+            content_type: Some("text/html".into()), // outside text/plain
+            mode: "create_or_truncate".into(),
+        };
+        let err = host.files_write(write).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "{err}");
+        assert!(err.to_string().contains("content-type"), "{err}");
+        drop(host);
+        assert!(
+            bridge.peek_file("workspace_data", "drafts/note.txt").is_none(),
+            "a content-type-denied write must not touch the filesystem"
+        );
+    }
+
+    /// A write that declares NO content-type against a grant that *constrains*
+    /// content-types is fail-closed (PermissionDenied) — mirrors net's behavior
+    /// when a rule constrains a content-type the request omits.
+    #[test]
+    fn files_write_missing_content_type_against_constraint_is_permission_denied() {
+        let grant = FilesGrant {
+            read: vec![],
+            write: vec![FileRule {
+                handle: "workspace_data".into(),
+                path_glob: "drafts/*.txt".into(),
+                max_bytes: Some(65536),
+                content_types: vec!["text/plain".into()],
+            }],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let mut bridge = MemoryHostBridge::new().with_file_system(
+            InMemoryFileSystem::new().with_handle_root("workspace_data", "/root"),
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let write = FileWriteRequest {
+            handle: "workspace_data".into(),
+            path: "drafts/note.txt".into(),
+            bytes_base64: BASE64.encode(b"draft"),
+            content_type: None, // omitted, but the grant constrains the type
+            mode: "create_or_truncate".into(),
+        };
+        let err = host.files_write(write).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "{err}");
+        drop(host);
+        assert!(bridge.peek_file("workspace_data", "drafts/note.txt").is_none());
+    }
+
+    /// The read content-type constraint is enforced on **replay** too: a recorded
+    /// read whose response content-type violates the grant is denied identically
+    /// when replayed (the recording is policy-bound, like net's response caps).
+    #[test]
+    fn files_read_content_type_is_enforced_on_replay() {
+        use crate::bridge::NullBridge;
+        use forge_domain::RecordedCall;
+
+        let grant = FilesGrant {
+            read: vec![FileRule {
+                handle: "workspace_data".into(),
+                path_glob: "data/*.json".into(),
+                max_bytes: Some(65536),
+                content_types: vec!["application/json".into()],
+            }],
+            write: vec![],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        let request = read_req("workspace_data", "data/page.json");
+
+        // A recorded read whose response content-type is text/html (off-grant).
+        let recorded_resp = FileReadResponse {
+            path: "data/page.json".into(),
+            bytes_base64: BASE64.encode(b"<html></html>"),
+            size: 13,
+            content_type: Some("text/html".into()),
+        };
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "files.read".into(),
+            args: serde_json::to_value(&request).unwrap(),
+            response: serde_json::to_value(&recorded_resp).unwrap(),
+        }];
+
+        let mut bridge = NullBridge::new();
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::replaying(1, 0, recorded),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host.files_read(request).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "{err}");
+        assert!(err.to_string().contains("content-type"), "{err}");
     }
 
     /// `ctx.files` counts against the host-call flood cap (SC-2): the (n+1)th
