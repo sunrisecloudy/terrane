@@ -1,0 +1,189 @@
+{
+  "modal": {
+    "annotations": [
+      {
+        "focusable": false,
+        "name": "Confirm delete",
+        "path": [],
+        "role": "dialog",
+        "type": "Modal"
+      },
+      {
+        "focusable": false,
+        "name": "This cannot be undone.",
+        "path": [
+          0
+        ],
+        "role": "text",
+        "type": "Text"
+      },
+      {
+        "focusable": true,
+        "name": "Cancel",
+        "path": [
+          1
+        ],
+        "role": "button",
+        "type": "Button"
+      },
+      {
+        "focusable": true,
+        "name": "Delete",
+        "path": [
+          2
+        ],
+        "role": "button",
+        "type": "Button"
+      }
+    ],
+    "focus_order": {
+      "initial_focus": [
+        1
+      ],
+      "stops": [
+        {
+          "name": "Cancel",
+          "path": [
+            1
+          ],
+          "role": "button"
+        },
+        {
+          "name": "Delete",
+          "path": [
+            2
+          ],
+          "role": "button"
+        }
+      ],
+      "traps_focus": true
+    }
+  },
+  "page": {
+    "annotations": [
+      {
+        "focusable": false,
+        "name": null,
+        "path": [],
+        "role": "group",
+        "type": "Stack"
+      },
+      {
+        "focusable": false,
+        "name": "Dashboard",
+        "path": [
+          0
+        ],
+        "role": "text",
+        "type": "Text"
+      },
+      {
+        "focusable": false,
+        "name": "Sections",
+        "path": [
+          1
+        ],
+        "role": "tablist",
+        "type": "Tabs"
+      },
+      {
+        "focusable": true,
+        "name": "Refresh",
+        "path": [
+          1,
+          0
+        ],
+        "role": "button",
+        "type": "Button"
+      },
+      {
+        "focusable": true,
+        "name": "Save settings",
+        "path": [
+          1,
+          1
+        ],
+        "role": "button",
+        "type": "Button"
+      },
+      {
+        "focusable": false,
+        "name": null,
+        "path": [
+          2
+        ],
+        "role": "grid",
+        "type": "Grid"
+      },
+      {
+        "focusable": true,
+        "name": "Search",
+        "path": [
+          2,
+          0
+        ],
+        "role": "textbox",
+        "type": "TextField"
+      },
+      {
+        "focusable": true,
+        "name": "Clear",
+        "path": [
+          2,
+          1
+        ],
+        "role": "button",
+        "type": "Button"
+      }
+    ],
+    "focus_order": {
+      "initial_focus": [
+        1,
+        0
+      ],
+      "stops": [
+        {
+          "name": "Overview",
+          "path": [
+            1,
+            0
+          ],
+          "role": "tab"
+        },
+        {
+          "name": "Settings",
+          "path": [
+            1,
+            1
+          ],
+          "role": "tab"
+        },
+        {
+          "name": "Refresh",
+          "path": [
+            1,
+            2
+          ],
+          "role": "button"
+        },
+        {
+          "name": "Search",
+          "path": [
+            2,
+            0
+          ],
+          "role": "textbox"
+        },
+        {
+          "name": "Clear",
+          "path": [
+            2,
+            1
+          ],
+          "role": "button"
+        }
+      ],
+      "traps_focus": false
+    }
+  }
+}

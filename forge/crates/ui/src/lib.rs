@@ -10,8 +10,10 @@
 //!   and unknown props on known nodes are ignored — never an error.
 //! - **UI-7** — every rendered node carries an accessibility annotation
 //!   ([`Node::accessibility`]) emitting its ARIA role + accessible name per
-//!   `spec/accessibility.md`, and [`validate_accessibility`] enforces the
-//!   spec's REQUIRED accessible-name rules as `ValidationError`s.
+//!   `spec/accessibility.md`, [`validate_accessibility`] enforces the spec's
+//!   REQUIRED accessible-name rules as `ValidationError`s, and
+//!   [`Node::focus_order`] emits the deterministic keyboard focus order
+//!   (Stack/Grid/Tabs/Modal traversal + Modal containment).
 //! - **UI-12** — versioned wire format with golden trees. `serde_json` is the
 //!   canonical encoding (see [`to_canonical_string`]).
 //!
@@ -20,12 +22,14 @@
 //! real paths.
 
 mod accessibility;
+mod focus;
 mod node;
 mod patch;
 
 pub use accessibility::{
     validate_accessibility, Accessibility, AxNameSource, AxRole,
 };
+pub use focus::{FocusOrder, FocusStop};
 pub use node::{ActionRef, BaseNode, Node, StackDir};
 pub use patch::{apply, diff, Patch, Path};
 
