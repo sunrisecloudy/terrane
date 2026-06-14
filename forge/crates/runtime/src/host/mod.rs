@@ -26,6 +26,18 @@ use forge_domain::{
 };
 use forge_policy::{Access, HostCall, NetPolicy, PolicyEngine};
 
+// Low-coupling host-call handlers split into focused submodules. Each adds
+// `impl HostContext` methods so `HostContext`'s public surface is reachable at
+// the same paths regardless of which file the handler body lives in:
+//   * `policy` — the `check_or_record_denial` denial-recording chokepoint;
+//   * `time`   — the `ctx.time.now` / `ctx.random.next` deterministic seams;
+//   * `log`    — the `ctx.log` sink + its byte/call budgets;
+//   * `ui`     — `ctx.ui.render` + the UI event-dispatch envelope.
+mod log;
+mod policy;
+mod time;
+mod ui;
+
 /// The hub shared (via interior mutability in the engine) by all `ctx.*`
 /// forwarders for the duration of a single run.
 pub struct HostContext<'b> {
@@ -154,46 +166,6 @@ impl<'b> HostContext<'b> {
     /// (review 009 P2). Delegates to the recorder; no-op in record mode.
     pub fn assert_replay_consumed(&self) -> Result<()> {
         self.recorder.assert_fully_consumed()
-    }
-
-    /// Run the policy check for `call`; on a denial, record the denied attempt
-    /// into the trace (so it survives into the [`RunRecord`], review 009 P1 CR-9)
-    /// and then propagate the error. `method`/`args` describe the call as the
-    /// recorder logs it.
-    ///
-    /// Recording the denial can itself fail in replay mode (a method/args
-    /// mismatch against the recorded denial) — that divergence takes precedence
-    /// and is surfaced instead of the original policy error.
-    fn check_or_record_denial(
-        &mut self,
-        call: &HostCall,
-        method: &str,
-        args: &serde_json::Value,
-    ) -> Result<()> {
-        match self.policy.check(call) {
-            Ok(()) => Ok(()),
-            Err(policy_err) => {
-                self.recorder
-                    .record_denial(method, args.clone(), &policy_err)?;
-                Err(policy_err)
-            }
-        }
-    }
-
-    // --- Deterministic seams (policy-checked, recorded) ------------------
-
-    /// `ctx.time.now()` — checked against the (always-granted) Time category,
-    /// counted against `max_host_calls`, served by the seeded logical clock.
-    pub fn now(&mut self) -> Result<i64> {
-        self.check_or_record_denial(&HostCall::Time, "time.now", &serde_json::Value::Null)?;
-        self.recorder.now()
-    }
-
-    /// `ctx.random.next()` — checked against Random, counted, served by the
-    /// seeded RNG.
-    pub fn random_next(&mut self) -> Result<f64> {
-        self.check_or_record_denial(&HostCall::Random, "random.next", &serde_json::Value::Null)?;
-        self.recorder.random_next()
     }
 
     // --- Storage (capability-checked, recorded effects) ------------------
@@ -914,80 +886,6 @@ impl<'b> HostContext<'b> {
                 }
             }
         }
-        Ok(())
-    }
-
-    // --- UI event dispatch (recorded, replay-bound) ---------------------
-
-    /// Record (or replay) a **dispatched UI event** (prd-merged/05 UI-4,
-    /// prd-merged/01 CR-6): the `(action_ref, payload)` that addressed a handler,
-    /// plus the `result` the dispatch produced (the handler's final UI tree /
-    /// returned value). The individual `ctx.ui.render` calls a handler makes are
-    /// already captured as `ui.render` effects; this records the *dispatch
-    /// envelope* so a session replays the same event sequence byte-identically.
-    ///
-    /// On replay the recorder serves the recorded result and asserts the
-    /// `action_ref`+`payload` match the recording (a diverging event/payload/order
-    /// is a determinism `RuntimeError`). This is *not* a policy-gated host call —
-    /// the dispatch itself touches no user data; the effects inside the handler
-    /// are gated as usual. It is, however, counted toward the trace order so the
-    /// `replay_fingerprint` covers every dispatched event.
-    pub fn dispatch_event(
-        &mut self,
-        action_ref: &str,
-        payload: serde_json::Value,
-        result: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.recorder.dispatch_event(action_ref, payload, result)
-    }
-
-    // --- UI (capability-checked, recorded) ------------------------------
-
-    pub fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {
-        let args = serde_json::json!([tree]);
-        self.check_or_record_denial(&HostCall::Ui, "ui.render", &args)?;
-        let bridge = &mut *self.bridge;
-        let t = tree.clone();
-        self.recorder.host_call("ui.render", args, || {
-            bridge.ui_render(t).map(|()| serde_json::Value::Null)
-        })?;
-        Ok(())
-    }
-
-    // --- Log (budget-checked, recorded) ---------------------------------
-
-    /// `ctx.log(line)` — there is no capability gate for logging (it is an
-    /// observability sink, not an effect on user data). It is recorded so replay
-    /// stays in parity, and bounded by **two** budgets (review 009 P2):
-    ///   * the `log_bytes` budget (CR-5) caps total log *volume*; and
-    ///   * the `max_host_calls` budget caps the *number* of log calls — an
-    ///     empty-string log flood costs zero bytes, so the byte budget alone can
-    ///     never stop it, and ctx.log is otherwise outside the policy host-call
-    ///     counter. Counting log calls here closes that flood hole.
-    pub fn log(&mut self, line: &str) -> Result<()> {
-        // Call-count budget first: a flood of empty logs must trip even though it
-        // adds no bytes (review 009 P2).
-        self.log_calls_used = self.log_calls_used.saturating_add(1);
-        if self.log_calls_used > self.limits.max_host_calls {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "host-call limit exceeded: max_host_calls = {} reached (ctx.log flood)",
-                self.limits.max_host_calls
-            )));
-        }
-        self.log_bytes_used = self.log_bytes_used.saturating_add(line.len() as u64);
-        if self.log_bytes_used > self.limits.log_bytes {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "log byte budget exceeded: log_bytes = {} reached",
-                self.limits.log_bytes
-            )));
-        }
-        let args = serde_json::json!([line]);
-        let bridge = &mut *self.bridge;
-        let l = line.to_string();
-        self.recorder.host_call("log", args, || {
-            bridge.log(&l).map(|()| serde_json::Value::Null)
-        })?;
-        self.logs.push(line.to_string());
         Ok(())
     }
 }
