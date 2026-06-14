@@ -72,15 +72,7 @@ impl Store {
     /// monotone guard `apply_migration`'s precondition enforces). The read-bump-write
     /// runs in ONE [`Store::transact`] so the version never half-advances.
     pub fn advance_schema_version(&mut self, to: u64) -> Result<()> {
-        self.transact(|tx| {
-            let current = read_schema_version_tx(tx)?;
-            if to <= current {
-                return Err(CoreError::SchemaCompatibilityError(format!(
-                    "schema_version must advance: current {current}, requested {to}"
-                )));
-            }
-            write_schema_version_tx(tx, to)
-        })
+        self.transact(|tx| advance_schema_version_tx(tx, to))
     }
 
     /// Apply a migration (DL-13) to every record of `descriptor.collection`,
@@ -117,6 +109,45 @@ impl Store {
         let peer_id = self.crdt_peer_id();
         self.transact(|tx| apply_migration_tx(tx, descriptor, peer_id, indexes))
     }
+}
+
+/// Advance the persisted `schema_version` to `to` inside a caller-provided
+/// transaction — the tx-scoped core of [`Store::advance_schema_version`].
+///
+/// Exposed so a caller composing a larger atomic unit (the core's
+/// `schema.apply_change`, which must land the registry persist + the version
+/// advance in ONE [`Store::transact`]) can advance the version in the SAME tx as
+/// its other writes. `to` must strictly advance the current version; a
+/// non-advancing target is a [`CoreError::SchemaCompatibilityError`].
+pub fn advance_schema_version_tx(tx: &rusqlite::Transaction<'_>, to: u64) -> Result<()> {
+    let current = read_schema_version_tx(tx)?;
+    if to <= current {
+        return Err(CoreError::SchemaCompatibilityError(format!(
+            "schema_version must advance: current {current}, requested {to}"
+        )));
+    }
+    write_schema_version_tx(tx, to)
+}
+
+/// Apply a migration (DL-13) inside a caller-provided transaction — the tx-scoped
+/// core of [`Store::apply_migration`]. Validates the descriptor, then runs the
+/// six-step migration body in the SAME tx (`peer_id` is the store's Loro peer id,
+/// read by the caller via [`Store::crdt_peer_id`] before opening the tx).
+///
+/// Exposed so the core's `schema.apply_change` can land the record migration, the
+/// version advance, AND the evolved-registry persist in ONE [`Store::transact`]:
+/// a failure in EITHER direction (a non-coercible value mid-migration OR a later
+/// registry kv_set error) rolls BOTH back, so the schema can never end up behind
+/// the data (or ahead of it). See [`Store::apply_migration`] for the body.
+pub fn apply_migration_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    descriptor: &MigrationDescriptor,
+    peer_id: u64,
+    indexes: &IndexManager,
+) -> Result<MigrationOutcome> {
+    // Structural validation up front (pure; independent of any record).
+    descriptor.validate()?;
+    apply_migration_tx(tx, descriptor, peer_id, indexes)
 }
 
 /// The DL-13 migration body, inside a caller-provided transaction. Split out so

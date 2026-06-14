@@ -72,7 +72,8 @@ mod kv;
 pub use kv::{kv_delete_tx, kv_get_tx, kv_set_tx};
 mod migration;
 pub use migration::{
-    MigrationOutcome, INITIAL_SCHEMA_VERSION, MIGRATION_OP_KIND, SCHEMA_VERSION_KEY,
+    advance_schema_version_tx, apply_migration_in_tx, MigrationOutcome, INITIAL_SCHEMA_VERSION,
+    MIGRATION_OP_KIND, SCHEMA_VERSION_KEY,
 };
 mod mutations;
 mod query_exec;

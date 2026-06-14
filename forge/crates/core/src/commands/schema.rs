@@ -8,7 +8,7 @@ use forge_schema::{
     CollectionDef, FieldDef, FieldTransform, FieldType, MigrationDescriptor, SchemaChange,
     SchemaRegistry,
 };
-use forge_storage::{CreateIndexKind, IndexDef, IndexState};
+use forge_storage::{kv_set_tx, CreateIndexKind, IndexDef, IndexState};
 
 use super::super::persistence::META_NS;
 use super::super::{WorkspaceCore, SCHEMA_REGISTRY_KEY};
@@ -94,35 +94,75 @@ impl WorkspaceCore {
             }
         }
 
-        // DL-13: advance the workspace schema_version in lockstep and carry existing
-        // records forward. The storage `schema_version` is the single version source
-        // of truth; this change advances it from `current` to `current + 1`.
+        // DL-13: advance the workspace schema_version in lockstep, carry existing
+        // records forward, AND durably persist the evolved registry — as ONE atomic
+        // unit. The storage `schema_version` is the single version source of truth;
+        // this change advances it from `current` to `current + 1`.
         //
-        // A data-affecting change (widen / deprecate / add_field-with-default) builds
-        // its companion MigrationDescriptor against the CANDIDATE registry (so display
-        // names resolve to the post-change registry) and drives the DURABLE migration,
-        // which rewrites the CRDT source of truth, materializes the projection, bumps
-        // the version, and rebuilds active indexes — atomically. Run it BEFORE
-        // persisting the registry: a failed (non-coercible) migration rolls itself
-        // fully back and returns its typed error here, so the registry is never
-        // persisted and nothing changed. A no-record-transform change advances the
-        // version directly (a single bump, never two).
+        // CROSS-TRANSACTION ATOMICITY (review 140): the record migration / version
+        // advance and the registry persist must commit OR roll back TOGETHER. If they
+        // were separate transactions and the migration committed but the later
+        // registry kv_set failed, records + schema_version would advance while the
+        // registry stayed old — schema BEHIND data (the mirror of review 138's data-
+        // behind-schema gap). So both run in ONE `Store::transact`:
+        //   - a data-affecting change (widen / deprecate / add_field-with-default)
+        //     builds its companion MigrationDescriptor against the CANDIDATE registry
+        //     (so display names resolve to the post-change registry) and drives the
+        //     DURABLE migration in-tx (rewrites the CRDT source of truth, materializes
+        //     the projection, bumps the version, rebuilds active indexes);
+        //   - a no-record-transform change advances the version directly (one bump);
+        //   - then the evolved registry is persisted via `kv_set_tx` in the SAME tx.
+        // A failure in EITHER direction — a non-coercible value mid-migration OR a
+        // registry kv_set error — rolls BOTH back, so the schema can never end up
+        // behind (or ahead of) the data. The disjoint borrow of `store` + `indexes`
+        // mirrors `WorkspaceCore::rebuild_projection` (the two are private fields).
         let current = self.store.schema_version()?;
-        let migrated = match migration_for_change(&change, &self.registry, &next, cmd, current)? {
-            Some(descriptor) => {
-                let outcome = self.store.apply_migration(&descriptor, &self.indexes)?;
-                outcome.migrated_records
+        let descriptor = migration_for_change(&change, &self.registry, &next, cmd, current)?;
+        let registry_bytes = serde_json::to_vec(&next)
+            .map_err(|e| CoreError::StorageError(format!("serialize schema registry: {e}")))?;
+        let peer_id = self.store.crdt_peer_id();
+        // TEST-ONLY seam (mirrors `applet.upgrade`'s `simulate_failure_stage`):
+        // inject a failure at the registry-persist step INSIDE the transaction —
+        // AFTER the migration / version advance committed-in-tx — so the review-140
+        // fault-injection test proves the records + `schema_version` roll back with the
+        // registry persist, not merely that "all writes happened to succeed". Compiles
+        // to a one-shot bool from the payload; absent in normal use.
+        let simulate_registry_persist_failure = cmd
+            .payload
+            .get("simulate_failure_stage")
+            .and_then(|v| v.as_str())
+            == Some("registry_persist");
+        let indexes = &self.indexes;
+        let migrated = self.store.transact(|tx| {
+            let migrated = match &descriptor {
+                Some(descriptor) => {
+                    let outcome =
+                        forge_storage::apply_migration_in_tx(tx, descriptor, peer_id, indexes)?;
+                    outcome.migrated_records
+                }
+                None => {
+                    forge_storage::advance_schema_version_tx(tx, current + 1)?;
+                    0
+                }
+            };
+            // Injected registry-persist failure: AFTER the migration / version advance
+            // ran in this tx but in place of the registry kv_set. Returning `Err` rolls
+            // the WHOLE transaction back — the migrated records AND `schema_version`
+            // included — so the schema can never end up behind the data (review 140).
+            if simulate_registry_persist_failure {
+                return Err(CoreError::StorageError(
+                    "simulated registry-persist failure after the record migration".into(),
+                ));
             }
-            None => {
-                self.store.advance_schema_version(current + 1)?;
-                0
-            }
-        };
+            // Persist the evolved registry in the SAME tx as the migration / version
+            // advance: the fault-injection above proves a failure here rolls the
+            // records + schema_version back too.
+            persist_registry_tx(tx, &registry_bytes)?;
+            Ok(migrated)
+        })?;
 
-        // The index (if any) was created and the migration committed successfully —
-        // now durably commit the evolved registry. Persist BEFORE swapping the
-        // in-memory copy so the durable schema and the in-memory one never diverge.
-        self.persist_registry(&next)?;
+        // Both the migration and the registry persist committed — swap the in-memory
+        // copy so the durable schema and the in-memory one never diverge.
         self.registry = next;
 
         self.events.emit(
@@ -257,21 +297,30 @@ impl WorkspaceCore {
         Ok(rebuilt)
     }
 
-    /// Persist the registry to the workspace file (`__forge/meta` /
-    /// `schema_registry`) as serialized JSON, mirroring the `db.read` grant
-    /// persistence. So a defined schema survives reopen (DL-7/DL-8).
-    fn persist_registry(&mut self, registry: &SchemaRegistry) -> Result<()> {
-        let bytes = serde_json::to_vec(registry)
-            .map_err(|e| CoreError::StorageError(format!("serialize schema registry: {e}")))?;
-        self.store
-            .kv_set(META_NS, SCHEMA_REGISTRY_KEY, &bytes, "application/json")
-    }
+}
+
+/// Persist the serialized registry to the workspace file (`__forge/meta` /
+/// `schema_registry`) INSIDE a caller-provided transaction, so it commits or rolls
+/// back together with the record migration + version advance (cross-transaction
+/// atomicity, review 140). A free function (not a `&mut self` method) so it can run
+/// inside a `self.store.transact` closure while `self.indexes` is disjointly
+/// borrowed by the migration. The registry is pre-serialized by the caller (a
+/// serialization failure should reject BEFORE the tx opens).
+fn persist_registry_tx(tx: &forge_storage::Transaction<'_>, bytes: &[u8]) -> Result<()> {
+    kv_set_tx(tx, META_NS, SCHEMA_REGISTRY_KEY, bytes, "application/json")
 }
 
 /// Every `(collection, field_id, kind)` the registry declares as `indexed`,
 /// skipping deprecated fields (a hidden field's index is not maintained). The
 /// kind is derived from the field type ([`index_kind_for`]). Stable iteration
 /// order (registry collections are a `BTreeMap`, fields are declaration-ordered).
+///
+/// M0a FIELD-ID CONVERGENCE (review 141): the `field_id` is the `f_<name>`
+/// **stand-in** ([`record_field_id`]) — the SAME id the apply-time index, the
+/// default-fill, and the write path's `materialize_field_ids` all use. So the
+/// open-time index reconstruction and `schema.rebuild_indexes` rebuild EXACTLY the
+/// index `schema.apply_change` created, over the id records actually carry (no
+/// divergence between create-time and reopen-time index ids).
 pub(in crate::workspace) fn indexed_fields(
     registry: &SchemaRegistry,
 ) -> Vec<(String, String, CreateIndexKind)> {
@@ -283,7 +332,7 @@ pub(in crate::workspace) fn indexed_fields(
 }
 
 /// The `indexed` (non-deprecated) fields of one collection as
-/// `(collection, field_id, kind)`.
+/// `(collection, field_id, kind)`, keyed by the `f_<name>` stand-in (review 141).
 fn collection_indexed_fields(
     name: &str,
     col: &CollectionDef,
@@ -291,7 +340,7 @@ fn collection_indexed_fields(
     col.fields()
         .iter()
         .filter(|f| f.indexed() && !f.deprecated())
-        .map(|f| (name.to_string(), f.field_id().to_string(), index_kind_for(f)))
+        .map(|f| (name.to_string(), record_field_id(f.name()), index_kind_for(f)))
         .collect()
 }
 
@@ -306,10 +355,21 @@ fn index_kind_for(field: &FieldDef) -> CreateIndexKind {
     }
 }
 
-/// The (stable field id, index kind) for the last-added field of `collection` in
-/// `registry`, iff that field is marked `indexed` (DL-8 → DL-5). Takes the
+/// The (record-side field id, index kind) for the last-added field of `collection`
+/// in `registry`, iff that field is marked `indexed` (DL-8 → DL-5). Takes the
 /// registry explicitly so `schema.apply_change` can probe the CANDIDATE registry
 /// and create the index BEFORE persisting (review 066 atomicity).
+///
+/// M0a FIELD-ID CONVERGENCE (review 141): the index is built over the `f_<name>`
+/// **stand-in** ([`record_field_id`]) — the SAME id the applet/CRDT write path
+/// materializes display values under ([`materialize_field_ids`]) — NOT the
+/// registry's actor-scoped stable id (`f_<actor>_<seq>`). The storage write path
+/// is not registry-aware, so a later DL-4 display write of the same field lands on
+/// `f_<name>`; if the index keyed the registry id instead, the index would serve a
+/// stale value (or nothing) while display reads saw the new one — a SPLIT IDENTITY
+/// (review 141 P1). Keying the index, the default-fill, and every migration on the
+/// one `f_<name>` stand-in keeps a single id scheme in M0a (see DECISIONS.md);
+/// registry-aware materialization is deferred (DL-7 future work).
 fn indexed_field_to_create(
     registry: &SchemaRegistry,
     collection: &str,
@@ -319,7 +379,7 @@ fn indexed_field_to_create(
     if !field.indexed() {
         return None;
     }
-    Some((field.field_id().to_string(), index_kind_for(field)))
+    Some((record_field_id(field.name()), index_kind_for(field)))
 }
 
 /// Build the companion DL-13 [`MigrationDescriptor`] for a schema `change` that
@@ -351,27 +411,26 @@ fn indexed_field_to_create(
 ///
 /// `add_collection` and `enforce_required` map to no transform.
 ///
-/// **Record-key resolution (M0a stand-in vs registry id — review 140 P1).** A
+/// **Record-key resolution (the M0a `f_<name>` stand-in — reviews 140/141).** A
 /// transform must target the `field_id` the **records actually carry**. The M0a DL-4
 /// mutation surface keys a display field `<name>` under the projection stand-in
 /// `f_<name>` (`forge_storage`'s `materialize_field_ids`: storage has no registry,
 /// so it has no schema name→id map and writes the `f_<name>` stand-in), so a record
-/// written before the change carries `f_<name>`, NOT the registry's actor-scoped
-/// `f_<actor>_<seq>`. So `widen`/`deprecate` over an EXISTING display field, and a
-/// `add_field` default whose field is NOT indexed, key by the stand-in
-/// [`record_field_id`].
+/// written through the DL-4 path carries `f_<name>`, NOT the registry's actor-scoped
+/// `f_<actor>_<seq>`. So EVERY transform — `widen`/`deprecate` over an existing
+/// display field, and an `add_field` default whether or not the field is indexed —
+/// keys by the stand-in [`record_field_id`].
 ///
-/// An **indexed** `add_field`-with-default is the exception: the facade creates the
-/// storage index over the registry-minted stable id ([`indexed_field_to_create`] →
-/// `field.field_id()`, e.g. `f_fx_1`). If the default-fill keyed the brand-new field
-/// by its `f_<name>` stand-in, the migrated rows would live under `field_ids.f_<name>`
-/// while the index reads `field_ids.f_<name>`'s SIBLING `field_ids.f_fx_1` — an empty
-/// index (review 140 P1). Since the field is brand-new (no prior record carries any
-/// id for it), we fill the default under the SAME registry stable id the index is
-/// built over, so the index serves the defaulted rows and a query by the registry
-/// field id uses it. The display `name` is still mirrored into `fields[name]` so reads
-/// stay readable; a later DL-4 display write of the same name is a fill-if-missing
-/// no-op on the value side.
+/// CONVERGED ID SCHEME (review 141): an `indexed` `add_field` builds its storage
+/// index over the SAME `f_<name>` stand-in ([`indexed_field_to_create`]), so filling
+/// the default under that stand-in populates the index AND means a later DL-4 display
+/// write of the same name updates the SAME key — no split identity. (Round 2 keyed an
+/// indexed default-fill under the registry stable id `f_<actor>_<seq>` to match an
+/// index built over that id; but the write path is not registry-aware, so a later
+/// `f_<name>` display write left the index serving a stale value — review 141 P1.
+/// That direction is reverted: indexes, default-fills, and migrations all key by the
+/// stand-in in M0a; registry-aware materialization is deferred DL-7 work — see
+/// `prd-merged/DECISIONS.md`.)
 ///
 /// The display `name` (and `from_name`/`to_name` for a rename) is carried explicitly
 /// so both the stable-id map and the display projection are rewritten exactly (review
@@ -424,7 +483,7 @@ fn migration_for_change(
                 ))
             }
         }
-        SchemaChange::AddField { collection, indexed, .. } => {
+        SchemaChange::AddField { collection, .. } => {
             // A default (an optional companion to `change` in the command payload) is
             // filled into existing records that lack the freshly minted field. The
             // schema crate mints the id when applying the change, so resolve the new
@@ -441,20 +500,19 @@ fn migration_for_change(
                             ))
                         })?;
                     let name = field.name().to_string();
-                    // Review 140 P1: an INDEXED new field is indexed over its registry
-                    // stable id (`indexed_field_to_create`), so fill the default under
-                    // that SAME id (not the `f_<name>` stand-in) — otherwise the index
-                    // is empty. A non-indexed field keeps the stand-in so a later DL-4
-                    // display write sees the default under the same key.
-                    let record_id = if *indexed {
-                        field.field_id().to_string()
-                    } else {
-                        record_field_id(&name)
-                    };
+                    // M0a FIELD-ID CONVERGENCE (review 141): fill the default under the
+                    // `f_<name>` stand-in for EVERY field — indexed or not. The index
+                    // (when the field is `indexed`) is built over the SAME stand-in
+                    // (`indexed_field_to_create`), and a later DL-4 display write of the
+                    // same name also lands on `f_<name>`. Keying the default-fill,
+                    // the index, and every migration on the one stand-in keeps a single
+                    // id scheme, so the index serves the defaulted rows AND a later
+                    // display write of the same field updates the SAME key (no split
+                    // identity — the round-2 registry-id direction is reverted).
                     Some((
                         collection.clone(),
                         FieldTransform::AddField {
-                            field_id: record_id,
+                            field_id: record_field_id(&name),
                             name,
                             default: default.clone(),
                         },

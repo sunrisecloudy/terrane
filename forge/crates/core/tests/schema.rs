@@ -193,8 +193,10 @@ fn indexed_field_creates_a_usable_storage_index() {
     let mut core = WorkspaceCore::in_memory("ws1").unwrap();
     assert!(apply(&mut core, add_collection("tasks")).ok);
 
-    // Add an INDEXED int field. The facade creates the expression (Value) index
-    // over the freshly minted stable field id (DL-8 → DL-5).
+    // Add an INDEXED int field. M0a field-id convergence (review 141): the facade
+    // creates the expression (Value) index over the `f_<name>` stand-in — the SAME
+    // id the applet/CRDT write path materializes display values under — NOT the
+    // registry stable id `f_alice_0` (DL-8 → DL-5).
     let added = apply(
         &mut core,
         add_field("tasks", "alice", "priority", serde_json::json!("int_num"), true, false),
@@ -202,12 +204,13 @@ fn indexed_field_creates_a_usable_storage_index() {
     assert!(added.ok, "{:?}", added.error);
     assert_eq!(
         added.payload["created_index"],
-        serde_json::json!("idx_records_tasks_f_alice_0"),
-        "marking a field indexed must create its storage index"
+        serde_json::json!("idx_records_tasks_f_priority"),
+        "marking a field indexed must create its storage index over the f_<name> stand-in"
     );
 
-    // Seed a record carrying the stable field id, then prove an equality query on
-    // the indexed field uses the index (the planner consults the live manager).
+    // Seed a record carrying the stand-in field id (what the DL-4 write path writes),
+    // then prove an equality query on the indexed field uses the index (the planner
+    // consults the live manager).
     let env = forge_domain::RecordEnvelope::new(
         forge_domain::CollectionId::new("tasks"),
         forge_domain::RecordId::new("t1"),
@@ -215,7 +218,7 @@ fn indexed_field_creates_a_usable_storage_index() {
         forge_domain::LogicalTimestamp(1),
     );
     let mut env = env;
-    env.field_ids.insert("f_alice_0".into(), serde_json::json!(5));
+    env.field_ids.insert("f_priority".into(), serde_json::json!(5));
     core.store().put_record(&env).unwrap();
     // Rebuild so the index reflects the seeded row (records may predate it).
     let rebuilt = core.handle(cmd("schema.rebuild_indexes", serde_json::json!({})));
@@ -223,12 +226,12 @@ fn indexed_field_creates_a_usable_storage_index() {
 
     let q = forge_storage::Query::from_fixture_value(&serde_json::json!({
         "from": "tasks",
-        "where": [{ "field_id": "f_alice_0", "op": "eq", "value": 5 }]
+        "where": [{ "field_id": "f_priority", "op": "eq", "value": 5 }]
     }))
     .unwrap();
     let planned = core.store().query_planned(&q, core.indexes()).unwrap();
     assert!(planned.uses_index, "a query on the indexed field must use the index");
-    assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_alice_0"));
+    assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_priority"));
 }
 
 /// The indexed-field storage index also SURVIVES reopen: the registry persists
@@ -248,16 +251,18 @@ fn indexed_field_index_survives_reopen() {
         .ok);
     }
 
-    // Reopen: the registry's indexed flag reconstructs the index manager.
+    // Reopen: the registry's indexed flag reconstructs the index manager over the
+    // SAME `f_<name>` stand-in the apply-time index used (review 141 — no divergence
+    // between create-time and reopen-time index ids).
     let core = WorkspaceCore::open(&path, "ws1").unwrap();
     let q = forge_storage::Query::from_fixture_value(&serde_json::json!({
         "from": "tasks",
-        "where": [{ "field_id": "f_alice_0", "op": "eq", "value": 1 }]
+        "where": [{ "field_id": "f_priority", "op": "eq", "value": 1 }]
     }))
     .unwrap();
     let planned = core.store().query_planned(&q, core.indexes()).unwrap();
     assert!(planned.uses_index, "the schema-defined index must survive reopen (DL-8 → DL-5)");
-    assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_alice_0"));
+    assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_priority"));
 }
 
 // --------------------------------------------------------------------------
@@ -582,25 +587,33 @@ fn assert_final_state(fx: &serde_json::Value, core: &WorkspaceCore, name: &str) 
     }
 }
 
-/// Review 066: an indexed `add_field` whose schema-minted field id contains
-/// characters the storage index identifier validator rejects (because the actor
-/// id has them, e.g. `alice@example.com` → `f_alice@example.com_0`) must REJECT
-/// the whole `apply_change` with the registry untouched — and crucially must NOT
-/// persist the change, which would poison every future reopen (rebuild_indexes
-/// re-runs the failing create_index). The fix creates the index BEFORE persisting.
+/// Review 066, under the review-141 converged id scheme: an indexed `add_field`
+/// whose `f_<name>` stand-in index id contains characters the storage index
+/// identifier validator rejects must REJECT the whole `apply_change` with the
+/// registry untouched — and crucially must NOT persist the change, which would
+/// poison every future reopen (`rebuild_indexes_from_registry` re-runs the failing
+/// create_index). The fix creates the index BEFORE persisting.
+///
+/// Note the TRIGGER moved (review 141): the storage index id is now derived from
+/// the field NAME (`f_<name>`), not the actor-scoped registry id (`f_<actor>_<seq>`).
+/// So a hostile ACTOR id no longer reaches storage DDL (the registry id stays
+/// internal); the un-indexable case is now a hostile field NAME (`ti@tle` →
+/// `f_ti@tle`). The non-poisoning property is the same, and is now structurally
+/// stronger: a workspace whose actor id has odd characters can never poison its
+/// indexes, because the index id never carries the actor id.
 #[test]
-fn indexed_field_with_invalid_actor_id_is_rejected_without_poisoning() {
+fn indexed_field_with_unindexable_name_is_rejected_without_poisoning() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ws.forge");
     {
         let mut core = WorkspaceCore::open(&path, "ws1").unwrap();
         assert!(apply(&mut core, add_collection("tasks")).ok, "add_collection");
 
-        // `alice@example.com` mints `f_alice@example.com_0`; create_index rejects
-        // the `@` so the whole apply_change must fail.
+        // A hostile field NAME `ti@tle` mints the `f_ti@tle` stand-in index id;
+        // create_index rejects the `@` so the whole apply_change must fail.
         let resp = apply(
             &mut core,
-            add_field("tasks", "alice@example.com", "title", serde_json::json!("text"), true, false),
+            add_field("tasks", "alice", "ti@tle", serde_json::json!("text"), true, false),
         );
         assert!(!resp.ok, "an un-indexable field id must reject apply_change: {resp:?}");
 
@@ -625,6 +638,41 @@ fn indexed_field_with_invalid_actor_id_is_rejected_without_poisoning() {
     // And the persisted registry has no `tasks` field either.
     let core2 = reopened.unwrap();
     assert_eq!(core2.registry().collection("tasks").map(|c| c.fields().len()).unwrap_or(0), 0);
+}
+
+/// Review 141 corollary: a hostile ACTOR id no longer makes an indexed `add_field`
+/// fail, because the storage index is now keyed by the `f_<name>` stand-in, NOT the
+/// actor-scoped registry id. The registry still mints `f_<actor>_<seq>` (internal,
+/// never a SQL identifier), and the index `idx_records_tasks_f_title` is well-formed,
+/// so the change APPLIES — and the workspace reopens cleanly (the open-time
+/// reconstruction also keys by the stand-in, so it never re-runs a failing DDL).
+#[test]
+fn indexed_field_with_odd_actor_id_now_applies_via_standin_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws1").unwrap();
+        assert!(apply(&mut core, add_collection("tasks")).ok, "add_collection");
+        let resp = apply(
+            &mut core,
+            add_field("tasks", "alice@example.com", "title", serde_json::json!("text"), true, false),
+        );
+        assert!(resp.ok, "an odd actor id must NOT block the stand-in index: {resp:?}");
+        // The index is keyed by the field NAME, not the actor id.
+        assert_eq!(
+            resp.payload["created_index"],
+            serde_json::json!("fts_records_tasks_f_title"),
+        );
+        // The registry minted the actor-scoped id (internal only).
+        assert_eq!(
+            resp.payload["registry"]["collections"]["tasks"]["fields"][0]["field_id"],
+            serde_json::json!("f_alice@example.com_0"),
+        );
+    }
+    // Reopens cleanly: the open-time reconstruction keys the index by `f_title`, never
+    // re-running a DDL over the actor-scoped id.
+    let reopened = WorkspaceCore::open(&path, "ws1");
+    assert!(reopened.is_ok(), "the odd actor id must not poison reopen: {:?}", reopened.err());
 }
 
 // --------------------------------------------------------------------------
@@ -961,6 +1009,73 @@ fn apply_change_migration_fault_injection_rolls_back_everything() {
 }
 
 #[test]
+fn apply_change_registry_persist_failure_after_migration_rolls_back_everything() {
+    // FAULT INJECTION — the OTHER direction (review 140 cross-transaction atomicity):
+    // the migration COMMITS-in-tx, then the registry persist FAILS. Because the
+    // migration (records + schema_version + CRDT chunk + oplog) and the registry persist
+    // now run in ONE `Store::transact`, the failure rolls BOTH back — so the schema can
+    // never end up BEHIND the data (the mirror of review 138's data-behind-schema gap).
+    // Without the single transaction the records + schema_version would have advanced
+    // while the registry stayed old. The `simulate_failure_stage: "registry_persist"`
+    // payload (a TEST-ONLY seam, like `applet.upgrade`'s) injects the failure AFTER the
+    // record migration ran in the tx but in place of the registry kv_set.
+    let mut core =
+        seeded_workspace("expenses", "amount", serde_json::json!("int_num"), &[("r1", serde_json::json!(10))]);
+    let before_record = core.store().get_record("expenses", "r1").unwrap().unwrap();
+    let before_version = core.store().schema_version().unwrap();
+    let before_registry = serde_json::to_value(core.registry()).unwrap();
+
+    // A data-affecting change (int → float widen) that DOES migrate the record, with the
+    // registry-persist failure injected. The command must fail and roll EVERYTHING back.
+    let resp = core.handle(cmd(
+        "schema.apply_change",
+        serde_json::json!({
+            "change": widen_field("expenses", "f_fx_0", serde_json::json!("float_num")),
+            "simulate_failure_stage": "registry_persist",
+        }),
+    ));
+    assert!(!resp.ok, "an injected registry-persist failure must fail the command");
+    assert_eq!(resp.error.unwrap().code(), "StorageError");
+
+    // FULL ROLLBACK across BOTH directions:
+    // ...the record is unchanged (NOT half-migrated to a float)...
+    let after_record = core.store().get_record("expenses", "r1").unwrap().unwrap();
+    assert_eq!(after_record, before_record, "the record must roll back with the failed registry persist");
+    assert_eq!(
+        after_record.field_ids["f_amount"],
+        serde_json::json!(10),
+        "the record value stays the pre-migration int"
+    );
+    // ...schema_version did NOT advance (the migration's bump rolled back too)...
+    assert_eq!(
+        core.store().schema_version().unwrap(),
+        before_version,
+        "schema_version must not advance when the registry persist fails"
+    );
+    // ...the durable registry is unchanged (the type is still int_num)...
+    assert_eq!(
+        *core.registry().collection("expenses").unwrap().field("f_fx_0").unwrap().ty(),
+        forge_schema::FieldType::IntNum,
+        "the in-memory registry must not be swapped after a failed commit"
+    );
+    // ...and the persisted registry (read back on reopen) is unchanged too: the
+    // in-memory `self.registry` was never swapped, and the kv_set never committed.
+    assert_eq!(
+        serde_json::to_value(core.registry()).unwrap(),
+        before_registry,
+        "the registry must be byte-identical to before the rejected change"
+    );
+
+    // The workspace is still fully usable: a SUBSEQUENT clean apply of the same change
+    // (no injection) succeeds and migrates, proving the rollback left no poison.
+    let ok = apply(&mut core, widen_field("expenses", "f_fx_0", serde_json::json!("float_num")));
+    assert!(ok.ok, "a clean retry after the rolled-back failure must succeed: {:?}", ok.error);
+    assert_eq!(core.store().schema_version().unwrap(), before_version + 1, "the retry advances the version");
+    let env = core.store().get_record("expenses", "r1").unwrap().unwrap();
+    assert!(env.field_ids["f_amount"].is_f64(), "the retry migrates the record to a float");
+}
+
+#[test]
 fn apply_change_migration_over_multiple_records_is_atomic_and_lockstep() {
     // A multi-record collection: a single data-affecting change migrates EVERY record
     // in one atomic unit and advances the version exactly once (not once per record).
@@ -1001,25 +1116,26 @@ fn apply_change_migration_over_multiple_records_is_atomic_and_lockstep() {
 }
 
 #[test]
-fn apply_change_indexed_add_field_with_default_populates_the_created_index() {
-    // Review 140 P1: an `add_field` that is BOTH `indexed: true` AND carries a
-    // `default` must fill the default under the SAME stable id the created index is
-    // built over. The facade indexes a new field over its registry-minted id
-    // (`f_fx_1`); if the default-fill keyed the brand-new field by its `f_<name>`
-    // stand-in instead, the migrated rows would live under `field_ids.f_priority`
-    // while the advertised index `idx_records_items_f_fx_1` read the (absent)
-    // `field_ids.f_fx_1` — an empty index that misses every defaulted row. A
-    // non-text (`int_num`) field gets a `Value` expression index the planner uses
-    // for an equality query.
+fn apply_change_indexed_add_field_with_default_converges_on_the_standin_no_split_identity() {
+    // Review 141 P1 (reverts the round-2 registry-id direction): an `add_field` that
+    // is BOTH `indexed: true` AND carries a `default` keys the index, the default-
+    // fill, and every later write on the ONE `f_<name>` stand-in. Round 2 indexed the
+    // new field over its registry stable id (`f_fx_1`) and back-filled under that id —
+    // but the applet/CRDT write path is NOT registry-aware (`materialize_field_ids`
+    // always writes `f_<name>`), so a later display patch of `priority` landed on
+    // `f_priority` while the index kept reading `f_fx_1`: a SPLIT IDENTITY (the index
+    // served the stale default, display reads saw the new value). Converging on the
+    // stand-in closes that: the index is `idx_records_items_f_priority`, the default
+    // fills `f_priority`, and a later patch updates the SAME key the index reads.
     let mut core = WorkspaceCore::in_memory("ws_idx").unwrap();
     assert!(apply(&mut core, add_collection("items")).ok);
-    // First field `sku` (f_fx_0), seeded into an existing record via the DL-4 path.
+    // First field `sku`, seeded into an existing record via the DL-4 path.
     assert!(apply(&mut core, add_field("items", "fx", "sku", serde_json::json!("text"), false, false)).ok);
     seed_record(&mut core, "items", "r1", "sku", serde_json::json!("widget"));
 
-    // Add an INDEXED `priority` field (f_fx_1) carrying a default. The command must
-    // (a) create the index over the registry id and (b) fill the default under that
-    // same id so the index is populated.
+    // Add an INDEXED `priority` field carrying a default. The command must (a) create
+    // the index over the `f_<name>` stand-in and (b) fill the default under that same
+    // stand-in so the index is populated.
     let resp = apply_with_default(
         &mut core,
         add_field("items", "fx", "priority", serde_json::json!("int_num"), true, false),
@@ -1028,8 +1144,8 @@ fn apply_change_indexed_add_field_with_default_populates_the_created_index() {
     assert!(resp.ok, "indexed add_field with default must succeed: {:?}", resp.error);
     assert_eq!(
         resp.payload["created_index"],
-        serde_json::json!("idx_records_items_f_fx_1"),
-        "the index is created over the registry stable id"
+        serde_json::json!("idx_records_items_f_priority"),
+        "the index is created over the f_<name> stand-in"
     );
     assert_eq!(
         resp.payload["migrated_records"],
@@ -1037,28 +1153,70 @@ fn apply_change_indexed_add_field_with_default_populates_the_created_index() {
         "the one existing record is back-filled with the default"
     );
 
-    // The defaulted row carries the value under the REGISTRY stable id (so the index
-    // serves it) AND under the display name (so reads stay readable) — durably, after
-    // a DL-6 rebuild from the CRDT chunks.
+    // The defaulted row carries the value under the `f_<name>` stand-in (so the index
+    // serves it) AND under the display name — durably, after a DL-6 rebuild.
     core.rebuild_projection().expect("DL-6 rebuild");
     let env = core.store().get_record("items", "r1").unwrap().unwrap();
-    assert_eq!(env.field_ids["f_fx_1"], serde_json::json!(0), "default under the registry stable id");
+    assert_eq!(env.field_ids["f_priority"], serde_json::json!(0), "default under the f_<name> stand-in");
     assert_eq!(env.fields["priority"], serde_json::json!(0), "default mirrored into the display projection");
     // The seed field is untouched (still its stand-in).
     assert_eq!(env.field_ids["f_sku"], serde_json::json!("widget"));
+    // No registry-id sibling was minted on the record (the round-2 split-identity key).
+    assert!(
+        !env.field_ids.contains_key("f_fx_1"),
+        "the record must NOT carry the registry-id sibling (no split identity)"
+    );
 
-    // A query on the indexed field by its REGISTRY id uses the created index and the
-    // defaulted row is visible (the index was rebuilt from the migrated projection).
-    let q = forge_storage::Query::from_fixture_value(&serde_json::json!({
+    // A query on the indexed field by the stand-in uses the created index and finds
+    // the back-filled row.
+    let q0 = forge_storage::Query::from_fixture_value(&serde_json::json!({
         "from": "items",
-        "where": [{ "field_id": "f_fx_1", "op": "eq", "value": 0 }]
+        "where": [{ "field_id": "f_priority", "op": "eq", "value": 0 }]
     }))
     .unwrap();
-    let planned = core.store().query_planned(&q, core.indexes()).unwrap();
+    let planned = core.store().query_planned(&q0, core.indexes()).unwrap();
     assert!(planned.uses_index, "a query on the indexed defaulted field must use the index");
-    assert_eq!(planned.index_id.as_deref(), Some("idx_records_items_f_fx_1"));
-    let ids = core.store().query(&q).unwrap().ids();
-    assert_eq!(ids, vec!["r1".to_string()], "the back-filled row is found by the advertised field id");
+    assert_eq!(planned.index_id.as_deref(), Some("idx_records_items_f_priority"));
+    assert_eq!(
+        core.store().query(&q0).unwrap().ids(),
+        vec!["r1".to_string()],
+        "the back-filled row is found by the advertised field id"
+    );
+
+    // REVIEW 141 POST-PATCH REGRESSION (the crux): patch the display field to a NON-
+    // default value via the DL-4 path, rebuild the projection, then assert a query by
+    // the field id finds the NEW value and NO LONGER finds the old default — proving
+    // the write, the index, and the query all share one id (no split identity). Under
+    // the round-2 registry-id direction this would FAIL: the patch lands on
+    // `f_priority` while the index reads `f_fx_1`, so the index would still serve the
+    // stale default `0` and miss the new `5`.
+    seed_record(&mut core, "items", "r1", "priority", serde_json::json!(5));
+    core.rebuild_projection().expect("DL-6 rebuild after patch");
+
+    let env2 = core.store().get_record("items", "r1").unwrap().unwrap();
+    assert_eq!(env2.field_ids["f_priority"], serde_json::json!(5), "the patch updated the stand-in key");
+    assert_eq!(env2.fields["priority"], serde_json::json!(5), "the patch updated the display projection");
+
+    // Query for the NEW value: served by the index, finds the row.
+    let q5 = forge_storage::Query::from_fixture_value(&serde_json::json!({
+        "from": "items",
+        "where": [{ "field_id": "f_priority", "op": "eq", "value": 5 }]
+    }))
+    .unwrap();
+    let planned5 = core.store().query_planned(&q5, core.indexes()).unwrap();
+    assert!(planned5.uses_index, "the index serves the patched value");
+    assert_eq!(planned5.index_id.as_deref(), Some("idx_records_items_f_priority"));
+    assert_eq!(
+        core.store().query(&q5).unwrap().ids(),
+        vec!["r1".to_string()],
+        "a query for the NEW value finds the row (the index sees the patch — no split identity)"
+    );
+
+    // Query for the OLD default: the index no longer serves it (the value moved).
+    assert!(
+        core.store().query(&q0).unwrap().ids().is_empty(),
+        "a query for the stale default must find NOTHING (the index is not split from display)"
+    );
 }
 
 #[test]

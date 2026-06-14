@@ -44,6 +44,12 @@ Single Rust core owning all product-critical behavior; thin native shells with n
 | R5 (P2) | Offline web type-check conflicts with 6 MB core budget | `tsc` worker is a lazy optional artifact **outside** the core budget (≤ 10 MB gzipped, cached; honest "pending download" fallback, never silent skip) — CR-15, CR §8, PRD 09 §4. |
 | R6 (P2) | Server-readable vs encryption needed a sharp product rule | Explicit owner-chosen **server-visibility modes**: server-readable workspace (default; search/share/server-LLM/scheduling) vs encrypted workspace (ciphertext to server; features disabled/degraded) — SS-14, DL-25, master non-goals. |
 
+## Implementation decisions (M0a)
+
+| # | Topic | Decision | Rationale |
+|---|---|---|---|
+| I1 (DL-13) | Record field-id materialization vs registry stable ids | **M0a storage materializes record field values under the `f_<name>` display-derived stand-in id; the registry `f_<actor>_<seq>` stable ids are NOT yet materialized into records or indexes (deferred). Indexes, default-fills, and migrations all key by the `f_<name>` stand-in to stay consistent; registry-aware materialization is future DL-7 work.** | The applet/CRDT write path (`materialize_field_ids`) has no schema name→id map, so every DL-4 write keys `f_<name>`. Round 2 keyed indexed `add_field` default-fills and indexes under the registry stable id to populate the created index, but a later DL-4 display write of the same field lands on `f_<name>` — so the index served a stale value while display reads saw the new one (a **split identity**, review 141 P1). Converging on the single `f_<name>` stand-in for the index, the default-fill, the open-time index reconstruction, and every migration keeps one id scheme: the index serves the value the record actually carries, and a later write updates the same key. Side effect: the storage index id derives from the field NAME, not the actor id, so a workspace whose actor id has odd characters can never poison its indexes (the review-066 hazard moved from a hostile actor id to a hostile field name, still rejected before persist). |
+
 ## Explicitly dropped
 
 - P2P/WebRTC transport at v1 (D3) — protocol designed not to preclude it.
