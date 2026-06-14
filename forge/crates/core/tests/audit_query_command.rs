@@ -355,6 +355,49 @@ fn audit_query_oversight_roles_may_read() {
 }
 
 #[test]
+fn a_failed_self_audit_append_fails_the_read_rather_than_returning_rows_unlogged() {
+    // Review 156: the `audit.query` self-audit append is REQUIRED, not best-effort. A
+    // privileged read of the oversight-only security trail must NEVER complete and
+    // return rows while its own audit row silently fails to persist (the no-unlogged-
+    // privileged-read invariant). The read already succeeded internally, so a failed
+    // self-audit append must FAIL the command (fail closed), not fall through to `Ok`.
+    let mut core = WorkspaceCore::in_memory("ws-audit-required").unwrap();
+
+    // Land one real deny row so there IS something a successful read would return.
+    assert!(!core.handle(runtime_run("actor-viewer-1", Role::Viewer)).ok);
+
+    // A privileged Auditor reads, but the self-audit append is forced to fail (the
+    // `test-hooks`-gated injection mirrors a real `append_audit` SQL/serialize error).
+    let resp = core.handle(CoreCommand {
+        request_id: RequestId::new("req-audit-fail"),
+        name: "audit.query".into(),
+        applet_id: None::<AppletId>,
+        actor: ActorContext { actor: "actor-auditor-1".into(), role: Role::Auditor },
+        workspace_id: WorkspaceId::new("ws"),
+        payload: json!({ "filter": {}, "simulate_failure_stage": "self_audit_append" }),
+    });
+
+    // The command FAILS (fail closed) — it does NOT return the rows it had already
+    // read with their access left unlogged.
+    assert!(
+        !resp.ok,
+        "a failed self-audit append must fail the audit.query, not return rows: {:?}",
+        resp.payload
+    );
+    assert!(
+        resp.payload.get("rows").is_none(),
+        "a failed read returns no rows payload: {}",
+        resp.payload
+    );
+
+    // Sanity: the SAME read WITHOUT the injected failure succeeds and returns the row —
+    // proving the failure above came from the required self-audit append, not the read.
+    let ok = core.handle(audit_query("actor-auditor-1", Role::Auditor, json!({})));
+    assert!(ok.ok, "the read succeeds when the self-audit append can persist");
+    assert!(!rows(&ok).is_empty(), "the deny row is returned on the successful read");
+}
+
+#[test]
 fn audit_query_rejects_a_malformed_filter() {
     let mut core = WorkspaceCore::in_memory("ws-audit-bad").unwrap();
 

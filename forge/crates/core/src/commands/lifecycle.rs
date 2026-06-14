@@ -82,7 +82,9 @@ impl WorkspaceCore {
     /// is an optional list of additive `schema.apply_change` operations the new
     /// version needs; `simulate_failure_stage` is a TEST-ONLY seam that injects a
     /// staged failure (e.g. `"schema.apply_change"`) so the rollback path is
-    /// exercised end-to-end.
+    /// exercised end-to-end. That field is read ONLY through the `test-hooks`-gated
+    /// [`super::test_hooks`] seam, so it is INERT in the release build (review 157):
+    /// a production caller cannot inject it to force a rollback.
     ///
     /// Atomicity (spec lines 92-94): every step — manifest validation, signature
     /// verification, source compilation, and schema additions — is STAGED first,
@@ -148,11 +150,7 @@ impl WorkspaceCore {
                 // so the doc'd `simulate_failure_stage == "commit"` rolls the whole
                 // commit back (registry persist included), proving the commit is
                 // crash-atomic and not merely "all writes happened to succeed".
-                let simulate_commit = cmd
-                    .payload
-                    .get("simulate_failure_stage")
-                    .and_then(|v| v.as_str())
-                    == Some("commit");
+                let simulate_commit = super::test_hooks::simulate_failure_at(cmd, "commit");
                 // Serialize the evolved registry (if the upgrade added fields) OUTSIDE
                 // the transaction; the in-memory `self.registry` is swapped only AFTER
                 // the transaction commits, so a rollback leaves it untouched too.
@@ -296,10 +294,7 @@ impl WorkspaceCore {
         let fail = |stage: &str, detail: &str| {
             (stage.to_string(), upgrade_failed(applet_id.as_str(), stage, detail))
         };
-        let simulate = cmd
-            .payload
-            .get("simulate_failure_stage")
-            .and_then(|v| v.as_str());
+        let simulate = super::test_hooks::simulate_failure_stage(cmd);
 
         // STAGE 1 — manifest validation.
         let manifest: Manifest =
@@ -715,11 +710,8 @@ impl WorkspaceCore {
                 // active-pointer removal so the whole purge-uninstall rolls back
                 // (records stay live, applet stays installed, NO audit row lands),
                 // proving the atomicity.
-                let simulate_uninstall = cmd
-                    .payload
-                    .get("simulate_failure_stage")
-                    .and_then(|v| v.as_str())
-                    == Some("uninstall.tombstone");
+                let simulate_uninstall =
+                    super::test_hooks::simulate_failure_at(cmd, "uninstall.tombstone");
                 let applet_id_str = applet_id.as_str();
                 self.store.transact(|tx| {
                     for env in &tombstones {

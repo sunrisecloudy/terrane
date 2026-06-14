@@ -34,6 +34,7 @@ pub(super) mod query;
 pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
+pub(super) mod test_hooks;
 pub(super) mod ui;
 pub(super) mod watch;
 pub(super) mod workspace_export;

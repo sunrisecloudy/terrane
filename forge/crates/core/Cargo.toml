@@ -18,6 +18,21 @@ forge-ui.workspace = true
 forge-schema.workspace = true
 forge-signing.workspace = true
 
+[features]
+# TEST-ONLY fault-injection hooks (the `simulate_failure_stage` payload field used by
+# the atomicity / fail-closed regressions — see `commands::test_hooks`). NOT in the
+# default set, so the forge-cli release binary CANNOT honor a `simulate_failure_stage`
+# injected from an untrusted command payload (review 157, P2). The crate's own
+# integration/unit tests enable it via the dev-dependency self-reference below, so the
+# atomicity coverage drives every hook through the test-gated seam.
+test-hooks = []
+
 [dev-dependencies]
+# Self-reference with `test-hooks` enabled so `cargo test -p forge-core` (and
+# `cargo test --workspace`) builds the crate-under-test WITH the fault-injection
+# hooks, while every NON-dev dependent (forge-cli, forge-ffi) builds it WITHOUT them.
+# Resolver v2 keeps a feature enabled only through a crate's own dev-dependency out of
+# that crate's normal build in other crates, so the release binary stays hook-free.
+forge-core = { path = ".", features = ["test-hooks"] }
 tempfile.workspace = true
 base64.workspace = true

@@ -80,13 +80,31 @@ impl WorkspaceCore {
         //
         // No code-level recursion: this append writes one row directly to the store;
         // it does NOT re-enter `WorkspaceCore::handle` or `cmd_audit_query`, so there
-        // is no audit-of-the-audit loop. The append is best-effort with respect to
-        // the read's success — the rows were already read and are returned even if
-        // the self-audit append errors — but it never fails open: it can only ADD an
-        // allow row, never suppress a deny or alter a result.
+        // is no audit-of-the-audit loop.
+        //
+        // Review 156: the self-audit append is REQUIRED, not best-effort. The read
+        // already succeeded (`rows` are in hand), so propagating the append failure
+        // via `?` either records the read or FAILS the `audit.query` — it never
+        // returns rows whose access went unlogged. A discarded `let _ =` would fail
+        // OPEN: a privileged read of the oversight-only security trail could complete
+        // and return rows while its own audit row silently failed to persist, exactly
+        // the no-unlogged-privileged-read invariant review 150 set out to guarantee.
+        // The append can only ADD an allow row; it never suppresses a deny or alters
+        // the returned result.
         let metadata = filter_metadata(&filter);
         let actor_id = cmd.actor.actor.as_str().to_string();
-        let _ = self.persist_producer_audit(
+        // TEST-ONLY hook (review 156, gated by `test-hooks` so it is unreachable from
+        // an untrusted payload — see `commands::test_hooks`): inject a self-audit
+        // append failure AFTER the rows were read, proving the `?` below fails the
+        // `audit.query` (returns NO rows) rather than returning the already-read rows
+        // with their access silently unlogged. Mirrors a real `append_audit` SQL /
+        // serialize error.
+        if super::test_hooks::simulate_failure_at(cmd, "self_audit_append") {
+            return Err(CoreError::StorageError(
+                "simulated audit.query self-audit append failure".into(),
+            ));
+        }
+        self.persist_producer_audit(
             "audit.query",
             serde_json::json!({
                 "decision": "allow",
@@ -102,7 +120,7 @@ impl WorkspaceCore {
             None,
             "audit log read authorized for oversight role",
             metadata,
-        );
+        )?;
 
         Ok(serde_json::json!({ "rows": json_rows }))
     }

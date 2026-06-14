@@ -561,6 +561,7 @@ name = "forge-core"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "forge-core",
  "forge-domain",
  "forge-pipeline",
  "forge-policy",

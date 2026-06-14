@@ -128,11 +128,8 @@ impl WorkspaceCore {
         // index roll back with the registry persist, not merely that "all writes
         // happened to succeed". Compiles to a one-shot bool from the payload; absent in
         // normal use.
-        let simulate_registry_persist_failure = cmd
-            .payload
-            .get("simulate_failure_stage")
-            .and_then(|v| v.as_str())
-            == Some("registry_persist");
+        let simulate_registry_persist_failure =
+            super::test_hooks::simulate_failure_at(cmd, "registry_persist");
 
         // Snapshot the in-memory IndexManager so an in-tx index create/swap can be
         // rolled back in memory if the transaction fails (the physical side rolls back

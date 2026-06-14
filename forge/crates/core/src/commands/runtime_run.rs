@@ -220,11 +220,8 @@ impl WorkspaceCore {
         // loop below runs only after this `?` — publishes NO `network.egress`/`secret.use`
         // event. The same `simulate_failure_stage` payload convention as the lifecycle
         // purge-uninstall atomicity hook (`lifecycle.rs`).
-        let simulate_run_save_failure = cmd
-            .payload
-            .get("simulate_failure_stage")
-            .and_then(|v| v.as_str())
-            == Some("run.save");
+        let simulate_run_save_failure =
+            super::test_hooks::simulate_failure_at(cmd, "run.save");
         self.store.transact(|tx| {
             forge_storage::Store::save_run_tx(tx, &run)?;
             for row in &egress_audit.rows {
