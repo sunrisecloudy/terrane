@@ -1,0 +1,68 @@
+{
+  "case": "unknown_action_rejected",
+  "kind": "error",
+  "applet": {
+    "id": "example.counter",
+    "entrypoint": "render"
+  },
+  "initial_state": {
+    "count": 0
+  },
+  "initial_tree": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "testId": "count-label",
+        "text": "0"
+      },
+      {
+        "type": "Button",
+        "testId": "increment-button",
+        "label": "Increment",
+        "onTap": "counter.increment"
+      }
+    ]
+  },
+  "events": [
+    {
+      "action": "counter.delete_everything",
+      "event_type": "tap",
+      "payload": {}
+    }
+  ],
+  "expect": {
+    "results": [
+      {
+        "error": {
+          "code": "ui.action_not_found",
+          "message_contains": "counter.delete_everything"
+        },
+        "state_unchanged": true,
+        "tree_unchanged": true,
+        "patches": []
+      }
+    ],
+    "final_state": {
+      "count": 0
+    },
+    "final_tree": {
+      "type": "Stack",
+      "direction": "v",
+      "children": [
+        {
+          "type": "Text",
+          "testId": "count-label",
+          "text": "0"
+        },
+        {
+          "type": "Button",
+          "testId": "increment-button",
+          "label": "Increment",
+          "onTap": "counter.increment"
+        }
+      ]
+    }
+  }
+}

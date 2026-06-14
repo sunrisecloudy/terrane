@@ -1,0 +1,50 @@
+{
+  "case": "invalid_payload_rejected",
+  "kind": "error",
+  "applet": {
+    "id": "example.profile",
+    "entrypoint": "render"
+  },
+  "initial_state": {
+    "name": ""
+  },
+  "initial_tree": {
+    "type": "TextField",
+    "testId": "name-input",
+    "label": "Name",
+    "value": "",
+    "onChange": "profile.name.change"
+  },
+  "events": [
+    {
+      "action": "profile.name.change",
+      "event_type": "change",
+      "payload": {
+        "value": 42
+      }
+    }
+  ],
+  "expect": {
+    "results": [
+      {
+        "error": {
+          "code": "ui.invalid_event_payload",
+          "message_contains": "value must be a string"
+        },
+        "state_unchanged": true,
+        "tree_unchanged": true,
+        "patches": []
+      }
+    ],
+    "final_state": {
+      "name": ""
+    },
+    "final_tree": {
+      "type": "TextField",
+      "testId": "name-input",
+      "label": "Name",
+      "value": "",
+      "onChange": "profile.name.change"
+    }
+  }
+}

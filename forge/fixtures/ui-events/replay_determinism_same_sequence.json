@@ -1,0 +1,100 @@
+{
+  "case": "replay_determinism_same_sequence",
+  "kind": "replay",
+  "applet": {
+    "id": "example.counter",
+    "entrypoint": "render"
+  },
+  "initial_state": {
+    "count": 0
+  },
+  "initial_tree": {
+    "type": "Stack",
+    "direction": "v",
+    "children": [
+      {
+        "type": "Text",
+        "testId": "count-label",
+        "text": "0"
+      },
+      {
+        "type": "Button",
+        "testId": "increment-button",
+        "label": "Increment",
+        "onTap": "counter.increment"
+      }
+    ]
+  },
+  "events": [
+    {
+      "action": "counter.increment",
+      "event_type": "tap",
+      "payload": {}
+    },
+    {
+      "action": "counter.increment",
+      "event_type": "tap",
+      "payload": {}
+    },
+    {
+      "action": "counter.increment",
+      "event_type": "tap",
+      "payload": {}
+    }
+  ],
+  "expect": {
+    "first_run": {
+      "patches": [
+        [
+          {
+            "op": "update_text",
+            "path": [
+              0
+            ],
+            "value": "1"
+          }
+        ],
+        [
+          {
+            "op": "update_text",
+            "path": [
+              0
+            ],
+            "value": "2"
+          }
+        ],
+        [
+          {
+            "op": "update_text",
+            "path": [
+              0
+            ],
+            "value": "3"
+          }
+        ]
+      ]
+    },
+    "replay_run": {
+      "patches_byte_identical_to": "first_run"
+    },
+    "final_tree": {
+      "type": "Stack",
+      "direction": "v",
+      "children": [
+        {
+          "type": "Text",
+          "testId": "count-label",
+          "text": "3"
+        },
+        {
+          "type": "Button",
+          "testId": "increment-button",
+          "label": "Increment",
+          "onTap": "counter.increment"
+        }
+      ]
+    },
+    "record_events_in_run": true,
+    "deterministic": true
+  }
+}
