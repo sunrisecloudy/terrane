@@ -33,8 +33,8 @@ use forge_runtime::{
     NetResponse, SecretStore,
 };
 use forge_storage::{
-    AggregateResult, IndexManager, Mutation, Query, QueryResult, ResultSnapshot, Store,
-    WatchRegistry,
+    AggregateResult, IndexManager, Mutation, Query, QueryResult, QuotaDecision, QuotaScope,
+    ResultSnapshot, Store, WatchRegistry,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -132,6 +132,63 @@ pub enum WatchIntent {
     Unwatch { watch_id: String },
 }
 
+/// A non-blocking DL-22 APPROACHING-LIMIT warning surfaced by a `ctx.db` write that
+/// COMMITTED but pushed a budget at/above its approaching threshold (default ≥ 80%).
+///
+/// This is DISTINCT from the hard over-quota rejection: an over-quota write is
+/// rejected at the storage write boundary (`enforce_records_write_tx`) and never
+/// reaches this struct; a write that fits but lands in the approaching band is
+/// ALLOWED and records this warning so the facade can surface it as an event/field
+/// suggesting *compaction / cleanup / export* (DL-22 "approaching limits → suggest …;
+/// never silent deletion"). The bridge collects these in call order, exactly as it
+/// collects [`UiRender`]s / [`WatchIntent`]s, and the facade drains them after the
+/// run. PURE/DETERMINISTIC: derived from the persisted post-write state + the trusted
+/// policy with no wall clock, so a replay reproduces the same warnings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuotaWarning {
+    /// The collection whose write triggered the warning.
+    pub collection: String,
+    /// Which budget is being approached (`workspace`, `applet:<name>`, or
+    /// `category:<name>`), as a stable machine token for the event/field.
+    pub scope: String,
+    /// The projected post-write bytes for `scope`.
+    pub projected: u64,
+    /// The limit `scope` is approaching.
+    pub limit: u64,
+    /// The DL-22 remedy suggestion (compaction / cleanup / export — never deletion).
+    pub suggestion: String,
+}
+
+/// The DL-22 approaching-limit remedy suggestion (compaction / cleanup / export),
+/// the non-blocking counterpart of [`QuotaDecision::over_quota_error`]'s message —
+/// and, like it, it NEVER suggests silent deletion.
+pub(crate) const QUOTA_APPROACHING_SUGGESTION: &str =
+    "approaching a storage quota; free space by compacting history, cleaning up run \
+     logs/old attachments, or exporting and archiving data — no data was deleted.";
+
+/// Render a [`QuotaScope`] as the stable machine token a [`QuotaWarning`] carries.
+fn quota_scope_token(scope: &QuotaScope) -> String {
+    match scope {
+        QuotaScope::Workspace => "workspace".to_string(),
+        QuotaScope::Applet { applet } => format!("applet:{applet}"),
+        QuotaScope::Category { category } => format!("category:{}", category.as_str()),
+    }
+}
+
+/// The collection a single (non-group) [`Mutation`] leaf targets, for the DL-22
+/// per-collection approaching-limit warning over a `ctx.db.transact` group. A nested
+/// `Transact` carries no single collection (and is rejected as a transact leaf
+/// anyway), so it yields `None`.
+fn mutation_collection(m: &Mutation) -> Option<&str> {
+    match m {
+        Mutation::Insert { collection, .. }
+        | Mutation::Update { collection, .. }
+        | Mutation::Patch { collection, .. }
+        | Mutation::Delete { collection, .. } => Some(collection),
+        Mutation::Transact { .. } => None,
+    }
+}
+
 /// A [`HostBridge`] backed by a real [`Store`], scoped to one applet.
 ///
 /// `ctx.storage` keys are namespaced per applet (`applet/<id>` namespace) so two
@@ -174,6 +231,14 @@ pub struct StorageHostBridge<'a> {
     /// reveal the pre-write membership). When no watch registry was injected (a run
     /// with no live watches) the snapshot is empty — a cheap no-op.
     pub applied_mutations: Vec<(Mutation, ResultSnapshot)>,
+    /// Every non-blocking DL-22 APPROACHING-LIMIT warning a committed `ctx.db` write
+    /// raised this run, in call order. A write that lands a budget at/above its
+    /// approaching threshold (default ≥ 80%) is ALLOWED but records a [`QuotaWarning`]
+    /// here; the facade drains these after the run and surfaces them as an event/field
+    /// (DL-22 "approaching limits → suggest compaction/cleanup/export"). An over-quota
+    /// write never reaches here — it is rejected at the storage write boundary and
+    /// rolls back. Empty ⇒ every write this run had headroom to spare.
+    pub quota_warnings: Vec<QuotaWarning>,
     /// The live watch registry, rebuilt from the workspace sessions at run START and
     /// injected by the spine (DL-16). The bridge snapshots it before each `ctx.db`
     /// write to capture the pre-write result membership. `None` ⇒ no live watches, so
@@ -255,6 +320,7 @@ impl<'a> StorageHostBridge<'a> {
             ui_renders: Vec::new(),
             watch_intents: Vec::new(),
             applied_mutations: Vec::new(),
+            quota_warnings: Vec::new(),
             watch_registry: None,
             foreign_watch_ids: BTreeSet::new(),
             logs: Vec::new(),
@@ -346,6 +412,31 @@ impl<'a> StorageHostBridge<'a> {
     /// turn (DL-16). Call AFTER the write lands with the snapshot taken BEFORE it.
     fn record_committed(&mut self, mutation: Mutation, before: ResultSnapshot) {
         self.applied_mutations.push((mutation, before));
+    }
+
+    /// Surface the non-blocking DL-22 APPROACHING-LIMIT warning for a `ctx.db` write
+    /// into `collection` that JUST COMMITTED (a growing insert/update/patch). The
+    /// write already landed and was within every limit (an over-quota write was
+    /// rejected at the storage boundary and never reached here); this asks whether the
+    /// post-write totals now sit at/above the approaching threshold, and if so records
+    /// a [`QuotaWarning`] the facade surfaces as an event/field.
+    ///
+    /// PURE/DETERMINISTIC: the decision reads the persisted post-write usage + the
+    /// trusted policy with no wall clock, so a replay reproduces the same warning. A
+    /// transient read error here is swallowed — accounting is observability, never a
+    /// reason to fail an already-committed write.
+    fn record_quota_status(&mut self, collection: &str) {
+        if let Ok(QuotaDecision::ApproachingLimit { scope, projected, limit }) =
+            self.store.records_write_quota_status(collection)
+        {
+            self.quota_warnings.push(QuotaWarning {
+                collection: collection.to_string(),
+                scope: quota_scope_token(&scope),
+                projected,
+                limit,
+                suggestion: QUOTA_APPROACHING_SUGGESTION.to_string(),
+            });
+        }
     }
 
     /// Validate the JSON `record` an applet passed to `ctx.db.insert` and return
@@ -518,6 +609,10 @@ impl HostBridge for StorageHostBridge<'_> {
         // turn (non-reentrant, DL-16 T047 (a)). The write already landed; the facade
         // computes its dirty set from this captured mutation without re-applying it.
         self.record_committed(mutation, before);
+        // DL-22: surface a non-blocking approaching-limit warning if this committed
+        // write pushed a budget at/above its threshold (over-quota was already rejected
+        // at the storage boundary; this never blocks).
+        self.record_quota_status(collection);
         Ok(id)
     }
 
@@ -545,6 +640,7 @@ impl HostBridge for StorageHostBridge<'_> {
         // its live-query notification turn — the snapshot lets the leave/changed filter
         // see this record's PRE-update membership (DL-16) — mirrors `db_insert`.
         self.record_committed(mutation, before);
+        self.record_quota_status(collection);
         Ok(id.to_string())
     }
 
@@ -567,6 +663,7 @@ impl HostBridge for StorageHostBridge<'_> {
         let before = self.snapshot_watches();
         self.store.apply_mutation_crdt(&mutation, &self.indexes)?;
         self.record_committed(mutation, before);
+        self.record_quota_status(collection);
         Ok(id.to_string())
     }
 
@@ -597,6 +694,16 @@ impl HostBridge for StorageHostBridge<'_> {
         let before = self.snapshot_watches();
         self.store.transact_mutations_crdt(&items, &self.indexes)?;
         self.record_committed(group, before);
+        // DL-22: surface an approaching-limit warning per DISTINCT collection the group
+        // grew (the whole group already committed within every limit; over-quota would
+        // have rolled the group back at the storage boundary). Dedup the collections so
+        // a multi-leaf group over one collection yields at most one warning for it.
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for collection in items.iter().filter_map(mutation_collection) {
+            if seen.insert(collection.to_string()) {
+                self.record_quota_status(collection);
+            }
+        }
         Ok(items.len() as u64)
     }
 

@@ -104,13 +104,17 @@ dominates a soft warning on another.
 
 The check runs on the **real** DL-4 records write path, inside the same SQLite
 transaction that appends the chunk/oplog/projection
-(`crdt_write::mutation::write_collection_bucket_tx`): after the incremental chunk
-payload is exported and **before** it is persisted,
-`enforce_records_write_tx(tx, collection, chunk_bytes)` reads usage + policy off the
-same transaction and rejects an over-quota write. Returning the error rolls the
-**whole** transaction back, so the chunk, the oplog row, and the projection are never
-written — and every existing record stays byte-for-byte intact (reject-not-delete).
-The chunk payload size is the write's durable growth, so it is what is charged.
+(`crdt_write::mutation::write_collection_bucket_tx`). The chunk, the oplog row, and the
+projection are **staged first**, then `enforce_records_write_tx(tx, collection)`
+recomputes `quota_usage` off the **same** transaction — now reflecting every staged
+slice — and compares the **real post-write totals** against the limits. This charges
+**exactly the slices the report counts** (the per-applet `records.data`, the
+`retained_chunks`, and the `cache`/oplog), so an *accepted* write can never leave the
+workspace over the limit it was checked against (it would otherwise pass on the chunk
+bytes alone and then commit additional accounted records + oplog bytes — review 176
+P1). Returning the over-quota error rolls the **whole** transaction back, so the chunk,
+the oplog row, and the projection are never written — and every existing record stays
+byte-for-byte intact (reject-not-delete).
 
 > The DL-6 projection **rebuild** and the migration rewrite do **not** go through this
 > boundary: they reconstruct already-accepted history, so an existing (possibly
@@ -130,6 +134,14 @@ The chunk payload size is the write's durable growth, so it is what is charged.
   dedup hit adds no storage, so it is allowed even at quota (it can never push usage
   up).
 
+The whole lookup → enforce → insert/refcount path runs in **one `BEGIN IMMEDIATE`
+transaction** (review 176 P2): it takes the writer lock **before** the dedup lookup, so
+two file-backed handles cannot both observe the same pre-write headroom and then both
+insert distinct blobs that together exceed the cap, and two identical first puts cannot
+race into a primary-key error (the second blocks, then dedups against the committed
+row). Like the records path, the new-blob branch **stages** the insert and then
+enforces against the **real post-insert** attachments + workspace totals.
+
 ## 5. Determinism + the lessons this encodes
 
 - **NEVER silent deletion** — an over-quota write is *rejected* with a typed error
@@ -145,3 +157,48 @@ The chunk payload size is the write's durable growth, so it is what is charged.
   not the request payload (§2).
 - **Live-wiring** — the check is enforced on the real DL-4 write path, not a
   disconnected library (§3).
+
+## 6. The forge-core command/host boundary (the LIVE surface)
+
+The storage layer (§1–§4) is the substrate; `forge-core` is where DL-22 is **live
+on the real command/host path** an applet and a shell actually use. The behavioral
+contract here is `forge/fixtures/quotas-core/` (driven by
+`forge-core/tests/quota_core_conformance.rs`), which exercises only the public
+[`WorkspaceCore`] surfaces.
+
+### Enforcement on the live `ctx.db` write path
+
+`runtime.run` runs the applet against a `StorageHostBridge` whose `ctx.db.insert /
+update / patch / transact` go through the same DL-4 `apply_mutation_crdt` write path
+that enforces the quota (§3). So an **over-quota `ctx.db` write is REJECTED at the
+host call**: the bridge returns the typed `ResourceLimitExceeded`, the applet's `main`
+rejects, and the run is recorded as **failed** with that error as its result
+(`run_ok = false`, `result.error.kind = "ResourceLimitExceeded"`, detail ending in
+*"no data was deleted"*). The over-quota records write rolled its own transaction back,
+so **the prior records and the records usage are byte-for-byte intact and the rejected
+record never landed** — reject-not-delete, proven LIVE by the
+`over_quota_db_write_rejected_data_intact` vector.
+
+### The approaching-limit warning (event + field)
+
+A `ctx.db` write that **fits** but pushes a budget at/above the approaching threshold
+(default ≥ 80%) is **allowed** and surfaces a non-blocking warning, distinct from the
+hard rejection. After the write commits, the bridge computes the post-write status
+(`Store::records_write_quota_status`, a pure read with `write_bytes = 0`) and records a
+`QuotaWarning { collection, scope, projected, limit, suggestion }`. `runtime.run`
+surfaces these two ways: a `quota.approaching` **event** per warning, and the
+`quota_warnings` **field** on the response. The `suggestion` is the DL-22 remedy
+(compaction / cleanup / export) and, like the rejection, **never** a deletion.
+
+### `quota.status` and `quota.set` commands
+
+| Command | Roles | What it does |
+| --- | --- | --- |
+| `quota.status` | Owner, Maintainer, Editor, Viewer, Auditor | REPORT `{ usage, policy, approaching }` — the deterministic usage vs. the trusted limits + the budgets already ≥ the threshold (each with the remedy suggestion). A read of trusted persisted state; two reads are byte-equal. |
+| `quota.set` | **Owner only** | CONFIGURE the trusted policy override. Payload `{ policy: { …optional fields… } }` overlays onto the current effective policy; the merged policy is validated (non-zero limits, threshold in `(0, 1]`) and persisted in the local-only namespace. |
+
+`quota.set` is **privileged, trust-gated** config: enforcement always reads the policy
+from this persisted state, never from the write being checked, so a write can never
+widen its own quota — and a non-owner `quota.set` is rejected at the command-RBAC gate
+(`quota_set_is_owner_only_trusted_state`). The scope a `quota.status` reports is the
+whole workspace, read from trusted state, never named by the payload.

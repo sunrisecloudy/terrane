@@ -1,0 +1,14 @@
+{
+  "case": "quota_set_is_owner_only_trusted_state",
+  "prd": "DL-22",
+  "describe": "quota.set is PRIVILEGED trusted config: a non-owner role (Editor) is PermissionDenied at the command-RBAC gate; an Owner set persists the override, which quota.status then reads back as the effective trusted policy. The config is TRUSTED state set by the workspace, not the request payload of a write.",
+  "assert": {
+    "kind": "set",
+    "non_owner_role": "Editor",
+    "expect_non_owner_error_code": "PermissionDenied",
+    "owner_set_policy": { "workspace_limit": 4096, "per_applet_limit": 2048, "approaching_threshold": 0.5 },
+    "expect_after_owner_set": { "workspace_limit": 4096, "per_applet_limit": 2048, "approaching_threshold": 0.5 },
+    "invalid_set_policy": { "workspace_limit": 0 },
+    "expect_invalid_error_code": "ValidationError"
+  }
+}

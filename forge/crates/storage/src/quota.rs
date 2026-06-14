@@ -447,36 +447,83 @@ pub(crate) fn policy_from_conn(conn: &Connection) -> Result<QuotaPolicy> {
     }
 }
 
-/// Enforce the DL-22 quota for a records write of `write_bytes` bytes into
-/// `collection`, INSIDE the caller's open transaction `tx`.
+/// Enforce the DL-22 quota for a records write into `collection`, AFTER the chunk +
+/// oplog row + projection have been STAGED inside the caller's open transaction `tx`
+/// but BEFORE it commits (review 176 P1).
 ///
-/// This is the LIVE write-boundary check: the usage and policy are read off the
-/// SAME transaction that is about to persist the chunk/oplog/projection, so the
-/// decision is against the real persisted state. An over-quota result returns the
-/// typed `ResourceLimitExceeded` error, which the caller propagates — rolling the
-/// whole transaction back, so the chunk, oplog row, and projection are NEVER
-/// written and no existing data is deleted (reject-not-delete). `Ok`/approaching
-/// allow the write to proceed; the approaching warning is non-blocking here (the
-/// applet-facing surface surfaces it via `quota.status`).
+/// This is the LIVE write-boundary check, and it charges EXACTLY the slices
+/// [`quota_usage`] counts — not just the chunk payload. A records write grows several
+/// accounted slices at once: the per-applet `records.data` projection, the
+/// `retained_chunks` (the new CRDT chunk), and the `cache` (the new oplog row's
+/// payload). The earlier pre-write check looked only at `chunk_payload.len()`, so a
+/// write could pass while the post-commit `quota_usage` it is enforced against landed
+/// MORE accounted bytes (records + oplog), leaving the workspace over quota
+/// immediately after an "accepted" write. To make the gate consistent with the report,
+/// the caller STAGES the full write first; this then recomputes `usage_from_conn(tx)`
+/// — which now reflects every staged slice exactly as a post-commit `quota_usage`
+/// would — and compares the REAL post-write totals against the trusted limits.
+///
+/// The touched budgets are the workspace total, the per-applet collection budget
+/// (charged against the projected `records.data` total, not the chunk bytes), and
+/// every category cap the write grew (`retained_chunks` and `cache`). An over-quota
+/// breach of ANY of them returns the typed `ResourceLimitExceeded` error, which the
+/// caller propagates — rolling the whole transaction back, so the chunk, oplog row,
+/// and projection are NEVER persisted and no existing data is deleted
+/// (reject-not-delete). The check reads off `tx`, so it is the real staged state, and
+/// it is a PURE function of that state + the trusted policy (no wall clock), so a
+/// replay reproduces the same accept/reject decision.
 pub(crate) fn enforce_records_write_tx(
     tx: &rusqlite::Transaction<'_>,
     collection: &str,
-    write_bytes: u64,
 ) -> Result<()> {
     let usage = usage_from_conn(tx)?;
     let policy = policy_from_conn(tx)?;
     let applet = applet_of_collection(collection);
-    let decision = decide_quota(
-        &usage,
-        &policy,
-        QuotaCategory::RetainedChunks,
-        Some(applet),
-        write_bytes,
-    );
-    if let Some(err) = decision.over_quota_error() {
-        return Err(err);
+
+    // Compare each touched budget's REAL post-write total (already reflecting the
+    // staged chunk + oplog + projection) against its limit; the FIRST breach rejects.
+    // Order: workspace, then per-applet, then the two categories the write grew —
+    // a stable order for a deterministic message.
+    let checks: [(QuotaScope, u64, u64); 4] = [
+        (
+            QuotaScope::Workspace,
+            usage.workspace_total_bytes,
+            policy.workspace_limit,
+        ),
+        (
+            QuotaScope::Applet { applet: applet.to_string() },
+            usage.applet_bytes(applet),
+            policy.per_applet_limit,
+        ),
+        (
+            QuotaScope::Category { category: QuotaCategory::RetainedChunks },
+            usage.category_bytes(QuotaCategory::RetainedChunks),
+            policy.category_cap(QuotaCategory::RetainedChunks),
+        ),
+        (
+            QuotaScope::Category { category: QuotaCategory::Cache },
+            usage.category_bytes(QuotaCategory::Cache),
+            policy.category_cap(QuotaCategory::Cache),
+        ),
+    ];
+    for (scope, projected, limit) in checks {
+        if let Some(err) = over_quota_breach(scope, projected, limit) {
+            return Err(err);
+        }
     }
     Ok(())
+}
+
+/// `Some(ResourceLimitExceeded)` iff `projected` exceeds `limit` for `scope` (the
+/// typed over-quota error naming the scope + suggesting the DL-22 remedies, never a
+/// deletion), else `None`. The shared post-write breach check behind the records-write
+/// and attachment enforcement paths, so both reject with the identical typed error.
+fn over_quota_breach(scope: QuotaScope, projected: u64, limit: u64) -> Option<CoreError> {
+    if projected > limit {
+        QuotaDecision::OverQuota { scope, projected, limit }.over_quota_error()
+    } else {
+        None
+    }
 }
 
 impl Store {
@@ -535,6 +582,29 @@ impl Store {
         let usage = self.quota_usage()?;
         let policy = self.quota_policy()?;
         Ok(decide_quota(&usage, &policy, category, applet, write_bytes))
+    }
+
+    /// The DL-22 quota status of `collection`'s applet+workspace+retained-chunks
+    /// budgets as of the CURRENT persisted state — the seam the live host boundary
+    /// uses to surface the non-blocking APPROACHING-LIMIT warning AFTER a records
+    /// write has already committed.
+    ///
+    /// This is [`check_quota`](Self::check_quota) with `write_bytes = 0`: the write
+    /// already landed, so its bytes are already counted in
+    /// [`quota_usage`](Self::quota_usage); we only ask whether the post-write totals
+    /// now sit at/above the approaching threshold (`ApproachingLimit`) or still have
+    /// headroom (`Ok`). It can never return `OverQuota` here — an over-quota write was
+    /// already REJECTED at the write boundary ([`enforce_records_write_tx`]) and rolled
+    /// back, so a committed write is by construction within every limit.
+    ///
+    /// PURE + DETERMINISTIC: a function of the persisted usage and the trusted policy
+    /// with NO wall clock and NO request input, so a replay of the same writes
+    /// reproduces the same warning (the determinism lesson). The category is
+    /// [`RetainedChunks`](QuotaCategory::RetainedChunks) — the slice a records write
+    /// grows — matching what `enforce_records_write_tx` charges the write against.
+    pub fn records_write_quota_status(&self, collection: &str) -> Result<QuotaDecision> {
+        let applet = applet_of_collection(collection);
+        self.check_quota(QuotaCategory::RetainedChunks, Some(applet), 0)
     }
 }
 
@@ -630,6 +700,88 @@ pub struct AttachmentPut {
     pub refcount: u64,
 }
 
+/// The atomic body of [`Store::put_attachment`], run inside one `BEGIN IMMEDIATE`
+/// transaction (review 176 P2). With the writer lock already held, the dedup lookup,
+/// the quota enforcement, and the insert/refcount-bump are one indivisible unit:
+///
+///   - If a blob for `hash` already exists, bump its refcount (`stored_new = false`);
+///     a dedup hit adds no storage, so it is allowed even at quota.
+///   - Otherwise STAGE the insert, then recompute usage off the SAME `tx` and enforce
+///     the attachments cap + the workspace limit against the REAL post-insert totals
+///     (matching `quota_usage`, mirroring the records path). Over quota ⇒ return the
+///     typed error, which rolls the staged insert back (reject-not-delete).
+///
+/// Because the writer lock was taken before the lookup, a second concurrent handle
+/// either sees the committed row (and dedups) or is enforced against the committed
+/// higher usage — it can neither oversubscribe the cap nor race into a primary-key
+/// error. The `INSERT … ON CONFLICT(content_hash) DO UPDATE` upsert keeps the insert
+/// branch idempotent under that serialization.
+fn put_attachment_tx(
+    tx: &rusqlite::Transaction<'_>,
+    hash: &str,
+    bytes: &[u8],
+    write_bytes: u64,
+    created_at: i64,
+) -> Result<AttachmentPut> {
+    // Dedup lookup INSIDE the locked txn.
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT refcount FROM attachments WHERE content_hash = ?1",
+            params![hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sql)?;
+    if let Some(current) = existing {
+        let next = (current.max(0) as u64).saturating_add(1);
+        tx.execute(
+            "UPDATE attachments SET refcount = ?2 WHERE content_hash = ?1",
+            params![hash, next as i64],
+        )
+        .map_err(map_sql)?;
+        return Ok(AttachmentPut {
+            content_hash: hash.to_string(),
+            stored_new: false,
+            refcount: next,
+        });
+    }
+    // New bytes: STAGE the insert (idempotent upsert under the writer lock), then
+    // enforce against the REAL post-insert usage.
+    tx.execute(
+        "INSERT INTO attachments (content_hash, bytes, byte_len, refcount, created_at)
+         VALUES (?1, ?2, ?3, 1, ?4)
+         ON CONFLICT(content_hash) DO UPDATE SET refcount = refcount",
+        params![hash, bytes, write_bytes as i64, created_at],
+    )
+    .map_err(map_sql)?;
+
+    let usage = usage_from_conn(tx)?;
+    let policy = policy_from_conn(tx)?;
+    // Charge the same slices `quota_usage` counts: the attachments cap (which now
+    // includes this blob) and the workspace total. A breach of either rejects and
+    // rolls the staged insert back.
+    let attachments = usage.category_bytes(QuotaCategory::Attachments);
+    if let Some(err) = over_quota_breach(
+        QuotaScope::Category { category: QuotaCategory::Attachments },
+        attachments,
+        policy.attachments_cap,
+    ) {
+        return Err(err);
+    }
+    if let Some(err) = over_quota_breach(
+        QuotaScope::Workspace,
+        usage.workspace_total_bytes,
+        policy.workspace_limit,
+    ) {
+        return Err(err);
+    }
+    Ok(AttachmentPut {
+        content_hash: hash.to_string(),
+        stored_new: true,
+        refcount: 1,
+    })
+}
+
 impl Store {
     // --- Attachments: content-hash dedup (DL-22) -------------------------
 
@@ -642,48 +794,23 @@ impl Store {
     /// accounted ONCE by [`quota_usage`](Self::quota_usage) no matter how many records
     /// reference them (DL-22 "attachments deduplicated by content hash").
     ///
-    /// Enforcement runs FIRST and only for genuinely new bytes: a dedup hit never
-    /// adds storage, so it is allowed even at quota (it cannot push usage up); a new
-    /// blob is checked against the attachments cap + the workspace limit and REJECTED
-    /// over quota, leaving every existing attachment byte-for-byte intact.
+    /// Enforcement runs only for genuinely new bytes: a dedup hit never adds storage,
+    /// so it is allowed even at quota (it cannot push usage up); a new blob is checked
+    /// against the attachments cap + the workspace limit and REJECTED over quota,
+    /// leaving every existing attachment byte-for-byte intact.
+    ///
+    /// The whole lookup → enforce → insert/refcount path runs in ONE `BEGIN IMMEDIATE`
+    /// transaction (review 176 P2): it takes the writer lock BEFORE the dedup lookup,
+    /// so two file-backed handles cannot both observe the same pre-write headroom and
+    /// then both insert distinct blobs that together exceed the cap, and two identical
+    /// first puts cannot race into a primary-key error — the second blocks, then sees
+    /// the committed row and takes the refcount-bump branch. An `INSERT … ON CONFLICT`
+    /// upsert makes the new-blob branch idempotent under that serialization.
     pub fn put_attachment(&mut self, bytes: &[u8]) -> Result<AttachmentPut> {
         let hash = content_hash(bytes);
-        let existing = self.attachment_refcount(&hash)?;
-        // Dedup hit: identical bytes already stored. Bump the refcount only; this
-        // adds no storage, so it bypasses the quota check (it can never exceed it).
-        if let Some(current) = existing {
-            let next = current.saturating_add(1);
-            self.conn
-                .execute(
-                    "UPDATE attachments SET refcount = ?2 WHERE content_hash = ?1",
-                    params![hash, next as i64],
-                )
-                .map_err(map_sql)?;
-            return Ok(AttachmentPut {
-                content_hash: hash,
-                stored_new: false,
-                refcount: next,
-            });
-        }
-        // New bytes: enforce the quota BEFORE writing. Over quota ⇒ reject, store
-        // nothing, delete nothing.
         let write_bytes = bytes.len() as u64;
-        let decision = self.check_quota(QuotaCategory::Attachments, None, write_bytes)?;
-        if let Some(err) = decision.over_quota_error() {
-            return Err(err);
-        }
-        self.conn
-            .execute(
-                "INSERT INTO attachments (content_hash, bytes, byte_len, refcount, created_at)
-                 VALUES (?1, ?2, ?3, 1, ?4)",
-                params![hash, bytes, write_bytes as i64, now_ms()],
-            )
-            .map_err(map_sql)?;
-        Ok(AttachmentPut {
-            content_hash: hash,
-            stored_new: true,
-            refcount: 1,
-        })
+        let created_at = now_ms();
+        self.transact_immediate(|tx| put_attachment_tx(tx, &hash, bytes, write_bytes, created_at))
     }
 
     /// Read an attachment's stored bytes by content hash, if present.
@@ -965,5 +1092,123 @@ mod tests {
         assert!(!again.stored_new);
         assert_eq!(again.refcount, 2);
         assert_eq!(again.content_hash, first.content_hash);
+    }
+
+    #[test]
+    fn accepted_records_write_never_leaves_usage_over_a_limit() {
+        // Review 176 P1: the gate charges the SAME slices `quota_usage` reports, so an
+        // ACCEPTED write can never leave the workspace/per-applet/cache usage over its
+        // limit. With a roomy policy we accept a chain of writes and assert AFTER EACH
+        // that every budget the write grew is still within its limit — the gate would
+        // reject a write that would breach, so a write that landed proves it did not.
+        let mut s = store();
+        let idx = IndexManager::new();
+        let policy = QuotaPolicy::DEFAULT;
+        s.set_quota_policy(&policy).unwrap();
+        for n in 0..8 {
+            s.apply_mutation_crdt(
+                &insert("tasks", &format!("t{n}"), json!({ "title": format!("row {n} body") }), n + 1),
+                &idx,
+            )
+            .unwrap();
+            let usage = s.quota_usage().unwrap();
+            assert!(
+                usage.workspace_total_bytes <= policy.workspace_limit,
+                "workspace usage must stay within the limit after an accepted write"
+            );
+            assert!(
+                usage.applet_bytes("tasks") <= policy.per_applet_limit,
+                "per-applet usage must stay within the limit after an accepted write"
+            );
+            assert!(
+                usage.category_bytes(QuotaCategory::RetainedChunks)
+                    <= policy.category_cap(QuotaCategory::RetainedChunks),
+                "retained_chunks usage must stay within its cap"
+            );
+            assert!(
+                usage.category_bytes(QuotaCategory::Cache) <= policy.category_cap(QuotaCategory::Cache),
+                "cache (oplog) usage must stay within its cap"
+            );
+        }
+
+        // And the gate is exact at the boundary: pin the workspace limit to the CURRENT
+        // total (zero headroom) — the next write, which grows records + chunk + oplog,
+        // must be rejected (it would otherwise land over the very limit it was checked
+        // against, the review 176 P1 bug).
+        let total = s.quota_usage().unwrap().workspace_total_bytes;
+        let mut tight = QuotaPolicy::DEFAULT;
+        tight.workspace_limit = total;
+        s.set_quota_policy(&tight).unwrap();
+        let err = s
+            .apply_mutation_crdt(&insert("tasks", "overflow", json!({"title": "nope"}), 99), &idx)
+            .unwrap_err();
+        assert_eq!(err.code(), "ResourceLimitExceeded");
+        assert!(
+            s.quota_usage().unwrap().workspace_total_bytes <= tight.workspace_limit,
+            "after the rejected write the workspace is NOT left over its limit"
+        );
+    }
+
+    #[test]
+    fn two_handles_cannot_oversubscribe_the_attachments_cap() {
+        // Review 176 P2: the dedup lookup + quota check + insert run in one BEGIN
+        // IMMEDIATE txn, so two file-backed handles serialize on the writer lock — they
+        // cannot both observe the same headroom and then both insert distinct blobs that
+        // together exceed the cap.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.db");
+        let blob_a = b"distinct attachment AAAA";
+        let blob_b = b"distinct attachment BBBB";
+
+        let mut s1 = Store::open(&path).unwrap();
+        // Cap the attachments category so EXACTLY ONE of the two distinct blobs fits.
+        let mut policy = QuotaPolicy::DEFAULT;
+        policy.attachments_cap = blob_a.len() as u64 + 4;
+        s1.set_quota_policy(&policy).unwrap();
+
+        let mut s2 = Store::open(&path).unwrap();
+        let r1 = s1.put_attachment(blob_a);
+        let r2 = s2.put_attachment(blob_b);
+
+        // At least one is rejected over quota; the two together never exceed the cap.
+        let ok_count = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+        assert!(ok_count <= 1, "the two distinct blobs must not BOTH be accepted past the cap");
+        let stored = s1.quota_usage().unwrap().category_bytes(QuotaCategory::Attachments);
+        assert!(
+            stored <= policy.attachments_cap,
+            "attachments usage {stored} must not exceed the cap {}",
+            policy.attachments_cap
+        );
+        // Whichever was rejected carries the typed error.
+        for r in [r1, r2] {
+            if let Err(e) = r {
+                assert_eq!(e.code(), "ResourceLimitExceeded");
+            }
+        }
+    }
+
+    #[test]
+    fn two_handles_identical_first_puts_dedup_without_a_primary_key_error() {
+        // Review 176 P2: two identical first puts from two file-backed handles must NOT
+        // race into a primary-key error — the writer lock serializes them so the second
+        // sees the committed row and takes the refcount-bump branch (dedup), leaving ONE
+        // stored blob with refcount 2.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.db");
+        let bytes = b"the same first-put bytes from two handles";
+
+        let mut s1 = Store::open(&path).unwrap();
+        let mut s2 = Store::open(&path).unwrap();
+        let r1 = s1.put_attachment(bytes).expect("first put");
+        let r2 = s2.put_attachment(bytes).expect("second put must dedup, not PK-error");
+        assert_eq!(r1.content_hash, r2.content_hash, "identical bytes share a content hash");
+        // Exactly one stored blob; the two puts are stored_new in some order, the later
+        // one a dedup hit with refcount 2.
+        assert_eq!(s1.attachment_refcount(&r1.content_hash).unwrap(), Some(2));
+        let blobs: i64 = s1
+            .connection()
+            .query_row("SELECT COUNT(*) FROM attachments WHERE content_hash = ?1", params![r1.content_hash], |row| row.get(0))
+            .unwrap();
+        assert_eq!(blobs, 1, "identical bytes occupy exactly ONE stored blob");
     }
 }

@@ -127,6 +127,22 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         // Rebuilding indexes is a maintenance op (commands.md:
         // schema.rebuild_indexes → Owner, Maintainer; DL-5).
         "schema.rebuild_indexes" => Some(&[Role::Owner, Role::Maintainer]),
+        // Reading the DL-22 storage-usage report (`quota.status`) is a read/oversight
+        // operation — like reading a projection — so it carries the read-membership
+        // roles (Owner, Maintainer, Editor, Viewer, Auditor). It exposes only byte
+        // counts vs. limits, no record contents.
+        "quota.status" => Some(&[
+            Role::Owner,
+            Role::Maintainer,
+            Role::Editor,
+            Role::Viewer,
+            Role::Auditor,
+        ]),
+        // Configuring the DL-22 quota policy (`quota.set`) is PRIVILEGED workspace
+        // administration: it changes the TRUSTED limits enforcement reads. Owner-only,
+        // mirroring `workspace.import` — a Maintainer/Editor/Viewer/Auditor/Runner
+        // cannot widen (or tighten) the workspace's quotas.
+        "quota.set" => Some(&[Role::Owner]),
         // Exporting the portable workspace bundle (DL-24, commands.md:
         // workspace.export → Owner, Maintainer, Auditor). The Auditor may take a
         // backup/debug bundle (including run logs by policy) without otherwise

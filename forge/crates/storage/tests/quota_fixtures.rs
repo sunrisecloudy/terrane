@@ -239,6 +239,15 @@ fn run_enforce(case: &str, fx: &Value) {
         for (k, v) in want["fields"].as_object().unwrap() {
             assert_eq!(env.fields.get(k), Some(v), "{case}: accepted record field {k}");
         }
+        // Review 176 P1: the gate charges the same slices `quota_usage` reports, so an
+        // ACCEPTED write never leaves the workspace over the limit it was checked
+        // against.
+        if expect["usage_within_workspace_limit_after_accept"].as_bool() == Some(true) {
+            assert!(
+                store.quota_usage().unwrap().workspace_total_bytes <= policy.workspace_limit,
+                "{case}: an accepted write must not leave the workspace over its limit"
+            );
+        }
         return;
     }
 

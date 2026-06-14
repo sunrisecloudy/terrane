@@ -768,6 +768,44 @@ impl WorkspaceCore {
         self.store.compact_history(opts, &self.indexes)
     }
 
+    /// Store an attachment, deduplicated by content hash (DL-22 "attachments
+    /// deduplicated by content hash"), through the workspace's [`Store`]. The first
+    /// put of given bytes writes one content-addressed blob (`stored_new = true`,
+    /// `refcount = 1`) enforced against the attachments cap + workspace limit; an
+    /// over-quota new blob is REJECTED (typed `ResourceLimitExceeded`, nothing stored,
+    /// nothing deleted). A subsequent put of IDENTICAL bytes stores nothing new and
+    /// only bumps the refcount (`stored_new = false`), so identical attachments occupy
+    /// ONE blob and are accounted ONCE by [`quota_usage`](Self::quota_usage). This is
+    /// the workspace-facing seam over [`Store::put_attachment`].
+    pub fn put_attachment(&mut self, bytes: &[u8]) -> Result<forge_storage::AttachmentPut> {
+        self.store.put_attachment(bytes)
+    }
+
+    /// The DL-22 deterministic [`QuotaUsage`] report — the bytes the workspace is
+    /// using, summed PURELY from the persisted tables with no wall clock / request
+    /// input (so two reads are byte-equal and a replay reproduces it). Read-only
+    /// access over [`Store::quota_usage`] for the `quota.status` command + tests.
+    pub fn quota_usage(&self) -> Result<forge_storage::QuotaUsage> {
+        self.store.quota_usage()
+    }
+
+    /// The effective trusted DL-22 [`QuotaPolicy`] — the persisted local-only override
+    /// or [`QuotaPolicy::DEFAULT`]. Read-only access over [`Store::quota_policy`] for
+    /// the `quota.status` command + tests. This is TRUSTED config (a const default + a
+    /// persisted override), never the request payload being checked.
+    pub fn quota_policy(&self) -> Result<forge_storage::QuotaPolicy> {
+        self.store.quota_policy()
+    }
+
+    /// Persist a trusted DL-22 [`QuotaPolicy`] override (user-configurable quotas).
+    /// Validated before it lands and stored in the LOCAL-ONLY KV namespace so it stays
+    /// per-install config (out of synced/exported bundles). This is the trusted seam
+    /// the privileged `quota.set` command writes through — never a path an applet's
+    /// `ctx.*` write can reach — so a write can never widen its own quota.
+    pub fn set_quota_policy(&mut self, policy: &forge_storage::QuotaPolicy) -> Result<()> {
+        self.store.set_quota_policy(policy)
+    }
+
     /// In-process CRDT sync (SS-1/SS-2, M0b): converge this workspace with
     /// `other` by exchanging the chunk sets their two [`Store`]s hold, then
     /// rebuilding both projections — the local CI seam before WebSocket transport

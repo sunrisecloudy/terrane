@@ -31,6 +31,7 @@ pub(super) mod applet;
 pub(super) mod audit;
 pub(super) mod lifecycle;
 pub(super) mod query;
+pub(super) mod quota;
 pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
@@ -100,6 +101,13 @@ const COMMANDS: &[(&str, Handler)] = &[
         WorkspaceCore::cmd_schema_validate_compatibility,
     ),
     ("schema.rebuild_indexes", WorkspaceCore::cmd_schema_rebuild_indexes),
+    // Workspace quotas (DL-22, commands/quota.rs): `quota.status` REPORTS usage vs the
+    // trusted limits + the approaching-limit warnings (a read, scoped to the whole
+    // workspace from trusted state); `quota.set` CONFIGURES the trusted policy override
+    // (privileged Owner-only admin — enforcement reads the policy from this persisted
+    // state, never the write's payload, so a write cannot widen its own quota).
+    ("quota.status", WorkspaceCore::cmd_quota_status),
+    ("quota.set", WorkspaceCore::cmd_quota_set),
     ("workspace.export", WorkspaceCore::cmd_workspace_export),
     ("workspace.import", WorkspaceCore::cmd_workspace_import),
 ];

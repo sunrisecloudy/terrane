@@ -30,7 +30,7 @@ mod run_policy;
 mod sync_rbac;
 mod workspace;
 
-pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender, WatchIntent};
+pub use bridge::{NoNetworkClient, QuotaWarning, StorageHostBridge, UiRender, WatchIntent};
 pub use event::EventSink;
 pub use features::{ClientFeatureRegistry, Unsupported, UnsupportedFeatures, APP_FEATURE_ID};
 pub use run_policy::{Capability, RunPolicy};

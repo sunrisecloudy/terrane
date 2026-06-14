@@ -363,16 +363,6 @@ fn write_collection_bucket_tx(
     // 7. Export exactly the new ops as one incremental update.
     let chunk_payload = doc.export_updates_since(&before)?;
 
-    // 7a. DL-22 quota enforcement at the REAL write boundary, inside this same
-    //     transaction. The durable growth of a records write is the new chunk it
-    //     appends, so the chunk payload size is the write size charged against the
-    //     workspace/per-applet/retained-chunks limits. An over-quota write returns a
-    //     typed `ResourceLimitExceeded` error here, which rolls the WHOLE transaction
-    //     back — the chunk, oplog row, and projection are never written and existing
-    //     data is left byte-for-byte intact (reject-not-delete; the usage is read off
-    //     `tx`, so it is the real persisted state).
-    crate::quota::enforce_records_write_tx(tx, collection, chunk_payload.len() as u64)?;
-
     // 8. Append one immutable chunk (per collection doc).
     let chunk_id = next_chunk_id(tx, &doc_id)?;
     put_chunk_tx(tx, &doc_id, &chunk_id, CHUNK_FORMAT, &chunk_payload)?;
@@ -401,6 +391,19 @@ fn write_collection_bucket_tx(
     for (_, id) in &touched {
         materialize_record_into_projection(tx, &doc, collection, id, indexes)?;
     }
+
+    // 11. DL-22 quota enforcement at the REAL write boundary, inside this same
+    //     transaction and AFTER the chunk + oplog row + projection are STAGED (review
+    //     176 P1). Enforcing here — rather than against the bare `chunk_payload.len()`
+    //     before the writes — charges EXACTLY the slices `quota_usage` counts: the
+    //     per-applet `records.data`, the `retained_chunks` (the new chunk), and the
+    //     `cache` (the new oplog payload). The check recomputes usage off `tx`, which
+    //     now reflects every staged slice, so an accepted write can never leave the
+    //     workspace over the limit it was checked against. An over-quota result returns
+    //     a typed `ResourceLimitExceeded` here, which rolls the WHOLE transaction back —
+    //     the chunk, oplog row, and projection are all discarded and existing data is
+    //     left byte-for-byte intact (reject-not-delete).
+    crate::quota::enforce_records_write_tx(tx, collection)?;
     Ok(())
 }
 

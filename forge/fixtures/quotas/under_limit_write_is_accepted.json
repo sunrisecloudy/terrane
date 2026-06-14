@@ -12,7 +12,8 @@
     "write": { "op": "insert", "id": "t2", "fields": { "title": "second" }, "logical_at": 2 },
     "expect": {
       "accepted": true,
-      "record_present": { "id": "t2", "fields": { "title": "second" } }
+      "record_present": { "id": "t2", "fields": { "title": "second" } },
+      "usage_within_workspace_limit_after_accept": true
     }
   }
 }

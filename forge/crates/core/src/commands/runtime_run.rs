@@ -164,6 +164,12 @@ impl WorkspaceCore {
         // the borrow is released.
         let ui_renders = std::mem::take(&mut bridge.ui_renders);
         let watch_intents = std::mem::take(&mut bridge.watch_intents);
+        // DL-22: the non-blocking approaching-limit warnings this run's committed
+        // `ctx.db` writes raised, in call order. Each is surfaced as an event + a
+        // response field below (an over-quota write was already REJECTED at the storage
+        // boundary and rolled back, so it never reaches here). Drained before the
+        // borrow is released, like `ui_renders`/`watch_intents`.
+        let quota_warnings = std::mem::take(&mut bridge.quota_warnings);
         // The record-mutating writes the run COMMITTED through `ctx.db` (already
         // applied to the store). We drive their live-query notifications AFTER the
         // borrow is released, so a watch fires on a real applet mutation (DL-16).
@@ -271,6 +277,26 @@ impl WorkspaceCore {
         // computes their notifications without re-applying them.
         self.notify_committed_mutations(applet_id.as_str(), &applied_mutations)?;
 
+        // DL-22: surface each non-blocking approaching-limit warning as a
+        // `quota.approaching` event so a host/shell can prompt the user toward
+        // compaction/cleanup/export — distinct from the hard over-quota rejection
+        // (which never reached here; it rolled the write back at the storage boundary).
+        // NEVER a deletion. The same warnings ride the response `quota_warnings` field.
+        for warning in &quota_warnings {
+            self.events.emit(
+                Some(applet_id.clone()),
+                "quota.approaching",
+                serde_json::json!({
+                    "applet_id": applet_id,
+                    "collection": warning.collection,
+                    "scope": warning.scope,
+                    "projected": warning.projected,
+                    "limit": warning.limit,
+                    "suggestion": warning.suggestion,
+                }),
+            );
+        }
+
         // Emit a ui.patch event per render (the UI tree patch link).
         for (i, render) in ui_renders.iter().enumerate() {
             self.events.emit(
@@ -317,6 +343,11 @@ impl WorkspaceCore {
             // re-reading the persisted RunRecord (review 032 finding 1).
             "host_call_methods": run.calls.iter().map(|c| c.method.clone()).collect::<Vec<_>>(),
             "ui_renders": ui_renders.iter().map(|r| r.tree.clone()).collect::<Vec<_>>(),
+            // DL-22: the non-blocking approaching-limit warnings this run raised, each
+            // naming the approached scope + the projected/limit bytes + the DL-22
+            // remedy suggestion (compaction/cleanup/export). Empty when every write had
+            // headroom; an over-quota write fails the run instead (a typed error).
+            "quota_warnings": quota_warnings,
         }))
     }
 

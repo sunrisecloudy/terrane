@@ -1,0 +1,22 @@
+{
+  "case": "quota_status_reports_usage_and_limits",
+  "prd": "DL-22",
+  "describe": "quota.status reports the deterministic usage (per-applet collection storage + per-category slices + workspace total) vs. the trusted effective policy (the DL-22 defaults when un-overridden) plus the approaching-limit list. Two reads of an unchanged workspace are byte-equal (no wall clock on the path).",
+  "assert": {
+    "kind": "status",
+    "collection": "tasks",
+    "seed_runs": [
+      { "title": "status seed one" },
+      { "title": "status seed two" }
+    ],
+    "expect": {
+      "applets_present": ["tasks"],
+      "categories_present": ["attachments", "run_logs", "retained_chunks", "snapshots", "cache"],
+      "retained_chunks_bytes_positive": true,
+      "workspace_total_is_sum_of_applets_plus_categories": true,
+      "policy_is_dl22_defaults": true,
+      "approaching_is_empty": true,
+      "two_reads_byte_equal": true
+    }
+  }
+}

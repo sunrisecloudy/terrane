@@ -232,6 +232,35 @@ impl Store {
         F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     {
         let tx = self.conn.transaction().map_err(map_sql)?;
+        Self::finish_transact(tx, f)
+    }
+
+    /// Run `f` inside a single `BEGIN IMMEDIATE` transaction: it takes the SQLite
+    /// WRITER lock UP FRONT (not lazily on the first write like the default
+    /// `transact`). Use this for a read-modify-write where two file-backed handles
+    /// would otherwise both observe the same pre-write state and then both write —
+    /// e.g. the DL-22 attachment dedup+quota check+insert (review 176 P2). Taking the
+    /// writer lock before the read serializes the two: the second handle blocks (up to
+    /// [`busy_timeout`]) until the first commits, then re-reads the now-updated state,
+    /// so it dedups against / is enforced against the committed result rather than a
+    /// stale snapshot. Commit/rollback semantics are identical to [`transact`].
+    pub fn transact_immediate<T, F>(&mut self, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(map_sql)?;
+        Self::finish_transact(tx, f)
+    }
+
+    /// Shared commit-on-Ok / rollback-on-Err body for [`transact`] /
+    /// [`transact_immediate`].
+    fn finish_transact<T, F>(tx: rusqlite::Transaction<'_>, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    {
         match f(&tx) {
             Ok(value) => {
                 tx.commit().map_err(map_sql)?;

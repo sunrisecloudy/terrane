@@ -1,0 +1,21 @@
+{
+  "suite": "quota-core-conformance",
+  "prd": ["DL-22"],
+  "spec": "forge/spec/quotas.md",
+  "describe": "DL-22 quotas LIVE-WIRED at the forge-core command/host boundary: a real over-quota ctx.db write (runtime.run) is REJECTED with data byte-intact (never deleted); an approaching-limit write is ACCEPTED but surfaces a non-blocking warning (event + response field) suggesting compaction/cleanup/export; attachments dedup by content hash through the workspace seam; quota.status reports usage vs. trusted limits deterministically; quota.set is Owner-only trusted config (not the request payload). Driven by forge-core/tests/quota_core_conformance.rs through WorkspaceCore::handle / put_attachment.",
+  "assert_kinds": {
+    "db_write": "drive runtime.run (a real ctx.db.insert): seed N runs, apply the trusted quota.set, run again; assert the run is accepted (optionally with an approaching warning + suggestion) or rejected (typed ResourceLimitExceeded + suggestion), and on rejection prove prior records + quota.status usage are byte-intact and the rejected record never landed",
+    "attachment": "put_attachment the listed byte strings through the workspace seam; assert per-put stored_new/refcount, that identical bytes dedup to one stored blob, and that quota.status attachments bytes are unchanged across a dedup hit",
+    "status": "seed records via runtime.run, then quota.status: assert the usage shape (applets/categories/workspace total), the effective policy, the approaching list, and that two reads are byte-equal (deterministic)",
+    "set": "quota.set is Owner-only trusted config: a non-owner role is PermissionDenied; an Owner set is persisted and read back by quota.status; the policy is the trusted state, not the request payload"
+  },
+  "count": 6,
+  "cases": [
+    { "case": "over_quota_db_write_rejected_data_intact", "kind": "db_write",   "file": "over_quota_db_write_rejected_data_intact.json" },
+    { "case": "approaching_limit_db_write_warns",         "kind": "db_write",   "file": "approaching_limit_db_write_warns.json" },
+    { "case": "under_limit_db_write_ok_no_warning",       "kind": "db_write",   "file": "under_limit_db_write_ok_no_warning.json" },
+    { "case": "attachment_dedup_same_bytes_once",         "kind": "attachment", "file": "attachment_dedup_same_bytes_once.json" },
+    { "case": "quota_status_reports_usage_and_limits",    "kind": "status",     "file": "quota_status_reports_usage_and_limits.json" },
+    { "case": "quota_set_is_owner_only_trusted_state",    "kind": "set",        "file": "quota_set_is_owner_only_trusted_state.json" }
+  ]
+}
