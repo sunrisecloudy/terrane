@@ -348,9 +348,10 @@ impl WorkspaceCore {
         }))
     }
 
-    /// MP-8 capability negotiation: refuse an install whose manifest declares a
-    /// `required_features` (or `min_app_version`) the TRUSTED client feature
-    /// registry does not support (`forge/spec/required-features.md`, prd-merged/08).
+    /// MP-8 capability negotiation: refuse an install/upgrade whose manifest
+    /// declares a `required_features` (or `min_app_version`) the TRUSTED client
+    /// feature registry does not support (`forge/spec/required-features.md`,
+    /// prd-merged/08).
     ///
     /// Reads the registry from trusted workspace state
     /// ([`client_feature_registry`](WorkspaceCore::client_feature_registry)) — never
@@ -361,7 +362,20 @@ impl WorkspaceCore {
     /// ALL of them; an empty `required_features` returns `Ok`. The error is the same
     /// `ValidationError` kind every other install-refusal uses, so a shell handles it
     /// uniformly.
-    fn negotiate_required_features(&self, manifest: &Manifest) -> Result<()> {
+    ///
+    /// Both signed-install ENTRY POINTS run this gate so the review-170 signed
+    /// `compatibility` bind is fail-closed on each: `applet.install`
+    /// ([`cmd_applet_install`](Self::cmd_applet_install)) calls it before
+    /// [`verify_install_signature`], and `applet.upgrade`'s staging
+    /// ([`stage_upgrade`](Self::stage_upgrade)) calls it before the same signature
+    /// verify. The bind forces `install.compatibility == signed.compatibility`, so
+    /// the negotiation that runs here on the install/upgrade manifest also vouches
+    /// for the SIGNED floor — without this call on the upgrade path the equality
+    /// would be vacuous (neither side checked against what the client supports), and
+    /// a signed package naming an unsupported `required_features` could install via
+    /// `applet.upgrade` even though `applet.install` refuses it (review 170 FIX
+    /// ROUND 2). Visible to the sibling `lifecycle` module for that reason.
+    pub(in crate::workspace) fn negotiate_required_features(&self, manifest: &Manifest) -> Result<()> {
         self.client_feature_registry()
             .negotiate(&manifest.compatibility)
             .map_err(|unsupported| {

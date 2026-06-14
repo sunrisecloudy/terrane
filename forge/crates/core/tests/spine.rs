@@ -2999,6 +2999,22 @@ fn install_with_a_malformed_signature_block_is_a_validation_error() {
 /// fixture seed so crypto + integrity both pass and the bind is the only thing left
 /// to decide. Returns the `applet.install` `signature` block.
 fn resign_with_compatibility(compatibility: serde_json::Value) -> serde_json::Value {
+    // Keep the fixture's signed source body — the install path only checks
+    // compatibility, so the default code is fine.
+    resign_package(compatibility, None)
+}
+
+/// Re-sign a `valid_signature`-shaped package, overriding its manifest
+/// `compatibility` AND (optionally) the body of its single signed source file.
+/// Overriding the source mints a DIFFERENT `code_hash`, so an `applet.upgrade` to
+/// the re-signed package is a real upgrade (a new canonical payload), not the
+/// same-code no-op `applet.install` collapses to. The four component hashes + the
+/// `terrane/sig/v1` preimage are recomputed over the edited manifest/files, so
+/// crypto + integrity pass and the install/upgrade decision is the only thing left.
+fn resign_package(
+    compatibility: serde_json::Value,
+    source_override: Option<&str>,
+) -> serde_json::Value {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -3007,19 +3023,26 @@ fn resign_with_compatibility(compatibility: serde_json::Value) -> serde_json::Va
     let mut manifest = fixture["package"]["manifest"].clone();
     manifest["compatibility"] = compatibility;
 
-    // The one signed file becomes the install source (so the sources bind passes).
+    // The one signed file becomes the install/upgrade source (so the sources bind
+    // passes). `source_override` swaps the body to mint a fresh `code_hash` for the
+    // upgrade path; otherwise the fixture's signed body is kept verbatim.
     let files: Vec<forge_signing::PackageFile> = fixture["package"]["files"]
         .as_array()
         .expect("files array")
         .iter()
-        .map(|f| forge_signing::PackageFile {
-            path: f["path"].as_str().expect("path").to_string(),
-            content: f["content"].as_str().expect("content").to_string(),
-            sha256: forge_signing::file_digest(f["content"].as_str().expect("content")),
+        .map(|f| {
+            let content = source_override
+                .map(str::to_string)
+                .unwrap_or_else(|| f["content"].as_str().expect("content").to_string());
+            forge_signing::PackageFile {
+                path: f["path"].as_str().expect("path").to_string(),
+                sha256: forge_signing::file_digest(&content),
+                content,
+            }
         })
         .collect();
 
-    // Recompute every component hash over the EDITED manifest so integrity passes.
+    // Recompute every component hash over the EDITED manifest/files so integrity passes.
     let hashes = forge_signing::PackageHashes {
         manifest_hash: forge_signing::manifest_hash(&manifest).expect("manifest hash"),
         content_hash: forge_signing::content_hash(&files),
@@ -3045,6 +3068,17 @@ fn resign_with_compatibility(compatibility: serde_json::Value) -> serde_json::Va
         "signature": format!("ed25519:{}", B64.encode(signature.to_bytes())),
         "public_key": fixture["public_key_pem"].clone(),
     })
+}
+
+/// The install `sources` map for a re-signed package whose single signed file's
+/// body was overridden — the upgrade must ship EXACTLY the signed file (the sources
+/// bind, review 080 #1), at the fixture's path.
+fn sources_with_body(body: &str) -> serde_json::Value {
+    let fixture = load_signing_fixture("valid_signature.json");
+    let path = fixture["package"]["files"][0]["path"]
+        .as_str()
+        .expect("file path");
+    serde_json::json!({ path: body })
 }
 
 /// The `signed_fixture_manifest()` boundary plus a `compatibility` block — the
@@ -3178,6 +3212,143 @@ fn a_signed_required_feature_the_client_supports_installs() {
     // And the signed applet actually runs (the install was real).
     let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
     assert!(run.ok, "the verified applet runs: {:?}", run.error);
+}
+
+// --- review 170 FIX ROUND 2: the SECOND signed-install entry point, `applet.
+// upgrade`, runs the SAME MP-8 negotiation as `applet.install`. `stage_upgrade`
+// shares `verify_install_signature` (and thus the review-170 signed `compatibility`
+// bind that forces `install.compatibility == signed.compatibility`), but that bind
+// is only fail-closed when the negotiation ALSO ran on the upgrade manifest —
+// otherwise the equality is vacuous (neither side checked against the trusted client
+// feature registry) and a signed package naming a `required_features` the client
+// lacks could install via `applet.upgrade` even though `applet.install` refuses it.
+// `stage_upgrade` now calls `negotiate_required_features`, so the gate is enforced on
+// both entry points. These vectors prove the upgrade path refuses an unsupported
+// signed floor and admits a supported one.
+
+/// A TS body distinct from the fixture's signed source, so an `applet.upgrade` to a
+/// re-signed package carrying it mints a NEW `code_hash` — a real upgrade, not the
+/// same-code no-op the upgrade path rejects at the `compile` stage.
+const SIGNED_UPGRADE_TS: &str = "export async function main(ctx) { return { ok: true, v: 2 }; }\n";
+
+/// Install the baseline signed applet (the fixture, no compatibility floor) so the
+/// upgrade vectors have an ACTIVE v1 to upgrade. Returns the core with `app.notes`
+/// installed + enabled.
+fn install_signed_baseline() -> WorkspaceCore {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let sig = signature_block_from_fixture(&fixture);
+    let resp = install_demo_signed(&mut core, SIGNED_APP_ID, &fixture, sig);
+    assert!(resp.ok, "baseline signed install must succeed: {:?}", resp.error);
+    core
+}
+
+#[test]
+fn a_signed_required_feature_the_client_lacks_cannot_be_installed_via_upgrade() {
+    // review 170 FIX ROUND 2 (the upgrade bypass): with an active v1 installed, the
+    // attacker re-signs a NEW version whose `compatibility.required_features` names a
+    // FUTURE feature the client does not support, and ships a top-level upgrade
+    // manifest carrying the SAME compatibility floor — so the review-170 signed/
+    // install compatibility BIND passes (they are equal). Before the fix, the upgrade
+    // path never negotiated `required_features`, so the bind's equality was vacuous
+    // and the unsupported package installed via `applet.upgrade` even though it is
+    // refused on `applet.install`. With the negotiation now run in `stage_upgrade`,
+    // the upgrade is REFUSED, the active version stays v1, and a rejection audit lands.
+    let mut core = install_signed_baseline();
+    let compat = serde_json::json!({
+        "required_features": [
+            { "feature_id": "ctx.timetravel.v2", "min_version": "9.0.0" }
+        ]
+    });
+    let signature = resign_package(compat.clone(), Some(SIGNED_UPGRADE_TS));
+    let resp = core.handle(cmd(
+        "applet.upgrade",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            // The top-level upgrade manifest mirrors the signed compatibility, so the
+            // review-170 bind matches — only the NEGOTIATION can refuse it now.
+            "manifest": signed_manifest_with_compatibility(compat),
+            "sources": sources_with_body(SIGNED_UPGRADE_TS),
+            "signature": signature,
+        }),
+    ));
+
+    assert!(
+        !resp.ok,
+        "an upgrade to a signed package whose required_features the client lacks must be REFUSED (the install gate must not be bypassable via upgrade)"
+    );
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("lifecycle.upgrade_failed")
+            && err.to_string().contains("required_features.negotiate"),
+        "the refusal is a staged upgrade-failed at the negotiation stage: {err}"
+    );
+    assert!(
+        err.to_string().contains("ctx.timetravel.v2"),
+        "the negotiation enumerates the unsupported feature: {err}"
+    );
+
+    // The active version is UNCHANGED (still the v1 baseline) and a rejection audit
+    // event names the negotiation stage — the staged upgrade rolled everything back.
+    let rejected = core
+        .events()
+        .events_of_kind("applet.upgrade.rejected")
+        .next()
+        .expect("a refused upgrade emits applet.upgrade.rejected");
+    assert_eq!(rejected.payload["active_version"], serde_json::json!(1));
+    assert_eq!(
+        rejected.payload["failed_stage"],
+        serde_json::json!("required_features.negotiate")
+    );
+    assert_eq!(
+        core.events().events_of_kind("applet.upgraded").count(),
+        0,
+        "no upgrade committed"
+    );
+}
+
+#[test]
+fn a_signed_required_feature_the_client_supports_upgrades() {
+    // review 170 FIX ROUND 2 positive: the same upgrade path ADMITS a signed package
+    // whose `required_features` the client DOES support (a live capability from the
+    // deterministic registry). The negotiation passes AND the signed/install
+    // compatibility bind matches, so the upgrade commits to v2 — proving the gate
+    // refuses only an unsupported floor, not every signed upgrade.
+    let mut core = install_signed_baseline();
+    let compat = serde_json::json!({
+        "min_app_version": "1.0.0",
+        "required_features": [
+            { "feature_id": "ctx.db.query", "min_version": "1.0.0" }
+        ]
+    });
+    let signature = resign_package(compat.clone(), Some(SIGNED_UPGRADE_TS));
+    let resp = core.handle(cmd(
+        "applet.upgrade",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            "manifest": signed_manifest_with_compatibility(compat),
+            "sources": sources_with_body(SIGNED_UPGRADE_TS),
+            "signature": signature,
+        }),
+    ));
+
+    assert!(
+        resp.ok,
+        "an upgrade to a signed package whose required_features the client supports must commit: {:?}",
+        resp.error
+    );
+    assert_eq!(resp.payload["version"], serde_json::json!(2), "upgraded to v2");
+    assert_eq!(resp.payload["previous_version"], serde_json::json!(1));
+    assert_eq!(
+        resp.payload["trust"]["status"],
+        serde_json::json!("signed"),
+        "the upgrade records Signed trust"
+    );
+
+    // The upgraded applet actually runs (the upgrade was real, not just a check).
+    let run = core.handle(cmd("runtime.run", Some(SIGNED_APP_ID), serde_json::json!({ "input": {} })));
+    assert!(run.ok, "the upgraded applet runs: {:?}", run.error);
 }
 
 // ---------------------------------------------------------------------------

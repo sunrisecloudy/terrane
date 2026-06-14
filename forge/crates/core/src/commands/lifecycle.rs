@@ -271,10 +271,14 @@ impl WorkspaceCore {
     }
 
     /// Stage every part of an `applet.upgrade` WITHOUT committing: validate the new
-    /// manifest, verify the signature (bound to the new sources), compile the new
-    /// entrypoint to a fresh `code_hash`, and apply any `schema_additions` to a COPY
-    /// of the registry. Returns the staged artifacts on success, or `(stage, error)`
-    /// on the first failure so the caller can roll back with everything untouched.
+    /// manifest, negotiate its MP-8 `required_features` against the trusted client
+    /// feature registry (the SAME gate `applet.install` runs — so the review-170
+    /// signed `compatibility` bind in `verify_install_signature` is fail-closed on
+    /// the upgrade path too), verify the signature (bound to the new sources),
+    /// compile the new entrypoint to a fresh `code_hash`, and apply any
+    /// `schema_additions` to a COPY of the registry. Returns the staged artifacts on
+    /// success, or `(stage, error)` on the first failure so the caller can roll back
+    /// with everything untouched.
     ///
     /// The optional `simulate_failure_stage` payload injects a failure at a named
     /// stage (`"manifest.validate"`, `"compile"`, `"schema.apply_change"`) so the
@@ -305,6 +309,23 @@ impl WorkspaceCore {
         if simulate == Some("manifest.validate") {
             return Err(fail("manifest.validate", "simulated failure"));
         }
+
+        // STAGE 1b — MP-8 capability negotiation (`forge/spec/required-features.md`,
+        // prd-merged/08), the SAME gate `applet.install` runs at `applet.rs`:192. An
+        // upgrade is the SECOND signed-install entry point — `stage_upgrade` runs the
+        // shared `verify_install_signature` (STAGE 3 below), which binds the install
+        // `compatibility` EQUAL to the signed package's (review 170). That bind is
+        // fail-closed ONLY when the negotiation also ran, so the equality is checked
+        // against what the TRUSTED client feature registry supports; without this call
+        // the equality would be VACUOUS (signed == install, neither negotiated), and a
+        // signed package naming a `required_features` the client lacks could install
+        // via `applet.upgrade` even though `applet.install` refuses it (review 170 FIX
+        // ROUND 2). The registry is read from trusted workspace state, never the
+        // request payload, and a refusal ENUMERATES every unsupported feature. Routed
+        // through the staged-rollback fail path under its own stage so a refused
+        // upgrade leaves the active version untouched and emits the rejection audit.
+        self.negotiate_required_features(&manifest)
+            .map_err(|e| fail("required_features.negotiate", &e.to_string()))?;
 
         // STAGE 2 — sources present + non-empty.
         let sources = cmd
