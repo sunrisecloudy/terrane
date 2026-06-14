@@ -25,7 +25,7 @@ A migration is described by a `MigrationDescriptor`:
   "to_schema_version": 2,
   "transforms": [
     { "op": "add_field",    "field_id": "f_alice_2", "name": "currency", "default": "USD" },
-    { "op": "rename_field", "field_id": "f_alice_0", "from_name": "amount", "to_name": "amount_total" },
+    { "op": "rename_field", "from_field_id": "f_amount", "to_field_id": "f_amount_total", "from_name": "amount", "to_name": "amount_total" },
     { "op": "drop_field",   "field_id": "f_alice_1", "name": "note" },
     { "op": "widen_field",  "field_id": "f_alice_0", "name": "amount", "to": "float_num" }
   ]
@@ -53,7 +53,7 @@ wrong key (review 138 P2).
 | op             | effect on each record                                                            |
 | -------------- | -------------------------------------------------------------------------------- |
 | `add_field`    | if the record lacks `field_id`, set it to `default` (a constant JSON value); records that already carry the field are left untouched. The display `name` is also written into `fields[name]` so the projection stays readable. |
-| `rename_field` | DL-7: move the display projection key from `from_name` to `to_name`; the stable `field_id` value is authoritative and untouched (so merge identity never moves). A record not carrying `from_name` is a no-op. |
+| `rename_field` | MOVES BOTH the name-derived record-side stand-in `field_ids[from_field_id]` → `field_ids[to_field_id]` AND the display projection `fields[from_name]` → `fields[to_name]`. Under the M0a `f_<name>` stand-in scheme the record-side id is name-derived, so moving only the display key would strand the value under `f_<old_name>` while the index / write path / query all moved to `f_<new_name>` — a split identity (review 142). All four keys (`from_field_id`/`to_field_id`/`from_name`/`to_name`) are explicit; `from_field_id == to_field_id` (a same-name rename) moves nothing, and a record not carrying the old keys is a no-op (idempotent after the move). **DL-9 destination-collision guard (review 144):** if the record already carries a value at the rename DESTINATION (`field_ids[to_field_id]` or `fields[to_name]`) that is DISTINCT from the one being moved — a forward-compatible/unknown value a peer wrote ahead of this rename — the migration is REJECTED with `SchemaCompatibilityError` (atomic, so it rolls back) rather than silently overwriting it; a destination equal to the moved value (or absent) proceeds. |
 | `drop_field`   | remove the field from both `field_ids[field_id]` and the display projection at `name`. This is the *data* side of DL-8 "deprecate + retain at the schema level": the record value is dropped, but the migration is recorded in the oplog so the drop is replayable, never a destructive `ALTER TABLE`. |
 | `widen_field`  | coerce the stored value to the wider type, in BOTH `field_ids[field_id]` and the display projection at `name`. Only **widening** coercions are legal (`int_num → float_num`, any scalar → `scalar`, `T → nullable(T)`); the value is rewritten to its widened JSON form (e.g. integer `5` → float `5.0`). |
 
@@ -187,6 +187,21 @@ pieces of metadata make it FIRST-CLASS on the sync path rather than dropped at a
    import txn, a receiver can never materialize migrated record values while staying
    behind at the old `schema_version` — no version drift — and a failed import (e.g. a
    rebuild rejection) rolls the version advance back with the chunk.
+
+   **Metadata survives EVERY relay hop (review 145).** A migration is a schema-affecting op
+   at every hop, not just the first. When a peer B IMPORTS a migration chunk from A, its
+   `record.remote_import` oplog row carries the schema-affecting metadata FORWARD — the
+   target `to` version, an explicit `is_migration` marker, and the evolved
+   `registry_collection` — so when B RELAYS the chunk to C the sync seam recovers it from
+   B's remote-import row (not only from an authoring peer's `schema.migration` row) and
+   re-stages the chunk as a migration. Therefore C advances its `schema_version` + registry
+   exactly like a direct receiver, and the `schema_write` gate (§7) is RE-APPLIED at the
+   B→C hop too (it is never bypassed because B is merely relaying). FAIL-CLOSED: if a
+   forwarded row is marked schema-affecting but its `to` target is unrecoverable, the seam
+   stages it `malformed` and the apply boundary DENIES it rather than importing the migrated
+   data as a plain record write that would silently skip the schema advance. Before this, a
+   relay's row dropped the version/registry and the next hop imported migrated DATA while
+   staying at the old `schema_version` under an unevolved registry (C inconsistent).
 
 3. **The receiver evolves its schema registry in lockstep** (review 143). The per-chunk
    migration row also carries the affected collection's EVOLVED registry entry

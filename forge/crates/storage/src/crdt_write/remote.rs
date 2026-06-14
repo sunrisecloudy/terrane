@@ -185,12 +185,24 @@ pub(crate) fn import_remote_chunk_tx(
     // Same `OplogPayload` builder as the local write path so the payload schema
     // cannot skew across the two sites; the remote variant carries `source` (the
     // original author) and no `collection`, preserving the prior shape exactly.
+    //
+    // Review 145 — multi-hop relay: when this chunk is a MIGRATION chunk
+    // (`schema_version.is_some()`), thread its schema-affecting metadata (the target
+    // `to` version + the evolved `registry_collection`) THROUGH this remote-import row.
+    // Otherwise the row would record only `record.remote_import` with no version/registry,
+    // and when THIS store relays the chunk to the next hop the sync seam would see a plain
+    // record write, import the migrated data, and never advance that hop's schema_version /
+    // registry. Carrying the metadata makes a migration a schema-affecting op at EVERY hop
+    // (and lets the seam re-authorize schema_write at each one). An ordinary record import
+    // passes `None`/`None`, so its row is byte-identical to before.
     let op_payload = OplogPayload::remote_import(
         doc_id,
         chunk_id,
         "record.remote_import",
         original_author,
         record_ids.clone(),
+        *schema_version,
+        registry_collection.clone(),
     )
     .encode("remote oplog payload encode")?;
     append_op_tx(

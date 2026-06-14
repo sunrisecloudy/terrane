@@ -33,18 +33,34 @@ pub(super) struct OplogPayload {
     collection: Option<String>,
     /// Present only on the REMOTE-import path (the chunk's original author).
     source: Option<String>,
-    /// Present only on the MIGRATION path: the schema-version pair the migration
-    /// chunk advances `from → to` (DL-13). Threaded into the per-chunk oplog row so
-    /// the sync seam can recover the receiver's target `schema_version` (review 139).
+    /// Present on the MIGRATION path AND on a REMOTE-import of a migration chunk: the
+    /// schema-version pair the migration chunk advances `from → to` (DL-13). Threaded
+    /// into the per-chunk oplog row so the sync seam can recover the receiver's target
+    /// `schema_version` (review 139), AND — on a relay's `record.remote_import` row —
+    /// so the NEXT hop still sees the chunk as schema-affecting (review 145). The local
+    /// migration path knows both `from` and `to`; a relay re-export only needs to carry
+    /// `to` forward, so the `from` it records is cosmetic (`0` when unknown).
     migration: Option<(u64, u64)>,
-    /// Present only on the MIGRATION path: the affected collection's EVOLVED registry
-    /// entry (a serialized `forge_schema::CollectionDef`), carried so an authorized
-    /// receiver evolves its `SchemaRegistry` in lockstep with the migrated records +
-    /// `schema_version` — the registry is a CRDT document that syncs with the
-    /// migration (prd-merged/02:15, review 143). Threaded into the per-chunk oplog row
-    /// and recovered by the sync seam; an opaque `serde_json::Value` here so storage
-    /// stays agnostic of the schema type's shape. `None` for an ordinary record write.
+    /// Present on the MIGRATION path AND on a REMOTE-import of a migration chunk: the
+    /// affected collection's EVOLVED registry entry (a serialized
+    /// `forge_schema::CollectionDef`), carried so an authorized receiver evolves its
+    /// `SchemaRegistry` in lockstep with the migrated records + `schema_version` — the
+    /// registry is a CRDT document that syncs with the migration (prd-merged/02:15,
+    /// review 143). Threaded into the per-chunk oplog row and recovered by the sync
+    /// seam; preserved verbatim onto a relay's `record.remote_import` row so it survives
+    /// the next hop (review 145). An opaque `serde_json::Value` so storage stays
+    /// agnostic of the schema type's shape. `None` for an ordinary record write (and a
+    /// registry-less migration).
     registry_collection: Option<serde_json::Value>,
+    /// `true` ONLY on a REMOTE-import row of a MIGRATION chunk (review 145): an explicit
+    /// "this forwarded chunk is schema-affecting" marker so a relaying peer re-stages it
+    /// as a migration EVEN when it carried no `registry_collection` (a registry-less
+    /// migration). The local-write / local-migration paths leave this `false` — they are
+    /// distinguished by their oplog `kind` (`schema.migration`), not this flag. Emitted
+    /// as `is_migration: true` so the sync seam can FAIL CLOSED if a remote-import row is
+    /// marked schema-affecting but its `to` is unrecoverable, rather than importing
+    /// migrated data as a plain record write that never advances the next hop's schema.
+    remote_is_migration: bool,
 }
 
 impl OplogPayload {
@@ -67,6 +83,7 @@ impl OplogPayload {
             source: None,
             migration: None,
             registry_collection: None,
+            remote_is_migration: false,
         }
     }
 
@@ -103,6 +120,7 @@ impl OplogPayload {
             source: None,
             migration: Some((from, to)),
             registry_collection,
+            remote_is_migration: false,
         }
     }
 
@@ -110,12 +128,23 @@ impl OplogPayload {
     /// source}` (alphabetical on the wire). `source` is the original author so a
     /// later relay hop preserves provenance (`review 092 #1`); no `collection` key —
     /// preserving the prior remote-path shape exactly.
+    ///
+    /// When the imported chunk is a DL-13 **migration** chunk (review 145), the
+    /// schema-affecting metadata is carried THROUGH this row so the NEXT relay hop still
+    /// sees a migration: `schema_version = Some(to)` emits `to` + `is_migration: true`,
+    /// and `registry_collection` emits the evolved registry entry. Without this, a
+    /// relay's `record.remote_import` row dropped the version/registry and the next hop
+    /// imported the migrated data as a plain record write that never advanced its schema
+    /// — the multi-hop bug this closes. An ordinary record import passes `None`/`None`
+    /// and the row's shape is byte-identical to before.
     pub(super) fn remote_import(
         doc_id: &str,
         chunk_id: &str,
         kind: &str,
         source: &str,
         record_ids: Vec<String>,
+        schema_version: Option<u64>,
+        registry_collection: Option<serde_json::Value>,
     ) -> Self {
         OplogPayload {
             doc_id: doc_id.to_string(),
@@ -124,8 +153,10 @@ impl OplogPayload {
             record_ids,
             collection: None,
             source: Some(source.to_string()),
-            migration: None,
-            registry_collection: None,
+            // A relay only needs to carry `to` forward; the `from` is cosmetic (`0`).
+            migration: schema_version.map(|to| (0, to)),
+            registry_collection,
+            remote_is_migration: schema_version.is_some(),
         }
     }
 
@@ -146,9 +177,17 @@ impl OplogPayload {
         }
         if let Some((from, to)) = self.migration {
             // The schema-version pair the migration chunk advances; the sync seam
-            // reads `to` back to advance a receiver's `schema_version` (review 139).
+            // reads `to` back to advance a receiver's `schema_version` (review 139). On a
+            // relay's remote-import row `from` is cosmetic `0` — only `to` is recovered.
             map.insert("from".into(), from.into());
             map.insert("to".into(), to.into());
+        }
+        if self.remote_is_migration {
+            // Explicit "this forwarded chunk is schema-affecting" marker on a
+            // `record.remote_import` row (review 145), so a relaying peer re-stages it as
+            // a migration even when it carried no `registry_collection`, and the sync seam
+            // can FAIL CLOSED if the marker is set but `to` is unrecoverable.
+            map.insert("is_migration".into(), true.into());
         }
         if let Some(registry_collection) = &self.registry_collection {
             // The affected collection's evolved registry entry; the sync seam reads it

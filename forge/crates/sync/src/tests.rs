@@ -897,3 +897,146 @@ fn migration_chunk_syncs_to_peer_and_advances_receiver_schema_version() {
     assert_eq!(again.total_chunks_moved(), 0, "converged: the migration chunk does not re-move");
     assert_eq!(b.schema_version().unwrap(), 2, "B's version is unchanged on a converged re-sync");
 }
+
+/// Review 145 (P1) — a migration's schema-affecting metadata must survive a RELAY hop at
+/// the storage/sync seam (the mechanism the core's three-peer test exercises end to end).
+///
+/// A authors a `widen` migration; B imports it FROM A (hop 1), recording a
+/// `record.remote_import` oplog row. When B relays to C (hop 2), that row must still carry
+/// the migration's `to` schema_version so the staged envelope keeps `schema_version =
+/// Some(2)` — i.e. the seam re-stages the chunk as a SCHEMA-AFFECTING op (so the authorizer
+/// re-gates schema_write at the second hop) and C advances its `schema_version` to the
+/// target. Before the fix B's relay row dropped `to`, the envelope went `None`, and C
+/// imported the migrated data as a plain record write that left its version at 1.
+#[test]
+fn migration_metadata_survives_a_relay_hop_to_the_third_peer() {
+    use forge_schema::{FieldTransform, FieldType, MigrationDescriptor};
+
+    let idx = IndexManager::new();
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11); // author
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22); // relay
+    let mut c = Store::open_in_memory().unwrap().with_crdt_peer_id(33); // final receiver
+
+    a.apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10}), 1), &idx)
+        .unwrap();
+    a.apply_mutation_crdt(&insert("expenses", "e2", json!({"amount": 20}), 2), &idx)
+        .unwrap();
+    let widen = MigrationDescriptor {
+        collection: "expenses".into(),
+        from_schema_version: 1,
+        to_schema_version: 2,
+        transforms: vec![FieldTransform::WidenField {
+            field_id: "f_amount".into(),
+            name: "amount".into(),
+            to: FieldType::FloatNum,
+        }],
+    };
+    a.apply_migration(&widen, &idx).unwrap();
+    assert_eq!(a.schema_version().unwrap(), 2);
+
+    // Hop 1: B imports A's migration FROM A (B is now only a RELAY for it — its oplog row
+    // for the migration chunk is a `record.remote_import`, not a `schema.migration`).
+    assert!(pull(&mut b, &a, &idx).unwrap() > 0, "B imports A's chunks");
+    assert_eq!(b.schema_version().unwrap(), 2, "B advanced on the first hop");
+
+    // The crux: stage B -> C and capture the envelope the seam recovers from B's RELAY row.
+    // The migration's target version must be recovered from the `record.remote_import` row
+    // (review 145), so the staged op is schema-affecting at the SECOND hop too.
+    let mut saw_migration_envelope = false;
+    sync_stores_authorized(&mut b, &idx, &mut c, &idx, |_src, env| {
+        if env.collection == "expenses" && env.schema_version == Some(2) {
+            saw_migration_envelope = true;
+        }
+        true
+    })
+    .unwrap();
+    assert!(
+        saw_migration_envelope,
+        "the relayed migration chunk must still carry schema_version=Some(2) (metadata survived B's relay row)"
+    );
+
+    // C holds the MIGRATED (float) values AND advanced its schema_version through the relay.
+    assert_eq!(c.get_record("expenses", "e1").unwrap().unwrap().fields["amount"], json!(10.0));
+    assert_eq!(c.get_record("expenses", "e2").unwrap().unwrap().fields["amount"], json!(20.0));
+    assert_eq!(
+        c.schema_version().unwrap(),
+        2,
+        "C advanced to the migration target across TWO hops — not left behind as a plain write"
+    );
+
+    // The migration is durable in C's own CRDT source of truth: a DL-6 rebuild reproduces
+    // the migrated values and an index reconstructed afterward serves them.
+    c.rebuild_projection(&idx).unwrap();
+    assert_eq!(c.get_record("expenses", "e1").unwrap().unwrap().fields["amount"], json!(10.0));
+    assert_eq!(c.schema_version().unwrap(), 2, "C stays at v2 across its own rebuild");
+    let mut c_idx = IndexManager::new();
+    c.create_index(&mut c_idx, "expenses", "f_amount", CreateIndexKind::Value)
+        .expect("C reconstructs an index over the migrated f_amount");
+    assert_eq!(
+        c.get_record("expenses", "e1").unwrap().unwrap().field_ids["f_amount"].as_f64(),
+        Some(10.0)
+    );
+}
+
+/// Review 145 (fail-closed): a `record.remote_import` oplog row MARKED schema-affecting
+/// (`is_migration: true`) but whose `to` target is UNRECOVERABLE must be staged `malformed`
+/// so a relaying peer DENIES it rather than importing migrated data as a plain record write
+/// that silently skips the schema advance. We forge such a row by importing a chunk whose
+/// `RemoteChunk` carries `schema_version` but on a store, then corrupt nothing — instead we
+/// directly assert the seam's fail-closed path via a hand-built remote-import row missing a
+/// usable `to`.
+#[test]
+fn relay_row_marked_migration_without_recoverable_target_is_staged_malformed() {
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut relay = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(33);
+
+    // The author writes a well-formed `expenses` chunk.
+    author
+        .apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("expenses");
+    // Stage the chunk into the relay as a MIGRATION chunk but with an UNRECOVERABLE target:
+    // `schema_version: Some(0)`. The relay's remote-import row records `is_migration: true`
+    // (the marker) but a `to` of 0, which `oplog_index` treats as unrecoverable metadata.
+    let staged: Vec<RemoteChunk> = author
+        .get_chunks(&doc_id)
+        .unwrap()
+        .into_iter()
+        .map(|c| RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: exchanged_chunk_id(&c.format, &c.payload),
+            format: c.format,
+            payload: c.payload,
+            author_actor_id: Some("peer:11".into()),
+            record_ids: vec!["e1".into()],
+            schema_version: Some(0),
+            registry_collection: None,
+        })
+        .collect();
+    relay.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();
+
+    // Stage relay -> receiver. The relay row is marked schema-affecting but its `to` is
+    // unrecoverable, so the envelope MUST be flagged malformed (fail closed). A deny-on-
+    // malformed gate skips it; the receiver imports nothing.
+    let mut seen: Vec<Option<String>> = Vec::new();
+    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env| {
+        seen.push(env.malformed.clone());
+        env.malformed.is_none()
+    })
+    .unwrap();
+
+    assert_eq!(report.chunks_denied, 1, "the unrecoverable-metadata migration row is denied");
+    assert!(
+        seen.iter().any(|m| m
+            .as_deref()
+            .map(|m| m.contains("unrecoverable migration metadata"))
+            .unwrap_or(false)),
+        "the schema-affecting row with no usable target is flagged malformed: {seen:?}"
+    );
+    assert!(
+        receiver.get_record("expenses", "e1").unwrap().is_none(),
+        "the receiver imported nothing — a schema-affecting chunk with lost metadata is not laundered as a plain write"
+    );
+}

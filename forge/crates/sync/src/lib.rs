@@ -247,6 +247,13 @@ struct OplogEntry {
     /// `SchemaRegistry` in lockstep with the version advance (review 143). `None` for
     /// an ordinary record-write chunk (and for a migration without a registry change).
     registry_collection: Option<serde_json::Value>,
+    /// `true` when this row is marked SCHEMA-AFFECTING (a migration) but its `to`
+    /// target version is UNRECOVERABLE (missing or zero) — review 145 fail-closed. A
+    /// relay re-exporting such a row must NOT let the chunk import as a plain record
+    /// write that silently skips the schema advance: `envelope_for_chunk` flags it
+    /// `malformed` so the apply boundary denies it. `false` for an ordinary record row
+    /// and for a migration whose `to` was recovered cleanly.
+    migration_meta_unrecoverable: bool,
 }
 
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
@@ -297,23 +304,48 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
         };
         // A DL-13 migration chunk's per-chunk oplog row carries the schema-version
         // pair it advances; recover the `to` target so the staged chunk can advance a
-        // receiver's `schema_version` on import (review 139). Only the migration kind
-        // names a `to` field, so an ordinary record-write row leaves this `None`.
-        let (schema_version, registry_collection) = if op.kind == "schema.migration" {
-            (
-                payload
-                    .as_ref()
-                    .and_then(|v| v.get("to").and_then(serde_json::Value::as_u64)),
-                // The affected collection's evolved registry entry, recovered so an
-                // authorized receiver evolves its SchemaRegistry in lockstep (review
-                // 143). Absent on a migration the sender drove without a registry change.
-                payload
-                    .as_ref()
-                    .and_then(|v| v.get("registry_collection"))
-                    .cloned(),
-            )
+        // receiver's `schema_version` on import (review 139), AND the evolved registry
+        // entry (review 143). This must work for TWO kinds of row:
+        //
+        // * the AUTHORING store's `schema.migration` per-chunk row (the origin migrated
+        //   locally); and
+        // * a RELAY's `record.remote_import` row that imported a migration chunk and
+        //   carried the metadata forward (review 145). Before this, a relay's row dropped
+        //   the version/registry, so when B relayed A's migration to C the seam saw a
+        //   plain record write — C imported the migrated DATA but never advanced its
+        //   `schema_version`/registry. A relayed migration row is marked schema-affecting
+        //   by `is_migration: true`, so we recognize it even if it carried no registry.
+        //
+        // An ordinary record-write row (local or remote) names neither, leaving `None`.
+        let is_migration_row = op.kind == "schema.migration"
+            || payload
+                .as_ref()
+                .and_then(|v| v.get("is_migration").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false);
+        let (schema_version, migration_meta_unrecoverable) = if is_migration_row {
+            // The `to` target the migration advances the receiver to. A row marked
+            // schema-affecting whose `to` is missing/zero is UNRECOVERABLE metadata: it
+            // is flagged so `envelope_for_chunk` can deny it fail-closed rather than let
+            // the chunk import as a plain record write that silently skips the schema
+            // advance (review 145 fail-closed).
+            let to = payload
+                .as_ref()
+                .and_then(|v| v.get("to").and_then(serde_json::Value::as_u64))
+                .filter(|to| *to > 0);
+            (to, to.is_none())
         } else {
-            (None, None)
+            (None, false)
+        };
+        let registry_collection = if is_migration_row {
+            // The affected collection's evolved registry entry, recovered so an
+            // authorized receiver evolves its SchemaRegistry in lockstep (review 143).
+            // Absent on a migration the sender drove without a registry change.
+            payload
+                .as_ref()
+                .and_then(|v| v.get("registry_collection"))
+                .cloned()
+        } else {
+            None
         };
         out.insert(
             op.op_id,
@@ -324,6 +356,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
                 origin_source,
                 schema_version,
                 registry_collection,
+                migration_meta_unrecoverable,
             },
         );
     }
@@ -369,6 +402,17 @@ fn envelope_for_chunk(
                     malformed = Some(format!(
                         "forwarded chunk {op_id:?} has no recoverable original author \
                          (record.remote_import without a usable source)"
+                    ));
+                }
+                // A chunk marked SCHEMA-AFFECTING (a migration) whose `to` target is
+                // unrecoverable must NOT import as a plain record write — that would
+                // materialize migrated data without advancing the next hop's schema
+                // (review 145 fail-closed). Flag it malformed so the apply boundary
+                // denies it. A clean migration (recoverable `to`) is unaffected.
+                if entry.migration_meta_unrecoverable && malformed.is_none() {
+                    malformed = Some(format!(
+                        "schema-affecting chunk {op_id:?} has unrecoverable migration \
+                         metadata (no usable target schema_version)"
                     ));
                 }
                 (

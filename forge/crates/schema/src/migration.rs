@@ -11,7 +11,11 @@
 //!
 //! Transforms are keyed by the **stable `field_id`** (DL-7), never the display
 //! name. Supported: `add_field` (fill a default into records missing the field),
-//! `rename_field` (display-name only — the stable id value never moves),
+//! `rename_field` (MOVES BOTH the name-derived stand-in `field_ids[from_field_id]`
+//! → `field_ids[to_field_id]` AND the display key `fields[from_name]` →
+//! `fields[to_name]`, since the M0a `f_<name>` stand-in is name-derived — review
+//! 142; a destination already holding a DISTINCT (forward-compatible/unknown) value
+//! is rejected fail-closed rather than overwritten — DL-9, review 144),
 //! `drop_field` (remove the value side; the schema field is kept via deprecate),
 //! and `widen_field` (coerce the stored value to a wider type). Narrowing is
 //! rejected: a type relation that is itself a narrowing fails up front, and a
@@ -200,13 +204,31 @@ fn apply_transform(record: &mut RecordEnvelope, transform: &FieldTransform) -> R
             // the old keys is a no-op (idempotent: re-applying after the move finds
             // nothing under the old keys). A same-name rename
             // (`from_field_id == to_field_id`) moves nothing.
+            //
+            // DESTINATION-COLLISION GUARD (review 144 P1, DL-9): a forward-compatible
+            // record may already carry an unknown/future value at the rename DESTINATION
+            // (`field_ids[to_field_id]` / `fields[to_name]`) — e.g. a peer wrote
+            // `f_<new_name>` before this peer ran the rename. Blindly inserting the moved
+            // value would SILENTLY DROP that distinct destination value, violating DL-9
+            // (unrelated/unknown field values are carried through verbatim, never
+            // overwritten). So before moving, reject the WHOLE migration fail-closed when
+            // the destination already holds a value DISTINCT from the one being moved. A
+            // destination equal to the moved value (a benign re-converge) — or absent —
+            // proceeds. The migration is atomic, so the rejection rolls everything back.
             if from_field_id != to_field_id {
                 if let Some(value) = record.field_ids.remove(from_field_id) {
+                    reject_rename_collision(
+                        record.field_ids.get(to_field_id),
+                        &value,
+                        "field_ids",
+                        to_field_id,
+                    )?;
                     record.field_ids.insert(to_field_id.clone(), value);
                 }
             }
             if from_name != to_name {
                 if let Some(value) = record.fields.remove(from_name) {
+                    reject_rename_collision(record.fields.get(to_name), &value, "fields", to_name)?;
                     record.fields.insert(to_name.clone(), value);
                 }
             }
@@ -229,6 +251,32 @@ fn apply_transform(record: &mut RecordEnvelope, transform: &FieldTransform) -> R
             to,
         } => widen_value(record, field_id, name, to),
     }
+}
+
+/// Guard a rename MOVE against a destination collision (review 144 P1, DL-9). When
+/// the destination key (`field_ids[to_field_id]` or `fields[to_name]`) already holds
+/// `existing`, the rename may overwrite it. DL-9 requires unknown/future field values
+/// to be carried through verbatim, never silently overwritten — so a destination value
+/// DISTINCT from the one being moved is rejected fail-closed with a
+/// [`CoreError::SchemaCompatibilityError`] (the migration is atomic, so the whole thing
+/// rolls back). A destination equal to the moved value — a benign re-converge where the
+/// rename target already agrees — is allowed (the insert is a no-op). `map` and `key`
+/// name the colliding slot for an actionable error.
+fn reject_rename_collision(
+    existing: Option<&serde_json::Value>,
+    moved: &serde_json::Value,
+    map: &str,
+    key: &str,
+) -> Result<()> {
+    if let Some(existing) = existing {
+        if existing != moved {
+            return Err(CoreError::SchemaCompatibilityError(format!(
+                "rename destination {map}[{key:?}] already holds a distinct value \
+                 ({existing}); refusing to overwrite it (DL-9 unknown-field preservation)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Coerce a record's stored value at `field_id` to the wider type `to`, rewriting
@@ -569,6 +617,58 @@ mod tests {
     }
 
     #[test]
+    fn rename_into_distinct_destination_value_is_rejected_dl9() {
+        // Review 144 P1 (DL-9): a forward-compatible record already carries an
+        // unknown/future value at the rename DESTINATION (`f_title` / `title`) — e.g.
+        // a peer wrote `f_<new_name>` before this peer ran the rename. Blindly
+        // inserting the moved value would SILENTLY DROP that distinct destination
+        // value, violating DL-9. The rename must REJECT fail-closed (the migration is
+        // atomic, so the whole thing rolls back) — nothing is moved.
+        let mut r = rec(&[
+            ("f_label", serde_json::json!("hi")),
+            ("f_title", serde_json::json!("DISTINCT-FUTURE-VALUE")),
+        ]);
+        r.fields.insert("label".into(), serde_json::json!("hi"));
+        r.fields
+            .insert("title".into(), serde_json::json!("DISTINCT-FUTURE-VALUE"));
+        let d = desc(vec![FieldTransform::RenameField {
+            from_field_id: "f_label".into(),
+            to_field_id: "f_title".into(),
+            from_name: "label".into(),
+            to_name: "title".into(),
+        }]);
+        let err = migrate_record(&r, &d).unwrap_err();
+        assert_eq!(err.code(), "SchemaCompatibilityError");
+        // The error names the colliding destination and the preserved value.
+        assert!(err.to_string().contains("f_title"), "{err}");
+        assert!(err.to_string().contains("DISTINCT-FUTURE-VALUE"), "{err}");
+    }
+
+    #[test]
+    fn rename_into_equal_destination_value_is_allowed_noop() {
+        // A destination already holding a value EQUAL to the one being moved is a
+        // benign re-converge (the rename target already agrees), so it proceeds: no
+        // data is lost, and the destination ends with that same value.
+        let mut r = rec(&[
+            ("f_label", serde_json::json!("hi")),
+            ("f_title", serde_json::json!("hi")),
+        ]);
+        r.fields.insert("label".into(), serde_json::json!("hi"));
+        r.fields.insert("title".into(), serde_json::json!("hi"));
+        let d = desc(vec![FieldTransform::RenameField {
+            from_field_id: "f_label".into(),
+            to_field_id: "f_title".into(),
+            from_name: "label".into(),
+            to_name: "title".into(),
+        }]);
+        let out = migrate_record(&r, &d).unwrap();
+        assert!(!out.field_ids.contains_key("f_label"), "old stand-in id removed");
+        assert_eq!(out.field_ids["f_title"], serde_json::json!("hi"));
+        assert!(!out.fields.contains_key("label"));
+        assert_eq!(out.fields["title"], serde_json::json!("hi"));
+    }
+
+    #[test]
     fn unknown_fields_are_preserved_dl9() {
         let mut r = rec(&[("f_amount", serde_json::json!(5))]);
         r.unknown_fields.insert("f_future".into(), serde_json::json!({"x": 1}));
@@ -618,6 +718,33 @@ mod tests {
         assert_eq!(out.updated_at, r.updated_at);
         assert_eq!(out.deleted, r.deleted);
         assert_eq!(out.envelope_version, r.envelope_version);
+    }
+
+    #[test]
+    fn rename_field_serialization_golden() {
+        // Review 144 P2: pin the EXACT on-the-wire shape of a `rename_field` transform
+        // so the oplog payload an authored migration writes (and a peer replays /
+        // interops with) is unambiguous. The round-2 "display-only rename" carried a
+        // single stable `field_id`; the current shape MOVES both the stand-in and the
+        // display key, so it carries `from_field_id`/`to_field_id` +
+        // `from_name`/`to_name`. serde emits keys in declaration order under the `op`
+        // tag. A drift in this byte shape breaks cross-peer replay — hence a golden,
+        // not a `contains` check.
+        let rename = FieldTransform::RenameField {
+            from_field_id: "f_label".into(),
+            to_field_id: "f_title".into(),
+            from_name: "label".into(),
+            to_name: "title".into(),
+        };
+        let s = serde_json::to_string(&rename).unwrap();
+        assert_eq!(
+            s,
+            r#"{"op":"rename_field","from_field_id":"f_label","to_field_id":"f_title","from_name":"label","to_name":"title"}"#,
+            "the rename_field op wire shape changed — replay/interop golden must be updated deliberately"
+        );
+        // And it deserializes back to the same value (the golden is bidirectional).
+        let back: FieldTransform = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, rename);
     }
 
     #[test]

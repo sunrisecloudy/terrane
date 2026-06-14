@@ -699,6 +699,212 @@ fn migration_chunk_authorized_for_maintainer_syncs_records_version_registry_and_
     assert_eq!(allowed.payload["decision"], json!("allow"));
 }
 
+/// Build three empty cores A (author) → B (relay) → C (final receiver) with distinct
+/// Loro peer ids, plus the symmetric back-channel trust each pair needs so only the
+/// forward direction under test can deny. `b_trusts_a` / `c_trusts_a` decide whether the
+/// migration A authors is authorized as a schema change at each hop (gated against A, the
+/// ORIGINAL author, by provenance). Returns `(a, b, c)`.
+fn three_relay_cores(
+    b_trusts_a: TrustedMembership,
+    c_trusts_a: TrustedMembership,
+) -> (WorkspaceCore, WorkspaceCore, WorkspaceCore) {
+    const A_PEER: u64 = 710;
+    const B_PEER: u64 = 720;
+    const C_PEER: u64 = 730;
+    let mut a = WorkspaceCore::in_memory("ws-relay-a").unwrap();
+    let mut b = WorkspaceCore::in_memory("ws-relay-b").unwrap();
+    let mut c = WorkspaceCore::in_memory("ws-relay-c").unwrap();
+    a.store_mut().set_crdt_peer_id(A_PEER);
+    b.store_mut().set_crdt_peer_id(B_PEER);
+    c.store_mut().set_crdt_peer_id(C_PEER);
+
+    // B trusts A for the migration (A->B hop); C trusts A for the relayed migration
+    // (B->C hop, authorized against the ORIGINAL author A — provenance).
+    b.set_peer_membership(source_id_for(A_PEER), b_trusts_a).unwrap();
+    c.set_peer_membership(source_id_for(A_PEER), c_trusts_a).unwrap();
+    // C must also trust the relay B (the direct sender) as an owner; provenance gates
+    // A's chunk against A, but B's own local writes (none here) would gate against B.
+    c.set_peer_membership(
+        source_id_for(B_PEER),
+        membership("actor-b", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    // Symmetric back-channels so the reverse direction never spuriously denies.
+    a.set_peer_membership(
+        source_id_for(B_PEER),
+        membership("actor-b", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    b.set_peer_membership(
+        source_id_for(C_PEER),
+        membership("actor-c", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    (a, b, c)
+}
+
+#[test]
+fn migration_relays_through_two_hops_carrying_version_registry_and_index() {
+    // Review 145 (P1): a genuine THREE-peer relay A -> B -> C. A authors a DL-13 migration
+    // (widen `amount` int -> float via the real `schema.apply_change`); B imports it (A->B),
+    // recording it as a `record.remote_import` row. When B RELAYS to C (B->C), the migration
+    // metadata MUST survive that hop: B's remote-import row now carries the target
+    // schema_version + the evolved registry entry + an is-migration marker, so the sync seam
+    // re-stages the chunk as a SCHEMA-AFFECTING op (re-authorized as schema_write at the B->C
+    // hop too), and C converges on the migrated records, schema_version, registry, AND the
+    // reconstructed index — exactly like the direct A->B receiver. Before the fix B's relay
+    // row dropped the version/registry, so C imported the migrated DATA as a plain record
+    // write and stayed at the old schema_version with an unevolved registry (C inconsistent).
+    let maintainer = || membership_full("actor-maintainer", Role::Maintainer, &["expenses"], true);
+    let (mut a, mut b, mut c) = three_relay_cores(maintainer(), maintainer());
+    seed_and_widen_expenses(&mut a);
+    assert!(a.store().schema_version().unwrap() > 1, "A authored the migration");
+    assert_eq!(b.store().schema_version().unwrap(), 1, "B starts at v1");
+    assert_eq!(c.store().schema_version().unwrap(), 1, "C starts at v1");
+
+    // Hop 1: A -> B. B authorizes the migration (Maintainer + schema_write) and converges.
+    let a_to_b = a.sync_with(&mut b).unwrap();
+    assert_eq!(a_to_b.chunks_denied, 0, "A->B: the authorized migration applies (report {a_to_b:?})");
+    assert!(b.store().schema_version().unwrap() > 1, "B advanced on the A->B hop");
+    // B holds the MIGRATED values after hop 1 (sanity — B is a faithful receiver).
+    assert_eq!(query_collection(&mut b, "expenses")[0].1["amount"], json!(10.0));
+
+    // Hop 2: B -> C. B only RELAYED A's migration (its oplog row is a record.remote_import).
+    // The metadata must survive this hop, so C converges identically.
+    let b_to_c = b.sync_with(&mut c).unwrap();
+    assert_eq!(
+        b_to_c.chunks_denied, 0,
+        "B->C: the relayed migration must be re-authorized + applied, not dropped (report {b_to_c:?})"
+    );
+    assert!(b_to_c.total_chunks_moved() > 0, "the relayed migration chunk moves B -> C");
+
+    // (records) C holds the MIGRATED (float) values — the migration reached the THIRD peer.
+    let rows = query_collection(&mut c, "expenses");
+    assert_eq!(rows.len(), 2, "both migrated records reached C: {rows:?}");
+    assert_eq!(rows[0].0, "e1");
+    assert_eq!(rows[0].1["amount"], json!(10.0), "e1 migrated to float on C (the relayed receiver)");
+    assert_eq!(rows[1].1["amount"], json!(20.0), "e2 migrated to float on C");
+
+    // (version) C advanced to the migration target and CONVERGES with A — through TWO hops.
+    assert!(c.store().schema_version().unwrap() > 1, "C advanced past v1 via the relay");
+    assert_eq!(
+        c.store().schema_version().unwrap(),
+        a.store().schema_version().unwrap(),
+        "C converges on A's schema_version across two relay hops (no drift)"
+    );
+
+    // (registry) C's registry was EVOLVED in lockstep: it KNOWS the `expenses` collection
+    // and `amount` is the WIDENED float type — the registry survived the relay hop, not stale.
+    let recv_col = c
+        .registry()
+        .collection("expenses")
+        .expect("C's registry contains the relayed collection");
+    let amount = recv_col
+        .field("f_alice_0")
+        .expect("C's registry contains the migrated field");
+    assert_eq!(amount.name(), "amount");
+    assert_eq!(
+        *amount.ty(),
+        forge_schema::FieldType::FloatNum,
+        "C's registry reflects the WIDENED type (registry metadata survived the relay)"
+    );
+    assert!(amount.indexed(), "C's registry keeps the field indexed");
+    assert_eq!(
+        c.registry().collection("expenses"),
+        a.registry().collection("expenses"),
+        "A and C registries converge across two relay hops"
+    );
+
+    // (index reconstruction) C reconstructed the `f_amount` index from the evolved registry.
+    assert!(
+        c.indexes().get_expression("expenses", "f_amount").is_some(),
+        "C reconstructed the f_amount index from the relayed registry"
+    );
+
+    // C audited the relayed migration as authorized, gated against the ORIGINAL author A.
+    let allowed = c
+        .events()
+        .events_of_kind("sync.authorized")
+        .find(|e| e.payload["collection"] == json!("expenses"))
+        .expect("C authorized the relayed migration chunk");
+    assert_eq!(allowed.payload["decision"], json!("allow"));
+    assert_eq!(
+        allowed.payload["source"],
+        json!(source_id_for(710)),
+        "the relayed migration is authorized against the ORIGINAL author A, not relay B"
+    );
+
+    // A converged re-sync is a pure no-op AND leaves C's schema state unchanged.
+    let again = b.sync_with(&mut c).unwrap();
+    assert_eq!(again.total_chunks_moved(), 0, "converged: the relayed migration does not re-move");
+    assert_eq!(c.store().schema_version().unwrap(), a.store().schema_version().unwrap());
+}
+
+#[test]
+fn relayed_migration_is_denied_at_a_hop_without_schema_write() {
+    // Review 145 (fail-closed twin): the schema_write gate must re-apply at EVERY relay hop,
+    // not just the first. A authors a migration; B imports it (A->B authorized). B then relays
+    // to C, but C trusts the ORIGINAL author A only as an EDITOR with db.write on `expenses`
+    // and WITHOUT schema_write. Because B's relay row carries the schema-affecting metadata
+    // forward (review 145), C sees the relayed chunk as a MIGRATION and DENIES it fail-closed —
+    // it must NOT slip through as a plain record write the editor's db.write would allow. The
+    // bug this guards: a dropped metadata row would let an unauthorized hop launder a schema
+    // bump.
+    let migrator = membership_full("actor-maintainer", Role::Maintainer, &["expenses"], true);
+    // C trusts A as an Editor on `expenses` but WITHOUT schema_write.
+    let c_trusts_a_editor = membership("actor-a-editor", Role::Editor, &["expenses"]);
+    let (mut a, mut b, mut c) = three_relay_cores(migrator, c_trusts_a_editor);
+    seed_and_widen_expenses(&mut a);
+
+    // Hop 1: A -> B authorized.
+    let a_to_b = a.sync_with(&mut b).unwrap();
+    assert_eq!(a_to_b.chunks_denied, 0, "A->B: the migration is authorized at the first hop");
+    assert!(b.store().schema_version().unwrap() > 1, "B advanced on the first hop");
+
+    // Hop 2: B -> C. The relayed migration is DENIED at C (the editor lacks schema_write),
+    // EVEN THOUGH the editor IS allowed plain db.write on `expenses` — proving the metadata
+    // survived the relay so the gate still sees a migration, and the gate re-applies at C.
+    let b_to_c = b.sync_with(&mut c).unwrap();
+    assert_eq!(
+        b_to_c.chunks_denied, 1,
+        "B->C: the relayed migration must be DENIED at the unauthorized hop (report {b_to_c:?})"
+    );
+
+    // C's schema state is untouched: the migration's effect was rejected before any import.
+    // The plain int record-insert chunks the editor IS allowed to write still applied, so C
+    // sees the PRE-migration int values, NOT the migrated floats.
+    let rows = query_collection(&mut c, "expenses");
+    assert_eq!(rows.len(), 2, "the editor's plain record writes still apply at C: {rows:?}");
+    assert_eq!(rows[0].1["amount"], json!(10), "e1 stays the PRE-migration int (migration denied at C)");
+    assert_eq!(rows[1].1["amount"], json!(20), "e2 stays the PRE-migration int (migration denied at C)");
+    assert_eq!(
+        c.store().schema_version().unwrap(),
+        1,
+        "C's schema_version must NOT advance for the unauthorized relayed migration"
+    );
+    assert!(
+        c.registry().collection("expenses").is_none(),
+        "C's registry must NOT be evolved by the unauthorized relayed migration"
+    );
+
+    // C audited a permission_denied naming the missing schema_write for the relayed migration,
+    // gated against the ORIGINAL author A (provenance), not the relay B.
+    let denial = c
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .find(|e| {
+            e.payload["collection"] == json!("expenses")
+                && e.payload["reason"].as_str().is_some_and(|r| r.contains("schema_write"))
+        })
+        .expect("C audited a denial naming the missing schema_write for the relayed migration");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+    assert_eq!(
+        denial.payload["source"],
+        json!(source_id_for(710)),
+        "the denial is gated against the ORIGINAL author A, not relay B"
+    );
+}
+
 #[test]
 fn seeded_membership_survives_reopen() {
     // The SS-7 membership table is persisted to the workspace file (mirrors the

@@ -193,6 +193,35 @@ mod tests {
             r#"{"chunk_id":"chunk-0001","doc_id":"collection/tasks","kind":"record.remote_import","record_ids":["t1"],"source":"peer:C"}"#,
             "remote-import oplog payload bytes drifted"
         );
+
+        // Review 145: a remote-import of a MIGRATION chunk carries the schema-affecting
+        // metadata THROUGH the relay row (`from`/`to` + the `is_migration` marker), so the
+        // next hop still sees a migration rather than a plain record write. The relay only
+        // forwards `to`, so `from` is the cosmetic `0`. Pin the exact bytes — a relaying
+        // peer's `oplog_index` recovers `to`/`is_migration` by these keys, so a drift would
+        // silently re-break multi-hop migration relay. (The companion `registry_collection`
+        // carry is exercised end-to-end by the core's three-peer relay test, which evolves a
+        // real `CollectionDef`; here we pin the registry-less migration row shape.)
+        let mig_chunk = RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: "chunk-0001".to_string(),
+            format: CHUNK_FORMAT.to_string(),
+            payload: b"opaque-migration".to_vec(),
+            author_actor_id: Some("peer:C".to_string()),
+            record_ids: vec!["t1".to_string()],
+            schema_version: Some(2),
+            registry_collection: None,
+        };
+        let mut relay = store();
+        relay
+            .transact(|tx| super::remote::import_remote_chunk_tx(tx, &mig_chunk, "peer:A").map(|_| ()))
+            .unwrap();
+        let relayed = String::from_utf8(relay.list_ops().unwrap()[0].payload.clone()).unwrap();
+        assert_eq!(
+            relayed,
+            r#"{"chunk_id":"chunk-0001","doc_id":"collection/tasks","from":0,"is_migration":true,"kind":"record.remote_import","record_ids":["t1"],"source":"peer:C","to":2}"#,
+            "migration relay-import oplog payload bytes drifted"
+        );
     }
 
     #[test]
