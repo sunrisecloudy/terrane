@@ -88,7 +88,7 @@ Engines historically diverge in ~15 areas; each is a vector in
 | `bigint_arithmetic` | `BigInt` arithmetic, `asUintN`/`asIntN`, string serialization | medium | required_identical |
 | `property_enumeration_order` | `[[OwnPropertyKeys]]` order (integer keys then insertion) | high | required_identical |
 | `parse_int_float_edges` | `parseInt`/`parseFloat` radix, junk, `Infinity`, empty | medium | required_identical |
-| `math_determinism_no_random` | `Math` determinism; `Math.random` neutralized | high | **normalized** |
+| `math_determinism_no_random` | `Math` determinism; `Math.random` neutralized | high | required_identical |
 | `recursion_stack_limit` | Deep recursion trips the stack limit identically | high | **normalized** |
 
 Highest divergence risk (the areas a second engine is most likely to break on
@@ -110,7 +110,7 @@ impossible to satisfy. A vector's `equivalence` field declares which class it is
   applet (and the host) observe only a **normalized projection** of it. The vector
   pins the normalized projection, never the raw shape.
 
-The normalization rules:
+Only two vectors are `normalized`; the normalization rules are:
 
 1. **Error `.stack` is never observable.** A stack trace's frames, line/column
    numbers, and formatting are entirely engine-specific. A conformant applet must
@@ -124,22 +124,33 @@ The normalization rules:
    raw message. At the run boundary the engine already surfaces an uncaught throw
    as a `CoreError::RuntimeError` whose code (`"RuntimeError"`) is portable while
    its detail text is not (mirrored by `conformance-vector-format.md`'s
-   "CPU/memory suspension detail text" carve-out).
+   "CPU/memory suspension detail text" carve-out). See `error_message_normalized`.
 3. **The stack-limit depth is not observable.** The exact recursion depth at which
    an engine overflows is implementation-defined. The portable contract is only
    that unbounded recursion throws a **catchable `RangeError`** (never a host/FFI
    crash — the runtime caps the C stack via `set_max_stack_size` so the overflow
    becomes a JS exception). A conformant applet observes `error.name === "RangeError"`,
    never the depth. See `recursion_stack_limit`.
-4. **`Math.random` is neutralized, not removed.** `typeof Math.random` stays
-   `"function"` (so feature-detection is identical across engines) but calling it
-   throws a catchable `Error`. The normalized observable is "it throws", not the
-   raw value. See `math_determinism_no_random`.
 
-Everything *not* on this list is `required_identical`: number formatting, JSON
-ordering/escaping, enumeration/iteration order, RegExp results, typed-array byte
-layout (via an explicit-endianness `DataView`), BigInt arithmetic, and
-microtask/`try-finally` ordering are all ECMAScript-mandated and must match exactly.
+**Why `Math.random` is `required_identical`, not `normalized`.** It is tempting to
+file `math_determinism_no_random` under normalization, but it is the opposite case:
+`Math.random` is **neutralized by the host**, not left implementation-defined.
+`typeof Math.random` stays `"function"` (so feature-detection is identical across
+engines) but the host installs *the same* throwing stub
+(`engine.rs::disable_nondeterministic_random`) in every realm, so a call throws an
+`Error` with `error.name === "Error"` **by construction** — the same bytes on
+QuickJS and on a future JSC. The applet projects only `error.name` (`"Error"`),
+which the host pins, so the observable is byte-identical, not engine-defined.
+Contrast `recursion_stack_limit` (rule 3): there the engine still picks the depth,
+so the host can only normalize the *outcome* (`RangeError`) and not the raw event —
+which is the actual `normalized` case. `math_determinism_no_random` is therefore
+`required_identical`. See `math_determinism_no_random`.
+
+Everything *not* covered by rules 1–3 is `required_identical`: number formatting,
+JSON ordering/escaping, enumeration/iteration order, RegExp results, typed-array
+byte layout (via an explicit-endianness `DataView`), BigInt arithmetic, the
+host-neutralized `Math.random` throw, and microtask/`try-finally` ordering are all
+either ECMAScript-mandated or host-pinned and must match exactly.
 
 ## 4. Fixture format
 

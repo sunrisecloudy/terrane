@@ -118,6 +118,15 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
 
     let run_manifest = conformance_manifest();
     let mut ran = 0usize;
+    // The only two vectors whose observable is a host-normalized projection of an
+    // engine-defined shape (error `.message`/`.stack`, stack-limit depth). Every
+    // other vector — including `math_determinism_no_random`, whose `Math.random`
+    // throw is HOST-installed and identical by construction — is
+    // `required_identical`. This guard pins the equivalence-class partition so the
+    // fixtures and `spec/cross-engine-conformance.md` (§3 table + rules) cannot
+    // drift apart silently.
+    const NORMALIZED_CASES: [&str; 2] = ["error_message_normalized", "recursion_stack_limit"];
+    let mut normalized_seen: Vec<String> = Vec::new();
 
     for case_file in &manifest.cases {
         let v = load_vector(case_file);
@@ -201,6 +210,24 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
             v.case,
             v.equivalence
         );
+        // Cross-check the tag against the spec's fixed normalized partition: a
+        // `normalized` tag is only legal on the two cases §3 documents, and those
+        // two cases must be tagged `normalized`. This is what stops the
+        // fixture/spec/report contradiction (FIX ROUND 2) from recurring silently.
+        let is_documented_normalized = NORMALIZED_CASES.contains(&v.case.as_str());
+        assert_eq!(
+            v.equivalence == "normalized",
+            is_documented_normalized,
+            "[{}] equivalence tag disagrees with spec §3: this case is {} the \
+             documented normalized set {:?} but is tagged {:?}",
+            v.case,
+            if is_documented_normalized { "in" } else { "NOT in" },
+            NORMALIZED_CASES,
+            v.equivalence
+        );
+        if v.equivalence == "normalized" {
+            normalized_seen.push(v.case.clone());
+        }
 
         ran += 1;
     }
@@ -209,5 +236,17 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
         ran,
         manifest.cases.len(),
         "every declared conformance case must be exercised"
+    );
+
+    // Both documented `normalized` cases must actually be present in the corpus —
+    // the partition is exactly these two, no more, no fewer.
+    normalized_seen.sort();
+    let mut expected_normalized: Vec<String> =
+        NORMALIZED_CASES.iter().map(|s| s.to_string()).collect();
+    expected_normalized.sort();
+    assert_eq!(
+        normalized_seen, expected_normalized,
+        "the `normalized` equivalence class must be exactly {NORMALIZED_CASES:?} \
+         (spec §3); `math_determinism_no_random` is `required_identical`"
     );
 }
