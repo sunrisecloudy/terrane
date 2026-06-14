@@ -33,10 +33,15 @@ use serde_json::{Map, Value};
 use crate::errors::{map_json, map_sql};
 use crate::store::Store;
 
-/// The KV namespace holding workspace metadata (mirrors the migration driver's
-/// `META_NS` and the core's `__forge/meta`). The audit `seq` counter lives here
-/// so it survives reopen and is the single workspace-local monotonic anchor.
-const AUDIT_META_NS: &str = "__forge/meta";
+/// The KV namespace holding the audit `seq` counter. It is a **LOCAL-ONLY**
+/// namespace (`__local/...`, matched by `is_local_only_namespace`): the audit log
+/// is a per-workspace immutable security trail, never part of a portable export
+/// bundle, so its counter must NOT travel in an export NOR gate `workspace.import`'s
+/// fresh-target check. (A prior placement under the portable `__forge/meta`
+/// namespace made a single recorded denial wrongly report a workspace as non-empty,
+/// refusing an otherwise-valid import.) It still survives reopen — local-only kv is
+/// persisted, just not exported — so the seq stays the single monotonic anchor.
+const AUDIT_META_NS: &str = "__local/audit";
 
 /// The KV key (within [`AUDIT_META_NS`]) holding the highest assigned audit
 /// `seq` as utf-8 decimal text. Absent → no rows yet; the first assigned seq is
@@ -436,19 +441,37 @@ fn row_to_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<AuditRecord>
     })())
 }
 
-/// Redact a metadata object before persistence (`forge/spec/audit-log.md`
+/// Redact a metadata value before persistence (`forge/spec/audit-log.md`
 /// §Redaction): drop any SECRET-value key (replacing it with a
 /// `value_redacted: true` marker) and any request/response BODY key (replacing it
-/// with the matching `*_redacted: true` marker). A `secret_ref` id is NOT
-/// secret material and is preserved. Non-object metadata is returned unchanged
-/// (producers persist objects; a scalar/array carries no keyed secret to drop).
+/// with the matching `*_redacted: true` marker). A `secret_ref` id is NOT secret
+/// material and is preserved.
+///
+/// The walk is FULLY RECURSIVE through BOTH objects AND arrays (review 148): a
+/// secret/body nested anywhere — under a key (`{"request": {"body": ...}}`) OR
+/// inside an array element (`{"items": [{"secret_value": ...}]}`) — is still
+/// redacted. Redacting objects but cloning arrays verbatim was a silent
+/// leak: a producer that put a secret value or a request/response body inside a
+/// JSON array would persist it in the clear. A scalar leaf carries no keyed secret,
+/// so it is returned unchanged.
 ///
 /// This is intentionally a pure value→value transform so it can be unit-tested in
 /// isolation and applied uniformly on every append, regardless of producer.
 pub fn redact_metadata(metadata: &Value) -> Value {
-    let Value::Object(obj) = metadata else {
-        return metadata.clone();
-    };
+    match metadata {
+        Value::Object(obj) => redact_object(obj),
+        // An array can hold objects that carry secret/body keys — recurse into every
+        // element so an array is never a redaction blind spot (review 148).
+        Value::Array(items) => Value::Array(items.iter().map(redact_metadata).collect()),
+        // A scalar (string/number/bool/null) has no keyed secret to drop.
+        other => other.clone(),
+    }
+}
+
+/// Redact one JSON object: drop secret-value / body keys, stamp the matching
+/// `*_redacted: true` markers, and recurse into every retained value (so nested
+/// objects AND arrays are redacted too — see [`redact_metadata`]).
+fn redact_object(obj: &Map<String, Value>) -> Value {
     let mut out = Map::with_capacity(obj.len());
     let mut secret_dropped = false;
     let mut request_body_dropped = false;
@@ -466,8 +489,8 @@ pub fn redact_metadata(metadata: &Value) -> Value {
             }
             continue;
         }
-        // Recurse into nested objects so a body/secret nested under `request` or
-        // `response` (e.g. `{"request": {"body": ...}}`) is redacted too.
+        // Recurse into the retained value (object OR array) so a body/secret nested
+        // under `request`/`response` — or inside an array element — is redacted too.
         out.insert(key.clone(), redact_metadata(value));
     }
     if secret_dropped {
@@ -804,6 +827,37 @@ mod tests {
         assert!(!serialized.contains("leak"), "nested body leaked: {serialized}");
         assert!(serialized.contains("POST"));
         assert!(serialized.contains("200"));
+    }
+
+    #[test]
+    fn redaction_recurses_through_arrays() {
+        // review 148 (P1): a secret value / body nested INSIDE a JSON array must be
+        // redacted too — arrays are not a redaction blind spot. Before the fix the
+        // walk only recursed into objects and cloned arrays verbatim, leaking any
+        // secret/body an array element carried.
+        let redacted = redact_metadata(&json!({
+            "attempts": [
+                {"secret_value": "Bearer leak-1", "host": "api.one.example"},
+                {"request_body": {"email": "leak-2@example.com"}, "method": "POST"},
+            ],
+            // An array of arrays of objects — recursion must reach the leaf object.
+            "nested": [[{"value": "leak-3"}]],
+            // A scalar array is untouched.
+            "ids": ["task-1", "task-2"],
+        }));
+        let serialized = serde_json::to_string(&redacted).unwrap();
+        for leak in ["Bearer leak-1", "leak-1", "leak-2@example.com", "leak-3"] {
+            assert!(!serialized.contains(leak), "array element leaked {leak}: {serialized}");
+        }
+        // The safe sibling keys inside the array elements survive.
+        assert!(serialized.contains("api.one.example"));
+        assert!(serialized.contains("POST"));
+        // The dropped keys stamped their redaction markers on the element objects.
+        let attempts = redacted["attempts"].as_array().unwrap();
+        assert_eq!(attempts[0]["value_redacted"], Value::Bool(true));
+        assert_eq!(attempts[1]["request_body_redacted"], Value::Bool(true));
+        // The scalar id array is preserved verbatim.
+        assert_eq!(redacted["ids"], json!(["task-1", "task-2"]));
     }
 
     #[test]

@@ -508,47 +508,80 @@ impl WorkspaceCore {
         let self_source = source_id_for(self.store.crdt_peer_id());
         let other_source = source_id_for(other.store.crdt_peer_id());
 
-        let WorkspaceCore {
-            store: self_store,
-            indexes: self_indexes,
-            events: self_events,
-            sync_membership: self_membership,
-            ..
-        } = self;
-        let WorkspaceCore {
-            store: other_store,
-            indexes: other_indexes,
-            events: other_events,
-            sync_membership: other_membership,
-            ..
-        } = other;
+        // SC-12 durable audit rows accumulated DURING authorization, persisted to
+        // each receiver's `audit_log` AFTER `forge_sync` releases the store borrow
+        // (the store is borrowed by the import inside the closure, so the append
+        // cannot run inline). `other` RECEIVES `self`'s chunks (so its decisions
+        // land in `other`'s log) and vice versa.
+        let mut self_pending: Vec<forge_storage::AuditRecord> = Vec::new();
+        let mut other_pending: Vec<forge_storage::AuditRecord> = Vec::new();
 
-        let report = forge_sync::sync_stores_authorized(
-            self_store,
-            self_indexes,
-            other_store,
-            other_indexes,
-            |source, envelope| {
-                // `source` is the RELAY peer the chunk arrived from; it selects the
-                // RECEIVER (the other side) for the direction. But the ACTOR whose
-                // trusted membership decides authorization is the chunk's ORIGINAL
-                // author: a chunk `source` merely forwarded (its `origin_source` is
-                // set from the remote-import provenance) must be gated against that
-                // original author, not the relay (`review 092 #1` / SS-7 actor
-                // identity). A locally-authored chunk has no `origin_source`, so the
-                // relay IS the author and `actor == source`.
-                let actor = envelope.origin_source.as_deref().unwrap_or(source);
-                if source == self_source {
-                    // Direction: self → received by `other`. Authorize against
-                    // `other`'s table for the original author.
-                    authorize_incoming_op(other_membership, other_events, actor, envelope)
-                } else {
-                    // Direction: other → received by `self`.
-                    debug_assert_eq!(source, other_source);
-                    authorize_incoming_op(self_membership, self_events, actor, envelope)
-                }
-            },
-        )?;
+        let report = {
+            let WorkspaceCore {
+                store: self_store,
+                indexes: self_indexes,
+                events: self_events,
+                sync_membership: self_membership,
+                ..
+            } = self;
+            let WorkspaceCore {
+                store: other_store,
+                indexes: other_indexes,
+                events: other_events,
+                sync_membership: other_membership,
+                ..
+            } = other;
+            let self_pending = &mut self_pending;
+            let other_pending = &mut other_pending;
+
+            forge_sync::sync_stores_authorized(
+                self_store,
+                self_indexes,
+                other_store,
+                other_indexes,
+                |source, envelope| {
+                    // `source` is the RELAY peer the chunk arrived from; it selects the
+                    // RECEIVER (the other side) for the direction. But the ACTOR whose
+                    // trusted membership decides authorization is the chunk's ORIGINAL
+                    // author: a chunk `source` merely forwarded (its `origin_source` is
+                    // set from the remote-import provenance) must be gated against that
+                    // original author, not the relay (`review 092 #1` / SS-7 actor
+                    // identity). A locally-authored chunk has no `origin_source`, so the
+                    // relay IS the author and `actor == source`.
+                    let actor = envelope.origin_source.as_deref().unwrap_or(source);
+                    if source == self_source {
+                        // Direction: self → received by `other`. Authorize against
+                        // `other`'s table for the original author; the durable row
+                        // lands in `other`'s log.
+                        authorize_incoming_op(
+                            other_membership,
+                            other_events,
+                            other_pending,
+                            actor,
+                            envelope,
+                        )
+                    } else {
+                        // Direction: other → received by `self`.
+                        debug_assert_eq!(source, other_source);
+                        authorize_incoming_op(
+                            self_membership,
+                            self_events,
+                            self_pending,
+                            actor,
+                            envelope,
+                        )
+                    }
+                },
+            )?
+        };
+
+        // SC-12: persist each receiver's audit decision trail now that the store
+        // borrows are released. The append is APPEND-ONLY and deterministic (seq +
+        // the EventSink logical clock); a real sync-RBAC denial therefore lands a
+        // queryable `audit_log` row through this live path (the task's acceptance
+        // bar) — not merely a transient EventSink event.
+        persist_audit_rows(&mut self.store, &self_pending)?;
+        persist_audit_rows(&mut other.store, &other_pending)?;
 
         // DL-13 review 143: an authorized migration chunk evolved the RECEIVER's
         // PERSISTED `SchemaRegistry` (and `schema_version`) inside the import txn — but
@@ -604,11 +637,76 @@ impl WorkspaceCore {
         // lifecycle suspension gate (inside `cmd_ui_dispatch_event`), and every
         // handler body are untouched — only the match-vs-table shape changed
         // (/simplify #11b).
-        let result = authorize(&cmd).and_then(|()| command_registry().dispatch(self, &cmd));
-        match result {
+        // CR-A3 command-level RBAC. A denial here is the command-RBAC producer for
+        // the durable audit log (SC-12): before returning the `PermissionDenied`
+        // response, persist an append-only `audit_log` row through the live path so
+        // a real role-denied command is queryable, not merely a transient error.
+        if let Err(error) = authorize(&cmd) {
+            if matches!(error, CoreError::PermissionDenied(_)) {
+                // Best-effort: a denial is the security signal; if the durable append
+                // itself errors we still surface the denial (we never fail OPEN on an
+                // audit-persistence error, and we never turn a deny into an allow).
+                let _ = self.persist_command_rbac_denial(&cmd, &error);
+            }
+            return CoreResponse::err(request_id, error);
+        }
+        match command_registry().dispatch(self, &cmd) {
             Ok(payload) => CoreResponse::ok(request_id, payload),
             Err(error) => CoreResponse::err(request_id, error),
         }
+    }
+
+    /// Append a command-RBAC denial to the durable audit log (SC-12 live wiring).
+    /// The row mirrors the `audit-log-e2e` `command_rbac_denial_query_actor` shape:
+    /// `producer = command-rbac`, `action = command.<name>`, `decision = deny`, the
+    /// authenticated `actor_id`, `resource_type = command`, `resource_id = <name>`,
+    /// the denial reason, and `metadata = {role, command, applet_id?}` (no secret
+    /// value / body, so redaction is a no-op). The `logical_time` is the EventSink
+    /// clock so the durable row replays deterministically; the append rides its own
+    /// [`Store::transact`] so a real denied command lands one queryable row.
+    fn persist_command_rbac_denial(
+        &mut self,
+        cmd: &CoreCommand,
+        error: &CoreError,
+    ) -> Result<()> {
+        let action = format!("command.{}", cmd.name);
+        let reason = match error {
+            CoreError::PermissionDenied(msg) => msg.clone(),
+            other => other.to_string(),
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "role".to_string(),
+            serde_json::json!(format!("{:?}", cmd.actor.role)),
+        );
+        metadata.insert("command".to_string(), serde_json::json!(cmd.name));
+        if let Some(applet) = &cmd.applet_id {
+            metadata.insert("applet_id".to_string(), serde_json::json!(applet.as_str()));
+        }
+        let logical_time = emit_event_logical_time(
+            &mut self.events,
+            "command.permission_denied",
+            serde_json::json!({
+                "decision": "deny",
+                "command": cmd.name,
+                "actor_id": cmd.actor.actor.as_str(),
+                "role": format!("{:?}", cmd.actor.role),
+                "reason": reason,
+            }),
+        );
+        let record = forge_storage::AuditRecord::new(
+            logical_time,
+            "command-rbac",
+            action,
+            "deny",
+            cmd.actor.actor.as_str(),
+            "command",
+            Some(cmd.name.clone()),
+            None,
+            reason,
+            serde_json::Value::Object(metadata),
+        );
+        self.store.append_audit(&record).map(|_| ())
     }
 
     // ---------------------------------------------------------------- commands
@@ -703,9 +801,18 @@ pub fn source_id_for(loro_peer_id: u64) -> String {
 /// receiver never seeded trust for that peer), an audit denial is written, and the
 /// chunk is skipped. This mirrors the command boundary's trusted-grant model
 /// (review 048/050): authorization comes only from the receiver-side table.
+///
+/// SC-12 live wiring: in addition to the transient `EventSink` audit event, every
+/// decision (allow AND deny) is appended to `pending` — the receiver's durable
+/// [`forge_storage::AuditRecord`] queue — so the caller persists it to the
+/// receiver's `audit_log` after `forge_sync` releases the store borrow (the store
+/// is borrowed by the import here, so the append cannot run inline). The
+/// `logical_time` is the SAME value the EventSink minted for this decision, so the
+/// transient event and the durable row share one deterministic clock.
 fn authorize_incoming_op(
     membership: &std::collections::BTreeMap<String, TrustedMembership>,
     events: &mut EventSink,
+    pending: &mut Vec<forge_storage::AuditRecord>,
     source: &str,
     envelope: &forge_sync::SyncOpEnvelope,
 ) -> bool {
@@ -715,8 +822,8 @@ fn authorize_incoming_op(
     // collection (`review 092 #2` / `forge/spec/sync-rbac.md` line 52). Surface a
     // permission_denied audit naming the staging defect so the skip is observable.
     if let Some(reason) = &envelope.malformed {
-        events.emit(
-            None,
+        let logical_time = emit_event_logical_time(
+            events,
             "sync.permission_denied",
             serde_json::json!({
                 "decision": "deny",
@@ -725,6 +832,21 @@ fn authorize_incoming_op(
                 "reason": reason,
             }),
         );
+        // An unknown-actor (no resolved trusted row) denial: persist what the
+        // envelope names so the durable row still identifies the rejected resource.
+        let collection = collection_opt(&envelope.collection);
+        pending.push(forge_storage::AuditRecord::new(
+            logical_time,
+            SYNC_RBAC_PRODUCER,
+            envelope_action(envelope),
+            "deny",
+            source,
+            "record",
+            collection.clone(),
+            collection,
+            reason.clone(),
+            serde_json::json!({ "source": source, "reason": reason }),
+        ));
         return false;
     }
     let env = remote_op_envelope_from_sync(envelope);
@@ -734,25 +856,117 @@ fn authorize_incoming_op(
             // session claim, so `claim = None` (a claim could only narrow, never
             // widen, the decision — `forge/spec/sync-rbac.md`).
             let decision = authorize_remote_op(trusted, None, &env);
-            emit_sync_audit(events, source, &decision);
+            let logical_time = emit_sync_audit(events, source, &decision);
+            pending.push(sync_audit_record(logical_time, source, &decision, &env));
             decision.is_allow()
         }
         None => {
             // Unknown peer: fail closed. Surface a permission_denied audit naming
             // the missing trust so the skip is observable.
-            events.emit(
-                None,
+            let reason = "no trusted membership for sync peer";
+            let logical_time = emit_event_logical_time(
+                events,
                 "sync.permission_denied",
                 serde_json::json!({
                     "decision": "deny",
                     "source": source,
                     "collection": envelope.collection,
-                    "reason": "no trusted membership for sync peer",
+                    "reason": reason,
                 }),
             );
+            let collection = collection_opt(&envelope.collection);
+            pending.push(forge_storage::AuditRecord::new(
+                logical_time,
+                SYNC_RBAC_PRODUCER,
+                envelope_action(envelope),
+                "deny",
+                source,
+                "record",
+                collection.clone(),
+                collection,
+                reason,
+                serde_json::json!({ "source": source, "reason": reason }),
+            ));
             false
         }
     }
+}
+
+/// The audit `producer` string for the sync-RBAC apply-boundary decision
+/// (`forge/spec/audit-log.md`). Matches the `audit-log-e2e` fixtures' `producer`.
+const SYNC_RBAC_PRODUCER: &str = "sync-rbac";
+
+/// `Some(collection)` when the staged envelope names a non-empty collection, else
+/// `None` (a malformed chunk has an empty `collection`, so the durable audit row's
+/// nullable `resource_id`/`collection` columns are `NULL` rather than `""`).
+fn collection_opt(collection: &str) -> Option<String> {
+    (!collection.is_empty()).then(|| collection.to_string())
+}
+
+/// The audit `action` for an incoming sync op, derived from the staged envelope's
+/// resource/op so a malformed or unknown-peer denial (which never builds a
+/// [`RemoteOpEnvelope`]) still records what was attempted. Record ops are the only
+/// resource the M0b chunk boundary carries; the op selects the suffix.
+fn envelope_action(envelope: &forge_sync::SyncOpEnvelope) -> &'static str {
+    match envelope.op {
+        forge_sync::SyncRecordOp::Insert | forge_sync::SyncRecordOp::Write => {
+            "sync.record.insert"
+        }
+        forge_sync::SyncRecordOp::Patch => "sync.record.patch",
+        forge_sync::SyncRecordOp::Delete => "sync.record.delete",
+    }
+}
+
+/// Build the durable [`forge_storage::AuditRecord`] for one resolved sync-RBAC
+/// decision (SC-12). The `metadata` mirrors the `audit-log-e2e`
+/// `sync_remote_denial_persisted_query_decision` shape: the originating `source`
+/// peer, the TRUSTED role + grants that decided the op (never the untrusted
+/// incoming claim), and the concrete touched `record_ids` — no secret value or
+/// request/response body is present, so redaction is a no-op here.
+fn sync_audit_record(
+    logical_time: u64,
+    source: &str,
+    decision: &SyncAuthDecision,
+    env: &RemoteOpEnvelope,
+) -> forge_storage::AuditRecord {
+    let audit = decision.audit();
+    let metadata = serde_json::json!({
+        "source": source,
+        "trusted_role": format!("{:?}", audit.trusted_role),
+        "trusted_db_read": audit.trusted_db_read,
+        "trusted_db_write": audit.trusted_db_write,
+        "trusted_schema_write": audit.trusted_schema_write,
+        "record_ids": env.record_ids,
+    });
+    forge_storage::AuditRecord::new(
+        logical_time,
+        SYNC_RBAC_PRODUCER,
+        audit.action.clone(),
+        audit.decision,
+        audit.actor_id.clone(),
+        "record",
+        audit.resource_id.clone(),
+        audit.collection.clone(),
+        audit.reason.clone(),
+        metadata,
+    )
+}
+
+/// Persist a batch of pending sync-RBAC audit rows to `store` in ONE transaction
+/// (SC-12 live wiring). Called by [`sync_with`] AFTER `forge_sync` released the
+/// store borrow, so the durable append composes with a real store transaction (the
+/// import txn already committed/rolled back; this records the receiver's decision
+/// trail). Appends only — never mutates a prior row.
+fn persist_audit_rows(store: &mut Store, rows: &[forge_storage::AuditRecord]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    store.transact(|tx| {
+        for row in rows {
+            Store::append_audit_tx(tx, row)?;
+        }
+        Ok(())
+    })
 }
 
 /// Translate the [`forge_sync`] op envelope (recovered at the apply boundary from
@@ -824,15 +1038,19 @@ fn remote_op_envelope_from_sync(env: &forge_sync::SyncOpEnvelope) -> RemoteOpEnv
 /// collection, trusted role + grants, reason). Denials are emitted as
 /// `sync.permission_denied`; allows as `sync.authorized` so the audit trail is
 /// complete (SC-12). `source` is the authenticated origin peer id.
-fn emit_sync_audit(events: &mut EventSink, source: &str, decision: &SyncAuthDecision) {
+///
+/// Returns the `logical_time` the EventSink minted for this event, so the caller
+/// can stamp the SAME deterministic clock on the durable `audit_log` row — the
+/// transient event and the persisted row are one decision under one clock.
+fn emit_sync_audit(events: &mut EventSink, source: &str, decision: &SyncAuthDecision) -> u64 {
     let audit = decision.audit();
     let kind = if decision.is_allow() {
         "sync.authorized"
     } else {
         "sync.permission_denied"
     };
-    events.emit(
-        None,
+    emit_event_logical_time(
+        events,
         kind,
         serde_json::json!({
             "action": audit.action,
@@ -844,7 +1062,26 @@ fn emit_sync_audit(events: &mut EventSink, source: &str, decision: &SyncAuthDeci
             "trusted_db_write": audit.trusted_db_write,
             "reason": audit.reason,
         }),
-    );
+    )
+}
+
+/// Emit a workspace event and return the `logical_time` (the EventSink's minted
+/// [`LogicalTimestamp`] value) it carries. The audit-log producers stamp this same
+/// value on their durable row so the transient event and the persisted audit row
+/// share one deterministic clock — no wall clock on the replayable path (SC-12).
+fn emit_event_logical_time(
+    events: &mut EventSink,
+    kind: &str,
+    payload: serde_json::Value,
+) -> u64 {
+    let id = events.emit(None, kind, payload);
+    events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| e.event_id == id)
+        .map(|e| e.created_at_logical.0)
+        .unwrap_or(0)
 }
 
 /// Load the persisted SS-7 sync membership table from the workspace file (mirrors

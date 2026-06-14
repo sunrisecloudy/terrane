@@ -103,6 +103,13 @@ the **single** chokepoint guaranteeing no producer can persist sensitive materia
 even by accident (a producer that mistakenly hands the resolved secret in metadata
 still cannot leak it, because the value is stripped on the way to disk).
 
+The walk is **fully recursive through both objects AND arrays** (review 148): a
+secret value or body is dropped wherever it appears — under a key
+(`{"request": {"body": …}}`) or inside an array element
+(`{"attempts": [{"secret_value": …}]}`). Arrays are not a redaction blind spot;
+every element is recursed into, so a producer cannot smuggle sensitive material past
+redaction by nesting it in a list.
+
 ## 5. Query contract
 
 `query_audit(filter)` returns rows **ordered by `seq` ascending** (the deterministic
@@ -136,7 +143,34 @@ manifest case names the producer whose live path must land a row:
 
 The acceptance bar (T031) is that a **real** sync-RBAC / command-RBAC denial lands a
 persisted, queryable row through the live decision path — proving the log is wired to
-the producers, not merely tested in isolation. Phase A (this commit) lands the
-storage substrate (table, append, query, redaction) and its unit tests; the live
-wiring of each producer to `append_audit_tx`, and the data-driven harness asserting
-all 10 vectors with a `ran == count` guard, follow in the subsequent phases.
+the producers, not merely tested in isolation.
+
+**Live wiring (landed).** Two production decision paths persist through this log today:
+
+- **sync-RBAC** — `WorkspaceCore::sync_with` authorizes every incoming op against the
+  receiver's trusted membership (`authorize_incoming_op`). Each decision (allow AND
+  deny — including the malformed-chunk and unknown-peer fail-closed denials) is
+  collected during authorization and appended to the **receiver's** `audit_log` in one
+  `Store::transact` after `forge_sync` releases the store borrow. The durable row
+  shares the EventSink logical clock with the transient `sync.permission_denied` /
+  `sync.authorized` event, so both replay deterministically.
+- **command-RBAC** — `WorkspaceCore::handle` persists a `command-rbac` deny row on the
+  `Err(PermissionDenied)` branch of the CR-A3 gate, before returning the response. The
+  append never fails open: an audit-persistence error never turns a deny into an allow.
+
+`crates/core/tests/audit_log_live.rs` proves the bar end-to-end: a real viewer sync
+write and a real auditor `runtime.run` each leave a row queryable by
+`decision=deny` / `actor_id`, and re-running a denial **appends** (never rewrites)
+history. The remaining producers (`secrets`, `net`, `lifecycle`, `signing`,
+`permission-manager`) share the same `append_audit_tx` seam and are exercised by the
+data-driven harness below; their live call sites land as those subsystems route
+through the audit seam.
+
+**Vector harness (landed).** `crates/core/tests/audit_log_e2e.rs` loads
+`fixtures/audit-log-e2e/manifest.json` and genuinely asserts every one of the 10 case
+vectors — pinning each `next_seq`/`logical_time`, appending through the real storage
+substrate (feeding the secret/network producers the RAW secret value / request+response
+bodies so redaction is actually exercised), and asserting the appended rows, the query
+`result_audit_ids`, the `must_not_contain` redaction guards, the append-only
+`existing_rows_unchanged` invariant, and the deterministic replay. It is guarded by
+`ran == manifest.count` (10), so a dropped or unhandled vector fails the suite.
