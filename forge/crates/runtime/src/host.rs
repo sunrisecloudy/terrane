@@ -651,8 +651,12 @@ impl<'b> HostContext<'b> {
     /// `ctx.files.write(request)` — write a sandboxed file, gated by the CR-3
     /// `files.write` grant + path confinement and recorded for deterministic
     /// replay. Same gate order as [`files_read`](Self::files_read) against the
-    /// `write` action. On **replay** the recorded write response is served and the
-    /// live filesystem is **never** created/truncated/modified (CR-8).
+    /// `write` action. The write leg adds one confinement check the read leg does
+    /// not need: because the final target may not exist yet, the **canonical
+    /// parent directory** is checked for a symlink escape *in addition to* the
+    /// final-target symlink check (spec/files.md "Gates"). On **replay** the
+    /// recorded write response is served and the live filesystem is **never**
+    /// created/truncated/modified (CR-8).
     pub fn files_write(&mut self, request: FileWriteRequest) -> Result<FileWriteResponse> {
         let args = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
 
@@ -736,6 +740,16 @@ impl<'b> HostContext<'b> {
             if bridge.file_system().handle_root(&handle).is_none() {
                 return Err(CoreError::PermissionDenied(format!(
                     "ctx.files.write denied: no sandbox root is granted for handle {handle:?}"
+                )));
+            }
+            // Write-only parent-directory confinement (spec/files.md "Gates": "For
+            // writes, the canonical parent directory stays under the root"). The
+            // final target may not exist yet, so the final-target symlink check
+            // alone cannot catch a symlinked PARENT directory that redirects the
+            // write outside the root — check the canonical parent first.
+            if bridge.file_system().write_parent_escapes_root(&handle, &path) {
+                return Err(CoreError::PermissionDenied(format!(
+                    "ctx.files.write denied: canonical parent directory escapes handle root for {path:?}"
                 )));
             }
             if bridge.file_system().symlink_escapes_root(&handle, &path) {
@@ -2439,6 +2453,51 @@ mod tests {
         assert_eq!(err.code(), "PermissionDenied", "{err}");
         drop(host);
         assert!(bridge.peek_file("workspace_data", "drafts/note.txt").is_none());
+    }
+
+    /// A write whose **canonical parent directory** escapes the handle root via a
+    /// symlinked parent is denied (PermissionDenied) and never touches the
+    /// filesystem (spec/files.md "Gates": "For writes, the canonical parent
+    /// directory stays under the root"). The grant matches and the final target
+    /// does not yet exist, so this is caught by the write-only parent-escape check,
+    /// not the final-target symlink check.
+    #[test]
+    fn files_write_parent_directory_symlink_escape_is_permission_denied() {
+        let grant = FilesGrant {
+            read: vec![],
+            write: vec![file_rule("workspace_data", "drafts/*.txt")],
+        };
+        let manifest = manifest_with_files(grant, 100);
+        let actor = ActorContext::owner("dev");
+        // `drafts/` is a symlink whose canonical target is outside the root, so a
+        // write to `drafts/note.txt` would land outside the sandbox even though the
+        // final file does not exist yet.
+        let fs = InMemoryFileSystem::new()
+            .with_handle_root("workspace_data", "/root")
+            .with_escaping_parent("workspace_data", "drafts/note.txt");
+        let mut bridge = MemoryHostBridge::new().with_file_system(fs);
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let write = FileWriteRequest {
+            handle: "workspace_data".into(),
+            path: "drafts/note.txt".into(),
+            bytes_base64: BASE64.encode(b"draft v1"),
+            content_type: Some("text/plain".into()),
+            mode: "create_or_truncate".into(),
+        };
+        let err = host.files_write(write).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied", "{err}");
+        assert!(err.to_string().contains("parent directory"), "{err}");
+        drop(host);
+        assert!(
+            bridge.peek_file("workspace_data", "drafts/note.txt").is_none(),
+            "a parent-escape-denied write must not touch the filesystem"
+        );
     }
 
     /// The read content-type constraint is enforced on **replay** too: a recorded

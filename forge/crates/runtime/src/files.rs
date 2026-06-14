@@ -149,6 +149,20 @@ pub trait FileSystem {
         false
     }
 
+    /// Whether the **canonical parent directory** of `rel_path` under `handle`
+    /// escapes the handle root (spec/files.md "Gates": "For writes, the canonical
+    /// parent directory stays under the root"). This is a distinct, write-only
+    /// check from [`symlink_escapes_root`](FileSystem::symlink_escapes_root): a
+    /// write target need not yet exist, so the *final* path is not a symlink, but
+    /// its parent directory may be (or contain) a symlink that redirects the write
+    /// outside the root. The real backend canonicalizes the parent and compares it
+    /// against the root; the default returns `false` (an in-memory backend without
+    /// symlinks has no parent escape). Reached only in record mode, before the
+    /// write commits.
+    fn write_parent_escapes_root(&self, _handle: &str, _rel_path: &str) -> bool {
+        false
+    }
+
     /// Read the confined file at the normalized `rel_path` under `handle`. Returns
     /// `Ok(None)` for a missing file (the runtime maps that to a clean
     /// `not_found` `StorageError`, never a panic). Reached only in record mode.
@@ -321,6 +335,9 @@ pub struct InMemoryFileSystem {
     roots: std::collections::BTreeMap<String, String>,
     /// (handle, relative path) pairs whose resolved symlink target escapes root.
     escaping_symlinks: std::collections::BTreeSet<(String, String)>,
+    /// (handle, relative path) pairs whose canonical *parent directory* escapes
+    /// root (the write-only parent-escape confinement case).
+    escaping_parents: std::collections::BTreeSet<(String, String)>,
 }
 
 impl InMemoryFileSystem {
@@ -372,6 +389,19 @@ impl InMemoryFileSystem {
         self
     }
 
+    /// Mark `rel_path` under `handle` as a write target whose canonical *parent
+    /// directory* escapes the root (test convenience for the write-only
+    /// parent-escape confinement case — a symlinked parent dir).
+    pub fn with_escaping_parent(
+        mut self,
+        handle: impl Into<String>,
+        rel_path: impl Into<String>,
+    ) -> Self {
+        self.escaping_parents
+            .insert((handle.into(), rel_path.into()));
+        self
+    }
+
     /// Direct read of a stored file (test convenience; bypasses confinement).
     pub fn peek(&self, handle: &str, rel_path: &str) -> Option<&SandboxFile> {
         self.files.get(handle).and_then(|m| m.get(rel_path))
@@ -385,6 +415,11 @@ impl FileSystem for InMemoryFileSystem {
 
     fn symlink_escapes_root(&self, handle: &str, rel_path: &str) -> bool {
         self.escaping_symlinks
+            .contains(&(handle.to_string(), rel_path.to_string()))
+    }
+
+    fn write_parent_escapes_root(&self, handle: &str, rel_path: &str) -> bool {
+        self.escaping_parents
             .contains(&(handle.to_string(), rel_path.to_string()))
     }
 
