@@ -445,23 +445,20 @@ impl WorkspaceCore {
         }
     }
 
-    /// Remove the ACTIVE installed applet record (CR-7 uninstall): after this the
-    /// applet is durably `uninstalled` (no active record), so `runtime.run` /
-    /// `ui.dispatch_event` / `applet.enable` / `applet.suspend` reject for that id
-    /// until a fresh install succeeds. The generation counter, run records, and
-    /// pinned replay programs are NOT touched here — only the active pointer — so
-    /// recorded runs remain replayable and a reinstall mints a fresh generation.
-    pub(in crate::workspace) fn delete_applet(&mut self, applet_id: &str) -> Result<()> {
-        self.store
-            .transact(|tx| forge_storage::kv_delete_tx(tx, META_NS, &applet_key(applet_id)))
-    }
-
-    /// Remove the ACTIVE installed applet record inside an OPEN transaction (the
-    /// tx-scoped form of [`delete_applet`](Self::delete_applet)), so a
-    /// `purge_data` uninstall can tombstone owned records AND switch the active
-    /// pointer off in one atomic `Store::transact` closure (CR-7, lifecycle
-    /// review P2): a crash mid-uninstall cannot leave some records purged with the
-    /// applet still installed.
+    /// Remove the ACTIVE installed applet record (CR-7 uninstall) inside an OPEN
+    /// transaction: after this commits the applet is durably `uninstalled` (no active
+    /// record), so `runtime.run` / `ui.dispatch_event` / `applet.enable` /
+    /// `applet.suspend` reject for that id until a fresh install succeeds. The
+    /// generation counter, run records, and pinned replay programs are NOT touched
+    /// here — only the active pointer — so recorded runs remain replayable and a
+    /// reinstall mints a fresh generation.
+    ///
+    /// This is the tx-scoped seam EVERY uninstall path uses, so a `purge_data`
+    /// uninstall can tombstone owned records, switch the active pointer off, AND land
+    /// its `applet.uninstalled` audit row in one atomic `Store::transact` closure
+    /// (CR-7 + SC-12 §2, lifecycle review P2 / FIX ROUND 2): a crash mid-uninstall
+    /// cannot leave some records purged with the applet still installed, nor the
+    /// uninstall committed without its audit row.
     pub(in crate::workspace) fn delete_applet_tx(
         tx: &forge_storage::Transaction<'_>,
         applet_id: &str,

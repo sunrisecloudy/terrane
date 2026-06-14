@@ -836,9 +836,9 @@ impl WorkspaceCore {
         reason: impl Into<String>,
         metadata: serde_json::Value,
     ) -> Result<forge_storage::AuditRecord> {
-        let logical_time = emit_event_logical_time(&mut self.events, event_kind, event_payload);
-        let record = forge_storage::AuditRecord::new(
-            logical_time,
+        let record = self.build_producer_audit_record(
+            event_kind,
+            event_payload,
             producer,
             action,
             decision,
@@ -850,6 +850,86 @@ impl WorkspaceCore {
             metadata,
         );
         self.store.append_audit(&record)
+    }
+
+    /// Build (but do NOT append) a producer audit row, emitting the transient event
+    /// so the durable row carries the SAME EventSink `logical_time` as
+    /// [`persist_producer_audit`] would. This is the seam a producer uses when the
+    /// audit append must commit in the SAME `Store::transact` as the durable decision
+    /// it records (spec/audit-log.md §2 — "a committed decision always lands its
+    /// row"): the caller mints the row(s) here, then folds them into its own
+    /// transaction via [`Store::append_audit_tx`](forge_storage::Store::append_audit_tx),
+    /// which is also where `metadata` is redacted. Used by the lifecycle-purge
+    /// uninstall and the `runtime.run` egress producers (whose `allow` rows must be
+    /// atomic with the tombstone writes / the `save_run`, respectively).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::workspace) fn build_producer_audit_record(
+        &mut self,
+        event_kind: &str,
+        event_payload: serde_json::Value,
+        producer: &str,
+        action: impl Into<String>,
+        decision: &'static str,
+        actor_id: impl Into<String>,
+        resource_type: &str,
+        resource_id: Option<String>,
+        collection: Option<String>,
+        reason: impl Into<String>,
+        metadata: serde_json::Value,
+    ) -> forge_storage::AuditRecord {
+        let logical_time = emit_event_logical_time(&mut self.events, event_kind, event_payload);
+        forge_storage::AuditRecord::new(
+            logical_time,
+            producer,
+            action,
+            decision,
+            actor_id,
+            resource_type,
+            resource_id,
+            collection,
+            reason,
+            metadata,
+        )
+    }
+
+    /// Build a producer audit row stamped with an EXPLICIT `logical_time` and WITHOUT
+    /// emitting the transient event. The DEFERRED-EMIT seam (vs.
+    /// [`build_producer_audit_record`], which emits during build): a producer whose
+    /// decision can ROLL BACK as a normal outcome (the lifecycle-purge uninstall,
+    /// whose tombstone txn may fail) peeks the next `logical_time`
+    /// ([`EventSink::peek_next_logical_time`]), builds the row here, appends it inside
+    /// the SAME `Store::transact` as the mutation, and emits the matching
+    /// observability event ONLY after that transaction COMMITS. So a rolled-back
+    /// decision persists no row AND emits no spurious event, while a committed one
+    /// keeps the transient event and the durable row under one clock (SC-12 §2). The
+    /// peeked timestamp matches the post-commit `emit` exactly because nothing else
+    /// emits between the peek and that emit.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::workspace) fn build_producer_audit_record_at(
+        &self,
+        logical_time: u64,
+        producer: &str,
+        action: impl Into<String>,
+        decision: &'static str,
+        actor_id: impl Into<String>,
+        resource_type: &str,
+        resource_id: Option<String>,
+        collection: Option<String>,
+        reason: impl Into<String>,
+        metadata: serde_json::Value,
+    ) -> forge_storage::AuditRecord {
+        forge_storage::AuditRecord::new(
+            logical_time,
+            producer,
+            action,
+            decision,
+            actor_id,
+            resource_type,
+            resource_id,
+            collection,
+            reason,
+            metadata,
+        )
     }
 
     // ---------------------------------------------------------------- commands

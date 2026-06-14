@@ -611,6 +611,74 @@ impl WorkspaceCore {
         let owned_collections: Vec<String> = installed.manifest.capabilities.db.write.clone();
         let mut records_retained = 0usize;
         let mut records_tombstoned = 0usize;
+
+        // SC-12 live wiring (`forge/spec/audit-log.md` §2): an uninstall is a
+        // security-relevant lifecycle decision — for `purge_data` it hard-tombstones
+        // applet-owned records — so it lands a durable, queryable `applet.uninstalled`
+        // audit row through this real command path. The row MUST commit in the SAME
+        // `Store::transact` as the durable mutation it records (the tombstone writes +
+        // active-pointer removal for purge; the active-pointer removal for keep), so a
+        // crash (or a transient SQLite error on a separate append) can NEVER leave the
+        // applet's records hard-tombstoned / the applet uninstalled with NO audit row
+        // of the purge — they land or roll back as one unit, exactly like the sync-RBAC
+        // path (`crdt_write/remote.rs`).
+        //
+        // The uninstall transaction can roll back as a NORMAL outcome (a failed
+        // tombstone write), so we use the DEFERRED-EMIT seam: PEEK the next
+        // `logical_time`, build the row at it WITHOUT emitting, append it inside the
+        // mutation's transaction, and emit the transient `applet.uninstalled` event
+        // ONLY after that transaction commits. A rolled-back uninstall therefore
+        // persists no row AND emits no spurious event (a shell must not observe an
+        // uninstall that didn't happen); a committed one keeps the event and the row
+        // under one clock. The metadata mirrors the `audit-log-e2e`
+        // `uninstall_purge_data_audit_row` shape (retention policy, tombstone count,
+        // tombstone reason, run records + replay artifacts retained); no secret value /
+        // body is present, so redaction is a no-op.
+        let uninstall_logical_time = self.events.peek_next_logical_time().0;
+        let uninstall_event_payload = serde_json::json!({
+            "applet_id": applet_id,
+            "install_generation": install_generation,
+            "retention_policy": policy.as_str(),
+            "state_after": "uninstalled",
+        });
+        let build_uninstall_audit = |this: &Self, records_tombstoned: usize| {
+            let mut audit_metadata = serde_json::Map::new();
+            audit_metadata
+                .insert("retention_policy".into(), serde_json::json!(policy.as_str()));
+            audit_metadata
+                .insert("records_tombstoned".into(), serde_json::json!(records_tombstoned));
+            // The tombstone reason is meaningful only for a purge (keep_data tombstones
+            // nothing), so it is recorded only on the purge path — the same string the
+            // staged tombstones carry in their `extensions`.
+            if matches!(policy, RetentionPolicy::PurgeData) {
+                audit_metadata.insert(
+                    "tombstone_reason".into(),
+                    serde_json::json!("applet.uninstall:purge_data"),
+                );
+            }
+            audit_metadata.insert("run_records_retained".into(), serde_json::json!(true));
+            audit_metadata.insert("replay_artifacts_retained".into(), serde_json::json!(true));
+            this.build_producer_audit_record_at(
+                uninstall_logical_time,
+                "lifecycle",
+                "applet.uninstalled",
+                "allow",
+                cmd.actor.actor.as_str(),
+                "applet",
+                Some(applet_id.as_str().to_string()),
+                None,
+                match policy {
+                    RetentionPolicy::PurgeData => {
+                        "uninstall purge_data tombstoned applet-owned records"
+                    }
+                    RetentionPolicy::KeepData => {
+                        "uninstall keep_data retained applet-owned records"
+                    }
+                },
+                serde_json::Value::Object(audit_metadata),
+            )
+        };
+
         match policy {
             RetentionPolicy::KeepData => {
                 for collection in &owned_collections {
@@ -621,21 +689,32 @@ impl WorkspaceCore {
                         .filter(|r| !r.deleted)
                         .count();
                 }
-                // No data work to commit with the removal; the active-record delete is
-                // itself one transaction (delegated below).
-                self.delete_applet(applet_id.as_str())?;
+                // No record data is purged, but the active-record removal IS the
+                // durable uninstall decision, so its `applet.uninstalled` audit row
+                // commits in the SAME transaction as the removal (spec §2).
+                let audit = build_uninstall_audit(self, 0);
+                let applet_id_str = applet_id.as_str();
+                self.store.transact(|tx| {
+                    Self::delete_applet_tx(tx, applet_id_str)?;
+                    forge_storage::Store::append_audit_tx(tx, &audit)?;
+                    Ok(())
+                })?;
             }
             RetentionPolicy::PurgeData => {
                 // Stage the tombstones (read live records OUTSIDE the transaction),
-                // then commit the tombstone writes AND the active-pointer removal in
-                // ONE `Store::transact` (CR-7, lifecycle review P2): a crash
-                // mid-uninstall can NEVER leave some records purged, others live, with
-                // the applet still installed — they land or roll back as a unit.
+                // then commit the tombstone writes, the active-pointer removal, AND the
+                // `applet.uninstalled` audit row in ONE `Store::transact` (CR-7,
+                // lifecycle review P2 + SC-12 §2): a crash mid-uninstall can NEVER leave
+                // some records purged, others live, the applet still installed, OR the
+                // purge committed without its audit row — they land or roll back as a
+                // unit.
                 let tombstones = self.stage_owned_tombstones(&owned_collections)?;
                 records_tombstoned = tombstones.len();
+                let audit = build_uninstall_audit(self, records_tombstoned);
                 // TEST-ONLY hook: inject a failure BETWEEN the tombstone writes and the
                 // active-pointer removal so the whole purge-uninstall rolls back
-                // (records stay live, applet stays installed), proving the atomicity.
+                // (records stay live, applet stays installed, NO audit row lands),
+                // proving the atomicity.
                 let simulate_uninstall = cmd
                     .payload
                     .get("simulate_failure_stage")
@@ -651,9 +730,9 @@ impl WorkspaceCore {
                             "simulated mid-uninstall failure between tombstone writes and active-pointer removal".into(),
                         ));
                     }
-                    // Remove the active applet record LAST, in the SAME transaction as
-                    // the tombstones. The applet is now durably `uninstalled` — the
-                    // ABSENCE of an active record — so every lifecycle/dispatch gate
+                    // Remove the active applet record, in the SAME transaction as the
+                    // tombstones. The applet is now durably `uninstalled` — the ABSENCE
+                    // of an active record — so every lifecycle/dispatch gate
                     // (`runtime.run`, `ui.dispatch_event`, `applet.enable`,
                     // `applet.suspend`) rejects with `lifecycle.applet_not_installed`
                     // BEFORE it ever consults the leftover lifecycle flag. We leave that
@@ -662,57 +741,34 @@ impl WorkspaceCore {
                     // `suspended` state. The generation counter is likewise retained (a
                     // reinstall mints a fresh generation past it).
                     Self::delete_applet_tx(tx, applet_id_str)?;
+                    // The audit row lands LAST in the same txn: append-only, redacted at
+                    // `append_audit_tx`, with the peeked deterministic `logical_time`.
+                    forge_storage::Store::append_audit_tx(tx, &audit)?;
                     Ok(())
                 })?;
             }
         }
 
-        // SC-12 live wiring (`forge/spec/audit-log.md`): an uninstall is a
-        // security-relevant lifecycle decision — for `purge_data` it hard-tombstones
-        // applet-owned records — so it lands a durable, queryable `applet.uninstalled`
-        // audit row through this real command path, not merely a transient event. The
-        // metadata mirrors the `audit-log-e2e` `uninstall_purge_data_audit_row` shape
-        // (the retention policy, how many records were tombstoned, the tombstone
-        // reason, and that run records + replay artifacts are retained); no secret
-        // value / body is present, so redaction is a no-op. The transient event keeps
-        // emitting unchanged; the durable row is ADDED.
-        let mut audit_metadata = serde_json::Map::new();
-        audit_metadata.insert("retention_policy".into(), serde_json::json!(policy.as_str()));
-        audit_metadata.insert("records_tombstoned".into(), serde_json::json!(records_tombstoned));
-        // The tombstone reason is meaningful only for a purge (keep_data tombstones
-        // nothing), so it is recorded only on the purge path — the same string the
-        // staged tombstones carry in their `extensions`.
-        if matches!(policy, RetentionPolicy::PurgeData) {
-            audit_metadata.insert(
-                "tombstone_reason".into(),
-                serde_json::json!("applet.uninstall:purge_data"),
-            );
-        }
-        audit_metadata.insert("run_records_retained".into(), serde_json::json!(true));
-        audit_metadata.insert("replay_artifacts_retained".into(), serde_json::json!(true));
-        self.persist_producer_audit(
+        // The uninstall transaction COMMITTED — only now emit the transient
+        // `applet.uninstalled` observability event, stamped with the SAME
+        // `logical_time` the durable row carries (the peek above matches this emit
+        // because nothing emitted in between). A rolled-back uninstall returned `?`
+        // above, so this line is never reached — no spurious event for a non-uninstall.
+        let emitted = self.events.emit(
+            Some(applet_id.clone()),
             "applet.uninstalled",
-            serde_json::json!({
-                "applet_id": applet_id,
-                "install_generation": install_generation,
-                "retention_policy": policy.as_str(),
-                "state_after": "uninstalled",
-            }),
-            "lifecycle",
-            "applet.uninstalled",
-            "allow",
-            cmd.actor.actor.as_str(),
-            "applet",
-            Some(applet_id.as_str().to_string()),
-            None,
-            match policy {
-                RetentionPolicy::PurgeData => {
-                    "uninstall purge_data tombstoned applet-owned records"
-                }
-                RetentionPolicy::KeepData => "uninstall keep_data retained applet-owned records",
-            },
-            serde_json::Value::Object(audit_metadata),
-        )?;
+            uninstall_event_payload,
+        );
+        debug_assert_eq!(
+            self.events
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.event_id == emitted)
+                .map(|e| e.created_at_logical.0),
+            Some(uninstall_logical_time),
+            "the peeked logical_time must match the committed event's stamp"
+        );
 
         Ok(serde_json::json!({
             "applet_id": applet_id,

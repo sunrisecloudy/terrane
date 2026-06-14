@@ -427,6 +427,33 @@ fn run_egress_applet() -> WorkspaceCore {
     core
 }
 
+/// Like [`run_egress_applet`] but ALSO returns the `run_id` the live `runtime.run`
+/// minted, so a test can prove the run record AND its egress audit rows committed
+/// together (FIX ROUND 2 P2 atomicity).
+fn run_egress_applet_with_run_id() -> (WorkspaceCore, String) {
+    let mut core = WorkspaceCore::in_memory("ws-egress-atomic").unwrap();
+    let response = NetResponse {
+        status: 201,
+        body: Some(r#"{"id":"lead-1"}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    };
+    core.set_http_client_factory(move || Box::new(CannedClient { response: response.clone() }));
+    core.set_secret_store_factory(|| {
+        Box::new(InMemorySecretStore::from_pairs([("secret_crm", "Bearer super-secret-token")]))
+    });
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "app.crm",
+        json!({ "manifest": egress_manifest(), "sources": { "src/main.ts": EGRESS_TS } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+    let run = core.handle(owner_cmd("runtime.run", "app.crm", json!({ "input": {} })));
+    assert!(run.ok, "run must succeed: {:?}", run.error);
+    let run_id = run.payload["run_id"].as_str().unwrap().to_string();
+    (core, run_id)
+}
+
 #[test]
 fn network_egress_persists_queryable_audit_row_through_live_run() {
     // A REAL `runtime.run` whose applet `ctx.net.fetch`-es lands a durable
@@ -656,6 +683,130 @@ fn lifecycle_purge_persists_queryable_audit_row_through_live_uninstall() {
     assert_eq!(meta.get("retention_policy").unwrap(), "purge_data");
     assert_eq!(meta.get("tombstone_reason").unwrap(), "applet.uninstall:purge_data");
     assert_eq!(meta.get("run_records_retained").unwrap(), &json!(true));
+}
+
+#[test]
+fn purge_uninstall_rollback_leaves_no_audit_row_atomicity() {
+    // FIX ROUND 2 (P1 atomicity, spec/audit-log.md §2): the `applet.uninstalled`
+    // audit row must commit in the SAME `Store::transact` as the tombstone writes +
+    // active-pointer removal. A purge-uninstall whose tombstone txn is FORCED to roll
+    // back (`simulate_failure_stage: "uninstall.tombstone"`) must therefore leave NO
+    // audit row of the purge — proving the row would have ridden the same rolled-back
+    // transaction, not a separate append that could have committed independently.
+    let mut core = WorkspaceCore::in_memory("ws-uninstall-rollback").unwrap();
+    let manifest = json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": ["tasks"], "write": ["tasks"] },
+            "ui": true
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    });
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "applet.todo",
+        json!({ "manifest": manifest, "sources": { "src/main.ts": "export async function main(ctx:any,input:any){ return { ok:true }; }" } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+    // One live applet-owned record so the purge has a tombstone to (try to) write.
+    let env = forge_domain::RecordEnvelope::new(
+        forge_domain::CollectionId::new("tasks"),
+        forge_domain::RecordId::new("tasks/1"),
+        [("title".to_string(), json!("one"))].into_iter().collect(),
+        forge_domain::LogicalTimestamp(1),
+    );
+    core.store_mut().put_record(&env).unwrap();
+
+    let seq_before = core.store().highest_audit_seq().unwrap();
+
+    // Force the purge transaction to roll back mid-uninstall.
+    let uninstall = core.handle(owner_cmd(
+        "applet.uninstall",
+        "applet.todo",
+        json!({ "retention_policy": "purge_data", "simulate_failure_stage": "uninstall.tombstone" }),
+    ));
+    assert!(!uninstall.ok, "the forced mid-uninstall failure must fail the uninstall");
+
+    // ATOMICITY: the rolled-back purge committed NO `applet.uninstalled` audit row...
+    let rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("applet.uninstalled"))
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "a rolled-back purge must leave NO applet.uninstalled audit row: {rows:?}"
+    );
+    // ...and did not advance the audit seq counter (no row was assigned a seq).
+    assert_eq!(
+        core.store().highest_audit_seq().unwrap(),
+        seq_before,
+        "a rolled-back purge must not bump the audit seq (no row landed)"
+    );
+    // And the record stays live (the tombstone rolled back with the audit append).
+    let rec = core.store().get_record("tasks", "tasks/1").unwrap().expect("record retained");
+    assert!(!rec.deleted, "the record stays live — the whole purge rolled back atomically");
+
+    // A clean purge AFTER the rolled-back attempt still lands its audit row (the
+    // failed txn left no poison), proving the same-txn append is the steady-state path.
+    let ok = core.handle(owner_cmd(
+        "applet.uninstall",
+        "applet.todo",
+        json!({ "retention_policy": "purge_data" }),
+    ));
+    assert!(ok.ok, "a clean purge after the rolled-back one succeeds: {:?}", ok.error);
+    let after = core
+        .store()
+        .query_audit(&AuditQuery::by_action("applet.uninstalled"))
+        .unwrap();
+    assert_eq!(after.len(), 1, "the clean purge lands exactly one audit row: {after:?}");
+    assert!(
+        core.store().highest_audit_seq().unwrap() > seq_before,
+        "the clean purge's audit row advanced the seq counter"
+    );
+}
+
+#[test]
+fn run_egress_audit_rows_commit_atomically_with_the_run_record() {
+    // FIX ROUND 2 (P2 atomicity, spec/audit-log.md §2): the `allow` `network.egress` /
+    // `secret.use` rows for a served egress commit in the SAME `Store::transact` as
+    // the run record (`save_run_tx` + `append_audit_tx`). A served egress (the durable
+    // effect) can never be persisted without its audit trail — so the run record AND
+    // both egress rows are durable together after one live `runtime.run`.
+    let (core, run_id) = run_egress_applet_with_run_id();
+
+    // The run record is durable (the run committed)...
+    let run = core
+        .store()
+        .load_run(&run_id)
+        .unwrap()
+        .expect("the run record committed");
+    // ...and it issued exactly one net.fetch (the egress whose rows must ride with it).
+    let fetches = run.calls.iter().filter(|c| c.method == "net.fetch").count();
+    assert_eq!(fetches, 1, "the egress applet issues exactly one net.fetch");
+
+    // BOTH the `allow` network.egress row AND the secret.use row are durable — they
+    // committed in the same transaction as the run record above.
+    let egress = core
+        .store()
+        .query_audit(&AuditQuery::by_action("network.egress"))
+        .unwrap();
+    assert_eq!(egress.len(), 1, "exactly one network.egress row: {egress:?}");
+    assert_eq!(egress[0].decision, "allow");
+    let secret = core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap();
+    assert_eq!(secret.len(), 1, "exactly one secret.use row: {secret:?}");
+    assert_eq!(secret[0].decision, "allow");
+    // Both rows share the run's actor — they are the egress THIS run produced.
+    assert_eq!(egress[0].actor_id, "actor-owner-1");
+    assert_eq!(secret[0].actor_id, "actor-owner-1");
 }
 
 #[test]

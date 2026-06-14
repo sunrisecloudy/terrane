@@ -52,6 +52,19 @@ impl EventSink {
         event_id
     }
 
+    /// The [`LogicalTimestamp`] the NEXT [`emit`](EventSink::emit) will stamp,
+    /// WITHOUT advancing the clock. A producer whose durable audit row must commit in
+    /// the SAME `Store::transact` as its decision uses this to stamp the row with the
+    /// timestamp its observability event will carry, then emits that event ONLY after
+    /// the transaction commits — so a rolled-back decision neither persists a row nor
+    /// emits a spurious event, while a committed one keeps the transient event and the
+    /// durable row under one clock (SC-12 §2 atomicity). Because `emit` derives the
+    /// stamp the same way (`clock.next()`), a peek immediately followed by an `emit`
+    /// with no intervening emission yields the SAME value.
+    pub fn peek_next_logical_time(&self) -> LogicalTimestamp {
+        self.clock.next()
+    }
+
     /// All events emitted so far, in emission order.
     pub fn events(&self) -> &[CoreEvent] {
         &self.events

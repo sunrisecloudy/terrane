@@ -185,20 +185,32 @@ impl WorkspaceCore {
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
 
-        // Persist the deterministic run record (replay source, CR-9). save_run
-        // re-validates the canonical code_hash.
-        self.store.save_run(&run)?;
-
-        // SC-12 live wiring (`forge/spec/audit-log.md`): the security-relevant
+        // Persist the deterministic run record (replay source, CR-9) AND the SC-12
+        // egress audit rows it produced, in ONE `Store::transact`.
+        //
+        // SC-12 live wiring (`forge/spec/audit-log.md` §2): the security-relevant
         // capability USES this real run made — each `ctx.net.fetch` egress and each
         // `secret_ref` header it resolved — land durable, queryable `network.egress` /
         // `secret.use` audit rows, derived from the recorded host-call trace. The trace
         // already keeps only the `secret_ref` (never the resolved value), and the
         // persistence layer redacts request/response bodies, so no secret value or body
-        // is ever written. Best-effort: an audit-persistence error never fails the run
-        // (the run + its effects already committed) — we never lose the run over its
-        // audit trail.
-        let _ = self.persist_run_egress_audit(applet_id.as_str(), &cmd.actor, &run);
+        // is ever written.
+        //
+        // FIX ROUND 2 (P2 atomicity): the `allow` egress rows commit in the SAME
+        // transaction as the run record (`save_run_tx` + `append_audit_tx`), so a real
+        // served egress (the durable effect) can NEVER be persisted without its audit
+        // trail — they land or roll back together (spec §2), exactly like the sync-RBAC
+        // path. We build the rows first (minting each `logical_time` from the EventSink),
+        // then commit run + rows atomically. `save_run` re-validates the canonical
+        // code_hash inside the txn.
+        let egress_audit = self.build_run_egress_audit(applet_id.as_str(), &cmd.actor, &run);
+        self.store.transact(|tx| {
+            forge_storage::Store::save_run_tx(tx, &run)?;
+            for row in &egress_audit {
+                forge_storage::Store::append_audit_tx(tx, row)?;
+            }
+            Ok(())
+        })?;
 
         // Fold any `ctx.db.watch`/`unwatch` the run issued into the workspace
         // live-query registry (DL-16) and persist, so a watch an applet registered
@@ -267,19 +279,27 @@ impl WorkspaceCore {
         }))
     }
 
-    /// Persist the SC-12 `network.egress` + `secret.use` audit rows for a real run's
+    /// BUILD the SC-12 `network.egress` + `secret.use` audit rows for a real run's
     /// recorded `ctx.net.fetch` host calls (`forge/spec/audit-log.md`; the
     /// `audit-log-e2e` `network_egress_metadata_no_body` / `secret_access_redacted`
-    /// vectors). Walks the run's recorded host-call trace in call order.
+    /// vectors). Walks the run's recorded host-call trace in call order and returns the
+    /// rows in append order; the caller folds them into the SAME `Store::transact` as
+    /// [`save_run_tx`](forge_storage::Store::save_run_tx) so a served egress and its
+    /// audit rows commit (or roll back) together (FIX ROUND 2 P2, spec §2). Redaction
+    /// runs when each row is appended ([`append_audit_tx`](forge_storage::Store::append_audit_tx)),
+    /// so the request/response bodies handed in here are still dropped before storage.
     ///
     /// DENY classification (review 151): a fetch the policy DENIED was recorded as
     /// `{"denied": <CoreError>}` (it never reached the network and was never
-    /// approved). Such a call appends a SINGLE `network.egress` `deny` row carrying
-    /// the denial reason and `{method, scheme, host, path}` metadata — and emits NO
+    /// approved). Such a call yields a SINGLE `network.egress` `deny` row carrying
+    /// the denial reason and `{method, scheme, host, path}` metadata — and NO
     /// `allow` egress/secret rows and NO defaulted `status: 0` — so a forbidden egress
     /// or a disallowed secret header is auditable AS a denial, never as an approval.
+    /// (A denied fetch produced no other durable effect, so its deny row is the only
+    /// record — there is nothing for it to desynchronize from; it rides the same txn
+    /// only for code uniformity.)
     ///
-    /// For an ALLOWED `net.fetch` (a real `NetResponse` was served) it appends:
+    /// For an ALLOWED `net.fetch` (a real `NetResponse` was served) it yields:
     ///
     ///   - one `network.egress` row — `resource_type = network`,
     ///     `resource_id = scheme://host`, metadata `{method, scheme, host, path, status,
@@ -295,14 +315,15 @@ impl WorkspaceCore {
     ///
     /// Deterministic: each row's `logical_time` is the EventSink clock; the rows
     /// derive purely from the recorded trace, so a replayed run reproduces them
-    /// byte-identically. Append-only; a re-run appends fresh rows.
-    fn persist_run_egress_audit(
+    /// byte-identically. Append-only; a re-run mints fresh rows.
+    fn build_run_egress_audit(
         &mut self,
         applet_id: &str,
         actor: &forge_domain::ActorContext,
         run: &RunRecord,
-    ) -> Result<()> {
+    ) -> Vec<forge_storage::AuditRecord> {
         let actor_id = actor.actor.as_str().to_string();
+        let mut rows: Vec<forge_storage::AuditRecord> = Vec::new();
         for call in &run.calls {
             if call.method != "net.fetch" {
                 continue;
@@ -328,7 +349,7 @@ impl WorkspaceCore {
             // to leak, and a denied fetch resolved no secret), so a forbidden egress
             // is auditable AS a denial rather than persisted as an approval.
             if let Some(reason) = denied_reason(&call.response) {
-                self.persist_producer_audit(
+                rows.push(self.build_producer_audit_record(
                     "network.egress.denied",
                     serde_json::json!({
                         "decision": "deny",
@@ -351,7 +372,7 @@ impl WorkspaceCore {
                         "host": host,
                         "path": path,
                     }),
-                )?;
+                ));
                 continue;
             }
 
@@ -373,7 +394,7 @@ impl WorkspaceCore {
                         .get("secret_ref")
                         .and_then(|v| v.as_str());
                     if let Some(secret_ref) = secret_ref {
-                        self.persist_producer_audit(
+                        rows.push(self.build_producer_audit_record(
                             "secret.used",
                             serde_json::json!({
                                 "decision": "allow",
@@ -395,7 +416,7 @@ impl WorkspaceCore {
                                 "target_header": header_name,
                                 "value_redacted": true,
                             }),
-                        )?;
+                        ));
                     }
                 }
             }
@@ -415,7 +436,7 @@ impl WorkspaceCore {
             if let Some(body) = call.response.get("body") {
                 metadata.insert("response_body".into(), body.clone());
             }
-            self.persist_producer_audit(
+            rows.push(self.build_producer_audit_record(
                 "network.egress",
                 serde_json::json!({
                     "decision": "allow",
@@ -433,9 +454,9 @@ impl WorkspaceCore {
                 None,
                 "network policy allowed request",
                 serde_json::Value::Object(metadata),
-            )?;
+            ));
         }
-        Ok(())
+        rows
     }
 
     /// Emit a `runtime.run.rejected` audit event for a run denied by the lifecycle

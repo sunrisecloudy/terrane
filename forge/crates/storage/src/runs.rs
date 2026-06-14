@@ -36,6 +36,31 @@ impl Store {
         Ok(())
     }
 
+    /// Persist a full `RunRecord` inside the CALLER's open transaction (the
+    /// tx-scoped form of [`save_run`](Self::save_run)). Used so a `runtime.run` can
+    /// commit the run record AND its `allow` SC-12 egress audit rows
+    /// ([`append_audit_tx`](Self::append_audit_tx)) in ONE `Store::transact`: a real
+    /// served egress (the durable effect) and its `network.egress`/`secret.use` rows
+    /// then land — or roll back — together, so a crash between them can never leave a
+    /// served egress durable without its audit trail (spec/audit-log.md §2). Same
+    /// `code_hash` provenance re-validation + idempotent record-and-replace as the
+    /// stand-alone form.
+    pub fn save_run_tx(tx: &rusqlite::Transaction<'_>, run: &RunRecord) -> Result<()> {
+        run.validate_code_hash()?;
+        let json = serde_json::to_string(run).map_err(|e| map_json("save_run_tx", e))?;
+        tx.execute(
+            "INSERT INTO runs (run_id, applet_id, record_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(run_id) DO UPDATE SET
+                 applet_id = excluded.applet_id,
+                 record_json = excluded.record_json,
+                 created_at = excluded.created_at",
+            params![run.run_id.as_str(), run.applet_id.as_str(), json, now_ms()],
+        )
+        .map_err(map_sql)?;
+        Ok(())
+    }
+
     /// Load a `RunRecord` by id, reconstructed from its stored JSON.
     ///
     /// The provenance contract is re-checked on read: a corrupted or legacy row
