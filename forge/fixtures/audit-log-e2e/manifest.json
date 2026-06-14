@@ -1,0 +1,40 @@
+{
+  "suite": "audit-log-e2e-vectors",
+  "version": 1,
+  "spec": "../../spec/sync-rbac.md",
+  "prd": ["SC-12", "SC-10", "SC-13", "SS-7", "CR-8"],
+  "source": "T048",
+  "scope": "Durable append-only audit-log integration vectors for real producers: sync RBAC, command RBAC, permission changes, secrets, network egress, lifecycle purge, signing refusal, queries, append-only replay, and deterministic timestamps.",
+  "count": 10,
+  "row_shape": {
+    "audit_id": "stable row id minted from append sequence",
+    "seq": "workspace-local monotonic append sequence",
+    "logical_time": "event-sink logical timestamp or externally supplied replay clock",
+    "producer": "subsystem that emitted the audit row",
+    "action": "canonical action string",
+    "decision": "allow or deny",
+    "actor_id": "authenticated actor responsible for the decision",
+    "resource_type": "record, schema, command, capability, secret, network, applet, package, or audit_log",
+    "resource_id": "stable resource id when present",
+    "collection": "record collection when present",
+    "reason": "human-readable decisive check",
+    "metadata": "redacted structured context; no secret values, request bodies, or response bodies"
+  },
+  "decisions": {
+    "redaction": "secret values and network bodies are never persisted in audit metadata; secret audit rows carry secret_ref ids only.",
+    "deterministic_time": "audit persistence uses append sequence plus logical_time from EventSink or an externally supplied replay clock; wall clock is metadata only when explicitly supplied and recorded.",
+    "append_only": "re-running a producer appends new rows with new seq/audit_id values and never mutates prior audit rows."
+  },
+  "cases": [
+    {"case": "sync_remote_denial_persisted_query_decision", "file": "sync_remote_denial_persisted_query_decision.json", "kind": "sync-rbac"},
+    {"case": "command_rbac_denial_query_actor", "file": "command_rbac_denial_query_actor.json", "kind": "command-rbac"},
+    {"case": "permission_grant_revoke_ordered_rows", "file": "permission_grant_revoke_ordered_rows.json", "kind": "permission"},
+    {"case": "secret_access_redacted", "file": "secret_access_redacted.json", "kind": "secret"},
+    {"case": "network_egress_metadata_no_body", "file": "network_egress_metadata_no_body.json", "kind": "network"},
+    {"case": "uninstall_purge_data_audit_row", "file": "uninstall_purge_data_audit_row.json", "kind": "lifecycle"},
+    {"case": "signed_install_refusal_unknown_field", "file": "signed_install_refusal_unknown_field.json", "kind": "signing"},
+    {"case": "query_by_action_resource_and_sequence", "file": "query_by_action_resource_and_sequence.json", "kind": "query"},
+    {"case": "append_only_rerun_adds_rows", "file": "append_only_rerun_adds_rows.json", "kind": "append-only"},
+    {"case": "deterministic_replay_logical_time", "file": "deterministic_replay_logical_time.json", "kind": "replay"}
+  ]
+}

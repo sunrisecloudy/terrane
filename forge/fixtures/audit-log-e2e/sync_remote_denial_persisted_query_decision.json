@@ -1,0 +1,58 @@
+{
+  "case": "sync_remote_denial_persisted_query_decision",
+  "description": "A sync SS-7 remote-op denial is persisted with actor, operation, resource, collection, trusted role, and reason, then queryable by decision=deny.",
+  "given": {
+    "next_seq": 1,
+    "logical_time_start": 1000,
+    "audit_rows": [],
+    "trusted_peer": {
+      "actor_id": "actor-viewer-1",
+      "role": "viewer",
+      "db_read": ["tasks"],
+      "db_write": [],
+      "schema_write": false
+    }
+  },
+  "when": {
+    "producer": "sync-rbac",
+    "source_fixture": "../sync-rbac/viewer_remote_write_rejected.json",
+    "operation": {
+      "frame": "live_update",
+      "source": "peer-viewer-1",
+      "action": "sync.record.insert",
+      "resource_type": "record",
+      "collection": "tasks",
+      "record_ids": ["tasks/task-101"]
+    }
+  },
+  "expect": {
+    "audit_rows_appended": [
+      {
+        "audit_id": "audit-000001",
+        "seq": 1,
+        "logical_time": 1001,
+        "producer": "sync-rbac",
+        "action": "sync.record.insert",
+        "decision": "deny",
+        "actor_id": "actor-viewer-1",
+        "resource_type": "record",
+        "resource_id": "tasks",
+        "collection": "tasks",
+        "reason": "viewer cannot author remote record writes",
+        "metadata": {
+          "source": "peer-viewer-1",
+          "trusted_role": "Viewer",
+          "trusted_db_read": ["tasks"],
+          "trusted_db_write": [],
+          "trusted_schema_write": false,
+          "record_ids": ["tasks/task-101"]
+        }
+      }
+    ],
+    "query": {
+      "where": {"decision": "deny"},
+      "order_by": ["seq", "asc"],
+      "result_audit_ids": ["audit-000001"]
+    }
+  }
+}

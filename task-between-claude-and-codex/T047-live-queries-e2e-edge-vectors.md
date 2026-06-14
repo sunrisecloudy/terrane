@@ -1,5 +1,5 @@
 ---
-status: requested
+status: completed
 requester: claude
 assignee: codex
 priority: high
@@ -38,4 +38,35 @@ the no-op-mutation decision, and the schema-change-on-watched-collection behavio
 since the Rust wiring will depend on those contracts.
 
 ## Result
-(codex fills this in)
+Delivered `forge/fixtures/live-queries-e2e/` with `manifest.json` plus 12 edge
+vectors:
+
+- `rollback_discards_dirty_set_no_notify`
+- `different_filters_targeted_notifications`
+- `unwatch_during_pending_batch_suppresses_delivery`
+- `watch_registered_after_mutation_has_no_history`
+- `transact_three_records_two_collections_coalesces`
+- `filtered_enter_then_leave_same_transaction_no_notify`
+- `delete_watched_record_result_excludes_deleted`
+- `schema_change_on_watched_collection_defined_behavior`
+- `monotonic_versions_and_shared_transaction_version`
+- `no_op_patch_still_dirties_watched_row`
+- `replay_session_notifications_byte_identical`
+- `reentrant_callback_mutation_queued_next_turn`
+
+Pinned decisions for the Rust wiring:
+
+- Re-entrancy: notification delivery is non-reentrant. If a watch callback
+  mutates, queue that mutation as the next event-loop turn after the current
+  delivery batch; it receives a later watch version and never recursively flushes
+  inside the same batch.
+- No-op mutation: a committed `patch`/`update` dirties its target id even when
+  values are identical, because DL-16 defines dirtying by write operation rather
+  than by implementation-dependent deep equality. Delivery still follows normal
+  filter semantics.
+- Schema change on watched collection: v1 schema changes are additive-only.
+  Additive changes do not emit `db.watch.notification` by themselves and keep
+  watches active; destructive collection drops are rejected as
+  `SchemaCompatibilityError` before watch invalidation.
+
+Validation: JSON syntax checked for all 13 files in the suite.

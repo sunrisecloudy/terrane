@@ -1,0 +1,70 @@
+{
+  "case": "monotonic_versions_and_shared_transaction_version",
+  "description": "Sequential transactions produce strictly increasing versions, while notifications from the same transaction share a version.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}},
+      {"watch_id": "watch:notes-all", "query": {"from": "notes", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 100
+  },
+  "when": {
+    "transactions": [
+      {"mutation": {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "A", "done": false}}},
+      {"mutation": {"op": "transact", "items": [
+        {"op": "insert", "collection": "tasks", "id": "tasks/2", "fields": {"title": "B", "done": false}},
+        {"op": "insert", "collection": "notes", "id": "notes/1", "fields": {"body": "N"}}
+      ]}},
+      {"mutation": {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"done": true}}}
+    ]
+  },
+  "expect": {
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 100,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      },
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 101,
+        "collection": "tasks",
+        "record_ids": ["tasks/2"],
+        "reason": "insert",
+        "result_ids": ["tasks/1", "tasks/2"],
+        "coalesced": false
+      },
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:notes-all",
+        "version": 101,
+        "collection": "notes",
+        "record_ids": ["notes/1"],
+        "reason": "insert",
+        "result_ids": ["notes/1"],
+        "coalesced": false
+      },
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 102,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "update",
+        "result_ids": ["tasks/1", "tasks/2"],
+        "coalesced": false
+      }
+    ],
+    "versions": {
+      "strictly_increasing_between_transactions": [100, 101, 102],
+      "same_transaction_notifications_share_version": 101
+    }
+  }
+}

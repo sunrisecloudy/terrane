@@ -1,0 +1,29 @@
+{
+  "case": "rollback_discards_dirty_set_no_notify",
+  "description": "A mutation inside a transaction that rolls back produces no dirty set and no watch notification.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Before", "done": false}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 1
+  },
+  "when": {
+    "mutation": {
+      "op": "transact",
+      "rollback": true,
+      "rollback_reason": "constraint violation",
+      "items": [
+        {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"title": "After"}}
+      ]
+    }
+  },
+  "expect": {
+    "dirty_set": null,
+    "notifications": [],
+    "records_unchanged": true,
+    "next_version": 1
+  }
+}

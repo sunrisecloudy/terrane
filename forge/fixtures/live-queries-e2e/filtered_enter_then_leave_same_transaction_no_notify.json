@@ -1,0 +1,29 @@
+{
+  "case": "filtered_enter_then_leave_same_transaction_no_notify",
+  "description": "A record that transiently enters and leaves a filtered result inside one transaction does not notify because only the committed projection is observed.",
+  "decision": "Live queries observe after each committed mutation transaction. If the filtered result ids are unchanged before and after the transaction, no notification is delivered for transient intra-transaction membership.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Closed", "done": true}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-open", "query": {"from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 24
+  },
+  "when": {
+    "mutation": {
+      "op": "transact",
+      "items": [
+        {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"done": false}},
+        {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"done": true}}
+      ]
+    }
+  },
+  "expect": {
+    "dirty_set": {"version": 24, "collections": {"tasks": ["tasks/1"]}},
+    "pre_transaction_result_ids": [],
+    "post_transaction_result_ids": [],
+    "notifications": []
+  }
+}

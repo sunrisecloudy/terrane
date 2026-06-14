@@ -1,0 +1,56 @@
+{
+  "case": "append_only_rerun_adds_rows",
+  "description": "Re-running the same producer operation appends a new row and never rewrites the prior audit row.",
+  "given": {
+    "next_seq": 81,
+    "logical_time_start": 9001,
+    "audit_rows": [
+      {
+        "audit_id": "audit-000080",
+        "seq": 80,
+        "logical_time": 9001,
+        "producer": "command-rbac",
+        "action": "command.runtime.run",
+        "decision": "deny",
+        "actor_id": "actor-auditor-1",
+        "resource_type": "command",
+        "resource_id": "runtime.run",
+        "reason": "auditor is not permitted to run applet code",
+        "metadata": {"role": "Auditor"}
+      }
+    ]
+  },
+  "when": {
+    "producer": "command-rbac",
+    "operation": {
+      "actor_id": "actor-auditor-1",
+      "role": "auditor",
+      "command": "runtime.run",
+      "applet_id": "applet.notes"
+    }
+  },
+  "expect": {
+    "audit_rows_appended": [
+      {
+        "audit_id": "audit-000081",
+        "seq": 81,
+        "logical_time": 9002,
+        "producer": "command-rbac",
+        "action": "command.runtime.run",
+        "decision": "deny",
+        "actor_id": "actor-auditor-1",
+        "resource_type": "command",
+        "resource_id": "runtime.run",
+        "applet_id": "applet.notes",
+        "reason": "auditor is not permitted to run applet code",
+        "metadata": {"role": "Auditor", "command": "runtime.run"}
+      }
+    ],
+    "existing_rows_unchanged": ["audit-000080"],
+    "query": {
+      "where": {"actor_id": "actor-auditor-1"},
+      "order_by": ["seq", "asc"],
+      "result_audit_ids": ["audit-000080", "audit-000081"]
+    }
+  }
+}

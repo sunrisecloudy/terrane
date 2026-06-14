@@ -1,0 +1,32 @@
+{
+  "case": "delete_watched_record_result_excludes_deleted",
+  "description": "Deleting a watched record notifies with reason=delete and the post-delete result set excludes the deleted id.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Delete me", "done": false}, "deleted": false},
+      {"collection": "tasks", "id": "tasks/2", "fields": {"title": "Keep me", "done": false}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-open", "query": {"from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 31
+  },
+  "when": {
+    "mutation": {"op": "delete", "collection": "tasks", "id": "tasks/1"}
+  },
+  "expect": {
+    "dirty_set": {"version": 31, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-open",
+        "version": 31,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "delete",
+        "result_ids": ["tasks/2"],
+        "coalesced": false
+      }
+    ]
+  }
+}

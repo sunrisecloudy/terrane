@@ -1,0 +1,55 @@
+{
+  "case": "network_egress_metadata_no_body",
+  "description": "A network egress audit row includes method and host metadata but excludes request and response bodies.",
+  "given": {
+    "next_seq": 40,
+    "logical_time_start": 5000,
+    "audit_rows": []
+  },
+  "when": {
+    "producer": "net",
+    "source_fixture": "../network/post_json_allowed.json",
+    "operation": {
+      "actor_id": "actor-runner-1",
+      "applet_id": "app.crm",
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/v1/leads",
+        "body": {"name": "Ada", "email": "ada@example.com"}
+      },
+      "response": {"status": 201, "body": {"id": "lead-1"}}
+    }
+  },
+  "expect": {
+    "audit_rows_appended": [
+      {
+        "audit_id": "audit-000040",
+        "seq": 40,
+        "logical_time": 5001,
+        "producer": "net",
+        "action": "network.egress",
+        "decision": "allow",
+        "actor_id": "actor-runner-1",
+        "resource_type": "network",
+        "resource_id": "https://api.example.com",
+        "applet_id": "app.crm",
+        "reason": "network policy allowed request",
+        "metadata": {
+          "method": "POST",
+          "scheme": "https",
+          "host": "api.example.com",
+          "path": "/v1/leads",
+          "status": 201,
+          "request_body_redacted": true,
+          "response_body_redacted": true
+        }
+      }
+    ],
+    "query": {
+      "where": {"resource_type": "network"},
+      "order_by": ["seq", "asc"],
+      "result_audit_ids": ["audit-000040"]
+    },
+    "must_not_contain": ["Ada", "ada@example.com", "lead-1"]
+  }
+}

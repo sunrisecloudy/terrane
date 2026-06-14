@@ -1,0 +1,71 @@
+{
+  "case": "permission_grant_revoke_ordered_rows",
+  "description": "A human-approved permission grant followed by revoke persists two ordered audit rows with monotonic sequence numbers.",
+  "given": {
+    "next_seq": 20,
+    "logical_time_start": 3000,
+    "audit_rows": [],
+    "actor": {"actor_id": "actor-owner-1", "role": "owner"}
+  },
+  "when": {
+    "producer": "permission-manager",
+    "operations": [
+      {
+        "op": "grant",
+        "target_actor_id": "actor-editor-1",
+        "capability": {"namespace": "db", "action": "write", "resource": "collection:tasks"}
+      },
+      {
+        "op": "revoke",
+        "target_actor_id": "actor-editor-1",
+        "capability": {"namespace": "db", "action": "write", "resource": "collection:tasks"}
+      }
+    ]
+  },
+  "expect": {
+    "audit_rows_appended": [
+      {
+        "audit_id": "audit-000020",
+        "seq": 20,
+        "logical_time": 3001,
+        "producer": "permission-manager",
+        "action": "permission.grant",
+        "decision": "allow",
+        "actor_id": "actor-owner-1",
+        "resource_type": "capability",
+        "resource_id": "db.write:collection:tasks",
+        "collection": "tasks",
+        "reason": "owner approved capability grant",
+        "metadata": {
+          "target_actor_id": "actor-editor-1",
+          "namespace": "db",
+          "capability_action": "write"
+        }
+      },
+      {
+        "audit_id": "audit-000021",
+        "seq": 21,
+        "logical_time": 3002,
+        "producer": "permission-manager",
+        "action": "permission.revoke",
+        "decision": "allow",
+        "actor_id": "actor-owner-1",
+        "resource_type": "capability",
+        "resource_id": "db.write:collection:tasks",
+        "collection": "tasks",
+        "reason": "owner revoked capability grant",
+        "metadata": {
+          "target_actor_id": "actor-editor-1",
+          "namespace": "db",
+          "capability_action": "write"
+        }
+      }
+    ],
+    "query": {
+      "where": {"resource_id": "db.write:collection:tasks"},
+      "order_by": ["seq", "asc"],
+      "result_audit_ids": ["audit-000020", "audit-000021"]
+    },
+    "assertions": ["seq strictly increases", "grant row precedes revoke row"]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "case": "uninstall_purge_data_audit_row",
+  "description": "An applet uninstall with purge_data records a hard-purge/tombstone audit row.",
+  "given": {
+    "next_seq": 50,
+    "logical_time_start": 6000,
+    "audit_rows": [],
+    "active_applet": {
+      "applet_id": "applet.todo",
+      "install_generation": 1,
+      "version": 1,
+      "state": "enabled"
+    }
+  },
+  "when": {
+    "producer": "lifecycle",
+    "source_fixture": "../lifecycle/uninstall_purge_data_tombstones_records.json",
+    "command": {
+      "actor_id": "actor-owner-1",
+      "name": "applet.uninstall",
+      "payload": {"applet_id": "applet.todo", "retention_policy": "purge_data"}
+    }
+  },
+  "expect": {
+    "audit_rows_appended": [
+      {
+        "audit_id": "audit-000050",
+        "seq": 50,
+        "logical_time": 6001,
+        "producer": "lifecycle",
+        "action": "applet.uninstalled",
+        "decision": "allow",
+        "actor_id": "actor-owner-1",
+        "resource_type": "applet",
+        "resource_id": "applet.todo",
+        "applet_id": "applet.todo",
+        "reason": "uninstall purge_data tombstoned applet-owned records",
+        "metadata": {
+          "retention_policy": "purge_data",
+          "records_tombstoned": 1,
+          "tombstone_reason": "applet.uninstall:purge_data",
+          "run_records_retained": true,
+          "replay_artifacts_retained": true
+        }
+      }
+    ],
+    "query": {
+      "where": {"action": "applet.uninstalled", "resource_id": "applet.todo"},
+      "order_by": ["seq", "asc"],
+      "result_audit_ids": ["audit-000050"]
+    }
+  }
+}

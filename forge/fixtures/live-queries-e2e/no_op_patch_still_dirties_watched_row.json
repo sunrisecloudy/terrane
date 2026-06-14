@@ -1,0 +1,32 @@
+{
+  "case": "no_op_patch_still_dirties_watched_row",
+  "description": "A patch that writes identical values still dirties the target id and notifies an active watch whose current result includes that record.",
+  "decision": "DL-16 defines dirtying by committed write operation, not by previous-value deep equality. This avoids an implementation-dependent no-op detector and keeps replay bytes stable.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Same", "done": false}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-open", "query": {"from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 40
+  },
+  "when": {
+    "mutation": {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"title": "Same"}}
+  },
+  "expect": {
+    "dirty_set": {"version": 40, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-open",
+        "version": 40,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "update",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      }
+    ]
+  }
+}
