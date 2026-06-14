@@ -36,11 +36,21 @@ message payloads.
 
 The actor a chunk is authorized against is its **original author**, not whichever
 peer most recently relayed it. A chunk a peer merely forwarded (it imported the
-chunk from another peer and re-exports it) carries its original author's source in
-its remote-import provenance; the receiver resolves trusted membership for that
-original author. A peer the receiver trusts therefore cannot launder a write from
-an untrusted peer through itself — the relayed chunk is gated against the
-untrusted author and denied (`review 092 #1`).
+chunk from another peer and re-exports it) carries its original author's source —
+and the record ids it touched — in its remote-import provenance; the receiver
+resolves trusted membership for that original author and gates a concrete record.
+This provenance is preserved across every relay hop: each import stamps the
+remote-import oplog row with the chunk's original author (not the importing peer)
+and its touched record ids, so after any number of hops the chunk is still gated
+against the original author and still names its record. A peer the receiver trusts
+therefore cannot launder a write from an untrusted peer through itself — the
+relayed chunk is gated against the untrusted author and denied (`review 092 #1`).
+
+If a forwarded chunk's original provenance is **unrecoverable** (its remote-import
+row names no usable original author), the receiver must **fail closed** and reject
+it rather than attribute it to the relay: a relay must not be able to launder a
+write whose author it cannot prove by having the receiver fall back to the relay's
+own (trusted) identity.
 
 ## M0b scope
 

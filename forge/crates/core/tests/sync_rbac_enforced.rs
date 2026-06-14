@@ -314,6 +314,74 @@ fn forwarded_chunk_is_authorized_against_original_author_not_relay() {
 }
 
 #[test]
+fn forwarded_chunk_is_authorized_against_original_author_positive_twin() {
+    // review 092 #1 (positive twin of the three-peer regression): C writes; A imports
+    // C's chunk (A is a relay); A syncs to B. B trusts A as an owner AND trusts C as an
+    // editor WITH db.write on `tasks`. The forwarded chunk is gated against C (the
+    // ORIGINAL author) — who IS authorized here — so it APPLIES and B converges with C.
+    let idx = IndexManager::new();
+    const C_PEER: u64 = 901;
+    let mut c = WorkspaceCore::in_memory("ws-c2").unwrap();
+    let mut a = WorkspaceCore::in_memory("ws-a2").unwrap();
+    let mut b = WorkspaceCore::in_memory("ws-b2").unwrap();
+    c.store_mut().set_crdt_peer_id(C_PEER);
+    a.store_mut().set_crdt_peer_id(SENDER_PEER);
+    b.store_mut().set_crdt_peer_id(RECEIVER_PEER);
+
+    // A trusts C; C trusts A (back-channel); A trusts B (back-channel).
+    a.set_peer_membership(source_id_for(C_PEER), membership("actor-c", Role::Owner, &["*"]))
+        .unwrap();
+    c.set_peer_membership(
+        source_id_for(SENDER_PEER),
+        membership("actor-a", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    a.set_peer_membership(
+        source_id_for(RECEIVER_PEER),
+        membership("actor-b", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    // B trusts the relay A as an owner AND the original author C as an editor on `tasks`.
+    b.set_peer_membership(
+        source_id_for(SENDER_PEER),
+        membership("actor-a", Role::Owner, &["*"]),
+    )
+    .unwrap();
+    b.set_peer_membership(
+        source_id_for(C_PEER),
+        membership("actor-c", Role::Editor, &["tasks"]),
+    )
+    .unwrap();
+
+    // C authors; A imports as a relay.
+    c.store_mut()
+        .apply_mutation_crdt(&insert("task-c", json!({ "title": "from C" }), 1), &idx)
+        .unwrap();
+    c.sync_with(&mut a).unwrap();
+    assert_eq!(query_tasks(&mut a).len(), 1, "A imported C's record as a relay");
+
+    // A -> B: A relays C's chunk; B authorizes it against C (trusted) -> applied.
+    let a_to_b = a.sync_with(&mut b).unwrap();
+    assert_eq!(a_to_b.chunks_denied, 0, "C is trusted by B, so the forwarded chunk applies");
+    let b_rows = query_tasks(&mut b);
+    assert_eq!(b_rows.len(), 1, "B imported C's forwarded record");
+    assert_eq!(b_rows[0].0, "task-c");
+    assert_eq!(b_rows[0].1["title"], json!("from C"));
+
+    // The allow audit on B names C (the original author), not relay A.
+    let allowed = b
+        .events()
+        .events_of_kind("sync.authorized")
+        .next()
+        .expect("B audited the authorized forwarded op");
+    assert_eq!(
+        allowed.payload["source"],
+        json!(source_id_for(C_PEER)),
+        "the allow names C (the original author), not relay A"
+    );
+}
+
+#[test]
 fn malformed_non_collection_doc_chunk_is_denied_before_import() {
     // review 092 #2: a chunk whose doc id is NOT a `collection/<name>` records doc
     // must be denied fail-closed at the apply boundary — the receiver must reject a
@@ -371,5 +439,290 @@ fn seeded_membership_survives_reopen() {
         reopened.peer_membership(&source_id_for(SENDER_PEER)),
         Some(&row),
         "the seeded membership row must persist across reopen"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Data-driven provenance corpus (fixtures/sync-provenance, review 092 #1).
+//
+// Each vector drives the full three-peer relay topology through the PUBLIC
+// `sync_with` path: author C writes, relay A imports C's chunk (A trusts C), then
+// A syncs to B. B's trust for the relay A AND the original author C decides the
+// forwarded chunk's fate. The runner asserts B's apply decision, B's visible
+// projection, and — for a denial — that the audit names the ORIGINAL author's
+// source, not the relay. The `relay_authored_locally_*` controls exercise the
+// direct-author path (A authored the chunk itself; B authorizes A) so provenance
+// handling cannot weaken or widen the non-forwarded case.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ProvFixtureOp {
+    op: String,
+    id: String,
+    fields: Value,
+}
+
+#[derive(serde::Deserialize)]
+struct ProvTrust {
+    role: String,
+    db_write: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProvExpectRecord {
+    id: String,
+    fields: Value,
+}
+
+#[derive(serde::Deserialize)]
+struct ProvExpect {
+    decision: String,
+    denied_count: usize,
+    receiver_visible: Vec<ProvExpectRecord>,
+    denial_source_is_author: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct ProvFixture {
+    case: String,
+    collection: String,
+    author_peer: u64,
+    relay_peer: u64,
+    receiver_peer: u64,
+    author_actor: String,
+    relay_actor: String,
+    author_ops: Vec<ProvFixtureOp>,
+    relay_local_ops: Vec<ProvFixtureOp>,
+    relay_trusts_author: ProvTrust,
+    receiver_trusts_relay: ProvTrust,
+    receiver_trusts_author: Option<ProvTrust>,
+    expect: ProvExpect,
+}
+
+/// Parse a fixture role string into a [`Role`] (the fixtures spell roles in
+/// PascalCase for readability; this maps them explicitly so a typo fails loudly).
+fn parse_role(s: &str) -> Role {
+    match s {
+        "Owner" => Role::Owner,
+        "Maintainer" => Role::Maintainer,
+        "Editor" => Role::Editor,
+        "Runner" => Role::Runner,
+        "Viewer" => Role::Viewer,
+        "Auditor" => Role::Auditor,
+        "Reviewer" => Role::Reviewer,
+        other => panic!("unknown role {other:?} in provenance fixture"),
+    }
+}
+
+fn trust_to_membership(actor: &str, t: &ProvTrust) -> TrustedMembership {
+    TrustedMembership {
+        actor_id: actor.into(),
+        role: parse_role(&t.role),
+        db_read: vec!["*".into()],
+        db_write: t.db_write.clone(),
+        schema_write: false,
+    }
+}
+
+fn prov_op_to_mutation(collection: &str, op: &ProvFixtureOp, at: i64) -> Mutation {
+    match op.op.as_str() {
+        "insert" => Mutation::Insert {
+            collection: collection.into(),
+            id: Some(op.id.clone()),
+            fields: op.fields.as_object().expect("fields object").clone(),
+            logical_at: Some(at),
+        },
+        other => panic!("provenance fixtures only use insert, got {other:?}"),
+    }
+}
+
+fn query_collection(core: &mut WorkspaceCore, collection: &str) -> Vec<(String, Value)> {
+    let cmd = CoreCommand {
+        request_id: RequestId::new("req"),
+        name: "query.execute".into(),
+        applet_id: None::<AppletId>,
+        actor: ActorContext::owner("dev"),
+        workspace_id: WorkspaceId::new("ws"),
+        payload: json!({ "collection": collection }),
+    };
+    let resp = core.handle(cmd);
+    assert!(resp.ok, "query.execute failed: {:?}", resp.error);
+    let mut rows: Vec<(String, Value)> = resp.payload["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .map(|r| (r["id"].as_str().unwrap().to_string(), r["fields"].clone()))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+fn run_provenance_fixture(fx: &ProvFixture) {
+    let idx = IndexManager::new();
+    let mut c = WorkspaceCore::in_memory("ws-prov-c").unwrap();
+    let mut a = WorkspaceCore::in_memory("ws-prov-a").unwrap();
+    let mut b = WorkspaceCore::in_memory("ws-prov-b").unwrap();
+    c.store_mut().set_crdt_peer_id(fx.author_peer);
+    a.store_mut().set_crdt_peer_id(fx.relay_peer);
+    b.store_mut().set_crdt_peer_id(fx.receiver_peer);
+
+    let author_src = source_id_for(fx.author_peer);
+    let relay_src = source_id_for(fx.relay_peer);
+    let receiver_src = source_id_for(fx.receiver_peer);
+
+    // A trusts C so C -> A applies and A becomes a relay for C's chunk.
+    a.set_peer_membership(
+        author_src.clone(),
+        trust_to_membership(&fx.author_actor, &fx.relay_trusts_author),
+    )
+    .unwrap();
+    // Back-channel trust so the symmetric directions never spuriously deny.
+    c.set_peer_membership(relay_src.clone(), membership(&fx.relay_actor, Role::Owner, &["*"]))
+        .unwrap();
+    a.set_peer_membership(receiver_src.clone(), membership("actor-b", Role::Owner, &["*"]))
+        .unwrap();
+    // B trusts the relay A as configured, and the author C only if the fixture seeds it.
+    b.set_peer_membership(
+        relay_src.clone(),
+        trust_to_membership(&fx.relay_actor, &fx.receiver_trusts_relay),
+    )
+    .unwrap();
+    if let Some(t) = &fx.receiver_trusts_author {
+        b.set_peer_membership(author_src.clone(), trust_to_membership(&fx.author_actor, t))
+            .unwrap();
+    }
+
+    // C authors its ops; A imports them as a relay.
+    let mut clock = 0i64;
+    for op in &fx.author_ops {
+        clock += 1;
+        c.store_mut()
+            .apply_mutation_crdt(&prov_op_to_mutation(&fx.collection, op, clock), &idx)
+            .unwrap();
+    }
+    if !fx.author_ops.is_empty() {
+        c.sync_with(&mut a).unwrap();
+    }
+    // A also authors its OWN ops (the relay-as-author control path).
+    for op in &fx.relay_local_ops {
+        clock += 1;
+        a.store_mut()
+            .apply_mutation_crdt(&prov_op_to_mutation(&fx.collection, op, clock), &idx)
+            .unwrap();
+    }
+
+    // The hop under test: A -> B. B authorizes each chunk against its ORIGINAL author.
+    let report = a.sync_with(&mut b).unwrap();
+    assert_eq!(
+        report.chunks_denied, fx.expect.denied_count,
+        "case {}: denied count mismatch (report {report:?})",
+        fx.case
+    );
+
+    // B's visible projection must equal the fixture's expectation exactly.
+    let got = query_collection(&mut b, &fx.collection);
+    assert_eq!(
+        got.len(),
+        fx.expect.receiver_visible.len(),
+        "case {}: B record count mismatch (got {got:?})",
+        fx.case
+    );
+    for want in &fx.expect.receiver_visible {
+        let have = got
+            .iter()
+            .find(|(id, _)| id == &want.id)
+            .unwrap_or_else(|| panic!("case {}: B missing record {}", fx.case, want.id));
+        let want_fields = want.fields.as_object().expect("expected fields object");
+        for (k, v) in want_fields {
+            assert_eq!(
+                have.1.get(k),
+                Some(v),
+                "case {}: B record {} field {k} mismatch",
+                fx.case,
+                want.id
+            );
+        }
+    }
+
+    match fx.expect.decision.as_str() {
+        "applied" => {
+            let allowed = b
+                .events()
+                .events_of_kind("sync.authorized")
+                .next()
+                .unwrap_or_else(|| panic!("case {}: expected an allow audit", fx.case));
+            // An applied forwarded chunk is authorized against the ORIGINAL author.
+            if !fx.author_ops.is_empty() {
+                assert_eq!(
+                    allowed.payload["source"], json!(author_src),
+                    "case {}: allow must name the original author, not the relay",
+                    fx.case
+                );
+            }
+        }
+        "permission_denied" => {
+            let denial = b
+                .events()
+                .events_of_kind("sync.permission_denied")
+                .next()
+                .unwrap_or_else(|| panic!("case {}: expected a denial audit", fx.case));
+            assert_eq!(denial.payload["decision"], json!("deny"), "case {}", fx.case);
+            let expected_source = if fx.expect.denial_source_is_author {
+                &author_src
+            } else {
+                &relay_src
+            };
+            assert_eq!(
+                denial.payload["source"], json!(expected_source),
+                "case {}: denial must name the {} source",
+                fx.case,
+                if fx.expect.denial_source_is_author { "original author" } else { "relay" }
+            );
+        }
+        other => panic!("case {}: unknown expected decision {other:?}", fx.case),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ProvManifest {
+    count: usize,
+}
+
+fn provenance_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sync-provenance")
+}
+
+#[test]
+fn every_sync_provenance_vector_matches_expected_decision() {
+    let dir = provenance_dir();
+    let manifest: ProvManifest = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("manifest.json")).expect("read provenance manifest"),
+    )
+    .expect("parse provenance manifest");
+
+    let mut ran = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("read sync-provenance dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some("manifest.json") {
+            continue;
+        }
+        let fx: ProvFixture = serde_json::from_str(
+            &std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display())),
+        )
+        .unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()));
+        run_provenance_fixture(&fx);
+        ran += 1;
+    }
+
+    // Guard against a silently empty / partial run (e.g. a moved fixtures dir): the
+    // suite is only load-bearing if it ran EVERY declared vector.
+    assert_eq!(
+        ran, manifest.count,
+        "ran {ran} provenance vectors but the manifest declares {}",
+        manifest.count
     );
 }

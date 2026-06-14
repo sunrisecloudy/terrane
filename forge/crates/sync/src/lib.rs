@@ -198,15 +198,26 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
 }
 
 /// What the origin store's oplog recorded for one chunk: the op `kind`, the touched
-/// `record_ids`, and — when the chunk is a FORWARDED foreign import — the original
-/// author's `origin_source`. Used to recover the SS-7 authorization envelope for a
-/// chunk staged FROM this store.
+/// `record_ids`, whether the row is a FORWARDED foreign import, and — when it is —
+/// the original author's `origin_source`. Used to recover the SS-7 authorization
+/// envelope for a chunk staged FROM this store.
 struct OplogEntry {
     kind: String,
     record_ids: Vec<String>,
-    /// `Some(peer:<id>)` when the origin store only RELAYED this chunk (its row is a
-    /// `record.remote_import` whose payload names the original `source`); `None` for
-    /// a chunk this store authored locally (the relay IS the author).
+    /// `true` when this store only RELAYED the chunk: its row is a
+    /// `record.remote_import` (it imported the chunk from another peer rather than
+    /// authoring it locally). A forwarded chunk MUST be gated against its original
+    /// author, never the relay — so the staging step needs to tell a relayed chunk
+    /// apart from a locally-authored one even when the original `source` is missing
+    /// (`review 092 #1` / SS-7 actor identity).
+    is_remote_import: bool,
+    /// `Some(peer:<id>)` when the origin store relayed this chunk AND its
+    /// `record.remote_import` payload named a recoverable original `source`; `None`
+    /// for a chunk this store authored locally OR a relayed chunk whose original
+    /// provenance is UNRECOVERABLE. The latter two are disambiguated by
+    /// `is_remote_import`: a relayed chunk with `origin_source == None` must FAIL
+    /// CLOSED (it cannot be attributed to the relay), never be treated as a local
+    /// write.
     origin_source: Option<String>,
 }
 
@@ -232,11 +243,18 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
             })
             .unwrap_or_default();
         // A forwarded foreign chunk carries the original author in its remote-import
-        // payload `source`; preserve it so the receiver gates the original actor.
-        let origin_source = if op.kind == "record.remote_import" {
+        // payload `source`; preserve it so the receiver gates the original actor. A
+        // relayed chunk whose payload does NOT name a recoverable, non-empty `source`
+        // leaves `origin_source` None but keeps `is_remote_import` set, so the staging
+        // step can fail it closed instead of mistaking it for a local write.
+        let is_remote_import = op.kind == "record.remote_import";
+        let origin_source = if is_remote_import {
             payload
                 .as_ref()
-                .and_then(|v| v.get("source").and_then(|s| s.as_str()).map(String::from))
+                .and_then(|v| v.get("source").and_then(|s| s.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
         } else {
             None
         };
@@ -245,6 +263,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
             OplogEntry {
                 kind: op.kind,
                 record_ids,
+                is_remote_import,
                 origin_source,
             },
         );
@@ -258,17 +277,23 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
 /// `collection/<name>` records doc is marked `malformed` (and given an empty
 /// collection) so the apply boundary denies it fail-closed instead of guessing a
 /// collection from the raw doc id (`review 092 #2`). A chunk whose oplog row is
-/// missing or a foreign re-import yields a generic record [`Write`] envelope so the
-/// receiver still gates it as a write (never silently allowed); a forwarded foreign
-/// chunk additionally carries its original author in `origin_source` (`review
-/// 092 #1`).
+/// missing or a transact group yields a generic record [`Write`] envelope so the
+/// receiver still gates it as a write (never silently allowed).
+///
+/// A FORWARDED foreign chunk (the origin row is a `record.remote_import`) carries its
+/// original author in `origin_source` so the receiver gates the ORIGINAL actor, not
+/// the relay (`review 092 #1`). If that row's original provenance is UNRECOVERABLE
+/// (the `record.remote_import` payload named no usable `source`), the chunk is marked
+/// `malformed` and denied fail-closed: a relay must NOT be able to launder a write
+/// whose author it cannot prove by having the receiver fall back to attributing the
+/// chunk to the relay (`forge/spec/sync-rbac.md` "Trust boundary").
 fn envelope_for_chunk(
     doc_id: &str,
     local_id: &str,
     oplog: &BTreeMap<String, OplogEntry>,
 ) -> SyncOpEnvelope {
     let collection = collection_of_doc(doc_id);
-    let malformed = match collection {
+    let mut malformed = match collection {
         Some(c) if !c.is_empty() => None,
         _ => Some(format!(
             "chunk doc id {doc_id:?} is not a collection/<name> records doc"
@@ -276,11 +301,22 @@ fn envelope_for_chunk(
     };
     let op_id = format!("{doc_id}#{local_id}");
     let (op, record_ids, origin_source) = match oplog.get(&op_id) {
-        Some(entry) => (
-            op_from_kind(&entry.kind),
-            entry.record_ids.clone(),
-            entry.origin_source.clone(),
-        ),
+        Some(entry) => {
+            // A relayed chunk whose original author is unrecoverable cannot be
+            // attributed to the relay — fail it closed (`review 092 #1`). Only the
+            // first defect is surfaced, so a malformed doc id still takes priority.
+            if entry.is_remote_import && entry.origin_source.is_none() && malformed.is_none() {
+                malformed = Some(format!(
+                    "forwarded chunk {op_id:?} has no recoverable original author \
+                     (record.remote_import without a usable source)"
+                ));
+            }
+            (
+                op_from_kind(&entry.kind),
+                entry.record_ids.clone(),
+                entry.origin_source.clone(),
+            )
+        }
         None => (SyncRecordOp::Write, Vec::new(), None),
     };
     SyncOpEnvelope {
@@ -340,14 +376,22 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
         if have.contains_key(id) {
             continue; // frontier already covers this chunk — nothing to send
         }
+        let envelope = envelope_for_chunk(doc_id, &chunk.local_id, &oplog);
+        // Carry the chunk's ORIGINAL-author provenance (the original author recovered
+        // when `from` only relayed this chunk, plus the touched record ids) INTO the
+        // RemoteChunk, so `from`'s import oplog row — and therefore the next relay
+        // hop — preserves the true author + record identity instead of attributing the
+        // chunk to the importer (`review 092 #1/#2`).
         out.push(StagedChunk {
             chunk: RemoteChunk {
                 doc_id: doc_id.to_string(),
                 chunk_id: chunk.id.clone(),
                 format: chunk.format.clone(),
                 payload: chunk.payload.clone(),
+                author_actor_id: envelope.origin_source.clone(),
+                record_ids: envelope.record_ids.clone(),
             },
-            envelope: envelope_for_chunk(doc_id, &chunk.local_id, &oplog),
+            envelope,
         });
     }
     Ok(out)

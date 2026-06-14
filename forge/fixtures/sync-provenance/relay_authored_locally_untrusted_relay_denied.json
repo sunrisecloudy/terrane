@@ -1,0 +1,22 @@
+{
+  "case": "relay_authored_locally_untrusted_relay_denied",
+  "collection": "tasks",
+  "author_peer": 900,
+  "relay_peer": 700,
+  "receiver_peer": 800,
+  "author_actor": "actor-c",
+  "relay_actor": "actor-a",
+  "author_ops": [],
+  "relay_local_ops": [
+    { "op": "insert", "id": "task-a", "fields": { "title": "from A" } }
+  ],
+  "relay_trusts_author": { "role": "Owner", "db_write": ["*"] },
+  "receiver_trusts_relay": { "role": "Viewer", "db_write": [] },
+  "receiver_trusts_author": null,
+  "expect": {
+    "decision": "permission_denied",
+    "denied_count": 1,
+    "receiver_visible": [],
+    "denial_source_is_author": false
+  }
+}

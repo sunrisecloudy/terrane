@@ -422,33 +422,133 @@ fn forwarded_chunk_envelope_carries_original_author_not_relay() {
     })
     .unwrap();
 
-    // C's forwarded chunk carries C's original source; A's own chunk carries none.
+    // The relay's `record.remote_import` row now PRESERVES the touched record ids
+    // (`review 092 #2`: a forwarded chunk must still name a concrete record so the
+    // receiver's envelope-metadata gate does not fail closed), so the forwarded and
+    // local chunks can be located by their record ids directly.
     let c_chunk = seen
         .iter()
-        .find(|(_, ids)| ids.iter().any(|r| r == "c1"));
+        .find(|(_, ids)| ids.iter().any(|r| r == "c1"))
+        .expect("C's forwarded chunk carries its record id c1");
     let a_chunk = seen
         .iter()
-        .find(|(_, ids)| ids.iter().any(|r| r == "a1"));
-    // The relay re-import row does not preserve the touched record ids, so locate
-    // the forwarded chunk by elimination when the record-id join is unavailable.
-    let forwarded_origin: Vec<&Option<String>> =
-        seen.iter().map(|(o, _)| o).filter(|o| o.is_some()).collect();
+        .find(|(_, ids)| ids.iter().any(|r| r == "a1"))
+        .expect("A's own chunk carries its record id a1");
+
+    // C's forwarded chunk is gated against C (the ORIGINAL author), not relay A.
     assert_eq!(
-        forwarded_origin.len(),
-        1,
-        "exactly one forwarded chunk carries an origin_source: {seen:?}"
-    );
-    assert_eq!(
-        forwarded_origin[0].as_deref(),
+        c_chunk.0.as_deref(),
         Some("peer:33"),
         "the forwarded chunk is gated against C (the original author), not relay A"
     );
-    // A's locally-authored chunk has no origin (relay == author). When the record-id
-    // join is present it confirms the mapping; otherwise the count above suffices.
-    if let Some((origin, _)) = a_chunk {
-        assert!(origin.is_none(), "A's own write has no origin_source");
-    }
-    let _ = c_chunk;
+    // A's locally-authored chunk has no origin (relay == author).
+    assert!(a_chunk.0.is_none(), "A's own write has no origin_source");
+
+    // Exactly one chunk carries an origin_source — the single forwarded one.
+    let forwarded = seen.iter().filter(|(o, _)| o.is_some()).count();
+    assert_eq!(forwarded, 1, "exactly one forwarded chunk carries an origin_source: {seen:?}");
+}
+
+#[test]
+fn original_author_survives_two_relay_hops() {
+    // review 092 #1 (multi-hop): C authors a chunk; A imports it (hop 1); B imports it
+    // FROM A (hop 2). After two relay hops the chunk is staged from B toward D and must
+    // STILL be gated against C — not A, and not B. This proves each import preserves the
+    // ORIGINAL author (and the record id) in its remote-import oplog row rather than
+    // overwriting it with the immediate sender.
+    let idx = IndexManager::new();
+    let mut c = Store::open_in_memory().unwrap().with_crdt_peer_id(33); // author
+    let mut a = Store::open_in_memory().unwrap().with_crdt_peer_id(11); // relay 1
+    let mut b = Store::open_in_memory().unwrap().with_crdt_peer_id(22); // relay 2
+    let mut d = Store::open_in_memory().unwrap().with_crdt_peer_id(44); // final receiver
+
+    c.apply_mutation_crdt(&insert("tasks", "c1", json!({"title": "from-c"}), 1), &idx)
+        .unwrap();
+    assert_eq!(pull(&mut a, &c, &idx).unwrap(), 1, "hop 1: A imports C's chunk");
+    assert_eq!(pull(&mut b, &a, &idx).unwrap(), 1, "hop 2: B imports it from relay A");
+
+    // B -> D: the chunk B forwards must carry C's ORIGINAL source and its record id,
+    // even though B got it from A (not C).
+    let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    sync_stores_authorized(&mut b, &idx, &mut d, &idx, |_relay, env| {
+        seen.push((env.origin_source.clone(), env.record_ids.clone()));
+        true
+    })
+    .unwrap();
+
+    assert_eq!(seen.len(), 1, "exactly one chunk staged from B");
+    assert_eq!(
+        seen[0].0.as_deref(),
+        Some("peer:33"),
+        "after two relay hops the chunk is still gated against C (origin), not A or B"
+    );
+    assert!(
+        seen[0].1.iter().any(|r| r == "c1"),
+        "the record id c1 survives both relay hops: {seen:?}"
+    );
+}
+
+#[test]
+fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
+    // review 092 #1 (fail-closed twin): a relayed chunk whose `record.remote_import`
+    // oplog row names NO recoverable original `source` must NOT be attributed to the
+    // relay. It is staged `malformed` so the apply boundary denies it fail-closed —
+    // a relay cannot launder a write whose author it cannot prove by having the
+    // receiver fall back to the relay's own (trusted) identity.
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut relay = Store::open_in_memory().unwrap().with_crdt_peer_id(33);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // An author writes a well-formed `collection/tasks` chunk (so the DOC ID is fine;
+    // only the provenance is at issue).
+    author
+        .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "from-author"}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("tasks");
+    let staged: Vec<RemoteChunk> = author
+        .get_chunks(&doc_id)
+        .unwrap()
+        .into_iter()
+        .map(|c| RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: exchanged_chunk_id(&c.format, &c.payload),
+            format: c.format,
+            payload: c.payload,
+            author_actor_id: None,
+            record_ids: Vec::new(),
+        })
+        .collect();
+    // The relay imports the chunk with an EMPTY source string: its `record.remote_import`
+    // oplog row records `"source": ""`, which `oplog_index` treats as UNRECOVERABLE
+    // provenance (a relayed chunk whose author was lost), distinct from a local write.
+    relay.apply_remote_chunks(&staged, "", &idx).unwrap();
+
+    // Stage relay -> receiver. The chunk's origin row is a remote-import with an empty
+    // source, so the envelope MUST be flagged malformed (fail closed). A deny-on-
+    // malformed gate skips it; the receiver imports nothing.
+    let mut seen: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env| {
+        seen.push((env.collection.clone(), env.origin_source.clone(), env.malformed.clone()));
+        env.malformed.is_none()
+    })
+    .unwrap();
+
+    assert_eq!(report.chunks_denied, 1, "the unrecoverable-origin chunk is denied");
+    assert_eq!(seen.len(), 1, "exactly one chunk staged");
+    assert!(seen[0].1.is_none(), "no original author was recovered: {seen:?}");
+    assert!(
+        seen[0]
+            .2
+            .as_deref()
+            .map(|m| m.contains("no recoverable original author"))
+            .unwrap_or(false),
+        "the forwarded chunk with no usable source is flagged malformed: {seen:?}"
+    );
+    assert!(
+        receiver.get_record("tasks", "t1").unwrap().is_none(),
+        "the relay could not launder the sourceless chunk into the receiver"
+    );
 }
 
 #[test]

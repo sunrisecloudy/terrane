@@ -518,7 +518,9 @@ impl Store {
 }
 
 /// One chunk handed to [`Store::apply_remote_chunks`]: the receiving-store chunk id
-/// (content-addressed by the sync seam) plus the immutable `(format, payload)`.
+/// (content-addressed by the sync seam) plus the immutable `(format, payload)` and
+/// the ORIGINAL-author provenance the import must persist so a later relay hop can
+/// recover it (`review 092 #1`).
 #[derive(Debug, Clone)]
 pub struct RemoteChunk {
     /// The `doc_id` the chunk belongs to (`collection/<name>`).
@@ -530,6 +532,20 @@ pub struct RemoteChunk {
     pub format: String,
     /// The opaque immutable Loro update bytes.
     pub payload: Vec<u8>,
+    /// The chunk's ORIGINAL author, when known to differ from the importing
+    /// `source`. `Some(peer:<id>)` when the chunk was itself FORWARDED (the sender
+    /// only relayed it and recovered the original author from its own provenance);
+    /// `None` when the importing `source` IS the author (a first-hop import of a
+    /// locally-authored chunk). The remote-import oplog row records this original
+    /// author as its `source`, so a peer that re-exports this chunk preserves the
+    /// true author across the next hop rather than overwriting it with itself.
+    pub author_actor_id: Option<String>,
+    /// The record ids the chunk touched, recovered from the origin's op metadata.
+    /// Preserved into the remote-import oplog row so a later hop's authorization
+    /// envelope still names a concrete record (the SS-7 resource gate / `review
+    /// 092 #2` envelope-metadata check), instead of failing closed on a forwarded
+    /// chunk whose record identity was dropped at import.
+    pub record_ids: Vec<String>,
 }
 
 /// Import ONE remote chunk inside an open transaction: append-only insert into
@@ -544,7 +560,7 @@ fn import_remote_chunk_tx(
     chunk: &RemoteChunk,
     source: &str,
 ) -> Result<bool> {
-    let RemoteChunk { doc_id, chunk_id, format, payload } = chunk;
+    let RemoteChunk { doc_id, chunk_id, format, payload, author_actor_id, record_ids } = chunk;
     let existing: Option<(String, Vec<u8>)> = tx
         .query_row(
             "SELECT format, payload FROM crdt_chunks WHERE doc_id = ?1 AND chunk_id = ?2",
@@ -572,19 +588,30 @@ fn import_remote_chunk_tx(
     // One oplog row in the SAME transaction, tagged remote (DL-4 parity). op_id
     // mirrors the local path: `(doc_id)#(chunk_id)`, unique because chunk ids are
     // unique per doc. The lamport is derived from a local `chunk-NNNN` id, else 0.
+    //
+    // The recorded `source` is the chunk's ORIGINAL author: `author_actor_id` when
+    // the chunk was itself forwarded (the importing `source` is only a relay that
+    // recovered the real author from its provenance), else the importing `source`
+    // (a first-hop import of a locally-authored chunk, where the source IS the
+    // author). Persisting the original author — together with the touched
+    // `record_ids` — means a peer that later re-exports this chunk preserves the true
+    // author and record identity across the next relay hop, so the receiver still
+    // gates the ORIGINAL actor and names a concrete record (`review 092 #1/#2`).
     let op_id = format!("{doc_id}#{chunk_id}");
     let lamport = chunk_id_lamport(chunk_id);
+    let original_author = author_actor_id.as_deref().unwrap_or(source);
     let op_payload = serde_json::to_vec(&serde_json::json!({
         "doc_id": doc_id,
         "chunk_id": chunk_id,
         "kind": "record.remote_import",
-        "source": source,
+        "source": original_author,
+        "record_ids": record_ids,
     }))
     .map_err(|e| map_json("remote oplog payload encode", e))?;
     append_op_tx(
         tx,
         &op_id,
-        source,
+        original_author,
         "remote",
         lamport,
         "record.remote_import",
@@ -938,6 +965,8 @@ mod tests {
             chunk_id: c.chunk_id,
             format: c.format,
             payload: c.payload,
+            author_actor_id: None,
+            record_ids: Vec::new(),
         }
     }
 
@@ -974,6 +1003,62 @@ mod tests {
         assert_eq!(again, 0, "re-applying a present chunk imports nothing");
         assert_eq!(total_chunk_rows(&dst), 1, "no duplicate chunk row");
         assert_eq!(dst.list_ops().unwrap().len(), 1, "no duplicate oplog row");
+    }
+
+    #[test]
+    fn forwarded_chunk_import_preserves_original_author_and_record_ids() {
+        // review 092 #1/#2: when a chunk is FORWARDED (the importing `source` is only a
+        // relay), the remote-import oplog row must record the chunk's ORIGINAL author —
+        // carried in `RemoteChunk::author_actor_id` — and the touched `record_ids`, NOT
+        // the importing relay's source. This is what lets a later hop's authorization
+        // gate against the original actor and still name a concrete record.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let mut chunk = one_chunk(&src, &doc_id);
+        // Mark the chunk as forwarded: its original author is peer:C, and it touched t1.
+        chunk.author_actor_id = Some("peer:C".to_string());
+        chunk.record_ids = vec!["t1".to_string()];
+
+        let mut relay = store();
+        // The importing source is the RELAY (peer:A), distinct from the original author.
+        relay
+            .apply_remote_chunks(std::slice::from_ref(&chunk), "peer:A", &idx)
+            .unwrap();
+
+        let ops = relay.list_ops().unwrap();
+        assert_eq!(ops.len(), 1);
+        let op = &ops[0];
+        assert_eq!(op.kind, "record.remote_import");
+        // The oplog attributes the ORIGINAL author, not the relay (peer:A).
+        assert_eq!(op.actor_id, "peer:C", "the import preserves the ORIGINAL author");
+        let payload: serde_json::Value = serde_json::from_slice(&op.payload).unwrap();
+        assert_eq!(payload["source"], json!("peer:C"), "payload source is the original author");
+        assert_eq!(payload["record_ids"], json!(["t1"]), "the touched record id is preserved");
+    }
+
+    #[test]
+    fn first_hop_import_attributes_the_importing_source_as_author() {
+        // The non-forwarded control: a chunk with no `author_actor_id` is a first-hop
+        // import where the importing `source` IS the author. The oplog records that
+        // source (unchanged behavior), so the provenance change does not regress the
+        // direct-import path.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t9", json!({"title": "X"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let chunk = one_chunk(&src, &doc_id); // author_actor_id: None
+
+        let mut dst = store();
+        dst.apply_remote_chunks(std::slice::from_ref(&chunk), "peer:origin", &idx)
+            .unwrap();
+        let ops = dst.list_ops().unwrap();
+        assert_eq!(ops[0].actor_id, "peer:origin", "first-hop import attributes its source");
+        let payload: serde_json::Value = serde_json::from_slice(&ops[0].payload).unwrap();
+        assert_eq!(payload["source"], json!("peer:origin"));
     }
 
     /// Review 088 #1 (P2): a remote apply that inserts chunks and THEN fails during
@@ -1018,6 +1103,8 @@ mod tests {
             chunk_id: "sha256:deadbeef".to_string(),
             format: CHUNK_FORMAT.to_string(),
             payload: vec![0xde, 0xad, 0xbe, 0xef],
+            author_actor_id: None,
+            record_ids: Vec::new(),
         };
 
         let err = dst
