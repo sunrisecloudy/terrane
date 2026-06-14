@@ -67,6 +67,13 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         // event SESSION (UI-4/CR-6): it replays [initial run + N dispatched events]
         // as one unit, so it carries the same roles as `runtime.replay`.
         "runtime.replay_session" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
+        // Reading the durable SC-12 audit log is a PRIVILEGED oversight read
+        // (`forge/spec/audit-log.md`): the audit trail records every security
+        // decision (who did what, allow/deny), so it carries the same audit/
+        // oversight roles as `runtime.replay` — Owner, Maintainer, Auditor. A
+        // data-only Editor/Viewer or an execution-only Runner cannot read the
+        // security trail; the denial itself lands a command-RBAC audit row.
+        "audit.query" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
         // Reading the records projection requires a read-capable role (db.read).
         "query.execute" => Some(&[
             Role::Owner,

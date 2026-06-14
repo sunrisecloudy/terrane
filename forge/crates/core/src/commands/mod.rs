@@ -14,6 +14,7 @@
 //!   - [`schema`] — `schema.apply_change` / `validate_compatibility` /
 //!     `rebuild_indexes` (DL-7/DL-8 → DL-5);
 //!   - [`query`] — `query.execute`;
+//!   - [`audit`] — `audit.query` (the privileged READ over the SC-12 audit log);
 //!   - [`workspace_export`] — `workspace.export` / `workspace.import` (DL-24).
 //!
 //! Every handler is an `impl WorkspaceCore` method (or a free fn over its state),
@@ -27,6 +28,7 @@ use forge_domain::{AppletId, CoreCommand, CoreError, Result};
 use super::WorkspaceCore;
 
 pub(super) mod applet;
+pub(super) mod audit;
 pub(super) mod lifecycle;
 pub(super) mod query;
 pub(super) mod replay;
@@ -73,6 +75,11 @@ const COMMANDS: &[(&str, Handler)] = &[
     ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),
     ("ui.dispatch_event", WorkspaceCore::cmd_ui_dispatch_event),
     ("query.execute", WorkspaceCore::cmd_query_execute),
+    // The privileged READ over the SC-12 durable audit log (commands/audit.rs):
+    // return the redacted, append-only rows matching the payload filter, ordered by
+    // seq. Gated to the oversight roles in `auth.rs` (reading the security trail is
+    // privileged); a role-denied `audit.query` itself lands a command-RBAC audit row.
+    ("audit.query", WorkspaceCore::cmd_audit_query),
     // Live queries (DL-16, commands/watch.rs): register/cancel a reactive
     // `db.watch` over a row query. Registration carries the same collection-scoped
     // `db.read` grant as `query.execute`; `db.unwatch` is idempotent.

@@ -19,6 +19,7 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 | schema.validate_compatibility | base_version?, proposed changes[] | ok, warnings/errors | Owner, Maintainer, Editor, Auditor | M0a | CR-A2, DL-8 |
 | schema.rebuild_indexes | collection?, index_ids? | rebuild report | Owner, Maintainer | later | CR-A2, DL-5 |
 | query.execute | collection, filter/order/limit or typed query | rows, cursor?, warnings | Role plus db.read capability | M0b | CR-A2, DL-15 |
+| audit.query | filter? (actor_id, action, decision, resource_type, resource_id, collection, seq/logical_time range) | rows (redacted audit_log records, seq-ordered) | Owner, Maintainer, Auditor | M0b | CR-A2, SC-12 |
 | record.put | collection, id?, fields | record envelope | Role plus db.write capability | M0a | CR-A2, DL-4 |
 | record.patch | collection, id, patch fields | record envelope | Role plus db.write capability | M0a | CR-A2, DL-9 |
 | record.delete | collection, id | tombstone/op id | Role plus db.write capability | M0b | CR-A2 |
