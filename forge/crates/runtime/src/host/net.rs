@@ -119,16 +119,23 @@ impl HostContext<'_> {
                 CoreError::RuntimeError(format!("net.fetch response serialize failed: {e}"))
             })
         })?;
-        // On REPLAY the recorder serves the recorded response. A response-leg
-        // denial was REDACTED into `{"denied": <CoreError>}` (step 5 below /
-        // `redact_last_response`), so the recorded entry for a denied fetch is that
-        // shape — NOT a `NetResponse`. Reconstruct the original denial here and
-        // surface it, so replay reports the SAME error byte-identically instead of
-        // failing to decode the redacted entry as a `NetResponse` (review 077). A
-        // real recorded response is a full `NetResponse` (always carries `status`),
-        // so a lone `"denied"` key is unambiguously the redaction shape.
+        // On REPLAY the recorder serves the recorded response. A denied fetch was
+        // REDACTED into a denial-shaped entry (`record_denial` for a request-gate
+        // deny, `redact_last_response` for the response-leg deny in step 5 below),
+        // so the recorded entry for a denied fetch is that shape — NOT a
+        // `NetResponse`. Reconstruct the original denial here and surface it, so
+        // replay reports the SAME error byte-identically instead of failing to
+        // decode the redacted entry as a `NetResponse` (review 077). A real recorded
+        // response is a full `NetResponse` (always carries `status`); the redaction
+        // shape carries a `denied` key plus AT MOST a non-sensitive `secret_injected`
+        // marker (review 153), and never a `status`. So a `denied` key without a
+        // `status` is unambiguously the redaction shape (a `NetResponse` could not
+        // produce it).
         if let Some(denied) = response_json.get("denied") {
-            if response_json.as_object().is_some_and(|o| o.len() == 1) {
+            let is_denial_shape = response_json
+                .as_object()
+                .is_some_and(|o| !o.contains_key("status"));
+            if is_denial_shape {
                 let err: CoreError = serde_json::from_value(denied.clone()).map_err(|e| {
                     CoreError::RuntimeError(format!(
                         "net.fetch recorded denial decode failed: {e}"
@@ -166,7 +173,16 @@ impl HostContext<'_> {
         //    the request's `secret_ref` (never a resolved value).
         let response_policy_request = to_response_policy_request(&request, &response);
         if let Err(net_err) = NetPolicy::new(&self.net_allowlist).check(&response_policy_request) {
-            self.recorder.redact_last_response(&net_err);
+            // Review 153: by here the request's secret_ref headers were already
+            // RESOLVED and SENT over the wire (step 4 resolved them inside the
+            // closure, before this response-leg check). A secret that crossed the
+            // trust boundary must still be auditable, so mark the redaction with the
+            // non-sensitive fact that injection happened — the audit builder emits a
+            // `secret.use` row for it even though the call is denied here. The marker
+            // carries no secret value; it only records THAT a secret_ref header was
+            // present (and therefore injected) on this request.
+            let secret_injected = request_carries_secret_ref(&request);
+            self.recorder.redact_last_response(&net_err, secret_injected);
             return Err(net_err);
         }
 
@@ -213,6 +229,19 @@ fn to_policy_request(request: &NetRequest) -> forge_policy::NetRequest {
             .collect(),
         ..Default::default()
     }
+}
+
+/// Whether `request` carries at least one `secret_ref` header (review 153). On a
+/// response-leg denial the secret_ref headers have already been resolved and sent
+/// over the wire (`resolve_secret_headers` ran inside the `host_call` closure), so
+/// a secret DID cross the trust boundary and must still be audited as a
+/// `secret.use`. This inspects the ORIGINAL (recorded-shape) request, whose headers
+/// still carry `{ secret_ref }` (never a resolved value), so it leaks nothing.
+fn request_carries_secret_ref(request: &NetRequest) -> bool {
+    request
+        .headers
+        .values()
+        .any(|v| matches!(v, NetHeaderValue::Secret { .. }))
 }
 
 /// Header names treated as secret-bearing for trace redaction. Mirrors the
@@ -1112,11 +1141,66 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "PermissionDenied");
         let (recorder, _logs) = host.finish();
-        let trace = serde_json::to_string(&recorder.into_calls()).unwrap();
+        let calls = recorder.into_calls();
+        let trace = serde_json::to_string(&calls).unwrap();
         // The secret_ref survives (the request was recorded) but neither the
         // resolved value nor the rejected response body persists.
         assert!(trace.contains("secret_ref"), "trace must keep the secret_ref: {trace}");
         assert!(!trace.contains("SECRET-XYZ"), "trace leaked the secret value: {trace}");
         assert!(!trace.contains("REJECTED-BODY"), "trace persisted the rejected body: {trace}");
+        // Review 153: the response-leg denial that ALREADY injected the secret stamps
+        // the non-sensitive `secret_injected` marker on the redacted response, so the
+        // audit builder can still mint the `secret.use` row. The marker is a bare
+        // boolean — it carries no secret value.
+        assert_eq!(calls.len(), 1);
+        let response = &calls[0].response;
+        assert!(response.get("denied").is_some(), "denied-shaped: {response}");
+        assert_eq!(
+            response.get("secret_injected").and_then(|v| v.as_bool()),
+            Some(true),
+            "an injected secret must be marked on the response-leg denial: {response}"
+        );
+        assert!(response.get("status").is_none(), "denial shape has no status: {response}");
+    }
+
+    /// Review 153: a request-gate denial (the secret_ref header is NOT allowlisted)
+    /// never resolves or sends the secret, so its redacted response carries NO
+    /// `secret_injected` marker — the audit builder must NOT mint a `secret.use` row
+    /// for it. This guards the marker against false positives on the request-gate
+    /// denial path (which uses `record_denial`, never `redact_last_response`).
+    #[test]
+    fn request_gate_denial_does_not_mark_secret_injected() {
+        // The rule allowlists "Authorization" but the request smuggles the secret on
+        // a NON-allowlisted header, so the call gate denies before any send.
+        let manifest = manifest_with_net(
+            NetGrant(vec![secret_rule("https://api.example.com/private/*", "Authorization")]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let secrets = InMemorySecretStore::new().with_secret("tok", "Bearer SECRET-XYZ");
+        let mut bridge = MemoryHostBridge::with_http_and_secrets(
+            Box::new(MockHttpClient::canned()),
+            secrets,
+        );
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(secret_req("https://api.example.com/private/me", "X-Api-Key", "tok"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        let (recorder, _logs) = host.finish();
+        let calls = recorder.into_calls();
+        assert_eq!(calls.len(), 1);
+        let response = &calls[0].response;
+        assert!(response.get("denied").is_some(), "denied-shaped: {response}");
+        assert!(
+            response.get("secret_injected").is_none(),
+            "a request-gate denial sent nothing — no secret_injected marker: {response}"
+        );
     }
 }

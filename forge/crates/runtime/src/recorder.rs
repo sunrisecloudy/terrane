@@ -354,12 +354,27 @@ impl RunRecorder {
     /// secret_ref still appears in the trace while the response becomes
     /// `{"denied": <CoreError JSON>}` — identical in shape to a call-gate denial.
     ///
+    /// `secret_injected` (review 153) distinguishes a response-leg denial from a
+    /// request-gate denial: by the time this runs, the secret_ref headers were
+    /// already RESOLVED and SENT over the wire (`net.rs` resolves them inside the
+    /// `host_call` closure, then the response-leg policy runs). A request-gate
+    /// denial (`record_denial`) never sent anything. When `true`, a NON-SENSITIVE
+    /// `secret_injected: true` marker is preserved alongside `denied` so the audit
+    /// builder can still emit the `secret.use` row for a secret that DID cross the
+    /// trust boundary — it carries no value, only the boolean fact that injection
+    /// happened. When `false` the shape stays the single-key `{"denied": …}` form,
+    /// byte-identical to a call-gate denial (no marker to perturb existing traces).
+    ///
     /// No-op if there is no produced call yet. In replay mode the recorded entry
     /// is already denial-shaped (it was recorded redacted), so calling this again
     /// just rewrites it to the same denial shape — idempotent.
-    pub fn redact_last_response(&mut self, error: &CoreError) {
+    pub fn redact_last_response(&mut self, error: &CoreError, secret_injected: bool) {
         if let Some(last) = self.produced.last_mut() {
-            last.response = serde_json::json!({ "denied": error });
+            last.response = if secret_injected {
+                serde_json::json!({ "denied": error, "secret_injected": true })
+            } else {
+                serde_json::json!({ "denied": error })
+            };
         }
     }
 

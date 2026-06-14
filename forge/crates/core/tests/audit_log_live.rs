@@ -543,6 +543,27 @@ const DENIED_EGRESS_TS: &str = r#"
     }
 "#;
 
+/// Like [`EGRESS_TS`] (POSTs to the ALLOWLISTED `api.example.com` with a `secret_ref`
+/// Authorization header) but CATCHES the response-leg denial so the run still
+/// completes. The request gate passes (host allowlisted), the secret is injected and
+/// sent, and the response-leg redirect re-check then denies — review 153's path.
+const DENIED_RESP_EGRESS_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        try {
+            await ctx.net.fetch({
+                method: "POST",
+                url: "https://api.example.com/v1/leads",
+                contentType: "application/json",
+                headers: { "Authorization": { secret_ref: "secret_crm" } },
+                body: JSON.stringify({ name: "Ada", email: "ada@example.com" })
+            });
+            return { ok: true, value: { sent: true } };
+        } catch (e) {
+            return { ok: true, value: { sent: false } };
+        }
+    }
+"#;
+
 #[test]
 fn denied_egress_persists_deny_row_and_no_allow_rows_through_live_run() {
     // Review 151 (deny classification): a `ctx.net.fetch` the SC-5 egress policy
@@ -632,6 +653,105 @@ fn denied_egress_persists_deny_row_and_no_allow_rows_through_live_run() {
         .join("\n");
     for leak in ["super-secret-token", "Ada", "ada@example.com"] {
         assert!(!raw.contains(leak), "a denied-egress audit row leaks {leak}: {raw}");
+    }
+}
+
+#[test]
+fn redirect_after_secret_injection_denied_trace_safe() {
+    // Review 153 (response-leg secret-use under-recording). Distinct from the
+    // request-gate denial above: here the request IS allowlisted, so the SC-13
+    // secret_ref Authorization header is RESOLVED and SENT over the wire — and only
+    // THEN does the response-leg policy DENY the fetch (the transport followed a
+    // redirect to an UNALLOWLISTED host). The secret already crossed the trust
+    // boundary, so the live `runtime.run` egress audit must:
+    //   * emit a `network.egress` DENY row (the egress was denied on the response leg),
+    //   * AND STILL emit a `secret.use` ALLOW row (the secret was injected/used),
+    //     carrying ONLY the secret_ref id — never the resolved value or the response.
+    // Under-recording the secret.use (the pre-153 bug) would hide a secret that was
+    // actually sent. Mis-classification is NOT at issue: the network denial stays a
+    // `deny` row, never an `allow`.
+    let mut core = WorkspaceCore::in_memory("ws-egress-resp-deny").unwrap();
+    // A response that LANDED on an unallowlisted host (a followed redirect). The
+    // request host is allowlisted, so the request gate passes, the secret is sent,
+    // and the response-leg redirect re-check then denies — after injection.
+    let response = NetResponse {
+        status: 200,
+        body: Some(r#"{"id":"lead-1"}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        final_url: Some("https://evil.example.net/v1/collect".to_string()),
+        redirect_chain: vec![
+            "https://api.example.com/v1/leads".to_string(),
+            "https://evil.example.net/v1/collect".to_string(),
+        ],
+        ..Default::default()
+    };
+    core.set_http_client_factory(move || Box::new(CannedClient { response: response.clone() }));
+    core.set_secret_store_factory(|| {
+        Box::new(InMemorySecretStore::from_pairs([("secret_crm", "Bearer super-secret-token")]))
+    });
+
+    // The allowed-host applet (EGRESS_TS POSTs to api.example.com, which the manifest
+    // allowlists) — so the request gate passes and the secret is injected before the
+    // response-leg redirect denial.
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "app.crm",
+        json!({ "manifest": egress_manifest(), "sources": { "src/main.ts": DENIED_RESP_EGRESS_TS } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+    let run = core.handle(owner_cmd("runtime.run", "app.crm", json!({ "input": {} })));
+    assert!(run.ok, "run completes (the applet caught the denial): {:?}", run.error);
+
+    // A `network.egress` DENY row was written (the response-leg redirect was denied).
+    let deny_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_decision("deny"))
+        .unwrap();
+    assert_eq!(deny_rows.len(), 1, "exactly one network.egress deny row: {deny_rows:?}");
+    assert_eq!(deny_rows[0].producer, "net");
+    assert_eq!(deny_rows[0].action, "network.egress");
+
+    // NO allow network.egress row — the fetch was denied, not approved.
+    let allow_egress = core
+        .store()
+        .query_audit(&AuditQuery::by_action("network.egress"))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.decision == "allow")
+        .count();
+    assert_eq!(allow_egress, 0, "a response-leg-denied fetch mints no allow egress row");
+
+    // THE FIX: a `secret.use` ALLOW row WAS written — the secret was injected and sent
+    // over the wire before the response was denied, so its use must be auditable.
+    let secret_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap();
+    assert_eq!(
+        secret_rows.len(),
+        1,
+        "an injected secret must mint a secret.use row even when the response is denied: {secret_rows:?}"
+    );
+    let row = &secret_rows[0];
+    assert_eq!(row.producer, "secrets");
+    assert_eq!(row.decision, "allow");
+    assert_eq!(row.resource_type, "secret");
+    assert_eq!(row.resource_id.as_deref(), Some("secret_crm"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("secret_ref").unwrap(), "secret_crm");
+    assert_eq!(meta.get("target_header").unwrap(), "Authorization");
+    assert_eq!(meta.get("value_redacted").unwrap(), &json!(true));
+
+    // REDACTION (trace-safe): no persisted row leaks the resolved secret value, the
+    // rejected response body, or the request body PII.
+    let all = core.store().query_audit(&AuditQuery::default()).unwrap();
+    let raw: String = all
+        .iter()
+        .map(|r| format!("{}\n{}", r.reason, serde_json::to_string(&r.metadata).unwrap()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for leak in ["super-secret-token", "Ada", "ada@example.com", "lead-1"] {
+        assert!(!raw.contains(leak), "a response-leg-denied audit row leaks {leak}: {raw}");
     }
 }
 

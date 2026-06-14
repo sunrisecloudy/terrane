@@ -338,16 +338,14 @@ impl WorkspaceCore {
             let (scheme, host, path) = split_url(url);
 
             // DENY classification (review 151). The recorder stores a host call the
-            // policy DENIED before/around the bridge as `{"denied": <CoreError>}` (a
-            // non-allowlisted fetch, a forbidden secret header, a response-leg cap
-            // violation — `runtime/src/recorder.rs::record_denial` /
-            // `redact_last_response`). Such a fetch NEVER reached the live network and
-            // was NEVER approved, so it must NOT mint `allow` `network.egress`/
-            // `secret.use` rows nor default its status to `0/allow`. Instead emit a
-            // SINGLE `network.egress` `deny` row carrying the denial reason (the
-            // request's `secret_ref` headers are still withheld — no value is present
-            // to leak, and a denied fetch resolved no secret), so a forbidden egress
-            // is auditable AS a denial rather than persisted as an approval.
+            // policy DENIED before/around the bridge as a denial-shaped entry (a
+            // non-allowlisted fetch, a forbidden secret header, a response-leg cap/
+            // redirect/DNS violation — `runtime/src/recorder.rs::record_denial` /
+            // `redact_last_response`). Such a fetch was NEVER approved, so it must NOT
+            // mint an `allow` `network.egress` row nor default its status to
+            // `0/allow`. Emit a SINGLE `network.egress` `deny` row carrying the denial
+            // reason instead, so a forbidden egress is auditable AS a denial rather
+            // than persisted as an approval.
             if let Some(reason) = denied_reason(&call.response) {
                 rows.push(self.build_producer_audit_record(
                     "network.egress.denied",
@@ -373,6 +371,23 @@ impl WorkspaceCore {
                         "path": path,
                     }),
                 ));
+                // Review 153: a RESPONSE-LEG denial had already RESOLVED and SENT the
+                // request's secret_ref headers over the wire BEFORE the response-leg
+                // policy denied (`redact_last_response` stamps `secret_injected`). The
+                // secret CROSSED the trust boundary, so it must still be audited as a
+                // `secret.use` — under-recording it would hide a real secret use. A
+                // request-gate denial sends nothing and sets no marker, so it mints no
+                // secret.use row (the secret never left the host). The row records the
+                // secret_ref id only (the value never persists).
+                if denied_after_secret_injection(&call.response) {
+                    self.push_secret_use_rows(
+                        &mut rows,
+                        applet_id,
+                        &actor_id,
+                        request,
+                        &host,
+                    );
+                }
                 continue;
             }
 
@@ -385,41 +400,8 @@ impl WorkspaceCore {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            // One secret.use row PER secret_ref header the request carried. The trace
-            // holds the secret_ref name only; we pass `value_redacted` so the row
-            // records that a value was withheld (no value is present to redact).
-            if let Some(headers) = request.get("headers").and_then(|v| v.as_object()) {
-                for (header_name, header_value) in headers {
-                    let secret_ref = header_value
-                        .get("secret_ref")
-                        .and_then(|v| v.as_str());
-                    if let Some(secret_ref) = secret_ref {
-                        rows.push(self.build_producer_audit_record(
-                            "secret.used",
-                            serde_json::json!({
-                                "decision": "allow",
-                                "applet_id": applet_id,
-                                "actor_id": actor_id,
-                                "secret_ref": secret_ref,
-                            }),
-                            "secrets",
-                            "secret.use",
-                            "allow",
-                            actor_id.clone(),
-                            "secret",
-                            Some(secret_ref.to_string()),
-                            None,
-                            "secret_ref injected into allowlisted header",
-                            serde_json::json!({
-                                "secret_ref": secret_ref,
-                                "target_host": host,
-                                "target_header": header_name,
-                                "value_redacted": true,
-                            }),
-                        ));
-                    }
-                }
-            }
+            // One secret.use row PER secret_ref header the request carried.
+            self.push_secret_use_rows(&mut rows, applet_id, &actor_id, request, &host);
 
             // One network.egress row for the fetch. The request/response BODIES are
             // handed in raw and DROPPED by the persistence redaction layer (no body is
@@ -459,6 +441,59 @@ impl WorkspaceCore {
         rows
     }
 
+    /// Append one `secret.use` `allow` row PER `secret_ref` header a `net.fetch`
+    /// request carried, into `rows`. Shared by the ALLOWED-fetch path and the
+    /// review-153 response-leg-denial path (where the secret was already injected and
+    /// sent before the response was denied), so both record a secret use identically.
+    ///
+    /// The recorded trace holds only the `secret_ref` NAME (the resolved value is
+    /// injected at the HTTP edge and never recorded), so the row records just the ref
+    /// id plus a `value_redacted` marker — no secret value is present to leak. The
+    /// row is `decision="allow"` because the SECRET ITSELF was permitted and used
+    /// (the policy allowlisted the header); any later network denial is a separate
+    /// `network.egress` `deny` row, not a re-judgement of the secret.
+    fn push_secret_use_rows(
+        &mut self,
+        rows: &mut Vec<forge_storage::AuditRecord>,
+        applet_id: &str,
+        actor_id: &str,
+        request: &serde_json::Value,
+        host: &str,
+    ) {
+        let Some(headers) = request.get("headers").and_then(|v| v.as_object()) else {
+            return;
+        };
+        for (header_name, header_value) in headers {
+            let Some(secret_ref) = header_value.get("secret_ref").and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            rows.push(self.build_producer_audit_record(
+                "secret.used",
+                serde_json::json!({
+                    "decision": "allow",
+                    "applet_id": applet_id,
+                    "actor_id": actor_id,
+                    "secret_ref": secret_ref,
+                }),
+                "secrets",
+                "secret.use",
+                "allow",
+                actor_id.to_string(),
+                "secret",
+                Some(secret_ref.to_string()),
+                None,
+                "secret_ref injected into allowlisted header",
+                serde_json::json!({
+                    "secret_ref": secret_ref,
+                    "target_host": host,
+                    "target_header": header_name,
+                    "value_redacted": true,
+                }),
+            ));
+        }
+    }
+
     /// Emit a `runtime.run.rejected` audit event for a run denied by the lifecycle
     /// gate BEFORE any user code ran (CR-7). Carries the stable lifecycle
     /// `error_code` marker plus the typed error message so a host/auditor can react
@@ -483,19 +518,22 @@ impl WorkspaceCore {
 }
 
 /// Classify a recorded `net.fetch` response as a policy DENIAL (review 151).
-/// The recorder stores a host call rejected by policy as `{"denied": <CoreError>}`
-/// (`runtime/src/recorder.rs::record_denial` / `redact_last_response`); a real
-/// served response is a full `NetResponse` (always carrying a numeric `status`), so
-/// a lone `denied` key is unambiguously the denial shape. Returns the denial reason
-/// (`"<Code>: <message>"`) when the call was denied, else `None` for an allowed
-/// fetch. The reason is reconstructed from the recorded `CoreError` when it decodes,
-/// else degrades to a generic marker (the row still records that the fetch was
-/// denied), and never carries a body — the recorder already redacted the response.
+/// The recorder stores a host call rejected by policy as a denial-shaped entry
+/// (`runtime/src/recorder.rs::record_denial` / `redact_last_response`): a `denied`
+/// key, plus AT MOST a non-sensitive `secret_injected` marker (review 153), and
+/// never a `status`. A real served response is a full `NetResponse` (always
+/// carrying a numeric `status`), so a `denied` key with no `status` is unambiguously
+/// the denial shape. Returns the denial reason (`"<Code>: <message>"`) when the call
+/// was denied, else `None` for an allowed fetch. The reason is reconstructed from
+/// the recorded `CoreError` when it decodes, else degrades to a generic marker (the
+/// row still records that the fetch was denied), and never carries a body — the
+/// recorder already redacted the response.
 fn denied_reason(response: &serde_json::Value) -> Option<String> {
-    // A lone `denied` key (an object of exactly one entry) is the redaction shape; a
-    // real `NetResponse` always carries more fields (at least `status`), so it never
-    // matches here.
-    if response.as_object().is_none_or(|o| o.len() != 1) {
+    // The denial shape carries `denied` and never a `status`; a real `NetResponse`
+    // always carries `status`, so it never matches here. (A response-leg denial that
+    // injected a secret additionally carries a `secret_injected` marker — still no
+    // `status` — so it is still classified as a denial.)
+    if response.as_object().is_none_or(|o| o.contains_key("status")) {
         return None;
     }
     let denied = response.get("denied")?;
@@ -504,6 +542,20 @@ fn denied_reason(response: &serde_json::Value) -> Option<String> {
         Err(_) => "network egress denied by policy".to_string(),
     };
     Some(reason)
+}
+
+/// Whether a denial-shaped recorded `net.fetch` response was a RESPONSE-LEG denial
+/// that had already RESOLVED and SENT the request's `secret_ref` headers over the
+/// wire (review 153). `redact_last_response` stamps the non-sensitive
+/// `secret_injected: true` marker in that case (a request-gate denial sends nothing
+/// and never sets it). When true, the secret crossed the trust boundary and must
+/// still be audited as a `secret.use`, even though the call was denied on the
+/// response leg. The marker is a bare boolean — it carries no secret value.
+fn denied_after_secret_injection(response: &serde_json::Value) -> bool {
+    response
+        .get("secret_injected")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Split an absolute request URL into `(scheme, host, path)` for the SC-12
