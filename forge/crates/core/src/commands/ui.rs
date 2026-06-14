@@ -395,7 +395,11 @@ impl WorkspaceCore {
             let error = error.clone();
             self.store_run_program(run.run_id.as_str(), &installed)?;
             self.store_program(&installed)?;
-            self.store.save_run(&run)?;
+            // DL-22: the failed-dispatch run record is persisted under the run_logs cap
+            // gate (review 177 P1) — a record whose bytes would exceed the cap is
+            // rejected (reject-not-delete) rather than appended beyond the limit.
+            self.store
+                .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
             // The event carries BOTH the typed `CoreError` (for transport/audit)
             // AND the renderer-facing T034 code (`ui.action_not_found` for an
             // unknown handler, `runtime.handler_error` for a handler throw), so a
@@ -431,7 +435,11 @@ impl WorkspaceCore {
                     // prior view); treat it as an empty-patch no-op over an empty base.
                     self.store_run_program(run.run_id.as_str(), &installed)?;
                     self.store_program(&installed)?;
-                    self.store.save_run(&run)?;
+                    // DL-22: the no-op dispatch run record is persisted under the
+                    // run_logs cap gate (review 177 P1) — over-cap ⇒ rejected, not
+                    // appended beyond the limit (reject-not-delete).
+                    self.store
+                        .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
                     return Ok(serde_json::json!({
                         "applet_id": applet_id,
                         "action_ref": action_ref,
@@ -456,9 +464,12 @@ impl WorkspaceCore {
 
         // Pin the per-run replay artifact + persist the recorded run (event in the
         // trace) so the dispatch replays byte-identically, exactly like a run.
+        // DL-22: the run record is persisted under the run_logs cap gate (review 177
+        // P1) — over-cap ⇒ rejected, not appended beyond the limit (reject-not-delete).
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
-        self.store.save_run(&run)?;
+        self.store
+            .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
 
         // Emit the UI patch event — the link the renderer consumes to advance the
         // live tree (UI-1/UI-4).

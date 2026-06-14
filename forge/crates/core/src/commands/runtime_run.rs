@@ -239,10 +239,17 @@ impl WorkspaceCore {
         let simulate_run_save_failure =
             super::test_hooks::simulate_failure_at(cmd, "run.save");
         self.store.transact(|tx| {
-            forge_storage::Store::save_run_tx(tx, &run)?;
+            // Stage the egress audit rows, then persist the run record AND enforce the
+            // DL-22 run_logs cap in one shot (review 177 P1): `save_run_with_quota_tx`
+            // stages `record_json` then recomputes the post-write usage off `tx` — now
+            // reflecting both the run record and the staged audit rows — and rejects a
+            // run whose bytes would push the run_logs category over the trusted cap. A
+            // rejection rolls back the run record AND its egress audit rows
+            // (reject-not-delete) — the cap is no longer report-only.
             for row in &egress_audit.rows {
                 forge_storage::Store::append_audit_tx(tx, row)?;
             }
+            forge_storage::Store::save_run_with_quota_tx(tx, &run)?;
             if simulate_run_save_failure {
                 return Err(CoreError::StorageError(
                     "simulated run-save failure after egress audit rows were appended".into(),

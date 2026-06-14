@@ -179,6 +179,28 @@ so **the prior records and the records usage are byte-for-byte intact and the re
 record never landed** — reject-not-delete, proven LIVE by the
 `over_quota_db_write_rejected_data_intact` vector.
 
+### Enforcement on run-record persistence (the `run_logs` cap)
+
+A run record (`runs.record_json`) is part of the `run_logs` category (§1), so the
+`run_logs_cap` is **enforced on run persistence**, not merely reported. Every
+run-persistence path — `runtime.run`, `ui.dispatch_event`, and the `db.watch` callback
+re-entry — routes its save through `Store::save_run_with_quota_tx`, which STAGES the
+run record inside the caller's transaction and then enforces the `run_logs` cap against
+the **real** post-write usage (the same stage+recompute discipline as the records-write
+gate). Once `run_logs_cap` (which a privileged `quota.set` can tighten) sits below the
+next run record's bytes, the save is **REJECTED** with the typed `ResourceLimitExceeded`
++ the compaction/cleanup/export suggestion; the whole transaction rolls back, so the run
+record (and any same-txn audit rows) never land and the `run_logs` usage never exceeds
+the cap (reject-not-delete). Without this the cap was **report-only**: a tightened cap
+appeared in `quota.status` while later runs kept appending run records beyond it.
+
+The workspace TOTAL is deliberately **not** gated on run persistence: a run that FAILED
+because its `ctx.db` write was rejected at the records boundary is still recorded as
+*failed* (above), and that auditable record of the rejection must survive even when the
+workspace is at `workspace_limit` — gating it on the total would drop the audit trail of
+the very rejection. The `run_logs` cap is the dedicated DL-22 backstop that bounds run
+records.
+
 ### The approaching-limit warning (event + field)
 
 A `ctx.db` write that **fits** but pushes a budget at/above the approaching threshold

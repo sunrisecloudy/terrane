@@ -626,11 +626,15 @@ impl WorkspaceCore {
         drop(bridge);
 
         // Persist the callback's run (replay source) under a unique per-execution id.
+        // DL-22: the callback run record is persisted under the run_logs cap gate
+        // (review 177 P1) — a record whose bytes would exceed the cap is rejected
+        // (reject-not-delete) rather than appended beyond the limit.
         let mut run: RunRecord = run;
         run.run_id = crate::determinism::unique_run_id(&run.code_hash, invocation);
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
-        self.store.save_run(&run)?;
+        self.store
+            .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
 
         // A notification callback re-renders the watching applet's view (the reactive
         // loop's whole point). Emit a `ui.patch` per captured render — the SAME link a

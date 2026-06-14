@@ -24,9 +24,7 @@
 //! usage, with no wall clock on the path, so the report is deterministic.
 
 use forge_domain::{CoreError, Result};
-use forge_storage::{
-    decide_quota, QuotaCategory, QuotaDecision, QuotaPolicy, QuotaScope, QuotaUsage,
-};
+use forge_storage::{QuotaCategory, QuotaPolicy, QuotaScope, QuotaUsage};
 
 use super::super::WorkspaceCore;
 use crate::bridge::QUOTA_APPROACHING_SUGGESTION;
@@ -108,62 +106,75 @@ impl WorkspaceCore {
     }
 }
 
-/// Build the DL-22 approaching-limit warnings for a `quota.status` report: every
-/// budget (workspace, each applet, each category) whose CURRENT usage is at/above the
-/// policy's approaching threshold, with `write_bytes = 0` (the usage is the already-
-/// persisted state). A budget that is OVER its limit (which an in-flight write would
-/// have been rejected for, but a tightened policy can produce against prior data) is
-/// also surfaced as approaching here — `quota.status` is a non-blocking REPORT, not a
-/// write gate, so it never errors; it just flags the budget so the user can act.
+/// Build the DL-22 approaching-limit warnings for a `quota.status` report: a warning
+/// for EVERY budget (the workspace total, each per-applet collection budget, and each
+/// category cap) whose CURRENT usage sits at/above the policy's approaching threshold,
+/// each compared DIRECTLY against its OWN limit (the usage is the already-persisted
+/// state, so `write_bytes = 0`). A budget that is OVER its limit (which an in-flight
+/// write would have been rejected for, but a tightened policy can produce against prior
+/// data) is also surfaced — `quota.status` is a non-blocking REPORT, not a write gate,
+/// so it never errors; it just flags the budget so the user can act.
+///
+/// Review 177 P2: this enumerates EVERY bucket independently rather than asking
+/// `decide_quota` per group — `decide_quota` returns only the FIRST over-cap scope or
+/// the single strongest approaching scope, so simultaneous workspace + category (or
+/// multiple-applet) warnings masked each other. The spec
+/// (`spec/quotas.md` §6) and the command doc promise the report lists ALL of them.
 ///
 /// Deterministic: a pure function of the persisted usage + the trusted policy with no
-/// wall clock, mirroring the live write-path warning the bridge raises.
+/// wall clock. The emit order is stable — workspace, then each applet in `per_applet`
+/// order, then each category in [`QuotaCategory::ALL`] order — so two reads of an
+/// unchanged workspace are byte-equal.
 fn approaching_warnings(usage: &QuotaUsage, policy: &QuotaPolicy) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    // Workspace budget.
+    // Workspace total against the workspace limit.
     push_if_approaching(
         &mut out,
-        decide_quota(usage, policy, QuotaCategory::RetainedChunks, None, 0),
+        policy,
+        QuotaScope::Workspace,
+        usage.workspace_total_bytes,
+        policy.workspace_limit,
     );
-    // Per-applet budgets (each applet's collection storage against the per-applet limit).
+    // Each per-applet collection budget against the per-applet limit.
     for applet in &usage.per_applet {
         push_if_approaching(
             &mut out,
-            decide_quota(
-                usage,
-                policy,
-                QuotaCategory::RetainedChunks,
-                Some(&applet.applet),
-                0,
-            ),
+            policy,
+            QuotaScope::Applet { applet: applet.applet.clone() },
+            applet.collections_bytes,
+            policy.per_applet_limit,
         );
     }
-    // Each category cap.
+    // Each category against its own cap.
     for category in QuotaCategory::ALL {
-        push_if_approaching(&mut out, decide_quota(usage, policy, category, None, 0));
+        push_if_approaching(
+            &mut out,
+            policy,
+            QuotaScope::Category { category },
+            usage.category_bytes(category),
+            policy.category_cap(category),
+        );
     }
     out
 }
 
-/// Append a warning row for an approaching/over decision; an `Ok` decision (headroom
-/// to spare) and the workspace/category cross-talk a single `decide_quota` reports are
-/// de-duplicated by scope so the report lists each budget at most once.
-fn push_if_approaching(out: &mut Vec<serde_json::Value>, decision: QuotaDecision) {
-    let (scope, projected, limit) = match decision {
-        QuotaDecision::ApproachingLimit { scope, projected, limit }
-        | QuotaDecision::OverQuota { scope, projected, limit } => (scope, projected, limit),
-        QuotaDecision::Ok => return,
-    };
-    let token = scope_token(&scope);
-    if out
-        .iter()
-        .any(|w| w.get("scope").and_then(|s| s.as_str()) == Some(token.as_str()))
-    {
+/// Append a warning row for `scope` iff `usage` is at/above the policy's approaching
+/// threshold of `limit` (or already over it). Below the threshold ⇒ the budget has
+/// headroom and nothing is appended. The threshold comparison matches the live write
+/// path (`decide_quota`): at/above `limit * approaching_threshold`.
+fn push_if_approaching(
+    out: &mut Vec<serde_json::Value>,
+    policy: &QuotaPolicy,
+    scope: QuotaScope,
+    usage: u64,
+    limit: u64,
+) {
+    if (usage as f64) < (limit as f64) * policy.approaching_threshold {
         return;
     }
     out.push(serde_json::json!({
-        "scope": token,
-        "projected": projected,
+        "scope": scope_token(&scope),
+        "projected": usage,
         "limit": limit,
         "suggestion": QUOTA_APPROACHING_SUGGESTION,
     }));

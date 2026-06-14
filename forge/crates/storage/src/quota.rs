@@ -514,6 +514,48 @@ pub(crate) fn enforce_records_write_tx(
     Ok(())
 }
 
+/// Enforce the DL-22 `run_logs` cap for a run-record persistence, AFTER the run row
+/// (and any same-txn audit rows) have been STAGED inside the caller's open
+/// transaction `tx` but BEFORE it commits (review 177 P1).
+///
+/// DL-22 caps run logs (`runs.record_json` + `run_logs.payload`), and a `quota.set`
+/// can tighten `run_logs_cap`, but the run-PERSISTENCE path had no gate — so a
+/// tightened cap was REPORT-ONLY and later runs kept appending `record_json` beyond
+/// the limit. This is the LIVE write-boundary check for run persistence, mirroring
+/// [`enforce_records_write_tx`]: the caller STAGES the run record first; this then
+/// recomputes `usage_from_conn(tx)` — which now reflects the staged run/audit bytes
+/// exactly as a post-commit `quota_usage` would — and compares the REAL post-write
+/// `run_logs` total against the trusted cap.
+///
+/// The enforced budget is the `run_logs` category cap (the slice a run record grows).
+/// An over-quota breach returns the typed `ResourceLimitExceeded` error (the
+/// compaction/cleanup/export suggestion, never a deletion), which the caller
+/// propagates — rolling the whole transaction back, so the run record (and any same-txn
+/// audit rows) are NEVER persisted and no existing data is deleted (reject-not-delete).
+///
+/// The workspace TOTAL is deliberately NOT checked here: a run record is the auditable,
+/// replayable record of the run — including a run that FAILED because its `ctx.db` write
+/// was rejected at the records boundary (`spec/quotas.md` §6: such a run is recorded as
+/// *failed* with `run_ok = false`). Gating that recording on the workspace total would
+/// drop the audit trail of the very rejection at exactly the moment the workspace is
+/// full, which the spec's reject-not-delete contract forbids; the run_logs cap is the
+/// dedicated DL-22 backstop that keeps run records from growing unbounded.
+///
+/// PURE: a function of the staged state + the trusted policy with no wall clock, so a
+/// replay reproduces the same accept/reject decision.
+pub(crate) fn enforce_run_log_write_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let usage = usage_from_conn(tx)?;
+    let policy = policy_from_conn(tx)?;
+    if let Some(err) = over_quota_breach(
+        QuotaScope::Category { category: QuotaCategory::RunLogs },
+        usage.category_bytes(QuotaCategory::RunLogs),
+        policy.category_cap(QuotaCategory::RunLogs),
+    ) {
+        return Err(err);
+    }
+    Ok(())
+}
+
 /// `Some(ResourceLimitExceeded)` iff `projected` exceeds `limit` for `scope` (the
 /// typed over-quota error naming the scope + suggesting the DL-22 remedies, never a
 /// deletion), else `None`. The shared post-write breach check behind the records-write
@@ -1210,5 +1252,65 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM attachments WHERE content_hash = ?1", params![r1.content_hash], |row| row.get(0))
             .unwrap();
         assert_eq!(blobs, 1, "identical bytes occupy exactly ONE stored blob");
+    }
+
+    /// A minimal contract-valid [`RunRecord`] for the run-log gate tests.
+    fn sample_run(run_id: &str) -> forge_domain::RunRecord {
+        forge_domain::RunRecord {
+            run_id: forge_domain::RunId::new(run_id),
+            applet_id: forge_domain::AppletId::new("app"),
+            code_hash: forge_domain::code_hash("body"),
+            input: json!({}),
+            random_seed: 1,
+            time_start: 0,
+            calls: vec![],
+            logs: vec![],
+            permissions: forge_domain::PermissionSnapshot::default(),
+            outcome: forge_domain::RunOutcome::Completed {
+                result: forge_domain::AppResult { ok: true, value: json!(null) },
+            },
+        }
+    }
+
+    #[test]
+    fn save_run_with_quota_tx_rejects_when_run_logs_cap_exceeded() {
+        // Review 177 P1: the run_logs cap is ENFORCED on run persistence, not report-only.
+        let mut s = store();
+        // Persist a first run so run_logs carries bytes, then pin the cap with zero
+        // headroom: the NEXT run record overflows it.
+        s.transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_1")))
+            .expect("first run fits under the default cap");
+        let cap = s.quota_usage().unwrap().category_bytes(QuotaCategory::RunLogs);
+        let mut policy = QuotaPolicy::DEFAULT;
+        policy.run_logs_cap = cap;
+        s.set_quota_policy(&policy).unwrap();
+
+        // A second, distinct run record would push run_logs over the cap → REJECTED, and
+        // the transaction rolls back (the record never lands).
+        let err = s
+            .transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_2")))
+            .expect_err("a run record over the run_logs cap is rejected");
+        assert_eq!(err.code(), "ResourceLimitExceeded");
+        assert!(
+            err.to_string().contains("no data was deleted"),
+            "carries the compaction/cleanup/export suggestion: {err}"
+        );
+        // Reject-not-delete: run_1 is intact, run_2 never landed, and run_logs never
+        // exceeded the cap.
+        assert!(s.load_run("run_1").unwrap().is_some(), "the prior run is untouched");
+        assert!(s.load_run("run_2").unwrap().is_none(), "the rejected run never landed");
+        assert!(
+            s.quota_usage().unwrap().category_bytes(QuotaCategory::RunLogs) <= cap,
+            "run_logs usage never exceeds the cap after a rejection"
+        );
+    }
+
+    #[test]
+    fn save_run_with_quota_tx_allows_a_run_with_headroom() {
+        // The gate is a backstop, not a blanket block: a run record that fits lands.
+        let mut s = store();
+        s.transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_ok")))
+            .expect("a run record under the default cap is allowed");
+        assert!(s.load_run("run_ok").unwrap().is_some());
     }
 }
