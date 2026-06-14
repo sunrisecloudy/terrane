@@ -115,6 +115,11 @@ impl WorkspaceCore {
         // its live-query notification turn (DL-16). Built BEFORE the bridge borrows
         // `&mut self.store` (the rebuild borrows `&self`).
         let watch_registry = self.watch_sessions.to_registry()?;
+        // The watch ids owned by OTHER applets, injected so a `ctx.db.watch` of a
+        // foreign-owned id is rejected AT HOST-CALL TIME with `PermissionDenied` (a
+        // recorded run denial), not silently accepted and dropped after the run by the
+        // owner-scoped intent fold (review 135 #1).
+        let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(applet_id.as_str());
 
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
@@ -131,7 +136,8 @@ impl WorkspaceCore {
         )
         .with_secret_store(secret_store)
         .with_file_system(file_system)
-        .with_watch_registry(watch_registry);
+        .with_watch_registry(watch_registry)
+        .with_foreign_watch_ids(foreign_watch_ids);
         let mut run = record_run(
             &program,
             &installed.manifest,

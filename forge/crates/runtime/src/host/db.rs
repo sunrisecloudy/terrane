@@ -239,6 +239,21 @@ impl HostContext<'_> {
             "db.watch",
             &args,
         )?;
+        // Owner-collision gate (review 135 #1): the `watch_id` is applet-visible, but a
+        // `watch_id` already registered by a DIFFERENT applet must NOT be re-registered
+        // here — that would let one applet hijack another's subscription. Detect the
+        // collision BEFORE recording the call and surface it through the SAME recorded-
+        // denial path as a policy denial, so `ctx.db.watch` returns `PermissionDenied`
+        // at host-call time (the run records the denial and registers nothing) instead
+        // of returning success and having the facade silently drop the intent after the
+        // run when it folds the registration owner-scoped.
+        if self.bridge.db_watch_owner_conflict(watch_id) {
+            let denied = forge_domain::CoreError::PermissionDenied(format!(
+                "watch_id `{watch_id}` is already registered by another applet"
+            ));
+            self.recorder.record_denial("db.watch", args, &denied)?;
+            return Err(denied);
+        }
         let bridge = &mut *self.bridge;
         let id = watch_id.to_string();
         let q = query.clone();

@@ -322,6 +322,10 @@ impl WorkspaceCore {
         // handler makes captures the pre-write watch membership for its notification
         // turn (DL-16). Built BEFORE the bridge borrows `&mut self.store`.
         let watch_registry = self.watch_sessions.to_registry()?;
+        // The watch ids owned by OTHER applets, so a handler's `ctx.db.watch` of a
+        // foreign-owned id is rejected at host-call time with `PermissionDenied`, not
+        // silently dropped after the dispatch (review 135 #1).
+        let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(applet_id.as_str());
 
         // Re-enter the handler over the SAME engine path as a run: record mode,
         // live Store-backed bridge, manifest-gated `ctx.*`. `record_dispatch` runs
@@ -335,7 +339,8 @@ impl WorkspaceCore {
         )
         .with_secret_store(secret_store)
         .with_file_system(file_system)
-        .with_watch_registry(watch_registry);
+        .with_watch_registry(watch_registry)
+        .with_foreign_watch_ids(foreign_watch_ids);
         let mut run = record_dispatch(
             &program,
             &installed.manifest,

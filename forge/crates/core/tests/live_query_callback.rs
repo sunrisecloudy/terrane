@@ -343,6 +343,103 @@ fn db_unwatch_is_owner_scoped_one_applet_cannot_cancel_another_applets_watch() {
     assert!(core.active_watch_ids().is_empty(), "owner's unwatch cancelled the watch");
 }
 
+/// An applet whose `main` registers a watch under the SHARED id `watch:open` via
+/// `ctx.db.watch` (so two installs of it collide on the same id) and reports whether
+/// the registration succeeded. The `main` does NOT swallow the host error, so a
+/// foreign-owner collision rejects the `ctx.db.watch` call and FAILS the run.
+const SHARED_ID_WATCH_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        await ctx.db.watch("watch:open", {
+            from: "tasks",
+            where: ["done", "=", false],
+            orderBy: ["id", "asc"]
+        });
+        return { ok: true, value: { registered: true } };
+    }
+
+    export async function onWatch(ctx: any, n: any): Promise<any> {
+        const ids = (n && n.result_ids) ? n.result_ids : [];
+        await ctx.ui.render({ type: "Text", text: "open=" + ids.length });
+        return { ok: true, value: { handled: true } };
+    }
+"#;
+
+#[test]
+fn runtime_ctx_db_watch_owner_collision_is_a_recorded_host_call_denial() {
+    // review 135 #1: `ctx.db.watch` of a watch id owned by ANOTHER applet must be
+    // rejected AT HOST-CALL TIME (a recorded `PermissionDenied` that fails the run),
+    // not silently accepted by the applet and dropped after the run. app A registers
+    // `watch:open` in its `main`; app B's `main` then attempts `ctx.db.watch("watch:open",
+    // ...)` and its run FAILS, registers nothing for B, and leaves A's subscription
+    // intact (notifications keep routing to A).
+    let mut core = WorkspaceCore::in_memory("ws-runtime-collision").expect("workspace");
+    for app in ["app-a", "app-b"] {
+        let resp = core.handle(cmd(
+            "applet.install",
+            Some(app),
+            json!({ "manifest": manifest(), "sources": { "src/main.ts": SHARED_ID_WATCH_TS } }),
+        ));
+        assert!(resp.ok, "install {app}: {:?}", resp.error);
+    }
+
+    // app-a runs main → `ctx.db.watch("watch:open", ...)` registers the workspace watch.
+    let resp = core.handle(cmd("runtime.run", Some("app-a"), json!({ "input": {} })));
+    assert!(resp.ok, "app-a run must succeed: {:?}", resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+    // app-b runs main → its `ctx.db.watch("watch:open", ...)` collides with app-a's id.
+    // The host rejects the call with PermissionDenied; the unhandled rejection fails
+    // app-b's `main`, so the RUN reports `ok: false` (the recorded run denial).
+    let resp = core.handle(cmd("runtime.run", Some("app-b"), json!({ "input": {} })));
+    assert!(resp.ok, "the runtime.run COMMAND itself returns a record: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["ok"],
+        json!(false),
+        "app-b's run FAILS because its ctx.db.watch was denied at host-call time, not silently accepted"
+    );
+
+    // The denied `db.watch` host call is RECORDED in app-b's run trace (the recorded-
+    // denial path), so replay reproduces the denial.
+    let run_id = resp.payload["run_id"].as_str().expect("run_id");
+    let run = core
+        .store()
+        .load_run(run_id)
+        .expect("load app-b run")
+        .expect("app-b run was saved");
+    let denied = run
+        .calls
+        .iter()
+        .find(|c| c.method == "db.watch")
+        .expect("the denied db.watch is recorded in the trace");
+    assert!(
+        denied.response.get("denied").is_some(),
+        "the recorded db.watch carries the denial envelope, got {:?}",
+        denied.response
+    );
+
+    // NOTHING was registered for app-b: app-a's watch is still the only one, owned by A.
+    assert_eq!(
+        core.active_watch_ids(),
+        vec!["watch:open".to_string()],
+        "app-b's collision registered no watch; app-a's subscription is intact"
+    );
+
+    // Notifications still route to app-a (ownership was never reassigned to app-b).
+    let batch = core.commit_and_notify(&insert("tasks/1", false, 10)).expect("commit");
+    assert_eq!(batch.notifications.len(), 1, "app-a's watch is still live");
+    assert_eq!(batch.notifications[0].watch_id, "watch:open");
+    let rerendered_a = core
+        .events()
+        .events_of_kind("ui.patch")
+        .any(|e| e.applet_id.as_ref().map(|a| a.as_str()) == Some("app-a"));
+    assert!(rerendered_a, "app-a's onWatch ran (it owns watch:open)");
+    let rerendered_b = core
+        .events()
+        .events_of_kind("ui.patch")
+        .any(|e| e.applet_id.as_ref().map(|a| a.as_str()) == Some("app-b"));
+    assert!(!rerendered_b, "app-b never owned the watch → its callback never ran");
+}
+
 #[test]
 fn db_watch_registration_is_owner_scoped_one_applet_cannot_replace_another_applets_watch() {
     // review 133 #2: watch ids are applet-visible strings, but one applet must NOT be

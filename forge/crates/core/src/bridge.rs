@@ -37,7 +37,7 @@ use forge_storage::{
     WatchRegistry,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The applet-facing JSON shape of an aggregate result bundle returned by
 /// `ctx.db.query` over an aggregate plan. Mirrors [`AggregateResult`] with stable,
@@ -179,6 +179,14 @@ pub struct StorageHostBridge<'a> {
     /// write to capture the pre-write result membership. `None` ⇒ no live watches, so
     /// each write's `before` snapshot is empty (no notification has anywhere to fire).
     watch_registry: Option<forge_storage::WatchRegistry>,
+    /// Watch ids owned by a DIFFERENT applet than this run's applet, injected by the
+    /// spine at run START (review 135 #1). A `ctx.db.watch` for one of these ids is a
+    /// FOREIGN-OWNER collision: the bridge rejects it with `PermissionDenied` AT
+    /// HOST-CALL TIME (the recorded run denial the runtime contract promises), instead
+    /// of returning success and silently dropping the watch when the facade later folds
+    /// the intent owner-scoped. Empty ⇒ no foreign watches, so every `ctx.db.watch`
+    /// the applet issues is its own (registered or a same-owner re-watch).
+    foreign_watch_ids: BTreeSet<String>,
     /// Every log line captured this run.
     pub logs: Vec<String>,
     /// The injectable HTTP client backing `ctx.net.fetch` (prd-merged/07 SC-5,
@@ -248,6 +256,7 @@ impl<'a> StorageHostBridge<'a> {
             watch_intents: Vec::new(),
             applied_mutations: Vec::new(),
             watch_registry: None,
+            foreign_watch_ids: BTreeSet::new(),
             logs: Vec::new(),
             http,
             // Fail-closed default: empty store ⇒ any secret_ref header is denied
@@ -297,6 +306,21 @@ impl<'a> StorageHostBridge<'a> {
     /// every `runtime.run`/`ui.dispatch_event`.
     pub fn with_watch_registry(mut self, registry: WatchRegistry) -> Self {
         self.watch_registry = Some(registry);
+        self
+    }
+
+    /// Inject the watch ids owned by OTHER applets so a `ctx.db.watch` for a
+    /// foreign-owned id is rejected at host-call time (review 135 #1). Without this the
+    /// set is empty (no foreign watches) and every `ctx.db.watch` the applet issues is
+    /// accepted — fine for a run whose applet owns (or freshly registers) the ids,
+    /// wrong when another applet already owns the id and the applet must see a recorded
+    /// `PermissionDenied` rather than a late no-op. Builder style; the spine wires this
+    /// from the workspace sessions on every `runtime.run`/`ui.dispatch_event`/callback.
+    pub fn with_foreign_watch_ids(
+        mut self,
+        ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.foreign_watch_ids = ids.into_iter().collect();
         self
     }
 
@@ -663,11 +687,32 @@ impl HostBridge for StorageHostBridge<'_> {
                     .into(),
             ));
         }
+        // FOREIGN-OWNER collision (review 135 #1): the workspace already has a watch
+        // under this id owned by a DIFFERENT applet. Reject AT HOST-CALL TIME with
+        // `PermissionDenied` so `ctx.db.watch` surfaces the denial through the normal
+        // recorded-denial path (the run records the failure and registers nothing),
+        // instead of returning success and having the facade silently drop the intent
+        // owner-scoped after the run. This is the runtime-visible mirror of
+        // `WatchSessions::register_owned`'s refusal — the two never disagree.
+        if self.foreign_watch_ids.contains(watch_id) {
+            return Err(CoreError::PermissionDenied(format!(
+                "watch_id `{watch_id}` is already registered by another applet"
+            )));
+        }
         self.watch_intents.push(WatchIntent::Watch {
             watch_id: watch_id.to_string(),
             query,
         });
         Ok(watch_id.to_string())
+    }
+
+    fn db_watch_owner_conflict(&self, watch_id: &str) -> bool {
+        // The runtime host consults this BEFORE recording the `db.watch` call, so a
+        // foreign-owner collision is surfaced as a recorded `PermissionDenied` at
+        // host-call time (review 135 #1). Answers from the foreign-owned ids the spine
+        // injected; the `db_watch` body keeps the same check as a backstop so the
+        // intent is never captured for a foreign id even if a caller bypasses the host.
+        self.foreign_watch_ids.contains(watch_id)
     }
 
     fn db_unwatch(&mut self, watch_id: &str) -> Result<()> {

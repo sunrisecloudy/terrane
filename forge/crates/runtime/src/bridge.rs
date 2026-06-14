@@ -105,6 +105,21 @@ pub trait HostBridge {
         Ok(watch_id.to_string())
     }
 
+    /// Whether `watch_id` is already registered by a DIFFERENT applet than the one
+    /// this bridge is scoped to (DL-16, review 135 #1). The host consults this BEFORE
+    /// it records the `ctx.db.watch` call, so a foreign-owner collision is surfaced as
+    /// a recorded `PermissionDenied` AT HOST-CALL TIME (the normal recorded-denial
+    /// path) rather than a success that the facade silently drops when it later folds
+    /// the registration owner-scoped.
+    ///
+    /// The **default** is `false`: a bridge with no live watch-session ownership
+    /// context (the in-memory test double) never reports a conflict, so every
+    /// `db.watch` registers. The real Store-backed bridge (forge-core) overrides this
+    /// to answer from the watch ids the spine injected as foreign-owned.
+    fn db_watch_owner_conflict(&self, _watch_id: &str) -> bool {
+        false
+    }
+
     /// `ctx.db.unwatch(watch_id)` — cancel a live query (DL-16). Idempotent:
     /// unwatching an unknown id is a no-op. After it commits the watch receives no
     /// further notifications. The host gates this on `db.read` (the same capability

@@ -87,6 +87,20 @@ impl WatchSessions {
         self.subscriptions.iter().map(|s| s.watch_id.clone()).collect()
     }
 
+    /// The watch ids currently owned by a DIFFERENT applet than `applet_id` (review
+    /// 135 #1). Injected into the [`StorageHostBridge`](crate::StorageHostBridge) before
+    /// a live run so an applet's `ctx.db.watch` of a foreign-owned id is rejected AT
+    /// HOST-CALL TIME (a recorded `PermissionDenied`), not silently accepted and dropped
+    /// after the run by [`register_owned`](Self::register_owned). The two checks agree:
+    /// the host-call denial is the runtime-visible mirror of `register_owned`'s refusal.
+    pub fn foreign_owned_watch_ids(&self, applet_id: &str) -> Vec<String> {
+        self.subscriptions
+            .iter()
+            .filter(|s| s.applet_id != applet_id)
+            .map(|s| s.watch_id.clone())
+            .collect()
+    }
+
     /// Register/replace a watch (DL-16 `db.watch`). Idempotent on `watch_id`: a
     /// re-watch replaces the subscription IN PLACE (keeping its registration
     /// position) so a re-`watch` is not a duplicate, matching the storage registry.

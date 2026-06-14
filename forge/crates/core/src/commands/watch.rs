@@ -576,6 +576,10 @@ impl WorkspaceCore {
         // that itself mutates through `ctx.db` captures the pre-write watch membership
         // for the NEXT turn's leave/changed filter (DL-16).
         let watch_registry = self.watch_sessions.to_registry()?;
+        // The watch ids owned by OTHER applets, so a `ctx.db.watch` the callback itself
+        // issues for a foreign-owned id is rejected at host-call time (review 135 #1) —
+        // the callback path uses the SAME host-call denial as a run/dispatch.
+        let foreign_watch_ids = self.watch_sessions.foreign_owned_watch_ids(&applet_id);
         let mut bridge = crate::StorageHostBridge::with_http_client(
             &mut self.store,
             &applet_id,
@@ -583,7 +587,8 @@ impl WorkspaceCore {
         )
         .with_secret_store(secret_store)
         .with_file_system(file_system)
-        .with_watch_registry(watch_registry);
+        .with_watch_registry(watch_registry)
+        .with_foreign_watch_ids(foreign_watch_ids);
         let run = record_notification(
             &program,
             &installed.manifest,
