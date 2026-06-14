@@ -587,6 +587,7 @@ impl WorkspaceCore {
             "applet.install" => self.cmd_applet_install(&cmd),
             "runtime.run" => self.cmd_runtime_run(&cmd),
             "runtime.replay" => self.cmd_runtime_replay(&cmd),
+            "runtime.replay_session" => self.cmd_runtime_replay_session(&cmd),
             "ui.dispatch_event" => self.cmd_ui_dispatch_event(&cmd),
             "query.execute" => self.cmd_query_execute(&cmd),
             "schema.apply_change" => self.cmd_schema_apply_change(&cmd),
@@ -939,22 +940,56 @@ impl WorkspaceCore {
             .ok_or_else(|| CoreError::ValidationError("runtime.replay requires `run_id`".into()))?
             .to_string();
 
+        let (original, replayed) = self.replay_run_by_id(&run_id, &cmd.actor)?;
+
+        self.events.emit(
+            Some(original.applet_id.clone()),
+            "run.replayed",
+            serde_json::json!({ "run_id": run_id, "ok": true }),
+        );
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "run_id": run_id,
+            "fingerprint": replayed.replay_fingerprint(),
+            "replays_identically": original.replays_identically(&replayed),
+        }))
+    }
+
+    /// Load the stored [`RunRecord`] for `run_id`, reconstruct the version-pinned
+    /// program + manifest this execution used, replay it deterministically over a
+    /// [`NullBridge`], and assert the replay is byte-identical to the original
+    /// (CR-9). Returns `(original, replayed)` so a caller can fingerprint either.
+    /// Shared by [`cmd_runtime_replay`](Self::cmd_runtime_replay) and the
+    /// session-replay path so the two never drift in how a single run is replayed.
+    ///
+    /// Version-pinned replay (review 031 finding 3, review 036 finding 2):
+    /// reconstruct the program + manifest from the artifact recorded for THIS
+    /// execution, not the currently installed applet. Resolution order:
+    ///   1. the PER-RUN pin (`program/run/<run_id>`) — unique to this run, so a
+    ///      reinstall under a different manifest cannot overwrite or alter it
+    ///      (the review 036 finding 2 case);
+    ///   2. the content-addressed `program/<code_hash>` pin — covers runs
+    ///      recorded before per-run pinning existed;
+    ///   3. the currently installed applet — last-resort legacy fallback, and
+    ///      only if its code_hash still matches the recorded one.
+    ///
+    /// A run recorded by `ui.dispatch_event` carries a `ui.dispatch_event` envelope
+    /// and was driven by re-entering a named handler (UI-4/CR-6), not `main` — so it
+    /// is replayed via the dispatch path, which recovers the recorded `(action_ref,
+    /// payload)` and re-runs that handler. A normal `runtime.run` record has no such
+    /// envelope and replays via `main`.
+    fn replay_run_by_id(
+        &self,
+        run_id: &str,
+        actor: &forge_domain::ActorContext,
+    ) -> Result<(RunRecord, RunRecord)> {
         let original = self
             .store
-            .load_run(&run_id)?
+            .load_run(run_id)?
             .ok_or_else(|| CoreError::ValidationError(format!("run {run_id} not found")))?;
 
-        // Version-pinned replay (review 031 finding 3, review 036 finding 2):
-        // reconstruct the program + manifest from the artifact recorded for THIS
-        // execution, not the currently installed applet. Resolution order:
-        //   1. the PER-RUN pin (`program/run/<run_id>`) — unique to this run, so a
-        //      reinstall under a different manifest cannot overwrite or alter it
-        //      (the review 036 finding 2 case);
-        //   2. the content-addressed `program/<code_hash>` pin — covers runs
-        //      recorded before per-run pinning existed;
-        //   3. the currently installed applet — last-resort legacy fallback, and
-        //      only if its code_hash still matches the recorded one.
-        let replay_artifact = match self.load_run_program(&run_id)? {
+        let installed = match self.load_run_program(run_id)? {
             Some(p) => p,
             None => match self.load_program(&original.code_hash)? {
                 Some(p) => p,
@@ -976,38 +1011,168 @@ impl WorkspaceCore {
                 }
             },
         };
-        let installed = replay_artifact;
 
         let program = RuntimeProgram::new(original.applet_id.clone(), installed.js_code.clone());
         let mut null = NullBridge::new();
-        // A run recorded by `ui.dispatch_event` carries a `ui.dispatch_event`
-        // envelope and was driven by re-entering a named handler (UI-4/CR-6), not
-        // `main` — so it must be replayed via the dispatch path, which recovers the
-        // recorded `(action_ref, payload)` and re-runs that handler. Replaying it via
-        // the `main` path would drive a different entrypoint and diverge. A normal
-        // `runtime.run` record has no such envelope and replays via `main` as before.
         let is_dispatch = original.calls.iter().any(|c| c.method == "ui.dispatch_event");
         let replayed = if is_dispatch {
-            replay_dispatch(&original, &program, &installed.manifest, &cmd.actor, &mut null)?
+            replay_dispatch(&original, &program, &installed.manifest, actor, &mut null)?
         } else {
-            replay(&original, &program, &installed.manifest, &cmd.actor, &mut null)?
+            replay(&original, &program, &installed.manifest, actor, &mut null)?
         };
 
         // The strict replay check: canonical provenance on both records AND
         // byte-identical traces, surfaced as a RuntimeError on divergence.
         original.assert_replay_of(&replayed)?;
+        Ok((original, replayed))
+    }
 
-        self.events.emit(
-            Some(original.applet_id.clone()),
-            "run.replayed",
-            serde_json::json!({ "run_id": run_id, "ok": true }),
-        );
+    /// `runtime.replay_session` — replay an ordered **event session** (an initial
+    /// `runtime.run` record followed by N `ui.dispatch_event` records, in dispatch
+    /// order) and prove the WHOLE sequence replays byte-identically (prd-merged/05
+    /// UI-4, prd-merged/01 CR-6, CR-8). This is the session-level analogue of
+    /// `runtime.replay`: where `runtime.replay` blesses ONE recorded run, this blesses
+    /// a recorded interactive session as a unit, so a multi-event session round-trips.
+    ///
+    /// Payload: `{ run_ids: [ <initial run_id>, <event run_id>, ... ] }` — the
+    /// session in dispatch order (the ids the initial `runtime.run` + each accepted
+    /// `ui.dispatch_event` returned).
+    ///
+    /// For each id we replay the run via [`replay_run_by_id`](Self::replay_run_by_id)
+    /// (which version-pins the program/manifest and asserts that single run is
+    /// byte-identical), then we ALSO:
+    ///   - re-derive each event's UI patch by diffing the replayed run's final tree
+    ///     against the PRIOR run's final tree, exactly as the live `ui.dispatch_event`
+    ///     loop did, and assert that re-derived patch equals the originally recorded
+    ///     one (so every patch is byte-identical, not just the host-call trace);
+    ///   - fold each record's per-run fingerprint into a composite
+    ///     [`session_fingerprint`](RunRecord::session_fingerprint), and assert the
+    ///     replayed session's composite equals the original's — which is sensitive to
+    ///     BOTH per-run divergence AND event ORDER (two events applied in a different
+    ///     order produce a different composite, so order is enforced).
+    ///
+    /// Divergence anywhere — a single run, a patch, or the composite — is a typed
+    /// `RuntimeError`/`ValidationError`, never a panic. The recorded permission
+    /// snapshot governs each replay (CR-9); the live bridge is never consulted.
+    fn cmd_runtime_replay_session(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
+        let run_ids: Vec<String> = match cmd.payload.get("run_ids") {
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        CoreError::ValidationError(
+                            "runtime.replay_session `run_ids` entries must be strings".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            _ => {
+                return Err(CoreError::ValidationError(
+                    "runtime.replay_session requires a non-empty `run_ids` array".into(),
+                ))
+            }
+        };
+        if run_ids.is_empty() {
+            return Err(CoreError::ValidationError(
+                "runtime.replay_session `run_ids` must not be empty".into(),
+            ));
+        }
+
+        // Replay each run in order, accumulating (original, replayed) pairs and the
+        // per-event re-derived patches. `prev_tree` walks the replayed final trees so
+        // each event's patch diffs against the PRIOR replayed tree — the same diff
+        // base the live `ui.dispatch_event` loop used (UI-4).
+        let mut originals: Vec<RunRecord> = Vec::with_capacity(run_ids.len());
+        let mut replayeds: Vec<RunRecord> = Vec::with_capacity(run_ids.len());
+        let mut prev_tree: Option<forge_ui::Node> = None;
+        let mut event_patches: Vec<serde_json::Value> = Vec::new();
+        let mut applet_id: Option<AppletId> = None;
+
+        for (step, run_id) in run_ids.iter().enumerate() {
+            let (original, replayed) = self.replay_run_by_id(run_id, &cmd.actor)?;
+            // Every run in one session must belong to the SAME applet — a session is
+            // one applet's interactive loop. A mixed-applet `run_ids` list is a
+            // caller error, not a silent cross-applet replay.
+            match &applet_id {
+                None => applet_id = Some(replayed.applet_id.clone()),
+                Some(id) if id != &replayed.applet_id => {
+                    return Err(CoreError::ValidationError(format!(
+                        "runtime.replay_session run {run_id} belongs to applet {} but the session started with {}",
+                        replayed.applet_id, id
+                    )));
+                }
+                Some(_) => {}
+            }
+
+            // The replayed run's final UI tree (its last recorded `ui.render`), if any.
+            let next_tree = replayed_final_tree(&replayed)?;
+            // For each EVENT (every run after the initial) re-derive the patch against
+            // the prior replayed tree and assert it equals the originally recorded
+            // patch, so the session reproduces every patch byte-identically.
+            if step > 0 {
+                if let Some(tree) = &next_tree {
+                    let patches = forge_ui::diff(prev_tree.as_ref(), tree);
+                    let patches_json = serde_json::to_value(&patches).map_err(|e| {
+                        CoreError::ValidationError(format!(
+                            "replay_session patch serialize failed: {e}"
+                        ))
+                    })?;
+                    event_patches.push(patches_json);
+                } else {
+                    // A handler that rendered nothing leaves the view unchanged → an
+                    // empty patch over the prior tree (the identical-tree edge).
+                    event_patches.push(serde_json::json!([]));
+                }
+            }
+            if next_tree.is_some() {
+                prev_tree = next_tree;
+            }
+            originals.push(original);
+            replayeds.push(replayed);
+        }
+
+        // The composite session identity: fold each record's per-run fingerprint in
+        // order. Equal composites ⇒ the whole ordered event sequence replayed
+        // byte-identically (per-run AND order). Divergence is a RuntimeError.
+        let original_refs: Vec<&RunRecord> = originals.iter().collect();
+        let replayed_refs: Vec<&RunRecord> = replayeds.iter().collect();
+        let session_fingerprint = RunRecord::session_fingerprint(&replayed_refs);
+        let replays_identically =
+            RunRecord::session_replays_identically(&original_refs, &replayed_refs);
+        if !replays_identically {
+            return Err(CoreError::RuntimeError(format!(
+                "session replay diverged from the recorded session ({} run(s); composite fingerprints differ)",
+                run_ids.len()
+            )));
+        }
+
+        if let Some(applet_id) = &applet_id {
+            self.events.emit(
+                Some(applet_id.clone()),
+                "session.replayed",
+                serde_json::json!({
+                    "applet_id": applet_id,
+                    "run_ids": run_ids,
+                    "events": run_ids.len().saturating_sub(1),
+                    "ok": true,
+                }),
+            );
+        }
 
         Ok(serde_json::json!({
             "ok": true,
-            "run_id": run_id,
-            "fingerprint": replayed.replay_fingerprint(),
-            "replays_identically": original.replays_identically(&replayed),
+            "run_ids": run_ids,
+            // The per-event re-derived UI patches (one list per dispatched event, in
+            // order); the harness asserts each equals the originally recorded patch.
+            "event_patches": event_patches,
+            // The session's final rendered tree (the last replayed render), so a
+            // caller can assert the session converged to the same view.
+            "final_tree": prev_tree
+                .as_ref()
+                .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+                .unwrap_or(serde_json::Value::Null),
+            "session_fingerprint": session_fingerprint,
+            "replays_identically": replays_identically,
         }))
     }
 
@@ -2472,6 +2637,10 @@ fn authorize(cmd: &CoreCommand) -> Result<()> {
         // Replay is an audit/oversight operation (CR-9): Auditor/Maintainer/Owner.
         // A bare Runner can run but not replay (per commands.md).
         "runtime.replay" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
+        // Session replay is the same audit/oversight operation lifted to an ordered
+        // event SESSION (UI-4/CR-6): it replays [initial run + N dispatched events]
+        // as one unit, so it carries the same roles as `runtime.replay`.
+        "runtime.replay_session" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
         // Reading the records projection requires a read-capable role (db.read).
         "query.execute" => Some(&[
             Role::Owner,
@@ -3344,6 +3513,27 @@ fn take_field<T: serde::de::DeserializeOwned>(cmd: &CoreCommand, field: &str) ->
     serde_json::from_value(value.clone()).map_err(|e| {
         CoreError::ValidationError(format!("{} `{field}` is malformed: {e}", cmd.name))
     })
+}
+
+/// The final UI tree a (replayed) run rendered — the tree of its LAST recorded
+/// `ui.render` call (`args = [tree]`), parsed as a [`forge_ui::Node`]. `None` when
+/// the run rendered nothing (so the session's diff base does not advance, and an
+/// event that renders nothing yields an empty patch). Used by the session-replay
+/// path to walk the replayed trees and re-derive each event's UI patch (UI-4).
+fn replayed_final_tree(run: &RunRecord) -> Result<Option<forge_ui::Node>> {
+    let last_render = run
+        .calls
+        .iter()
+        .rev()
+        .find(|c| c.method == "ui.render")
+        .and_then(|c| c.args.as_array().and_then(|a| a.first()).cloned());
+    match last_render {
+        Some(tree_json) => {
+            let node = forge_ui::from_str(&tree_json.to_string())?;
+            Ok(Some(node))
+        }
+        None => Ok(None),
+    }
 }
 
 /// `(ok, app_result_json)` for a run's outcome.

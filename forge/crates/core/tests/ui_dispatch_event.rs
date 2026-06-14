@@ -598,6 +598,298 @@ fn dispatched_event_is_recorded_and_replays_identically() {
     assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
 }
 
+// ---------------------------------------------------------------------------
+// V3: deterministic UI event-SESSION replay (UI-4/CR-6, CR-8). A recorded
+// sequence of [initial run + N dispatched events] replays as ONE unit to a
+// byte-identical composite session fingerprint, per-event patches, and final
+// tree (`runtime.replay_session`).
+// ---------------------------------------------------------------------------
+
+/// Render the vector player's initial tree and return the `run_id` of that
+/// initial `runtime.run` (the head of the session).
+fn render_initial_run_id(
+    core: &mut WorkspaceCore,
+    applet_id: &str,
+    initial_tree: &serde_json::Value,
+    queue: &[serde_json::Value],
+) -> String {
+    let resp = core.handle(cmd(
+        "runtime.run",
+        applet_id,
+        serde_json::json!({ "input": { "tree": initial_tree, "queue": queue } }),
+    ));
+    assert!(resp.ok, "initial render must succeed: {:?}", resp.error);
+    resp.payload["run_id"].as_str().unwrap().to_string()
+}
+
+/// Record a multi-event interactive session, replay the WHOLE ordered sequence
+/// via `runtime.replay_session`, and assert the composite session fingerprint
+/// matches AND every per-event patch is byte-identical (V3 #1).
+#[test]
+fn recorded_event_session_replays_byte_identically() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.session");
+
+    // A 3-event session: text "0" -> "1" -> "2" -> "3".
+    let trees: Vec<serde_json::Value> = (0..=3)
+        .map(|n| {
+            serde_json::json!({
+                "type": "Stack", "testId": "root", "direction": "v",
+                "children": [ { "type": "Text", "testId": "c", "text": n.to_string() } ]
+            })
+        })
+        .collect();
+    let queue = &trees[1..]; // the per-event next trees
+
+    // Record the session: initial run + 3 dispatched `step` events.
+    let initial_run_id = render_initial_run_id(&mut core, "vec.session", &trees[0], queue);
+    let mut session = vec![initial_run_id];
+    let mut recorded_patches: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..3 {
+        let resp = dispatch(&mut core, "vec.session", serde_json::json!("step"), serde_json::json!({}));
+        assert!(resp.ok, "event must dispatch: {:?}", resp.error);
+        session.push(resp.payload["run_id"].as_str().unwrap().to_string());
+        recorded_patches.push(resp.payload["patches"].clone());
+    }
+
+    // Replay the WHOLE session as one unit.
+    let replay = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.session",
+        serde_json::json!({ "run_ids": session }),
+    ));
+    assert!(replay.ok, "session replay must succeed: {:?}", replay.error);
+
+    // The composite session fingerprint is the SINGLE byte-identity claim.
+    assert_eq!(
+        replay.payload["replays_identically"],
+        serde_json::json!(true),
+        "the recorded event session must replay byte-identically"
+    );
+
+    // Every per-event patch the replay re-derived equals the originally recorded
+    // patch (not just the host-call trace — the actual UI patches match).
+    let replayed_patches = replay.payload["event_patches"].as_array().unwrap();
+    assert_eq!(replayed_patches.len(), recorded_patches.len(), "one patch per event");
+    for (i, (got, want)) in replayed_patches.iter().zip(&recorded_patches).enumerate() {
+        assert_eq!(got, want, "event #{i}: replayed patch must equal the recorded patch");
+    }
+
+    // The session converged to the same final tree (text "3").
+    let final_tree: Node = from_str(&replay.payload["final_tree"].to_string()).unwrap();
+    let want_final: Node = from_str(&trees[3].to_string()).unwrap();
+    assert_eq!(final_tree, want_final, "the session converges to the recorded final tree");
+
+    // A `session.replayed` observability event was emitted.
+    assert_eq!(core.events().events_of_kind("session.replayed").count(), 1);
+
+    // Replaying the SAME session again is still identical (idempotent / stable).
+    let again = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.session",
+        serde_json::json!({ "run_ids": replay.payload["run_ids"].clone() }),
+    ));
+    assert!(again.ok);
+    assert_eq!(
+        again.payload["session_fingerprint"],
+        replay.payload["session_fingerprint"],
+        "session fingerprint is stable across replays"
+    );
+}
+
+/// Two events apply in RECORDED ORDER deterministically: replaying the SAME
+/// run_ids in the recorded order reproduces the recorded per-event patch chain +
+/// final tree, while a SWAPPED order produces an observably DIFFERENT diff-base
+/// walk (different per-event patches, different final tree). Each run still
+/// self-replays, but the ORDERED session output is order-sensitive — that is what
+/// "two events apply in recorded order deterministically" means (V3 #2 order).
+#[test]
+fn session_replay_is_order_sensitive_over_the_patch_chain() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.order");
+
+    // Two DISTINCT events so the ordered diff-base walk is observable: "a" -> "b" -> "c".
+    let t0 = serde_json::json!({ "type": "Text", "testId": "t", "text": "a" });
+    let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "b" });
+    let t2 = serde_json::json!({ "type": "Text", "testId": "t", "text": "c" });
+    let initial_run_id = render_initial_run_id(&mut core, "vec.order", &t0, &[t1, t2.clone()]);
+
+    let e1 = dispatch(&mut core, "vec.order", serde_json::json!("step"), serde_json::json!({}));
+    let e2 = dispatch(&mut core, "vec.order", serde_json::json!("step"), serde_json::json!({}));
+    let id1 = e1.payload["run_id"].as_str().unwrap().to_string();
+    let id2 = e2.payload["run_id"].as_str().unwrap().to_string();
+
+    // In recorded order the session replays identically and ends at "c" (t2).
+    let ordered = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.order",
+        serde_json::json!({ "run_ids": [initial_run_id.clone(), id1.clone(), id2.clone()] }),
+    ));
+    assert!(ordered.ok, "{:?}", ordered.error);
+    assert_eq!(ordered.payload["replays_identically"], serde_json::json!(true));
+    let ordered_final: Node = from_str(&ordered.payload["final_tree"].to_string()).unwrap();
+    assert_eq!(ordered_final, from_str(&t2.to_string()).unwrap(), "recorded order ends at t2 (\"c\")");
+
+    // Swapping the two events is a DIFFERENT ordered session: every run still
+    // self-replays (so it succeeds), but the diff-base walk — and therefore the
+    // per-event patch chain AND the final tree — differ from the recorded order.
+    // This proves the ORDER is load-bearing and deterministic, not interchangeable.
+    let swapped = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.order",
+        serde_json::json!({ "run_ids": [initial_run_id, id2, id1] }),
+    ));
+    assert!(swapped.ok, "each run self-replays regardless of order: {:?}", swapped.error);
+    assert_ne!(
+        swapped.payload["event_patches"], ordered.payload["event_patches"],
+        "a swapped event order produces a DIFFERENT per-event patch chain"
+    );
+    let swapped_final: Node = from_str(&swapped.payload["final_tree"].to_string()).unwrap();
+    assert_eq!(
+        swapped_final,
+        from_str(&t1_text("b").to_string()).unwrap(),
+        "swapped order ends at the now-last event's tree (\"b\"), not \"c\""
+    );
+    assert_ne!(swapped_final, ordered_final, "the ordered and swapped sessions converge to different trees");
+}
+
+/// Helper: a single-Text tree carrying `text`, matching the player's queued shape.
+fn t1_text(text: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "Text", "testId": "t", "text": text })
+}
+
+/// Edge: an event whose ActionRef is absent from the applet's handler registry is
+/// a typed `ValidationError` no-op — the applet's last-known tree + state are
+/// UNCHANGED, and NO run is recorded for the rejected event (V3 #2 unknown ref).
+#[test]
+fn unknown_action_ref_is_typed_noop_state_unchanged() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.unknown");
+
+    let t0 = serde_json::json!({ "type": "Text", "testId": "t", "text": "a" });
+    let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "b" });
+    let initial_run_id = render_initial_run_id(&mut core, "vec.unknown", &t0, std::slice::from_ref(&t1));
+
+    let patches_before = core.events().events_of_kind("ui.patch").count();
+    // No handler named "nope" is exported.
+    let resp = dispatch(&mut core, "vec.unknown", serde_json::json!("nope"), serde_json::json!({}));
+    assert!(!resp.ok, "an absent ActionRef must be rejected");
+    let err = resp.error.unwrap();
+    assert_eq!(err.code(), "ValidationError");
+    assert!(err.to_string().contains("no UI handler registered"), "{err}");
+
+    // State unchanged: no ui.patch emitted, the cursor was NOT advanced — so a
+    // SUBSEQUENT valid `step` still produces the FIRST queued tree ("a" -> "b"),
+    // proving the rejected event did not consume the queue or move the diff base.
+    assert_eq!(
+        patches_before,
+        core.events().events_of_kind("ui.patch").count(),
+        "a rejected unknown-ref event emits no ui.patch (tree unchanged)"
+    );
+    let ok = dispatch(&mut core, "vec.unknown", serde_json::json!("step"), serde_json::json!({}));
+    assert!(ok.ok, "{:?}", ok.error);
+    let tree: Node = from_str(&ok.payload["tree"].to_string()).unwrap();
+    assert_eq!(tree, from_str(&t1.to_string()).unwrap(), "state was not advanced by the rejected event");
+
+    // The valid event records a session of [initial, valid] that replays identically.
+    let session = serde_json::json!({
+        "run_ids": [initial_run_id, ok.payload["run_id"].as_str().unwrap()]
+    });
+    let replay = core.handle(cmd("runtime.replay_session", "vec.unknown", session));
+    assert!(replay.ok, "{:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
+
+/// Edge: a handler that THROWS is a typed runtime error and the prior tree is
+/// intact — no patch, the diff base does not advance, and the next valid event
+/// still diffs against the pre-throw tree (V3 #2 throwing handler).
+#[test]
+fn throwing_handler_leaves_prior_tree_intact() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.throw");
+
+    let t0 = serde_json::json!({ "type": "Text", "testId": "t", "text": "0" });
+    let t1 = serde_json::json!({ "type": "Text", "testId": "t", "text": "1" });
+    render_initial(&mut core, "vec.throw", &t0, std::slice::from_ref(&t1));
+
+    let patches_before = core.events().events_of_kind("ui.patch").count();
+    let resp = dispatch(&mut core, "vec.throw", serde_json::json!("boom"), serde_json::json!({}));
+    assert!(!resp.ok, "a throwing handler must be a typed error");
+    assert_eq!(resp.error.unwrap().code(), "RuntimeError");
+    assert_eq!(
+        patches_before,
+        core.events().events_of_kind("ui.patch").count(),
+        "a throwing handler emits no ui.patch (prior tree intact)"
+    );
+
+    // The prior tree is the diff base: the next valid `step` diffs t0 -> t1.
+    let ok = dispatch(&mut core, "vec.throw", serde_json::json!("step"), serde_json::json!({}));
+    assert!(ok.ok, "{:?}", ok.error);
+    let produced: Vec<forge_ui::Patch> = serde_json::from_value(ok.payload["patches"].clone()).unwrap();
+    let want = diff(Some(&from_str(&t0.to_string()).unwrap()), &from_str(&t1.to_string()).unwrap());
+    assert_eq!(produced, want, "the next event diffs against the pre-throw tree");
+}
+
+/// Edge: a handler that renders an IDENTICAL tree produces an EMPTY patch (no
+/// spurious diff), and that empty-patch event still replays identically in a
+/// session (V3 #2 identical-tree empty patch).
+#[test]
+fn identical_tree_yields_empty_patch_and_replays() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.same");
+
+    // The queued "next" tree is byte-identical to the initial tree → empty patch.
+    let same = serde_json::json!({ "type": "Text", "testId": "t", "text": "same" });
+    let initial_run_id = render_initial_run_id(&mut core, "vec.same", &same, std::slice::from_ref(&same));
+
+    let resp = dispatch(&mut core, "vec.same", serde_json::json!("step"), serde_json::json!({}));
+    assert!(resp.ok, "{:?}", resp.error);
+    let patches: Vec<forge_ui::Patch> = serde_json::from_value(resp.payload["patches"].clone()).unwrap();
+    assert!(patches.is_empty(), "an identical re-render is an empty patch (no spurious diff): {patches:?}");
+
+    // The empty-patch event still replays identically in a session.
+    let replay = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.same",
+        serde_json::json!({ "run_ids": [initial_run_id, resp.payload["run_id"].as_str().unwrap()] }),
+    ));
+    assert!(replay.ok, "{:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+    // The re-derived event patch is empty too.
+    assert_eq!(replay.payload["event_patches"][0], serde_json::json!([]));
+}
+
+/// A session-replay over an empty / missing / non-array `run_ids` is a clean typed
+/// rejection, and an unknown run id in the session is a clean `ValidationError`.
+#[test]
+fn session_replay_rejects_malformed_input() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install_player(&mut core, "vec.bad");
+
+    // Missing run_ids.
+    let r = core.handle(cmd("runtime.replay_session", "vec.bad", serde_json::json!({})));
+    assert!(!r.ok);
+    assert_eq!(r.error.unwrap().code(), "ValidationError");
+
+    // Empty run_ids.
+    let r = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.bad",
+        serde_json::json!({ "run_ids": [] }),
+    ));
+    assert!(!r.ok);
+    assert_eq!(r.error.unwrap().code(), "ValidationError");
+
+    // Unknown run id.
+    let r = core.handle(cmd(
+        "runtime.replay_session",
+        "vec.bad",
+        serde_json::json!({ "run_ids": ["run_does_not_exist"] }),
+    ));
+    assert!(!r.ok);
+    assert_eq!(r.error.unwrap().code(), "ValidationError");
+}
+
 /// The named human-facing fixture applet
 /// (`forge/fixtures/e2e/interactive_ui/applet.ts`) binds `Button.onTap` and
 /// `TextField.onChange` to handler names that are the dispatch ActionRefs, and
