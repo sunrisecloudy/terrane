@@ -155,6 +155,19 @@ impl OplogPayload {
     /// imported the migrated data as a plain record write that never advanced its schema
     /// — the multi-hop bug this closes. An ordinary record import passes `None`/`None`
     /// and the row's shape is byte-identical to before.
+    ///
+    /// `mutation_at` is the ORIGIN delete's logical timestamp threaded across the sync
+    /// boundary (DL-20 review 171). A delete tombstones the record, so no envelope
+    /// carries its WHEN on the receiver either — `record_history` recovers the WHEN
+    /// from this `record.remote_import` row's `mutation_at` exactly as it does for a
+    /// LOCAL delete, so the receiver's monotone restore clock counts the imported
+    /// delete in its frontier and never stamps a restore BEFORE the delete it undid.
+    /// `None` for a non-delete import (recovered from the origin's per-chunk oplog
+    /// row), keeping an ordinary import's row bytes byte-identical to before.
+    // The remote-import row carries enough metadata to preserve provenance, schema
+    // effect, AND the delete WHEN across the relay; a struct of args would not improve
+    // a single internal call site (mirrors `migration`/`append_op_tx`).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn remote_import(
         doc_id: &str,
         chunk_id: &str,
@@ -163,6 +176,7 @@ impl OplogPayload {
         record_ids: Vec<String>,
         schema_version: Option<u64>,
         registry_collection: Option<serde_json::Value>,
+        mutation_at: Option<i64>,
     ) -> Self {
         OplogPayload {
             doc_id: doc_id.to_string(),
@@ -175,11 +189,11 @@ impl OplogPayload {
             migration: schema_version.map(|to| (0, to)),
             registry_collection,
             remote_is_migration: schema_version.is_some(),
-            // The remote-import path does not (yet) recover the original delete's
-            // mutation timestamp through sync metadata, so it never emits `mutation_at`
-            // (DL-20 review 169 scopes the fix to the LOCAL oplog). Keeping it `None`
-            // preserves the remote-import row bytes exactly.
-            mutation_at: None,
+            // The ORIGIN delete's logical timestamp, threaded across the sync boundary
+            // (DL-20 review 171) so the receiver's change feed + monotone restore clock
+            // surface the imported delete's WHEN — recovered just like a local delete.
+            // `None` for a non-delete import keeps the row bytes unchanged.
+            mutation_at,
         }
     }
 

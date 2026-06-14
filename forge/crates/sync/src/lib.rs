@@ -149,6 +149,16 @@ pub struct SyncOpEnvelope {
     /// (review 143). Threaded onto the staged [`RemoteChunk`]. `None` for an ordinary
     /// record-write chunk (and for a migration driven without a registry change).
     pub registry_collection: Option<serde_json::Value>,
+    /// `Some(at)` when this chunk authored a DELETE: the delete's logical timestamp,
+    /// recovered from the origin oplog row's `mutation_at` (DL-20 review 171). Threaded
+    /// onto the staged [`RemoteChunk`] so the receiver's `record.remote_import` row
+    /// carries the delete's WHEN, letting the receiver's change feed + monotone restore
+    /// clock count an imported late delete in their frontier — so an omitted `db.restore`
+    /// on the receiver stamps a version strictly AFTER the synced delete, never before
+    /// it. `None` for an insert/update/patch chunk (whose WHEN rides its envelope). It
+    /// rides this metadata envelope, never the content-addressed `chunk_id`, so
+    /// convergence + chunk identity are untouched.
+    pub delete_mutation_at: Option<i64>,
 }
 
 /// The resource an incoming chunk targets. M0b chunk sync only carries records.
@@ -254,6 +264,16 @@ struct OplogEntry {
     /// `malformed` so the apply boundary denies it. `false` for an ordinary record row
     /// and for a migration whose `to` was recovered cleanly.
     migration_meta_unrecoverable: bool,
+    /// `Some(at)` when this row authored a DELETE: the delete's logical timestamp,
+    /// recovered from the origin oplog row's `mutation_at` (DL-20 review 171). Threaded
+    /// onto the staged [`RemoteChunk`] so the receiver's `record.remote_import` row
+    /// carries the delete's WHEN — letting the receiver's change feed + monotone restore
+    /// clock count an imported late delete in their frontier, never stamping an omitted
+    /// restore BEFORE the delete it undid. Recovered generically from ANY row carrying
+    /// `mutation_at` (a local `record.delete` OR a relayed `record.remote_import` of a
+    /// delete), so the delete WHEN survives every hop just like the author/record ids.
+    /// `None` for an insert/update/patch row (whose WHEN rides its surviving envelope).
+    delete_mutation_at: Option<i64>,
 }
 
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
@@ -347,6 +367,16 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
         } else {
             None
         };
+        // A DELETE row carries the delete's logical timestamp as `mutation_at` (DL-20
+        // review 171): the origin recorded it because a tombstone leaves no envelope to
+        // read the WHEN from. Recover it generically from ANY row that has the key — a
+        // LOCAL `record.delete` OR a relayed `record.remote_import` of a delete (the
+        // remote-import path now carries it forward) — so the delete WHEN survives every
+        // hop, exactly like the author + record ids. An insert/update/patch row has no
+        // `mutation_at`, leaving `None`.
+        let delete_mutation_at = payload
+            .as_ref()
+            .and_then(|v| v.get("mutation_at").and_then(serde_json::Value::as_i64));
         out.insert(
             op.op_id,
             OplogEntry {
@@ -357,6 +387,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
                 schema_version,
                 registry_collection,
                 migration_meta_unrecoverable,
+                delete_mutation_at,
             },
         );
     }
@@ -392,7 +423,7 @@ fn envelope_for_chunk(
         )),
     };
     let op_id = format!("{doc_id}#{local_id}");
-    let (op, record_ids, origin_source, schema_version, registry_collection) =
+    let (op, record_ids, origin_source, schema_version, registry_collection, delete_mutation_at) =
         match oplog.get(&op_id) {
             Some(entry) => {
                 // A relayed chunk whose original author is unrecoverable cannot be
@@ -421,9 +452,10 @@ fn envelope_for_chunk(
                     entry.origin_source.clone(),
                     entry.schema_version,
                     entry.registry_collection.clone(),
+                    entry.delete_mutation_at,
                 )
             }
-            None => (SyncRecordOp::Write, Vec::new(), None, None, None),
+            None => (SyncRecordOp::Write, Vec::new(), None, None, None, None),
         };
     SyncOpEnvelope {
         resource_type: SyncResource::Record,
@@ -434,6 +466,7 @@ fn envelope_for_chunk(
         malformed,
         schema_version,
         registry_collection,
+        delete_mutation_at,
     }
 }
 
@@ -504,6 +537,11 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
                 // ...and the affected collection's evolved registry entry, so an
                 // authorized receiver evolves its registry in lockstep (review 143).
                 registry_collection: envelope.registry_collection.clone(),
+                // A chunk that authored a DELETE carries the delete's logical timestamp
+                // (review 171), so the receiver's `record.remote_import` row preserves the
+                // delete's WHEN and its monotone restore clock counts the imported delete
+                // — never stamping an omitted restore before the synced delete it undid.
+                delete_mutation_at: envelope.delete_mutation_at,
             },
             envelope,
         });

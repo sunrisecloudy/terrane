@@ -519,6 +519,7 @@ mod tests {
                 record_ids: Vec::new(),
                 schema_version: None,
                 registry_collection: None,
+                delete_mutation_at: None,
             })
             .collect()
     }
@@ -592,6 +593,7 @@ mod tests {
             record_ids: vec!["t1".into()],
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         };
         s.apply_remote_chunks(&[stale], "peer:relay", &idx).unwrap();
         assert!(

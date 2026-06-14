@@ -1721,6 +1721,7 @@ mod remote_envelope_tests {
             malformed: None,
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         }
     }
 

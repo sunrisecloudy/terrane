@@ -166,6 +166,18 @@ pub struct RemoteChunk {
     /// never widens authorization: the caller authorizes the migration as a schema
     /// change (Owner/Maintainer + `schema_write`) BEFORE the chunk is staged for import.
     pub registry_collection: Option<serde_json::Value>,
+    /// `Some(at)` when this chunk authored a DELETE: the ORIGIN delete's logical
+    /// timestamp, recovered from the origin's per-chunk oplog `mutation_at` and carried
+    /// across the sync boundary (DL-20 review 171). A delete tombstones the record, so
+    /// no envelope on the RECEIVER carries its WHEN either — `import_remote_chunk_tx`
+    /// writes it onto the receiver's `record.remote_import` oplog row so `record_history`
+    /// recovers the imported delete's WHEN exactly as it does for a local delete, and the
+    /// receiver's monotone restore clock counts the imported delete in its frontier (never
+    /// stamping an omitted restore BEFORE the delete it undid). `None` for an insert /
+    /// update / patch import (whose WHEN is read off the surviving envelope), keeping its
+    /// remote-import row bytes unchanged. Rides the oplog METADATA, never the
+    /// content-addressed chunk id, so convergence + chunk identity are untouched.
+    pub delete_mutation_at: Option<i64>,
 }
 
 /// Import ONE remote chunk inside an open transaction: append-only insert into
@@ -195,6 +207,7 @@ pub(crate) fn import_remote_chunk_tx(
         record_ids,
         schema_version,
         registry_collection,
+        delete_mutation_at,
     } = chunk;
     let existing: Option<(String, Vec<u8>)> = tx
         .query_row(
@@ -248,6 +261,13 @@ pub(crate) fn import_remote_chunk_tx(
     // registry. Carrying the metadata makes a migration a schema-affecting op at EVERY hop
     // (and lets the seam re-authorize schema_write at each one). An ordinary record import
     // passes `None`/`None`, so its row is byte-identical to before.
+    //
+    // Review 171 — synced delete WHEN: a chunk that authored a DELETE carries the
+    // ORIGIN delete's logical timestamp in `delete_mutation_at`; write it onto this
+    // receiver's `record.remote_import` row as `mutation_at` so the receiver's change
+    // feed (`record_history`) + monotone restore clock surface the imported delete's
+    // WHEN, exactly as the LOCAL delete path does. A non-delete import carries `None`,
+    // so its row stays byte-identical to before.
     let op_payload = OplogPayload::remote_import(
         doc_id,
         chunk_id,
@@ -256,6 +276,7 @@ pub(crate) fn import_remote_chunk_tx(
         record_ids.clone(),
         *schema_version,
         registry_collection.clone(),
+        *delete_mutation_at,
     )
     .encode("remote oplog payload encode")?;
     append_op_tx(

@@ -519,6 +519,7 @@ fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
             record_ids: Vec::new(),
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         })
         .collect();
     // The relay imports the chunk with an EMPTY source string: its `record.remote_import`
@@ -812,6 +813,125 @@ fn synced_chunks_are_recorded_in_receiver_oplog_as_remote_and_idempotent() {
     assert_eq!(b.list_ops().unwrap().len(), 2, "B: no duplicate import op");
 }
 
+/// DL-20 review 171 (P1): a synced DELETE must carry its `mutation_at` across the sync
+/// boundary so the RECEIVER's monotone restore clock counts the imported delete.
+///
+/// The local delete path records the delete's logical timestamp on its oplog row as
+/// `mutation_at`, and `record_history` recovers the tombstoned version's WHEN from it —
+/// so the monotone default restore clock (`max(logical_at) + 1`) lands strictly after the
+/// delete it undid (review 169). But that WHEN lived ONLY on the author's local oplog: the
+/// remote-import path dropped `mutation_at`, so a peer importing `insert@1 -> patch@2 ->
+/// delete@100` saw the tombstone with `logical_at = None`. An omitted `db.restore` there
+/// would derive its default from `max(1, 2) + 1 = 3` — BEFORE the synced `delete@100` —
+/// violating the monotone restore contract. This pins the fix: the delete's WHEN now rides
+/// the staged chunk's metadata onto the receiver's `record.remote_import` oplog row.
+///
+/// Setup: author A writes `insert@1 -> patch@2 -> delete@100` (a LATE delete whose logical
+/// timestamp jumps well past the live-state frontier); a fresh peer B syncs the history.
+/// On B (the receiver), we assert:
+///   - the imported delete's `record.remote_import` oplog row physically carries
+///     `mutation_at == 100` (the metadata crossed the boundary);
+///   - `record_history` on B surfaces the tombstoned version's WHEN as `Some(100)`;
+///   - the monotone default restore clock B computes the SAME way core's
+///     `monotone_restore_clock` does — `max(history.logical_at) + 1` — is `101`, strictly
+///     greater than the synced `delete@100`, so an omitted `db.restore` on B stamps a
+///     version AFTER the delete it reverses (not `3`, BEFORE it, as before the fix).
+#[test]
+fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it() {
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // insert@1 -> patch@2 -> delete@100 (a LATE delete: WHEN well past the data frontier).
+    author
+        .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "draft"}), 1), &idx)
+        .unwrap();
+    author
+        .apply_mutation_crdt(
+            &Mutation::Patch {
+                collection: "tasks".into(),
+                id: "t1".into(),
+                fields: json!({"title": "final"}).as_object().unwrap().clone(),
+                logical_at: Some(2),
+            },
+            &idx,
+        )
+        .unwrap();
+    author
+        .apply_mutation_crdt(
+            &Mutation::Delete {
+                collection: "tasks".into(),
+                id: "t1".into(),
+                logical_at: Some(100),
+            },
+            &idx,
+        )
+        .unwrap();
+
+    // Sync the whole history to the fresh receiver (the M0b always-allow seam).
+    let report = sync_stores(&mut author, &idx, &mut receiver, &idx).unwrap();
+    assert!(report.total_chunks_moved() > 0, "the history must move");
+    // The record is a tombstone on both peers after convergence.
+    assert!(receiver.get_record("tasks", "t1").unwrap().is_none());
+
+    // (1) The imported delete's `record.remote_import` oplog row physically carries the
+    // origin delete's logical timestamp as `mutation_at` — the metadata crossed the sync
+    // boundary (the fix). It is the only remote-import row carrying the key.
+    let carried: Vec<i64> = receiver
+        .list_ops()
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.kind == "record.remote_import")
+        .filter_map(|o| {
+            serde_json::from_slice::<Value>(&o.payload)
+                .ok()
+                .and_then(|v| v.get("mutation_at").and_then(Value::as_i64))
+        })
+        .collect();
+    assert_eq!(
+        carried,
+        vec![100],
+        "the synced delete must carry mutation_at=100 onto the receiver's remote-import row"
+    );
+
+    // (2) On the receiver, the change feed surfaces the imported delete's WHEN. Exactly one
+    // feed entry reports `Some(100)` — the tombstoned (deleted) version. Before the fix that
+    // entry reported `None`, since the remote-import row dropped `mutation_at`.
+    let feed = receiver.record_history("tasks", "t1").unwrap();
+    let with_delete_when: Vec<_> = feed
+        .iter()
+        .filter(|e| e.logical_at == Some(100))
+        .collect();
+    assert_eq!(
+        with_delete_when.len(),
+        1,
+        "exactly one feed entry surfaces the imported delete's WHEN (=100), not None"
+    );
+    assert!(
+        with_delete_when[0].state.is_none(),
+        "the entry carrying the delete WHEN is the tombstoned (deleted) version"
+    );
+
+    // (3) The default restore clock B derives the SAME way core's `monotone_restore_clock`
+    // does — `max(history.logical_at) + 1` over the receiver's change feed — now COUNTS the
+    // imported delete in its frontier, so it is 101: strictly greater than the synced
+    // `delete@100`. Restoring on B with this omitted-clock default therefore stamps a
+    // version AFTER the delete it reverses, honoring the monotone contract on the receiving
+    // peer. BEFORE the fix the imported delete's WHEN was `None`, the frontier was
+    // `max(1, 2) = 2`, and the default was `3` — BEFORE the very delete the restore undoes,
+    // the non-monotone bug. (Mirror core's cast: the frontier is a u64 logical clock and the
+    // restore takes an i64, so `+1` is computed on the cast; the clock never nears i64::MAX.)
+    let monotone_default = feed.iter().filter_map(|e| e.logical_at).max().unwrap() as i64 + 1;
+    assert_eq!(
+        monotone_default, 101,
+        "receiver's monotone restore default must count the synced delete@100 (=101), not 3"
+    );
+    assert!(
+        monotone_default > 100,
+        "the default restore WHEN must be strictly after the synced delete@100"
+    );
+}
+
 /// Review 139 (P1) — DL-13 migration chunks must SYNC to peers and advance the
 /// receiver's `schema_version`.
 ///
@@ -1057,6 +1177,7 @@ fn migration_chunk_merges_registry_even_when_receiver_already_at_target_version(
             record_ids: vec!["e1".into()],
             schema_version: Some(TARGET),
             registry_collection: Some(carried_registry.clone()),
+            delete_mutation_at: None,
         })
         .collect();
     let imported = receiver.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();
@@ -1123,6 +1244,7 @@ fn migration_chunk(
         record_ids: vec!["e1".into()],
         schema_version: Some(to_version),
         registry_collection: Some(carried_registry),
+        delete_mutation_at: None,
     }
 }
 
@@ -1432,6 +1554,7 @@ fn relay_row_marked_migration_without_recoverable_target_is_staged_malformed() {
             record_ids: vec!["e1".into()],
             schema_version: Some(0),
             registry_collection: None,
+            delete_mutation_at: None,
         })
         .collect();
     relay.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();

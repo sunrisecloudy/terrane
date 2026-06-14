@@ -211,6 +211,7 @@ mod tests {
             record_ids: vec!["t1".to_string()],
             schema_version: Some(2),
             registry_collection: None,
+            delete_mutation_at: None,
         };
         let mut relay = store();
         relay
@@ -433,6 +434,7 @@ mod tests {
             record_ids: Vec::new(),
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         }
     }
 
@@ -636,6 +638,7 @@ mod tests {
             record_ids: Vec::new(),
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         };
 
         let mut dst = store();
@@ -1234,6 +1237,7 @@ mod tests {
             record_ids: Vec::new(),
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         };
 
         let err = dst
@@ -1343,6 +1347,7 @@ mod tests {
             record_ids: Vec::new(),
             schema_version: None,
             registry_collection: None,
+            delete_mutation_at: None,
         };
 
         let mut dst = store();

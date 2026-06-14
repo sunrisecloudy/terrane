@@ -192,6 +192,11 @@ impl Store {
             // batch sync seam (reviews 139/143), so this path never carries either.
             schema_version: None,
             registry_collection: None,
+            // The delete WHEN (review 171) rides the batch sync staging seam, which
+            // recovers it from the origin's per-chunk oplog `mutation_at`; this raw
+            // single-chunk surface has no origin oplog to recover it from, so it carries
+            // `None` (the imported row then omits `mutation_at`, unchanged from before).
+            delete_mutation_at: None,
         };
         // `apply_remote_chunks` reports the number of chunks newly imported (0 or 1
         // for a single chunk); map it back to this API's was-newly-written boolean.
