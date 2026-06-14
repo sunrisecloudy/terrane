@@ -24,6 +24,8 @@
 
 use forge_domain::{AppletId, CoreCommand, CoreError, Result};
 
+use super::WorkspaceCore;
+
 pub(super) mod applet;
 pub(super) mod query;
 pub(super) mod replay;
@@ -31,6 +33,81 @@ pub(super) mod runtime_run;
 pub(super) mod schema;
 pub(super) mod ui;
 pub(super) mod workspace_export;
+
+/// One command handler: a method over [`WorkspaceCore`] state, taken as a function
+/// pointer so the registry can hold the whole catalog in one table. Every M0a
+/// handler shares this signature (`&mut self, &CoreCommand -> Result<Value>`), so a
+/// `cmd_*` method coerces directly to this type — the registry is just the old
+/// `handle` match arms turned into data (`/simplify #11b`).
+type Handler = fn(&mut WorkspaceCore, &CoreCommand) -> Result<serde_json::Value>;
+
+/// The command catalog as DATA: command name → handler, built ONCE as a static
+/// table (prd-merged/04 P-04, `forge/spec/commands.md`). Each entry is exactly one
+/// old `handle` match arm — `"name" => self.cmd_x(&cmd)` becomes
+/// `("name", WorkspaceCore::cmd_x)` — so [`Registry::dispatch`] produces the SAME
+/// routing as the hand-written match it replaces, and an unregistered name is
+/// rejected at the SAME place with the SAME CR-A5 error. Adding a command is now a
+/// single row here plus its handler module, with no change to the facade's
+/// [`handle`](WorkspaceCore::handle).
+///
+/// Ordering mirrors the former match for readability only; dispatch is by exact
+/// name match, so order is not semantically significant (each name is unique).
+const COMMANDS: &[(&str, Handler)] = &[
+    ("workspace.create", WorkspaceCore::cmd_workspace_create),
+    ("workspace.open", WorkspaceCore::cmd_workspace_open),
+    ("applet.install", WorkspaceCore::cmd_applet_install),
+    ("runtime.run", WorkspaceCore::cmd_runtime_run),
+    ("runtime.replay", WorkspaceCore::cmd_runtime_replay),
+    ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),
+    ("ui.dispatch_event", WorkspaceCore::cmd_ui_dispatch_event),
+    ("query.execute", WorkspaceCore::cmd_query_execute),
+    ("schema.apply_change", WorkspaceCore::cmd_schema_apply_change),
+    (
+        "schema.validate_compatibility",
+        WorkspaceCore::cmd_schema_validate_compatibility,
+    ),
+    ("schema.rebuild_indexes", WorkspaceCore::cmd_schema_rebuild_indexes),
+    ("workspace.export", WorkspaceCore::cmd_workspace_export),
+    ("workspace.import", WorkspaceCore::cmd_workspace_import),
+];
+
+/// The command registry: maps a command name to its handler over the [`COMMANDS`]
+/// table. Built once and consulted by [`WorkspaceCore::handle`] AFTER the CR-A3
+/// authorization gate — the registry owns ONLY routing, never authorization or
+/// lifecycle gating (those stay in the handlers / the facade exactly as before).
+pub(super) struct Registry {
+    table: &'static [(&'static str, Handler)],
+}
+
+impl Registry {
+    /// The process-wide command registry over the static [`COMMANDS`] catalog.
+    pub(super) fn new() -> Self {
+        Registry { table: COMMANDS }
+    }
+
+    /// Route `cmd` to its handler and run it against `core`, returning the handler's
+    /// result. This is the dispatch half of the former `handle` match: a registered
+    /// name calls the SAME `cmd_*` method it used to; an UNREGISTERED name returns
+    /// the IDENTICAL CR-A5 `ValidationError` (same message, same place) — the
+    /// graceful-reject contract for an unknown command.
+    ///
+    /// Authorization is NOT performed here: [`WorkspaceCore::handle`] runs
+    /// [`authorize`](super::auth::authorize) BEFORE calling `dispatch`, preserving
+    /// the CR-A3 "policy before dispatch" ordering unchanged.
+    pub(super) fn dispatch(
+        &self,
+        core: &mut WorkspaceCore,
+        cmd: &CoreCommand,
+    ) -> Result<serde_json::Value> {
+        let name = cmd.name.as_str();
+        match self.table.iter().find(|(n, _)| *n == name) {
+            Some((_, handler)) => handler(core, cmd),
+            None => Err(CoreError::ValidationError(format!(
+                "unknown command {name:?} (CR-A5: client should negotiate capability)"
+            ))),
+        }
+    }
+}
 
 /// Extract and require the command's `applet_id` (from the envelope, or the
 /// payload as a fallback).

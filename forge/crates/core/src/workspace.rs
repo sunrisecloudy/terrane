@@ -36,6 +36,11 @@ pub(in crate::workspace) use commands::applet::{InstallTrust, InstalledApplet};
 // The registry → storage-index helper the open-time index reconstruction
 // (`rebuild_indexes_from_registry`) shares with the `schema.*` command module.
 use commands::schema::indexed_fields;
+// The command [`Registry`] that turns the former `handle` dispatch match into a
+// built-once name → handler table (/simplify #11b). `handle` consults it AFTER the
+// CR-A3 `authorize` gate, preserving identical routing + the CR-A5 unknown-command
+// reject.
+use commands::Registry;
 use crate::event::EventSink;
 use crate::sync_rbac::{
     authorize_remote_op, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuthDecision,
@@ -526,24 +531,15 @@ impl WorkspaceCore {
     /// capabilities are checked per `ctx.*` call.
     pub fn handle(&mut self, cmd: CoreCommand) -> CoreResponse {
         let request_id = cmd.request_id.clone();
-        let result = authorize(&cmd).and_then(|()| match cmd.name.as_str() {
-            "workspace.create" => self.cmd_workspace_create(&cmd),
-            "workspace.open" => self.cmd_workspace_open(&cmd),
-            "applet.install" => self.cmd_applet_install(&cmd),
-            "runtime.run" => self.cmd_runtime_run(&cmd),
-            "runtime.replay" => self.cmd_runtime_replay(&cmd),
-            "runtime.replay_session" => self.cmd_runtime_replay_session(&cmd),
-            "ui.dispatch_event" => self.cmd_ui_dispatch_event(&cmd),
-            "query.execute" => self.cmd_query_execute(&cmd),
-            "schema.apply_change" => self.cmd_schema_apply_change(&cmd),
-            "schema.validate_compatibility" => self.cmd_schema_validate_compatibility(&cmd),
-            "schema.rebuild_indexes" => self.cmd_schema_rebuild_indexes(&cmd),
-            "workspace.export" => self.cmd_workspace_export(&cmd),
-            "workspace.import" => self.cmd_workspace_import(&cmd),
-            other => Err(CoreError::ValidationError(format!(
-                "unknown command {other:?} (CR-A5: client should negotiate capability)"
-            ))),
-        });
+        // CR-A3 ordering, UNCHANGED: command-level RBAC runs FIRST; only on `Ok(())`
+        // does dispatch proceed. The former hand-written match is now the command
+        // `Registry` (the catalog as data, built once): `dispatch` routes a
+        // registered name to the SAME `cmd_*` handler and rejects an unregistered
+        // name with the IDENTICAL CR-A5 `ValidationError`. Authorization, the
+        // lifecycle suspension gate (inside `cmd_ui_dispatch_event`), and every
+        // handler body are untouched — only the match-vs-table shape changed
+        // (/simplify #11b).
+        let result = authorize(&cmd).and_then(|()| command_registry().dispatch(self, &cmd));
         match result {
             Ok(payload) => CoreResponse::ok(request_id, payload),
             Err(error) => CoreResponse::err(request_id, error),
@@ -555,7 +551,10 @@ impl WorkspaceCore {
     /// `workspace.create` — in M0a the store is created on open, so this reports
     /// the workspace identity + the base logical version (CR-A2; M0b adds
     /// templates/owner wiring).
-    fn cmd_workspace_create(&mut self, _cmd: &CoreCommand) -> Result<serde_json::Value> {
+    pub(in crate::workspace) fn cmd_workspace_create(
+        &mut self,
+        _cmd: &CoreCommand,
+    ) -> Result<serde_json::Value> {
         Ok(serde_json::json!({
             "workspace_id": self.workspace_id,
             "root_version": 0,
@@ -564,7 +563,10 @@ impl WorkspaceCore {
 
     /// `workspace.open` — report workspace metadata + the current logical clock
     /// (CR-A2). The file is already open (this core wraps one workspace file).
-    fn cmd_workspace_open(&mut self, _cmd: &CoreCommand) -> Result<serde_json::Value> {
+    pub(in crate::workspace) fn cmd_workspace_open(
+        &mut self,
+        _cmd: &CoreCommand,
+    ) -> Result<serde_json::Value> {
         Ok(serde_json::json!({
             "workspace_id": self.workspace_id,
             "logical_clock": self.events.len(),
@@ -604,6 +606,16 @@ impl WorkspaceCore {
     fn next_run_counter(&mut self) -> Result<u64> {
         next_run_counter(&mut self.store)
     }
+}
+
+/// The process-wide command [`Registry`], built ONCE on first dispatch and reused
+/// for every [`WorkspaceCore::handle`]. The registry holds only the static command
+/// catalog (a `&'static` table) and no per-workspace state, so one shared instance
+/// routes every workspace's commands identically. Lazily initialized via a
+/// [`OnceLock`](std::sync::OnceLock) so construction happens exactly once.
+fn command_registry() -> &'static Registry {
+    static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(Registry::new)
 }
 
 /// The sync **source id** for a Loro peer id — the form
