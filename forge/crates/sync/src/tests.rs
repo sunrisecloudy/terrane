@@ -1097,6 +1097,208 @@ fn migration_chunk_merges_registry_even_when_receiver_already_at_target_version(
     assert_eq!(persisted_again, persisted, "the re-import left the merged registry byte-identical");
 }
 
+/// Build the `{ "name", "collection" }` carried-registry payload a migration chunk
+/// ships, from an evolved `expenses` registry's collection entry.
+#[cfg(test)]
+fn carried_expenses(registry: &forge_schema::SchemaRegistry) -> Value {
+    let def = registry.collection("expenses").unwrap().clone();
+    json!({ "name": "expenses", "collection": serde_json::to_value(&def).unwrap() })
+}
+
+/// Stage one chunk as a DL-13 migration chunk carrying `schema_version` + a
+/// `registry_collection` payload, mirroring the sync seam's `RemoteChunk` shape.
+#[cfg(test)]
+fn migration_chunk(
+    doc_id: &str,
+    chunk: &forge_storage::ChunkRow,
+    to_version: u64,
+    carried_registry: Value,
+) -> RemoteChunk {
+    RemoteChunk {
+        doc_id: doc_id.to_string(),
+        chunk_id: exchanged_chunk_id(&chunk.format, &chunk.payload),
+        format: chunk.format.clone(),
+        payload: chunk.payload.clone(),
+        author_actor_id: Some("peer:11".into()),
+        record_ids: vec!["e1".into()],
+        schema_version: Some(to_version),
+        registry_collection: Some(carried_registry),
+    }
+}
+
+/// Review 147 (P1) — the per-collection registry merge on a migration import must be
+/// FORWARD-ONLY, not a blind replace. A receiver whose `expenses` collection is
+/// ALREADY evolved (here `amount` widened int → float, at the migration target version)
+/// imports a DELAYED, OLDER migration chunk that carries `expenses` at the int_num
+/// stage. Under the review-w9 always-merge fix this chunk reaches
+/// `evolve_registry_collection_tx` (the receiver is already at the target, so the
+/// version advance is a no-op but the registry merge still runs) — and a blind replace
+/// would roll the registry BACKWARD to int_num while the global `schema_version` stays
+/// newer. The forward-only guard must SKIP the stale carried def, leaving `amount` at
+/// float_num, the records untouched, and the version unregressed.
+#[test]
+fn out_of_order_older_migration_chunk_does_not_roll_back_evolved_registry() {
+    use forge_domain::ActorId;
+    use forge_schema::{FieldType, SchemaChange, SchemaRegistry};
+    use forge_storage::SCHEMA_REGISTRY_KEY;
+
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // The author writes one `expenses` chunk (a record payload); its bytes are reused
+    // as the body of the older (int-stage) migration chunk the receiver will import.
+    author
+        .apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 7}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("expenses");
+    let chunk = author.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+    // Build the OLDER (int_num) `expenses` registry — the stage the delayed chunk carries.
+    let mut int_registry = SchemaRegistry::new();
+    int_registry
+        .apply_change(SchemaChange::AddCollection { name: "expenses".into() })
+        .unwrap();
+    int_registry
+        .apply_change(SchemaChange::AddField {
+            collection: "expenses".into(),
+            actor: ActorId::new("alice"),
+            name: "amount".into(),
+            ty: FieldType::IntNum,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+
+    // The receiver is ALREADY AHEAD: the SAME `f_alice_0` field widened int → float, at
+    // the migration target version. Pre-seed that evolved registry + version directly.
+    let mut float_registry = int_registry.clone();
+    float_registry
+        .apply_change(SchemaChange::WidenField {
+            collection: "expenses".into(),
+            field_id: "f_alice_0".into(),
+            to: FieldType::FloatNum,
+        })
+        .unwrap();
+    let evolved_def = float_registry.collection("expenses").unwrap().clone();
+    receiver
+        .kv_set(
+            "__forge/meta",
+            SCHEMA_REGISTRY_KEY,
+            &serde_json::to_vec(&float_registry).unwrap(),
+            "application/json",
+        )
+        .unwrap();
+    const TARGET: u64 = 2;
+    receiver.advance_schema_version(TARGET).unwrap();
+
+    // The DELAYED OLDER chunk carries `expenses` at the int_num stage and the SAME
+    // target version (so the version advance is a no-op and the registry merge runs).
+    let stale = migration_chunk(&doc_id, &chunk, TARGET, carried_expenses(&int_registry));
+    let imported = receiver.apply_remote_chunks(&[stale], "peer:11", &idx).unwrap();
+    assert_eq!(imported, 1, "the (older) migration chunk is still imported");
+
+    // (registry) The CRUX: `amount` stays FLOAT — the stale int carried def was skipped,
+    // not blindly replaced, so the evolved registry is NOT rolled back.
+    let persisted = receiver
+        .kv_get("__forge/meta", SCHEMA_REGISTRY_KEY)
+        .unwrap()
+        .expect("the receiver still has its evolved registry");
+    let merged: SchemaRegistry = serde_json::from_slice(&persisted).unwrap();
+    let merged_col = merged.collection("expenses").unwrap();
+    assert_eq!(
+        merged_col, &evolved_def,
+        "the receiver keeps its float `amount` — the older int chunk did not roll it back"
+    );
+    assert_eq!(
+        *merged_col.field("f_alice_0").unwrap().ty(),
+        FieldType::FloatNum,
+        "amount must remain float_num (not regressed to int_num)"
+    );
+
+    // (records) The record landed unaffected by the registry decision.
+    assert_eq!(
+        receiver.get_record("expenses", "e1").unwrap().unwrap().fields["amount"],
+        json!(7)
+    );
+    // (version) The global schema_version is not regressed.
+    assert_eq!(
+        receiver.schema_version().unwrap(),
+        TARGET,
+        "the workspace-global schema_version is not rolled back by a stale chunk"
+    );
+}
+
+/// Review 147 (companion) — a NORMAL FORWARD migration chunk still applies its carried
+/// registry. A receiver that knows `expenses` at the int_num stage imports a migration
+/// chunk carrying the evolved float_num `expenses`; the forward-compatible superset must
+/// be MERGED (`amount` becomes float), confirming the forward-only guard does not block
+/// legitimate forward evolution.
+#[test]
+fn normal_forward_migration_chunk_still_applies_evolved_registry() {
+    use forge_domain::ActorId;
+    use forge_schema::{FieldType, SchemaChange, SchemaRegistry};
+    use forge_storage::SCHEMA_REGISTRY_KEY;
+
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    author
+        .apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 9}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("expenses");
+    let chunk = author.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+    // Receiver is at the int_num stage (knows `expenses.amount: int`, version 1).
+    let mut int_registry = SchemaRegistry::new();
+    int_registry
+        .apply_change(SchemaChange::AddCollection { name: "expenses".into() })
+        .unwrap();
+    int_registry
+        .apply_change(SchemaChange::AddField {
+            collection: "expenses".into(),
+            actor: ActorId::new("alice"),
+            name: "amount".into(),
+            ty: FieldType::IntNum,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+    receiver
+        .kv_set(
+            "__forge/meta",
+            SCHEMA_REGISTRY_KEY,
+            &serde_json::to_vec(&int_registry).unwrap(),
+            "application/json",
+        )
+        .unwrap();
+
+    // The migration chunk carries the EVOLVED float `expenses` (a forward superset).
+    let mut float_registry = int_registry.clone();
+    float_registry
+        .apply_change(SchemaChange::WidenField {
+            collection: "expenses".into(),
+            field_id: "f_alice_0".into(),
+            to: FieldType::FloatNum,
+        })
+        .unwrap();
+    let evolved_def = float_registry.collection("expenses").unwrap().clone();
+
+    let fwd = migration_chunk(&doc_id, &chunk, 2, carried_expenses(&float_registry));
+    receiver.apply_remote_chunks(&[fwd], "peer:11", &idx).unwrap();
+
+    // The forward-compatible carried def was MERGED — `amount` is now float_num.
+    let persisted = receiver.kv_get("__forge/meta", SCHEMA_REGISTRY_KEY).unwrap().unwrap();
+    let merged: SchemaRegistry = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(
+        merged.collection("expenses").unwrap(),
+        &evolved_def,
+        "a forward migration chunk must apply its evolved registry entry"
+    );
+    assert_eq!(receiver.schema_version().unwrap(), 2, "the receiver advanced to the target");
+}
+
 /// Review 145 (fail-closed): a `record.remote_import` oplog row MARKED schema-affecting
 /// (`is_migration: true`) but whose `to` target is UNRECOVERABLE must be staged `malformed`
 /// so a relaying peer DENIES it rather than importing migrated data as a plain record write

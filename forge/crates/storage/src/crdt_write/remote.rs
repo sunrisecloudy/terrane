@@ -291,11 +291,13 @@ pub(crate) fn import_remote_chunk_tx(
         // workspace-wide counter, so a receiver whose global version already reached the
         // target via UNRELATED schema work on OTHER collections would otherwise import
         // this collection's migrated records while skipping its registry entry — leaving
-        // data ahead of schema (the exact drift class review 143 closed). `sync_collection`
-        // is a replace-or-insert + re-validate, so applying it on a converged / already-
-        // migrated peer is a safe idempotent no-op; a malformed carried entry (or a
-        // re-validation failure) rolls the whole import back together with the chunk +
-        // version, so the receiver never persists a version ahead of its registry.
+        // data ahead of schema (the exact drift class review 143 closed). The merge is
+        // FORWARD-ONLY (review 147): a delayed OLDER chunk for a collection this peer has
+        // already evolved past is SKIPPED (the local entry stays ahead) rather than
+        // rolling the registry backward, while applying it on a converged / already-
+        // migrated peer stays a safe idempotent no-op; a malformed carried entry (or a
+        // re-validation failure) still rolls the whole import back together with the chunk
+        // + version, so the receiver never persists a version ahead of its registry.
         if let Some(registry_collection) = registry_collection {
             evolve_registry_collection_tx(tx, registry_collection)?;
         }
@@ -306,9 +308,11 @@ pub(crate) fn import_remote_chunk_tx(
 /// Evolve the receiver's persisted `SchemaRegistry` with the affected collection's
 /// EVOLVED entry carried by an authorized DL-13 migration chunk, IN THE caller's
 /// import transaction (review 143). Reads the persisted registry JSON (default empty),
-/// deserializes the carried `CollectionDef`, merges it via
-/// [`SchemaRegistry::sync_collection`] (replace-or-insert + re-validate), and writes
-/// the merged registry back under `__forge/meta`/`schema_registry`.
+/// deserializes the carried `CollectionDef`, merges it FORWARD-ONLY via
+/// [`SchemaRegistry::sync_collection_forward_only`] (review 147: apply only when the
+/// carried def is a forward-compatible additive superset of the local entry, else skip
+/// the stale out-of-order chunk and leave the local entry ahead), and writes the merged
+/// registry back under `__forge/meta`/`schema_registry`.
 ///
 /// Because this runs inside the same transaction as the chunk insert + the
 /// `schema_version` advance, the registry, the records, and the version commit (or
@@ -356,7 +360,19 @@ fn evolve_registry_collection_tx(
         }
         None => SchemaRegistry::new(),
     };
-    registry.sync_collection(name, collection)?;
+    // FORWARD-ONLY merge (review 147): apply the carried entry ONLY when it is a
+    // forward-compatible additive superset of the receiver's local `name` entry. A
+    // delayed OLDER migration chunk — for a collection this peer already evolved PAST
+    // (an out-of-order arrival, or a later migration that converged first) — would
+    // otherwise BLINDLY REPLACE and roll the registry BACKWARD (narrowing/dropping a
+    // field) while the workspace-global `schema_version` stays newer. When the carried
+    // def is stale the merge is SKIPPED and the local entry is left unchanged (it is
+    // already ahead); the records still import and the version still advances, so the
+    // receiver never regresses its schema. A first-seen collection (no local entry) is
+    // always a forward step and inserts. The decision is pure in (local, carried) and
+    // re-validates on apply exactly as before, so a malformed entry still rolls the
+    // whole import back.
+    registry.sync_collection_forward_only(name, collection)?;
 
     let bytes = serde_json::to_vec(&registry).map_err(|e| {
         CoreError::StorageError(format!("serialize schema registry on sync apply: {e}"))

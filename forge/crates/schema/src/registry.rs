@@ -321,6 +321,69 @@ impl SchemaRegistry {
         Ok(())
     }
 
+    /// FORWARD-ONLY variant of [`Self::sync_collection`] for the migration-import
+    /// seam (DL-13 review 147). Migration chunks can arrive OUT OF ORDER: a delayed
+    /// OLDER chunk for a collection the receiver has already evolved PAST (via a later
+    /// migration that converged first, or unrelated schema work) would, under the
+    /// blind-replace [`Self::sync_collection`], roll that collection's registry
+    /// BACKWARD — narrowing a field or dropping one — while the workspace-global
+    /// `schema_version` stays newer. That is the exact data-ahead-of-schema drift the
+    /// review-w9 always-merge fix must not reintroduce.
+    ///
+    /// So the carried `collection` is applied ONLY when it is a forward-compatible,
+    /// additive superset of the receiver's local entry — every local field still
+    /// present, each field's type only widened (never narrowed), no field removed or
+    /// un-deprecated, and no actor's id counter rolled back — i.e. exactly the
+    /// additive-only relation [`Self::validate_compatibility`] enforces, evaluated as
+    /// a pure predicate over `(local, carried)`. When the receiver has no entry for
+    /// `name` yet, the carried def is simply inserted (any def is a forward evolution
+    /// of "absent").
+    ///
+    /// Returns `Ok(true)` when the carried def was applied (inserted or a forward
+    /// merge), `Ok(false)` when it was SKIPPED because the local entry is already
+    /// ahead (a stale out-of-order chunk — the local stays unchanged, never rolled
+    /// back). The decision is a pure function of `(local def, carried def)`, so it is
+    /// deterministic and replay-identical. On apply, the merged registry is
+    /// re-validated exactly as [`Self::sync_collection`] does, so a malformed carried
+    /// entry still rejects (and rolls the receiver's import back) rather than
+    /// persisting a structurally-invalid schema.
+    pub fn sync_collection_forward_only(
+        &mut self,
+        name: &str,
+        collection: CollectionDef,
+    ) -> Result<bool> {
+        if name.trim().is_empty() {
+            return Err(CoreError::ValidationError(
+                "sync_collection_forward_only: empty collection name".into(),
+            ));
+        }
+        // Forward-only: skip a carried def that would roll an already-ahead local
+        // collection backward (a delayed older migration chunk). "Absent locally" is
+        // always a forward step, so a first-seen collection inserts.
+        if let Some(local) = self.collections.get(name) {
+            if !Self::is_forward_compatible_superset(local, &collection) {
+                return Ok(false);
+            }
+        }
+        self.sync_collection(name, collection)?;
+        Ok(true)
+    }
+
+    /// True iff `carried` is a forward-compatible, additive-only SUPERSET of `local`:
+    /// every field in `local` is still present in `carried` with a type that only
+    /// widened (never narrowed) and was not un-deprecated, and no actor's per-actor id
+    /// counter went backwards (DL-7/DL-8). This is the same additive relation
+    /// [`Self::check_collection_compatibility`] enforces (reusing the
+    /// [`FieldType::can_widen_to`] ordering: `int_num < float_num`, any scalar
+    /// `<= Scalar`, `T <= Nullable(T)`), surfaced as a pure boolean predicate for the
+    /// forward-only migration merge. Pure in `(local, carried)` — no I/O, deterministic.
+    pub fn is_forward_compatible_superset(local: &CollectionDef, carried: &CollectionDef) -> bool {
+        // `check_collection_compatibility(name, old, new)` proves `new` is an additive
+        // evolution of `old`; here `old = local`, `new = carried`. The `name` only
+        // shapes the error message, which we discard.
+        Self::check_collection_compatibility(local.name(), local, carried).is_ok()
+    }
+
     // -------------------------------------------------------------- validation
 
     /// Validate a record against `collection`'s schema (DL-12 validate-on-write).
@@ -1240,6 +1303,96 @@ mod tests {
         let err = bad.validated().unwrap_err();
         assert_eq!(err.code(), "SchemaCompatibilityError");
         assert!(err.to_string().contains("duplicate field name"), "got {err}");
+    }
+
+    // -------- review 147: forward-only per-collection migration merge --------
+
+    /// A single-collection registry `m` with one field `amount` of type `ty`
+    /// (minted by `alice`, so the field id is the stable `f_alice_0`).
+    fn amount_registry(ty: FieldType) -> SchemaRegistry {
+        let mut r = SchemaRegistry::new();
+        r.apply_change(SchemaChange::AddCollection { name: "m".into() }).unwrap();
+        r.apply_change(SchemaChange::AddField {
+            collection: "m".into(),
+            actor: actor("alice"),
+            name: "amount".into(),
+            ty,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+        r
+    }
+
+    #[test]
+    fn forward_only_superset_predicate_matches_widen_ordering() {
+        let int_col = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
+        let float_col = amount_registry(FieldType::FloatNum).collection("m").unwrap().clone();
+        // int -> float is a forward (additive) widening: float is a superset of int.
+        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &float_col));
+        // float -> int is a NARROWING: int is NOT a forward superset of float.
+        assert!(!SchemaRegistry::is_forward_compatible_superset(&float_col, &int_col));
+        // Identity is trivially forward-compatible.
+        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &int_col));
+        // Dropping a field (carried lacks a local field) is NOT a forward superset.
+        let mut empty = SchemaRegistry::new();
+        empty.apply_change(SchemaChange::AddCollection { name: "m".into() }).unwrap();
+        let empty_col = empty.collection("m").unwrap().clone();
+        assert!(!SchemaRegistry::is_forward_compatible_superset(&int_col, &empty_col));
+        // Adding a field IS a forward superset (additive).
+        let mut grown = amount_registry(FieldType::IntNum);
+        grown
+            .apply_change(SchemaChange::AddField {
+                collection: "m".into(),
+                actor: actor("alice"),
+                name: "note".into(),
+                ty: FieldType::Text,
+                indexed: false,
+                required: false,
+            })
+            .unwrap();
+        let grown_col = grown.collection("m").unwrap().clone();
+        assert!(SchemaRegistry::is_forward_compatible_superset(&int_col, &grown_col));
+    }
+
+    #[test]
+    fn sync_collection_forward_only_inserts_when_absent() {
+        // A first-seen collection has no local entry, so any carried def is a forward
+        // step and is inserted.
+        let mut local = SchemaRegistry::new();
+        let carried = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
+        assert!(local.sync_collection_forward_only("m", carried.clone()).unwrap());
+        assert_eq!(local.collection("m").unwrap(), &carried);
+    }
+
+    #[test]
+    fn sync_collection_forward_only_applies_a_forward_widen() {
+        let mut local = amount_registry(FieldType::IntNum);
+        let float_col = amount_registry(FieldType::FloatNum).collection("m").unwrap().clone();
+        assert!(local.sync_collection_forward_only("m", float_col.clone()).unwrap());
+        assert_eq!(
+            *local.collection("m").unwrap().field("f_alice_0").unwrap().ty(),
+            FieldType::FloatNum,
+            "a forward widen must be merged"
+        );
+    }
+
+    #[test]
+    fn sync_collection_forward_only_skips_a_stale_narrowing() {
+        // Local already at float; a STALE older carried def at int must be SKIPPED so
+        // the registry is not rolled back.
+        let mut local = amount_registry(FieldType::FloatNum);
+        let before = local.collection("m").unwrap().clone();
+        let int_col = amount_registry(FieldType::IntNum).collection("m").unwrap().clone();
+        assert!(
+            !local.sync_collection_forward_only("m", int_col).unwrap(),
+            "a stale narrowing carried def must be skipped (returns false)"
+        );
+        assert_eq!(
+            local.collection("m").unwrap(),
+            &before,
+            "the local (ahead) entry stays float — never rolled back to int"
+        );
     }
 
     #[test]
