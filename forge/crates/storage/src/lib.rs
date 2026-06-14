@@ -42,7 +42,9 @@ pub use query::{
 };
 
 pub mod index;
-pub use index::{CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexState};
+pub use index::{
+    CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexManagerSnapshot, IndexState,
+};
 
 pub mod crdt_write;
 pub use crdt_write::{collection_doc_id, collection_of_doc, RemoteChunk, CHUNK_FORMAT, LOCAL_PEER_ID};

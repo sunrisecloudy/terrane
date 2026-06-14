@@ -354,6 +354,23 @@ impl Store {
     ) -> Result<String> {
         indexes.create_index(&self.conn, collection, field_id, kind)
     }
+
+    /// Whether a physical SQLite object (index or table) named `name` exists in this
+    /// store. Used to assert a rolled-back schema change left no live index — the
+    /// physical structure must roll back with the transaction that created it (review
+    /// 142 P2). A thin `sqlite_master` lookup; the name need not be validated (it is a
+    /// literal bound parameter).
+    pub fn physical_object_exists(&self, name: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                rusqlite::params![name],
+                |r| r.get(0),
+            )
+            .map_err(crate::errors::map_sql)?;
+        Ok(count > 0)
+    }
 }
 
 /// Bind a JSON scalar as a SQLite value for a parameterized predicate. Numbers

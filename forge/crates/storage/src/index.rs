@@ -318,6 +318,18 @@ pub struct IndexManager {
     defs: BTreeMap<DefKey, IndexDef>,
 }
 
+/// An opaque snapshot of an [`IndexManager`]'s in-memory definitions, taken before
+/// a transaction that mutates the manager (e.g. `create_index_tx`). A SQLite
+/// rollback reverts only the PHYSICAL structures; the in-memory `defs` map is not
+/// transactional, so a caller composing index mutation into a larger
+/// [`Store::transact`] must `restore` this snapshot if the transaction rolls back —
+/// otherwise a rejected schema change would leave a live in-memory index entry while
+/// the physical index, records, and version all rolled back (review 142 P2).
+#[derive(Clone)]
+pub struct IndexManagerSnapshot {
+    defs: BTreeMap<DefKey, IndexDef>,
+}
+
 impl Default for IndexManager {
     fn default() -> Self {
         Self::new()
@@ -410,6 +422,45 @@ impl IndexManager {
         }
         self.register(def);
         Ok(index_id)
+    }
+
+    /// Create an index INSIDE a caller-provided transaction (review 142 P2).
+    ///
+    /// Identical to [`create_index`](Self::create_index) — `tx` derefs to the
+    /// connection, so the physical DDL runs on the transaction and rolls back with
+    /// it — but exposed by name so the core's `schema.apply_change` composes index
+    /// creation into the SAME [`Store::transact`] as the migration, the version
+    /// advance, and the registry persist. If that transaction rolls back, the
+    /// physical index is gone (SQLite reverted it), but the in-memory `defs` mutation
+    /// this performs is NOT transactional; the caller must
+    /// [`snapshot`](Self::snapshot) before and [`restore`](Self::restore) on rollback
+    /// so a rejected schema change leaves no live in-memory index entry. Validates the
+    /// field id up front (a hostile id rejects before any DDL — same as `create_index`).
+    pub fn create_index_tx(
+        &mut self,
+        tx: &Connection,
+        collection: &str,
+        field_id: &str,
+        kind: CreateIndexKind,
+    ) -> Result<String> {
+        self.create_index(tx, collection, field_id, kind)
+    }
+
+    /// Snapshot the in-memory definitions before a transaction that mutates the
+    /// manager, so the caller can [`restore`](Self::restore) them if the transaction
+    /// rolls back (review 142 P2). Physical structures are transactional (SQLite
+    /// rolls them back); the in-memory `defs` map is not, so this pairs with the
+    /// transaction's commit/rollback to keep the manager and the physical index in
+    /// lockstep.
+    pub fn snapshot(&self) -> IndexManagerSnapshot {
+        IndexManagerSnapshot { defs: self.defs.clone() }
+    }
+
+    /// Restore the in-memory definitions from a [`snapshot`](Self::snapshot) taken
+    /// before a now-rolled-back transaction, so the manager matches the physical
+    /// index state the rollback restored (review 142 P2).
+    pub fn restore(&mut self, snapshot: IndexManagerSnapshot) {
+        self.defs = snapshot.defs;
     }
 
     /// Deprecate (DL-5 / DL-8 "delete = deprecate + retain") the registered index

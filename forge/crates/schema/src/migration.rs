@@ -37,13 +37,24 @@ pub enum FieldTransform {
         name: String,
         default: serde_json::Value,
     },
-    /// DL-7: change only the display-name projection from `from_name` to `to_name`.
-    /// The stable `field_id` value is authoritative and untouched, so the record's
-    /// merge identity never moves; only the display projection's key changes (a
-    /// move of `fields[from_name]` → `fields[to_name]`). Both names are explicit so
-    /// the rename is exact for schema-minted ids (review 138 P2).
+    /// Move a renamed field's stored value to its new keys (DL-13).
+    ///
+    /// Under the M0a `f_<name>` stand-in scheme the record-side field id is
+    /// NAME-DERIVED (`forge_storage`'s `materialize_field_ids` keys a display field
+    /// `<name>` under `f_<name>`), so a rename is NOT display-only: the stand-in id a
+    /// record carries for the OLD name (`from_field_id` = `f_<old_name>`) no longer
+    /// addresses the field after the rename, and the index / write path / query all
+    /// move to `f_<new_name>` (`to_field_id`). So the transform moves BOTH the
+    /// stand-id value `field_ids[from_field_id]` → `field_ids[to_field_id]` AND the
+    /// display projection `fields[from_name]` → `fields[to_name]`, keeping a single id
+    /// scheme (review 142 P1: under round-2's "display-only rename" an indexed rename
+    /// stranded the record under `f_<old_name>` while the index served `f_<new_name>`).
+    /// All four keys are explicit so the rename is exact for the stand-in
+    /// (`from_field_id == to_field_id` — a same-name rename — is a no-op; re-applying
+    /// after the move finds nothing under the old keys, so it is idempotent).
     RenameField {
-        field_id: String,
+        from_field_id: String,
+        to_field_id: String,
         from_name: String,
         to_name: String,
     },
@@ -69,13 +80,14 @@ pub enum FieldTransform {
 }
 
 impl FieldTransform {
-    /// The stable field id this transform targets (DL-7).
+    /// The (post-transform) field id this transform targets. For a rename this is
+    /// the NEW stand-in (`to_field_id`) — the id the field carries after the move.
     pub fn field_id(&self) -> &str {
         match self {
             FieldTransform::AddField { field_id, .. }
-            | FieldTransform::RenameField { field_id, .. }
             | FieldTransform::DropField { field_id, .. }
             | FieldTransform::WidenField { field_id, .. } => field_id,
+            FieldTransform::RenameField { to_field_id, .. } => to_field_id,
         }
     }
 }
@@ -174,16 +186,25 @@ fn apply_transform(record: &mut RecordEnvelope, transform: &FieldTransform) -> R
             Ok(())
         }
         FieldTransform::RenameField {
-            field_id: _,
+            from_field_id,
+            to_field_id,
             from_name,
             to_name,
         } => {
-            // DL-7: a rename changes only the display projection's key. The stable-id
-            // value is authoritative and untouched (so merge identity never moves);
-            // we move `fields[from_name]` → `fields[to_name]` so the materialized
-            // record reflects the new display name. A record that does not carry the
-            // old display name is a no-op (idempotent: re-applying after the move
-            // finds nothing under `from_name`).
+            // M0a (review 142 P1): the record-side stand-in id is NAME-DERIVED, so a
+            // rename moves BOTH the stand-in value `field_ids[from_field_id]` →
+            // `field_ids[to_field_id]` AND the display projection `fields[from_name]` →
+            // `fields[to_name]`. Moving only the display projection would STRAND the
+            // value under `f_<old_name>` while the index (and every later write/query)
+            // moved to `f_<new_name>` — a split identity. A record that does not carry
+            // the old keys is a no-op (idempotent: re-applying after the move finds
+            // nothing under the old keys). A same-name rename
+            // (`from_field_id == to_field_id`) moves nothing.
+            if from_field_id != to_field_id {
+                if let Some(value) = record.field_ids.remove(from_field_id) {
+                    record.field_ids.insert(to_field_id.clone(), value);
+                }
+            }
             if from_name != to_name {
                 if let Some(value) = record.fields.remove(from_name) {
                     record.fields.insert(to_name.clone(), value);
@@ -506,20 +527,45 @@ mod tests {
     }
 
     #[test]
-    fn rename_moves_display_name_and_preserves_stable_id_value() {
-        let mut r = rec(&[("f_alice_0", serde_json::json!("hi"))]);
+    fn rename_moves_stand_in_id_and_display_name() {
+        // Review 142 P1: under the M0a `f_<name>` stand-in scheme a rename moves BOTH
+        // the record-side stand-in `f_<old>` → `f_<new>` AND the display projection
+        // `<old>` → `<new>`. Moving only the display would strand the value under
+        // `f_label` while the index/write/query moved to `f_title` (split identity).
+        let mut r = rec(&[("f_label", serde_json::json!("hi"))]);
         r.fields.insert("label".into(), serde_json::json!("hi"));
         let d = desc(vec![FieldTransform::RenameField {
-            field_id: "f_alice_0".into(),
+            from_field_id: "f_label".into(),
+            to_field_id: "f_title".into(),
             from_name: "label".into(),
             to_name: "title".into(),
         }]);
         let out = migrate_record(&r, &d).unwrap();
-        // DL-7: the stable id value never moves on a rename.
-        assert_eq!(out.field_ids["f_alice_0"], serde_json::json!("hi"));
-        // The display projection's key moves old → new (review 138 P2).
+        // The stand-in value MOVED old → new (not stranded under f_label).
+        assert!(!out.field_ids.contains_key("f_label"), "old stand-in id must be gone");
+        assert_eq!(out.field_ids["f_title"], serde_json::json!("hi"));
+        // The display projection's key moves old → new.
         assert!(!out.fields.contains_key("label"), "old display name must be gone");
         assert_eq!(out.fields["title"], serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn rename_is_idempotent_after_the_move() {
+        // Re-applying a rename after the move finds nothing under the old keys, so it
+        // is a no-op — the record already reads under the new keys.
+        let mut r = rec(&[("f_title", serde_json::json!("hi"))]);
+        r.fields.insert("title".into(), serde_json::json!("hi"));
+        let d = desc(vec![FieldTransform::RenameField {
+            from_field_id: "f_label".into(),
+            to_field_id: "f_title".into(),
+            from_name: "label".into(),
+            to_name: "title".into(),
+        }]);
+        let out = migrate_record(&r, &d).unwrap();
+        assert_eq!(out.field_ids["f_title"], serde_json::json!("hi"));
+        assert_eq!(out.fields["title"], serde_json::json!("hi"));
+        assert!(!out.field_ids.contains_key("f_label"));
+        assert!(!out.fields.contains_key("label"));
     }
 
     #[test]
@@ -592,7 +638,8 @@ mod tests {
                 name: "old".into(),
             },
             FieldTransform::RenameField {
-                field_id: "f_a".into(),
+                from_field_id: "f_a".into(),
+                to_field_id: "f_amount".into(),
                 from_name: "a".into(),
                 to_name: "amount".into(),
             },

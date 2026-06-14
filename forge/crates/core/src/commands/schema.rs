@@ -69,53 +69,42 @@ impl WorkspaceCore {
         let mut next = self.registry.clone();
         next.apply_change(change.clone())?;
 
-        // DL-8 → DL-5: a newly added `indexed` field gets its storage index built
-        // over the stable field id the schema crate just minted.
-        //
-        // Create the index BEFORE persisting/swapping the registry (review 066): a
-        // schema-minted field id interpolates the actor id (`f_<actor>_<seq>`), and
-        // an actor id with characters outside the storage identifier charset (e.g.
-        // `alice@example.com`) makes `create_index` fail. If we persisted first, the
-        // rejected change would still be on disk and `rebuild_indexes_from_registry`
-        // would fail on EVERY future open — poisoning the workspace. By creating the
-        // index against the candidate registry first, an invalid field id rejects the
-        // whole `apply_change` (`QueryError`) with the live + persisted registry
-        // untouched.
-        let mut created_index: Option<String> = None;
-        if let SchemaChange::AddField { collection, indexed: true, .. } = &change {
-            if let Some((field_id, kind)) = indexed_field_to_create(&next, collection) {
-                let id = self.store.create_index(
-                    &mut self.indexes,
-                    collection,
-                    &field_id,
-                    kind,
-                )?;
-                created_index = Some(id);
-            }
-        }
+        // DL-8 → DL-5: the storage-index work a change implies (review 142 P2). An
+        // `add_field{indexed}` CREATEs the field's index; a `rename_field` of an
+        // INDEXED field SWAPs the index from the old `f_<old_name>` stand-in to the new
+        // `f_<new_name>` (the index is name-derived, so a rename moves it — review 142
+        // P1). Computed against the CANDIDATE registry BEFORE the transaction so an
+        // un-indexable field id (`IndexDef::new` validates it) rejects the whole
+        // `apply_change` here with the live + persisted registry untouched (review 066
+        // non-poisoning) — the create itself happens INSIDE the transaction below.
+        let index_op = index_op_for_change(&change, &self.registry, &next)?;
 
         // DL-13: advance the workspace schema_version in lockstep, carry existing
-        // records forward, AND durably persist the evolved registry — as ONE atomic
-        // unit. The storage `schema_version` is the single version source of truth;
-        // this change advances it from `current` to `current + 1`.
+        // records forward, create/swap the field's storage index, AND durably persist
+        // the evolved registry — as ONE atomic unit. The storage `schema_version` is
+        // the single version source of truth; this change advances it from `current`
+        // to `current + 1`.
         //
-        // CROSS-TRANSACTION ATOMICITY (review 140): the record migration / version
-        // advance and the registry persist must commit OR roll back TOGETHER. If they
-        // were separate transactions and the migration committed but the later
-        // registry kv_set failed, records + schema_version would advance while the
-        // registry stayed old — schema BEHIND data (the mirror of review 138's data-
-        // behind-schema gap). So both run in ONE `Store::transact`:
-        //   - a data-affecting change (widen / deprecate / add_field-with-default)
-        //     builds its companion MigrationDescriptor against the CANDIDATE registry
-        //     (so display names resolve to the post-change registry) and drives the
-        //     DURABLE migration in-tx (rewrites the CRDT source of truth, materializes
-        //     the projection, bumps the version, rebuilds active indexes);
-        //   - a no-record-transform change advances the version directly (one bump);
+        // CROSS-TRANSACTION ATOMICITY (reviews 140/142): the record migration / version
+        // advance, the index create/swap, and the registry persist must commit OR roll
+        // back TOGETHER. Previously the index was created in its OWN connection BEFORE
+        // this transaction, so a later migration/registry failure rolled records +
+        // version + registry back but left the physical index + in-memory manager entry
+        // live — a rejected indexed `add_field` leaving a live index (review 142 P2). So
+        // ALL of it now runs in ONE `Store::transact`:
+        //   - the index create/swap runs first via `create_index_tx` / `drop_index` on
+        //     the tx (so the physical DDL rolls back with the tx);
+        //   - a data-affecting change (widen / deprecate / add_field-with-default /
+        //     indexed-rename) drives the DURABLE migration in-tx (rewrites the CRDT
+        //     source of truth, materializes the projection, bumps the version, and
+        //     rebuilds active indexes — so the just-created index is built from the
+        //     migrated rows);
+        //   - a no-record-transform change advances the version directly (one bump) and
+        //     builds the just-created index from the current projection;
         //   - then the evolved registry is persisted via `kv_set_tx` in the SAME tx.
-        // A failure in EITHER direction — a non-coercible value mid-migration OR a
-        // registry kv_set error — rolls BOTH back, so the schema can never end up
-        // behind (or ahead of) the data. The disjoint borrow of `store` + `indexes`
-        // mirrors `WorkspaceCore::rebuild_projection` (the two are private fields).
+        // A failure ANYWHERE rolls EVERYTHING back. The PHYSICAL index is reverted by
+        // SQLite's rollback; the IN-MEMORY `IndexManager` is not transactional, so we
+        // snapshot it before the tx and `restore` on failure (review 142 P2).
         let current = self.store.schema_version()?;
         let descriptor = migration_for_change(&change, &self.registry, &next, cmd, current)?;
         let registry_bytes = serde_json::to_vec(&next)
@@ -123,17 +112,51 @@ impl WorkspaceCore {
         let peer_id = self.store.crdt_peer_id();
         // TEST-ONLY seam (mirrors `applet.upgrade`'s `simulate_failure_stage`):
         // inject a failure at the registry-persist step INSIDE the transaction —
-        // AFTER the migration / version advance committed-in-tx — so the review-140
-        // fault-injection test proves the records + `schema_version` roll back with the
-        // registry persist, not merely that "all writes happened to succeed". Compiles
-        // to a one-shot bool from the payload; absent in normal use.
+        // AFTER the migration / version advance / index create committed-in-tx — so the
+        // review-140/142 fault-injection tests prove the records + `schema_version` +
+        // index roll back with the registry persist, not merely that "all writes
+        // happened to succeed". Compiles to a one-shot bool from the payload; absent in
+        // normal use.
         let simulate_registry_persist_failure = cmd
             .payload
             .get("simulate_failure_stage")
             .and_then(|v| v.as_str())
             == Some("registry_persist");
-        let indexes = &self.indexes;
-        let migrated = self.store.transact(|tx| {
+
+        // Snapshot the in-memory IndexManager so an in-tx index create/swap can be
+        // rolled back in memory if the transaction fails (the physical side rolls back
+        // with the tx; the manager's `defs` map is not transactional — review 142 P2).
+        let index_snapshot = self.indexes.snapshot();
+        // Disjoint field borrows (mirrors `WorkspaceCore::rebuild_projection`): the
+        // closure mutates `self.indexes` (index create/swap) and reborrows it as shared
+        // for the migration; `transact` borrows `self.store`.
+        let indexes = &mut self.indexes;
+        let outcome = self.store.transact(|tx| {
+            // (a) Create/swap the field's storage index INSIDE the tx, so the physical
+            // DDL rolls back with everything else (review 142 P2). For an indexed
+            // rename, drop the old `f_<old_name>` index first so it no longer serves the
+            // field, then create the new one.
+            let mut created_index = None;
+            if let Some(op) = &index_op {
+                for drop in &op.drops {
+                    indexes.drop_index(tx, &op.collection, &drop.field_id, drop.kind)?;
+                }
+                if let Some(create) = &op.create {
+                    let id = indexes.create_index_tx(
+                        tx,
+                        &op.collection,
+                        &create.field_id,
+                        create.kind,
+                    )?;
+                    created_index = Some(id);
+                }
+            }
+
+            // (b) Carry existing records forward + bump the version (data-affecting
+            // change), or advance the version directly (no-record-transform change).
+            // The migration's `rebuild_active` rebuilds the just-created index from the
+            // migrated projection; the no-migration branch builds it from the current
+            // projection so the new index is populated either way.
             let migrated = match &descriptor {
                 Some(descriptor) => {
                     let outcome =
@@ -142,27 +165,46 @@ impl WorkspaceCore {
                 }
                 None => {
                     forge_storage::advance_schema_version_tx(tx, current + 1)?;
+                    // No migration ran `rebuild_active`, so build the just-created index
+                    // from the current projection (a no-default indexed add_field).
+                    if index_op.as_ref().and_then(|o| o.create.as_ref()).is_some() {
+                        indexes.rebuild_active(tx)?;
+                    }
                     0
                 }
             };
-            // Injected registry-persist failure: AFTER the migration / version advance
-            // ran in this tx but in place of the registry kv_set. Returning `Err` rolls
-            // the WHOLE transaction back — the migrated records AND `schema_version`
-            // included — so the schema can never end up behind the data (review 140).
+
+            // Injected registry-persist failure: AFTER the migration / version advance /
+            // index create ran in this tx but in place of the registry kv_set. Returning
+            // `Err` rolls the WHOLE transaction back — the migrated records, the
+            // `schema_version`, AND the physical index included — so the schema can never
+            // end up behind the data, and a rejected change leaves no live index
+            // (reviews 140/142).
             if simulate_registry_persist_failure {
                 return Err(CoreError::StorageError(
                     "simulated registry-persist failure after the record migration".into(),
                 ));
             }
             // Persist the evolved registry in the SAME tx as the migration / version
-            // advance: the fault-injection above proves a failure here rolls the
-            // records + schema_version back too.
+            // advance / index create: the fault-injection above proves a failure here
+            // rolls all of it back together.
             persist_registry_tx(tx, &registry_bytes)?;
-            Ok(migrated)
-        })?;
+            Ok((migrated, created_index))
+        });
 
-        // Both the migration and the registry persist committed — swap the in-memory
-        // copy so the durable schema and the in-memory one never diverge.
+        let (migrated, created_index) = match outcome {
+            Ok(v) => v,
+            Err(e) => {
+                // The tx rolled back the physical index; restore the in-memory manager
+                // so a rejected change leaves no live in-memory index entry (review 142
+                // P2). The borrow of `self.indexes` ended with the closure.
+                self.indexes.restore(index_snapshot);
+                return Err(e);
+            }
+        };
+
+        // Everything committed — swap the in-memory copy so the durable schema and the
+        // in-memory one never diverge.
         self.registry = next;
 
         self.events.emit(
@@ -382,6 +424,99 @@ fn indexed_field_to_create(
     Some((record_field_id(field.name()), index_kind_for(field)))
 }
 
+/// One storage index to create over a `(collection, field_id)` of a given kind.
+struct IndexCreate {
+    field_id: String,
+    kind: CreateIndexKind,
+}
+
+/// One storage index to drop (its physical structure + in-memory def of `kind`).
+struct IndexDrop {
+    field_id: String,
+    kind: CreateIndexKind,
+}
+
+/// The storage-index work a schema `change` implies (DL-8 → DL-5; review 142 P2),
+/// all keyed by the `f_<name>` stand-in ([`record_field_id`]) so the index, the
+/// write path, and queries share one id (review 141). `None` for a change that
+/// touches no index. The `create`/`drops` are PERFORMED inside the schema
+/// transaction; this just describes (and pre-validates) the work.
+struct IndexOp {
+    collection: String,
+    /// Old index(es) to drop — non-empty only for an INDEXED rename, which moves the
+    /// index from the old `f_<old_name>` stand-in to the new `f_<new_name>`.
+    drops: Vec<IndexDrop>,
+    /// The index to create (the new field's index, or the renamed field's moved one).
+    create: Option<IndexCreate>,
+}
+
+/// Decide the storage-index work a `change` implies, pre-validating any new index id
+/// so an un-indexable field NAME rejects the whole `apply_change` BEFORE the
+/// transaction (review 066 non-poisoning) — the actual create/drop runs in-tx.
+///
+/// - `add_field{indexed}` → CREATE the field's index over its `f_<name>` stand-in.
+/// - `rename_field` of an INDEXED field → SWAP: DROP the old `f_<old_name>` index
+///   and CREATE the new `f_<new_name>` one. Under the M0a name-derived stand-in a
+///   rename moves the record-side id, so the index must move with it or it would
+///   serve the OLD key while the rows moved to the new one (review 142 P1). The OLD
+///   display name is read from `prev` (`next` already renamed it).
+/// - every other change touches no index.
+fn index_op_for_change(
+    change: &SchemaChange,
+    prev: &SchemaRegistry,
+    next: &SchemaRegistry,
+) -> Result<Option<IndexOp>> {
+    let op = match change {
+        SchemaChange::AddField { collection, indexed: true, .. } => {
+            let Some((field_id, kind)) = indexed_field_to_create(next, collection) else {
+                return Ok(None);
+            };
+            // Pre-validate the stand-in index id (an un-indexable field NAME like
+            // `ti@tle` → `f_ti@tle` rejects here, before the tx — review 066).
+            validate_index_id(collection, &field_id, kind)?;
+            IndexOp {
+                collection: collection.clone(),
+                drops: Vec::new(),
+                create: Some(IndexCreate { field_id, kind }),
+            }
+        }
+        SchemaChange::RenameField { collection, field_id, name } => {
+            // Only an INDEXED field's rename touches an index. Resolve the field in
+            // `next` by its stable id (the rename kept the id, changed the name).
+            let Some(field) = next.collection(collection).and_then(|c| c.field(field_id)) else {
+                return Ok(None);
+            };
+            if !field.indexed() {
+                return Ok(None);
+            }
+            let kind = index_kind_for(field);
+            let old_name = resolve_display_name(prev, collection, field_id)?;
+            // A same-name rename moves nothing (the registry no-ops it too).
+            if &old_name == name {
+                return Ok(None);
+            }
+            let old_field_id = record_field_id(&old_name);
+            let new_field_id = record_field_id(name);
+            validate_index_id(collection, &new_field_id, kind)?;
+            IndexOp {
+                collection: collection.clone(),
+                drops: vec![IndexDrop { field_id: old_field_id, kind }],
+                create: Some(IndexCreate { field_id: new_field_id, kind }),
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+
+/// Validate that a `(collection, field_id, kind)` mints a well-formed storage index
+/// id, so an un-indexable identifier rejects the schema change BEFORE the
+/// transaction opens (review 066 non-poisoning). Constructing an [`IndexDef`] runs
+/// the same identifier allowlist `create_index` would, without emitting any DDL.
+fn validate_index_id(collection: &str, field_id: &str, kind: CreateIndexKind) -> Result<()> {
+    IndexDef::new(collection, field_id, kind.into(), IndexState::Active).map(|_| ())
+}
+
 /// Build the companion DL-13 [`MigrationDescriptor`] for a schema `change` that
 /// evolves an existing field's stored data, or `None` for a change that touches
 /// only the registry/validation surface (`add_collection`, `enforce_required`, a
@@ -400,11 +535,13 @@ fn indexed_field_to_create(
 ///   `deprecate_field_ok` fixture pins only the registry-level retention
 ///   (`deprecated: true`), so dropping the value is consistent with both the spec
 ///   table and the fixture.
-/// - `rename_field{field_id, name}` → [`FieldTransform::RenameField`]: move the
-///   display projection key from the OLD name (read from `prev`) to the NEW `name`.
-///   The stable-id value never moves (DL-7), so this is display-only (review 140 P2:
-///   previously `rename_field` only bumped the version + registry and left existing
-///   records keyed under the old display name).
+/// - `rename_field{field_id, name}` → [`FieldTransform::RenameField`]: MOVE both the
+///   record-side stand-in `f_<old_name>` → `f_<new_name>` AND the display projection
+///   key OLD name → NEW `name` (the OLD name read from `prev`). Under the M0a
+///   name-derived stand-in the rename is NOT display-only — the record's value id
+///   moves with the name, so a stale `f_<old_name>` would otherwise strand the value
+///   while the index / write path / query all moved to `f_<new_name>` (review 142 P1;
+///   review 140 P2 first drove the rename's display move).
 /// - `add_field` → [`FieldTransform::AddField`] (fill-if-missing) ONLY when the
 ///   command carries a `default`; without a default the new field is simply absent
 ///   on existing records until written, so no record is rewritten.
@@ -462,11 +599,14 @@ fn migration_for_change(
             ))
         }
         SchemaChange::RenameField { collection, field_id, name } => {
-            // Review 140 P2: a rename must MOVE the display projection key on existing
-            // records, not only the registry. The OLD display name lives in `prev`
-            // (`next` already renamed it); the NEW name is the change's `name`. The
-            // stable-id value never moves (DL-7), so the transform is display-only. A
-            // same-name rename (idempotent registry no-op) carries no record change.
+            // Review 142 P1: under the M0a `f_<name>` stand-in scheme the record-side
+            // id is NAME-DERIVED, so a rename is NOT display-only — it MOVES the
+            // stand-in `f_<old_name>` → `f_<new_name>` on existing records (so the
+            // value follows the field instead of being stranded under the old key while
+            // the index / write path / query all move to `f_<new_name>`). The OLD
+            // display name lives in `prev` (`next` already renamed it); the NEW name is
+            // the change's `name`. A same-name rename (idempotent registry no-op)
+            // carries no record change.
             let from_name = resolve_display_name(prev, collection, field_id)?;
             if &from_name == name {
                 None
@@ -474,9 +614,11 @@ fn migration_for_change(
                 Some((
                     collection.clone(),
                     FieldTransform::RenameField {
-                        // The stable id is informational here (RenameField is keyed by
-                        // display name); carry the record-side stand-in for fidelity.
-                        field_id: record_field_id(&from_name),
+                        // Both record-side stand-ins so the value moves to the field's
+                        // new name-derived id (NOT the actor-scoped registry id, which
+                        // the write path is unaware of — review 141 single-id scheme).
+                        from_field_id: record_field_id(&from_name),
+                        to_field_id: record_field_id(name),
                         from_name,
                         to_name: name.clone(),
                     },

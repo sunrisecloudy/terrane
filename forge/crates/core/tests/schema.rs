@@ -1075,6 +1075,92 @@ fn apply_change_registry_persist_failure_after_migration_rolls_back_everything()
     assert!(env.field_ids["f_amount"].is_f64(), "the retry migrates the record to a float");
 }
 
+/// Whether a physical SQLite index/table named `name` exists on the store.
+fn physical_object_exists(core: &WorkspaceCore, name: &str) -> bool {
+    core.store().physical_object_exists(name).unwrap()
+}
+
+#[test]
+fn apply_change_indexed_add_field_registry_persist_failure_leaves_no_live_index() {
+    // FAULT INJECTION — review 142 P2: an INDEXED `add_field` creates its storage index
+    // INSIDE the same transaction as the migration + version advance + registry persist.
+    // When the registry persist fails, the WHOLE transaction rolls back — so registry +
+    // schema_version + records + the in-memory IndexManager + the physical index/FTS
+    // table + REOPEN state are ALL unchanged. Previously the index was created in its OWN
+    // connection BEFORE the transaction, so a rejected indexed add_field left a LIVE index.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+
+    let before_version;
+    let before_registry;
+    {
+        let mut core = WorkspaceCore::open(&path, "ws_idxfault").unwrap();
+        assert!(apply(&mut core, add_collection("tasks")).ok);
+        // Seed an existing record so the (would-be) index has rows to build from.
+        assert!(apply(&mut core, add_field("tasks", "fx", "sku", serde_json::json!("text"), false, false)).ok);
+        seed_record(&mut core, "tasks", "r1", "sku", serde_json::json!("widget"));
+
+        before_version = core.store().schema_version().unwrap();
+        before_registry = serde_json::to_value(core.registry()).unwrap();
+        // No index physically exists or is registered yet for the new field.
+        assert!(!physical_object_exists(&core, "idx_records_tasks_f_priority"));
+        assert!(core.indexes().get_expression("tasks", "f_priority").is_none());
+
+        // An INDEXED add_field with the registry-persist failure injected. The command
+        // must fail and roll back EVERYTHING, including the index it created in-tx.
+        let resp = core.handle(cmd(
+            "schema.apply_change",
+            serde_json::json!({
+                "change": add_field("tasks", "fx", "priority", serde_json::json!("int_num"), true, false),
+                "simulate_failure_stage": "registry_persist",
+            }),
+        ));
+        assert!(!resp.ok, "an injected registry-persist failure must fail the command");
+        assert_eq!(resp.error.unwrap().code(), "StorageError");
+
+        // FULL ROLLBACK across all surfaces:
+        // ...the registry is unchanged (no `priority` field)...
+        assert_eq!(
+            serde_json::to_value(core.registry()).unwrap(),
+            before_registry,
+            "the registry must not gain the rejected field"
+        );
+        assert!(core.registry().collection("tasks").unwrap().field("f_fx_1").is_none());
+        // ...the schema_version did not advance...
+        assert_eq!(core.store().schema_version().unwrap(), before_version, "version unchanged");
+        // ...the record is untouched (no default-less add_field rewrite anyway)...
+        let env = core.store().get_record("tasks", "r1").unwrap().unwrap();
+        assert_eq!(env.field_ids["f_sku"], serde_json::json!("widget"));
+        assert!(!env.field_ids.contains_key("f_priority"));
+        // ...the IN-MEMORY IndexManager has NO entry for the new field (restored)...
+        assert!(
+            core.indexes().get_expression("tasks", "f_priority").is_none(),
+            "the in-memory index manager must not retain the rolled-back index"
+        );
+        // ...and the PHYSICAL index is gone (SQLite rolled the in-tx CREATE back).
+        assert!(
+            !physical_object_exists(&core, "idx_records_tasks_f_priority"),
+            "the physical index must not survive a rolled-back schema change"
+        );
+
+        // The workspace is still usable: a clean retry (no injection) succeeds and
+        // creates the index, proving the rollback left no poison.
+        let ok = apply(
+            &mut core,
+            add_field("tasks", "fx", "priority", serde_json::json!("int_num"), true, false),
+        );
+        assert!(ok.ok, "a clean retry must succeed: {:?}", ok.error);
+        assert_eq!(ok.payload["created_index"], serde_json::json!("idx_records_tasks_f_priority"));
+        assert!(physical_object_exists(&core, "idx_records_tasks_f_priority"));
+    }
+
+    // REOPEN cleanly: the rejected change never persisted, so the reopened registry has
+    // only the fields the CLEAN retry committed (sku + priority), and reopen does not
+    // re-run a failing create_index.
+    let reopened = WorkspaceCore::open(&path, "ws_idxfault");
+    assert!(reopened.is_ok(), "a rolled-back indexed change must not poison reopen: {:?}", reopened.err());
+}
+
 #[test]
 fn apply_change_migration_over_multiple_records_is_atomic_and_lockstep() {
     // A multi-record collection: a single data-affecting change migrates EVERY record
@@ -1220,19 +1306,19 @@ fn apply_change_indexed_add_field_with_default_converges_on_the_standin_no_split
 }
 
 #[test]
-fn apply_change_rename_field_moves_existing_record_display_projection() {
-    // Review 140 P2: `schema.apply_change(rename_field)` must MOVE the display
-    // projection key on existing records, not only bump the version + registry. A
-    // record seeded under the old display name `label` must read under the new name
-    // `title` after the rename — and survive a DL-6 rebuild. The stable-id VALUE is
-    // authoritative and never moves (DL-7).
+fn apply_change_rename_field_moves_existing_record_stand_in_and_display() {
+    // Review 142 P1: under the M0a `f_<name>` stand-in scheme a rename moves BOTH the
+    // record-side stand-in `f_<old>` → `f_<new>` AND the display projection key
+    // OLD → NEW on existing records — and the move survives a DL-6 rebuild. (Round-2's
+    // "display-only" rename — review 140 P2 — left the value stranded under
+    // `f_<old_name>` while every other path moved to `f_<new_name>`: a split identity.)
     let mut core = WorkspaceCore::in_memory("ws_rename").unwrap();
     assert!(apply(&mut core, add_collection("tasks")).ok);
     assert!(apply(&mut core, add_field("tasks", "fx", "label", serde_json::json!("text"), false, false)).ok);
     seed_record(&mut core, "tasks", "r1", "label", serde_json::json!("hi"));
     let before_version = core.store().schema_version().unwrap();
 
-    // Rename `label` → `title` (the field id `f_fx_0` is unchanged).
+    // Rename `label` → `title` (the registry field id `f_fx_0` is unchanged).
     let resp = apply(
         &mut core,
         serde_json::json!({ "op": "rename_field", "collection": "tasks", "field_id": "f_fx_0", "name": "title" }),
@@ -1245,11 +1331,11 @@ fn apply_change_rename_field_moves_existing_record_display_projection() {
     assert_eq!(
         resp.payload["migrated_records"],
         serde_json::json!(1),
-        "the one existing record's display projection moved"
+        "the one existing record's value moved to the new keys"
     );
 
-    // The display projection moved old → new in BOTH the live read and after a DL-6
-    // rebuild (durable); the stable-id stand-in value is untouched (DL-7).
+    // Both the stand-in id and the display projection moved old → new in BOTH the live
+    // read and after a DL-6 rebuild (durable); the OLD keys are gone (no stranded rows).
     for phase in ["post-apply", "post-rebuild"] {
         if phase == "post-rebuild" {
             core.rebuild_projection().expect("DL-6 rebuild");
@@ -1257,6 +1343,112 @@ fn apply_change_rename_field_moves_existing_record_display_projection() {
         let env = core.store().get_record("tasks", "r1").unwrap().unwrap();
         assert!(!env.fields.contains_key("label"), "[{phase}] old display name must be gone");
         assert_eq!(env.fields["title"], serde_json::json!("hi"), "[{phase}] value reads under the new name");
-        assert_eq!(env.field_ids["f_label"], serde_json::json!("hi"), "[{phase}] stable-id value never moves (DL-7)");
+        assert!(!env.field_ids.contains_key("f_label"), "[{phase}] old stand-in id must be gone (moved, not stranded)");
+        assert_eq!(env.field_ids["f_title"], serde_json::json!("hi"), "[{phase}] value moved to the new stand-in id");
     }
+}
+
+#[test]
+fn apply_change_indexed_rename_moves_records_and_swaps_index() {
+    // Review 142 P1 (the crux): renaming an INDEXED field must MOVE the record-side
+    // stand-in `f_<old>` → `f_<new>` AND swap the storage index from
+    // `idx_records_<col>_f_<old>` to `idx_records_<col>_f_<new>` — all in the ONE
+    // schema transaction — so a query by the NEW field id finds the row and the OLD
+    // index no longer serves it (no stranded rows, no stale index).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws_idxrename").unwrap();
+        assert!(apply(&mut core, add_collection("tasks")).ok);
+        // An INDEXED `priority` field; its index is created over the `f_priority`
+        // stand-in (review 141).
+        let added = apply(
+            &mut core,
+            add_field("tasks", "fx", "priority", serde_json::json!("int_num"), true, false),
+        );
+        assert!(added.ok, "{:?}", added.error);
+        assert_eq!(
+            added.payload["created_index"],
+            serde_json::json!("idx_records_tasks_f_priority"),
+        );
+        // Seed a record via the DL-4 path so it carries the `f_priority` stand-in.
+        seed_record(&mut core, "tasks", "r1", "priority", serde_json::json!(5));
+        core.handle(cmd("schema.rebuild_indexes", serde_json::json!({})));
+
+        // Before the rename: a query by `f_priority` uses the index and finds r1.
+        let q_old = forge_storage::Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": [{ "field_id": "f_priority", "op": "eq", "value": 5 }]
+        }))
+        .unwrap();
+        let p_old = core.store().query_planned(&q_old, core.indexes()).unwrap();
+        assert!(p_old.uses_index, "the pre-rename index serves f_priority");
+        assert_eq!(core.store().query(&q_old).unwrap().ids(), vec!["r1".to_string()]);
+
+        // Rename `priority` → `rank` (registry id `f_fx_0` is stable).
+        let resp = apply(
+            &mut core,
+            serde_json::json!({ "op": "rename_field", "collection": "tasks", "field_id": "f_fx_0", "name": "rank" }),
+        );
+        assert!(resp.ok, "indexed rename must succeed: {:?}", resp.error);
+        assert_eq!(
+            resp.payload["created_index"],
+            serde_json::json!("idx_records_tasks_f_rank"),
+            "the index swaps to the new stand-in id"
+        );
+        assert_eq!(resp.payload["migrated_records"], serde_json::json!(1), "the row moved to f_rank");
+
+        // The row moved to `f_rank`; the OLD `f_priority` key/index no longer serves it.
+        let q_new = forge_storage::Query::from_fixture_value(&serde_json::json!({
+            "from": "tasks",
+            "where": [{ "field_id": "f_rank", "op": "eq", "value": 5 }]
+        }))
+        .unwrap();
+        let p_new = core.store().query_planned(&q_new, core.indexes()).unwrap();
+        assert!(p_new.uses_index, "the renamed index serves f_rank");
+        assert_eq!(p_new.index_id.as_deref(), Some("idx_records_tasks_f_rank"));
+        assert_eq!(
+            core.store().query(&q_new).unwrap().ids(),
+            vec!["r1".to_string()],
+            "a query by the new field id finds the moved row"
+        );
+        // The OLD field id is no longer index-served (the index moved off it) AND finds
+        // no row (the value moved, not stranded).
+        let p_stale = core.store().query_planned(&q_old, core.indexes()).unwrap();
+        assert!(!p_stale.uses_index, "the old f_priority index must no longer serve the field");
+        assert!(
+            core.store().query(&q_old).unwrap().ids().is_empty(),
+            "a query by the old field id must find nothing (no stranded row)"
+        );
+
+        // The record itself carries only the new stand-in.
+        let env = core.store().get_record("tasks", "r1").unwrap().unwrap();
+        assert!(!env.field_ids.contains_key("f_priority"), "old stand-in gone from the record");
+        assert_eq!(env.field_ids["f_rank"], serde_json::json!(5));
+        assert_eq!(env.fields["rank"], serde_json::json!(5));
+    }
+
+    // REOPEN: the persisted registry reconstructs the index over `f_rank` (the new
+    // name), and the migrated row is durable — the query still finds it, the old index
+    // does not.
+    let core = WorkspaceCore::open(&path, "ws_idxrename").unwrap();
+    let q_new = forge_storage::Query::from_fixture_value(&serde_json::json!({
+        "from": "tasks",
+        "where": [{ "field_id": "f_rank", "op": "eq", "value": 5 }]
+    }))
+    .unwrap();
+    let planned = core.store().query_planned(&q_new, core.indexes()).unwrap();
+    assert!(planned.uses_index, "the swapped index survives reopen");
+    assert_eq!(planned.index_id.as_deref(), Some("idx_records_tasks_f_rank"));
+    assert_eq!(core.store().query(&q_new).unwrap().ids(), vec!["r1".to_string()]);
+    // The old stand-in is gone after reopen too.
+    let q_old = forge_storage::Query::from_fixture_value(&serde_json::json!({
+        "from": "tasks",
+        "where": [{ "field_id": "f_priority", "op": "eq", "value": 5 }]
+    }))
+    .unwrap();
+    assert!(
+        core.store().query(&q_old).unwrap().ids().is_empty(),
+        "the old field id finds nothing after reopen"
+    );
 }
