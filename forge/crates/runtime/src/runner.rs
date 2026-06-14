@@ -17,7 +17,7 @@ use crate::bridge::HostBridge;
 use crate::engine::QuickJsEngine;
 use crate::host::HostContext;
 use crate::recorder::RunRecorder;
-use crate::{JsEngine, Program};
+use crate::{EngineOutcome, JsEngine, Program};
 use forge_domain::{
     ActorContext, AppResult, CoreError, Manifest, PermissionSnapshot, Result, RunId, RunOutcome,
     RunRecord,
@@ -58,6 +58,124 @@ pub fn record_run(
         recorder,
         bridge,
     )
+}
+
+/// Dispatch a UI event to the applet's handler named `action_ref` in **record
+/// mode**, producing a [`RunRecord`] (prd-merged/05 UI-4, prd-merged/01 CR-6).
+///
+/// This is the record-side of the interactive loop: the rendered tree carried an
+/// `onTap`/`onChange` `ActionRef`, the renderer sent that ref back with an event
+/// `payload`, and this drives the handler exported under that name over the same
+/// containment / limits / host path as [`record_run`]. The handler's `ctx.*`
+/// effects are recorded as usual, plus a `ui.dispatch_event` envelope capturing
+/// `(action_ref, payload) -> result`, so the event replays byte-identically via
+/// [`replay_dispatch`].
+///
+/// State persists ONLY through `ctx.db`/`ctx.storage`: the realm is one-shot per
+/// dispatch (a fresh realm per call), so a handler that needs to see a prior
+/// dispatch's effect must have written it through the host bridge. An unknown
+/// `action_ref` makes the run fail with a typed `ValidationError` (no such
+/// handler), recorded as the run's outcome — never a panic.
+#[allow(clippy::too_many_arguments)]
+pub fn record_dispatch(
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    action_ref: &str,
+    payload: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    let recorder = RunRecorder::recording(seed, time_start);
+    let policy = PolicyEngine::new(manifest, actor)?;
+    finish_dispatch(
+        program,
+        policy,
+        manifest.limits.clone(),
+        action_ref,
+        payload,
+        seed,
+        time_start,
+        recorder,
+        bridge,
+    )
+}
+
+/// Replay a recorded UI event dispatch (the counterpart to [`record_dispatch`]).
+/// Re-runs the same handler in **replay mode**: the recorder serves the recorded
+/// `ctx.*` responses and asserts the dispatched `(action_ref, payload)` matches
+/// the recording, so the produced record must
+/// [`replays_identically`](RunRecord::replays_identically) to `run`. A diverging
+/// event (different action ref, payload, or order) is a determinism
+/// `RuntimeError`. The recorded permission snapshot governs the replay decision
+/// exactly as in [`replay`] (CR-9); the pre-CR-9 manifest fallback applies too.
+pub fn replay_dispatch(
+    run: &RunRecord,
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    run.validate_code_hash()?;
+    if program.code_hash() != run.code_hash {
+        return Err(CoreError::RuntimeError(format!(
+            "determinism divergence: replay program code_hash {} != recorded {}",
+            program.code_hash(),
+            run.code_hash
+        )));
+    }
+    // Recover the dispatched `(action_ref, payload)` from the recorded
+    // `ui.dispatch_event` envelope so the replay re-issues the SAME event. A
+    // record produced by `record_dispatch` always carries exactly one such entry.
+    let (action_ref, payload) = recorded_dispatch(run)?;
+    let recorder = RunRecorder::replaying(run.random_seed, run.time_start, run.calls.clone());
+    let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
+    let mut limits = manifest.limits.clone();
+    limits.max_host_calls = host_call_cap;
+    finish_dispatch(
+        program,
+        policy,
+        limits,
+        &action_ref,
+        &payload,
+        run.random_seed,
+        run.time_start,
+        recorder,
+        bridge,
+    )
+}
+
+/// Recover the `(action_ref, payload)` of the dispatched UI event from a recorded
+/// run's `ui.dispatch_event` envelope (its `args = [action_ref, payload]`). A
+/// record built by [`record_dispatch`] carries exactly one such call; its absence
+/// (or a malformed shape) means the record is not a dispatch record, which is a
+/// `RuntimeError` rather than a silent wrong-event replay.
+fn recorded_dispatch(run: &RunRecord) -> Result<(String, serde_json::Value)> {
+    let call = run
+        .calls
+        .iter()
+        .find(|c| c.method == "ui.dispatch_event")
+        .ok_or_else(|| {
+            CoreError::RuntimeError(
+                "replay_dispatch: record carries no ui.dispatch_event envelope".into(),
+            )
+        })?;
+    match call.args.as_array().map(|a| a.as_slice()) {
+        Some([action_ref, payload]) => {
+            let action_ref = action_ref.as_str().ok_or_else(|| {
+                CoreError::RuntimeError(
+                    "replay_dispatch: recorded action_ref is not a string".into(),
+                )
+            })?;
+            Ok((action_ref.to_string(), payload.clone()))
+        }
+        _ => Err(CoreError::RuntimeError(
+            "replay_dispatch: ui.dispatch_event args are not [action_ref, payload]".into(),
+        )),
+    }
 }
 
 /// Replay a previously recorded [`RunRecord`] by re-running `program` in
@@ -134,43 +252,7 @@ pub fn replay(
         )));
     }
     let recorder = RunRecorder::replaying(run.random_seed, run.time_start, run.calls.clone());
-
-    // CR-9 (review 009 P1): build the replay policy from the RECORDED permission
-    // snapshot, not the live manifest/actor, so a call denied (or allowed) at
-    // record time replays with the same decision even if the workspace's grants,
-    // role, or budget have since changed. Engine-level limits (memory/fuel/wall)
-    // still come from the manifest, but the host-call cap tracks the snapshot so
-    // the budget gate behaves identically on replay.
-    //
-    // Exception — review 019 P2: a pre-CR-9 record has no snapshot, which
-    // deserializes to the all-deny default. Don't replay a legitimate historical
-    // run as an all-deny denial; fall back to the caller-provided manifest/actor
-    // (the legacy replay path) and use the manifest's host-call cap.
-    //
-    // Review 029 P2: gate the manifest fallback on the recorded *trace shape*, not
-    // the outcome. The completed-only gate (review 026 P1) over-rotated: it routed
-    // every snapshotless *failed* legacy record through the all-deny default, so a
-    // genuine pre-CR-9 run that made an allowed host call and then failed for an
-    // app/runtime reason (e.g. `await ctx.time.now(); throw …`) would die at the
-    // first host call instead of replaying its recorded success and reproducing the
-    // original failure. The denial-specific signal is in the trace: a policy denial
-    // is recorded as a `{"denied": …}` response. So fall back to the manifest only
-    // when no recorded call is a denial; a stripped post-CR-9 denial keeps its
-    // `{"denied": …}` call and stays on the recorded all-deny snapshot, so a
-    // recorded denial cannot replay as a success.
-    let use_manifest_fallback =
-        run.permissions == PermissionSnapshot::default() && !trace_has_denial(&run.calls);
-    let (policy, host_call_cap) = if use_manifest_fallback {
-        (
-            PolicyEngine::new(manifest, actor)?,
-            manifest.limits.max_host_calls,
-        )
-    } else {
-        (
-            PolicyEngine::from_snapshot(&run.permissions)?,
-            run.permissions.max_host_calls,
-        )
-    };
+    let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = host_call_cap;
     finish_run(
@@ -185,6 +267,43 @@ pub fn replay(
     )
 }
 
+/// Select the replay-mode policy + host-call cap for a recorded run (CR-9), shared
+/// by [`replay`] and [`replay_dispatch`].
+///
+/// CR-9 (review 009 P1): build the replay policy from the RECORDED permission
+/// snapshot, not the live manifest/actor, so a call denied (or allowed) at record
+/// time replays with the same decision even if the workspace's grants, role, or
+/// budget have since changed. Engine-level limits (memory/fuel/wall) still come
+/// from the manifest, but the host-call cap tracks the snapshot so the budget gate
+/// behaves identically on replay.
+///
+/// Exception — review 019 P2 / 029 P2: a pre-CR-9 record has no snapshot, which
+/// deserializes to the all-deny default. Don't replay a legitimate historical run
+/// as an all-deny denial; fall back to the caller-provided manifest/actor (the
+/// legacy replay path) and use the manifest's host-call cap — but ONLY when no
+/// recorded call is a denial. A stripped post-CR-9 denial keeps its `{"denied": …}`
+/// call and stays on the recorded all-deny snapshot, so a recorded denial cannot
+/// replay as a success.
+fn replay_policy(
+    run: &RunRecord,
+    manifest: &Manifest,
+    actor: &ActorContext,
+) -> Result<(PolicyEngine, u64)> {
+    let use_manifest_fallback =
+        run.permissions == PermissionSnapshot::default() && !trace_has_denial(&run.calls);
+    if use_manifest_fallback {
+        Ok((
+            PolicyEngine::new(manifest, actor)?,
+            manifest.limits.max_host_calls,
+        ))
+    } else {
+        Ok((
+            PolicyEngine::from_snapshot(&run.permissions)?,
+            run.permissions.max_host_calls,
+        ))
+    }
+}
+
 /// Shared body for record/replay: drive the engine with a prepared recorder +
 /// policy and assemble the [`RunRecord`].
 ///
@@ -193,6 +312,34 @@ pub fn replay(
 /// can never be emitted (reviews 012/013/014). The evaluated permission snapshot
 /// is attached (review 009 P1 CR-9), and on replay the recorder is asserted to
 /// have consumed every recorded call (review 009 P2).
+/// How [`finish_run`] should drive the engine for this run record: the program's
+/// `main(ctx, input)`, or a UI event handler addressed by `ActionRef` with a
+/// payload (UI-4/CR-6). The two share the entire record/replay assembly below;
+/// they differ only in which engine entrypoint runs and (for the handler) the
+/// extra `ui.dispatch_event` envelope recorded around the handler's effects.
+enum Drive<'a> {
+    /// Drive `main(ctx, input)` (the classic run/replay path).
+    Main { input: &'a serde_json::Value },
+    /// Dispatch `<action_ref>(ctx, payload)` and record the dispatch envelope so
+    /// the event replays identically.
+    Handler {
+        action_ref: &'a str,
+        payload: &'a serde_json::Value,
+    },
+}
+
+impl<'a> Drive<'a> {
+    /// The value recorded as the run record's `input` (the `main` input, or the
+    /// dispatched event's payload). Either way it is the second argument the
+    /// driven entrypoint received, so the record round-trips what was run.
+    fn record_input(&self) -> serde_json::Value {
+        match self {
+            Drive::Main { input } => (*input).clone(),
+            Drive::Handler { payload, .. } => (*payload).clone(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_run(
     program: &Program,
@@ -204,9 +351,86 @@ fn finish_run(
     recorder: RunRecorder,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
+    finish_drive(
+        program,
+        policy,
+        limits,
+        Drive::Main { input },
+        seed,
+        time_start,
+        recorder,
+        bridge,
+    )
+}
+
+/// Drive a UI event dispatch (record or replay) and assemble its [`RunRecord`].
+/// The engine runs the handler named by `action_ref` over the SAME containment /
+/// limits / host path as a normal run, the handler's `ctx.*` effects are recorded
+/// as usual, and the `(action_ref, payload) -> result` dispatch envelope is
+/// recorded as a `ui.dispatch_event` call so the event replays byte-identically.
+#[allow(clippy::too_many_arguments)]
+fn finish_dispatch(
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    action_ref: &str,
+    payload: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    finish_drive(
+        program,
+        policy,
+        limits,
+        Drive::Handler { action_ref, payload },
+        seed,
+        time_start,
+        recorder,
+        bridge,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_drive(
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    drive: Drive<'_>,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    // The record's `input` field round-trips whatever the driven entrypoint
+    // received (run input / event payload); capture it before `drive` is consumed.
+    let record_input = drive.record_input();
     let mut host = HostContext::with_policy(policy, limits.clone(), recorder, bridge);
     let engine = QuickJsEngine::new();
-    let outcome = engine.run(program, input, &mut host, &limits);
+    let outcome = match drive {
+        Drive::Main { input } => engine.run(program, input, &mut host, &limits),
+        Drive::Handler { action_ref, payload } => {
+            let outcome = engine.run_handler(program, action_ref, payload, &mut host, &limits);
+            // Record the dispatch envelope AFTER the handler's effects so the
+            // trace order is: <handler's ctx.* calls> then `ui.dispatch_event`.
+            // On replay the recorder consumes them in the same order, so the
+            // event sequence (and thus `replay_fingerprint`) is byte-identical.
+            // The recorded result is the handler's returned `value` on success
+            // (the final UI tree the applet returned), or `null` on failure — a
+            // determinism error here (a replay whose action_ref/payload diverge)
+            // takes precedence over the handler's own outcome.
+            let result = match &outcome.result {
+                Ok(app) => app.value.clone(),
+                Err(_) => serde_json::Value::Null,
+            };
+            if let Err(divergence) = host.dispatch_event(action_ref, payload.clone(), result) {
+                EngineOutcome { result: Err(divergence), logs: outcome.logs }
+            } else {
+                outcome
+            }
+        }
+    };
 
     // Capture the evaluated permission snapshot (CR-9) before consuming the host.
     let permissions = host.permission_snapshot();
@@ -230,7 +454,7 @@ fn finish_run(
         derive_run_id(program, seed, time_start),
         program.applet_id.clone(),
         program.code_hash(),
-        input.clone(),
+        record_input,
         seed,
         time_start,
         calls,

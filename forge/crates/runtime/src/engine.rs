@@ -117,6 +117,10 @@ enum Stop {
     HostError(CoreError),
     Limit(String),
     Runtime(String),
+    /// A typed validation failure (e.g. an unknown UI handler action ref). Maps
+    /// to `CoreError::ValidationError` so a missing handler is a clean error, not
+    /// a runtime fault or a panic (UI-4/CR-6).
+    Validation(String),
 }
 
 impl QuickJsEngine {
@@ -157,26 +161,102 @@ impl JsEngine for QuickJsEngine {
         host: &mut HostContext<'_>,
         limits: &Limits,
     ) -> EngineOutcome {
-        match run_inner(program, input, host, limits) {
-            Ok(result) => EngineOutcome {
-                result: Ok(result),
-                logs: Vec::new(),
-            },
-            Err(e) => EngineOutcome {
-                result: Err(e),
-                logs: Vec::new(),
-            },
+        Self::outcome(run_inner(program, &Entry::Main, input, host, limits))
+    }
+}
+
+impl QuickJsEngine {
+    /// Dispatch a named UI event handler addressed by `action_ref`
+    /// (prd-merged/05 UI-4, prd-merged/01 CR-6), reusing the **same**
+    /// containment / resource-limit / host-bridge path as [`JsEngine::run`]: the
+    /// program is wrapped (which synthesizes the `__forge_handlers` registry, see
+    /// [`wrap_program`]), the realm is built with zero ambient capability, and the
+    /// handler named `action_ref` is called as `handler(ctx, payload)`.
+    ///
+    /// The realm is **one-shot per dispatch** — exactly like `run` — so a handler
+    /// MUST persist any state through `ctx.db`/`ctx.storage`; in-memory globals do
+    /// not survive between dispatches. An unknown/missing `action_ref` (no such
+    /// exported handler) returns a typed [`CoreError::ValidationError`], never a
+    /// panic across the FFI boundary (CR-A4/CR-A5).
+    pub fn run_handler(
+        &self,
+        program: &Program,
+        action_ref: &str,
+        payload: &serde_json::Value,
+        host: &mut HostContext<'_>,
+        limits: &Limits,
+    ) -> EngineOutcome {
+        Self::outcome(run_inner(
+            program,
+            &Entry::Handler(action_ref.to_string()),
+            payload,
+            host,
+            limits,
+        ))
+    }
+
+    /// Fold a `run_inner` result into the public [`EngineOutcome`] shape. Logs are
+    /// carried by the [`HostContext`] (the record/replay layer drains them), so
+    /// the engine leaves `logs` empty here.
+    fn outcome(result: Result<AppResult, CoreError>) -> EngineOutcome {
+        EngineOutcome {
+            result,
+            logs: Vec::new(),
         }
     }
 }
 
-/// Build the runtime/realm, wire the budget and `ctx`, drive `main`, and map the
-/// stop reason to a `CoreError`. Logs are carried by the [`HostContext`] (the
-/// caller drains them), so the returned outcome's `logs` is filled by the
-/// record/replay layer below — `run` itself leaves it empty.
+/// Which entrypoint a realm run should drive: the program's `main(ctx, input)`,
+/// or a named UI event handler `<action_ref>(ctx, payload)` (UI-4/CR-6).
+enum Entry {
+    /// Drive `main`, the program entrypoint (the classic `run` path).
+    Main,
+    /// Drive the exported handler whose name equals this `ActionRef`.
+    Handler(String),
+}
+
+impl Entry {
+    /// The global the realm exposes the chosen callable under: `__forge_main` for
+    /// the entrypoint, or a lookup into `__forge_handlers` for a named handler.
+    /// Returns the resolved [`Function`], or a typed [`Stop`] when the handler is
+    /// missing/not callable (an unknown `action_ref` is a clean error, not a panic).
+    fn resolve<'js>(&self, ctx: &Ctx<'js>) -> Result<Function<'js>, Stop> {
+        match self {
+            Entry::Main => ctx.globals().get("__forge_main").map_err(|_| {
+                Stop::Runtime("program does not export an async function main(ctx, input)".into())
+            }),
+            Entry::Handler(action_ref) => {
+                let handlers: Object = ctx.globals().get("__forge_handlers").map_err(|e| {
+                    Stop::Runtime(format!("handler registry missing: {e}"))
+                })?;
+                match handlers.get::<_, Function>(action_ref.as_str()) {
+                    Ok(f) => Ok(f),
+                    // A missing/non-function action ref is a typed engine error
+                    // (UI-4/CR-6), surfaced as a ValidationError so the dispatch
+                    // path reports "no such handler" rather than panicking.
+                    Err(_) => Err(Stop::Validation(format!(
+                        "no UI handler registered for action ref {action_ref:?}"
+                    ))),
+                }
+            }
+        }
+    }
+}
+
+/// Build the runtime/realm, wire the budget and `ctx`, drive the selected
+/// [`Entry`] (`main` or a named UI handler), and map the stop reason to a
+/// `CoreError`. Logs are carried by the [`HostContext`] (the caller drains them),
+/// so the returned outcome's `logs` is filled by the record/replay layer below —
+/// `run`/`run_handler` themselves leave it empty.
+///
+/// `arg` is the second argument passed to the chosen callable: the run `input`
+/// for [`Entry::Main`], or the event `payload` for [`Entry::Handler`]. Both share
+/// the **same** zero-ambient realm, resource limits, and `ctx` host bridge — the
+/// only difference is which captured function is fetched and called (UI-4/CR-6).
 fn run_inner(
     program: &Program,
-    input: &serde_json::Value,
+    entry: &Entry,
+    arg: &serde_json::Value,
     host: &mut HostContext<'_>,
     limits: &Limits,
 ) -> Result<AppResult, CoreError> {
@@ -248,9 +328,10 @@ fn run_inner(
             return Stop::Runtime(format!("failed to install ctx host object: {e}"));
         }
 
-        // Wrap the program so `main` is reachable as a global without relying on
-        // ES-module namespace plumbing: strip a leading `export` from the
-        // entrypoint declaration and assign the function to a known global.
+        // Wrap the program so `main` (and every exported handler) is reachable as
+        // a global without relying on ES-module namespace plumbing: strip a
+        // leading `export` from each declaration, assign `main` to `__forge_main`,
+        // and register every exported function into `__forge_handlers` (UI-4/CR-6).
         let wrapped = wrap_program(&program.source);
         if let Err(e) = ctx.eval::<(), _>(wrapped).catch(&ctx) {
             // A compile/eval error in user code is a runtime error (not a limit
@@ -261,30 +342,29 @@ fn run_inner(
             return Stop::Runtime(format!("program failed to load: {e}"));
         }
 
-        // Fetch the captured `main`.
-        let main: Function = match ctx.globals().get("__forge_main") {
+        // Resolve the chosen callable: `main` for a run, or the handler named by
+        // the action ref for a UI dispatch (an unknown action ref is a typed
+        // ValidationError Stop, never a panic).
+        let callable: Function = match entry.resolve(&ctx) {
             Ok(f) => f,
-            Err(_) => {
-                return Stop::Runtime(
-                    "program does not export an async function main(ctx, input)".into(),
-                )
-            }
+            Err(stop) => return stop,
         };
 
-        // Marshal input and the ctx object, then call main(ctx, input).
+        // Marshal the arg (run input / event payload) and the ctx object, then
+        // call callable(ctx, arg).
         let ctx_obj: Object = match ctx.globals().get("ctx") {
             Ok(o) => o,
             Err(e) => return Stop::Runtime(format!("ctx object missing: {e}")),
         };
-        let input_js = match QuickJsEngine::json_to_js(&ctx, input) {
+        let arg_js = match QuickJsEngine::json_to_js(&ctx, arg) {
             Ok(v) => v,
             Err(e) => return Stop::Runtime(format!("failed to marshal input: {e}")),
         };
 
-        let value = match main.call::<_, Value>((ctx_obj, input_js)) {
+        let value = match callable.call::<_, Value>((ctx_obj, arg_js)) {
             Ok(v) => v,
             Err(e) => {
-                let msg = format!("main threw: {}", exception_message(&ctx, e));
+                let msg = format!("entrypoint threw: {}", exception_message(&ctx, e));
                 return classify_failure(&budget, &host_error, msg);
             }
         };
@@ -303,6 +383,7 @@ fn run_inner(
         Stop::HostError(e) => Err(e),
         Stop::Limit(msg) => Err(CoreError::ResourceLimitExceeded(msg)),
         Stop::Runtime(msg) => Err(CoreError::RuntimeError(msg)),
+        Stop::Validation(msg) => Err(CoreError::ValidationError(msg)),
     }
 }
 
@@ -451,15 +532,91 @@ fn classify_failure(
 /// `async function main(...)`) is captured as the global `__forge_main`, then
 /// re-exported through a name the engine reads. We do not rely on ES-module
 /// evaluation: the program runs as a global script and assigns `main`.
+///
+/// In addition to `main`, we synthesize a **handler registry** (prd-merged/05
+/// UI-4, prd-merged/01 CR-6): every `export`ed named function in the source is
+/// registered into `globalThis.__forge_handlers` keyed by its name (the
+/// `ActionRef` the rendered tree's `onTap`/`onChange` carries). This is the
+/// wrap-time half of [`run_handler`]: a UI event is dispatched by addressing the
+/// function whose name equals the action ref. The registry is keyed by the
+/// exported name precisely so the dispatch key (`ActionRef`, a `String`) and the
+/// handler name are the same identifier — no separate mapping table to drift.
 fn wrap_program(source: &str) -> String {
-    // The transpiler emits `export async function main` / `export function main`
-    // / `export const main = ...`. For the spine we strip a leading `export `
-    // (module syntax is invalid in a global script) and capture the binding.
-    let stripped = source.replace("export async function main", "async function main");
-    let stripped = stripped.replace("export function main", "function main");
-    let stripped = stripped.replace("export const main", "const main");
-    let stripped = stripped.replace("export default async function main", "async function main");
-    format!("{stripped}\n;globalThis.__forge_main = main;\n")
+    let stripped = strip_exports(source);
+    // Collect every exported binding name so each becomes an addressable handler
+    // (main included — it is just the entrypoint handler). The registry is built
+    // *after* the stripped declarations so each name is already bound.
+    let names = exported_names(source);
+    let mut registry = String::from(";globalThis.__forge_handlers = {};\n");
+    for name in &names {
+        // `typeof <name> === 'function'` guards a name whose export was a
+        // non-function const (e.g. `export const x = 1;`) so the registry only
+        // holds callable handlers; a non-callable export is simply not addressable.
+        registry.push_str(&format!(
+            ";if (typeof {name} === 'function') {{ globalThis.__forge_handlers[{name:?}] = {name}; }}\n"
+        ));
+    }
+    format!("{stripped}\n;globalThis.__forge_main = main;\n{registry}")
+}
+
+/// Strip leading `export ` module syntax (invalid in a global script) from every
+/// exported declaration so each binding is a plain top-level declaration the
+/// engine can reach. Covers the forms the transpiler emits: `export [default]
+/// [async] function NAME` and `export const/let/var NAME`.
+fn strip_exports(source: &str) -> String {
+    source
+        .replace("export default async function ", "async function ")
+        .replace("export default function ", "function ")
+        .replace("export async function ", "async function ")
+        .replace("export function ", "function ")
+        .replace("export const ", "const ")
+        .replace("export let ", "let ")
+        .replace("export var ", "var ")
+}
+
+/// Best-effort scan of `source` for the names of exported declarations
+/// (`export [default] [async] function NAME` and `export const/let/var NAME`).
+/// Used to populate the `__forge_handlers` registry so each exported function is
+/// addressable by name. This is a lexical scan, not a full parse: the static
+/// policy scan (forge-pipeline) already validated the source, and the engine
+/// only needs the *names* to build the registry — an over-broad match is harmless
+/// because the registry guards each entry with a `typeof === 'function'` check.
+fn exported_names(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        // Walk past optional `default`/`async`/`function`/`const`/`let`/`var`
+        // keywords to the identifier that names the binding.
+        let rest = rest
+            .trim_start()
+            .strip_prefix("default ")
+            .unwrap_or(rest)
+            .trim_start();
+        let rest = rest
+            .strip_prefix("async ")
+            .unwrap_or(rest)
+            .trim_start();
+        let after_kw = rest
+            .strip_prefix("function ")
+            .or_else(|| rest.strip_prefix("const "))
+            .or_else(|| rest.strip_prefix("let "))
+            .or_else(|| rest.strip_prefix("var "));
+        let Some(after_kw) = after_kw else {
+            continue;
+        };
+        let name: String = after_kw
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Install the single host object `ctx` into the realm globals. Every method
