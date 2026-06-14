@@ -129,9 +129,13 @@ pub struct SandboxFile {
 ///
 /// `symlink_escapes_root(handle, rel_path)` lets the confinement gate ask the
 /// host whether the *resolved* target of a path (after following any symlink)
-/// escapes the handle root — a fact only the real filesystem knows. The default
-/// returns `false` (no symlink escape) so an in-memory backend without symlinks is
-/// safe; the real backend canonicalizes and compares against the root.
+/// escapes the handle root — a fact only the real filesystem knows. It (and the
+/// write-only `write_parent_escapes_root`) is a **required** method with no
+/// default: a default "does not escape" answer would silently fail OPEN on a
+/// backend that forgot to implement it, so every implementor must answer
+/// consciously. An in-memory backend without symlinks returns `false`; the real
+/// backend canonicalizes and compares against the root (see the per-method docs
+/// for the atomic-open / TOCTOU requirement).
 ///
 /// This trait is **wasm-clean** by design (no `std::fs` in the signature); the one
 /// real-I/O implementation lives host-side. This crate ships only the in-memory
@@ -144,10 +148,24 @@ pub trait FileSystem {
     fn handle_root(&self, handle: &str) -> Option<String>;
 
     /// Whether the resolved target of `rel_path` under `handle` escapes the
-    /// handle root after following any symlink. Default `false` (no symlinks).
-    fn symlink_escapes_root(&self, _handle: &str, _rel_path: &str) -> bool {
-        false
-    }
+    /// handle root after following any symlink.
+    ///
+    /// **REQUIRED (no default) — fail-closed by construction.** Every
+    /// [`FileSystem`] implementor MUST consciously answer this: there is
+    /// deliberately no default `false` body, because a default "does not escape"
+    /// would silently ALLOW a symlink escape on any backend that forgot to
+    /// implement it (fail-OPEN). An in-memory backend with no symlinks returns
+    /// `false`; a real/disk-backed implementor MUST resolve symlinks and
+    /// **canonicalize** the target (e.g. `realpath`/`std::fs::canonicalize`),
+    /// comparing the canonical path against the per-applet root, and MUST do so
+    /// **atomically at open time** (an `openat` + `O_NOFOLLOW`-style open, or an
+    /// `O_PATH`/`*at` resolution pinned to the root fd). This hook is **advisory**:
+    /// a non-atomic check-then-open is a TOCTOU hole (a symlink swapped between the
+    /// check and the open escapes the root), so a real-disk backend must NOT be
+    /// wired against this advisory hook — that real-disk `FileSystem` is a tracked
+    /// **hard blocker** for shipping live file I/O, not something to bolt onto
+    /// these advisory checks.
+    fn symlink_escapes_root(&self, handle: &str, rel_path: &str) -> bool;
 
     /// Whether the **canonical parent directory** of `rel_path` under `handle`
     /// escapes the handle root (spec/files.md "Gates": "For writes, the canonical
@@ -155,13 +173,21 @@ pub trait FileSystem {
     /// check from [`symlink_escapes_root`](FileSystem::symlink_escapes_root): a
     /// write target need not yet exist, so the *final* path is not a symlink, but
     /// its parent directory may be (or contain) a symlink that redirects the write
-    /// outside the root. The real backend canonicalizes the parent and compares it
-    /// against the root; the default returns `false` (an in-memory backend without
-    /// symlinks has no parent escape). Reached only in record mode, before the
-    /// write commits.
-    fn write_parent_escapes_root(&self, _handle: &str, _rel_path: &str) -> bool {
-        false
-    }
+    /// outside the root.
+    ///
+    /// **REQUIRED (no default) — fail-closed by construction.** As with
+    /// [`symlink_escapes_root`](FileSystem::symlink_escapes_root), there is
+    /// deliberately no default `false` body: a default would silently ALLOW a
+    /// parent-redirected write on a backend that forgot to implement it
+    /// (fail-OPEN). An in-memory backend without symlinks returns `false`; a
+    /// real/disk-backed implementor MUST resolve symlinks and **canonicalize** the
+    /// parent directory, comparing the canonical parent against the per-applet
+    /// root, and MUST do so **atomically at open time** (`openat`/`O_NOFOLLOW`-style
+    /// resolution pinned to the root fd). This hook is **advisory**: a non-atomic
+    /// check-then-open is a TOCTOU hole, so a real-disk backend must NOT be wired
+    /// against it — the real-disk `FileSystem` is a tracked **hard blocker**.
+    /// Reached only in record mode, before the write commits.
+    fn write_parent_escapes_root(&self, handle: &str, rel_path: &str) -> bool;
 
     /// Read the confined file at the normalized `rel_path` under `handle`. Returns
     /// `Ok(None)` for a missing file (the runtime maps that to a clean
@@ -192,7 +218,11 @@ pub trait FileSystem {
 ///   * a **`..` traversal** segment (rejected before join — a `.` segment is
 ///     stripped, a `..` segment is denied);
 ///   * a backslash separator (Windows-style), normalized-then-rejected as a
-///     drive/traversal escape rather than silently treated as a filename.
+///     drive/traversal escape rather than silently treated as a filename;
+///   * a **non-canonical component** ending in a trailing `.` or ASCII space
+///     (`secrets.txt.`, `secrets.txt `): a Windows/SMB backend strips those and
+///     aliases the component to `secrets.txt`, which would bypass a grant glob or
+///     collide with a distinct file — rejected fail-closed.
 ///
 /// On success the path is the segments joined by `/` with `.` segments removed —
 /// the form the grant glob and the [`FileSystem`] read/write are evaluated
@@ -248,6 +278,16 @@ pub fn confine_relative_path(path: &str) -> Result<String> {
                     "ctx.files path traversal is not allowed; path escapes the handle root via '..': {path:?}"
                 )))
             }
+            // A component ending in a trailing '.' or ASCII space is non-canonical:
+            // Windows/SMB strips those and aliases (e.g. `x.json.` / `x.json ` →
+            // `x.json`), which would bypass a grant glob or collide with a distinct
+            // file. Reject fail-closed (trim only trailing dots/spaces — a leading
+            // or interior space/dot is a legitimate filename byte).
+            other if other.trim_end_matches(['.', ' ']) != other => {
+                return Err(CoreError::PermissionDenied(format!(
+                    "ctx.files path component {other:?} has a trailing dot or space and is not a canonical path: {path:?}"
+                )))
+            }
             other => segments.push(other),
         }
     }
@@ -276,10 +316,26 @@ fn is_windows_drive_path(path: &str) -> bool {
 /// "match any run of characters including `/`" and `*` as "match any run of
 /// non-`/` characters".
 pub fn glob_matches(path_glob: &str, path: &str) -> bool {
-    glob_match_bytes(path_glob.as_bytes(), path.as_bytes())
+    glob_match_bytes(path_glob.as_bytes(), path.as_bytes(), GLOB_RECURSION_BUDGET)
 }
 
-fn glob_match_bytes(glob: &[u8], text: &[u8]) -> bool {
+/// Recursion-depth budget for [`glob_match_bytes`]. The matcher backtracks
+/// recursively (a wildcard run may try `rest` at many positions and `**/`
+/// recurses on the slash-skip branch); an adversarially crafted *trusted* glob
+/// with many `**` against a long path is otherwise unbudgeted recursion.
+/// Exceeding the budget is treated as **no-match** (fail closed: an over-complex
+/// glob never grants access). 4096 comfortably covers any legitimate
+/// manifest glob (each `**` and each literal byte costs at most one level) while
+/// capping pathological backtracking. Defense-in-depth: the glob is trusted, so
+/// no benign manifest reaches this depth.
+const GLOB_RECURSION_BUDGET: u32 = 4096;
+
+fn glob_match_bytes(glob: &[u8], text: &[u8], budget: u32) -> bool {
+    // Exhausted the recursion budget: fail closed (no-match). An over-complex
+    // glob never grants access rather than risking unbounded recursion.
+    let Some(budget) = budget.checked_sub(1) else {
+        return false;
+    };
     // A run of `*` is `**` (segment-crossing) iff it contains two or more stars;
     // a single `*` matches within one segment (does not cross '/').
     if glob.is_empty() {
@@ -296,14 +352,14 @@ fn glob_match_bytes(glob: &[u8], text: &[u8]) -> bool {
         // `**/` matches zero-or-more directories *including* the trailing slash,
         // so `data/**/*.json` also matches `data/x.json` (zero directories). Try
         // matching the glob after the `**/` against the text first.
-        if double && rest.first() == Some(&b'/') && glob_match_bytes(&rest[1..], text) {
+        if double && rest.first() == Some(&b'/') && glob_match_bytes(&rest[1..], text, budget) {
             return true;
         }
         // Try to match `rest` at every position the wildcard may extend to. A
         // single `*` may not consume a '/', so it stops at the first separator.
         let mut t = 0usize;
         loop {
-            if glob_match_bytes(rest, &text[t..]) {
+            if glob_match_bytes(rest, &text[t..], budget) {
                 return true;
             }
             if t >= text.len() {
@@ -318,7 +374,7 @@ fn glob_match_bytes(glob: &[u8], text: &[u8]) -> bool {
     }
     // Literal byte: must match the head of the text.
     if !text.is_empty() && glob[0] == text[0] {
-        return glob_match_bytes(&glob[1..], &text[1..]);
+        return glob_match_bytes(&glob[1..], &text[1..], budget);
     }
     false
 }
@@ -519,6 +575,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn confine_rejects_trailing_dot_or_space_component() {
+        // A canonical component is accepted.
+        assert_eq!(confine_relative_path("data/x.json").unwrap(), "data/x.json");
+        // A trailing dot aliases to `x.json` on Windows/SMB → reject fail-closed.
+        let dot = confine_relative_path("data/x.json.").unwrap_err();
+        assert_eq!(dot.code(), "PermissionDenied");
+        assert!(dot.to_string().contains("trailing dot or space"), "{dot}");
+        // A trailing ASCII space likewise aliases to `x.json` → reject.
+        let space = confine_relative_path("data/x.json ").unwrap_err();
+        assert_eq!(space.code(), "PermissionDenied");
+        assert!(space.to_string().contains("trailing dot or space"), "{space}");
+        // A leading/interior space or dot is a legitimate filename byte, not stripped.
+        assert_eq!(confine_relative_path("data/.hidden").unwrap(), "data/.hidden");
+        assert_eq!(confine_relative_path("data/a b.json").unwrap(), "data/a b.json");
+    }
+
     // --- glob_matches -----------------------------------------------------
 
     #[test]
@@ -540,6 +613,20 @@ mod tests {
     fn glob_is_anchored_at_both_ends() {
         assert!(!glob_matches("data/*.json", "xdata/settings.json"));
         assert!(!glob_matches("data/*.json", "data/settings.jsonx"));
+    }
+
+    #[test]
+    fn glob_recursion_budget_fails_closed_on_pathological_input() {
+        // A budget of 1 lets the first call run but no recursion, so any glob that
+        // must recurse fails closed (no-match) rather than risking unbounded depth.
+        assert!(!glob_match_bytes(b"data/**/*.json", b"data/a/b/c.json", 1));
+        // A glob with many `**` against a long path matches under the real budget
+        // (no benign manifest reaches the cap) but exhausting a tiny budget yields
+        // no-match — defense-in-depth, never a panic/stack overflow.
+        let many = "**/".repeat(16) + "*.json";
+        let text = "a/".repeat(64) + "x.json";
+        assert!(glob_matches(&many, &text)); // matches under the default budget
+        assert!(!glob_match_bytes(many.as_bytes(), text.as_bytes(), 4)); // tiny budget → no-match
     }
 
     // --- InMemoryFileSystem ----------------------------------------------
