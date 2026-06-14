@@ -32,8 +32,8 @@
 //!     relative to the prior `AllowAll` baseline (shells tighten, never loosen).
 
 use forge_runtime::{
-    ComposedDecisionContext, DecisionContext, PlatformPermissions, PolicyCategory, RunProfile,
-    WorkspacePolicy,
+    ComposedDecisionContext, DecisionContext, GateDecision, PlatformPermissions, PolicyCategory,
+    RunProfile, WorkspacePolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -137,5 +137,30 @@ impl RunPolicy {
         let platform = PlatformPermissions::new(granted.iter().map(|c| c.to_policy()));
 
         Box::new(ComposedDecisionContext::new(workspace, run_profile, platform))
+    }
+
+    /// Evaluate the SC-10 **workspace-policy gate** (gate 2) for one capability
+    /// category against this trusted policy, returning `Err(reason)` when the gate
+    /// denies. This delegates to the SAME [`ComposedDecisionContext`] the live command
+    /// path installs via [`to_decision_context`](Self::to_decision_context) (its
+    /// `workspace_policy` hook), so the sync boundary and the command boundary share
+    /// one trusted-source `WorkspacePolicy` decision — exposed as a boolean so the
+    /// **SS-7 remote-sync boundary** can apply the workspace-policy gate to every
+    /// incoming op, not just local `ctx.*` host calls (T037: "evaluated on every
+    /// command AND every remote sync op").
+    ///
+    /// Only the workspace-policy gate applies at the sync boundary: it is a workspace
+    /// admin decision over capability *categories*, independent of any one applet, so
+    /// it governs an imported peer's record write exactly as it governs a local one.
+    /// The run-profile gate (gate 4, per-run) and platform-permission gate (gate 5,
+    /// OS-at-runtime) are properties of *executing* a run on this host and have no
+    /// meaning for importing a peer's already-authored CRDT op, so they are not
+    /// consulted here. The decision reads ONLY trusted workspace state — never the
+    /// incoming op's payload (review 048/050).
+    pub fn workspace_policy_gate(&self, category: Capability) -> std::result::Result<(), String> {
+        match self.to_decision_context().workspace_policy(category.to_policy()) {
+            GateDecision::Allow => Ok(()),
+            GateDecision::Deny(reason) | GateDecision::Unavailable(reason) => Err(reason),
+        }
     }
 }

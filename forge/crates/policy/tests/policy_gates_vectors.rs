@@ -150,19 +150,55 @@ fn suite() -> serde_json::Value {
     load("manifest.json")
 }
 
+/// Every `*.json` in the fixtures dir EXCEPT `manifest.json` — the on-disk vector
+/// files. The harness must run all of these, so this is the denominator the
+/// `ran == fixture count` guard compares against (T037 Phase B): a vector dropped
+/// on disk but not listed in `manifest.json` would otherwise be silently skipped.
+fn vector_files_on_disk() -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(fixtures_dir())
+        .expect("read policy-gates fixtures dir")
+        .map(|e| e.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json") && name != "manifest.json")
+        .collect();
+    files.sort();
+    files
+}
+
 #[test]
 fn every_listed_case_matches_its_expected_gate_decision() {
     let suite = suite();
     let cases = suite["cases"].as_array().expect("cases is an array");
     let mut checked = 0usize;
+    let mut ran_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for entry in cases {
         let name = entry["case"].as_str().expect("case name");
         let file = entry["file"].as_str().expect("file name");
         let case = load(file);
         run_vector(name, &case);
+        ran_files.insert(file.to_string());
         checked += 1;
     }
     assert_eq!(checked, 12, "expected 12 policy-gate vectors, checked {checked}");
+
+    // GUARD: ran == fixture count. Every `*.json` on disk (skipping manifest.json)
+    // must have been driven by exactly one vector — a fixture added to the dir but
+    // not listed in the suite manifest (or vice versa) fails here rather than being
+    // silently skipped, so the harness can never run a stale subset of the corpus.
+    let on_disk = vector_files_on_disk();
+    assert_eq!(
+        ran_files.len(),
+        on_disk.len(),
+        "harness ran {} vectors but {} *.json fixtures exist on disk (skipping manifest.json): {:?} vs {:?}",
+        ran_files.len(),
+        on_disk.len(),
+        ran_files,
+        on_disk,
+    );
+    let on_disk_set: std::collections::BTreeSet<String> = on_disk.into_iter().collect();
+    assert_eq!(
+        ran_files, on_disk_set,
+        "the set of vectors the harness ran must be exactly the set of *.json fixtures on disk"
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@
 //!    `db.write` does NOT cover the collection: rejected the same way (the role
 //!    matrix passes but the collection grant denies).
 
-use forge_core::{source_id_for, TrustedMembership, WorkspaceCore};
+use forge_core::{source_id_for, Capability, RunPolicy, TrustedMembership, WorkspaceCore};
 use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, Role, WorkspaceId};
 use forge_storage::{IndexManager, Mutation};
 use serde_json::{json, Value};
@@ -245,6 +245,186 @@ fn editor_outside_db_write_scope_is_rejected() {
         "denial names the missing collection grant: {:?}",
         denial.payload
     );
+}
+
+// --- SC-10 workspace-policy gate at the SS-7 sync boundary (T037 / review 164) ---
+//
+// SC-10 is evaluated on EVERY command AND EVERY remote sync op. The receiver's
+// trusted `RunPolicy` therefore gates an incoming op the same way it gates a local
+// `ctx.*` call: a remote record write is a `Db`-category op, so a receiver that
+// forbids the `db` category SKIPS the chunk even when its `sync_membership` would
+// allow it. These tests pin the wiring in `authorize_incoming_op`.
+
+#[test]
+fn workspace_policy_db_deny_skips_otherwise_rbac_allowed_remote_op() {
+    let idx = IndexManager::new();
+    // RBAC would ALLOW: the receiver trusts the sender as an editor WITH db.write on
+    // `tasks`. The only thing that can deny is the SC-10 workspace-policy gate.
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+
+    // The receiver's trusted workspace admin policy forbids the `db` capability
+    // category (set ONLY through the trusted seam, never the incoming op payload).
+    receiver
+        .set_run_policy(RunPolicy {
+            workspace_denied: vec![Capability::Db],
+            ..RunPolicy::default()
+        })
+        .unwrap();
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(
+            &insert("task-1", json!({ "title": "rbac-allowed but policy-denied" }), 1),
+            &idx,
+        )
+        .unwrap();
+
+    let before = query_tasks(&mut receiver);
+    assert!(before.is_empty(), "receiver starts empty");
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+
+    // The op is SKIPPED by the workspace-policy gate even though membership allowed
+    // it: a chunk is denied and NONE imported into the receiver.
+    assert_eq!(
+        report.chunks_denied, 1,
+        "a workspace-policy db deny must skip the otherwise-RBAC-allowed op"
+    );
+    assert_eq!(report.chunks_a_to_b, 0, "no chunk imported into the receiver");
+
+    // Projection + chunk history unchanged.
+    assert_eq!(query_tasks(&mut receiver), before, "projection unchanged");
+    let doc = forge_storage::collection_doc_id("tasks");
+    assert!(
+        receiver.store().get_chunks(&doc).unwrap().is_empty(),
+        "no chunk landed in the receiver's history"
+    );
+
+    // A permission_denied audit denial naming the workspace-policy gate was recorded.
+    let denial = receiver
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .next()
+        .expect("a denial was audited");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+    assert_eq!(denial.payload["collection"], json!("tasks"));
+    assert!(
+        denial.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("workspace policy"),
+        "denial reason names the workspace-policy gate: {:?}",
+        denial.payload
+    );
+    // The durable audit row tags the deciding gate so the skip is attributable.
+    let rows = receiver
+        .store()
+        .query_audit(&forge_storage::AuditQuery::by_decision("deny"))
+        .unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r.metadata["gate"] == json!("workspace-policy")),
+        "a durable workspace-policy deny audit row was persisted in the receiver's log: {rows:?}"
+    );
+}
+
+#[test]
+fn workspace_policy_gate_first_failing_beats_membership_rbac() {
+    // The same incoming op fails BOTH the workspace-policy gate (db denied) AND
+    // membership RBAC (viewer cannot write). SC-10 order: workspace-policy (gate 2)
+    // is evaluated BEFORE the role/grant checks, so the surfaced reason names the
+    // workspace-policy gate, not the viewer role. First-failing-gate wins.
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-viewer", Role::Viewer, &[]));
+    receiver
+        .set_run_policy(RunPolicy {
+            workspace_denied: vec![Capability::Db],
+            ..RunPolicy::default()
+        })
+        .unwrap();
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(&insert("task-2", json!({ "title": "doubly denied" }), 1), &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(report.chunks_denied, 1);
+    assert_eq!(report.chunks_a_to_b, 0);
+
+    let denial = receiver
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .next()
+        .expect("a denial was audited");
+    let reason = denial.payload["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("workspace policy"),
+        "workspace-policy gate runs first, so it names the surfaced reason: {reason}"
+    );
+    assert!(
+        !reason.contains("viewer"),
+        "the later membership role denial is not the surfaced reason: {reason}"
+    );
+}
+
+#[test]
+fn unprovisioned_run_policy_does_not_block_rbac_allowed_remote_op() {
+    // Baseline / no-regression: with NO RunPolicy set on the receiver, an
+    // RBAC-allowed op imports exactly as before (the SS-7 SC-10 wiring is opt-in and
+    // default-open — shells tighten, never loosen).
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+    assert!(receiver.run_policy().is_none(), "no policy configured");
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(&insert("task-3", json!({ "title": "allowed" }), 1), &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(report.chunks_denied, 0, "no SC-10 deny when unprovisioned");
+    assert!(report.total_chunks_moved() > 0, "the op moved a chunk");
+    let rows = query_tasks(&mut receiver);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "task-3");
+}
+
+#[test]
+fn workspace_policy_allowing_db_still_imports_remote_op() {
+    // A RunPolicy that explicitly ALLOWS `db` (and leaves the other gates
+    // unspecified → all-categories) must NOT block an RBAC-allowed op: the gate only
+    // denies a category it forbids, proving the deny in the prior test was the db
+    // forbid, not the mere presence of a policy.
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+    receiver
+        .set_run_policy(RunPolicy {
+            workspace_allowed: Some(vec![
+                Capability::Db,
+                Capability::Storage,
+                Capability::Ui,
+                Capability::Time,
+                Capability::Random,
+            ]),
+            ..RunPolicy::default()
+        })
+        .unwrap();
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(&insert("task-4", json!({ "title": "db allowed" }), 1), &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(report.chunks_denied, 0, "db is allowed, so no SC-10 deny");
+    let rows = query_tasks(&mut receiver);
+    assert_eq!(rows.len(), 1, "the op imported under a db-allowing policy");
+    assert_eq!(rows[0].0, "task-4");
 }
 
 #[test]

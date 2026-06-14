@@ -699,6 +699,7 @@ impl WorkspaceCore {
                 indexes: self_indexes,
                 events: self_events,
                 sync_membership: self_membership,
+                run_policy: self_run_policy,
                 ..
             } = self;
             let WorkspaceCore {
@@ -706,6 +707,7 @@ impl WorkspaceCore {
                 indexes: other_indexes,
                 events: other_events,
                 sync_membership: other_membership,
+                run_policy: other_run_policy,
                 ..
             } = other;
 
@@ -739,9 +741,13 @@ impl WorkspaceCore {
                     if source == self_source {
                         // Direction: self → received by `other`. Authorize against
                         // `other`'s table for the original author; the durable row
-                        // lands in `other`'s log.
+                        // lands in `other`'s log. The receiver's OWN trusted
+                        // `RunPolicy` supplies the SC-10 workspace-policy gate, so a
+                        // category `other` forbids blocks the import even when its
+                        // membership would allow it (SS-7).
                         authorize_incoming_op(
                             other_membership,
+                            other_run_policy.as_ref(),
                             other_events,
                             audit,
                             actor,
@@ -752,6 +758,7 @@ impl WorkspaceCore {
                         debug_assert_eq!(source, other_source);
                         authorize_incoming_op(
                             self_membership,
+                            self_run_policy.as_ref(),
                             self_events,
                             audit,
                             actor,
@@ -1114,8 +1121,21 @@ pub fn source_id_for(loro_peer_id: u64) -> String {
 /// committed decision lacks its row. The `logical_time` is the SAME value the
 /// EventSink minted for this decision, so the transient event and the durable row
 /// share one deterministic clock.
+///
+/// SC-10 workspace-policy gate at the sync boundary (T037 / review 164): SC-10 is
+/// "evaluated on every command AND every remote sync op (SS-7)". The receiver's
+/// trusted `run_policy` therefore gates an incoming op the SAME way it gates a local
+/// `ctx.*` call: a remote record write is a `Db`-category op, so a receiver whose
+/// `RunPolicy` forbids the `db` category SKIPS the chunk even when its `sync_membership`
+/// would allow it. The gate runs BEFORE membership resolution so a workspace-policy
+/// deny is the first failing gate (SC-10 order: workspace-policy precedes the
+/// role/grant checks membership RBAC plays). Only the workspace-policy gate applies
+/// here — the run-profile / platform-permission gates are properties of executing a
+/// run on this host, not of importing a peer's already-authored op (see
+/// [`RunPolicy::workspace_policy_gate`](crate::RunPolicy::workspace_policy_gate)).
 fn authorize_incoming_op(
     membership: &std::collections::BTreeMap<String, TrustedMembership>,
+    run_policy: Option<&RunPolicy>,
     events: &mut EventSink,
     audit: &mut Vec<forge_storage::AuditRecord>,
     source: &str,
@@ -1153,6 +1173,37 @@ fn authorize_incoming_op(
             serde_json::json!({ "source": source, "reason": reason }),
         ));
         return false;
+    }
+    // SC-10 workspace-policy gate (gate 2), evaluated FIRST so a workspace-policy deny
+    // wins over a membership-RBAC denial (first-failing-gate order). A record chunk is
+    // a `Db`-category op; an un-provisioned receiver (`None`) imposes no SC-10 deny.
+    if let Some(policy) = run_policy {
+        if let Err(reason) = policy.workspace_policy_gate(crate::Capability::Db) {
+            let logical_time = emit_event_logical_time(
+                events,
+                "sync.permission_denied",
+                serde_json::json!({
+                    "decision": "deny",
+                    "source": source,
+                    "collection": envelope.collection,
+                    "reason": reason,
+                }),
+            );
+            let collection = collection_opt(&envelope.collection);
+            audit.push(forge_storage::AuditRecord::new(
+                logical_time,
+                SYNC_RBAC_PRODUCER,
+                envelope_action(envelope),
+                "deny",
+                source,
+                "record",
+                collection.clone(),
+                collection,
+                reason.clone(),
+                serde_json::json!({ "source": source, "reason": reason, "gate": "workspace-policy" }),
+            ));
+            return false;
+        }
     }
     let env = remote_op_envelope_from_sync(envelope);
     match membership.get(source) {

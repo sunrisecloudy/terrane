@@ -63,7 +63,7 @@ pub use runner::{
 // / run-profile / platform-permission gates that read TRUSTED workspace/run/platform
 // state, never the request payload (review 048/050).
 pub use forge_policy::{
-    AllowAll, Category as PolicyCategory, ComposedDecisionContext, DecisionContext,
+    AllowAll, Category as PolicyCategory, ComposedDecisionContext, DecisionContext, GateDecision,
     PlatformPermissions, RunProfile, WorkspacePolicy,
 };
 
