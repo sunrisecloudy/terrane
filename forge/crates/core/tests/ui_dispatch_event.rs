@@ -1094,3 +1094,158 @@ fn interactive_fixture_applet_drives_through_the_command() {
     );
     assert_eq!(reject.payload["dispatch_attempted"], serde_json::json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// review 112 — `ctx.files` must work through `ui.dispatch_event`, exactly like
+// `runtime.run`
+// ---------------------------------------------------------------------------
+//
+// `cmd_ui_dispatch_event` builds its `StorageHostBridge` over the SAME engine
+// path as a run (UI-4). A prior version wired the bridge with only the HTTP
+// client + secret store but NOT the injected `ctx.files` filesystem, so a UI
+// event handler calling `ctx.files.read`/`write` failed closed even when the
+// manifest granted files and `runtime.run` worked for the SAME applet. This test
+// pins the fix: a granted file op inside a dispatched handler round-trips
+// end-to-end through the injected `InMemoryFileSystem`.
+
+/// An interactive applet whose `main` renders a placeholder tree (the diff base)
+/// and whose `saveDraft` handler writes a text draft through `ctx.files.write`,
+/// reads it back through `ctx.files.read`, and renders the round-tripped bytes —
+/// so the read-back is visible in the dispatch's returned tree. Every path is
+/// INSIDE the `files_manifest` grant. `ZHJhZnQgdjE=` = `draft v1`.
+const FILES_DISPATCH_TS: &str = r#"
+    export async function main(ctx, _input) {
+        ctx.ui.render({ type: "Text", text: "no draft yet" });
+        return { ok: true };
+    }
+    export const handlers = {
+        "saveDraft": async (ctx, _event) => {
+            await ctx.files.write({
+                handle: "workspace_data", path: "drafts/note.txt",
+                bytes_base64: "ZHJhZnQgdjE=", content_type: "text/plain",
+                mode: "create_or_truncate"
+            });
+            const back = await ctx.files.read({ handle: "workspace_data", path: "drafts/note.txt" });
+            ctx.ui.render({ type: "Text", text: "draft: " + back.bytes_base64 });
+            return { ok: true, value: { draft_back: back.bytes_base64 } };
+        },
+    };
+"#;
+
+/// The `files_manifest` from spine.rs: grants `files.read`/`write` on the
+/// `drafts/*.txt` glob under the `workspace_data` handle (plus ui).
+fn files_dispatch_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "files": {
+                "read": [
+                    { "handle": "workspace_data", "path_glob": "drafts/*.txt",
+                      "max_bytes": 65536, "content_types": ["text/plain"] }
+                ],
+                "write": [
+                    { "handle": "workspace_data", "path_glob": "drafts/*.txt",
+                      "max_bytes": 65536, "content_types": ["text/plain"] }
+                ]
+            }
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+#[test]
+fn dispatch_handler_files_read_write_runs_through_injected_filesystem() {
+    use forge_runtime::InMemoryFileSystem;
+
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // Inject the SAME trusted per-applet sandbox filesystem wiring the run-path
+    // files tests use: grant the `workspace_data` handle a root. The factory
+    // builds a fresh filesystem each invocation; the write the handler performs
+    // (and reads back) lands in THIS dispatch's filesystem. Without the review-112
+    // fix the dispatch path never wires this factory onto its bridge, so the
+    // handler's `ctx.files.write` fails closed and the dispatch is rejected.
+    core.set_file_system_factory(|| {
+        Box::new(
+            InMemoryFileSystem::new()
+                .with_handle_root("workspace_data", "/sandbox/app_files/workspace_data"),
+        )
+    });
+
+    let resp = core.handle(cmd(
+        "applet.install",
+        "files_dispatch",
+        serde_json::json!({
+            "manifest": files_dispatch_manifest(),
+            "sources": { "src/main.ts": FILES_DISPATCH_TS }
+        }),
+    ));
+    assert!(resp.ok, "install: {:?}", resp.error);
+
+    // The initial render establishes the diff base (the interactive session start).
+    let run = core.handle(cmd("runtime.run", "files_dispatch", serde_json::json!({ "input": {} })));
+    assert!(run.ok, "initial render: {:?}", run.error);
+
+    // Dispatch the `saveDraft` handler: it writes + reads back through `ctx.files`.
+    // This SUCCEEDS only because the dispatch bridge now carries the injected
+    // filesystem (the fix). Pre-fix this is a typed CapabilityRequired rejection
+    // (`resp.ok == false`), so the dispatch succeeding meaningfully exercises the
+    // files bridge in the dispatch path.
+    let save = dispatch(
+        &mut core,
+        "files_dispatch",
+        serde_json::json!("saveDraft"),
+        serde_json::json!({}),
+    );
+    assert!(
+        save.ok,
+        "a granted ctx.files op inside a dispatched handler must succeed: {:?}",
+        save.error
+    );
+
+    // The handler's read-back bytes are visible in the dispatch's returned tree —
+    // proof the write→read round-trip ran end-to-end through the injected
+    // filesystem, not a fail-closed empty default.
+    let tree: Node = from_str(&save.payload["tree"].to_string()).expect("produced tree parses");
+    match &tree {
+        Node::Text { value, .. } => assert_eq!(
+            value, "draft: ZHJhZnQgdjE=",
+            "the handler rendered the round-tripped file bytes"
+        ),
+        other => panic!("expected a Text root carrying the read-back bytes, got {other:?}"),
+    }
+
+    // The file ops are in the dispatched run's recorded host-call trace, in order
+    // (CR-8) — so the dispatch records + replays the file effects like a run.
+    let run_id = save.payload["run_id"].as_str().unwrap().to_string();
+    let rec = core.store().load_run(&run_id).unwrap().unwrap();
+    let methods: Vec<&str> = rec.calls.iter().map(|c| c.method.as_str()).collect();
+    assert!(
+        methods.contains(&"files.write") && methods.contains(&"files.read"),
+        "the dispatched run records both file ops: {methods:?}"
+    );
+    let read = rec.calls.iter().find(|c| c.method == "files.read").unwrap();
+    assert_eq!(
+        read.response["bytes_base64"],
+        serde_json::json!("ZHJhZnQgdjE="),
+        "the recorded read-back bytes equal what the handler wrote, within its grant"
+    );
+
+    // And the dispatched run replays byte-identically (CR-8: the recorded file
+    // responses are served, never re-performed against any live filesystem).
+    let replay = core.handle(cmd(
+        "runtime.replay",
+        "files_dispatch",
+        serde_json::json!({ "run_id": run_id }),
+    ));
+    assert!(replay.ok, "the files dispatch must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}

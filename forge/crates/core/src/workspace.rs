@@ -1379,6 +1379,13 @@ impl WorkspaceCore {
 
         let http_client = (self.http_client_factory)();
         let secret_store = (self.secret_store_factory)();
+        // Build this dispatch's `ctx.files` sandbox from the injected factory, EXACTLY
+        // like `cmd_runtime_run` does (CR-3 / spec/files.md). Without this a UI event
+        // handler calling `ctx.files.read`/`write` would fail closed even when the
+        // manifest grants files and `runtime.run` works for the same applet — breaking
+        // the "same engine/host path as a run" promise (UI-4) for interactive applets
+        // with file-backed handler state (review 112). Default = empty (fail-closed).
+        let file_system = (self.file_system_factory)();
 
         // Re-enter the handler over the SAME engine path as a run: record mode,
         // live Store-backed bridge, manifest-gated `ctx.*`. `record_dispatch` runs
@@ -1390,7 +1397,8 @@ impl WorkspaceCore {
             applet_id.as_str(),
             http_client,
         )
-        .with_secret_store(secret_store);
+        .with_secret_store(secret_store)
+        .with_file_system(file_system);
         let mut run = record_dispatch(
             &program,
             &installed.manifest,
