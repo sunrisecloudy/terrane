@@ -826,19 +826,93 @@ fn synced_chunks_are_recorded_in_receiver_oplog_as_remote_and_idempotent() {
 /// violating the monotone restore contract. This pins the fix: the delete's WHEN now rides
 /// the staged chunk's metadata onto the receiver's `record.remote_import` oplog row.
 ///
-/// Setup: author A writes `insert@1 -> patch@2 -> delete@100` (a LATE delete whose logical
-/// timestamp jumps well past the live-state frontier); a fresh peer B syncs the history.
-/// On B (the receiver), we assert:
-///   - the imported delete's `record.remote_import` oplog row physically carries
-///     `mutation_at == 100` (the metadata crossed the boundary);
-///   - `record_history` on B surfaces the tombstoned version's WHEN as `Some(100)`;
-///   - the monotone default restore clock B computes the SAME way core's
-///     `monotone_restore_clock` does — `max(history.logical_at) + 1` — is `101`, strictly
-///     greater than the synced `delete@100`, so an omitted `db.restore` on B stamps a
-///     version AFTER the delete it reverses (not `3`, BEFORE it, as before the fix).
+/// ## Determinism (review 171 round 2)
+///
+/// The proof is split into two parts so it is STABLE across every build/scheduling state —
+/// the round-1 form depended on the delete chunk surviving content-addressing as a single
+/// distinct staged entry and on the change feed having exactly one entry per version, both
+/// of which can vary with how Loro splits the incremental export and with `list_ops`
+/// ordering, making the assertion flaky:
+///
+///   * Part A — the SEAM threading — is proven directly and deterministically by handing
+///     `import_remote_chunk_tx` (via [`Store::apply_remote_chunks`]) a delete [`RemoteChunk`]
+///     built EXACTLY as `missing_chunks_for_doc` builds it (`delete_mutation_at: Some(100)`),
+///     with NO dependence on content-addressing or chunk splitting. The receiver's
+///     `record.remote_import` row must carry `mutation_at = 100`. This is the load-bearing
+///     "the WHEN crosses the boundary" assertion, made on the single code path the seam uses.
+///
+///   * Part B — the END-TO-END convergence + monotone clock — runs the real `sync_stores`
+///     and asserts the RECEIVER's observable invariants with set/extremum checks that do not
+///     depend on chunk count or feed-entry ordering: the SET of `mutation_at` values carried
+///     by the receiver's remote-import rows is exactly `{100}` (no row carries a WRONG WHEN,
+///     and the delete's WHEN is present), the change feed's tombstoned version reports
+///     `Some(100)`, and the monotone default clock `max(logical_at) + 1` is `101 > 100`.
 #[test]
 fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it() {
     let idx = IndexManager::new();
+
+    // ---- Part A: the seam threading, proven on the single import code path ---------------
+    //
+    // Hand the receiver a delete chunk built EXACTLY as the sync seam's `missing_chunks_for_doc`
+    // builds it — `delete_mutation_at: Some(100)` — and assert `import_remote_chunk_tx` writes
+    // that WHEN onto the receiver's `record.remote_import` oplog row. This exercises the fix
+    // (`OplogPayload::remote_import` → `mutation_at`) with NO dependence on content-addressing,
+    // chunk splitting, or feed ordering, so it cannot flake.
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    author
+        .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "draft"}), 1), &idx)
+        .unwrap();
+    author
+        .apply_mutation_crdt(
+            &Mutation::Delete {
+                collection: "tasks".into(),
+                id: "t1".into(),
+                logical_at: Some(100),
+            },
+            &idx,
+        )
+        .unwrap();
+    let doc_id = collection_doc_id("tasks");
+    // Stage EVERY author chunk as the seam would, attaching the delete's WHEN to ALL of them
+    // (the seam attaches it only to the delete chunk; over-attaching here would only make the
+    // assertion STRICTER, but we keep it faithful: the delete's WHEN rides the delete chunk).
+    // We mirror `missing_chunks_for_doc`'s shape directly so the test stays pinned to the seam
+    // contract without reaching into its private staging.
+    let delete_when = delete_when_for_chunks(&author, &doc_id);
+    let staged: Vec<RemoteChunk> = author
+        .get_chunks(&doc_id)
+        .unwrap()
+        .into_iter()
+        .map(|c| {
+            let exchanged = exchanged_chunk_id(&c.format, &c.payload);
+            RemoteChunk {
+                doc_id: doc_id.clone(),
+                chunk_id: exchanged.clone(),
+                format: c.format,
+                payload: c.payload,
+                author_actor_id: None,
+                record_ids: vec!["t1".into()],
+                schema_version: None,
+                registry_collection: None,
+                // The delete's WHEN rides ONLY the chunk the author's delete oplog row named.
+                delete_mutation_at: delete_when.get(&c.chunk_id).copied(),
+            }
+        })
+        .collect();
+    let mut direct_receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+    direct_receiver
+        .apply_remote_chunks(&staged, "peer:11", &idx)
+        .unwrap();
+    // The SET of `mutation_at` values carried by the receiver's remote-import rows is exactly
+    // {100}: the delete row carries the origin WHEN, no other row carries a (wrong) WHEN.
+    assert_eq!(
+        remote_import_mutation_ats(&direct_receiver),
+        std::collections::BTreeSet::from([100]),
+        "import_remote_chunk_tx must write the delete's mutation_at=100 onto the \
+         receiver's record.remote_import row (the seam threading)"
+    );
+
+    // ---- Part B: end-to-end convergence + monotone clock via the real sync seam ----------
     let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
     let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
 
@@ -874,42 +948,37 @@ fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it()
     // The record is a tombstone on both peers after convergence.
     assert!(receiver.get_record("tasks", "t1").unwrap().is_none());
 
-    // (1) The imported delete's `record.remote_import` oplog row physically carries the
-    // origin delete's logical timestamp as `mutation_at` — the metadata crossed the sync
-    // boundary (the fix). It is the only remote-import row carrying the key.
-    let carried: Vec<i64> = receiver
-        .list_ops()
-        .unwrap()
-        .into_iter()
-        .filter(|o| o.kind == "record.remote_import")
-        .filter_map(|o| {
-            serde_json::from_slice::<Value>(&o.payload)
-                .ok()
-                .and_then(|v| v.get("mutation_at").and_then(Value::as_i64))
-        })
-        .collect();
+    // (1) The imported delete's `record.remote_import` oplog row physically carries the origin
+    // delete's logical timestamp as `mutation_at` — the metadata crossed the sync boundary
+    // (the fix). Asserted as a SET so the proof is invariant to how many chunks the import
+    // produced and to `list_ops` ordering: the set of WHENs the remote-import rows carry is
+    // exactly {100} — the delete's WHEN is present and no row carries a wrong WHEN.
     assert_eq!(
-        carried,
-        vec![100],
+        remote_import_mutation_ats(&receiver),
+        std::collections::BTreeSet::from([100]),
         "the synced delete must carry mutation_at=100 onto the receiver's remote-import row"
     );
 
-    // (2) On the receiver, the change feed surfaces the imported delete's WHEN. Exactly one
-    // feed entry reports `Some(100)` — the tombstoned (deleted) version. Before the fix that
-    // entry reported `None`, since the remote-import row dropped `mutation_at`.
+    // (2) On the receiver, the change feed surfaces the imported delete's WHEN. The delete's
+    // WHEN (=100) is the MAXIMUM logical timestamp in the feed (the late delete jumps past the
+    // live-state frontier), and the entry carrying it is a tombstone (deleted) version. This is
+    // asserted by the WHEN value, NOT by feed position / `version`: a sync-receiver stores
+    // content-addressed chunk ids, so every entry's `version` (the `chunk-NNNN` frontier)
+    // degrades to 0 — feed ORDER among them is not meaningful, so the proof keys on the
+    // logical WHEN instead. Before the fix the delete's WHEN was dropped, the feed's max WHEN
+    // was 2, and NO entry reported 100.
     let feed = receiver.record_history("tasks", "t1").unwrap();
-    let with_delete_when: Vec<_> = feed
-        .iter()
-        .filter(|e| e.logical_at == Some(100))
-        .collect();
+    let max_when = feed.iter().filter_map(|e| e.logical_at).max();
     assert_eq!(
-        with_delete_when.len(),
-        1,
-        "exactly one feed entry surfaces the imported delete's WHEN (=100), not None"
+        max_when,
+        Some(100),
+        "the feed's maximum WHEN must be the synced late delete's (=100), not None/2"
     );
     assert!(
-        with_delete_when[0].state.is_none(),
-        "the entry carrying the delete WHEN is the tombstoned (deleted) version"
+        feed.iter()
+            .filter(|e| e.logical_at == Some(100))
+            .all(|e| e.state.is_none()),
+        "every entry carrying the delete WHEN (=100) is the tombstoned (deleted) version"
     );
 
     // (3) The default restore clock B derives the SAME way core's `monotone_restore_clock`
@@ -930,6 +999,50 @@ fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it()
         monotone_default > 100,
         "the default restore WHEN must be strictly after the synced delete@100"
     );
+}
+
+/// The set of `mutation_at` values carried by a store's `record.remote_import` oplog rows.
+/// Used by the review-171 regression as an ORDER- and COUNT-independent witness that the
+/// synced delete's WHEN crossed the sync boundary onto the receiver's remote-import row(s):
+/// the set is `{100}` exactly when the delete's WHEN is carried and no other imported row
+/// carries a (wrong) WHEN, regardless of how the import split into chunks or how `list_ops`
+/// orders them.
+fn remote_import_mutation_ats(store: &Store) -> std::collections::BTreeSet<i64> {
+    store
+        .list_ops()
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.kind == "record.remote_import")
+        .filter_map(|o| {
+            serde_json::from_slice::<Value>(&o.payload)
+                .ok()
+                .and_then(|v| v.get("mutation_at").and_then(Value::as_i64))
+        })
+        .collect()
+}
+
+/// Map each of `doc_id`'s local chunk ids to the delete `mutation_at` its oplog row recorded
+/// (DL-20 review 169) — i.e. exactly the WHEN the sync seam's `missing_chunks_for_doc` would
+/// attach to that chunk's staged [`RemoteChunk`]. A non-delete chunk's id is absent (its row
+/// carries no `mutation_at`). Lets the deterministic seam-threading assertion stage chunks
+/// the SAME way the seam does without reaching into its private staging path.
+fn delete_when_for_chunks(
+    store: &Store,
+    doc_id: &str,
+) -> std::collections::BTreeMap<String, i64> {
+    let mut out = std::collections::BTreeMap::new();
+    for op in store.list_ops().unwrap() {
+        let Some(local_id) = op.op_id.strip_prefix(&format!("{doc_id}#")) else {
+            continue;
+        };
+        if let Some(at) = serde_json::from_slice::<Value>(&op.payload)
+            .ok()
+            .and_then(|v| v.get("mutation_at").and_then(Value::as_i64))
+        {
+            out.insert(local_id.to_string(), at);
+        }
+    }
+    out
 }
 
 /// Review 139 (P1) — DL-13 migration chunks must SYNC to peers and advance the
