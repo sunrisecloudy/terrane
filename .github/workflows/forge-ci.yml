@@ -1,0 +1,63 @@
+name: Forge CI
+
+# Enforces the forge/ Rust workspace quality gates (PRD09): the workspace must
+# build, the full test suite must pass, clippy must be clean, and the spine demo
+# must replay byte-identically (REPLAY IDENTICAL: true) — the same acceptance gate
+# used throughout development. Scoped to forge/** so it is independent of the
+# platform-shell CI in ci.yml.
+
+on:
+  push:
+    branches: [main, forge-m0a]
+    paths:
+      - 'forge/**'
+      - '.github/workflows/forge-ci.yml'
+  pull_request:
+    paths:
+      - 'forge/**'
+      - '.github/workflows/forge-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: forge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  forge-workspace:
+    name: Forge Workspace (build · test · clippy · demo replay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: forge
+
+      - name: Build workspace
+        working-directory: forge
+        run: cargo build --workspace --locked
+
+      - name: Test workspace
+        working-directory: forge
+        run: cargo test --workspace --locked
+
+      - name: Clippy (deny warnings)
+        working-directory: forge
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Spine demo replay gate (REPLAY IDENTICAL)
+        working-directory: forge
+        run: |
+          out="$(cargo run -q -p forge-cli --locked -- demo)"
+          echo "$out"
+          echo "$out" | grep -q "REPLAY IDENTICAL: true" \
+            || { echo "::error::demo did not report REPLAY IDENTICAL: true"; exit 1; }
