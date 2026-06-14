@@ -3,9 +3,11 @@
 Read-only architecture audit (WF) → target modular decomposition + ordered,
 behavior-preserving, replay-gated refactor plan. Goal: the codebase is (1) easy to
 understand fully, (2) fully tested, (3) structured so a new feature lands in ONE
-focused place. **Master invariant for every step:** `cargo test --workspace` stays
-green AND `cargo run -p forge-cli -- demo` stays `REPLAY IDENTICAL` — every step is a
-PURE MOVE (no logic/rename/reorder of semantics), independently shippable, demo-gated.
+focused place. **Master invariant for every step (all three must hold before commit):**
+`cargo test --workspace` stays green, `cargo clippy --workspace --all-targets -- -D warnings`
+is clean (per AGENTS.md), AND `cargo run -p forge-cli -- demo` stays `REPLAY IDENTICAL` —
+every step is a PURE MOVE (no logic/rename/reorder of semantics), independently
+shippable, demo-gated + clippy-gated (review 113).
 
 ## Target architecture
 - **forge-core/workspace.rs (4312 LOC) → ~400-LOC facade**: WorkspaceCore state +
