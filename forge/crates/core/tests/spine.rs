@@ -2783,3 +2783,182 @@ fn install_with_a_malformed_signature_block_is_a_validation_error() {
     let run = core.handle(cmd("runtime.run", Some("app_malformed"), serde_json::json!({ "input": {} })));
     assert!(!run.ok, "nothing was installed");
 }
+
+// ---------------------------------------------------------------------------
+// 11. ctx.files (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12,
+//     forge/spec/files.md, T028): the applet-facing sandboxed file capability
+//     reaches the StorageHostBridge's INJECTED FileSystem — but only AFTER the
+//     runtime's HostContext has (a) resolved the `files.<read|write>` grant from
+//     the TRUSTED manifest snapshot (not the request payload), (b) resolved the
+//     user-granted HANDLE to its per-applet sandbox root, and (c) confined the
+//     path to that root. An allowed read/write is RECORDED so replay is
+//     byte-identical (CR-8: no live filesystem on replay; the recording is
+//     served). The trusted handle → root resolution is the injected filesystem,
+//     so the manifest never names a native root. The denied case proves an
+//     out-of-grant path surfaces the run's CapabilityRequired outcome with the
+//     filesystem never written.
+// ---------------------------------------------------------------------------
+
+use forge_runtime::InMemoryFileSystem;
+
+/// Manifest granting `files.read` on `data/*.json` and `files.write` on
+/// `drafts/*.txt` under the `workspace_data` handle, plus ui. No db/storage/net.
+fn files_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "entrypoint": "src/main.ts",
+        "min_api": "forge-api@0.1",
+        "deterministic": true,
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "files": {
+                "read": [
+                    { "handle": "workspace_data", "path_glob": "data/*.json",
+                      "max_bytes": 65536, "content_types": ["application/json"] },
+                    { "handle": "workspace_data", "path_glob": "drafts/*.txt",
+                      "max_bytes": 65536, "content_types": ["text/plain"] }
+                ],
+                "write": [
+                    { "handle": "workspace_data", "path_glob": "drafts/*.txt",
+                      "max_bytes": 65536, "content_types": ["text/plain"] }
+                ]
+            }
+        },
+        "limits": {
+            "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
+            "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
+        }
+    })
+}
+
+/// An applet that reads a seeded JSON file, writes a text draft, reads the draft
+/// back, and renders the round-tripped bytes. Every path is INSIDE its grant.
+/// Deterministic: it reads no seams, so its trace depends only on the recorded
+/// file responses. `bytes_base64` for "draft v1" is `ZHJhZnQgdjE=`.
+const FILES_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        const read = await ctx.files.read({ handle: "workspace_data", path: "data/settings.json" });
+        const wrote = await ctx.files.write({
+            handle: "workspace_data", path: "drafts/note.txt",
+            bytes_base64: "ZHJhZnQgdjE=", content_type: "text/plain", mode: "create_or_truncate"
+        });
+        const back = await ctx.files.read({ handle: "workspace_data", path: "drafts/note.txt" });
+        await ctx.ui.render({
+            type: "Stack", direction: "v",
+            children: [
+                { type: "Text", text: "settings size: " + read.size },
+                { type: "Text", text: "draft bytes: " + back.bytes_base64 }
+            ]
+        });
+        return { ok: true, value: {
+            settings_size: read.size,
+            written_bytes: wrote.written_bytes,
+            draft_back: back.bytes_base64
+        } };
+    }
+"#;
+
+#[test]
+fn files_read_write_runs_through_injected_filesystem_records_and_replays_identically() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // Inject the trusted per-applet sandbox filesystem: grant the `workspace_data`
+    // handle a root and seed the file the applet reads. The factory builds a fresh
+    // filesystem per run (the host/shell injection point); the write the applet
+    // performs lands in THIS run's filesystem. `eyJvayI6dHJ1ZX0=` = `{"ok":true}`.
+    core.set_file_system_factory(|| {
+        Box::new(
+            InMemoryFileSystem::new()
+                .with_handle_root("workspace_data", "/sandbox/app_files/workspace_data")
+                .with_file(
+                    "workspace_data",
+                    "data/settings.json",
+                    br#"{"ok":true}"#.to_vec(),
+                    Some("application/json"),
+                ),
+        )
+    });
+
+    install_demo(&mut core, FILES_TS, files_manifest());
+    let resp = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    assert!(resp.ok, "files run must succeed: {:?}", resp.error);
+    assert_eq!(resp.payload["ok"], serde_json::json!(true), "run outcome must complete");
+    let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
+
+    // The read returned the seeded file size (11 bytes), the write reported 8 bytes
+    // written, and the read-back returned the SAME base64 the applet wrote.
+    assert_eq!(resp.payload["result"]["value"]["settings_size"], serde_json::json!(11));
+    assert_eq!(resp.payload["result"]["value"]["written_bytes"], serde_json::json!(8));
+    assert_eq!(
+        resp.payload["result"]["value"]["draft_back"],
+        serde_json::json!("ZHJhZnQgdjE="),
+        "the read-back bytes match what the applet wrote, within its grant"
+    );
+
+    // The file ops are in the recorded host-call trace, in order (CR-8).
+    let methods: Vec<String> = resp.payload["host_call_methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        methods,
+        vec!["files.read", "files.write", "files.read", "ui.render"],
+        "the run records the file ops then the render"
+    );
+
+    // The RunRecord captured the read response bytes.
+    let rec = core.store().load_run(&run_id).unwrap().unwrap();
+    let first_read = rec.calls.iter().find(|c| c.method == "files.read").unwrap();
+    assert_eq!(first_read.response["bytes_base64"], serde_json::json!("eyJvayI6dHJ1ZX0="));
+    assert_eq!(first_read.response["size"], serde_json::json!(11));
+
+    // Replay is byte-identical AND serves the RECORDED responses — the replay path
+    // uses a NullBridge, so the live filesystem is never consulted (CR-8). The
+    // replay succeeding proves the recorded write/read responses are served, not
+    // re-performed against any live file.
+    let replay = core.handle(cmd("runtime.replay", None, serde_json::json!({ "run_id": run_id })));
+    assert!(replay.ok, "files run must replay: {:?}", replay.error);
+    assert_eq!(replay.payload["replays_identically"], serde_json::json!(true));
+}
+
+/// An applet that reads a path OUTSIDE its grant (`private/secrets.txt` when the
+/// grant only covers `data/*.json` / `drafts/*.txt`).
+const FILES_OUT_OF_GRANT_TS: &str = r#"
+    export async function main(ctx: any, input: any): Promise<any> {
+        const r = await ctx.files.read({ handle: "workspace_data", path: "private/secrets.txt" });
+        return { ok: true, value: { size: r.size } };
+    }
+"#;
+
+#[test]
+fn files_read_outside_grant_is_denied_and_filesystem_untouched() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+
+    // The injected filesystem even HOLDS the out-of-grant file — proving the denial
+    // is the manifest grant gate (not a missing file): the path is reachable on
+    // disk but is outside the granted globs, so the runtime denies it before any
+    // read reaches the filesystem.
+    core.set_file_system_factory(|| {
+        Box::new(
+            InMemoryFileSystem::new()
+                .with_handle_root("workspace_data", "/sandbox/app_files/workspace_data")
+                .with_file("workspace_data", "private/secrets.txt", b"never".to_vec(), Some("text/plain")),
+        )
+    });
+
+    install_demo(&mut core, FILES_OUT_OF_GRANT_TS, files_manifest());
+    let resp = core.handle(cmd("runtime.run", Some("app_demo"), serde_json::json!({ "input": {} })));
+    // The run command completes (the denial is recorded), but the RUN outcome is a
+    // failure: the applet's ctx.files.read threw the capability denial.
+    assert!(resp.ok, "the run command itself completes (records the denial)");
+    assert_eq!(resp.payload["ok"], serde_json::json!(false), "an out-of-grant read fails the run");
+    let result_str = resp.payload["result"].to_string();
+    assert!(
+        result_str.contains("CapabilityRequired"),
+        "a path outside the granted glob surfaces CapabilityRequired: {result_str}"
+    );
+    assert_eq!(core.events().events_of_kind("run.failed").count(), 1);
+}

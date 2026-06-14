@@ -69,6 +69,17 @@ pub struct Capabilities {
     /// this list.
     #[serde(default)]
     pub net: NetGrant,
+    /// Handle-scoped filesystem grants for `ctx.files` (prd-merged/01 CR-3,
+    /// prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`). Default empty →
+    /// **no file access**: an applet that lists no `files` rules cannot read or
+    /// write any file at all. Each rule names a user-granted *handle* (never a
+    /// native absolute root — the handle resolves to a per-applet sandbox root
+    /// via trusted policy at the host), a `path_glob` matched against the
+    /// normalized relative path inside the handle, and per-action `max_bytes` /
+    /// `content_types` constraints. The runtime's `ctx.files` host call evaluates
+    /// a read/write against this grant before touching the host filesystem.
+    #[serde(default)]
+    pub files: FilesGrant,
 }
 
 fn default_true() -> bool {
@@ -86,6 +97,7 @@ impl Default for Capabilities {
             db: DbGrant::default(),
             ui: true,
             net: NetGrant::default(),
+            files: FilesGrant::default(),
         }
     }
 }
@@ -180,6 +192,69 @@ pub struct NetRule {
     /// header may be attached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_secret_headers: Vec<String>,
+}
+
+/// The applet's handle-scoped filesystem grants (`ctx.files`).
+///
+/// prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`.
+/// `read` and `write` are **separate arrays** so a review UI can show exactly
+/// which file operations an applet requests. **Both empty = no file access**,
+/// the default for every applet (an applet that lists no `files` rules cannot
+/// touch the filesystem at all — distinct from a request that matches no rule of
+/// a non-empty grant). Mirrors [`NetGrant`]'s read/write split + empty-default
+/// semantics so manifests don't churn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FilesGrant {
+    #[serde(default)]
+    pub read: Vec<FileRule>,
+    #[serde(default)]
+    pub write: Vec<FileRule>,
+}
+
+impl FilesGrant {
+    /// Whether the applet declared *any* file rule (read or write). An empty
+    /// grant means the applet never requested the `files` capability at all —
+    /// the runtime maps a file op against an empty action list to
+    /// `CapabilityRequired`.
+    pub fn is_empty(&self) -> bool {
+        self.read.is_empty() && self.write.is_empty()
+    }
+}
+
+/// One handle-scoped filesystem grant (prd-merged/07 SC-8 grammar,
+/// `forge/spec/files.md`).
+///
+/// `handle` + `path_glob` are the action's resource: a stable logical `handle`
+/// the trusted workspace/user policy maps to a per-applet sandbox root (the
+/// manifest **never** names a native absolute root, SC-8/SC-12), plus a
+/// `path_glob` matched against the normalized relative path inside that handle
+/// (`*` matches within a path segment, `**` may cross segment boundaries). The
+/// remaining fields are per-action constraints the runtime enforces *before*
+/// returning a read response or committing a write payload.
+///
+/// Unknown constraint fields are tolerated for forward-compat (a future
+/// constraint added to a fixture/manifest won't fail to parse); the runtime only
+/// acts on the fields it knows. Field names mirror the `forge/fixtures/files/*`
+/// vectors' `grant` shape so a fixture's grant deserializes straight into a
+/// [`FilesGrant`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FileRule {
+    /// The user-granted handle this rule applies to, e.g. `workspace_data`. The
+    /// host's trusted policy maps it to a per-applet sandbox root; the manifest
+    /// never names a native absolute filesystem path (SC-8/SC-12).
+    pub handle: String,
+    /// `path_glob` matched against the **normalized relative** path inside the
+    /// handle, e.g. `data/**/*.json`. `*` matches within a single path segment;
+    /// `**` may cross segment boundaries.
+    pub path_glob: String,
+    /// Max bytes a read response / write payload for this action may be (SC-5
+    /// per-action budget). `None` = no rule-level cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// Allowed `Content-Type` values for this action. Empty = unconstrained;
+    /// non-empty = a read/write whose content-type is not in this set is denied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_types: Vec<String>,
 }
 
 /// Resource limits per instance/run. prd-merged/01 CR-5, prd-merged/07 §07.
@@ -366,5 +441,79 @@ mod tests {
         // Optional/empty constraints are omitted from the wire form (clean JSON).
         assert!(!s.contains("max_response_bytes"), "unset cap omitted: {s}");
         assert!(s.contains("allow_secret_headers"), "set field present: {s}");
+    }
+
+    // --- Files capability grant (CR-3 / spec/files.md) ----------------------
+
+    #[test]
+    fn files_grant_defaults_to_empty_no_file_access() {
+        // An absent `capabilities` (and an absent `files`) grants zero file access.
+        let m: Manifest = serde_json::from_str(r#"{"entrypoint":"src/main.ts"}"#).unwrap();
+        assert!(m.capabilities.files.is_empty());
+        assert!(m.capabilities.files.read.is_empty());
+        assert!(m.capabilities.files.write.is_empty());
+    }
+
+    #[test]
+    fn file_rule_deserializes_from_fixture_shaped_grant() {
+        // The same JSON shape the T028 fixtures put under "files": a handle, a
+        // normalized-relative path_glob, and the per-action constraint fields.
+        let json = r#"{
+            "handle": "workspace_data",
+            "path_glob": "data/**/*.json",
+            "max_bytes": 65536,
+            "content_types": ["application/json"]
+        }"#;
+        let rule: FileRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.handle, "workspace_data");
+        assert_eq!(rule.path_glob, "data/**/*.json");
+        assert_eq!(rule.max_bytes, Some(65536));
+        assert_eq!(rule.content_types, vec!["application/json".to_string()]);
+    }
+
+    #[test]
+    fn files_grant_deserializes_as_read_write_arrays_in_capabilities() {
+        // A manifest writes `"files": { "read": [...], "write": [...] }`. This is
+        // the exact `grant_shape` in forge/fixtures/files/manifest.json.
+        let json = r#"{
+            "entrypoint": "src/main.ts",
+            "capabilities": {
+                "files": {
+                    "read": [
+                        { "handle": "workspace_data", "path_glob": "data/**/*.json",
+                          "max_bytes": 65536, "content_types": ["application/json"] }
+                    ],
+                    "write": [
+                        { "handle": "workspace_data", "path_glob": "drafts/*.txt",
+                          "max_bytes": 65536, "content_types": ["text/plain"] }
+                    ]
+                }
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let files = &m.capabilities.files;
+        assert!(!files.is_empty());
+        assert_eq!(files.read.len(), 1);
+        assert_eq!(files.write.len(), 1);
+        assert_eq!(files.read[0].handle, "workspace_data");
+        assert_eq!(files.write[0].path_glob, "drafts/*.txt");
+        // A `files` grant does not disturb the M0a ui-default.
+        assert!(m.capabilities.ui);
+    }
+
+    #[test]
+    fn file_rule_roundtrips_and_omits_empty_constraints() {
+        let rule = FileRule {
+            handle: "workspace_data".into(),
+            path_glob: "data/*.json".into(),
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&rule).unwrap();
+        let back: FileRule = serde_json::from_str(&s).unwrap();
+        assert_eq!(rule, back);
+        // Optional/empty constraints are omitted from the wire form (clean JSON).
+        assert!(!s.contains("max_bytes"), "unset cap omitted: {s}");
+        assert!(!s.contains("content_types"), "empty list omitted: {s}");
+        assert!(s.contains("path_glob"), "required field present: {s}");
     }
 }

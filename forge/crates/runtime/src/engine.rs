@@ -481,6 +481,7 @@ fn install_ctx<'js>(
     let time = Object::new(ctx.clone())?;
     let random = Object::new(ctx.clone())?;
     let net = Object::new(ctx.clone())?;
+    let files = Object::new(ctx.clone())?;
 
     // --- storage.get(key) -> value | null --------------------------------
     {
@@ -722,6 +723,71 @@ fn install_ctx<'js>(
         net.set("fetch", f)?;
     }
 
+    // --- files.read(request) -> response ---------------------------------
+    // The applet calls `await ctx.files.read({ handle, path, encoding? })`. The
+    // request is marshalled to a runtime `FileReadRequest`; the host
+    // capability-checks the read against the manifest grant, confines the path to
+    // the handle's sandbox root, then records (record) / serves (replay) the
+    // bytes. A denied/missing read surfaces as the run's CoreError and never
+    // leaks a path outside the sandbox.
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, request: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let json = QuickJsEngine::js_to_json(&cx, request)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let req: crate::FileReadRequest = serde_json::from_value(json).map_err(|e| {
+                    store_and_throw(
+                        &cx,
+                        &host_error,
+                        CoreError::ValidationError(format!(
+                            "ctx.files.read request must be {{ handle, path, ... }}: {e}"
+                        )),
+                    )
+                })?;
+                let r = unsafe { host.get() }.files_read(req).and_then(|resp| {
+                    serde_json::to_value(&resp).map_err(|e| {
+                        CoreError::RuntimeError(format!(
+                            "ctx.files.read response serialize failed: {e}"
+                        ))
+                    })
+                });
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        files.set("read", f)?;
+    }
+    // --- files.write(request) -> response --------------------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, request: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let json = QuickJsEngine::js_to_json(&cx, request)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let req: crate::FileWriteRequest = serde_json::from_value(json).map_err(|e| {
+                    store_and_throw(
+                        &cx,
+                        &host_error,
+                        CoreError::ValidationError(format!(
+                            "ctx.files.write request must be {{ handle, path, bytes_base64, ... }}: {e}"
+                        )),
+                    )
+                })?;
+                let r = unsafe { host.get() }.files_write(req).and_then(|resp| {
+                    serde_json::to_value(&resp).map_err(|e| {
+                        CoreError::RuntimeError(format!(
+                            "ctx.files.write response serialize failed: {e}"
+                        ))
+                    })
+                });
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        files.set("write", f)?;
+    }
+
     // --- log(line) -> null (top-level ctx.log) ---------------------------
     {
         let host_error = host_error.clone();
@@ -744,6 +810,7 @@ fn install_ctx<'js>(
     ctx_obj.set("time", time)?;
     ctx_obj.set("random", random)?;
     ctx_obj.set("net", net)?;
+    ctx_obj.set("files", files)?;
     globals.set("ctx", ctx_obj)?;
 
     // Poison dynamic code evaluation at the engine level (review 009 P1, CR-13).

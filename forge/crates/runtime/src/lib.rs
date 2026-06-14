@@ -25,11 +25,16 @@
 //! does run. See the corpus integration test for the ownership split.
 
 mod bridge;
+mod files;
 mod host;
 mod net;
 mod recorder;
 
 pub use bridge::{HostBridge, MemoryHostBridge, NullBridge};
+pub use files::{
+    confine_relative_path, glob_matches, live_files_forbidden, FileReadRequest, FileReadResponse,
+    FileSystem, FileWriteRequest, FileWriteResponse, InMemoryFileSystem, SandboxFile,
+};
 pub use host::HostContext;
 pub use net::{
     resolve_secret_headers, HttpClient, InMemorySecretStore, MockHttpClient, NetHeaderValue,

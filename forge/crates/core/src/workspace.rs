@@ -206,6 +206,23 @@ pub struct WorkspaceCore {
     /// A factory (not one shared store) is used because the run's bridge owns its
     /// store and the trait object is not `Clone`.
     secret_store_factory: SecretStoreFactory,
+    /// Factory for the `ctx.files` sandbox [`FileSystem`](forge_runtime::FileSystem)
+    /// (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`).
+    /// Each `runtime.run` builds a fresh filesystem from this factory and hands it
+    /// to the run's [`StorageHostBridge`], so the runtime can resolve a granted
+    /// **handle** to its per-applet sandbox root and perform a *capability-checked,
+    /// confined* read/write at the HOST edge. The trusted handle → root resolution
+    /// lives in the filesystem (the manifest never names a native root), exactly as
+    /// the `files` grant the runtime gates against rides on the TRUSTED manifest
+    /// snapshot — not the request payload.
+    ///
+    /// The default factory yields an EMPTY in-memory filesystem — so no handle has
+    /// a granted root and any `ctx.files` op fails closed (`PermissionDenied`) until
+    /// a host/shell injects a real per-applet sandbox filesystem via
+    /// [`set_file_system_factory`](WorkspaceCore::set_file_system_factory). A
+    /// factory (not one shared filesystem) is used because the run's bridge owns its
+    /// filesystem and the trait object is not `Clone`.
+    file_system_factory: FileSystemFactory,
 }
 
 /// A factory that produces a fresh `ctx.net.fetch`
@@ -217,6 +234,11 @@ type HttpClientFactory = Box<dyn Fn() -> Box<dyn forge_runtime::HttpClient>>;
 /// [`SecretStore`](forge_runtime::SecretStore) per run. See
 /// [`WorkspaceCore::set_secret_store_factory`].
 type SecretStoreFactory = Box<dyn Fn() -> Box<dyn forge_runtime::SecretStore>>;
+
+/// A factory that produces a fresh `ctx.files` sandbox
+/// [`FileSystem`](forge_runtime::FileSystem) per run. See
+/// [`WorkspaceCore::set_file_system_factory`].
+type FileSystemFactory = Box<dyn Fn() -> Box<dyn forge_runtime::FileSystem>>;
 
 impl WorkspaceCore {
     /// Open (or create) a file-backed workspace at `path` (`workspace.open`
@@ -260,6 +282,13 @@ impl WorkspaceCore {
             secret_store_factory: Box::new(|| {
                 Box::new(forge_runtime::InMemorySecretStore::new())
             }),
+            // Fail-closed default: an EMPTY sandbox filesystem (no granted handle
+            // root, so every ctx.files op is PermissionDenied) until a host/shell
+            // injects a real per-applet sandbox filesystem via
+            // `set_file_system_factory`.
+            file_system_factory: Box::new(|| {
+                Box::new(forge_runtime::InMemoryFileSystem::new())
+            }),
         })
     }
 
@@ -300,6 +329,30 @@ impl WorkspaceCore {
         factory: impl Fn() -> Box<dyn forge_runtime::SecretStore> + 'static,
     ) {
         self.secret_store_factory = Box::new(factory);
+    }
+
+    /// Inject the factory that builds the `ctx.files` sandbox
+    /// [`FileSystem`](forge_runtime::FileSystem) for each `runtime.run`
+    /// (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`).
+    /// A host/shell wires its real per-applet sandbox filesystem here; tests inject
+    /// an [`InMemoryFileSystem`](forge_runtime::InMemoryFileSystem). Until this is
+    /// called the workspace uses an EMPTY in-memory filesystem — no handle has a
+    /// granted root — so any `ctx.files` op fails closed (`PermissionDenied`).
+    ///
+    /// The filesystem carries the **trusted** handle → per-applet-sandbox-root
+    /// resolution (a handle with no granted root is denied), so the manifest never
+    /// names a native root — mirroring how the `files` capability grant the runtime
+    /// gates against rides on the TRUSTED manifest snapshot, never the request
+    /// payload. The factory is invoked once per run so each run's bridge owns its
+    /// own filesystem (the trait object is not `Clone`). The capability decision is
+    /// still the runtime's: the injected filesystem is consulted only for an
+    /// *allowed*, *record-mode* op whose path the runtime already confined to the
+    /// handle's root (replay serves the recording; a denied op never reaches it).
+    pub fn set_file_system_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn forge_runtime::FileSystem> + 'static,
+    ) {
+        self.file_system_factory = Box::new(factory);
     }
 
     /// Configure the TRUSTED `db.read` grant scope for `actor` (workspace
@@ -749,18 +802,28 @@ impl WorkspaceCore {
         // host resolves a `secret_ref` header's value against it at the HTTP edge,
         // inside the runtime's recording closure. Default = empty (fail-closed).
         let secret_store = (self.secret_store_factory)();
+        // Build this run's `ctx.files` sandbox filesystem from the injected factory
+        // (CR-3 / spec/files.md). It carries the TRUSTED handle → per-applet-root
+        // resolution; the runtime resolves a granted handle to its sandbox root and
+        // performs a capability-checked, confined read/write at the host edge.
+        // Default = empty (no granted root → every ctx.files op fails closed).
+        let file_system = (self.file_system_factory)();
 
         // Run in record mode against the live Store-backed bridge. The bridge
         // performs the SQLite writes / UI diffs; the runtime's HostContext gates
         // each ctx.* call against the manifest policy BEFORE the bridge runs —
-        // including the SC-5 net egress check, so a denied ctx.net.fetch never
-        // reaches the injected client.
+        // including the SC-5 net egress check (so a denied ctx.net.fetch never
+        // reaches the injected client) and the CR-3 files capability + sandbox
+        // confinement (so a denied/escaping ctx.files op never reaches the
+        // injected filesystem). The files grant the runtime gates against is read
+        // from the TRUSTED manifest snapshot, not the request payload.
         let mut bridge = StorageHostBridge::with_http_client(
             &mut self.store,
             applet_id.as_str(),
             http_client,
         )
-        .with_secret_store(secret_store);
+        .with_secret_store(secret_store)
+        .with_file_system(file_system);
         let mut run = record_run(
             &program,
             &installed.manifest,
