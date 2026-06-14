@@ -21,7 +21,10 @@
           "watch_id": "watch:tasks-all",
           "version": 30,
           "collection": "tasks",
-          "record_ids": ["tasks/1"]
+          "record_ids": ["tasks/1"],
+          "reason": "insert",
+          "result_ids": ["tasks/1"],
+          "coalesced": false
         },
         "result": {"delivered": true}
       }

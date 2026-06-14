@@ -110,13 +110,18 @@ Watch notifications are part of the event loop, so they must be recorded in the 
     "watch_id": "watch:tasks-open",
     "version": 12,
     "collection": "tasks",
-    "record_ids": ["tasks/1"]
+    "record_ids": ["tasks/1"],
+    "reason": "changed",
+    "result_ids": ["tasks/1", "tasks/3"],
+    "coalesced": false
   },
   "result": {
     "delivered": true
   }
 }
 ```
+
+The recorded `args` carry the **full canonical notification payload** — every field of the callback payload above except `type` (which is the `method`): `watch_id`, `version`, `collection`, `record_ids`, `reason`, `result_ids`, and `coalesced`. The recorded subset is therefore identical to the event the applet observed, so replay never recomputes an omitted field (review 103).
 
 Replay does not re-open SQLite update hooks or recompute timing. It replays the recorded notification sequence byte-for-byte so the same applet event stream produces the same UI patches and final tree.
 
