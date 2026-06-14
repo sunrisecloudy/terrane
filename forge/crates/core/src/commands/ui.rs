@@ -341,10 +341,18 @@ impl WorkspaceCore {
             time_start,
             &mut bridge,
         )?;
-        // The handler's final rendered tree (its last `ui.render`), if any. Drain
-        // before dropping the bridge so the `&mut Store` borrow is released.
+        // The handler's final rendered tree (its last `ui.render`), if any. Drain it
+        // + any `ctx.db.watch`/`unwatch` intents the handler issued (DL-16) before
+        // dropping the bridge so the `&mut Store` borrow is released.
         let final_render = bridge.ui_renders.last().map(|r| r.tree.clone());
+        let watch_intents = std::mem::take(&mut bridge.watch_intents);
         drop(bridge);
+
+        // Fold any `ctx.db.watch`/`unwatch` the handler issued into the workspace
+        // live-query registry (DL-16), on every dispatch path (the handler's effects
+        // already committed through the live bridge, so a watch it registered is live
+        // regardless of how the dispatch finished).
+        self.apply_watch_intents(applet_id.as_str(), &watch_intents)?;
 
         run.run_id = unique_run_id(&run.code_hash, invocation);
 

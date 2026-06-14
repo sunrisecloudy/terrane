@@ -33,6 +33,7 @@ pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
 pub(super) mod ui;
+pub(super) mod watch;
 pub(super) mod workspace_export;
 
 /// One command handler: a method over [`WorkspaceCore`] state, taken as a function
@@ -72,6 +73,11 @@ const COMMANDS: &[(&str, Handler)] = &[
     ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),
     ("ui.dispatch_event", WorkspaceCore::cmd_ui_dispatch_event),
     ("query.execute", WorkspaceCore::cmd_query_execute),
+    // Live queries (DL-16, commands/watch.rs): register/cancel a reactive
+    // `db.watch` over a row query. Registration carries the same collection-scoped
+    // `db.read` grant as `query.execute`; `db.unwatch` is idempotent.
+    ("db.watch", WorkspaceCore::cmd_db_watch),
+    ("db.unwatch", WorkspaceCore::cmd_db_unwatch),
     ("schema.apply_change", WorkspaceCore::cmd_schema_apply_change),
     (
         "schema.validate_compatibility",

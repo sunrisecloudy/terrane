@@ -110,6 +110,25 @@ pub struct UiRender {
     pub patches: serde_json::Value,
 }
 
+/// One live-query subscription change an applet requested during a run, in call
+/// order (DL-16). `ctx.db.watch` produces a [`WatchIntent::Watch`]; `ctx.db.unwatch`
+/// a [`WatchIntent::Unwatch`]. The bridge records the *intent* (the registry it must
+/// mutate is workspace state the facade owns, not the per-run `&mut Store` the bridge
+/// holds); the facade DRAINS these after the run and applies them to the workspace
+/// [`WatchRegistry`](forge_storage::WatchRegistry), exactly as it drains `ui_renders`
+/// (review: keep the registry mutation off the bridge's borrow of the store).
+#[derive(Debug, Clone)]
+pub enum WatchIntent {
+    /// Register/replace a watch over `query` (the query's `from` is the watched
+    /// collection; already capability-checked as `db.read` by the runtime host).
+    Watch {
+        watch_id: String,
+        query: serde_json::Value,
+    },
+    /// Cancel the watch under `watch_id` (idempotent).
+    Unwatch { watch_id: String },
+}
+
 /// A [`HostBridge`] backed by a real [`Store`], scoped to one applet.
 ///
 /// `ctx.storage` keys are namespaced per applet (`applet/<id>` namespace) so two
@@ -138,6 +157,10 @@ pub struct StorageHostBridge<'a> {
     prev_ui: Option<forge_ui::Node>,
     /// Every UI render captured this run (tree + patch list), in order.
     pub ui_renders: Vec<UiRender>,
+    /// Every live-query subscription change requested this run, in call order
+    /// (DL-16). The facade drains this after the run and applies it to the
+    /// workspace [`WatchRegistry`](forge_storage::WatchRegistry).
+    pub watch_intents: Vec<WatchIntent>,
     /// Every log line captured this run.
     pub logs: Vec<String>,
     /// The injectable HTTP client backing `ctx.net.fetch` (prd-merged/07 SC-5,
@@ -204,6 +227,7 @@ impl<'a> StorageHostBridge<'a> {
             indexes: IndexManager::new(),
             prev_ui: None,
             ui_renders: Vec::new(),
+            watch_intents: Vec::new(),
             logs: Vec::new(),
             http,
             // Fail-closed default: empty store ⇒ any secret_ref header is denied
@@ -392,6 +416,43 @@ impl HostBridge for StorageHostBridge<'_> {
                 .collect::<Result<Vec<_>>>()?,
         };
         Ok(serde_json::Value::Array(rows))
+    }
+
+    fn db_watch(&mut self, watch_id: &str, query: serde_json::Value) -> Result<String> {
+        // Validate the watch query is a parseable, watchable ROW query BEFORE
+        // capturing the intent, so a malformed/aggregate/group watch is rejected at
+        // registration (DL-16, review 129 #2) rather than silently captured and
+        // failing later in the facade. `WatchRegistry::register_from_value` runs the
+        // same canonical parse + non-row rejection the facade will, but it needs a
+        // registry; here we mirror its guard with the shared parser + a cheap
+        // aggregate/group check so the bridge fails fast and identically.
+        let q = Query::from_fixture_value(&query)?;
+        if q.aggregate.is_some() {
+            return Err(CoreError::QueryError(
+                "ctx.db.watch does not support aggregate queries; watch the underlying rows \
+                 and reduce in the callback"
+                    .into(),
+            ));
+        }
+        if q.group_by.is_some() {
+            return Err(CoreError::QueryError(
+                "ctx.db.watch does not support groupBy queries; watch the underlying rows \
+                 and group in the callback"
+                    .into(),
+            ));
+        }
+        self.watch_intents.push(WatchIntent::Watch {
+            watch_id: watch_id.to_string(),
+            query,
+        });
+        Ok(watch_id.to_string())
+    }
+
+    fn db_unwatch(&mut self, watch_id: &str) -> Result<()> {
+        self.watch_intents.push(WatchIntent::Unwatch {
+            watch_id: watch_id.to_string(),
+        });
+        Ok(())
     }
 
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {

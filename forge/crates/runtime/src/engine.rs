@@ -918,6 +918,43 @@ fn install_ctx<'js>(
         )?;
         db.set("query", f)?;
     }
+    // --- db.watch(watch_id, query) -> watch_id (DL-16) -------------------
+    // The applet registers a live query: `ctx.db.watch("watch:open", { from:
+    // "tasks", where: ["done","=",false] })`. The host gates on `db.read` for the
+    // query's `from`, records the registration, and returns the runtime-assigned
+    // watch_id. Delivery (re-entering the callback on each committed mutation) is
+    // the facade's job; the applet wires its callback by `watch_id` (forge-core).
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, watch_id: Value<'js>, query: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let watch_id = value_to_string(&cx, &watch_id)?;
+                let query_json = QuickJsEngine::js_to_json(&cx, query)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let r = unsafe { host.get() }
+                    .db_watch(&watch_id, query_json)
+                    .map(|id| serde_json::json!(id));
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("watch", f)?;
+    }
+    // --- db.unwatch(watch_id) -> null (DL-16) ---------------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, watch_id: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let watch_id = value_to_string(&cx, &watch_id)?;
+                let r = unsafe { host.get() }
+                    .db_unwatch(&watch_id)
+                    .map(|()| serde_json::Value::Null);
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        db.set("unwatch", f)?;
+    }
 
     // --- ui.render(tree) -> null -----------------------------------------
     {

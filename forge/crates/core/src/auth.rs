@@ -75,6 +75,20 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
             Role::Viewer,
             Role::Auditor,
         ]),
+        // Registering/cancelling a live query (DL-16) is a data-READ operation —
+        // `forge/spec/live-queries.md` §Registration: "Registration requires the
+        // same db.read grant as all() for the watched collection". So `db.watch`
+        // carries the SAME read-capable roles as `query.execute`, plus the
+        // collection-scoped `db.read` grant enforced in the handler. `db.unwatch`
+        // only cancels a subscription (no data read), but a caller that could never
+        // read could never have watched, so it shares the same read-capable roles.
+        "db.watch" | "db.unwatch" => Some(&[
+            Role::Owner,
+            Role::Maintainer,
+            Role::Editor,
+            Role::Viewer,
+            Role::Auditor,
+        ]),
         // Schema evolution (commands.md: schema.apply_change → Owner, Maintainer;
         // DL-8). An additive schema change mutates workspace state, so it is a
         // maintainer+ operation — a Viewer/Editor/Auditor cannot apply one.

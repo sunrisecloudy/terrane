@@ -57,6 +57,37 @@ pub trait HostBridge {
         query: serde_json::Value,
     ) -> Result<serde_json::Value>;
 
+    /// `ctx.db.watch(watch_id, query)` — register a live query (DL-16, `forge/spec/
+    /// live-queries.md`). The applet subscribes its callback under `watch_id` over
+    /// the `query` plan; after every committed mutation transaction an affected
+    /// watch's callback is re-entered with a `db.watch.notification` (the facade
+    /// owns delivery; this bridge method only registers the subscription).
+    ///
+    /// Like the `db.*` reads the host gates this on `db.read` for the watched
+    /// collection (the query's `from`) and the recorder captures the call so replay
+    /// serves the recording. Registration is idempotent on `watch_id` (a re-watch
+    /// replaces the query in place). Returns the runtime-assigned `watch_id`.
+    ///
+    /// The **default** is an in-process no-op that echoes the `watch_id`: a bridge
+    /// with no live watch substrate (the in-memory test double) accepts the
+    /// registration without a registry so it keeps compiling, while the real
+    /// Store-backed bridge (forge-core) overrides this to register the watch in the
+    /// workspace [`WatchRegistry`](forge_storage::WatchRegistry).
+    fn db_watch(&mut self, watch_id: &str, _query: serde_json::Value) -> Result<String> {
+        Ok(watch_id.to_string())
+    }
+
+    /// `ctx.db.unwatch(watch_id)` — cancel a live query (DL-16). Idempotent:
+    /// unwatching an unknown id is a no-op. After it commits the watch receives no
+    /// further notifications. The host gates this on `db.read` (the same capability
+    /// `db.watch` required) and the recorder captures the call.
+    ///
+    /// The **default** is an in-process no-op; the real Store-backed bridge
+    /// overrides this to unregister the watch from the workspace registry.
+    fn db_unwatch(&mut self, _watch_id: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// `ctx.ui.render(tree)` — emit a UI tree for the shell to paint.
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()>;
 
@@ -180,6 +211,12 @@ pub struct MemoryHostBridge {
     /// root — so a `ctx.files` op fails closed unless the test injects a root via
     /// [`with_file_system`](Self::with_file_system).
     file_system: InMemoryFileSystem,
+    /// The registered live-query watches (`watch_id -> query`), in registration
+    /// order (DL-16). A `db.watch` adds/replaces; a `db.unwatch` removes. The
+    /// in-memory bridge keeps the subscription so the runtime's own tests can prove
+    /// `ctx.db.watch`/`unwatch` are capability-checked + recorded; delivery is the
+    /// facade's job (forge-core) and is not modeled here.
+    watches: Vec<(String, serde_json::Value)>,
 }
 
 // Hand-rolled `Debug` because `Box<dyn HttpClient>` is not `Debug`.
@@ -259,6 +296,11 @@ impl MemoryHostBridge {
     /// Direct read of a stored value (test convenience; bypasses recording).
     pub fn peek_storage(&self, key: &str) -> Option<&serde_json::Value> {
         self.storage.get(key)
+    }
+
+    /// The registered watch ids, in registration order (test convenience).
+    pub fn watch_ids(&self) -> Vec<String> {
+        self.watches.iter().map(|(id, _)| id.clone()).collect()
     }
 }
 
@@ -359,6 +401,22 @@ impl HostBridge for MemoryHostBridge {
         Ok(serde_json::Value::Array(filtered))
     }
 
+    fn db_watch(&mut self, watch_id: &str, query: serde_json::Value) -> Result<String> {
+        // Idempotent on watch_id: a re-watch replaces the query in place, keeping
+        // the registration position (DL-16).
+        match self.watches.iter_mut().find(|(id, _)| id == watch_id) {
+            Some((_, q)) => *q = query,
+            None => self.watches.push((watch_id.to_string(), query)),
+        }
+        Ok(watch_id.to_string())
+    }
+
+    fn db_unwatch(&mut self, watch_id: &str) -> Result<()> {
+        // Idempotent: removing an unknown id is a no-op.
+        self.watches.retain(|(id, _)| id != watch_id);
+        Ok(())
+    }
+
     fn ui_render(&mut self, tree: serde_json::Value) -> Result<()> {
         self.ui_trees.push(tree);
         Ok(())
@@ -448,6 +506,12 @@ impl HostBridge for NullBridge {
     ) -> Result<serde_json::Value> {
         Err(null_violation("db.query"))
     }
+    fn db_watch(&mut self, _watch_id: &str, _query: serde_json::Value) -> Result<String> {
+        Err(null_violation("db.watch"))
+    }
+    fn db_unwatch(&mut self, _watch_id: &str) -> Result<()> {
+        Err(null_violation("db.unwatch"))
+    }
     fn ui_render(&mut self, _tree: serde_json::Value) -> Result<()> {
         Err(null_violation("ui.render"))
     }
@@ -505,6 +569,26 @@ mod tests {
             b.db_get("tasks", "missing").unwrap(),
             serde_json::Value::Null
         );
+    }
+
+    #[test]
+    fn memory_db_watch_registers_idempotently_and_unwatch_removes() {
+        let mut b = MemoryHostBridge::new();
+        let id = b
+            .db_watch("watch:tasks-all", serde_json::json!({ "from": "tasks" }))
+            .unwrap();
+        assert_eq!(id, "watch:tasks-all");
+        // A re-watch on the same id replaces in place (no duplicate).
+        b.db_watch(
+            "watch:tasks-all",
+            serde_json::json!({ "from": "tasks", "where": ["done", "=", false] }),
+        )
+        .unwrap();
+        assert_eq!(b.watch_ids(), vec!["watch:tasks-all".to_string()]);
+        // Unwatch removes it; a second unwatch is a no-op (idempotent).
+        b.db_unwatch("watch:tasks-all").unwrap();
+        b.db_unwatch("watch:tasks-all").unwrap();
+        assert!(b.watch_ids().is_empty());
     }
 
     #[test]

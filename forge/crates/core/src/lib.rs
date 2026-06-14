@@ -28,10 +28,12 @@ mod event;
 mod sync_rbac;
 mod workspace;
 
-pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender};
+pub use bridge::{NoNetworkClient, StorageHostBridge, UiRender, WatchIntent};
 pub use event::EventSink;
 pub use sync_rbac::{
     authorize_remote_op, IncomingClaim, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuditRecord,
     SyncAuthDecision, TrustedMembership,
 };
-pub use workspace::{source_id_for, AppletLifecycle, WorkspaceCore};
+pub use workspace::{
+    replay_notification_stream, source_id_for, AppletLifecycle, DeliveredBatch, WorkspaceCore,
+};

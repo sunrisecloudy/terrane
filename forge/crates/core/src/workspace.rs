@@ -25,6 +25,9 @@ use auth::authorize;
 #[path = "persistence.rs"]
 mod persistence;
 use persistence::*;
+#[path = "watch.rs"]
+mod watch;
+use watch::{load_watch_sessions, WatchSessions};
 #[path = "signing.rs"]
 mod signing;
 #[path = "commands/mod.rs"]
@@ -41,6 +44,10 @@ use commands::schema::indexed_fields;
 // CR-A3 `authorize` gate, preserving identical routing + the CR-A5 unknown-command
 // reject.
 use commands::Registry;
+// The DL-16 live-query delivery surface (`commands::watch`): the per-transaction
+// delivered batch + the notification-stream replay helper, re-exported so the crate
+// root (and the conformance harness) can drive the reactive loop end to end.
+pub use commands::watch::{replay_notification_stream, DeliveredBatch};
 use crate::event::EventSink;
 use crate::sync_rbac::{
     authorize_remote_op, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuthDecision,
@@ -130,6 +137,16 @@ pub struct WorkspaceCore {
     /// to the workspace file so a seeded membership survives reopen. A peer with NO
     /// entry is UNKNOWN and every op it sends is denied (fail-closed).
     sync_membership: std::collections::BTreeMap<String, TrustedMembership>,
+    /// Live-query (`db.watch`) session state (DL-16, `forge/spec/live-queries.md`):
+    /// the registered watches (owning applet + callback handler + query) plus the
+    /// workspace's monotone notification `version`. Loaded from `__forge/meta`
+    /// (`watch_sessions`) on open so a registered watch — and the version sequence —
+    /// survives reopen (mirrors `db_read_grants` / the schema registry), and
+    /// re-persisted after every `db.watch`/`db.unwatch` and every delivered batch.
+    /// The storage [`WatchRegistry`](forge_storage::WatchRegistry) substrate is
+    /// rebuilt from this on demand to compute notification bytes; this facade owns
+    /// DELIVERY (re-entering the right applet callback) + persistence.
+    watch_sessions: WatchSessions,
     /// Factory for the `ctx.net.fetch` [`HttpClient`](forge_runtime::HttpClient)
     /// (prd-merged/07 SC-5, prd-merged/01 CR-3 `net`). Each `runtime.run` builds a
     /// fresh client from this factory and hands it to the run's
@@ -211,6 +228,7 @@ impl WorkspaceCore {
         let sync_membership = load_sync_membership(&store)?;
         let registry = load_schema_registry(&store)?;
         let indexes = rebuild_indexes_from_registry(&store, &registry)?;
+        let watch_sessions = load_watch_sessions(&store, META_NS)?;
         Ok(WorkspaceCore {
             store,
             registry,
@@ -219,6 +237,7 @@ impl WorkspaceCore {
             workspace_id: workspace_id.into(),
             db_read_grants,
             sync_membership,
+            watch_sessions,
             // Fail-closed default: no live network. A host/shell opts in by
             // calling `set_http_client_factory` (review: keep the network seam
             // injectable so CI/the demo never reach the network).

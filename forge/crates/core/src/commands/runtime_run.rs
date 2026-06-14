@@ -135,9 +135,13 @@ impl WorkspaceCore {
             time_start,
             &mut bridge,
         )?;
-        // Drain the captured UI renders + logs before dropping the bridge (which
-        // releases the &mut Store borrow so we can save the run).
+        // Drain the captured UI renders + watch intents before dropping the bridge
+        // (which releases the &mut Store borrow so we can save the run + fold the
+        // intents). A `ctx.db.watch`/`unwatch` the run issued is captured here as an
+        // intent (DL-16); we register/cancel it against the workspace registry after
+        // the borrow is released.
         let ui_renders = std::mem::take(&mut bridge.ui_renders);
+        let watch_intents = std::mem::take(&mut bridge.watch_intents);
         drop(bridge);
 
         // Override the runtime's deterministic run_id with the unique per-core
@@ -168,6 +172,13 @@ impl WorkspaceCore {
         // Persist the deterministic run record (replay source, CR-9). save_run
         // re-validates the canonical code_hash.
         self.store.save_run(&run)?;
+
+        // Fold any `ctx.db.watch`/`unwatch` the run issued into the workspace
+        // live-query registry (DL-16) and persist, so a watch an applet registered
+        // during its run is live for subsequent committed mutations. A failed run
+        // still folds the intents it issued before failing (the run's effects up to
+        // the failure already committed through the live bridge).
+        self.apply_watch_intents(applet_id.as_str(), &watch_intents)?;
 
         // Emit a ui.patch event per render (the UI tree patch link).
         for (i, render) in ui_renders.iter().enumerate() {

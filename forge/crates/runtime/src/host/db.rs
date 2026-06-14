@@ -13,6 +13,28 @@ use forge_domain::Result;
 use forge_policy::{Access, HostCall};
 
 impl HostContext<'_> {
+    // --- Live-query notification delivery (recorded, replay-bound) --------
+
+    /// Record (or replay) a delivered **watch notification** (DL-16, `forge/spec/
+    /// live-queries.md` §Replay): the canonical `db.watch.notification` payload the
+    /// facade computed and re-entered into the applet's watch callback. The
+    /// callback's own `ctx.*` effects are captured as ordinary host calls; this
+    /// records the *notification envelope* so a session replays the same
+    /// notification sequence byte-identically.
+    ///
+    /// On replay the recorder serves the recorded `{delivered: true}` and asserts
+    /// the payload matches the recording (a diverging notification payload/order is
+    /// a determinism `RuntimeError`). Like the UI dispatch envelope this is NOT a
+    /// policy-gated host call — the delivery itself touches no user data; the
+    /// callback's effects are gated as usual — but it IS counted toward the trace
+    /// order so the `replay_fingerprint` covers every delivered notification.
+    pub fn deliver_notification(
+        &mut self,
+        notification: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.recorder.notification(notification)
+    }
+
     // --- Db (capability-checked, recorded effects) ----------------------
 
     pub fn db_insert(&mut self, collection: &str, record: serde_json::Value) -> Result<String> {
@@ -93,4 +115,75 @@ impl HostContext<'_> {
         self.recorder
             .host_call("db.query", args, || bridge.db_query(&c, q))
     }
+
+    /// `ctx.db.watch(watch_id, query)` — register a live query (DL-16, `forge/spec/
+    /// live-queries.md`). The watched collection is the query's `from`; registration
+    /// requires the SAME `db.read` grant as `ctx.db.from(...).all()` over that
+    /// collection (spec §Registration), so the gate is `db.read` for `from` — pinned
+    /// into the query so a caller cannot widen the watch to an ungranted collection
+    /// by naming a different `from` (mirrors [`db_query`](Self::db_query)). The call
+    /// is recorded as `db.watch` so replay serves the recording; a denied watch is
+    /// recorded as the run's denial and registers nothing.
+    pub fn db_watch(
+        &mut self,
+        watch_id: &str,
+        mut query: serde_json::Value,
+    ) -> Result<String> {
+        let collection = watch_collection(&query)?;
+        // Pin the query's `from` to the watched collection BEFORE the gate / bridge
+        // see it, so the recorded args and the registered plan agree and the gate
+        // authorizes exactly the collection that will be watched.
+        if let Some(obj) = query.as_object_mut() {
+            obj.insert("from".into(), serde_json::Value::String(collection.clone()));
+        }
+        let args = serde_json::json!([watch_id, query]);
+        self.check_or_record_denial(
+            &HostCall::Db { op: Access::Read, collection: collection.clone() },
+            "db.watch",
+            &args,
+        )?;
+        let bridge = &mut *self.bridge;
+        let id = watch_id.to_string();
+        let q = query.clone();
+        let resp = self.recorder.host_call("db.watch", args, || {
+            Ok(serde_json::json!(bridge.db_watch(&id, q)?))
+        })?;
+        Ok(resp.as_str().unwrap_or(watch_id).to_string())
+    }
+
+    /// `ctx.db.unwatch(watch_id)` — cancel a live query (DL-16). Idempotent: an
+    /// unknown id is a no-op; after it commits the watch receives no further
+    /// notifications.
+    ///
+    /// Cancellation is a CONTROL op that reads no collection data — the `watch_id`
+    /// alone names no collection, and dropping a subscription cannot reveal a row —
+    /// so it is NOT policy-gated on a `db.read` scope (a `db.read` gate keyed on the
+    /// empty collection would spuriously deny every unwatch, since no manifest grants
+    /// the empty collection). It is, however, RECORDED (like the `ui.dispatch_event`
+    /// envelope) so the cancellation is part of the replayable trace and replay
+    /// serves the recording without re-touching the live watch registry.
+    pub fn db_unwatch(&mut self, watch_id: &str) -> Result<()> {
+        let args = serde_json::json!([watch_id]);
+        let bridge = &mut *self.bridge;
+        let id = watch_id.to_string();
+        self.recorder.host_call("db.unwatch", args, || {
+            bridge.db_unwatch(&id).map(|()| serde_json::Value::Null)
+        })?;
+        Ok(())
+    }
+}
+
+/// The watched collection for a `db.watch` query value: its required string `from`
+/// (DL-16 / DL-15). A query without a string `from` is a `QueryError` — a watch
+/// must name a row collection to observe.
+fn watch_collection(query: &serde_json::Value) -> Result<String> {
+    query
+        .get("from")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            forge_domain::CoreError::QueryError(
+                "ctx.db.watch(watch_id, query) requires a string 'from' collection".into(),
+            )
+        })
 }

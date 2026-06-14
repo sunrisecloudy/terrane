@@ -272,6 +272,44 @@ impl RunRecorder {
         }
     }
 
+    /// Record (or replay) a delivered **watch notification** (DL-16,
+    /// `forge/spec/live-queries.md` §Replay). A live query's callback was
+    /// re-entered with the canonical `db.watch.notification` payload; this records
+    /// the *notification envelope* — the full payload (minus the `type`
+    /// discriminator, which becomes the `method`) as `args`, and `{delivered:
+    /// true}` as the response — so the run/session record carries the exact event
+    /// the applet observed and a session replays the same notification sequence
+    /// byte-identically WITHOUT re-opening live SQLite update hooks or recomputing
+    /// the dirty set / result ids.
+    ///
+    /// `payload` is the canonical notification `args` (`watch_id`, `version`,
+    /// `collection`, `record_ids`, `reason`, `result_ids`, `coalesced`). The call
+    /// is recorded as method `db.watch.notification`. In record mode the entry is
+    /// appended; in replay mode the recorded entry must line up at the cursor (same
+    /// payload), the recorded `{delivered: true}` is served, and a mismatch — a
+    /// notification whose payload, order, or count diverges from the recording — is
+    /// a determinism `RuntimeError`, exactly like any other recorded call. This is
+    /// the seam that makes the `replay_fingerprint` cover notifications (the recorder
+    /// folds every produced call, including these, into the trace).
+    pub fn notification(&mut self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        let response = serde_json::json!({ "delivered": true });
+        match self.mode {
+            Mode::Record => {
+                let seq = self.next_seq();
+                self.produced.push(RecordedCall {
+                    seq,
+                    method: "db.watch.notification".to_string(),
+                    args: payload,
+                    response: response.clone(),
+                });
+                Ok(response)
+            }
+            // In replay the recorded notification must match at the cursor (same
+            // payload); `consume` serves the recorded `{delivered: true}`.
+            Mode::Replay => self.consume("db.watch.notification", payload),
+        }
+    }
+
     /// Record (or replay) a host-call attempt that was **denied** by policy
     /// before any live effect ran (review 009 P1 CR-9). Denials used to vanish
     /// from the trace because the policy check returned before
@@ -520,6 +558,67 @@ mod tests {
         // A different action_ref (decrement) must diverge.
         let err = r
             .dispatch_event("decrement", serde_json::json!({ "value": "1" }), serde_json::Value::Null)
+            .unwrap_err();
+        assert_eq!(err.code(), "RuntimeError");
+        assert!(err.to_string().contains("divergence"), "{err}");
+    }
+
+    #[test]
+    fn notification_is_recorded_as_db_watch_notification() {
+        let mut r = RunRecorder::recording(42, 1000);
+        let payload = serde_json::json!({
+            "watch_id": "watch:tasks-all",
+            "version": 30,
+            "collection": "tasks",
+            "record_ids": ["tasks/1"],
+            "reason": "insert",
+            "result_ids": ["tasks/1"],
+            "coalesced": false
+        });
+        let served = r.notification(payload.clone()).unwrap();
+        assert_eq!(served, serde_json::json!({ "delivered": true }));
+        let calls = r.into_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "db.watch.notification");
+        assert_eq!(calls[0].args, payload);
+        assert_eq!(calls[0].response, serde_json::json!({ "delivered": true }));
+    }
+
+    #[test]
+    fn replay_serves_recorded_notification() {
+        let payload = serde_json::json!({
+            "watch_id": "watch:tasks-all",
+            "version": 30,
+            "collection": "tasks",
+            "record_ids": ["tasks/1"],
+            "reason": "insert",
+            "result_ids": ["tasks/1"],
+            "coalesced": false
+        });
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "db.watch.notification".into(),
+            args: payload.clone(),
+            response: serde_json::json!({ "delivered": true }),
+        }];
+        let mut r = RunRecorder::replaying(42, 1000, recorded);
+        let served = r.notification(payload).unwrap();
+        // The recorded `{delivered: true}` is served from the recording, never recomputed.
+        assert_eq!(served, serde_json::json!({ "delivered": true }));
+    }
+
+    #[test]
+    fn replay_detects_notification_payload_divergence() {
+        let recorded = vec![RecordedCall {
+            seq: 0,
+            method: "db.watch.notification".into(),
+            args: serde_json::json!({ "watch_id": "watch:tasks-all", "version": 30 }),
+            response: serde_json::json!({ "delivered": true }),
+        }];
+        let mut r = RunRecorder::replaying(42, 1000, recorded);
+        // A different version → divergence (the notification stream is not byte-identical).
+        let err = r
+            .notification(serde_json::json!({ "watch_id": "watch:tasks-all", "version": 31 }))
             .unwrap_err();
         assert_eq!(err.code(), "RuntimeError");
         assert!(err.to_string().contains("divergence"), "{err}");

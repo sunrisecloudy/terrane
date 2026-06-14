@@ -148,6 +148,112 @@ pub fn replay_dispatch(
     )
 }
 
+/// Deliver a live-query notification to the applet's watch callback named
+/// `action_ref` in **record mode**, producing a [`RunRecord`] (DL-16,
+/// `forge/spec/live-queries.md` §Replay).
+///
+/// This is the record-side of notification DELIVERY: a committed mutation made a
+/// watched record dirty, the facade computed the canonical `db.watch.notification`
+/// payload, and this re-enters the callback the applet wired its `ctx.db.watch`
+/// to — over the SAME containment / limits / host path as [`record_dispatch`] — to
+/// let it re-render. The callback's `ctx.*` effects are recorded as usual, plus a
+/// `db.watch.notification` envelope capturing the delivered payload, so the
+/// notification stream replays byte-identically via [`replay_notification`].
+///
+/// NON-REENTRANT (T047 (a)): the callback runs in its own one-shot realm; any
+/// mutation it makes through `ctx.db` is a committed write that the FACADE queues as
+/// the NEXT event-loop turn (a later version), never a recursive flush inside this
+/// delivery. This function delivers exactly ONE notification — the facade drives the
+/// turn loop.
+#[allow(clippy::too_many_arguments)]
+pub fn record_notification(
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    action_ref: &str,
+    notification: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    let recorder = RunRecorder::recording(seed, time_start);
+    let policy = PolicyEngine::new(manifest, actor)?;
+    finish_drive(
+        program,
+        policy,
+        manifest.limits.clone(),
+        Drive::Notification { action_ref, notification },
+        seed,
+        time_start,
+        recorder,
+        bridge,
+    )
+}
+
+/// Replay a recorded live-query notification delivery (the counterpart to
+/// [`record_notification`]). Re-runs the same callback in **replay mode**: the
+/// recorder serves the recorded `ctx.*` responses and asserts the delivered
+/// notification payload matches the recording, so the produced record must
+/// [`replays_identically`](RunRecord::replays_identically) to `run`. A diverging
+/// notification (different payload, or order) is a determinism `RuntimeError`. The
+/// recorded permission snapshot governs the replay exactly as in [`replay`] (CR-9).
+///
+/// `action_ref` is the watch's registered callback handler — workspace state the
+/// FACADE holds (the notification payload does not name its callback), so the caller
+/// supplies it. The delivered notification payload itself is recovered from the
+/// record's `db.watch.notification` envelope so the replay re-issues the SAME
+/// delivery.
+pub fn replay_notification(
+    run: &RunRecord,
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    action_ref: &str,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    run.validate_code_hash()?;
+    if program.code_hash() != run.code_hash {
+        return Err(CoreError::RuntimeError(format!(
+            "determinism divergence: replay program code_hash {} != recorded {}",
+            program.code_hash(),
+            run.code_hash
+        )));
+    }
+    let notification = recorded_notification(run)?;
+    let recorder = RunRecorder::replaying(run.random_seed, run.time_start, run.calls.clone());
+    let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
+    let mut limits = manifest.limits.clone();
+    limits.max_host_calls = host_call_cap;
+    finish_drive(
+        program,
+        policy,
+        limits,
+        Drive::Notification { action_ref, notification: &notification },
+        run.random_seed,
+        run.time_start,
+        recorder,
+        bridge,
+    )
+}
+
+/// Recover the delivered `db.watch.notification` payload from a recorded
+/// notification-delivery run (its `args` is the canonical payload). A record built
+/// by [`record_notification`] carries exactly one such call; its absence is a
+/// `RuntimeError` (the record is not a notification record).
+fn recorded_notification(run: &RunRecord) -> Result<serde_json::Value> {
+    run.calls
+        .iter()
+        .find(|c| c.method == "db.watch.notification")
+        .map(|c| c.args.clone())
+        .ok_or_else(|| {
+            CoreError::RuntimeError(
+                "replay_notification: record carries no db.watch.notification envelope".into(),
+            )
+        })
+}
+
 /// Recover the `(action_ref, payload)` of the dispatched UI event from a recorded
 /// run's `ui.dispatch_event` envelope (its `args = [action_ref, payload]`). A
 /// record built by [`record_dispatch`] carries exactly one such call; its absence
@@ -326,16 +432,28 @@ enum Drive<'a> {
         action_ref: &'a str,
         payload: &'a serde_json::Value,
     },
+    /// Deliver a live-query notification: re-enter the watch callback
+    /// `<action_ref>(ctx, notification)` and record the `db.watch.notification`
+    /// envelope so the notification stream replays byte-identically (DL-16,
+    /// `forge/spec/live-queries.md` §Replay). This reuses the SAME containment /
+    /// limits / host path as a UI dispatch (the callback is an exported handler);
+    /// it differs only in which envelope is recorded around the callback's effects.
+    Notification {
+        action_ref: &'a str,
+        notification: &'a serde_json::Value,
+    },
 }
 
 impl<'a> Drive<'a> {
-    /// The value recorded as the run record's `input` (the `main` input, or the
-    /// dispatched event's payload). Either way it is the second argument the
-    /// driven entrypoint received, so the record round-trips what was run.
+    /// The value recorded as the run record's `input` (the `main` input, the
+    /// dispatched event's payload, or the delivered notification). Either way it is
+    /// the second argument the driven entrypoint received, so the record round-trips
+    /// what was run.
     fn record_input(&self) -> serde_json::Value {
         match self {
             Drive::Main { input } => (*input).clone(),
             Drive::Handler { payload, .. } => (*payload).clone(),
+            Drive::Notification { notification, .. } => (*notification).clone(),
         }
     }
 }
@@ -425,6 +543,21 @@ fn finish_drive(
                 Err(_) => serde_json::Value::Null,
             };
             if let Err(divergence) = host.dispatch_event(action_ref, payload.clone(), result) {
+                EngineOutcome { result: Err(divergence), logs: outcome.logs }
+            } else {
+                outcome
+            }
+        }
+        Drive::Notification { action_ref, notification } => {
+            // Re-enter the watch callback over the SAME engine path as a UI
+            // dispatch: the notification IS the callback's event payload
+            // (`<callback>(ctx, notification)`). Record the `db.watch.notification`
+            // envelope AFTER the callback's effects so the trace order is
+            // <callback's ctx.* calls> then the notification envelope, and on replay
+            // the recorder consumes them in the same order — the notification stream
+            // (and thus `replay_fingerprint`) is byte-identical (DL-16 §Replay).
+            let outcome = engine.run_handler(program, action_ref, notification, &mut host, &limits);
+            if let Err(divergence) = host.deliver_notification(notification.clone()) {
                 EngineOutcome { result: Err(divergence), logs: outcome.logs }
             } else {
                 outcome
