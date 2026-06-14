@@ -521,6 +521,110 @@ fn secret_use_persists_redacted_audit_row_through_live_run() {
     }
 }
 
+#[test]
+fn egress_audit_events_carry_their_committed_rows_logical_time() {
+    // Review 154 (deferred-emit, happy path): the transient `network.egress` /
+    // `secret.use` observability events are emitted AFTER the run txn commits, each
+    // stamped with the SAME `logical_time` its durable audit row carries. A build-time
+    // emit (the pre-154 behavior) could publish an event the txn then rolled back; the
+    // deferred-emit seam ties the event's clock to the committed row.
+    let core = run_egress_applet();
+
+    // The committed rows and their logical_times.
+    let egress_row = &core
+        .store()
+        .query_audit(&AuditQuery::by_action("network.egress"))
+        .unwrap()[0]
+        .clone();
+    let secret_row = &core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap()[0]
+        .clone();
+
+    // The post-commit events of each kind, stamped with the same logical_time as the
+    // row they accompany (proving they were emitted via the peeked-then-committed seam,
+    // in lockstep with the durable rows).
+    let egress_events: Vec<_> = core.events().events_of_kind("network.egress").collect();
+    assert_eq!(egress_events.len(), 1, "exactly one network.egress event");
+    assert_eq!(
+        egress_events[0].created_at_logical.0, egress_row.logical_time,
+        "the network.egress event carries the committed row's logical_time"
+    );
+    let secret_events: Vec<_> = core.events().events_of_kind("secret.used").collect();
+    assert_eq!(secret_events.len(), 1, "exactly one secret.used event");
+    assert_eq!(
+        secret_events[0].created_at_logical.0, secret_row.logical_time,
+        "the secret.used event carries the committed row's logical_time"
+    );
+}
+
+#[test]
+fn rolled_back_run_persists_no_egress_row_and_emits_no_egress_event() {
+    // Review 154 (deferred-emit, rollback path, the load-bearing case): if the run txn
+    // ROLLS BACK (a `save_run_tx`/SQL failure after the egress rows were appended),
+    // NEITHER the audit rows NOR their observability events may survive. The egress
+    // applet POSTs an allowlisted fetch with a secret_ref header (so absent the
+    // rollback it would mint one `network.egress` + one `secret.use` row and their
+    // events); the injected `simulate_failure_stage = "run.save"` rolls the txn back.
+    let mut core = WorkspaceCore::in_memory("ws-egress-rollback").unwrap();
+    let response = NetResponse {
+        status: 201,
+        body: Some(r#"{"id":"lead-1"}"#.to_string()),
+        content_type: Some("application/json".to_string()),
+        ..Default::default()
+    };
+    core.set_http_client_factory(move || Box::new(CannedClient { response: response.clone() }));
+    core.set_secret_store_factory(|| {
+        Box::new(InMemorySecretStore::from_pairs([("secret_crm", "Bearer super-secret-token")]))
+    });
+    let install = core.handle(owner_cmd(
+        "applet.install",
+        "app.crm",
+        json!({ "manifest": egress_manifest(), "sources": { "src/main.ts": EGRESS_TS } }),
+    ));
+    assert!(install.ok, "install must succeed: {:?}", install.error);
+
+    // Run with the failure injected: the command fails (the txn rolled back).
+    let run = core.handle(owner_cmd(
+        "runtime.run",
+        "app.crm",
+        json!({ "input": {}, "simulate_failure_stage": "run.save" }),
+    ));
+    assert!(!run.ok, "the run must fail when its commit txn rolls back: {run:?}");
+
+    // NO egress / secret audit row survived the rollback.
+    let egress_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("network.egress"))
+        .unwrap();
+    assert!(
+        egress_rows.is_empty(),
+        "a rolled-back run must persist NO network.egress row: {egress_rows:?}"
+    );
+    let secret_rows = core
+        .store()
+        .query_audit(&AuditQuery::by_action("secret.use"))
+        .unwrap();
+    assert!(
+        secret_rows.is_empty(),
+        "a rolled-back run must persist NO secret.use row: {secret_rows:?}"
+    );
+
+    // AND no transient egress/secret observability event was published (deferred-emit:
+    // the emit loop runs only after the commit `?`, which the rollback never passed).
+    assert_eq!(
+        core.events().events_of_kind("network.egress").count(),
+        0,
+        "a rolled-back run must publish NO network.egress event"
+    );
+    assert_eq!(
+        core.events().events_of_kind("secret.used").count(),
+        0,
+        "a rolled-back run must publish NO secret.used event"
+    );
+}
+
 /// An applet whose `ctx.net.fetch` targets a host the manifest does NOT allowlist,
 /// while carrying a `secret_ref` Authorization header. The SC-5 egress gate DENIES
 /// the request before it reaches the client (host mismatch), and the SC-13 secret is

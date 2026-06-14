@@ -200,17 +200,51 @@ impl WorkspaceCore {
         // transaction as the run record (`save_run_tx` + `append_audit_tx`), so a real
         // served egress (the durable effect) can NEVER be persisted without its audit
         // trail — they land or roll back together (spec §2), exactly like the sync-RBAC
-        // path. We build the rows first (minting each `logical_time` from the EventSink),
-        // then commit run + rows atomically. `save_run` re-validates the canonical
-        // code_hash inside the txn.
+        // path.
+        //
+        // Review 154 (P2): DEFERRED-EMIT. `save_run_tx` can fail INSIDE this txn
+        // (`validate_code_hash`, serialize, or a SQL error), rolling back every audit
+        // row. So the transient `network.egress`/`secret.use` observability events must
+        // NOT be published at build time — a shell would otherwise observe an egress /
+        // secret use whose durable row was rolled back. We follow the lifecycle-purge
+        // seam (`build_producer_audit_record_at` + `peek_next_logical_time`): build the
+        // rows WITHOUT emitting, stamping each with a peeked `logical_time`, append them
+        // inside the run txn, and emit the matching events ONLY after it commits. The
+        // peeked timestamps match the post-commit emits because nothing emits in between.
         let egress_audit = self.build_run_egress_audit(applet_id.as_str(), &cmd.actor, &run);
+        // TEST-ONLY hook (review 154): inject a failure INSIDE the run txn, AFTER the
+        // egress rows were appended, so the whole `Store::transact` rolls back (the run
+        // record AND every egress/secret row). This mirrors the degenerate `save_run_tx`
+        // failure (a serialize/SQL error). It proves the DEFERRED-EMIT guarantee: a
+        // rolled-back run persists NO audit row AND — because the `self.events.emit`
+        // loop below runs only after this `?` — publishes NO `network.egress`/`secret.use`
+        // event. The same `simulate_failure_stage` payload convention as the lifecycle
+        // purge-uninstall atomicity hook (`lifecycle.rs`).
+        let simulate_run_save_failure = cmd
+            .payload
+            .get("simulate_failure_stage")
+            .and_then(|v| v.as_str())
+            == Some("run.save");
         self.store.transact(|tx| {
             forge_storage::Store::save_run_tx(tx, &run)?;
-            for row in &egress_audit {
+            for row in &egress_audit.rows {
                 forge_storage::Store::append_audit_tx(tx, row)?;
+            }
+            if simulate_run_save_failure {
+                return Err(CoreError::StorageError(
+                    "simulated run-save failure after egress audit rows were appended".into(),
+                ));
             }
             Ok(())
         })?;
+        // The run + egress rows COMMITTED — only now publish the transient
+        // observability events, each stamped with the SAME `logical_time` its durable
+        // row carries (the peeks above match these emits, in order, with nothing
+        // emitting in between). A rolled-back commit returned `?` above, so a shell
+        // never observes an egress/secret event whose row didn't land.
+        for ev in egress_audit.events {
+            self.events.emit(None, ev.kind, ev.payload);
+        }
 
         // Fold any `ctx.db.watch`/`unwatch` the run issued into the workspace
         // live-query registry (DL-16) and persist, so a watch an applet registered
@@ -316,14 +350,29 @@ impl WorkspaceCore {
     /// Deterministic: each row's `logical_time` is the EventSink clock; the rows
     /// derive purely from the recorded trace, so a replayed run reproduces them
     /// byte-identically. Append-only; a re-run mints fresh rows.
+    ///
+    /// Review 154 (P2, DEFERRED-EMIT): this method builds the rows WITHOUT emitting
+    /// their transient observability events — the run txn that persists them can still
+    /// roll back (`save_run_tx` failure), so a build-time emit would let a shell observe
+    /// an egress/secret use whose durable row never landed. Each row is stamped with a
+    /// peeked `logical_time` ([`EventSink::peek_next_logical_time`], then incremented per
+    /// row), and the matching `(kind, payload, logical_time)` events are returned in the
+    /// accumulator so the caller can emit them ONLY after the txn commits — exactly the
+    /// lifecycle-purge seam. The peeked times match the post-commit emits because nothing
+    /// emits between the peek and that emit.
     fn build_run_egress_audit(
-        &mut self,
+        &self,
         applet_id: &str,
         actor: &forge_domain::ActorContext,
         run: &RunRecord,
-    ) -> Vec<forge_storage::AuditRecord> {
+    ) -> DeferredEgressAudit {
         let actor_id = actor.actor.as_str().to_string();
-        let mut rows: Vec<forge_storage::AuditRecord> = Vec::new();
+        // The deferred-emit accumulator: rows to commit + transient events to emit
+        // post-commit. The running `logical_time` starts at the peeked next stamp; each
+        // built row consumes one and advances it, so N rows occupy `base..base+N` and
+        // the N post-commit emits (in order, nothing in between) stamp the same range.
+        let mut audit =
+            DeferredEgressAudit::new(self.events.peek_next_logical_time().0);
         for call in &run.calls {
             if call.method != "net.fetch" {
                 continue;
@@ -347,7 +396,8 @@ impl WorkspaceCore {
             // reason instead, so a forbidden egress is auditable AS a denial rather
             // than persisted as an approval.
             if let Some(reason) = denied_reason(&call.response) {
-                rows.push(self.build_producer_audit_record(
+                audit.push_row(
+                    self,
                     "network.egress.denied",
                     serde_json::json!({
                         "decision": "deny",
@@ -370,7 +420,7 @@ impl WorkspaceCore {
                         "host": host,
                         "path": path,
                     }),
-                ));
+                );
                 // Review 153: a RESPONSE-LEG denial had already RESOLVED and SENT the
                 // request's secret_ref headers over the wire BEFORE the response-leg
                 // policy denied (`redact_last_response` stamps `secret_injected`). The
@@ -381,7 +431,7 @@ impl WorkspaceCore {
                 // secret_ref id only (the value never persists).
                 if denied_after_secret_injection(&call.response) {
                     self.push_secret_use_rows(
-                        &mut rows,
+                        &mut audit,
                         applet_id,
                         &actor_id,
                         request,
@@ -401,7 +451,7 @@ impl WorkspaceCore {
                 .unwrap_or(0);
 
             // One secret.use row PER secret_ref header the request carried.
-            self.push_secret_use_rows(&mut rows, applet_id, &actor_id, request, &host);
+            self.push_secret_use_rows(&mut audit, applet_id, &actor_id, request, &host);
 
             // One network.egress row for the fetch. The request/response BODIES are
             // handed in raw and DROPPED by the persistence redaction layer (no body is
@@ -418,7 +468,8 @@ impl WorkspaceCore {
             if let Some(body) = call.response.get("body") {
                 metadata.insert("response_body".into(), body.clone());
             }
-            rows.push(self.build_producer_audit_record(
+            audit.push_row(
+                self,
                 "network.egress",
                 serde_json::json!({
                     "decision": "allow",
@@ -436,9 +487,9 @@ impl WorkspaceCore {
                 None,
                 "network policy allowed request",
                 serde_json::Value::Object(metadata),
-            ));
+            );
         }
-        rows
+        audit
     }
 
     /// Append one `secret.use` `allow` row PER `secret_ref` header a `net.fetch`
@@ -453,8 +504,8 @@ impl WorkspaceCore {
     /// (the policy allowlisted the header); any later network denial is a separate
     /// `network.egress` `deny` row, not a re-judgement of the secret.
     fn push_secret_use_rows(
-        &mut self,
-        rows: &mut Vec<forge_storage::AuditRecord>,
+        &self,
+        audit: &mut DeferredEgressAudit,
         applet_id: &str,
         actor_id: &str,
         request: &serde_json::Value,
@@ -468,7 +519,8 @@ impl WorkspaceCore {
             else {
                 continue;
             };
-            rows.push(self.build_producer_audit_record(
+            audit.push_row(
+                self,
                 "secret.used",
                 serde_json::json!({
                     "decision": "allow",
@@ -490,7 +542,7 @@ impl WorkspaceCore {
                     "target_header": header_name,
                     "value_redacted": true,
                 }),
-            ));
+            );
         }
     }
 
@@ -514,6 +566,81 @@ impl WorkspaceCore {
                 "message": error.to_string(),
             }),
         );
+    }
+}
+
+/// A transient observability event whose emission is DEFERRED until the run txn
+/// that persists its audit row COMMITS (review 154). Carries the `(kind, payload)`
+/// the EventSink would have published at build time, plus the `logical_time` the
+/// row was stamped with so the post-commit emit lands under the same clock.
+struct DeferredEvent {
+    kind: String,
+    payload: serde_json::Value,
+}
+
+/// The deferred-emit accumulator for `runtime.run`'s SC-12 egress audit (review
+/// 154). Collects the `network.egress`/`secret.use` rows to commit inside the run
+/// txn AND the matching transient events to emit ONLY after that txn commits — so a
+/// `save_run_tx` rollback persists no row AND publishes no spurious event. Each row
+/// is stamped with a running `logical_time` (peeked once, then incremented per row),
+/// and the parallel events are emitted in the same order post-commit, so the peeked
+/// stamps match the emits exactly (nothing emits in between).
+struct DeferredEgressAudit {
+    rows: Vec<forge_storage::AuditRecord>,
+    events: Vec<DeferredEvent>,
+    /// The `logical_time` the NEXT built row will carry (and its event will stamp on
+    /// the post-commit emit). Starts at the peeked next stamp; advances per row.
+    next_logical_time: u64,
+}
+
+impl DeferredEgressAudit {
+    /// Start an accumulator whose first row is stamped with `base_logical_time`
+    /// (the EventSink's peeked next stamp).
+    fn new(base_logical_time: u64) -> Self {
+        Self { rows: Vec::new(), events: Vec::new(), next_logical_time: base_logical_time }
+    }
+
+    /// Build one audit row WITHOUT emitting its event: stamp it with the running
+    /// `logical_time` via the deferred-emit seam
+    /// ([`WorkspaceCore::build_producer_audit_record_at`]), record the transient
+    /// `(event_kind, event_payload)` to emit post-commit, and advance the clock. The
+    /// post-commit emit stamps the same `logical_time` because no other emission
+    /// happens between the peek and that emit.
+    #[allow(clippy::too_many_arguments)]
+    fn push_row(
+        &mut self,
+        core: &WorkspaceCore,
+        event_kind: &str,
+        event_payload: serde_json::Value,
+        producer: &str,
+        action: impl Into<String>,
+        decision: &'static str,
+        actor_id: impl Into<String>,
+        resource_type: &str,
+        resource_id: Option<String>,
+        collection: Option<String>,
+        reason: impl Into<String>,
+        metadata: serde_json::Value,
+    ) {
+        let logical_time = self.next_logical_time;
+        self.next_logical_time += 1;
+        let row = core.build_producer_audit_record_at(
+            logical_time,
+            producer,
+            action,
+            decision,
+            actor_id,
+            resource_type,
+            resource_id,
+            collection,
+            reason,
+            metadata,
+        );
+        self.rows.push(row);
+        self.events.push(DeferredEvent {
+            kind: event_kind.to_string(),
+            payload: event_payload,
+        });
     }
 }
 

@@ -611,37 +611,59 @@ fn finish_drive(
 /// JSON, so a legitimate legacy run that read a stored value like
 /// `{ "denied": false }` and then failed for an app reason would have been
 /// mis-routed onto the all-deny path and replayed as a permission failure. The
-/// denial encoding is a *specific* shape: `record_denial` writes an object with
-/// exactly one key, `"denied"`, whose value is a serialized [`CoreError`]
-/// (`{"kind": "...", "detail": "..."}` per its `#[serde(tag, content)]`). So we
-/// match that shape exactly — a single `"denied"` key whose value deserializes as
-/// a `CoreError` — instead of any object that merely carries a `"denied"` key.
-/// Arbitrary user data cannot collide: a bool/string/number fails the object
-/// check, and an object that lacks a valid `kind`/`detail` `CoreError` body fails
-/// to deserialize.
+/// denial encoding is a *specific* shape: a `"denied"` key whose value is a
+/// serialized [`CoreError`] (`{"kind": "...", "detail": "..."}` per its
+/// `#[serde(tag, content)]`), optionally accompanied by the non-sensitive boolean
+/// `"secret_injected"` marker (review 153). So we match that shape exactly instead
+/// of any object that merely carries a `"denied"` key. Arbitrary user data cannot
+/// collide: a bool/string/number fails the object check, an object that lacks a
+/// valid `kind`/`detail` `CoreError` body fails to deserialize, and any extra key
+/// other than the allowed `secret_injected` boolean disqualifies it.
 fn trace_has_denial(calls: &[forge_domain::RecordedCall]) -> bool {
     calls.iter().any(|call| is_recorded_denial(&call.response))
 }
 
-/// True iff `response` is exactly the `{"denied": <CoreError>}` shape emitted by
-/// [`RunRecorder::record_denial`](crate::RunRecorder): an object with a single
-/// `"denied"` key whose value deserializes as a [`CoreError`]. See
-/// [`trace_has_denial`] for why the key alone is insufficient (review 035 P2).
+/// True iff `response` is the denial shape emitted by the recorder: an object
+/// carrying a `"denied"` key whose value deserializes as a [`CoreError`], with at
+/// most an optional boolean `"secret_injected"` marker alongside it.
+///
+/// Two recorder paths write this shape (review 153 / review 155):
+/// * [`RunRecorder::record_denial`](crate::RunRecorder) writes the single-key
+///   `{"denied": <CoreError>}` for a request-gate denial (nothing was sent).
+/// * [`RunRecorder::redact_last_response`](crate::RunRecorder) writes
+///   `{"denied": <CoreError>, "secret_injected": true}` for a response-leg denial
+///   that already injected a secret over the wire, so the audit builder can still
+///   emit the `secret.use` row.
+///
+/// Both must be recognized as a recorded denial, so a snapshotless record whose
+/// only denial is a response-leg-after-injection net deny stays on the recorded
+/// (all-deny default) snapshot path instead of falling back to the live permissive
+/// manifest (the tampered-replay attack at the top of [`replay_policy`]'s doc).
+/// This mirrors the parallel recognizer in [`crate::host::net`] (`denied` present
+/// AND `status` absent). See [`trace_has_denial`] for why the key alone is
+/// insufficient (review 035 P2) — arbitrary multi-key user JSON is still rejected.
 fn is_recorded_denial(response: &serde_json::Value) -> bool {
     let Some(obj) = response.as_object() else {
         return false;
     };
-    // Exactly one key, and it is `denied`: a real denial response is `{"denied": …}`
-    // and nothing else, so a stored user object that happens to include a `denied`
-    // field alongside other keys is not mistaken for a denial.
-    if obj.len() != 1 {
-        return false;
-    }
+    // The denial-bearing key must be present and a serialized CoreError
+    // (`{"kind": "...", "detail": "..."}`).
     let Some(denied) = obj.get("denied") else {
         return false;
     };
-    // The value must be a serialized CoreError (`{"kind": "...", "detail": "..."}`).
-    serde_json::from_value::<CoreError>(denied.clone()).is_ok()
+    if serde_json::from_value::<CoreError>(denied.clone()).is_err() {
+        return false;
+    }
+    // Only `denied`, and (optionally) a boolean `secret_injected`, may appear —
+    // any other key means this is arbitrary stored user JSON, not a recorded
+    // denial (review 035 P2 collision guard). The single-key `{"denied": …}`
+    // request-gate shape and the two-key `{"denied": …, "secret_injected": true}`
+    // response-leg shape (review 153) both pass; anything else is rejected.
+    obj.iter().all(|(key, value)| match key.as_str() {
+        "denied" => true,
+        "secret_injected" => value.is_boolean(),
+        _ => false,
+    })
 }
 
 /// A deterministic-but-readable run id from the program + seeds. Replays derive
@@ -678,5 +700,144 @@ pub fn run_once(
     match record.outcome {
         RunOutcome::Completed { result } => Ok(result),
         RunOutcome::Failed { error } => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod denial_guard_tests {
+    use super::*;
+    use crate::recorder::RunRecorder;
+    use forge_domain::{
+        Capabilities, Limits, NetGrant, NetRule, RecordedCall, StorageGrant,
+    };
+
+    /// Build the exact response-leg-after-injection denial shape via the REAL
+    /// recorder producer (`redact_last_response` with `secret_injected = true`),
+    /// not a hand-written literal — so this test tracks the producer (review 153).
+    fn response_leg_injected_denial() -> serde_json::Value {
+        let mut rec = RunRecorder::recording(1, 0);
+        // First a produced net.fetch call (its response is captured), then the
+        // response-leg policy denies AFTER the secret was already injected/sent.
+        rec.host_call("net.fetch", serde_json::json!({"url": "x"}), || {
+            Ok(serde_json::json!({"status": 200, "body": "REJECTED"}))
+        })
+        .unwrap();
+        rec.redact_last_response(
+            &CoreError::PermissionDenied("redirect to private host".into()),
+            true,
+        );
+        let calls = rec.into_calls();
+        calls.last().unwrap().response.clone()
+    }
+
+    /// Review 155 (P1 security): the two-key `{"denied": <CoreError>,
+    /// "secret_injected": true}` response-leg denial shape MUST be recognized as a
+    /// recorded denial — otherwise a snapshotless record whose only denial is a
+    /// response-leg-after-injection net deny falls through to the permissive
+    /// manifest fallback (the tampered-replay attack).
+    #[test]
+    fn response_leg_injected_denial_is_recognized() {
+        let response = response_leg_injected_denial();
+        assert_eq!(
+            response.get("secret_injected").and_then(|v| v.as_bool()),
+            Some(true),
+            "precondition: producer emits the two-key shape: {response}"
+        );
+        assert!(
+            is_recorded_denial(&response),
+            "the {{denied, secret_injected}} shape must be recognized as a denial: {response}"
+        );
+        // And the single-key request-gate shape is still recognized.
+        let single = serde_json::json!({
+            "denied": CoreError::PermissionDenied("nope".into())
+        });
+        assert!(is_recorded_denial(&single), "the single-key denial shape stays recognized");
+    }
+
+    /// The collision guard (review 035 P2) still holds: arbitrary stored user JSON
+    /// — including a `secret_injected` value that is NOT a boolean, or an extra
+    /// unrelated key — is NOT a recorded denial.
+    #[test]
+    fn arbitrary_user_json_is_not_a_denial() {
+        // A user object that merely carries a `denied` field alongside others.
+        assert!(!is_recorded_denial(&serde_json::json!({ "denied": false })));
+        assert!(!is_recorded_denial(&serde_json::json!({ "denied": false, "x": 1 })));
+        // A valid CoreError `denied` plus an UNEXPECTED extra key is rejected.
+        let err = CoreError::PermissionDenied("x".into());
+        assert!(!is_recorded_denial(&serde_json::json!({ "denied": err, "evil": 1 })));
+        // A valid CoreError `denied` plus a NON-boolean `secret_injected` is rejected.
+        let err = CoreError::PermissionDenied("x".into());
+        assert!(!is_recorded_denial(
+            &serde_json::json!({ "denied": err, "secret_injected": "yes" })
+        ));
+        // Non-objects are never denials.
+        assert!(!is_recorded_denial(&serde_json::json!("denied")));
+        assert!(!is_recorded_denial(&serde_json::json!(null)));
+    }
+
+    /// Review 155 (P1 security): a snapshotless record (loads as the all-deny
+    /// default) whose ONLY denial is the response-leg-after-injection net deny must
+    /// stay on the recorded all-deny snapshot path — NOT fall back to the live
+    /// permissive manifest. Proven by the host-call cap selected: the snapshot path
+    /// uses `run.permissions.max_host_calls` (0 for the all-deny default), the
+    /// manifest fallback uses `manifest.limits.max_host_calls`. If the two-key
+    /// denial were unrecognized, `use_manifest_fallback` would be true and the cap
+    /// would be the (permissive) manifest's — re-granting the denied capability.
+    #[test]
+    fn stripped_response_leg_injected_denial_stays_on_all_deny_snapshot() {
+        // A snapshotless record: default (all-deny) permissions, and its only call
+        // is the response-leg-after-injection denial.
+        let run = RunRecord {
+            run_id: RunId::new("run_x"),
+            applet_id: forge_domain::AppletId::new("app_test"),
+            code_hash: "sha256:00".into(),
+            input: serde_json::Value::Null,
+            random_seed: 1,
+            time_start: 0,
+            calls: vec![RecordedCall {
+                seq: 0,
+                method: "net.fetch".into(),
+                args: serde_json::json!({"url": "x"}),
+                response: response_leg_injected_denial(),
+            }],
+            logs: vec![],
+            outcome: RunOutcome::Failed {
+                error: CoreError::PermissionDenied("redirect to private host".into()),
+            },
+            permissions: PermissionSnapshot::default(),
+        };
+        assert_eq!(run.permissions, PermissionSnapshot::default());
+        assert!(trace_has_denial(&run.calls), "the recorded call is a denial");
+
+        // A PERMISSIVE manifest with a non-zero host-call cap and a granting actor:
+        // if the fallback engaged, the replay policy would carry THIS cap and grant.
+        let manifest = Manifest {
+            entrypoint: "main.ts".into(),
+            min_api: "forge-api@0.1".into(),
+            deterministic: true,
+            capabilities: Capabilities {
+                storage: StorageGrant {
+                    read: vec!["app/*".into()],
+                    write: vec!["app/*".into()],
+                },
+                net: NetGrant(vec![NetRule {
+                    method: "GET".into(),
+                    url: "https://api.example.com/private/*".into(),
+                    ..Default::default()
+                }]),
+                ..Capabilities::default()
+            },
+            limits: Limits { max_host_calls: 99, ..Limits::default() },
+        };
+        let actor = ActorContext::owner("dev");
+
+        let (_policy, cap) = replay_policy(&run, &manifest, &actor).unwrap();
+        // The all-deny snapshot path is selected: the cap is the snapshot's 0, NOT
+        // the permissive manifest's 99. A regression (unrecognized two-key denial)
+        // would pick 99 and re-grant the denied capability.
+        assert_eq!(
+            cap, 0,
+            "a recorded response-leg-injected denial must keep replay on the all-deny snapshot, not the permissive manifest"
+        );
     }
 }
