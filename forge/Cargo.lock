@@ -631,6 +631,7 @@ dependencies = [
 name = "forge-runtime"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "forge-domain",
  "forge-policy",
  "forge-storage",

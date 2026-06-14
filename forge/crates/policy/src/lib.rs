@@ -721,6 +721,9 @@ mod tests {
             // keeps these manifests "no network" (net is gated by NetPolicy, a
             // separate decision path from this CapabilityCheck).
             net: forge_domain::NetGrant::default(),
+            // Files are likewise gated by the runtime's ctx.files host call, not
+            // this CapabilityCheck; an empty grant keeps these manifests "no files".
+            ..Capabilities::default()
         }
     }
 

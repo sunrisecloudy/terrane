@@ -11,6 +11,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+# Pure-Rust base64 for the `bytes_base64` payloads of ctx.files read/write
+# (engine-independent, byte-exact, wasm-clean). Same crate/version forge-signing
+# already pins.
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+
 # rquickjs ships a native C library (QuickJS) and does NOT build for
 # wasm32-unknown-unknown (prd-merged/09 M0a; reviews 002/003/004). Gate it to
 # native targets so the JsEngine trait + all pure record/replay logic stay

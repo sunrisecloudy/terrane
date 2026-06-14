@@ -13,6 +13,7 @@
 //! bridge methods: those are deterministic seams owned by the recorder
 //! (prd-merged/01 CR-11), not host effects.
 
+use crate::files::{live_files_forbidden, FileSystem, InMemoryFileSystem, SandboxFile};
 use crate::net::{
     live_network_forbidden, HttpClient, InMemorySecretStore, MockHttpClient, NetRequest,
     NetResponse, SecretStore,
@@ -94,6 +95,48 @@ pub trait HostBridge {
     fn secret_store(&self) -> &dyn SecretStore {
         empty_secret_store()
     }
+
+    /// The sandboxed filesystem the host resolves `ctx.files` handles/paths
+    /// against (prd-merged/01 CR-3, `forge/spec/files.md`). The
+    /// [`HostContext`](crate::HostContext) consults this **only after** it has
+    /// capability-checked the op against the manifest grant and confined the path
+    /// to the handle's sandbox root — to resolve the handle root, ask whether a
+    /// symlink target escapes the root, and (in record mode) perform the confined
+    /// read/write. On **replay** the recorder serves the recorded bytes and this
+    /// is never consulted (CR-8).
+    ///
+    /// The **default** is the shared empty filesystem: no handle has a root, so
+    /// every `ctx.files` op fails closed (`PermissionDenied`, no root). A bridge
+    /// that holds real per-applet roots (e.g. forge-core's host bridge) overrides
+    /// this to return its injected filesystem.
+    fn file_system(&self) -> &dyn FileSystem {
+        empty_file_system()
+    }
+
+    /// The mutable filesystem seam for `ctx.files.write` (record mode only). The
+    /// host calls this **only after** the write was capability-checked and the
+    /// path confined. The **default** returns the canonical fail-closed error
+    /// (no filesystem wired) so an implementor that does not opt into files —
+    /// including any out-of-crate bridge — keeps compiling and fails closed
+    /// rather than writing silently.
+    fn files_write(
+        &mut self,
+        _handle: &str,
+        _rel_path: &str,
+        _bytes: &[u8],
+        _content_type: Option<&str>,
+    ) -> Result<u64> {
+        Err(live_files_forbidden("write"))
+    }
+}
+
+/// The process-wide empty [`FileSystem`] backing the [`HostBridge::file_system`]
+/// default: no handle has a granted root, so any `ctx.files` op fails closed.
+/// Shared so the default needs no allocation and returns a stable reference.
+fn empty_file_system() -> &'static InMemoryFileSystem {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<InMemoryFileSystem> = OnceLock::new();
+    EMPTY.get_or_init(InMemoryFileSystem::new)
 }
 
 /// The process-wide empty [`SecretStore`] backing the [`HostBridge::secret_store`]
@@ -132,6 +175,11 @@ pub struct MemoryHostBridge {
     /// secret_ref fails closed unless the test injects secrets via
     /// [`with_secret_store`](Self::with_secret_store).
     secret_store: InMemorySecretStore,
+    /// The sandboxed filesystem `ctx.files` resolves handles/paths against
+    /// (CR-3). Defaults to an EMPTY [`InMemoryFileSystem`] — no granted handle
+    /// root — so a `ctx.files` op fails closed unless the test injects a root via
+    /// [`with_file_system`](Self::with_file_system).
+    file_system: InMemoryFileSystem,
 }
 
 // Hand-rolled `Debug` because `Box<dyn HttpClient>` is not `Debug`.
@@ -188,6 +236,19 @@ impl MemoryHostBridge {
     pub fn with_secret_store(mut self, secrets: InMemorySecretStore) -> Self {
         self.secret_store = secrets;
         self
+    }
+
+    /// Replace this bridge's sandboxed filesystem for `ctx.files` (builder style,
+    /// test convenience). Inject an [`InMemoryFileSystem`] with granted handle
+    /// roots + seeded files so `ctx.files` reads/writes resolve.
+    pub fn with_file_system(mut self, fs: InMemoryFileSystem) -> Self {
+        self.file_system = fs;
+        self
+    }
+
+    /// Direct read of a confined file (test convenience; bypasses recording).
+    pub fn peek_file(&self, handle: &str, rel_path: &str) -> Option<&SandboxFile> {
+        self.file_system.peek(handle, rel_path)
     }
 
     /// The most recently rendered UI tree, if any (test convenience).
@@ -323,6 +384,20 @@ impl HostBridge for MemoryHostBridge {
     fn secret_store(&self) -> &dyn SecretStore {
         &self.secret_store
     }
+
+    fn file_system(&self) -> &dyn FileSystem {
+        &self.file_system
+    }
+
+    fn files_write(
+        &mut self,
+        handle: &str,
+        rel_path: &str,
+        bytes: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<u64> {
+        self.file_system.write(handle, rel_path, bytes, content_type)
+    }
 }
 
 /// A [`HostBridge`] that refuses every effect — used as the live bridge in
@@ -383,6 +458,17 @@ impl HostBridge for NullBridge {
         // Replay must serve recorded net responses; a live fetch reaching here is
         // a bug (CR-8: no live network unless replaying a recorded response).
         Err(null_violation("net.fetch"))
+    }
+    fn files_write(
+        &mut self,
+        _handle: &str,
+        _rel_path: &str,
+        _bytes: &[u8],
+        _content_type: Option<&str>,
+    ) -> Result<u64> {
+        // Replay must serve the recorded write response; a live write reaching
+        // here is a bug (CR-8: replay never writes a live file).
+        Err(null_violation("files.write"))
     }
 }
 
