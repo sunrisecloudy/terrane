@@ -612,14 +612,6 @@ impl WorkspaceCore {
         let self_source = source_id_for(self.store.crdt_peer_id());
         let other_source = source_id_for(other.store.crdt_peer_id());
 
-        // SC-12 durable audit rows accumulated DURING authorization, persisted to
-        // each receiver's `audit_log` AFTER `forge_sync` releases the store borrow
-        // (the store is borrowed by the import inside the closure, so the append
-        // cannot run inline). `other` RECEIVES `self`'s chunks (so its decisions
-        // land in `other`'s log) and vice versa.
-        let mut self_pending: Vec<forge_storage::AuditRecord> = Vec::new();
-        let mut other_pending: Vec<forge_storage::AuditRecord> = Vec::new();
-
         let report = {
             let WorkspaceCore {
                 store: self_store,
@@ -635,15 +627,20 @@ impl WorkspaceCore {
                 sync_membership: other_membership,
                 ..
             } = other;
-            let self_pending = &mut self_pending;
-            let other_pending = &mut other_pending;
 
+            // SC-12 review 149: the authorize gate pushes each receiver's audit row
+            // into the per-direction `audit` sink `forge_sync` hands it, and
+            // `forge_sync` appends that sink IN THE SAME TRANSACTION as the receiver's
+            // import. So a committed authorization decision and its durable `audit_log`
+            // row commit (or roll back) together — no crash window between them. The
+            // EventSink emission is UNCHANGED (the transient event still fires); only
+            // the durable persistence moved inside the import txn.
             forge_sync::sync_stores_authorized(
                 self_store,
                 self_indexes,
                 other_store,
                 other_indexes,
-                |source, envelope| {
+                |source, envelope, audit| {
                     // `source` is the RELAY peer the chunk arrived from; it selects the
                     // RECEIVER (the other side) for the direction. But the ACTOR whose
                     // trusted membership decides authorization is the chunk's ORIGINAL
@@ -652,6 +649,11 @@ impl WorkspaceCore {
                     // original author, not the relay (`review 092 #1` / SS-7 actor
                     // identity). A locally-authored chunk has no `origin_source`, so the
                     // relay IS the author and `actor == source`.
+                    //
+                    // The `audit` sink is the RECEIVING store's audit batch: `forge_sync`
+                    // routes the sink for the `other`-receives direction into `other`'s
+                    // import txn and the `self`-receives direction into `self`'s, so the
+                    // decision lands in the receiver's own durable log.
                     let actor = envelope.origin_source.as_deref().unwrap_or(source);
                     if source == self_source {
                         // Direction: self → received by `other`. Authorize against
@@ -660,7 +662,7 @@ impl WorkspaceCore {
                         authorize_incoming_op(
                             other_membership,
                             other_events,
-                            other_pending,
+                            audit,
                             actor,
                             envelope,
                         )
@@ -670,7 +672,7 @@ impl WorkspaceCore {
                         authorize_incoming_op(
                             self_membership,
                             self_events,
-                            self_pending,
+                            audit,
                             actor,
                             envelope,
                         )
@@ -678,14 +680,6 @@ impl WorkspaceCore {
                 },
             )?
         };
-
-        // SC-12: persist each receiver's audit decision trail now that the store
-        // borrows are released. The append is APPEND-ONLY and deterministic (seq +
-        // the EventSink logical clock); a real sync-RBAC denial therefore lands a
-        // queryable `audit_log` row through this live path (the task's acceptance
-        // bar) — not merely a transient EventSink event.
-        persist_audit_rows(&mut self.store, &self_pending)?;
-        persist_audit_rows(&mut other.store, &other_pending)?;
 
         // DL-13 review 143: an authorized migration chunk evolved the RECEIVER's
         // PERSISTED `SchemaRegistry` (and `schema_version`) inside the import txn — but
@@ -951,17 +945,18 @@ pub fn source_id_for(loro_peer_id: u64) -> String {
 /// chunk is skipped. This mirrors the command boundary's trusted-grant model
 /// (review 048/050): authorization comes only from the receiver-side table.
 ///
-/// SC-12 live wiring: in addition to the transient `EventSink` audit event, every
-/// decision (allow AND deny) is appended to `pending` — the receiver's durable
-/// [`forge_storage::AuditRecord`] queue — so the caller persists it to the
-/// receiver's `audit_log` after `forge_sync` releases the store borrow (the store
-/// is borrowed by the import here, so the append cannot run inline). The
-/// `logical_time` is the SAME value the EventSink minted for this decision, so the
-/// transient event and the durable row share one deterministic clock.
+/// SC-12 live wiring (review 149): in addition to the transient `EventSink` audit
+/// event, every decision (allow AND deny) is pushed onto `audit` — the per-direction
+/// [`forge_storage::AuditRecord`] sink `forge_sync` threads into the RECEIVER's
+/// import transaction. So the decision and its durable `audit_log` row commit (or
+/// roll back) TOGETHER with the import it authorizes — no crash window where a
+/// committed decision lacks its row. The `logical_time` is the SAME value the
+/// EventSink minted for this decision, so the transient event and the durable row
+/// share one deterministic clock.
 fn authorize_incoming_op(
     membership: &std::collections::BTreeMap<String, TrustedMembership>,
     events: &mut EventSink,
-    pending: &mut Vec<forge_storage::AuditRecord>,
+    audit: &mut Vec<forge_storage::AuditRecord>,
     source: &str,
     envelope: &forge_sync::SyncOpEnvelope,
 ) -> bool {
@@ -984,7 +979,7 @@ fn authorize_incoming_op(
         // An unknown-actor (no resolved trusted row) denial: persist what the
         // envelope names so the durable row still identifies the rejected resource.
         let collection = collection_opt(&envelope.collection);
-        pending.push(forge_storage::AuditRecord::new(
+        audit.push(forge_storage::AuditRecord::new(
             logical_time,
             SYNC_RBAC_PRODUCER,
             envelope_action(envelope),
@@ -1006,7 +1001,7 @@ fn authorize_incoming_op(
             // widen, the decision — `forge/spec/sync-rbac.md`).
             let decision = authorize_remote_op(trusted, None, &env);
             let logical_time = emit_sync_audit(events, source, &decision);
-            pending.push(sync_audit_record(logical_time, source, &decision, &env));
+            audit.push(sync_audit_record(logical_time, source, &decision, &env));
             decision.is_allow()
         }
         None => {
@@ -1024,7 +1019,7 @@ fn authorize_incoming_op(
                 }),
             );
             let collection = collection_opt(&envelope.collection);
-            pending.push(forge_storage::AuditRecord::new(
+            audit.push(forge_storage::AuditRecord::new(
                 logical_time,
                 SYNC_RBAC_PRODUCER,
                 envelope_action(envelope),
@@ -1099,23 +1094,6 @@ fn sync_audit_record(
         audit.reason.clone(),
         metadata,
     )
-}
-
-/// Persist a batch of pending sync-RBAC audit rows to `store` in ONE transaction
-/// (SC-12 live wiring). Called by [`sync_with`] AFTER `forge_sync` released the
-/// store borrow, so the durable append composes with a real store transaction (the
-/// import txn already committed/rolled back; this records the receiver's decision
-/// trail). Appends only — never mutates a prior row.
-fn persist_audit_rows(store: &mut Store, rows: &[forge_storage::AuditRecord]) -> Result<()> {
-    if rows.is_empty() {
-        return Ok(());
-    }
-    store.transact(|tx| {
-        for row in rows {
-            Store::append_audit_tx(tx, row)?;
-        }
-        Ok(())
-    })
 }
 
 /// Translate the [`forge_sync`] op envelope (recovered at the apply boundary from

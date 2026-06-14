@@ -362,7 +362,7 @@ fn authorized_gate_skips_denied_chunks_and_carries_allowed_with_envelope() {
     // Authorize only the `tasks` collection; deny `notes`. Capture the envelopes
     // the gate observed to assert the op + collection were recovered.
     let mut seen: Vec<(String, SyncRecordOp, String)> = Vec::new();
-    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |source, env| {
+    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |source, env, _audit| {
         seen.push((source.to_string(), env.op, env.collection.clone()));
         env.collection == "tasks"
     })
@@ -416,7 +416,7 @@ fn forwarded_chunk_envelope_carries_original_author_not_relay() {
 
     // A → B: capture the (origin_source, record_ids) the gate observes per chunk.
     let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
-    sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_relay, env| {
+    sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_relay, env, _audit| {
         seen.push((env.origin_source.clone(), env.record_ids.clone()));
         true
     })
@@ -470,7 +470,7 @@ fn original_author_survives_two_relay_hops() {
     // B -> D: the chunk B forwards must carry C's ORIGINAL source and its record id,
     // even though B got it from A (not C).
     let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
-    sync_stores_authorized(&mut b, &idx, &mut d, &idx, |_relay, env| {
+    sync_stores_authorized(&mut b, &idx, &mut d, &idx, |_relay, env, _audit| {
         seen.push((env.origin_source.clone(), env.record_ids.clone()));
         true
     })
@@ -530,7 +530,7 @@ fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
     // source, so the envelope MUST be flagged malformed (fail closed). A deny-on-
     // malformed gate skips it; the receiver imports nothing.
     let mut seen: Vec<(String, Option<String>, Option<String>)> = Vec::new();
-    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env| {
+    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env, _audit| {
         seen.push((env.collection.clone(), env.origin_source.clone(), env.malformed.clone()));
         env.malformed.is_none()
     })
@@ -567,7 +567,7 @@ fn non_collection_doc_id_is_staged_malformed_and_denied() {
         .unwrap();
 
     let mut seen_malformed: Vec<(String, Option<String>)> = Vec::new();
-    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_src, env| {
+    let report = sync_stores_authorized(&mut a, &idx, &mut b, &idx, |_src, env, _audit| {
         seen_malformed.push((env.collection.clone(), env.malformed.clone()));
         // The gate here always allows; the MECHANISM under test is that the
         // envelope is flagged malformed so the real core gate (which denies on
@@ -943,7 +943,7 @@ fn migration_metadata_survives_a_relay_hop_to_the_third_peer() {
     // The migration's target version must be recovered from the `record.remote_import` row
     // (review 145), so the staged op is schema-affecting at the SECOND hop too.
     let mut saw_migration_envelope = false;
-    sync_stores_authorized(&mut b, &idx, &mut c, &idx, |_src, env| {
+    sync_stores_authorized(&mut b, &idx, &mut c, &idx, |_src, env, _audit| {
         if env.collection == "expenses" && env.schema_version == Some(2) {
             saw_migration_envelope = true;
         }
@@ -1140,7 +1140,7 @@ fn relay_row_marked_migration_without_recoverable_target_is_staged_malformed() {
     // unrecoverable, so the envelope MUST be flagged malformed (fail closed). A deny-on-
     // malformed gate skips it; the receiver imports nothing.
     let mut seen: Vec<Option<String>> = Vec::new();
-    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env| {
+    let report = sync_stores_authorized(&mut relay, &idx, &mut receiver, &idx, |_src, env, _audit| {
         seen.push(env.malformed.clone());
         env.malformed.is_none()
     })

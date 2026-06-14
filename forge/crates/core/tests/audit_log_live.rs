@@ -119,6 +119,50 @@ fn sync_rbac_denial_persists_queryable_audit_row_through_live_path() {
 }
 
 #[test]
+fn sync_rbac_allow_persists_record_and_audit_row_atomically_via_live_path() {
+    // SC-12 review 149: an ALLOWED sync import lands the imported record AND the
+    // receiver's `allow` audit row through the live path — and they commit in the SAME
+    // receiving-store transaction, so a committed authorization decision ALWAYS has its
+    // durable row (no crash window between the import and a separate audit append). This
+    // test proves the durability promise positively: after a clean allowed sync, both
+    // the record and its allow row are present in the receiver.
+    let idx = IndexManager::new();
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
+
+    sender
+        .store_mut()
+        .apply_mutation_crdt(&insert("task-ok", json!({ "title": "editor write" }), 1), &idx)
+        .unwrap();
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(report.chunks_denied, 0, "the editor write is authorized");
+    assert_eq!(report.chunks_a_to_b, 1, "the record imported into the receiver");
+
+    // The imported record materialized in the receiver's projection...
+    assert!(
+        receiver.store().get_record("tasks", "task-ok").unwrap().is_some(),
+        "the authorized record is durable in the receiver"
+    );
+    // ...AND its `allow` audit row is durable in the receiver's log — the two committed
+    // together (the row used to be appended in a SEPARATE post-import transaction).
+    let allows = receiver
+        .store()
+        .query_audit(&AuditQuery::by_decision("allow"))
+        .unwrap();
+    assert_eq!(allows.len(), 1, "exactly one persisted allow row: {allows:?}");
+    let row = &allows[0];
+    assert_eq!(row.producer, "sync-rbac");
+    assert_eq!(row.action, "sync.record.insert");
+    assert_eq!(row.decision, "allow");
+    assert_eq!(row.actor_id, "actor-editor");
+    assert_eq!(row.collection.as_deref(), Some("tasks"));
+    let meta = row.metadata.as_object().unwrap();
+    assert_eq!(meta.get("trusted_role").unwrap(), "Editor");
+    assert_eq!(meta.get("record_ids").unwrap(), &json!(["task-ok"]));
+}
+
+#[test]
 fn sync_rbac_denial_is_append_only_across_reruns_via_live_path() {
     // APPEND-ONLY against the LIVE path: re-running the same denied sync appends a
     // NEW row (fresh seq/audit_id) and never mutates the prior one.

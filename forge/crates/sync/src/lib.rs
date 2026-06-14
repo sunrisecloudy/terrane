@@ -44,7 +44,7 @@
 
 use forge_crdt::RecordsDoc;
 use forge_domain::Result;
-use forge_storage::{collection_of_doc, IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
+use forge_storage::{collection_of_doc, AuditRecord, IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -601,9 +601,10 @@ pub fn sync_stores(
     b_indexes: &IndexManager,
 ) -> Result<SyncReport> {
     // Both in-process peers are assumed already authorized (the M0b local CI seam):
-    // an always-allow gate that imports every staged chunk. The SS-7 enforced path
+    // an always-allow gate that imports every staged chunk and records no audit row
+    // (the unauthorized seam has no RBAC decision to persist). The SS-7 enforced path
     // is `sync_stores_authorized`, used by `WorkspaceCore::sync_with`.
-    sync_stores_authorized(a, a_indexes, b, b_indexes, |_src, _env| true)
+    sync_stores_authorized(a, a_indexes, b, b_indexes, |_src, _env, _audit| true)
 }
 
 /// The SS-7 authorized bidirectional sync: like [`sync_stores`], but each staged
@@ -640,7 +641,7 @@ pub fn sync_stores_authorized(
     a_indexes: &IndexManager,
     b: &mut Store,
     b_indexes: &IndexManager,
-    mut authorize: impl FnMut(&str, &SyncOpEnvelope) -> bool,
+    mut authorize: impl FnMut(&str, &SyncOpEnvelope, &mut Vec<AuditRecord>) -> bool,
 ) -> Result<SyncReport> {
     let doc_ids = union_doc_ids(a, b)?;
     // Each peer tags the chunks it RECEIVES with the other peer's source id, so the
@@ -662,17 +663,28 @@ pub fn sync_stores_authorized(
     // from the batch, so `apply_remote_chunks` never imports it — the receiver's
     // history + projection stay unchanged for that op (`forge/spec/sync-rbac.md`).
     // `b` receives `a`'s chunks (source `a_source`); `a` receives `b`'s (source
-    // `b_source`).
+    // `b_source`). The gate also COLLECTS each receiver's SC-12 audit rows (allow AND
+    // deny) so they can be appended IN THE SAME TRANSACTION as that receiver's import
+    // (review 149) — closing the crash window where a committed decision could lack
+    // its durable audit row.
     let mut denied = 0usize;
-    let allowed_to_b = filter_authorized(to_b, &a_source, &mut authorize, &mut denied);
-    let allowed_to_a = filter_authorized(to_a, &b_source, &mut authorize, &mut denied);
+    let mut audit_b: Vec<AuditRecord> = Vec::new(); // b's decisions over a's chunks
+    let mut audit_a: Vec<AuditRecord> = Vec::new(); // a's decisions over b's chunks
+    let allowed_to_b =
+        filter_authorized(to_b, &a_source, &mut authorize, &mut denied, &mut audit_b);
+    let allowed_to_a =
+        filter_authorized(to_a, &b_source, &mut authorize, &mut denied, &mut audit_a);
 
     // Apply each direction atomically into the RECEIVING store, each against its OWN
     // index manager (review 084 #1) so asymmetric indexes stay correct and the
-    // result is independent of which store is `a` vs `b`. The returned count is the
-    // number of chunks NEWLY imported (idempotent re-imports add nothing).
-    let chunks_a_to_b = b.apply_remote_chunks(&allowed_to_b, &a_source, b_indexes)?;
-    let chunks_b_to_a = a.apply_remote_chunks(&allowed_to_a, &b_source, a_indexes)?;
+    // result is independent of which store is `a` vs `b`. The receiver's audit rows
+    // ride along in the SAME transaction (review 149): an allowed import and its
+    // `allow` row — and every `deny` row — commit or roll back together. The returned
+    // count is the number of chunks NEWLY imported (idempotent re-imports add nothing).
+    let chunks_a_to_b =
+        b.apply_remote_chunks_with_audit(&allowed_to_b, &a_source, b_indexes, &audit_b)?;
+    let chunks_b_to_a =
+        a.apply_remote_chunks_with_audit(&allowed_to_a, &b_source, a_indexes, &audit_a)?;
 
     Ok(SyncReport {
         chunks_a_to_b,
@@ -686,15 +698,21 @@ pub fn sync_stores_authorized(
 /// the [`RemoteChunk`]s `authorize` allowed (ready for the atomic apply) and bump
 /// `denied` for every rejection. A rejected chunk is simply excluded, so it never
 /// reaches the receiving store's import.
+///
+/// The `authorize` callback pushes the receiver's SC-12 audit row(s) for the op
+/// into `audit` (allow AND deny — review 149), so the caller can append them in the
+/// SAME transaction as this direction's import. The rows accumulate in staging
+/// order, which `apply_remote_chunks_with_audit` appends under monotonic `seq`s.
 fn filter_authorized(
     staged: Vec<StagedChunk>,
     source: &str,
-    authorize: &mut impl FnMut(&str, &SyncOpEnvelope) -> bool,
+    authorize: &mut impl FnMut(&str, &SyncOpEnvelope, &mut Vec<AuditRecord>) -> bool,
     denied: &mut usize,
+    audit: &mut Vec<AuditRecord>,
 ) -> Vec<RemoteChunk> {
     let mut allowed = Vec::with_capacity(staged.len());
     for StagedChunk { chunk, envelope } in staged {
-        if authorize(source, &envelope) {
+        if authorize(source, &envelope, audit) {
             allowed.push(chunk);
         } else {
             *denied += 1;

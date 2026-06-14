@@ -46,6 +46,35 @@ impl Store {
         source: &str,
         indexes: &IndexManager,
     ) -> Result<usize> {
+        self.apply_remote_chunks_with_audit(chunks, source, indexes, &[])
+    }
+
+    /// Like [`apply_remote_chunks`](Self::apply_remote_chunks), but ALSO appends a
+    /// batch of SC-12 audit rows for this receiver inside the SAME transaction as the
+    /// import + rebuild (review 149). The SS-7 sync-RBAC gate decides whether each
+    /// staged chunk is imported AND mints the receiver's `allow`/`deny` audit rows;
+    /// persisting those rows here — not in a separate transaction afterward — closes
+    /// the crash window where a committed authorization decision could lack its durable
+    /// audit row. The rows are appended via [`append_audit_tx`](Self::append_audit_tx)
+    /// (append-only, deterministic `seq` + caller-supplied `logical_time`, metadata
+    /// redacted), so a failure in the import, the rebuild, OR the audit append rolls the
+    /// whole receiving-store update back together. `audit_rows` carries the DENY rows for
+    /// skipped chunks too (a deny has no import to be atomic with, but its row must still
+    /// land durably), so passing an empty `chunks` slice with a non-empty `audit_rows`
+    /// is the supported "record the denial(s) only" shape.
+    pub fn apply_remote_chunks_with_audit(
+        &mut self,
+        chunks: &[RemoteChunk],
+        source: &str,
+        indexes: &IndexManager,
+        audit_rows: &[crate::AuditRecord],
+    ) -> Result<usize> {
+        // Nothing to do when neither a chunk nor an audit row is pending: skip the
+        // transaction entirely so an unrelated empty direction stays a pure no-op
+        // (it must NOT rebuild the projection or bump the audit seq for nothing).
+        if chunks.is_empty() && audit_rows.is_empty() {
+            return Ok(0);
+        }
         let peer_id = self.crdt_peer_id();
         let source = source.to_string();
         self.transact(move |tx| {
@@ -57,8 +86,18 @@ impl Store {
             }
             // Rebuild the projection + active physical indexes from the augmented
             // chunk history INSIDE this transaction, so a rebuild failure rolls the
-            // chunk/oplog inserts back with it (atomic per receiving store).
+            // chunk/oplog inserts back with it (atomic per receiving store). An empty
+            // chunk batch (deny-only) leaves the chunk history untouched, so this is a
+            // pure rebuild-to-identical-state.
             rebuild_projection_tx(tx, peer_id, indexes)?;
+            // SC-12 review 149: append the receiver's authorization audit rows in the
+            // SAME transaction as the import they record, so an allowed import and its
+            // `allow` row — and every `deny` row — commit or roll back together. The
+            // append is the only mutation path for `audit_log` (INSERT only), so this
+            // stays append-only and deterministic.
+            for row in audit_rows {
+                Store::append_audit_tx(tx, row)?;
+            }
             Ok(imported)
         })
     }

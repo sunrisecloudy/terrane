@@ -59,7 +59,7 @@ pub(crate) use mutation::migrate_collection_records_crdt_tx;
 mod tests {
     use super::*;
     use crate::index::IndexManager;
-    use crate::{CreateIndexKind, Mutation, Query, QueryResult, Store};
+    use crate::{AuditQuery, AuditRecord, CreateIndexKind, Mutation, Query, QueryResult, Store};
     use forge_crdt::RecordsDoc;
     use forge_domain::RecordEnvelope;
     use serde_json::json;
@@ -1173,6 +1173,140 @@ mod tests {
             kept_before,
             "the prior record must be untouched after a rolled-back apply"
         );
+    }
+
+    /// One SC-12 sync-RBAC audit row, for the atomicity tests below.
+    fn audit_row(action: &str, decision: &str, actor: &str) -> AuditRecord {
+        AuditRecord::new(
+            7,
+            "sync-rbac",
+            action,
+            decision,
+            actor,
+            "record",
+            Some("tasks".to_string()),
+            Some("tasks".to_string()),
+            "test reason",
+            json!({ "source": "peer:99" }),
+        )
+    }
+
+    // --- review 149: audit rows commit/roll back WITH the import ----------
+
+    #[test]
+    fn apply_remote_chunks_with_audit_commits_audit_row_in_same_txn() {
+        // A clean authorized apply: the imported record AND its `allow` audit row land
+        // TOGETHER, so a committed authorization decision always has its durable row
+        // (the SC-12 review 149 promise) — both visible after the single transaction.
+        let mut other = store();
+        let idx = IndexManager::new();
+        other
+            .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "ok"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let chunk = one_chunk(&other, &doc_id);
+
+        let mut dst = store();
+        let imported = dst
+            .apply_remote_chunks_with_audit(
+                &[chunk],
+                "peer:99",
+                &idx,
+                &[audit_row("sync.record.insert", "allow", "actor-editor")],
+            )
+            .unwrap();
+        assert_eq!(imported, 1, "the authorized chunk imported");
+        // The record materialized AND its audit row is durable, from the SAME txn.
+        assert!(dst.get_record("tasks", "t1").unwrap().is_some());
+        let rows = dst.query_audit(&AuditQuery::default()).unwrap();
+        assert_eq!(rows.len(), 1, "the allow row committed with the import");
+        assert_eq!(rows[0].decision, "allow");
+        assert_eq!(rows[0].action, "sync.record.insert");
+        assert_eq!(rows[0].seq, 1, "the row took the next monotonic seq");
+        assert_eq!(rows[0].audit_id, "audit-000001");
+    }
+
+    #[test]
+    fn apply_remote_chunks_with_audit_rolls_back_audit_row_when_import_fails() {
+        // The atomicity guarantee in the FAILURE direction: when the import rolls back
+        // (a garbage chunk fails the in-txn rebuild), the audit row staged for that
+        // SAME transaction rolls back WITH it — no orphaned `audit_log` row for a
+        // decision whose import never committed. This is the inverse of the durability
+        // promise: the decision and its row are atomic, both ways.
+        let mut other = store();
+        let idx = IndexManager::new();
+        other
+            .apply_mutation_crdt(&insert("tasks", "t2", json!({"title": "remote"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let mut good = one_chunk(&other, &doc_id);
+        good.chunk_id = "sha256:goodgood".to_string();
+        let garbage = RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: "sha256:deadbeef".to_string(),
+            format: CHUNK_FORMAT.to_string(),
+            payload: vec![0xde, 0xad, 0xbe, 0xef],
+            author_actor_id: None,
+            record_ids: Vec::new(),
+            schema_version: None,
+            registry_collection: None,
+        };
+
+        let mut dst = store();
+        let err = dst
+            .apply_remote_chunks_with_audit(
+                &[good, garbage],
+                "peer:99",
+                &idx,
+                &[audit_row("sync.record.insert", "allow", "actor-editor")],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "SyncError", "the garbage chunk fails the rebuild");
+
+        // The whole receiving-store update rolled back: the audit row did NOT persist.
+        assert!(
+            dst.query_audit(&AuditQuery::default()).unwrap().is_empty(),
+            "the audit row must roll back with the failed import (no orphan row)"
+        );
+        assert_eq!(
+            dst.highest_audit_seq().unwrap(),
+            0,
+            "a rolled-back append must not advance the audit seq counter"
+        );
+        assert!(dst.get_record("tasks", "t2").unwrap().is_none(), "no record leaked");
+    }
+
+    #[test]
+    fn apply_remote_chunks_with_audit_persists_deny_row_with_empty_chunks() {
+        // A DENY has no import to be atomic with, but its row must still land durably.
+        // The gate hands an empty `chunks` batch (the denied chunk was skipped) plus the
+        // deny audit row; the call persists the row in its own transaction.
+        let mut dst = store();
+        let idx = IndexManager::new();
+        let imported = dst
+            .apply_remote_chunks_with_audit(
+                &[],
+                "peer:99",
+                &idx,
+                &[audit_row("sync.record.insert", "deny", "actor-viewer")],
+            )
+            .unwrap();
+        assert_eq!(imported, 0, "nothing imported for a deny-only direction");
+        let rows = dst.query_audit(&AuditQuery::by_decision("deny")).unwrap();
+        assert_eq!(rows.len(), 1, "the deny row persisted");
+        assert_eq!(rows[0].actor_id, "actor-viewer");
+    }
+
+    #[test]
+    fn apply_remote_chunks_with_empty_chunks_and_no_audit_is_a_pure_noop() {
+        // An entirely empty direction (no chunk, no audit row) must NOT open a txn,
+        // rebuild the projection, or touch the audit seq — it is a pure no-op.
+        let mut dst = store();
+        let idx = IndexManager::new();
+        let imported = dst.apply_remote_chunks_with_audit(&[], "peer:99", &idx, &[]).unwrap();
+        assert_eq!(imported, 0);
+        assert_eq!(dst.highest_audit_seq().unwrap(), 0, "no seq consumed for a no-op");
+        assert!(dst.query_audit(&AuditQuery::default()).unwrap().is_empty());
     }
 
     // --- DL-6: rebuild equals maintained projection (zero diff) -----------
