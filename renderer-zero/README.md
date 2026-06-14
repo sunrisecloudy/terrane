@@ -83,9 +83,21 @@ payload verbatim:
 `TextArea`, `Select`, `MultiSelect`, `Checkbox`, `Switch`, `Slider`,
 `DatePicker`, `Badge`, `Stat`.
 
+Where a component's role/name depends on its props, renderer-zero follows
+`accessibility.rs` exactly — e.g. a decorative `Icon` (`decorative: true`) is
+`presentation` with **no** accessible name (a stray `ariaLabel` is ignored),
+while an informative `Icon` is `img` named by `ariaLabel`; `Card`/`Scroll`
+become `region` only once labelled, and `Spacer` is presentational.
+
 **Unknown fallback** (UI-6, NORMATIVE): a genuinely unrecognized `type` renders
 the spec's "Unknown Component Fallback" — a labelled `group` reading
 `Unsupported component <Type>`, never the raw JSON — and round-trips losslessly.
+An unknown node's payload is preserved **fully verbatim**: like Rust's
+`Node::Unknown` (which keeps the original object as raw `serde_json`), a known
+node nested *inside* an unknown container is **not** re-decoded, so it retains
+every prop a typed node would otherwise drop. Canonicalization only sorts object
+keys, matching serde_json's default `BTreeMap` ordering (the workspace does not
+enable `preserve_order`).
 
 ## Patch ops covered (all five, per `patch.rs`)
 
@@ -98,7 +110,11 @@ applier accepts (`id`, `testId`, `gap`, `variant`, `label`, `value`, `ariaLabel`
 like the Rust `ValidationError`s.
 
 `applyTree` mutates the live tree (the conformance target); `applyDom` keeps a
-rendered DOM in sync so `render(tree)` ≡ `dom` after every op.
+rendered DOM in sync so `render(tree)` ≡ `dom` after every op. `applyDom` uses a
+correctness-first "render-from-truth" strategy: after each op mutates the
+authoritative tree, the DOM is re-derived from it (not surgically diffed), which
+guarantees the equivalence invariant without re-implementing every op against
+the DOM's wrapper structure.
 
 ## Conformance corpus asserted
 
@@ -115,7 +131,9 @@ manifest is cross-checked against the files on disk.
 | `forge/fixtures/ui-events/*.json`                         | 12       | event ActionRef → expected patches → final tree (dispatch/error/replay) |
 
 **20** golden UI fixtures + the a11y screen golden + **12** ui-event vectors =
-**33 committed fixture files** driving **49** test assertions, all green.
+**33 committed fixture files** driving the suite (**51** test cases total,
+including unit/regression coverage of the patch ops, the decorative-Icon a11y
+rule, and UI-6 verbatim nesting), all green.
 
 ## Relationship to the Rust ground truth
 

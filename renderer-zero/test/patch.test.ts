@@ -123,6 +123,23 @@ test("applyDom keeps the DOM equal to render(tree) after each op", () => {
   assert.equal(serialize(patched), serialize(render(expected)));
 });
 
+test("unknown container preserves a nested known node's extra props verbatim (UI-6)", () => {
+  // Rust's `Node::Unknown` stores its original object as raw serde_json (it is
+  // never re-decoded into typed `Node`s), so a Button carried inside an unknown
+  // container keeps EVERY prop — including `sparkle`, which a typed Button would
+  // drop. The canonical form must match: nested objects stay verbatim, with
+  // object keys sorted to mirror serde_json's `BTreeMap` (no preserve_order).
+  const tree = {
+    type: "FancyPanel",
+    children: [{ type: "Button", label: "Go", sparkle: true }],
+  } as unknown as Node;
+  assert.equal(
+    canonicalJson(tree),
+    '{"children":[{"label":"Go","sparkle":true,"type":"Button"}],"type":"FancyPanel"}',
+    "nested known node lost a prop inside an unknown container (UI-6 verbatim broken)",
+  );
+});
+
 test("canonical form equals Rust wire field order (type, base, then props)", () => {
   const json = canonicalJson({
     type: "Button",

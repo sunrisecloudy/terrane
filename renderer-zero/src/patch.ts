@@ -180,11 +180,15 @@ export function clone<T>(node: T): T {
 /**
  * Apply patches to BOTH a live tree and its rendered DOM, keeping them in sync.
  *
- * The tree is the source of truth (the conformance target); the DOM is updated
- * incrementally so a host needn't re-render the whole screen per patch:
- * `update_text`/`update_prop` mutate the addressed element in place, while
- * `replace`/`insert`/`remove` re-render only the affected node/subtree. The
- * returned `{ tree, dom }` always satisfies `render(tree)` ≡ `dom`.
+ * The tree is the authoritative model (the conformance target); after each patch
+ * mutates it, the DOM is re-derived from the now-authoritative tree so the
+ * returned `{ tree, dom }` always satisfies `render(tree)` ≡ `dom`. This is a
+ * correctness-first ("render-from-truth") strategy, not an incremental DOM
+ * diff: each op re-renders from the tree rather than surgically mutating the
+ * existing DOM. That keeps DOM/tree equivalence trivially guaranteed against the
+ * goldens without re-implementing every op against the DOM's list-item and
+ * extended-catalog wrapper structure; a production renderer would specialize the
+ * scalar ops (`update_text`/`update_prop`) into in-place element mutations.
  */
 export function applyDom(
   tree: Node,
@@ -195,11 +199,6 @@ export function applyDom(
   let curDom = dom;
   for (const patch of patches) {
     curTree = applyOne(curTree, patch);
-    // Re-render the smallest enclosing subtree the patch touched. For ops at
-    // the root (`[]`) that is the whole tree; otherwise the addressed node's
-    // nearest stable ancestor. Re-rendering from the tree (now authoritative)
-    // guarantees DOM ≡ render(tree) without re-implementing each op against the
-    // DOM's list-item/extended-catalog wrapper structure.
     curDom = render(curTree);
   }
   return { tree: curTree, dom: curDom };

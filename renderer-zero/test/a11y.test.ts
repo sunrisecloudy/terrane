@@ -73,12 +73,30 @@ test("extended @forge/std catalog role/name (UI-6 fallback, accessibility.rs)", 
     [{ type: "Switch", label: "Dark" } as unknown as Node, "switch", "Dark"],
     [{ type: "Slider", label: "Volume" } as unknown as Node, "slider", "Volume"],
     [{ type: "Badge", label: "New" } as unknown as Node, "status", "New"],
+    // Icon: informative icon is an `img` named by ariaLabel (accessibility.rs).
+    [{ type: "Icon", ariaLabel: "Search" } as unknown as Node, "img", "Search"],
+    // Spacer is presentational and exposes no name.
+    [{ type: "Spacer" } as unknown as Node, "presentation", null],
   ];
   for (const [node, role, name] of cases) {
     const got = roleName(node);
     assert.equal(got.role, role, `${(node as { type: string }).type} role`);
     assert.equal(got.name, name, `${(node as { type: string }).type} name`);
   }
+});
+
+test("decorative Icon is presentational with NO accessible name (accessibility.rs)", () => {
+  // `decorative: true` => role `presentation`, AxNameSource::None — even if a
+  // stray `ariaLabel` is present it must NOT surface as a name on a decorative
+  // icon, mirroring `unknown_accessibility`'s Icon arm.
+  const decorative = roleName({ type: "Icon", decorative: true } as unknown as Node);
+  assert.deepEqual(decorative, { role: "presentation", name: null });
+  const decorativeWithStrayName = roleName({
+    type: "Icon",
+    decorative: true,
+    ariaLabel: "ignored",
+  } as unknown as Node);
+  assert.deepEqual(decorativeWithStrayName, { role: "presentation", name: null });
 });
 
 test("genuinely-unknown component renders the UI-6 fallback group, never raw JSON", () => {

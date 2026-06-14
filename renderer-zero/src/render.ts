@@ -183,7 +183,14 @@ const CATALOG: Record<string, CatalogSpec> = {
   Markdown: { tag: "div", role: "document", nameFrom: [] },
   Tabs: { tag: "div", role: "tablist", nameFrom: ["ariaLabel"], childKeys: ["panels", "children"] },
   // Media / regions.
-  Icon: { tag: "span", role: "img", nameFrom: ["ariaLabel"] },
+  // Icon: a decorative icon (`decorative: true`) is presentational and exposes
+  // NO accessible name; an informative icon is an `img` named by `ariaLabel`
+  // (mirrors `unknown_accessibility`'s Icon arm in accessibility.rs).
+  Icon: {
+    tag: "span",
+    role: (p) => (isDecorative(p) ? "presentation" : "img"),
+    nameFrom: ["ariaLabel"],
+  },
   Image: { tag: "img", role: "img", nameFrom: ["alt"] },
   Chart: { tag: "figure", role: "img", nameFrom: ["summary"] },
   Table: { tag: "table", role: "table", nameFrom: ["caption", "ariaLabel"], childKeys: ["children", "items"] },
@@ -221,12 +228,16 @@ function renderUnknown(node: UnknownNode): DomElement {
   if (typeof testId === "string") el.setAttribute("data-test-id", testId);
   const role = typeof spec.role === "function" ? spec.role(node) : spec.role;
   el.setAttribute("role", role);
-  // Accessible name from the first non-blank source key.
-  for (const key of spec.nameFrom) {
-    const v = nonBlank(node[key]);
-    if (v !== undefined) {
-      el.setAttribute("aria-label", v);
-      break;
+  // Accessible name from the first non-blank source key. A presentational role
+  // (e.g. a decorative Icon, a Spacer) intentionally exposes NO name, matching
+  // `AxNameSource::None` in accessibility.rs.
+  if (role !== "presentation") {
+    for (const key of spec.nameFrom) {
+      const v = nonBlank(node[key]);
+      if (v !== undefined) {
+        el.setAttribute("aria-label", v);
+        break;
+      }
     }
   }
   // Recurse into declared child arrays so known descendants still render.
@@ -246,6 +257,12 @@ function renderUnknown(node: UnknownNode): DomElement {
 
 function isNodeLike(v: unknown): v is Node {
   return typeof v === "object" && v !== null && typeof (v as { type?: unknown }).type === "string";
+}
+
+/** Whether an element declared itself decorative (`decorative: true`),
+ * mirroring `is_decorative` in accessibility.rs. */
+function isDecorative(props: UnknownNode): boolean {
+  return props["decorative"] === true;
 }
 
 /** Whether a Grid is interactive enough for the `grid` role (accessibility.rs). */

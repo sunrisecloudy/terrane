@@ -94,28 +94,34 @@ export function canonicalize(node: Node): Json {
 }
 
 /**
- * Canonicalize an unknown node: preserve its payload verbatim (UI-6), but
- * recursively canonicalize any nested `Node`s inside `children`/`items` arrays
- * so a known child carried by an unknown container compares structurally (not by
- * incidental key order). Keys are sorted so the comparison is order-independent
- * for the verbatim props, matching the Rust `serde_json::Map` value equality.
+ * Canonicalize an unknown node: preserve its payload **fully verbatim** (UI-6).
+ *
+ * The Rust `Unknown` arm stores the original object as a raw
+ * `serde_json::Map`/`Value` (`node.rs`) and re-emits it unchanged on
+ * serialization — it never re-decodes nested objects into typed `Node`s, so a
+ * KNOWN-typed object nested inside an unknown container keeps ALL its props
+ * (even ones a typed node would drop, e.g. `sparkle` on a Button). We must match
+ * that: do NOT route nested `{type:...}` objects back through `canonicalize()`
+ * (which would strip extra props and diverge from Rust). The only normalization
+ * is key sorting, because serde_json's default `Map` is a `BTreeMap` (no
+ * `preserve_order` feature in the workspace), so Rust emits object keys sorted —
+ * sorting here reproduces that byte-for-byte and keeps value equality
+ * order-independent.
  */
 function canonicalizeUnknown(node: UnknownNode): Json {
-  const out: { [k: string]: Json } = {};
-  for (const key of Object.keys(node).sort()) {
-    out[key] = canonicalizeValue(node[key]);
-  }
-  return out;
+  return canonicalizeVerbatim(node) as { [k: string]: Json };
 }
 
-function canonicalizeValue(v: unknown): Json {
+/** Deep-canonicalize a raw JSON value verbatim, sorting object keys (Rust
+ * `serde_json::Map` is a sorted `BTreeMap`) but never reinterpreting typed
+ * objects as catalog nodes. */
+function canonicalizeVerbatim(v: unknown): Json {
   if (v === null) return null;
-  if (Array.isArray(v)) return v.map(canonicalizeValue);
+  if (Array.isArray(v)) return v.map(canonicalizeVerbatim);
   if (typeof v === "object") {
     const obj = v as Record<string, unknown>;
-    if (typeof obj["type"] === "string") return canonicalize(obj as Node);
     const out: { [k: string]: Json } = {};
-    for (const key of Object.keys(obj).sort()) out[key] = canonicalizeValue(obj[key]);
+    for (const key of Object.keys(obj).sort()) out[key] = canonicalizeVerbatim(obj[key]);
     return out;
   }
   if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
