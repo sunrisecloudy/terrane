@@ -19,6 +19,7 @@ import {
   type Patch,
   type Path,
   type UnknownNode,
+  RAW,
   isKnownType,
 } from "./wire.ts";
 import { render } from "./render.ts";
@@ -170,9 +171,41 @@ function fmt(path: Path): string {
   return `[${path.join(", ")}]`;
 }
 
-/** A structural deep clone of a node (so patches never alias the source tree). */
+/**
+ * A structural deep clone of a node (so patches never alias the source tree).
+ *
+ * `structuredClone` drops symbol-keyed properties, so it would lose the UI-6
+ * verbatim carrier ({@link RAW}) an `UnknownNode` uses to canonicalize a
+ * non-string/absent `type` losslessly. We walk source and copy in parallel and
+ * re-attach a deep-cloned RAW wherever the source had one, so a cloned tree
+ * canonicalizes identically to the original.
+ */
 export function clone<T>(node: T): T {
-  return structuredClone(node) as T;
+  const copy = structuredClone(node) as T;
+  reattachRaw(node, copy);
+  return copy;
+}
+
+/** Re-attach the {@link RAW} verbatim carrier (lost by `structuredClone`) on any
+ * unknown node in `copy`, mirroring `src`, recursing through container kids. */
+function reattachRaw(src: unknown, copy: unknown): void {
+  if (src === null || typeof src !== "object" || copy === null || typeof copy !== "object") return;
+  const raw = (src as { [RAW]?: Record<string, unknown> })[RAW];
+  if (raw !== undefined) {
+    Object.defineProperty(copy, RAW, {
+      value: structuredClone(raw),
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const key of ["children", "items"] as const) {
+    const sArr = (src as Record<string, unknown>)[key];
+    const cArr = (copy as Record<string, unknown>)[key];
+    if (Array.isArray(sArr) && Array.isArray(cArr)) {
+      for (let i = 0; i < sArr.length && i < cArr.length; i++) reattachRaw(sArr[i], cArr[i]);
+    }
+  }
 }
 
 // --- DOM-incremental applier --------------------------------------------

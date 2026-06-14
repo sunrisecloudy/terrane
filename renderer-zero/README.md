@@ -93,11 +93,17 @@ become `region` only once labelled, and `Spacer` is presentational.
 the spec's "Unknown Component Fallback" — a labelled `group` reading
 `Unsupported component <Type>`, never the raw JSON — and round-trips losslessly.
 An unknown node's payload is preserved **fully verbatim**: like Rust's
-`Node::Unknown` (which keeps the original object as raw `serde_json`), a known
-node nested *inside* an unknown container is **not** re-decoded, so it retains
-every prop a typed node would otherwise drop. Canonicalization only sorts object
-keys, matching serde_json's default `BTreeMap` ordering (the workspace does not
-enable `preserve_order`).
+`Node::Unknown { type_name, props }` (which keeps the original object as raw
+`serde_json` and a separate string discriminant), a known node nested *inside* an
+unknown container is **not** re-decoded, so it retains every prop a typed node
+would otherwise drop. The fidelity extends to the `type` field itself: Rust reads
+`type` with `as_str()`, so a **non-string** `type` (e.g. the number `42`) or a
+**missing** `type` key survives untouched — never coerced to `""` and never
+injected. renderer-zero mirrors this by carrying the untouched original object
+alongside a normalized string `type` discriminant used only for renderer routing;
+canonicalization reads the verbatim original, so the round-trip is exact (and
+survives `clone`). Canonicalization only sorts object keys, matching serde_json's
+default `BTreeMap` ordering (the workspace does not enable `preserve_order`).
 
 ## Patch ops covered (all five, per `patch.rs`)
 
@@ -131,9 +137,10 @@ manifest is cross-checked against the files on disk.
 | `forge/fixtures/ui-events/*.json`                         | 12       | event ActionRef → expected patches → final tree (dispatch/error/replay) |
 
 **20** golden UI fixtures + the a11y screen golden + **12** ui-event vectors =
-**33 committed fixture files** driving the suite (**51** test cases total,
+**33 committed fixture files** driving the suite (**53** test cases total,
 including unit/regression coverage of the patch ops, the decorative-Icon a11y
-rule, and UI-6 verbatim nesting), all green.
+rule, UI-6 verbatim nesting, and UI-6 verbatim `type` fidelity for
+non-string/absent `type`), all green.
 
 ## Relationship to the Rust ground truth
 

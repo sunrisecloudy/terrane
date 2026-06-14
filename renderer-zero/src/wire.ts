@@ -77,12 +77,32 @@ export interface ListNode extends BaseFields {
 }
 
 /**
+ * A symbol key under which an {@link UnknownNode} stashes the ORIGINAL wire
+ * object verbatim (UI-6). Rust's `Node::Unknown { type_name, props }` keeps a
+ * string discriminant *and* the untouched `serde_json` object: the discriminant
+ * may be `""` (absent/non-string `type`) while the object preserves whatever
+ * `type` value the wire actually carried — a number, `null`, or no `type` key at
+ * all. We mirror that by exposing a normalized string `type` for routing while
+ * carrying the untouched original here for lossless canonicalization.
+ *
+ * It is a `symbol` so it never appears as a wire prop, never collides with a
+ * real key, and is dropped by `JSON.stringify`/`structuredClone`-of-plain-object
+ * paths the renderer does not control — `parse` re-attaches it on decode.
+ */
+export const RAW = Symbol.for("forge.renderer-zero.unknownRaw");
+
+/**
  * Forward-compatible fallback for any unrecognized `"type"` (UI-6). Preserves
- * the original object verbatim (the `type` key included) so it round-trips and
- * a future-aware renderer loses nothing.
+ * the original object verbatim (under {@link RAW}) so it round-trips exactly —
+ * including a non-string or absent `type` — and a future-aware renderer loses
+ * nothing. The enumerable `type` is a normalized *string* discriminant (`""`
+ * when the wire `type` was absent or not a string) used only for renderer
+ * routing and never for canonicalization.
  */
 export interface UnknownNode {
   type: string;
+  /** The untouched original wire object (UI-6 verbatim source of truth). */
+  [RAW]?: Record<string, unknown>;
   [key: string]: unknown;
 }
 

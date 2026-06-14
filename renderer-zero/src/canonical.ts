@@ -26,6 +26,7 @@ import {
   type TextFieldNode,
   type ListNode,
   type UnknownNode,
+  RAW,
   isKnownType,
 } from "./wire.ts";
 
@@ -109,7 +110,26 @@ export function canonicalize(node: Node): Json {
  * order-independent.
  */
 function canonicalizeUnknown(node: UnknownNode): Json {
-  return canonicalizeVerbatim(node) as { [k: string]: Json };
+  // Prefer the verbatim original captured by `parse` (the UI-6 source of truth):
+  // it preserves a non-string/absent `type` exactly, where the enumerable copy
+  // carries only a normalized string discriminant. For a hand-built unknown that
+  // never went through `parse` there is no RAW, so fall back to the enumerable
+  // props — dropping a synthetic empty-string `type` so a `{type:""}` routing
+  // tag is not mistaken for a real wire key.
+  const raw = node[RAW];
+  const source: Record<string, unknown> = raw ?? stripSyntheticType(node);
+  return canonicalizeVerbatim(source) as { [k: string]: Json };
+}
+
+/** A shallow copy of a hand-built unknown's enumerable props with a synthetic
+ * empty-string `type` discriminant removed (a real wire `type` is kept). */
+function stripSyntheticType(node: UnknownNode): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === "type" && v === "") continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 /** Deep-canonicalize a raw JSON value verbatim, sorting object keys (Rust

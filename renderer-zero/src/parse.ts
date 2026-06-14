@@ -28,6 +28,7 @@ import {
   type TextFieldNode,
   type ListNode,
   type UnknownNode,
+  RAW,
   isKnownType,
 } from "./wire.ts";
 
@@ -47,14 +48,21 @@ function nodeArray(obj: Raw, key: string): Node[] {
 /** Decode one raw wire value into a `Node` (the model the renderer operates on). */
 export function parse(value: unknown): Node {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    // Not an object → verbatim unknown fallback (no string `type`).
-    return { type: "", ...(typeof value === "object" && value !== null ? value : {}) } as UnknownNode;
+    // Not an object → verbatim unknown fallback. Rust's `NodeVisitor` only ever
+    // visits a map, so a non-object never reaches it; we model it as an empty
+    // verbatim unknown (`type_name` = "", no props) so the renderer stays total.
+    return makeUnknown({});
   }
   const obj = value as Raw;
   const type = obj["type"];
   if (typeof type !== "string" || !isKnownType(type)) {
-    // Unknown `type` (or missing/non-string) → preserve verbatim (UI-6).
-    return { ...obj, type: typeof type === "string" ? type : "" } as UnknownNode;
+    // Unknown `type` (or missing/non-string) → preserve the ORIGINAL object
+    // VERBATIM (UI-6). Rust keeps `props = obj` untouched — so a non-string or
+    // absent `type` survives exactly (a number stays a number, an absent key
+    // stays absent) and is NEVER coerced to `""`. The enumerable `type` we add
+    // is a normalized string discriminant for renderer routing only; the RAW
+    // carrier is the lossless source of truth for canonicalization.
+    return makeUnknown(obj);
   }
 
   switch (type) {
@@ -114,4 +122,33 @@ function copyBase(obj: Raw, out: { id?: string; testId?: string }): void {
   if (id !== undefined) out.id = id;
   const testId = str(obj, "testId");
   if (testId !== undefined) out.testId = testId;
+}
+
+/**
+ * Build a UI-6 `UnknownNode` from a raw wire object, mirroring Rust's
+ * `Node::Unknown { type_name, props }`:
+ *
+ *  - `RAW` holds the ORIGINAL object verbatim (the canonicalization source of
+ *    truth) — its `type` value (number / null / absent) is never touched.
+ *  - The enumerable copy carries the same props for ergonomic prop access
+ *    (`render`'s extended catalog reads `node.ariaLabel` etc.) plus a normalized
+ *    string `type` discriminant (`""` when the wire `type` is absent/non-string)
+ *    used solely for renderer routing — canonicalization ignores it in favor of
+ *    `RAW`, so it can never corrupt the round-trip.
+ */
+function makeUnknown(obj: Raw): UnknownNode {
+  const rawType = obj["type"];
+  const node: UnknownNode = {
+    ...obj,
+    type: typeof rawType === "string" ? rawType : "",
+  };
+  // Stash the untouched original. A shallow copy is enough — canonicalize only
+  // reads it, never mutates it.
+  Object.defineProperty(node, RAW, {
+    value: { ...obj },
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  return node;
 }

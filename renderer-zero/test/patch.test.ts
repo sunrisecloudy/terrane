@@ -12,6 +12,7 @@ import { render } from "../src/render.ts";
 import { serialize } from "../src/dom.ts";
 import { applyTree, applyDom, PatchError, clone } from "../src/patch.ts";
 import { canonicalJson, treeEqual } from "../src/canonical.ts";
+import { parse } from "../src/parse.ts";
 import { type Node } from "../src/wire.ts";
 
 function stack(...children: Node[]): Node {
@@ -138,6 +139,33 @@ test("unknown container preserves a nested known node's extra props verbatim (UI
     '{"children":[{"label":"Go","sparkle":true,"type":"Button"}],"type":"FancyPanel"}',
     "nested known node lost a prop inside an unknown container (UI-6 verbatim broken)",
   );
+});
+
+test("UI-6: an unknown node with a NON-STRING `type` round-trips verbatim", () => {
+  // Rust's `NodeVisitor` reads `type` with `as_str()`; a numeric `type` is not a
+  // string, so the object falls through to `Node::Unknown { props = obj }` with
+  // the ORIGINAL `type` value (the number) preserved untouched. The renderer must
+  // NOT coerce it to "" — the verbatim carrier keeps the number 42.
+  const tree = parse({ type: 42, x: 1 });
+  assert.equal(
+    canonicalJson(tree),
+    '{"type":42,"x":1}',
+    "non-string `type` was corrupted (UI-6 verbatim broken)",
+  );
+  // Survives a structural clone too (the RAW carrier is re-attached).
+  assert.equal(canonicalJson(clone(tree)), '{"type":42,"x":1}');
+});
+
+test("UI-6: an object with NO `type` key round-trips without a spurious type", () => {
+  // When `type` is absent Rust keeps `props = obj` unchanged — it never injects a
+  // `type` key. The renderer must not add `"type":""`.
+  const tree = parse({ foo: "bar", baz: [1, 2] });
+  assert.equal(
+    canonicalJson(tree),
+    '{"baz":[1,2],"foo":"bar"}',
+    "a spurious empty `type` leaked into a no-type object (UI-6 verbatim broken)",
+  );
+  assert.equal(canonicalJson(clone(tree)), '{"baz":[1,2],"foo":"bar"}');
 });
 
 test("canonical form equals Rust wire field order (type, base, then props)", () => {
