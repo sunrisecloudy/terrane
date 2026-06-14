@@ -61,30 +61,6 @@ impl Store {
         Ok(())
     }
 
-    /// Persist a full `RunRecord` inside the CALLER's open transaction AND enforce the
-    /// DL-22 `run_logs` cap before the transaction commits (review 177 P1).
-    ///
-    /// DL-22 caps run logs and `quota.set` can tighten `run_logs_cap`, but the
-    /// run-PERSISTENCE path had no gate — so a tightened cap was REPORT-ONLY and later
-    /// runs kept appending `record_json` beyond the limit. This is the shared run-log
-    /// write boundary every run-persistence path routes through (`runtime.run` +
-    /// the UI-dispatch/watch-callback saves): it STAGES the run row via
-    /// [`save_run_tx`](Self::save_run_tx) and then enforces the `run_logs` cap against
-    /// the REAL post-write total the SAME stage+recompute way the records-write path
-    /// does ([`enforce_records_write_tx`](crate::quota::enforce_records_write_tx),
-    /// review 176). A run record whose bytes would exceed the cap is REJECTED with a
-    /// typed `ResourceLimitExceeded` + a compaction/cleanup/export suggestion, which
-    /// rolls the whole transaction back so the run record (and any same-txn audit rows)
-    /// NEVER land and no existing data is deleted (reject-not-delete). The check is a
-    /// pure function of the staged state + the trusted policy, so a replay reproduces
-    /// the same accept/reject decision. See [`enforce_run_log_write_tx`](crate::quota::enforce_run_log_write_tx)
-    /// for why the workspace total is deliberately not gated here (the failed-run record
-    /// must survive even a full workspace).
-    pub fn save_run_with_quota_tx(tx: &rusqlite::Transaction<'_>, run: &RunRecord) -> Result<()> {
-        Store::save_run_tx(tx, run)?;
-        crate::quota::enforce_run_log_write_tx(tx)
-    }
-
     /// Load a `RunRecord` by id, reconstructed from its stored JSON.
     ///
     /// The provenance contract is re-checked on read: a corrupted or legacy row

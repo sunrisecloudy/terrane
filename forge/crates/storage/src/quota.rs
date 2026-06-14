@@ -514,48 +514,6 @@ pub(crate) fn enforce_records_write_tx(
     Ok(())
 }
 
-/// Enforce the DL-22 `run_logs` cap for a run-record persistence, AFTER the run row
-/// (and any same-txn audit rows) have been STAGED inside the caller's open
-/// transaction `tx` but BEFORE it commits (review 177 P1).
-///
-/// DL-22 caps run logs (`runs.record_json` + `run_logs.payload`), and a `quota.set`
-/// can tighten `run_logs_cap`, but the run-PERSISTENCE path had no gate — so a
-/// tightened cap was REPORT-ONLY and later runs kept appending `record_json` beyond
-/// the limit. This is the LIVE write-boundary check for run persistence, mirroring
-/// [`enforce_records_write_tx`]: the caller STAGES the run record first; this then
-/// recomputes `usage_from_conn(tx)` — which now reflects the staged run/audit bytes
-/// exactly as a post-commit `quota_usage` would — and compares the REAL post-write
-/// `run_logs` total against the trusted cap.
-///
-/// The enforced budget is the `run_logs` category cap (the slice a run record grows).
-/// An over-quota breach returns the typed `ResourceLimitExceeded` error (the
-/// compaction/cleanup/export suggestion, never a deletion), which the caller
-/// propagates — rolling the whole transaction back, so the run record (and any same-txn
-/// audit rows) are NEVER persisted and no existing data is deleted (reject-not-delete).
-///
-/// The workspace TOTAL is deliberately NOT checked here: a run record is the auditable,
-/// replayable record of the run — including a run that FAILED because its `ctx.db` write
-/// was rejected at the records boundary (`spec/quotas.md` §6: such a run is recorded as
-/// *failed* with `run_ok = false`). Gating that recording on the workspace total would
-/// drop the audit trail of the very rejection at exactly the moment the workspace is
-/// full, which the spec's reject-not-delete contract forbids; the run_logs cap is the
-/// dedicated DL-22 backstop that keeps run records from growing unbounded.
-///
-/// PURE: a function of the staged state + the trusted policy with no wall clock, so a
-/// replay reproduces the same accept/reject decision.
-pub(crate) fn enforce_run_log_write_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    let usage = usage_from_conn(tx)?;
-    let policy = policy_from_conn(tx)?;
-    if let Some(err) = over_quota_breach(
-        QuotaScope::Category { category: QuotaCategory::RunLogs },
-        usage.category_bytes(QuotaCategory::RunLogs),
-        policy.category_cap(QuotaCategory::RunLogs),
-    ) {
-        return Err(err);
-    }
-    Ok(())
-}
-
 /// `Some(ResourceLimitExceeded)` iff `projected` exceeds `limit` for `scope` (the
 /// typed over-quota error naming the scope + suggesting the DL-22 remedies, never a
 /// deletion), else `None`. The shared post-write breach check behind the records-write
@@ -566,6 +524,58 @@ fn over_quota_breach(scope: QuotaScope, projected: u64, limit: u64) -> Option<Co
     } else {
         None
     }
+}
+
+/// The PRE-FLIGHT run-admission decision (review 178): read the ALREADY-COMMITTED
+/// `quota_usage` and the trusted [`QuotaPolicy`] and decide whether a NEW run may
+/// START — BEFORE any applet side effect runs. Returns the typed
+/// `ResourceLimitExceeded` (the DL-22 compaction/cleanup/export suggestion) when the
+/// workspace has no budget left to admit a run, else `None`.
+///
+/// WHY a pre-flight gate, not a post-execution one (review 178 P1): each `ctx.db` write
+/// an applet makes commits its CRDT mutation to SQLite IMMEDIATELY as the applet runs
+/// (`apply_mutation_crdt`), so the applet's record writes are durable the moment it
+/// executes. Gating the MANDATORY run record (CR-9) AFTER the applet ran could then
+/// reject the run record while the applet's writes are already committed — leaving
+/// UNREPLAYABLE side effects (durable writes with no run record to replay from). This
+/// check runs BEFORE the applet/handler/callback executes: because nothing has run yet,
+/// a rejection leaves NO new records, NO UI state, and NO callback writes — no torn,
+/// unreplayable state. Once a run is ADMITTED, its run record ALWAYS persists
+/// ([`save_run_tx`](Self::save_run_tx)); the mandatory record may push the run_logs
+/// category up to one record past its cap, and the NEXT run is then rejected here.
+///
+/// A run is REFUSED when the run_logs category is already exhausted: its committed usage
+/// sits at/over `run_logs_cap`, so there is no headroom for a new mandatory run record.
+///
+/// The workspace TOTAL is deliberately NOT gated here (`spec/quotas.md` §6): a run that
+/// FAILS because its `ctx.db` write was rejected at the records boundary committed NO
+/// durable write (its records transaction rolled back) — it has no unreplayable side
+/// effect — and its *failed* run record is the auditable record of that very rejection,
+/// which must survive even when the workspace is at `workspace_limit`. Gating admission
+/// on the total would drop that audit trail at exactly the moment the workspace is full,
+/// which reject-not-delete forbids. The run_logs cap is the dedicated DL-22 backstop that
+/// bounds run records.
+///
+/// PURE + DETERMINISTIC: a function of the COMMITTED usage + the trusted policy with no
+/// wall clock and no request input, so it is in the LIVE command path only — a rejected
+/// run has no record to replay, and an admitted run replays from its recorded run, so
+/// the demo stays REPLAY IDENTICAL.
+fn admit_run_decision(usage: &QuotaUsage, policy: &QuotaPolicy) -> Option<CoreError> {
+    // No run-log headroom: the committed run_logs usage already sits at/over the cap, so
+    // there is no budget to admit even the mandatory run record of a new run. Reject
+    // before the applet runs (reject-not-delete: existing run logs are kept; the user
+    // must compact/clean up/export to free budget before starting new runs).
+    let run_logs = usage.category_bytes(QuotaCategory::RunLogs);
+    let run_logs_cap = policy.category_cap(QuotaCategory::RunLogs);
+    if run_logs >= run_logs_cap {
+        return QuotaDecision::OverQuota {
+            scope: QuotaScope::Category { category: QuotaCategory::RunLogs },
+            projected: run_logs,
+            limit: run_logs_cap,
+        }
+        .over_quota_error();
+    }
+    None
 }
 
 impl Store {
@@ -647,6 +657,43 @@ impl Store {
     pub fn records_write_quota_status(&self, collection: &str) -> Result<QuotaDecision> {
         let applet = applet_of_collection(collection);
         self.check_quota(QuotaCategory::RetainedChunks, Some(applet), 0)
+    }
+
+    /// The PRE-FLIGHT run-admission gate (review 178): may a NEW run START? Reads the
+    /// ALREADY-COMMITTED [`quota_usage`](Self::quota_usage) and the trusted
+    /// [`quota_policy`](Self::quota_policy) and returns the typed `ResourceLimitExceeded`
+    /// (the DL-22 compaction/cleanup/export suggestion) when the workspace has no budget
+    /// to admit a run, else `Ok(())`.
+    ///
+    /// This MUST be called BEFORE any applet side effect runs — before `runtime.run`'s
+    /// recorded execution, before a `ui.dispatch_event` handler, and before a `db.watch`
+    /// callback. Each `ctx.db` write an applet makes commits to SQLite immediately as the
+    /// applet runs, so its record writes are durable the instant it executes; gating the
+    /// MANDATORY run record (CR-9) AFTER the fact would let a rejection strand those
+    /// committed writes with no run record to replay from (review 178 P1: unreplayable
+    /// side effects). Because this check runs first, a rejection leaves NO new records,
+    /// NO UI state, and NO callback writes — no torn state. Once admitted, the run record
+    /// ALWAYS persists via [`save_run_tx`](Self::save_run_tx).
+    ///
+    /// A run is REFUSED when the committed run_logs usage already sits at/over
+    /// `run_logs_cap` (no headroom for a new mandatory run record). The workspace total is
+    /// deliberately NOT gated here (`spec/quotas.md` §6): a run that FAILS because its
+    /// `ctx.db` write was rejected at the records boundary committed no durable write, and
+    /// its *failed* run record — the audit trail of that rejection — must survive even on
+    /// a full workspace. Existing data is never deleted — the user compacts/cleans
+    /// up/exports to free run-log budget before starting new runs (reject-not-delete).
+    ///
+    /// PURE + DETERMINISTIC: a function of committed state + the trusted policy with no
+    /// wall clock and no request input — a rejected run has no record to replay and an
+    /// admitted run replays from its recorded run, so a replay reproduces the same
+    /// admit/reject decision.
+    pub fn admit_run_or_reject(&self) -> Result<()> {
+        let usage = self.quota_usage()?;
+        let policy = self.quota_policy()?;
+        match admit_run_decision(&usage, &policy) {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1254,7 +1301,7 @@ mod tests {
         assert_eq!(blobs, 1, "identical bytes occupy exactly ONE stored blob");
     }
 
-    /// A minimal contract-valid [`RunRecord`] for the run-log gate tests.
+    /// A minimal contract-valid [`RunRecord`] for the run-log admission tests.
     fn sample_run(run_id: &str) -> forge_domain::RunRecord {
         forge_domain::RunRecord {
             run_id: forge_domain::RunId::new(run_id),
@@ -1273,44 +1320,70 @@ mod tests {
     }
 
     #[test]
-    fn save_run_with_quota_tx_rejects_when_run_logs_cap_exceeded() {
-        // Review 177 P1: the run_logs cap is ENFORCED on run persistence, not report-only.
+    fn admit_run_rejects_when_run_logs_has_no_headroom() {
+        // Review 178: the run_logs cap is a PRE-FLIGHT ADMISSION gate — a workspace whose
+        // run-log budget is exhausted refuses to START new runs (reject-not-delete).
         let mut s = store();
-        // Persist a first run so run_logs carries bytes, then pin the cap with zero
-        // headroom: the NEXT run record overflows it.
-        s.transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_1")))
-            .expect("first run fits under the default cap");
+        // Persist a first run so run_logs carries bytes, then pin the cap to exactly the
+        // committed run_logs usage: zero headroom, so a NEW run cannot be admitted.
+        s.transact(|tx| Store::save_run_tx(tx, &sample_run("run_1")))
+            .expect("first run persists");
         let cap = s.quota_usage().unwrap().category_bytes(QuotaCategory::RunLogs);
         let mut policy = QuotaPolicy::DEFAULT;
         policy.run_logs_cap = cap;
         s.set_quota_policy(&policy).unwrap();
 
-        // A second, distinct run record would push run_logs over the cap → REJECTED, and
-        // the transaction rolls back (the record never lands).
+        // With run_logs usage AT the cap (>= run_logs_cap), admission is REFUSED with the
+        // typed error + the compaction/cleanup/export suggestion.
         let err = s
-            .transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_2")))
-            .expect_err("a run record over the run_logs cap is rejected");
+            .admit_run_or_reject()
+            .expect_err("a workspace at the run_logs cap refuses to admit a new run");
         assert_eq!(err.code(), "ResourceLimitExceeded");
         assert!(
             err.to_string().contains("no data was deleted"),
             "carries the compaction/cleanup/export suggestion: {err}"
         );
-        // Reject-not-delete: run_1 is intact, run_2 never landed, and run_logs never
-        // exceeded the cap.
-        assert!(s.load_run("run_1").unwrap().is_some(), "the prior run is untouched");
-        assert!(s.load_run("run_2").unwrap().is_none(), "the rejected run never landed");
         assert!(
-            s.quota_usage().unwrap().category_bytes(QuotaCategory::RunLogs) <= cap,
-            "run_logs usage never exceeds the cap after a rejection"
+            err.to_string().contains("run_logs") || err.to_string().contains("category"),
+            "names the run_logs budget: {err}"
+        );
+        // Reject-not-delete: nothing was deleted — the prior run is intact and usage is
+        // unchanged (admission is a pure read; it commits nothing).
+        assert!(s.load_run("run_1").unwrap().is_some(), "the prior run is untouched");
+        assert_eq!(
+            s.quota_usage().unwrap().category_bytes(QuotaCategory::RunLogs),
+            cap,
+            "admission is read-only: run_logs usage is unchanged by a rejection"
         );
     }
 
     #[test]
-    fn save_run_with_quota_tx_allows_a_run_with_headroom() {
-        // The gate is a backstop, not a blanket block: a run record that fits lands.
+    fn admit_run_does_not_gate_on_a_full_workspace() {
+        // Review 178 / spec/quotas.md §6: the workspace TOTAL is deliberately NOT part of
+        // the admission gate. A run that FAILS because its `ctx.db` write was rejected at
+        // the records boundary committed no durable write, and its *failed* run record
+        // must be recorded even on a full workspace — so admission must ADMIT here, gated
+        // only on run_logs headroom.
         let mut s = store();
-        s.transact(|tx| Store::save_run_with_quota_tx(tx, &sample_run("run_ok")))
-            .expect("a run record under the default cap is allowed");
-        assert!(s.load_run("run_ok").unwrap().is_some());
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "seed"}), 1), &idx)
+            .unwrap();
+        let total = s.quota_usage().unwrap().workspace_total_bytes;
+        let mut policy = QuotaPolicy::DEFAULT;
+        // Workspace total AT the limit (zero headroom), but run_logs is roomy.
+        policy.workspace_limit = total;
+        s.set_quota_policy(&policy).unwrap();
+
+        s.admit_run_or_reject()
+            .expect("a full workspace still admits a run (gated only on run_logs)");
+    }
+
+    #[test]
+    fn admit_run_allows_a_run_with_headroom() {
+        // The gate is a backstop, not a blanket block: with run-log budget to spare, a run
+        // is admitted (and may then persist its mandatory record).
+        let s = store();
+        s.admit_run_or_reject()
+            .expect("a fresh workspace under the default policy admits a run");
     }
 }

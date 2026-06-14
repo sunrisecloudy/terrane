@@ -276,6 +276,22 @@ impl WorkspaceCore {
             return Err(error);
         }
 
+        // DL-22 PRE-FLIGHT ADMISSION GATE (review 178 P1): refuse to START a dispatch
+        // when the workspace has no run-log budget left, BEFORE the handler runs. A
+        // handler's `ctx.db` writes commit to SQLite immediately as it runs, and its
+        // notifications + new UI tree are applied/persisted before the run-log save, so
+        // gating the MANDATORY run record (CR-9) AFTER the handler ran would strand those
+        // committed writes/UI state with no run record to replay from (unreplayable side
+        // effects). Because nothing has run yet, a rejection here leaves NO new records,
+        // NO callback writes, and the last-known UI tree UNCHANGED. (The workspace total
+        // is NOT gated — spec/quotas.md §6.) We emit the same `ui.dispatch_event.rejected`
+        // audit event as the lifecycle gates so the pre-dispatch denial is observable.
+        // Once admitted, the run record ALWAYS persists below (`save_run_tx`).
+        if let Err(error) = self.store.admit_run_or_reject() {
+            self.emit_dispatch_rejected(&applet_id, &action_ref, &error);
+            return Err(error);
+        }
+
         // The DIFF BASE: the applet's last-known tree (the previous render this
         // facade saw). Absent (the applet has not rendered yet) ⇒ `None`, so the
         // first event's diff is a single root replace, exactly like `runtime.run`'s
@@ -395,11 +411,13 @@ impl WorkspaceCore {
             let error = error.clone();
             self.store_run_program(run.run_id.as_str(), &installed)?;
             self.store_program(&installed)?;
-            // DL-22: the failed-dispatch run record is persisted under the run_logs cap
-            // gate (review 177 P1) — a record whose bytes would exceed the cap is
-            // rejected (reject-not-delete) rather than appended beyond the limit.
+            // DL-22 (review 178): the dispatch was already ADMITTED pre-flight, so the
+            // failed-dispatch run record ALWAYS persists now — it is the auditable,
+            // replayable record of the handler's denial/throw (CR-9). The run_logs cap is
+            // enforced as the pre-flight admission gate above, not here, so an admitted
+            // run never has its mandatory record dropped after the handler ran.
             self.store
-                .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
+                .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
             // The event carries BOTH the typed `CoreError` (for transport/audit)
             // AND the renderer-facing T034 code (`ui.action_not_found` for an
             // unknown handler, `runtime.handler_error` for a handler throw), so a
@@ -435,11 +453,11 @@ impl WorkspaceCore {
                     // prior view); treat it as an empty-patch no-op over an empty base.
                     self.store_run_program(run.run_id.as_str(), &installed)?;
                     self.store_program(&installed)?;
-                    // DL-22: the no-op dispatch run record is persisted under the
-                    // run_logs cap gate (review 177 P1) — over-cap ⇒ rejected, not
-                    // appended beyond the limit (reject-not-delete).
+                    // DL-22 (review 178): admitted pre-flight, so the no-op dispatch run
+                    // record ALWAYS persists now (CR-9); the run_logs cap is the pre-flight
+                    // admission gate above, not a post-execution drop.
                     self.store
-                        .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
+                        .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
                     return Ok(serde_json::json!({
                         "applet_id": applet_id,
                         "action_ref": action_ref,
@@ -464,12 +482,13 @@ impl WorkspaceCore {
 
         // Pin the per-run replay artifact + persist the recorded run (event in the
         // trace) so the dispatch replays byte-identically, exactly like a run.
-        // DL-22: the run record is persisted under the run_logs cap gate (review 177
-        // P1) — over-cap ⇒ rejected, not appended beyond the limit (reject-not-delete).
+        // DL-22 (review 178): admitted pre-flight, so the run record ALWAYS persists now
+        // (CR-9) — the run_logs cap is enforced as the pre-flight admission gate above,
+        // never as a post-execution drop that would strand the handler's committed writes.
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
         self.store
-            .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
+            .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
 
         // Emit the UI patch event — the link the renderer consumes to advance the
         // live tree (UI-1/UI-4).

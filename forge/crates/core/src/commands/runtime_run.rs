@@ -58,6 +58,25 @@ impl WorkspaceCore {
             return Err(error);
         }
 
+        // DL-22 PRE-FLIGHT ADMISSION GATE (review 178 P1): refuse to START a run when the
+        // workspace has no run-log budget left, BEFORE any applet side effect runs. Each
+        // `ctx.db` write the applet makes commits to SQLite immediately as it runs
+        // (`apply_mutation_crdt`), so its record writes are durable the instant it
+        // executes; gating the MANDATORY run record (CR-9) AFTER the applet ran would let
+        // a rejection strand those committed writes with no run record to replay from
+        // (unreplayable side effects). Because nothing has run yet, a rejection here
+        // leaves NO new records / NO UI state. The check reads the COMMITTED `quota_usage`
+        // + the trusted `QuotaPolicy` and rejects with the compaction/cleanup/export
+        // suggestion when the run_logs category has no headroom. (The workspace total is
+        // NOT gated here — spec/quotas.md §6: a run whose `ctx.db` write is rejected at the
+        // records boundary commits nothing and must still record its failure even on a
+        // full workspace.) Once admitted, the run record ALWAYS persists below
+        // (`save_run_tx`).
+        if let Err(error) = self.store.admit_run_or_reject() {
+            self.emit_run_rejected(&applet_id, error.code(), &error);
+            return Err(error);
+        }
+
         self.events.emit(
             Some(applet_id.clone()),
             "run.started",
@@ -239,17 +258,18 @@ impl WorkspaceCore {
         let simulate_run_save_failure =
             super::test_hooks::simulate_failure_at(cmd, "run.save");
         self.store.transact(|tx| {
-            // Stage the egress audit rows, then persist the run record AND enforce the
-            // DL-22 run_logs cap in one shot (review 177 P1): `save_run_with_quota_tx`
-            // stages `record_json` then recomputes the post-write usage off `tx` — now
-            // reflecting both the run record and the staged audit rows — and rejects a
-            // run whose bytes would push the run_logs category over the trusted cap. A
-            // rejection rolls back the run record AND its egress audit rows
-            // (reject-not-delete) — the cap is no longer report-only.
+            // Stage the egress audit rows, then persist the run record. The DL-22
+            // run_logs cap is NOT enforced here (review 178 P1): the run was already
+            // ADMITTED pre-flight (`admit_run_or_reject`, before any applet side effect),
+            // so its MANDATORY run record (CR-9) must ALWAYS persist now — the applet's
+            // `ctx.db` writes already committed durably as it ran, and dropping the run
+            // record at this point would strand them with no replay source. The admission
+            // gate refuses the NEXT run when run_logs is exhausted, so the cap stays
+            // bounded (one mandatory record of bounded overshoot past the cap).
             for row in &egress_audit.rows {
                 forge_storage::Store::append_audit_tx(tx, row)?;
             }
-            forge_storage::Store::save_run_with_quota_tx(tx, &run)?;
+            forge_storage::Store::save_run_tx(tx, &run)?;
             if simulate_run_save_failure {
                 return Err(CoreError::StorageError(
                     "simulated run-save failure after egress audit rows were appended".into(),

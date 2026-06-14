@@ -179,27 +179,46 @@ so **the prior records and the records usage are byte-for-byte intact and the re
 record never landed** — reject-not-delete, proven LIVE by the
 `over_quota_db_write_rejected_data_intact` vector.
 
-### Enforcement on run-record persistence (the `run_logs` cap)
+### Enforcement on run admission (the `run_logs` cap is a PRE-FLIGHT gate)
 
 A run record (`runs.record_json`) is part of the `run_logs` category (§1), so the
-`run_logs_cap` is **enforced on run persistence**, not merely reported. Every
-run-persistence path — `runtime.run`, `ui.dispatch_event`, and the `db.watch` callback
-re-entry — routes its save through `Store::save_run_with_quota_tx`, which STAGES the
-run record inside the caller's transaction and then enforces the `run_logs` cap against
-the **real** post-write usage (the same stage+recompute discipline as the records-write
-gate). Once `run_logs_cap` (which a privileged `quota.set` can tighten) sits below the
-next run record's bytes, the save is **REJECTED** with the typed `ResourceLimitExceeded`
-+ the compaction/cleanup/export suggestion; the whole transaction rolls back, so the run
-record (and any same-txn audit rows) never land and the `run_logs` usage never exceeds
-the cap (reject-not-delete). Without this the cap was **report-only**: a tightened cap
-appeared in `quota.status` while later runs kept appending run records beyond it.
+`run_logs_cap` is **enforced**, not merely reported. But it is enforced as a **pre-flight
+admission gate** — *before* a run starts — **not** as a post-execution save gate. The
+reason is correctness: every `ctx.db` write an applet makes commits to SQLite
+**immediately as the applet runs** (`apply_mutation_crdt`, its own transaction), so the
+applet's record writes are durable the instant it executes. A run record is **mandatory**
+(CR-9: every execution persists its resulting writes), so gating that record AFTER the
+applet ran — rejecting it because `run_logs` is now over cap — would leave the applet's
+already-committed writes with **no run record to replay from**: durable, unreplayable side
+effects. Reject-not-delete forbids that torn state.
 
-The workspace TOTAL is deliberately **not** gated on run persistence: a run that FAILED
-because its `ctx.db` write was rejected at the records boundary is still recorded as
-*failed* (above), and that auditable record of the rejection must survive even when the
-workspace is at `workspace_limit` — gating it on the total would drop the audit trail of
-the very rejection. The `run_logs` cap is the dedicated DL-22 backstop that bounds run
-records.
+So every run-persistence path — `runtime.run`, `ui.dispatch_event`, and the `db.watch`
+callback re-entry — calls `Store::admit_run_or_reject` **before** any applet side effect.
+It reads the **committed** `quota_usage` and the trusted `QuotaPolicy` and **REFUSES to
+start the run** with the typed `ResourceLimitExceeded` + the compaction/cleanup/export
+suggestion when the `run_logs` category has **no headroom** (committed `run_logs` usage
+`>= run_logs_cap`). Because nothing has run yet, a rejection leaves **NO** new records,
+**NO** UI state, and **NO** callback writes — no torn, unreplayable state
+(reject-not-delete). The semantics: a workspace whose run-log budget is exhausted refuses
+to START new runs until logs are compacted/exported (reject, never delete). Without any
+gate the cap was **report-only**: a tightened cap appeared in `quota.status` while later
+runs kept appending run records beyond it.
+
+Once a run is **ADMITTED**, its run record **ALWAYS** persists (`Store::save_run_tx`) —
+the mandatory CR-9 record is never dropped after the applet committed writes. The
+admission gate may let the mandatory record push `run_logs` up to **one record past the
+cap**; that bounded overshoot is acceptable because the record is mandatory and the NEXT
+run is then rejected pre-flight (so usage stays bounded at one record over).
+
+The workspace TOTAL is deliberately **not** part of the admission gate: a run that FAILS
+because its `ctx.db` write was rejected at the records boundary (above) committed **no**
+durable write (its records transaction rolled back), so it has no unreplayable side
+effect — and its *failed* run record is the auditable record of that very rejection, which
+must survive **even when the workspace is at `workspace_limit`**. Admitting that recording
+on a full workspace is exactly the reject-not-delete contract; gating it on the total
+would drop the audit trail of the rejection. The `run_logs` cap is the dedicated DL-22
+backstop that bounds run records, and as a pre-flight admission gate it bounds them
+without ever stranding a committed write.
 
 ### The approaching-limit warning (event + field)
 

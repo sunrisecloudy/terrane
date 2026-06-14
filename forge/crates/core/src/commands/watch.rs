@@ -565,6 +565,18 @@ impl WorkspaceCore {
             return Ok(None);
         }
 
+        // DL-22 PRE-FLIGHT ADMISSION GATE (review 178 P1): refuse to RUN the callback
+        // when the workspace has no run-log budget left, BEFORE the callback executes. A
+        // callback's `ctx.db` writes commit to SQLite immediately as it runs, and its
+        // renders/intents are applied/persisted before the run-log save, so gating the
+        // MANDATORY callback run record (CR-9) AFTER it ran would strand those committed
+        // writes with no run record to replay from (unreplayable side effects). Because
+        // nothing has run yet, propagating this typed `ResourceLimitExceeded` up through
+        // `commit_and_notify` leaves NO callback run record and NO callback writes. (The
+        // workspace total is NOT gated — spec/quotas.md §6.) Once admitted, the callback
+        // run record ALWAYS persists below (`save_run_tx`).
+        self.store.admit_run_or_reject()?;
+
         let program = forge_runtime::Program::new(
             forge_domain::AppletId::new(applet_id.clone()),
             installed.js_code.clone(),
@@ -626,15 +638,17 @@ impl WorkspaceCore {
         drop(bridge);
 
         // Persist the callback's run (replay source) under a unique per-execution id.
-        // DL-22: the callback run record is persisted under the run_logs cap gate
-        // (review 177 P1) — a record whose bytes would exceed the cap is rejected
-        // (reject-not-delete) rather than appended beyond the limit.
+        // DL-22 (review 178): the callback was already ADMITTED pre-flight, so its
+        // MANDATORY run record (CR-9) ALWAYS persists now — the callback's `ctx.db` writes
+        // already committed durably as it ran, so dropping the record here would strand
+        // them with no replay source. The run_logs cap is the pre-flight admission gate
+        // above, never a post-execution drop.
         let mut run: RunRecord = run;
         run.run_id = crate::determinism::unique_run_id(&run.code_hash, invocation);
         self.store_run_program(run.run_id.as_str(), &installed)?;
         self.store_program(&installed)?;
         self.store
-            .transact(|tx| forge_storage::Store::save_run_with_quota_tx(tx, &run))?;
+            .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
 
         // A notification callback re-renders the watching applet's view (the reactive
         // loop's whole point). Emit a `ui.patch` per captured render — the SAME link a
