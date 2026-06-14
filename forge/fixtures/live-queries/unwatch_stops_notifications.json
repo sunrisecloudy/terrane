@@ -1,0 +1,24 @@
+{
+  "case": "unwatch_stops_notifications",
+  "description": "After db.unwatch, later writes do not deliver notifications to that watch.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 10
+  },
+  "when": {
+    "steps": [
+      {"op": "unwatch", "watch_id": "watch:tasks-all"},
+      {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "Ship"}}
+    ]
+  },
+  "expect": {
+    "active_watches": [],
+    "dirty_set": {"version": 10, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": [],
+    "idempotent_unwatch": true
+  }
+}
+

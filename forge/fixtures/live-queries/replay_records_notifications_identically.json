@@ -1,0 +1,47 @@
+{
+  "case": "replay_records_notifications_identically",
+  "description": "Recorded watch notifications replay byte-identically without re-opening live update hooks.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 30
+  },
+  "when": {
+    "mutation": {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "Replay me"}},
+    "record_mode": true,
+    "replay_mode": true
+  },
+  "expect": {
+    "recorded_calls": [
+      {
+        "method": "db.watch.notification",
+        "args": {
+          "watch_id": "watch:tasks-all",
+          "version": 30,
+          "collection": "tasks",
+          "record_ids": ["tasks/1"]
+        },
+        "result": {"delivered": true}
+      }
+    ],
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 30,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      }
+    ],
+    "replay": {
+      "open_update_hooks": false,
+      "byte_identical_notifications": true
+    }
+  }
+}
+

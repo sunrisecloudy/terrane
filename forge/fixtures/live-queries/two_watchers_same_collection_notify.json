@@ -1,0 +1,42 @@
+{
+  "case": "two_watchers_same_collection_notify",
+  "description": "Two watches on the same collection both receive deterministic notifications from one write.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}},
+      {"watch_id": "watch:tasks-open", "query": {"from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 5
+  },
+  "when": {
+    "mutation": {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "Ship", "done": false}}
+  },
+  "expect": {
+    "dirty_set": {"version": 5, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 5,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      },
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-open",
+        "version": 5,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      }
+    ],
+    "notification_order": "watch registration order"
+  }
+}
+

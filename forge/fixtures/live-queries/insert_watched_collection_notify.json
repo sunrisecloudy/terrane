@@ -1,0 +1,30 @@
+{
+  "case": "insert_watched_collection_notify",
+  "description": "Inserting into a watched collection delivers one notification with the new id.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 1
+  },
+  "when": {
+    "mutation": {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "Ship", "done": false}}
+  },
+  "expect": {
+    "dirty_set": {"version": 1, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 1,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      }
+    ]
+  }
+}
+

@@ -1,0 +1,21 @@
+{
+  "case": "non_watched_collection_no_notify",
+  "description": "A mutation in a different collection does not notify a tasks watch.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Ship"}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 3
+  },
+  "when": {
+    "mutation": {"op": "insert", "collection": "notes", "id": "notes/1", "fields": {"body": "private"}}
+  },
+  "expect": {
+    "dirty_set": {"version": 3, "collections": {"notes": ["notes/1"]}},
+    "notifications": []
+  }
+}
+

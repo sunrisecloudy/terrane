@@ -1,0 +1,39 @@
+{
+  "case": "transact_coalesced_notify",
+  "description": "A multi-record transaction coalesces into one notification for the watch.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Existing", "done": false}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 11
+  },
+  "when": {
+    "mutation": {
+      "op": "transact",
+      "items": [
+        {"op": "insert", "collection": "tasks", "id": "tasks/2", "fields": {"title": "New", "done": false}},
+        {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"done": true}}
+      ]
+    }
+  },
+  "expect": {
+    "dirty_set": {"version": 11, "collections": {"tasks": ["tasks/1", "tasks/2"]}},
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 11,
+        "collection": "tasks",
+        "record_ids": ["tasks/1", "tasks/2"],
+        "reason": "mixed",
+        "result_ids": ["tasks/1", "tasks/2"],
+        "coalesced": true
+      }
+    ],
+    "max_notifications_per_watch_per_transaction": 1
+  }
+}
+

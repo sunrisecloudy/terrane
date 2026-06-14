@@ -1,0 +1,43 @@
+{
+  "case": "monotonic_version_increments",
+  "description": "Notification versions increase monotonically across committed write transactions.",
+  "given": {
+    "records": [],
+    "watches": [
+      {"watch_id": "watch:tasks-all", "query": {"from": "tasks", "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 20
+  },
+  "when": {
+    "steps": [
+      {"op": "insert", "collection": "tasks", "id": "tasks/1", "fields": {"title": "A"}},
+      {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"title": "B"}}
+    ]
+  },
+  "expect": {
+    "notifications": [
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 20,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "insert",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      },
+      {
+        "type": "db.watch.notification",
+        "watch_id": "watch:tasks-all",
+        "version": 21,
+        "collection": "tasks",
+        "record_ids": ["tasks/1"],
+        "reason": "update",
+        "result_ids": ["tasks/1"],
+        "coalesced": false
+      }
+    ],
+    "assertions": ["versions are strictly increasing", "same committed transaction would share one version"]
+  }
+}
+

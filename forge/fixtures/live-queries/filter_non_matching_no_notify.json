@@ -1,0 +1,21 @@
+{
+  "case": "filter_non_matching_no_notify",
+  "description": "A dirty record outside the query result before and after the write does not notify.",
+  "given": {
+    "records": [
+      {"collection": "tasks", "id": "tasks/1", "fields": {"title": "Done", "done": true, "prio": 1}, "deleted": false}
+    ],
+    "watches": [
+      {"watch_id": "watch:tasks-open", "query": {"from": "tasks", "where": ["done", "=", false], "orderBy": ["id", "asc"]}}
+    ],
+    "next_version": 4
+  },
+  "when": {
+    "mutation": {"op": "patch", "collection": "tasks", "id": "tasks/1", "fields": {"prio": 2}}
+  },
+  "expect": {
+    "dirty_set": {"version": 4, "collections": {"tasks": ["tasks/1"]}},
+    "notifications": []
+  }
+}
+
