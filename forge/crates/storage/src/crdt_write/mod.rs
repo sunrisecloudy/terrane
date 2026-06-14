@@ -403,6 +403,7 @@ mod tests {
             author_actor_id: None,
             record_ids: Vec::new(),
             schema_version: None,
+            registry_collection: None,
         }
     }
 
@@ -512,6 +513,7 @@ mod tests {
             author_actor_id: None,
             record_ids: Vec::new(),
             schema_version: None,
+            registry_collection: None,
         };
 
         let mut dst = store();
@@ -1109,6 +1111,7 @@ mod tests {
             author_actor_id: None,
             record_ids: Vec::new(),
             schema_version: None,
+            registry_collection: None,
         };
 
         let err = dst

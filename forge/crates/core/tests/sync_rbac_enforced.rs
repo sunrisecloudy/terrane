@@ -27,12 +27,24 @@ const SENDER_PEER: u64 = 700;
 const RECEIVER_PEER: u64 = 800;
 
 fn membership(actor: &str, role: Role, db_write: &[&str]) -> TrustedMembership {
+    membership_full(actor, role, db_write, false)
+}
+
+/// A membership row with an explicit `schema_write` grant. A DL-13 migration chunk is
+/// a schema-affecting op (review 143), so a peer that may apply one needs BOTH db.write
+/// on the collection AND schema-change authority (Owner/Maintainer + `schema_write`).
+fn membership_full(
+    actor: &str,
+    role: Role,
+    db_write: &[&str],
+    schema_write: bool,
+) -> TrustedMembership {
     TrustedMembership {
         actor_id: actor.into(),
         role,
         db_read: vec!["*".into()],
         db_write: db_write.iter().map(|s| s.to_string()).collect(),
-        schema_write: false,
+        schema_write,
     }
 }
 
@@ -491,67 +503,191 @@ fn multi_record_transact_group_applies_and_converges() {
     assert_eq!(allowed.payload["collection"], json!("tasks"));
 }
 
-#[test]
-fn migration_chunk_is_authorized_and_advances_receiver_schema_version() {
-    // Review 139 (P1): a DL-13 migration chunk must reach a peer through the REAL
-    // SS-7 apply gate and advance the receiver's `schema_version` — NOT be denied.
-    //
-    // Before the fix the migration chunk had no per-chunk oplog row, so the sync seam
-    // fell back to a generic write with EMPTY record_ids, and the wired RBAC gate
-    // (`sync_rbac.rs` envelope-metadata check) denied it fail-closed as "missing
-    // record id" — silently dropping the migration at peer sync. With the per-chunk
-    // row carrying the migrated record ids + the schema-version pair, the chunk
-    // authorizes as a record write against concrete ids and the receiver advances its
-    // version on import. The trusted sender is an editor WITH db.write on `expenses`.
-    use forge_schema::{FieldTransform, FieldType, MigrationDescriptor};
-    let idx = IndexManager::new();
-    let (mut sender, mut receiver) =
-        cores_with_membership(membership("actor-editor", Role::Editor, &["expenses"]));
+/// Issue a command as an Owner dev actor (the schema commands are command-level RBAC
+/// gated to Owner/Maintainer; this is the LOCAL author boundary, distinct from the
+/// SYNC apply boundary the membership table governs).
+fn owner_cmd(name: &str, payload: Value) -> CoreCommand {
+    CoreCommand {
+        request_id: RequestId::new("req"),
+        name: name.into(),
+        applet_id: None::<AppletId>,
+        actor: ActorContext::owner("dev"),
+        workspace_id: WorkspaceId::new("ws"),
+        payload,
+    }
+}
 
-    // The sender authors two `expenses` records (int `amount`) through the CRDT path.
+/// Apply a `schema.apply_change` on `core`, asserting it succeeded.
+fn apply_change(core: &mut WorkspaceCore, change: Value) {
+    let resp = core.handle(owner_cmd("schema.apply_change", json!({ "change": change })));
+    assert!(resp.ok, "schema.apply_change failed: {:?}", resp.error);
+}
+
+/// Seed an `expenses` collection on `core` with an INDEXED int `amount` field, two
+/// records (10/20), then widen `amount` int → float through the REAL
+/// `schema.apply_change` command — which drives the durable DL-13 migration AND carries
+/// the evolved registry collection onto the migration chunk (review 143). Leaves the
+/// sender at `schema_version 2` with float records + the evolved registry.
+fn seed_and_widen_expenses(core: &mut WorkspaceCore) {
+    let idx = IndexManager::new();
+    apply_change(core, json!({ "op": "add_collection", "name": "expenses" }));
+    apply_change(
+        core,
+        json!({
+            "op": "add_field",
+            "collection": "expenses",
+            "actor": "alice",
+            "name": "amount",
+            "ty": "int_num",
+            "indexed": true,
+            "required": false,
+        }),
+    );
     let expense = |id: &str, amount: i64, at: i64| Mutation::Insert {
         collection: "expenses".into(),
         id: Some(id.into()),
         fields: json!({ "amount": amount }).as_object().unwrap().clone(),
         logical_at: Some(at),
     };
-    sender.store_mut().apply_mutation_crdt(&expense("e1", 10, 1), &idx).unwrap();
-    sender.store_mut().apply_mutation_crdt(&expense("e2", 20, 2), &idx).unwrap();
+    core.store_mut().apply_mutation_crdt(&expense("e1", 10, 1), &idx).unwrap();
+    core.store_mut().apply_mutation_crdt(&expense("e2", 20, 2), &idx).unwrap();
+    // The widen is keyed by the registry stable id `f_alice_0`; the companion migration
+    // rewrites records keyed by the `f_amount` stand-in (the M0a record-side id). Each
+    // accepted change advances the schema_version by one (add_collection, add_field, and
+    // the widen migration), so the sender ends past v1 with the evolved registry; the
+    // exact value is asserted only relative to the receiver post-sync (convergence).
+    apply_change(
+        core,
+        json!({
+            "op": "widen_field",
+            "collection": "expenses",
+            "field_id": "f_alice_0",
+            "to": "float_num",
+        }),
+    );
+    assert!(core.store().schema_version().unwrap() > 1, "sender advanced past v1");
+}
 
-    // The sender widens `amount` int → float, advancing itself to schema_version 2 and
-    // rewriting the CRDT source of truth (the migration chunk + its per-chunk row).
-    let widen = MigrationDescriptor {
-        collection: "expenses".into(),
-        from_schema_version: 1,
-        to_schema_version: 2,
-        transforms: vec![FieldTransform::WidenField {
-            field_id: "f_amount".into(),
-            name: "amount".into(),
-            to: FieldType::FloatNum,
-        }],
-    };
-    assert!(sender.store_mut().apply_migration(&widen, &idx).unwrap().applied);
-    assert_eq!(sender.store().schema_version().unwrap(), 2);
+#[test]
+fn migration_chunk_denied_for_editor_without_schema_write() {
+    // Review 143 (FIX 1, the DENY polarity): a DL-13 migration chunk is a SCHEMA-AFFECTING
+    // op, not a plain record write. An Editor trusted with db.write on `expenses` but
+    // WITHOUT schema_write may author ordinary record writes there — but the migration
+    // needs schema-change authority (Owner/Maintainer + schema_write). It must be DENIED
+    // BEFORE any chunk import or version advance, fail-closed. (This is the bypass the
+    // prior regression mis-codified: an editor with schema_write:false asserting allow.)
+    let (mut sender, mut receiver) =
+        cores_with_membership(membership("actor-editor", Role::Editor, &["expenses"]));
+    seed_and_widen_expenses(&mut sender);
     assert_eq!(receiver.store().schema_version().unwrap(), 1, "receiver starts at v1");
 
-    // Sync through the REAL authorization gate. The migration chunk is NOT denied.
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(
+        report.chunks_denied, 1,
+        "exactly the migration chunk must be DENIED (the plain record-insert chunks the \
+         editor IS allowed to write still apply): report {report:?}"
+    );
+
+    // The migration's EFFECT is rejected before any schema state change: the
+    // schema_version did NOT advance and the registry was NOT evolved. The receiver
+    // sees the PRE-migration record state (the plain int inserts the editor may author),
+    // proving the records were NOT carried forward by the denied migration.
+    let rows = query_collection(&mut receiver, "expenses");
+    assert_eq!(rows.len(), 2, "the editor's plain record writes still apply: {rows:?}");
+    assert_eq!(rows[0].1["amount"], json!(10), "e1 stays the PRE-migration int (migration denied)");
+    assert_eq!(rows[1].1["amount"], json!(20), "e2 stays the PRE-migration int (migration denied)");
+    assert_eq!(
+        receiver.store().schema_version().unwrap(),
+        1,
+        "the receiver's schema_version must NOT advance for an unauthorized migration"
+    );
+    assert!(
+        receiver.registry().collection("expenses").is_none(),
+        "the receiver's registry must NOT be evolved by an unauthorized migration"
+    );
+
+    // A permission_denied audit names the missing schema_write grant.
+    let denial = receiver
+        .events()
+        .events_of_kind("sync.permission_denied")
+        .find(|e| {
+            e.payload["collection"] == json!("expenses")
+                && e.payload["reason"].as_str().is_some_and(|r| r.contains("schema_write"))
+        })
+        .expect("a denial was audited naming the missing schema_write for the migration chunk");
+    assert_eq!(denial.payload["decision"], json!("deny"));
+}
+
+#[test]
+fn migration_chunk_authorized_for_maintainer_syncs_records_version_registry_and_index() {
+    // Review 143 (FIX 1 allow polarity + FIX 2): a Maintainer trusted WITH schema_write
+    // AND db.write on `expenses` may apply a migration. After an authorized sync the
+    // receiver must converge on ALL of: the migrated record values, the schema_version,
+    // the EVOLVED registry (not a stale one), AND the reconstructed indexed field — all
+    // in lockstep, no drift.
+    let (mut sender, mut receiver) = cores_with_membership(membership_full(
+        "actor-maintainer",
+        Role::Maintainer,
+        &["expenses"],
+        true,
+    ));
+    seed_and_widen_expenses(&mut sender);
+    assert_eq!(receiver.store().schema_version().unwrap(), 1, "receiver starts at v1");
+    assert!(receiver.registry().collection("expenses").is_none(), "receiver registry starts empty");
+
     let report = sender.sync_with(&mut receiver).unwrap();
     assert_eq!(
         report.chunks_denied, 0,
-        "the migration chunk must be authorized as a record write, not denied (report {report:?})"
+        "an authorized migration must NOT be denied (report {report:?})"
     );
     assert!(report.total_chunks_moved() > 0, "the migration chunk moves to the receiver");
 
-    // The receiver holds the MIGRATED (float) values and advanced its schema_version.
+    // (records) The receiver holds the MIGRATED (float) values.
     let rows = query_collection(&mut receiver, "expenses");
     assert_eq!(rows.len(), 2, "both migrated records imported: {rows:?}");
     assert_eq!(rows[0].0, "e1");
     assert_eq!(rows[0].1["amount"], json!(10.0), "e1 migrated to float on the receiver");
     assert_eq!(rows[1].1["amount"], json!(20.0), "e2 migrated to float on the receiver");
+
+    // (version) The receiver advanced to the migration target and CONVERGES with the
+    // sender's version — no drift between version and the data/registry it describes.
+    assert!(receiver.store().schema_version().unwrap() > 1, "the receiver advanced past v1");
     assert_eq!(
         receiver.store().schema_version().unwrap(),
-        2,
-        "the receiver advanced to the migration target version on import (no drift)"
+        sender.store().schema_version().unwrap(),
+        "the receiver converges on the sender's schema_version"
+    );
+
+    // (registry) The receiver's registry was EVOLVED in lockstep: it now KNOWS the
+    // `expenses` collection and `amount` is the WIDENED float type — not stale/empty.
+    let recv_col = receiver
+        .registry()
+        .collection("expenses")
+        .expect("the receiver's registry now contains the synced collection");
+    let amount = recv_col
+        .field("f_alice_0")
+        .expect("the receiver's registry contains the migrated field");
+    assert_eq!(amount.name(), "amount");
+    assert_eq!(
+        *amount.ty(),
+        forge_schema::FieldType::FloatNum,
+        "the receiver's registry reflects the WIDENED type (registry synced, not stale)"
+    );
+    assert!(amount.indexed(), "the receiver's registry keeps the field indexed");
+    // The sender and receiver registries agree byte-for-byte (true convergence).
+    assert_eq!(
+        receiver.registry().collection("expenses"),
+        sender.registry().collection("expenses"),
+        "sender and receiver registries converge"
+    );
+
+    // (index reconstruction) The receiver reconstructed the indexed field over the
+    // `f_amount` stand-in from the evolved registry: the `Value` expression index for
+    // `expenses.f_amount` is a live planner candidate after sync, proving the indexed
+    // field was rebuilt (collection_indexed_fields keyed by f_<name>).
+    assert!(
+        receiver.indexes().get_expression("expenses", "f_amount").is_some(),
+        "the receiver reconstructed the f_amount index from the evolved registry"
     );
 
     // The op was AUDITED as authorized (allow), naming the `expenses` collection.

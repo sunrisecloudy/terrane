@@ -37,6 +37,14 @@ pub(super) struct OplogPayload {
     /// chunk advances `from → to` (DL-13). Threaded into the per-chunk oplog row so
     /// the sync seam can recover the receiver's target `schema_version` (review 139).
     migration: Option<(u64, u64)>,
+    /// Present only on the MIGRATION path: the affected collection's EVOLVED registry
+    /// entry (a serialized `forge_schema::CollectionDef`), carried so an authorized
+    /// receiver evolves its `SchemaRegistry` in lockstep with the migrated records +
+    /// `schema_version` — the registry is a CRDT document that syncs with the
+    /// migration (prd-merged/02:15, review 143). Threaded into the per-chunk oplog row
+    /// and recovered by the sync seam; an opaque `serde_json::Value` here so storage
+    /// stays agnostic of the schema type's shape. `None` for an ordinary record write.
+    registry_collection: Option<serde_json::Value>,
 }
 
 impl OplogPayload {
@@ -58,6 +66,7 @@ impl OplogPayload {
             collection: Some(collection.to_string()),
             source: None,
             migration: None,
+            registry_collection: None,
         }
     }
 
@@ -65,9 +74,16 @@ impl OplogPayload {
     /// `(doc_id)#(chunk_id)` exactly like a local write so the sync seam discovers it
     /// by the SAME `missing_chunks_for_doc` join (review 139). It carries the migrated
     /// `record_ids` (so the chunk authorizes as a record write against concrete ids,
-    /// not an empty list the RBAC gate denies) plus the `from`/`to` schema versions
-    /// (so a receiver advances its `schema_version` to `to` on import). Shape on the
-    /// wire: `{chunk_id, collection, doc_id, from, kind, record_ids, to}` (alphabetical).
+    /// not an empty list the RBAC gate denies), the `from`/`to` schema versions (so a
+    /// receiver advances its `schema_version` to `to` on import), and the affected
+    /// collection's EVOLVED registry entry `registry_collection` (so an authorized
+    /// receiver evolves its `SchemaRegistry` in lockstep — review 143). Shape on the
+    /// wire: `{chunk_id, collection, doc_id, from, kind, record_ids, registry_collection,
+    /// to}` (alphabetical; `registry_collection` omitted when `None`).
+    // The per-chunk migration row carries enough metadata for the sync seam to
+    // authorize + apply it (ids, version pair, evolved registry entry); a struct of
+    // args would not improve a single internal call site (mirrors `append_op_tx`).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn migration(
         doc_id: &str,
         chunk_id: &str,
@@ -76,6 +92,7 @@ impl OplogPayload {
         record_ids: Vec<String>,
         from: u64,
         to: u64,
+        registry_collection: Option<serde_json::Value>,
     ) -> Self {
         OplogPayload {
             doc_id: doc_id.to_string(),
@@ -85,6 +102,7 @@ impl OplogPayload {
             collection: Some(collection.to_string()),
             source: None,
             migration: Some((from, to)),
+            registry_collection,
         }
     }
 
@@ -107,6 +125,7 @@ impl OplogPayload {
             collection: None,
             source: Some(source.to_string()),
             migration: None,
+            registry_collection: None,
         }
     }
 
@@ -130,6 +149,12 @@ impl OplogPayload {
             // reads `to` back to advance a receiver's `schema_version` (review 139).
             map.insert("from".into(), from.into());
             map.insert("to".into(), to.into());
+        }
+        if let Some(registry_collection) = &self.registry_collection {
+            // The affected collection's evolved registry entry; the sync seam reads it
+            // back so an authorized receiver evolves its SchemaRegistry in lockstep with
+            // the migrated records + schema_version (review 143). Omitted when absent.
+            map.insert("registry_collection".into(), registry_collection.clone());
         }
         map.insert("record_ids".into(), self.record_ids.clone().into());
         serde_json::to_vec(&serde_json::Value::Object(map)).map_err(|e| map_json(context, e))

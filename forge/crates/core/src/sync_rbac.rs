@@ -101,6 +101,15 @@ pub struct RemoteOpEnvelope {
     pub schema_id: Option<String>,
     /// Schema version named in the envelope metadata, if present.
     pub schema_version: Option<u64>,
+    /// `true` when this op is a DL-13 **schema migration** carried over the sync
+    /// boundary (a record-write chunk that ALSO advances the schema —
+    /// `forge/spec/migrations.md` §6). A migration is a SCHEMA-AFFECTING op, not a
+    /// plain record write: the authorizer requires BOTH the collection `db.write`
+    /// grant AND schema-change authority (Owner/Maintainer + `schema_write`) before it
+    /// may apply (review 143). An ordinary record write (or a fixture/unit record op
+    /// that merely names a `schema_version` for the metadata gate) leaves this `false`
+    /// so it is gated by `db.write` alone, exactly as before.
+    pub is_migration: bool,
 }
 
 /// An **untrusted** role/grant claim carried in the incoming message/session
@@ -293,19 +302,40 @@ pub fn authorize_remote_op(
             }
             // (c) Trusted db.write grant for the collection.
             let collection = env.collection.as_deref().unwrap_or("");
+            let has_write = scope_is_wildcard(&trusted.db_write)
+                || scope_grants(&trusted.db_write, collection);
+            if !has_write {
+                return deny(format!("trusted db.write does not include {collection}"));
+            }
+            // (d) DL-13 migration (review 143): a record-write chunk that ALSO advances
+            // the schema is a SCHEMA-AFFECTING op. It needs the db.write grant above
+            // AND schema-change authority — Owner/Maintainer role + `schema_write` —
+            // exactly as a command-boundary schema change does (`forge/spec/sync-rbac.md`
+            // lines 106/124). An Editor with only db.write is DENIED here even though
+            // the record-write grant passed; the schema_write grant default is fail-
+            // closed (it never widens authorization).
+            if env.is_migration {
+                if !role_can_schema_change(trusted.role) || !trusted.schema_write {
+                    return deny(format!(
+                        "{} lacks trusted schema_write for a migration on {collection}",
+                        role_name(trusted.role)
+                    ));
+                }
+                return allow(format!(
+                    "trusted {} has db.write + schema_write for the migration on {collection}",
+                    role_name(trusted.role)
+                ));
+            }
             if scope_is_wildcard(&trusted.db_write) {
                 return allow(format!(
                     "{} wildcard db.write covers {collection}",
                     role_name(trusted.role)
                 ));
             }
-            if scope_grants(&trusted.db_write, collection) {
-                return allow(format!(
-                    "trusted {} has db.write on {collection}",
-                    role_name(trusted.role)
-                ));
-            }
-            deny(format!("trusted db.write does not include {collection}"))
+            allow(format!(
+                "trusted {} has db.write on {collection}",
+                role_name(trusted.role)
+            ))
         }
 
         // ---- Schema change -------------------------------------------------
@@ -486,6 +516,22 @@ mod tests {
             record_ids: vec!["rec-1".to_string()],
             schema_id: None,
             schema_version: Some(1),
+            is_migration: false,
+        }
+    }
+
+    /// A DL-13 migration record-write envelope: a record write that ALSO carries the
+    /// schema-version advance (`is_migration: true`). The authorizer must gate it as a
+    /// schema change (db.write AND schema_write), not a plain record write (review 143).
+    fn migration_env(collection: &str) -> RemoteOpEnvelope {
+        RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::Patch,
+            collection: Some(collection.to_string()),
+            record_ids: vec!["rec-1".to_string()],
+            schema_id: None,
+            schema_version: Some(2),
+            is_migration: true,
         }
     }
 
@@ -527,6 +573,62 @@ mod tests {
     }
 
     #[test]
+    fn migration_denied_for_editor_with_only_db_write() {
+        // review 143 (FIX 1, the deny polarity): an Editor trusted with db.write on
+        // `expenses` but WITHOUT schema_write is allowed to author a plain record write
+        // there — but a DL-13 MIGRATION chunk is a schema-affecting op. The editor lacks
+        // schema-change authority (Editor is not Owner/Maintainer, and schema_write is
+        // false), so the migration is DENIED even though the db.write grant passes.
+        let trusted = member(Role::Editor, &["expenses"], false);
+        let env = migration_env("expenses");
+        let d = authorize_remote_op(&trusted, None, &env);
+        assert!(!d.is_allow(), "an editor with only db.write must not apply a migration");
+        assert!(
+            d.reason().contains("lacks trusted schema_write"),
+            "the denial names the missing schema_write: {}",
+            d.reason()
+        );
+        // Same editor, SAME collection, a NON-migration record write IS allowed — so the
+        // new gate narrows only the migration case, never ordinary record writes.
+        let plain = record_env(RemoteOp::Patch, "expenses");
+        assert!(
+            authorize_remote_op(&trusted, None, &plain).is_allow(),
+            "the editor can still author a plain record write"
+        );
+    }
+
+    #[test]
+    fn migration_denied_for_maintainer_missing_schema_write_grant() {
+        // The role matrix passes (Maintainer may change schema), but the trusted
+        // `schema_write` grant is false — fail-closed, the migration is denied.
+        let trusted = member(Role::Maintainer, &["expenses"], false);
+        let d = authorize_remote_op(&trusted, None, &migration_env("expenses"));
+        assert!(!d.is_allow(), "a maintainer without schema_write must be denied");
+        assert!(d.reason().contains("lacks trusted schema_write"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn migration_allowed_for_maintainer_with_schema_write_and_collection_grant() {
+        // review 143 (FIX 1, the allow polarity): a Maintainer WITH schema_write AND
+        // db.write on the collection has both grants the migration needs, so it applies.
+        let trusted = member(Role::Maintainer, &["expenses"], true);
+        let d = authorize_remote_op(&trusted, None, &migration_env("expenses"));
+        assert!(d.is_allow(), "a maintainer with schema_write + db.write applies the migration: {}", d.reason());
+        assert!(d.reason().contains("schema_write"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn migration_denied_for_owner_outside_db_write_scope() {
+        // Even an Owner WITH schema_write is denied when the trusted db.write does NOT
+        // cover the migrated collection: a migration needs BOTH grants (the collection
+        // write AND schema-change authority), not just schema authority.
+        let trusted = member(Role::Owner, &["notes"], true);
+        let d = authorize_remote_op(&trusted, None, &migration_env("expenses"));
+        assert!(!d.is_allow(), "an owner without db.write on the collection is denied");
+        assert!(d.reason().contains("does not include expenses"), "reason: {}", d.reason());
+    }
+
+    #[test]
     fn schema_write_claim_on_record_write_rejected_as_escalation() {
         // An editor trusted to write `tasks` but WITHOUT schema_write smuggles a
         // `schema_write: true` claim into a record insert. The schema-grant check
@@ -560,6 +662,7 @@ mod tests {
             record_ids: vec!["rec-1".to_string()],
             schema_id: None,
             schema_version: Some(1),
+            is_migration: false,
         };
         // Even an owner with wildcard db.write is denied when the envelope names
         // no collection: the apply path/audit must have a concrete resource.
@@ -581,6 +684,7 @@ mod tests {
             record_ids: vec![],
             schema_id: None,
             schema_version: Some(1),
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &env);
         assert!(!d.is_allow());
@@ -598,6 +702,7 @@ mod tests {
             record_ids: vec!["".to_string(), "   ".to_string()],
             schema_id: None,
             schema_version: Some(1),
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &env);
         assert!(!d.is_allow());
@@ -617,6 +722,7 @@ mod tests {
             record_ids: vec!["t1".to_string(), "t2".to_string()],
             schema_id: None,
             schema_version: None,
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &env);
         assert!(d.is_allow(), "a multi-record group is well-formed: {}", d.reason());
@@ -633,6 +739,7 @@ mod tests {
             record_ids: vec![],
             schema_id: None,
             schema_version: Some(2),
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &no_id);
         assert!(!d.is_allow());
@@ -645,6 +752,7 @@ mod tests {
             record_ids: vec![],
             schema_id: Some("tasks".to_string()),
             schema_version: None,
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &no_version);
         assert!(!d.is_allow());
@@ -662,6 +770,7 @@ mod tests {
             record_ids: vec![],
             schema_id: Some("tasks".to_string()),
             schema_version: Some(2),
+            is_migration: false,
         };
         let d = authorize_remote_op(&trusted, None, &mismatch);
         assert!(!d.is_allow());

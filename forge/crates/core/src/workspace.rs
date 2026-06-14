@@ -77,7 +77,12 @@ const SYNC_MEMBERSHIP_KEY: &str = "sync_membership";
 /// workspace file, so the registry is loaded on [`WorkspaceCore::open`] /
 /// [`in_memory`](WorkspaceCore::in_memory) the same way the `db.read` grant table
 /// is (it mirrors [`load_db_read_grants`]).
-const SCHEMA_REGISTRY_KEY: &str = "schema_registry";
+///
+/// Re-exported from `forge_storage` (one source of truth) because the DL-13 sync
+/// receiver evolves the SAME persisted registry inside the migration import
+/// transaction (review 143): if the two crates spelled this key differently, a synced
+/// registry change would land under a key the open-time loader never reads.
+const SCHEMA_REGISTRY_KEY: &str = forge_storage::SCHEMA_REGISTRY_KEY;
 
 /// An applet's dispatch lifecycle for the interactive UI loop (UI-4/CR-6).
 ///
@@ -518,7 +523,7 @@ impl WorkspaceCore {
             ..
         } = other;
 
-        forge_sync::sync_stores_authorized(
+        let report = forge_sync::sync_stores_authorized(
             self_store,
             self_indexes,
             other_store,
@@ -543,7 +548,35 @@ impl WorkspaceCore {
                     authorize_incoming_op(self_membership, self_events, actor, envelope)
                 }
             },
-        )
+        )?;
+
+        // DL-13 review 143: an authorized migration chunk evolved the RECEIVER's
+        // PERSISTED `SchemaRegistry` (and `schema_version`) inside the import txn — but
+        // each side's IN-MEMORY `registry` handle (loaded at open) is now stale. The
+        // exchange is symmetric, so EITHER peer may have received a migration; reload
+        // both in-memory registries from their stores so `registry()` reflects the
+        // synced schema, and rebuild each index manager from its refreshed registry so a
+        // newly-indexed field reconstructed on the receiver becomes a live planner
+        // candidate (mirrors `from_store`'s open-time reconstruction). This is the only
+        // mutation outside the import txn, and it cannot diverge from the durable state:
+        // it re-derives the in-memory handles purely FROM the just-committed store.
+        self.refresh_schema_from_store()?;
+        other.refresh_schema_from_store()?;
+        Ok(report)
+    }
+
+    /// Reload this workspace's in-memory [`SchemaRegistry`] and rebuild its
+    /// [`IndexManager`] purely from the persisted store (DL-13 review 143). Called
+    /// after [`sync_with`](Self::sync_with) so an authorized migration chunk that
+    /// evolved the persisted registry + `schema_version` inside the import transaction
+    /// is reflected in `registry()` and in the active index set, instead of leaving the
+    /// receiver running validation / index reconstruction / later schema changes
+    /// against a stale registry. Re-derives the handles from the just-committed durable
+    /// state, so it can never drift from it (mirrors [`from_store`]'s open-time load).
+    fn refresh_schema_from_store(&mut self) -> Result<()> {
+        self.registry = load_schema_registry(&self.store)?;
+        self.indexes = rebuild_indexes_from_registry(&self.store, &self.registry)?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------- dispatch
@@ -724,10 +757,13 @@ fn authorize_incoming_op(
 
 /// Translate the [`forge_sync`] op envelope (recovered at the apply boundary from
 /// the origin's oplog + the chunk's `doc_id`) into the pure-decision
-/// [`RemoteOpEnvelope`] the authorizer consumes. M0b chunk sync carries only
-/// record ops; the FULL list of touched record ids is threaded through so the
-/// envelope-metadata gate (`forge/spec/sync-rbac.md` line 90) sees a concrete
-/// record identity and the collection grant gates the chunk as a whole.
+/// [`RemoteOpEnvelope`] the authorizer consumes. M0b chunk sync carries record ops
+/// AND DL-13 migration chunks; the FULL list of touched record ids is threaded
+/// through so the envelope-metadata gate (`forge/spec/sync-rbac.md` line 90) sees a
+/// concrete record identity and the collection grant gates the chunk as a whole. A
+/// migration chunk additionally carries its target `schema_version`, which is
+/// threaded through (NOT dropped — review 143) and flips `is_migration` so the
+/// authorizer requires schema-change authority on top of the record-write grant.
 ///
 /// `record_ids` is the WHOLE recovered list, trimmed and with any blank entry
 /// dropped (`review 093`): a single-record op carries exactly one; a multi-record
@@ -772,7 +808,14 @@ fn remote_op_envelope_from_sync(env: &forge_sync::SyncOpEnvelope) -> RemoteOpEnv
             .map(String::from)
             .collect(),
         schema_id: None,
-        schema_version: None,
+        // Carry the migration's target `schema_version` THROUGH the envelope instead
+        // of dropping it (review 143): a chunk that carries `schema_version: Some(_)`
+        // is a DL-13 migration, and the authorizer gates it as a SCHEMA CHANGE — it
+        // needs the collection `db.write` grant AND schema-change authority
+        // (Owner/Maintainer + `schema_write`), not a plain record write. An ordinary
+        // record-write chunk carries `None` and is gated by `db.write` alone.
+        schema_version: env.schema_version,
+        is_migration: env.schema_version.is_some(),
     }
 }
 
@@ -892,6 +935,7 @@ mod remote_envelope_tests {
             origin_source: None,
             malformed: None,
             schema_version: None,
+            registry_collection: None,
         }
     }
 
@@ -911,7 +955,37 @@ mod remote_envelope_tests {
         assert_eq!(env.collection.as_deref(), Some("tasks"));
         assert_eq!(env.record_ids, vec!["t1".to_string()]);
         assert_eq!(env.op, RemoteOp::Insert);
+        assert!(!env.is_migration, "an ordinary record write is not a migration");
+        assert_eq!(env.schema_version, None);
         // A trusted owner applies it (the gate sees a concrete record id).
+        assert!(authorize_remote_op(&owner(), None, &env).is_allow());
+    }
+
+    #[test]
+    fn migration_chunk_translates_to_a_schema_affecting_envelope() {
+        // review 143: a sync chunk that carries a migration `schema_version` is a
+        // SCHEMA-AFFECTING op. The translation threads the version through (NOT dropped)
+        // and flips `is_migration`, so the authorizer gates it as a schema change — an
+        // editor with only db.write is DENIED, an owner with schema_write applies it.
+        let mut sync = sync_env(SyncRecordOp::Write, "expenses", &["e1"]);
+        sync.schema_version = Some(2);
+        let env = remote_op_envelope_from_sync(&sync);
+        assert!(env.is_migration, "a chunk carrying a schema_version is a migration");
+        assert_eq!(env.schema_version, Some(2), "the migration target version is threaded, not dropped");
+
+        // An editor with only db.write on the collection is denied (FIX-1 polarity).
+        let editor = TrustedMembership {
+            actor_id: "actor-editor".into(),
+            role: Role::Editor,
+            db_read: vec!["*".into()],
+            db_write: vec!["expenses".into()],
+            schema_write: false,
+        };
+        assert!(
+            !authorize_remote_op(&editor, None, &env).is_allow(),
+            "an editor with only db.write must not apply a migration chunk"
+        );
+        // An owner with wildcard db.write + schema_write applies it.
         assert!(authorize_remote_op(&owner(), None, &env).is_allow());
     }
 

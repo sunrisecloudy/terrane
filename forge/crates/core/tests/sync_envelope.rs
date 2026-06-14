@@ -68,6 +68,9 @@ fn parse_envelope(env: &Value) -> RemoteOpEnvelope {
             .unwrap_or_default(),
         schema_id: env.get("schema_id").and_then(|v| v.as_str()).map(String::from),
         schema_version: env.get("schema_version").and_then(|v| v.as_u64()),
+        // Not a migration unless a vector explicitly flags it; these envelope vectors
+        // model plain record / schema ops, so default `false` (review 143).
+        is_migration: env.get("is_migration").and_then(|v| v.as_bool()).unwrap_or(false),
     }
 }
 

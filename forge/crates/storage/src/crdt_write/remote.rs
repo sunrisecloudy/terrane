@@ -7,8 +7,11 @@ use super::chunk_storage::OptionalRow;
 use super::oplog::{append_op_tx, chunk_id_lamport, OplogPayload};
 use super::rebuild::rebuild_projection_tx;
 use crate::index::IndexManager;
+use crate::kv::{kv_get_tx, kv_set_tx};
+use crate::migration::{advance_schema_version_if_newer_tx, META_NS, SCHEMA_REGISTRY_KEY};
 use crate::{map_sql, now_ms, Store};
 use forge_domain::{CoreError, Result};
+use forge_schema::{CollectionDef, SchemaRegistry};
 use rusqlite::params;
 
 impl Store {
@@ -99,6 +102,17 @@ pub struct RemoteChunk {
     /// origin's per-chunk migration oplog row; never widens authorization (the chunk
     /// is still gated as a record write against its `record_ids`).
     pub schema_version: Option<u64>,
+    /// `Some(entry)` when this DL-13 migration chunk also carries the affected
+    /// collection's EVOLVED registry entry (a serialized `forge_schema::CollectionDef`),
+    /// so an authorized receiver evolves its `SchemaRegistry` IN THE SAME txn as the
+    /// chunk import + `schema_version` advance — the registry is a CRDT document that
+    /// syncs with the migration, never drifting behind the data it describes
+    /// (prd-merged/02:15, review 143). Recovered by the sync seam from the per-chunk
+    /// migration oplog row's `registry_collection` field. `None` for an ordinary
+    /// record-write chunk (and for a migration driven without a registry change). It
+    /// never widens authorization: the caller authorizes the migration as a schema
+    /// change (Owner/Maintainer + `schema_write`) BEFORE the chunk is staged for import.
+    pub registry_collection: Option<serde_json::Value>,
 }
 
 /// Import ONE remote chunk inside an open transaction: append-only insert into
@@ -127,6 +141,7 @@ pub(crate) fn import_remote_chunk_tx(
         author_actor_id,
         record_ids,
         schema_version,
+        registry_collection,
     } = chunk;
     let existing: Option<(String, Vec<u8>)> = tx
         .query_row(
@@ -198,7 +213,81 @@ pub(crate) fn import_remote_chunk_tx(
     // converged peer, or one that authored the same migration locally), never an
     // error — so a re-sync stays a pure no-op.
     if let Some(to) = schema_version {
-        crate::migration::advance_schema_version_if_newer_tx(tx, *to)?;
+        // DL-13 review 143: a migration chunk ALSO carries the affected collection's
+        // evolved registry entry. Evolve the receiver's persisted `SchemaRegistry` in
+        // lockstep with the version advance — IN THIS SAME txn — so the registry never
+        // drifts behind the migrated data: after import the receiver's records,
+        // `schema_version`, AND registry all agree, and a failed import (e.g. a
+        // malformed carried entry, or a later rebuild rejection) rolls ALL of it back
+        // together. The advance is applied ONLY when the version actually moves
+        // forward, so a converged / already-migrated receiver re-merges nothing.
+        let advanced = advance_schema_version_if_newer_tx(tx, *to)?;
+        if advanced {
+            if let Some(registry_collection) = registry_collection {
+                evolve_registry_collection_tx(tx, registry_collection)?;
+            }
+        }
     }
     Ok(true)
+}
+
+/// Evolve the receiver's persisted `SchemaRegistry` with the affected collection's
+/// EVOLVED entry carried by an authorized DL-13 migration chunk, IN THE caller's
+/// import transaction (review 143). Reads the persisted registry JSON (default empty),
+/// deserializes the carried `CollectionDef`, merges it via
+/// [`SchemaRegistry::sync_collection`] (replace-or-insert + re-validate), and writes
+/// the merged registry back under `__forge/meta`/`schema_registry`.
+///
+/// Because this runs inside the same transaction as the chunk insert + the
+/// `schema_version` advance, the registry, the records, and the version commit (or
+/// roll back) TOGETHER — no drift window. A malformed carried entry (or a registry
+/// that fails re-validation) returns a typed error that rolls the whole import back,
+/// so the receiver never persists a structurally-invalid schema or a version ahead of
+/// its registry. The migration was already authorized as a schema change
+/// (Owner/Maintainer + `schema_write`) before its chunk was staged, so this seam is
+/// reached only for a trusted, schema-authorized peer.
+fn evolve_registry_collection_tx(
+    tx: &rusqlite::Transaction<'_>,
+    registry_collection: &serde_json::Value,
+) -> Result<()> {
+    // The carried entry is `{ "name": <collection>, "collection": <CollectionDef> }`
+    // so the receiver knows which collection to replace without re-deriving the name.
+    let name = registry_collection
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            CoreError::SchemaCompatibilityError(
+                "migration registry_collection is missing the collection name".into(),
+            )
+        })?;
+    let collection_value = registry_collection.get("collection").ok_or_else(|| {
+        CoreError::SchemaCompatibilityError(
+            "migration registry_collection is missing the collection definition".into(),
+        )
+    })?;
+    let collection: CollectionDef = serde_json::from_value(collection_value.clone())
+        .map_err(|e| {
+            CoreError::SchemaCompatibilityError(format!(
+                "migration registry_collection is not a valid collection definition: {e}"
+            ))
+        })?;
+
+    // Load the persisted registry (default empty for a fresh receiver), re-validating
+    // it so a corrupt persisted registry surfaces here rather than being silently
+    // merged into.
+    let mut registry = match kv_get_tx(tx, META_NS, SCHEMA_REGISTRY_KEY)? {
+        Some(bytes) => {
+            let parsed: SchemaRegistry = serde_json::from_slice(&bytes).map_err(|e| {
+                CoreError::StorageError(format!("deserialize schema registry on sync apply: {e}"))
+            })?;
+            parsed.validated()?
+        }
+        None => SchemaRegistry::new(),
+    };
+    registry.sync_collection(name, collection)?;
+
+    let bytes = serde_json::to_vec(&registry).map_err(|e| {
+        CoreError::StorageError(format!("serialize schema registry on sync apply: {e}"))
+    })?;
+    kv_set_tx(tx, META_NS, SCHEMA_REGISTRY_KEY, &bytes, "application/json")
 }

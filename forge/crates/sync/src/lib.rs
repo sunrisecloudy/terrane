@@ -137,10 +137,18 @@ pub struct SyncOpEnvelope {
     /// version it advances the receiver to (review 139). Recovered from the origin's
     /// per-chunk migration oplog row and threaded onto the staged [`RemoteChunk`], so
     /// an authorized import advances the receiver's `schema_version` to `to` in the
-    /// SAME txn as the chunk import — no version drift. It does NOT widen
-    /// authorization: the chunk is still gated as a record write against `record_ids`.
-    /// `None` for an ordinary record-write chunk.
+    /// SAME txn as the chunk import — no version drift. A migration chunk (i.e.
+    /// `schema_version.is_some()`) is a SCHEMA-AFFECTING op: the receiver's authorizer
+    /// gates it as a SCHEMA CHANGE requiring BOTH the collection `db.write` grant AND
+    /// schema-change authority (Owner/Maintainer + `schema_write`), not a plain record
+    /// write (review 143). `None` for an ordinary record-write chunk.
     pub schema_version: Option<u64>,
+    /// `Some(entry)` when a DL-13 migration chunk also carries the affected
+    /// collection's EVOLVED registry entry (`{name, collection}`), so an authorized
+    /// receiver evolves its `SchemaRegistry` in lockstep with the version advance
+    /// (review 143). Threaded onto the staged [`RemoteChunk`]. `None` for an ordinary
+    /// record-write chunk (and for a migration driven without a registry change).
+    pub registry_collection: Option<serde_json::Value>,
 }
 
 /// The resource an incoming chunk targets. M0b chunk sync only carries records.
@@ -233,6 +241,12 @@ struct OplogEntry {
     /// to `to` on import, never staying behind while it materializes migrated values
     /// (review 139). `None` for an ordinary record-write chunk.
     schema_version: Option<u64>,
+    /// `Some(entry)` when a DL-13 migration chunk's per-chunk oplog row carried the
+    /// affected collection's EVOLVED registry entry (`registry_collection`). Threaded
+    /// onto the staged [`RemoteChunk`] so an authorized receiver evolves its
+    /// `SchemaRegistry` in lockstep with the version advance (review 143). `None` for
+    /// an ordinary record-write chunk (and for a migration without a registry change).
+    registry_collection: Option<serde_json::Value>,
 }
 
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
@@ -285,12 +299,21 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
         // pair it advances; recover the `to` target so the staged chunk can advance a
         // receiver's `schema_version` on import (review 139). Only the migration kind
         // names a `to` field, so an ordinary record-write row leaves this `None`.
-        let schema_version = if op.kind == "schema.migration" {
-            payload
-                .as_ref()
-                .and_then(|v| v.get("to").and_then(serde_json::Value::as_u64))
+        let (schema_version, registry_collection) = if op.kind == "schema.migration" {
+            (
+                payload
+                    .as_ref()
+                    .and_then(|v| v.get("to").and_then(serde_json::Value::as_u64)),
+                // The affected collection's evolved registry entry, recovered so an
+                // authorized receiver evolves its SchemaRegistry in lockstep (review
+                // 143). Absent on a migration the sender drove without a registry change.
+                payload
+                    .as_ref()
+                    .and_then(|v| v.get("registry_collection"))
+                    .cloned(),
+            )
         } else {
-            None
+            (None, None)
         };
         out.insert(
             op.op_id,
@@ -300,6 +323,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
                 is_remote_import,
                 origin_source,
                 schema_version,
+                registry_collection,
             },
         );
     }
@@ -335,26 +359,28 @@ fn envelope_for_chunk(
         )),
     };
     let op_id = format!("{doc_id}#{local_id}");
-    let (op, record_ids, origin_source, schema_version) = match oplog.get(&op_id) {
-        Some(entry) => {
-            // A relayed chunk whose original author is unrecoverable cannot be
-            // attributed to the relay — fail it closed (`review 092 #1`). Only the
-            // first defect is surfaced, so a malformed doc id still takes priority.
-            if entry.is_remote_import && entry.origin_source.is_none() && malformed.is_none() {
-                malformed = Some(format!(
-                    "forwarded chunk {op_id:?} has no recoverable original author \
-                     (record.remote_import without a usable source)"
-                ));
+    let (op, record_ids, origin_source, schema_version, registry_collection) =
+        match oplog.get(&op_id) {
+            Some(entry) => {
+                // A relayed chunk whose original author is unrecoverable cannot be
+                // attributed to the relay — fail it closed (`review 092 #1`). Only the
+                // first defect is surfaced, so a malformed doc id still takes priority.
+                if entry.is_remote_import && entry.origin_source.is_none() && malformed.is_none() {
+                    malformed = Some(format!(
+                        "forwarded chunk {op_id:?} has no recoverable original author \
+                         (record.remote_import without a usable source)"
+                    ));
+                }
+                (
+                    op_from_kind(&entry.kind),
+                    entry.record_ids.clone(),
+                    entry.origin_source.clone(),
+                    entry.schema_version,
+                    entry.registry_collection.clone(),
+                )
             }
-            (
-                op_from_kind(&entry.kind),
-                entry.record_ids.clone(),
-                entry.origin_source.clone(),
-                entry.schema_version,
-            )
-        }
-        None => (SyncRecordOp::Write, Vec::new(), None, None),
-    };
+            None => (SyncRecordOp::Write, Vec::new(), None, None, None),
+        };
     SyncOpEnvelope {
         resource_type: SyncResource::Record,
         op,
@@ -363,6 +389,7 @@ fn envelope_for_chunk(
         origin_source,
         malformed,
         schema_version,
+        registry_collection,
     }
 }
 
@@ -430,6 +457,9 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
                 // A DL-13 migration chunk carries the version it advances the receiver
                 // to (review 139); an ordinary record-write chunk leaves this `None`.
                 schema_version: envelope.schema_version,
+                // ...and the affected collection's evolved registry entry, so an
+                // authorized receiver evolves its registry in lockstep (review 143).
+                registry_collection: envelope.registry_collection.clone(),
             },
             envelope,
         });

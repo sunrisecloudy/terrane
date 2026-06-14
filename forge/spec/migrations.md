@@ -188,6 +188,33 @@ pieces of metadata make it FIRST-CLASS on the sync path rather than dropped at a
    behind at the old `schema_version` — no version drift — and a failed import (e.g. a
    rebuild rejection) rolls the version advance back with the chunk.
 
-Authorization is NOT weakened: the migration chunk is gated as a record write against
-its migrated `record_ids` (the collection `db.write` grant decides), exactly like any
-other record write — there is no schema-grant escape hatch on the sync path.
+3. **The receiver evolves its schema registry in lockstep** (review 143). The per-chunk
+   migration row also carries the affected collection's EVOLVED registry entry
+   (`registry_collection = { name, collection }`, the post-change `CollectionDef`). On an
+   authorized import — and ONLY when the version actually advances — the receiver replaces
+   that collection's entry in its persisted `SchemaRegistry`, re-validates, and writes it
+   back IN THE SAME transaction as the chunk insert + `schema_version` advance. So after
+   sync the receiver's records, `schema_version`, registry, AND indexed-field
+   reconstruction (`collection_indexed_fields` keyed by `f_<name>`) all agree; the receiver
+   never sits at version N with N-shaped data under an N-1 (or empty) registry. The
+   in-memory registry handle + index manager are refreshed from the store after sync (see
+   `WorkspaceCore::sync_with`). The registry-as-CRDT-document direction (prd-merged/02:15)
+   is realized in M0a by carrying the migration's registry change with the chunk; a full
+   registry-as-CRDT vector merge (DL-11) is future work. A migration whose `from` version
+   does not match the receiver advances nothing (the monotone `to`-newer guard), so the
+   version never moves ahead of the registry.
+
+## 7. Migration authorization is a SCHEMA CHANGE (SS-7, review 143)
+
+A migration chunk is NOT a plain record write on the sync path: it advances the
+receiver's `schema_version` and evolves its registry, so it is a SCHEMA-AFFECTING op.
+The receiver's authorizer (`sync-rbac.md`) gates it as a schema change — it requires
+BOTH the collection `db.write` grant AND schema-change authority (Owner/Maintainer role
++ `schema_write = true`), exactly as a schema change at the command boundary does. An
+Editor trusted with only `db.write` on the collection may author ordinary record writes
+there, but a migration chunk it sends is DENIED — fail-closed, before any chunk import,
+version advance, or registry evolution. The schema-affecting signal is carried through
+the authorization envelope (the chunk's `schema_version`), never dropped, so the gate
+sees a migration as a migration. (This closes the review-143 RBAC bypass, where every
+synced chunk — including a migration — was translated to a plain `db.write` record op
+and an unauthorized Editor could bump a peer's schema.)

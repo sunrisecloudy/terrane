@@ -188,9 +188,10 @@ impl Store {
             author_actor_id: author_actor_id.map(str::to_string),
             record_ids: record_ids.iter().map(|s| s.trim().to_string()).collect(),
             // The public single-chunk import surface imports record-write chunks only;
-            // a DL-13 migration chunk's version advance rides the batch sync seam
-            // (review 139), so this path never carries one.
+            // a DL-13 migration chunk's version advance + registry evolution ride the
+            // batch sync seam (reviews 139/143), so this path never carries either.
             schema_version: None,
+            registry_collection: None,
         };
         // `apply_remote_chunks` reports the number of chunks newly imported (0 or 1
         // for a single chunk); map it back to this API's was-newly-written boolean.

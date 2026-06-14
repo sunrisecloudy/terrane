@@ -284,6 +284,43 @@ impl SchemaRegistry {
         })
     }
 
+    /// Merge an evolved [`CollectionDef`] for `name` carried with a DL-13 migration
+    /// chunk across the sync boundary (review 143). prd-merged/02:15: the schema
+    /// registry is a CRDT document that syncs like data; the M0a step is that a
+    /// migration carries the affected collection's evolved entry so the receiver
+    /// evolves its registry in lockstep with the migrated records + `schema_version`.
+    ///
+    /// The carried entry REPLACES the local collection of the same name (or inserts
+    /// it when absent), then the merged registry is re-validated via
+    /// [`Self::validated`] so a malformed entry rejects rather than corrupting the
+    /// schema. This is the receiver-side seam called inside the same transaction as
+    /// the chunk import + version advance, so the registry never drifts behind the
+    /// data it describes. The caller has already authorized the migration as a
+    /// schema change (Owner/Maintainer + `schema_write`), so this is reached only
+    /// for a trusted, schema-authorized peer.
+    ///
+    /// M0a scope (see `forge/spec/migrations.md` §7): this carries the affected
+    /// collection's evolved entry, not a full registry-as-CRDT-document vector merge
+    /// (DL-11) — that is future work. Replacing the whole collection is sound here
+    /// because the sender drove the change additively from the SAME base the
+    /// receiver is at (the migration's `from` version gates the apply), so the
+    /// carried entry is a forward evolution of the receiver's collection.
+    pub fn sync_collection(&mut self, name: &str, collection: CollectionDef) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(CoreError::ValidationError(
+                "sync_collection: empty collection name".into(),
+            ));
+        }
+        self.collections.insert(name.to_string(), collection);
+        // Re-validate the merged registry so a malformed carried entry is rejected
+        // (and, under the receiver's import transaction, rolls the whole import back)
+        // rather than persisting a structurally-invalid schema.
+        for col in self.collections.values() {
+            col.validate_invariants().map_err(CoreError::SchemaCompatibilityError)?;
+        }
+        Ok(())
+    }
+
     // -------------------------------------------------------------- validation
 
     /// Validate a record against `collection`'s schema (DL-12 validate-on-write).

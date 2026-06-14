@@ -393,11 +393,18 @@ fn write_collection_bucket_tx(
 /// A record whose value the transform leaves byte-identical still re-exports as a
 /// no-op delta; only genuinely changed records add ops, keeping the chunk minimal
 /// and rebuild byte-equal.
+///
+/// `registry_collection` is the affected collection's EVOLVED registry entry (a
+/// serialized `forge_schema::CollectionDef`), carried into the per-chunk migration
+/// oplog row so an authorized receiver evolves its `SchemaRegistry` in lockstep with
+/// the migrated records + `schema_version` (review 143). `None` for a migration the
+/// caller drives without a registry change (e.g. the storage unit tests).
 pub(crate) fn migrate_collection_records_crdt_tx(
     tx: &rusqlite::Transaction<'_>,
     descriptor: &MigrationDescriptor,
     peer_id: u64,
     indexes: &IndexManager,
+    registry_collection: Option<&serde_json::Value>,
 ) -> Result<Vec<String>> {
     let collection = descriptor.collection.as_str();
     let doc_id = collection_doc_id(collection);
@@ -445,6 +452,10 @@ pub(crate) fn migrate_collection_records_crdt_tx(
         record_ids.clone(),
         descriptor.from_schema_version,
         descriptor.to_schema_version,
+        // The affected collection's evolved registry entry (review 143), so an
+        // authorized receiver evolves its SchemaRegistry in lockstep with the migrated
+        // records + version. `None` for a migration driven without a registry change.
+        registry_collection.cloned(),
     )
     .encode("migration chunk oplog payload encode")?;
     append_op_tx(

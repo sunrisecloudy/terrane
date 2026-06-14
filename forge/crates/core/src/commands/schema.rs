@@ -107,6 +107,17 @@ impl WorkspaceCore {
         // snapshot it before the tx and `restore` on failure (review 142 P2).
         let current = self.store.schema_version()?;
         let descriptor = migration_for_change(&change, &self.registry, &next, cmd, current)?;
+        // DL-13 review 143: when this change drives a record migration, carry the
+        // affected collection's EVOLVED registry entry onto the migration chunk so an
+        // authorized receiver evolves its SchemaRegistry in lockstep (the registry is a
+        // CRDT document that syncs with the migration — prd-merged/02:15). The entry is
+        // `{ name, collection }` taken from the CANDIDATE registry `next` (the
+        // post-change state), serialized once here; `None` when no migration runs (a
+        // no-record-transform change carries no chunk to ride).
+        let migration_registry_collection = descriptor
+            .as_ref()
+            .map(|d| registry_collection_entry(&next, &d.collection))
+            .transpose()?;
         let registry_bytes = serde_json::to_vec(&next)
             .map_err(|e| CoreError::StorageError(format!("serialize schema registry: {e}")))?;
         let peer_id = self.store.crdt_peer_id();
@@ -159,8 +170,17 @@ impl WorkspaceCore {
             // projection so the new index is populated either way.
             let migrated = match &descriptor {
                 Some(descriptor) => {
-                    let outcome =
-                        forge_storage::apply_migration_in_tx(tx, descriptor, peer_id, indexes)?;
+                    let outcome = forge_storage::apply_migration_in_tx(
+                        tx,
+                        descriptor,
+                        peer_id,
+                        indexes,
+                        // Carry the evolved collection entry onto the migration chunk so
+                        // an authorized receiver evolves its registry in lockstep (review
+                        // 143). The same entry is persisted locally via the registry
+                        // kv_set below; both commit/roll-back together in this one txn.
+                        migration_registry_collection.as_ref(),
+                    )?;
                     outcome.migrated_records
                 }
                 None => {
@@ -350,6 +370,27 @@ impl WorkspaceCore {
 /// serialization failure should reject BEFORE the tx opens).
 fn persist_registry_tx(tx: &forge_storage::Transaction<'_>, bytes: &[u8]) -> Result<()> {
     kv_set_tx(tx, META_NS, SCHEMA_REGISTRY_KEY, bytes, "application/json")
+}
+
+/// Build the migration's carried registry entry for `collection` from the CANDIDATE
+/// (post-change) registry: `{ "name": <collection>, "collection": <CollectionDef> }`
+/// (DL-13 review 143). The migration chunk carries this so an authorized receiver
+/// evolves its `SchemaRegistry` in lockstep with the migrated records + version,
+/// instead of leaving the receiver at version N with N-shaped data under an N-1
+/// registry (the registry-drift this closes). Naming the collection explicitly lets
+/// the receiver replace exactly that entry without re-deriving the name from the
+/// chunk's doc id. The collection MUST exist in `next` (the change just evolved it),
+/// so an absent entry is a `ValidationError` rather than a silently dropped carry.
+fn registry_collection_entry(next: &SchemaRegistry, collection: &str) -> Result<serde_json::Value> {
+    let col = next.collection(collection).ok_or_else(|| {
+        CoreError::ValidationError(format!(
+            "schema.apply_change: migrated collection {collection:?} not found in the evolved registry"
+        ))
+    })?;
+    let collection_value = serde_json::to_value(col).map_err(|e| {
+        CoreError::StorageError(format!("serialize migrated collection {collection:?}: {e}"))
+    })?;
+    Ok(serde_json::json!({ "name": collection, "collection": collection_value }))
 }
 
 /// Every `(collection, field_id, kind)` the registry declares as `indexed`,

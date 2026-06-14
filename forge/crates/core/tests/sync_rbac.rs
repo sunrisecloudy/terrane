@@ -103,6 +103,12 @@ fn parse_envelope(incoming: &Value) -> RemoteOpEnvelope {
             .unwrap_or_default(),
         schema_id: meta.get("schema_id").and_then(|v| v.as_str()).map(String::from),
         schema_version,
+        // The sync-rbac fixtures model schema changes via `resource_type: "schema"`,
+        // distinct from a DL-13 migration record-write; none is a migration, so this
+        // defaults `false` (an optional `is_migration` flag is honored for future
+        // vectors). A record-write fixture carrying a `schema_version` for the metadata
+        // gate stays a plain record write — only a migration chunk flips this (review 143).
+        is_migration: meta.get("is_migration").and_then(|v| v.as_bool()).unwrap_or(false),
     }
 }
 

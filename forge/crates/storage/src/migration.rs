@@ -29,6 +29,14 @@ pub const META_NS: &str = "__forge/meta";
 /// as utf-8 decimal text. Absent → schema version `1` (every workspace starts at 1).
 pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 
+/// The KV key (within [`META_NS`]) holding the persisted `SchemaRegistry` JSON (the
+/// dynamic schema; core's `WorkspaceCore` owns it). Kept in lockstep with core's
+/// `SCHEMA_REGISTRY_KEY` so the DL-13 sync receiver can evolve the SAME persisted
+/// registry inside the migration import transaction (review 143): a migration chunk
+/// carrying an evolved collection entry merges it here so the registry never drifts
+/// behind the migrated data.
+pub const SCHEMA_REGISTRY_KEY: &str = "schema_registry";
+
 /// The oplog `kind` for a recorded migration (DL-13 "migrations are oplog
 /// operations"). One op per `apply_migration` records the version bump, the
 /// collection, the transforms, and the affected record ids for replay.
@@ -107,7 +115,10 @@ impl Store {
         // Structural validation up front (pure; independent of any record).
         descriptor.validate()?;
         let peer_id = self.crdt_peer_id();
-        self.transact(|tx| apply_migration_tx(tx, descriptor, peer_id, indexes))
+        // No registry change carried for a direct `apply_migration` (the core's
+        // `schema.apply_change` carries one via `apply_migration_in_tx`; this seam is
+        // used by storage tests / tooling that migrate records without a registry).
+        self.transact(|tx| apply_migration_tx(tx, descriptor, peer_id, indexes, None))
     }
 }
 
@@ -140,14 +151,20 @@ pub fn advance_schema_version_tx(tx: &rusqlite::Transaction<'_>, to: u64) -> Res
 /// re-sync of a converged pair stays a pure no-op and the version never regresses.
 /// Runs in the SAME txn as the chunk import + projection rebuild, so the migrated
 /// values and the version advance commit (or roll back) together — no drift.
+///
+/// Returns `true` iff the version actually moved forward (it was newer), so the
+/// caller can perform the once-per-advance registry evolution (review 143) ONLY when
+/// the migration genuinely advances this receiver — never re-merging on a converged /
+/// already-migrated peer.
 pub(crate) fn advance_schema_version_if_newer_tx(
     tx: &rusqlite::Transaction<'_>,
     to: u64,
-) -> Result<()> {
+) -> Result<bool> {
     if to > read_schema_version_tx(tx)? {
         write_schema_version_tx(tx, to)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Apply a migration (DL-13) inside a caller-provided transaction — the tx-scoped
@@ -160,15 +177,22 @@ pub(crate) fn advance_schema_version_if_newer_tx(
 /// a failure in EITHER direction (a non-coercible value mid-migration OR a later
 /// registry kv_set error) rolls BOTH back, so the schema can never end up behind
 /// the data (or ahead of it). See [`Store::apply_migration`] for the body.
+///
+/// `registry_collection` is the affected collection's EVOLVED registry entry (a
+/// serialized `forge_schema::CollectionDef`) the core passes so the per-chunk
+/// migration oplog row carries it onto the sync path: an authorized receiver evolves
+/// its `SchemaRegistry` in lockstep with the migrated records + `schema_version`
+/// (review 143). `None` advances records + version only (no registry-carry).
 pub fn apply_migration_in_tx(
     tx: &rusqlite::Transaction<'_>,
     descriptor: &MigrationDescriptor,
     peer_id: u64,
     indexes: &IndexManager,
+    registry_collection: Option<&serde_json::Value>,
 ) -> Result<MigrationOutcome> {
     // Structural validation up front (pure; independent of any record).
     descriptor.validate()?;
-    apply_migration_tx(tx, descriptor, peer_id, indexes)
+    apply_migration_tx(tx, descriptor, peer_id, indexes, registry_collection)
 }
 
 /// The DL-13 migration body, inside a caller-provided transaction. Split out so
@@ -179,6 +203,7 @@ fn apply_migration_tx(
     descriptor: &MigrationDescriptor,
     peer_id: u64,
     indexes: &IndexManager,
+    registry_collection: Option<&serde_json::Value>,
 ) -> Result<MigrationOutcome> {
     let current = read_schema_version_tx(tx)?;
 
@@ -204,7 +229,8 @@ fn apply_migration_tx(
     // rebuild reproduces the migrated values instead of restoring the pre-migration
     // state (review 138 P1). The pure transform runs per record; a non-coercible
     // value propagates its typed error, rolling the whole tx back.
-    let record_ids = migrate_collection_records_crdt_tx(tx, descriptor, peer_id, indexes)?;
+    let record_ids =
+        migrate_collection_records_crdt_tx(tx, descriptor, peer_id, indexes, registry_collection)?;
     let migrated_records = record_ids.len();
 
     // (4) Record the migration in the oplog (DL-13 "migrations are oplog ops").

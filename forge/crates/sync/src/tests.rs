@@ -518,6 +518,7 @@ fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
             author_actor_id: None,
             record_ids: Vec::new(),
             schema_version: None,
+            registry_collection: None,
         })
         .collect();
     // The relay imports the chunk with an EMPTY source string: its `record.remote_import`
