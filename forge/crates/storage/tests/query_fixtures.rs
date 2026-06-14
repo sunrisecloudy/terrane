@@ -25,8 +25,7 @@ fn load(name: &str) -> serde_json::Value {
     let path = fixtures_dir().join(name);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()))
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()))
 }
 
 fn seed_store(fixture: &serde_json::Value) -> Store {
@@ -65,15 +64,22 @@ fn run_query_case(name: &str) {
     let fx = load(name);
     let store = seed_store(&fx);
     let plan = query_value(&fx).unwrap_or_else(|| panic!("{name}: no query plan"));
-    let query = Query::from_fixture_value(&plan)
-        .unwrap_or_else(|e| panic!("{name}: parse query: {e}"));
-    let result = store.query(&query).unwrap_or_else(|e| panic!("{name}: query: {e}"));
+    let query =
+        Query::from_fixture_value(&plan).unwrap_or_else(|e| panic!("{name}: parse query: {e}"));
+    let result = store
+        .query(&query)
+        .unwrap_or_else(|e| panic!("{name}: query: {e}"));
 
-    let expect = fx.get("expect").unwrap_or_else(|| panic!("{name}: no expect"));
+    let expect = fx
+        .get("expect")
+        .unwrap_or_else(|| panic!("{name}: no expect"));
 
     // Ordered ids.
     if let Some(ids) = expect.get("ids").and_then(|v| v.as_array()) {
-        let want: Vec<String> = ids.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let want: Vec<String> = ids
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
         assert_eq!(result.ids(), want, "{name}: ordered ids mismatch");
     }
 
@@ -108,13 +114,14 @@ fn run_query_case(name: &str) {
         };
         assert_eq!(got.len(), groups.len(), "{name}: group count");
         for (g, want) in got.iter().zip(groups) {
-            assert_eq!(
-                &g.key,
-                want.get("key").unwrap(),
-                "{name}: group key"
-            );
+            assert_eq!(&g.key, want.get("key").unwrap(), "{name}: group key");
             if let Some(s) = want.get("sum").and_then(|v| v.as_f64()) {
-                assert_eq!(g.aggregate.sum, Some(s), "{name}: group sum for {:?}", g.key);
+                assert_eq!(
+                    g.aggregate.sum,
+                    Some(s),
+                    "{name}: group sum for {:?}",
+                    g.key
+                );
             }
         }
     }
@@ -381,7 +388,9 @@ fn reject_ungranted_collection_is_a_caller_boundary() {
     let store = seed_store(&fx);
     let plan = query_value(&fx).expect("query plan");
     let query = Query::from_fixture_value(&plan).expect("parse query");
-    let result = store.query(&query).expect("storage runs the scan unguarded");
+    let result = store
+        .query(&query)
+        .expect("storage runs the scan unguarded");
     assert_eq!(
         result.ids(),
         vec!["secret_001".to_string()],

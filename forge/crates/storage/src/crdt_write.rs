@@ -59,19 +59,29 @@ fn oplog_kind(m: &Mutation) -> &'static str {
 }
 
 /// Mint the next immutable chunk id for `doc_id`. Ids are `chunk-NNNN`, zero-padded
-/// so lexical order matches insertion order (the `get_chunks` ordering tiebreak),
-/// and the sequence is the count of existing chunks + 1 so a re-run never collides
-/// with a prior chunk (append-only discipline, review 003). Computed inside the
+/// so lexical order matches insertion order (the `get_chunks` ordering tiebreak).
+/// The sequence advances past both ordinary chunks and compact snapshots so new
+/// writes after compaction never reuse an older frontier id. Computed inside the
 /// open transaction so it sees only committed chunks.
 fn next_chunk_id(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<String> {
-    let count: i64 = tx
-        .query_row(
-            "SELECT COUNT(*) FROM crdt_chunks WHERE doc_id = ?1",
-            params![doc_id],
-            |row| row.get(0),
-        )
+    let mut stmt = tx
+        .prepare("SELECT chunk_id FROM crdt_chunks WHERE doc_id = ?1")
         .map_err(map_sql)?;
-    Ok(format!("chunk-{:04}", count + 1))
+    let rows = stmt
+        .query_map(params![doc_id], |row| row.get::<_, String>(0))
+        .map_err(map_sql)?;
+    let mut max_seq = 0u64;
+    for row in rows {
+        let chunk_id = row.map_err(map_sql)?;
+        if let Some(seq) = chunk_id
+            .strip_prefix("chunk-")
+            .or_else(|| chunk_id.strip_prefix("compact-"))
+            .and_then(|n| n.parse::<u64>().ok())
+        {
+            max_seq = max_seq.max(seq);
+        }
+    }
+    Ok(format!("chunk-{:04}", max_seq + 1))
 }
 
 /// Append one immutable CRDT chunk inside an open transaction. Mirrors
@@ -632,7 +642,7 @@ pub(crate) fn import_remote_chunk_tx(
 /// or rolls back with whatever else the caller did in the same transaction. The
 /// shared engine behind [`Store::rebuild_projection`] and
 /// [`Store::apply_remote_chunks`].
-fn rebuild_projection_tx(
+pub(crate) fn rebuild_projection_tx(
     tx: &rusqlite::Transaction<'_>,
     peer_id: u64,
     indexes: &IndexManager,

@@ -219,7 +219,13 @@ impl IndexDef {
             IndexKind::Fts5 => "fts5",
         };
         let mut h: u64 = 0xcbf29ce484222325;
-        for part in [self.collection.as_str(), "\0", self.field_id.as_str(), "\0", kind] {
+        for part in [
+            self.collection.as_str(),
+            "\0",
+            self.field_id.as_str(),
+            "\0",
+            kind,
+        ] {
             for b in part.as_bytes() {
                 h ^= *b as u64;
                 h = h.wrapping_mul(0x100000001b3);
@@ -328,20 +334,13 @@ impl IndexManager {
     /// Register (or replace) an index definition. Replaces only the *same kind*
     /// for the field, so a `Value` and an `Fts` index over one field coexist.
     pub fn register(&mut self, def: IndexDef) {
-        self.defs.insert(
-            def_key(&def.collection, &def.field_id, def.kind),
-            def,
-        );
+        self.defs
+            .insert(def_key(&def.collection, &def.field_id, def.kind), def);
     }
 
     /// The registered definition for `(collection, field_id, kind)`, if any.
     /// Distinct kinds on the same field are separate entries.
-    pub fn get_kind(
-        &self,
-        collection: &str,
-        field_id: &str,
-        kind: IndexKind,
-    ) -> Option<&IndexDef> {
+    pub fn get_kind(&self, collection: &str, field_id: &str, kind: IndexKind) -> Option<&IndexDef> {
         self.defs.get(&def_key(collection, field_id, kind))
     }
 
@@ -478,9 +477,7 @@ impl IndexManager {
         data_json: &str,
     ) -> Result<()> {
         for def in self.defs.values() {
-            if def.collection != collection
-                || def.kind != IndexKind::Fts5
-                || !def.state.is_usable()
+            if def.collection != collection || def.kind != IndexKind::Fts5 || !def.state.is_usable()
             {
                 continue;
             }
@@ -516,9 +513,7 @@ impl IndexManager {
         record_id: &str,
     ) -> Result<()> {
         for def in self.defs.values() {
-            if def.collection != collection
-                || def.kind != IndexKind::Fts5
-                || !def.state.is_usable()
+            if def.collection != collection || def.kind != IndexKind::Fts5 || !def.state.is_usable()
             {
                 continue;
             }
@@ -575,7 +570,9 @@ impl IndexManager {
     /// Drop the physical structure for a definition (index or FTS table).
     fn drop_physical(&self, conn: &Connection, def: &IndexDef) -> Result<()> {
         let sql = match def.kind {
-            IndexKind::Expression => format!("DROP INDEX IF EXISTS {};", quote_ident(&def.index_id)),
+            IndexKind::Expression => {
+                format!("DROP INDEX IF EXISTS {};", quote_ident(&def.index_id))
+            }
             IndexKind::Fts5 => format!("DROP TABLE IF EXISTS {};", quote_ident(&def.index_id)),
         };
         conn.execute_batch(&sql)
@@ -593,10 +590,9 @@ impl IndexManager {
             .prepare(select)
             .map_err(|e| CoreError::StorageError(e.to_string()))?;
         let rows = stmt
-            .query_map(
-                rusqlite::params![json_path, def.collection],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-            )
+            .query_map(rusqlite::params![json_path, def.collection], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
             .map_err(|e| CoreError::StorageError(e.to_string()))?;
         let insert = format!(
             "INSERT INTO {} (record_id, value) VALUES (?1, ?2)",
@@ -623,9 +619,7 @@ impl IndexManager {
         query: &str,
     ) -> Result<Vec<String>> {
         let def = self.get_fts(collection, field_id).ok_or_else(|| {
-            CoreError::QueryError(format!(
-                "no FTS index for {collection}/{field_id}"
-            ))
+            CoreError::QueryError(format!("no FTS index for {collection}/{field_id}"))
         })?;
         let sql = format!(
             "SELECT record_id FROM {} WHERE {} MATCH ?1 ORDER BY rank",
@@ -915,18 +909,27 @@ mod tests {
 
     #[test]
     fn canonical_names_match_the_fixture_convention() {
-        let expr = IndexDef::new("tasks", "f_alice_1", IndexKind::Expression, IndexState::Active)
-            .unwrap();
+        let expr = IndexDef::new(
+            "tasks",
+            "f_alice_1",
+            IndexKind::Expression,
+            IndexState::Active,
+        )
+        .unwrap();
         assert_eq!(expr.index_id, "idx_records_tasks_f_alice_1");
-        let fts =
-            IndexDef::new("notes", "f_alice_0", IndexKind::Fts5, IndexState::Active).unwrap();
+        let fts = IndexDef::new("notes", "f_alice_0", IndexKind::Fts5, IndexState::Active).unwrap();
         assert_eq!(fts.index_id, "fts_records_notes_f_alice_0");
     }
 
     #[test]
     fn expression_ddl_is_collection_scoped_and_quoted() {
-        let def = IndexDef::new("tasks", "f_alice_1", IndexKind::Expression, IndexState::Active)
-            .unwrap();
+        let def = IndexDef::new(
+            "tasks",
+            "f_alice_1",
+            IndexKind::Expression,
+            IndexState::Active,
+        )
+        .unwrap();
         let ddl = def.ddl();
         assert!(ddl.contains("\"idx_records_tasks_f_alice_1\""));
         // The leaf field-id key is double-quoted in the JSON path so a dotted id
@@ -962,7 +965,13 @@ mod tests {
     fn plan_requires_active_state_and_stable_id() {
         let mut mgr = IndexManager::new();
         mgr.register(
-            IndexDef::new("tasks", "f_alice_1", IndexKind::Expression, IndexState::Active).unwrap(),
+            IndexDef::new(
+                "tasks",
+                "f_alice_1",
+                IndexKind::Expression,
+                IndexState::Active,
+            )
+            .unwrap(),
         );
         // Stable-id equality over an active index uses it.
         let q = Query::from_fixture_value(&serde_json::json!({
@@ -972,7 +981,10 @@ mod tests {
         .unwrap();
         let plan = mgr.plan(&q, 3);
         assert!(plan.uses_index);
-        assert_eq!(plan.index_id.as_deref(), Some("idx_records_tasks_f_alice_1"));
+        assert_eq!(
+            plan.index_id.as_deref(),
+            Some("idx_records_tasks_f_alice_1")
+        );
         assert!(plan.warnings.is_empty());
 
         // A display-name predicate never matches an index by id -> no_index.
@@ -993,7 +1005,13 @@ mod tests {
         // uncovered branch surfaces a full_scan warning.
         let mut mgr = IndexManager::new();
         mgr.register(
-            IndexDef::new("tasks", "f_indexed", IndexKind::Expression, IndexState::Active).unwrap(),
+            IndexDef::new(
+                "tasks",
+                "f_indexed",
+                IndexKind::Expression,
+                IndexState::Active,
+            )
+            .unwrap(),
         );
         let q = Query::from_fixture_value(&serde_json::json!({
             "from": "tasks",
@@ -1004,7 +1022,10 @@ mod tests {
         }))
         .unwrap();
         let plan = mgr.plan(&q, 5);
-        assert!(!plan.uses_index, "an uncovered OR branch must not claim uses_index");
+        assert!(
+            !plan.uses_index,
+            "an uncovered OR branch must not claim uses_index"
+        );
         assert_eq!(plan.index_id, None);
         // Exactly one warning, for the uncovered field.
         assert_eq!(plan.warnings.len(), 1);
@@ -1019,7 +1040,13 @@ mod tests {
         // no warning.
         let mut mgr = IndexManager::new();
         mgr.register(
-            IndexDef::new("expenses", "f_amt", IndexKind::Expression, IndexState::Active).unwrap(),
+            IndexDef::new(
+                "expenses",
+                "f_amt",
+                IndexKind::Expression,
+                IndexState::Active,
+            )
+            .unwrap(),
         );
         let q = Query::from_fixture_value(&serde_json::json!({
             "from": "expenses",
@@ -1072,7 +1099,10 @@ mod tests {
         .unwrap();
         let p3 = mgr.plan(&q_id, 7);
         assert!(!p3.uses_index);
-        assert!(p3.warnings.is_empty(), "id sort uses the primary key, no warning");
+        assert!(
+            p3.warnings.is_empty(),
+            "id sort uses the primary key, no warning"
+        );
     }
 
     #[test]
@@ -1114,7 +1144,10 @@ mod tests {
         }))
         .unwrap();
         let plan = mgr.plan(&q, 4);
-        assert!(plan.uses_index, "the active FTS index still serves the match");
+        assert!(
+            plan.uses_index,
+            "the active FTS index still serves the match"
+        );
         assert_eq!(plan.index_id.as_deref(), Some("fts_records_notes_f_body"));
         // ...but the unindexed `tag` filter is reported, not masked.
         assert_eq!(plan.warnings.len(), 1, "the uncovered filter must warn");
@@ -1178,7 +1211,10 @@ mod tests {
         let empty = IndexManager::new();
         let p_missing = empty.plan(&q("f_body"), 3);
         assert!(!p_missing.uses_index);
-        assert_eq!(p_missing.warnings[0].reason, FullScanReason::FtsNotAvailable);
+        assert_eq!(
+            p_missing.warnings[0].reason,
+            FullScanReason::FtsNotAvailable
+        );
 
         // The three reasons are genuinely distinct.
         assert_ne!(p_dep.warnings[0].reason, p_stale.warnings[0].reason);
@@ -1268,14 +1304,29 @@ mod tests {
         .unwrap();
         let plan = mgr.plan(&q, 2);
         assert!(plan.uses_index);
-        assert_eq!(plan.index_id.as_deref(), Some("idx_records_events_f_alice_0"));
+        assert_eq!(
+            plan.index_id.as_deref(),
+            Some("idx_records_events_f_alice_0")
+        );
     }
 
     #[test]
     fn create_fts_index_populates_shadow_table_from_records() {
         let conn = records_conn();
-        seed(&conn, "notes", "n1", "f_alice_0", "offline rebuild keeps indexes honest");
-        seed(&conn, "notes", "n2", "f_alice_0", "lunch plans for the team");
+        seed(
+            &conn,
+            "notes",
+            "n1",
+            "f_alice_0",
+            "offline rebuild keeps indexes honest",
+        );
+        seed(
+            &conn,
+            "notes",
+            "n2",
+            "f_alice_0",
+            "lunch plans for the team",
+        );
         let mut mgr = IndexManager::new();
         let id = mgr
             .create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Fts)
@@ -1297,12 +1348,14 @@ mod tests {
         mgr.create_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
             .unwrap();
         assert!(index_exists(&conn, "idx_records_tasks_f_alice_1"));
-        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value).unwrap();
+        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
+            .unwrap();
         // Definition gone and physical index removed.
         assert!(mgr.get_expression("tasks", "f_alice_1").is_none());
         assert!(!index_exists(&conn, "idx_records_tasks_f_alice_1"));
         // Dropping again is a no-op (idempotent).
-        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value).unwrap();
+        mgr.drop_index(&conn, "tasks", "f_alice_1", CreateIndexKind::Value)
+            .unwrap();
     }
 
     #[test]
@@ -1336,7 +1389,13 @@ mod tests {
         // once. Keying by (collection, field_id, kind) keeps both; registering
         // the second kind must NOT overwrite the first.
         let conn = records_conn();
-        seed(&conn, "notes", "n1", "f_alice_0", "offline rebuild keeps indexes honest");
+        seed(
+            &conn,
+            "notes",
+            "n1",
+            "f_alice_0",
+            "offline rebuild keeps indexes honest",
+        );
         let mut mgr = IndexManager::new();
         mgr.create_index(&conn, "notes", "f_alice_0", CreateIndexKind::Value)
             .unwrap();
@@ -1350,8 +1409,14 @@ mod tests {
         assert_eq!(expr.state, IndexState::Active);
         let fts = mgr.get_fts("notes", "f_alice_0").unwrap();
         assert_eq!(fts.kind, IndexKind::Fts5);
-        assert!(index_exists(&conn, "idx_records_notes_f_alice_0"), "value index present");
-        assert!(table_exists(&conn, "fts_records_notes_f_alice_0"), "fts table present");
+        assert!(
+            index_exists(&conn, "idx_records_notes_f_alice_0"),
+            "value index present"
+        );
+        assert!(
+            table_exists(&conn, "fts_records_notes_f_alice_0"),
+            "fts table present"
+        );
 
         // The expression index serves an equality predicate...
         let q = Query::from_fixture_value(&serde_json::json!({
@@ -1361,7 +1426,10 @@ mod tests {
         .unwrap();
         let plan = mgr.plan(&q, 1);
         assert!(plan.uses_index);
-        assert_eq!(plan.index_id.as_deref(), Some("idx_records_notes_f_alice_0"));
+        assert_eq!(
+            plan.index_id.as_deref(),
+            Some("idx_records_notes_f_alice_0")
+        );
         // ...and the FTS table still answers a text search.
         let qt = Query::from_fixture_value(&serde_json::json!({
             "from": "notes",
@@ -1370,13 +1438,19 @@ mod tests {
         .unwrap();
         let plan_t = mgr.plan(&qt, 1);
         assert!(plan_t.uses_index);
-        assert_eq!(plan_t.index_id.as_deref(), Some("fts_records_notes_f_alice_0"));
+        assert_eq!(
+            plan_t.index_id.as_deref(),
+            Some("fts_records_notes_f_alice_0")
+        );
 
         // Dropping the Value index leaves the Fts index intact (targets one kind).
         mgr.drop_index(&conn, "notes", "f_alice_0", CreateIndexKind::Value)
             .unwrap();
         assert!(mgr.get_expression("notes", "f_alice_0").is_none());
-        assert!(mgr.get_fts("notes", "f_alice_0").is_some(), "fts survives value drop");
+        assert!(
+            mgr.get_fts("notes", "f_alice_0").is_some(),
+            "fts survives value drop"
+        );
         assert!(table_exists(&conn, "fts_records_notes_f_alice_0"));
     }
 
@@ -1417,7 +1491,8 @@ mod tests {
         mgr.sync_fts_for_record(&conn, "notes", "n1", &live("offline rebuild", false))
             .unwrap();
         assert_eq!(
-            mgr.fts_match(&conn, "notes", "f_alice_0", "offline").unwrap(),
+            mgr.fts_match(&conn, "notes", "f_alice_0", "offline")
+                .unwrap(),
             vec!["n1".to_string()]
         );
 
@@ -1425,7 +1500,10 @@ mod tests {
         // rows (the prior row is deleted before re-insert).
         mgr.sync_fts_for_record(&conn, "notes", "n1", &live("lunch plans", false))
             .unwrap();
-        assert!(mgr.fts_match(&conn, "notes", "f_alice_0", "offline").unwrap().is_empty());
+        assert!(mgr
+            .fts_match(&conn, "notes", "f_alice_0", "offline")
+            .unwrap()
+            .is_empty());
         assert_eq!(
             mgr.fts_match(&conn, "notes", "f_alice_0", "lunch").unwrap(),
             vec!["n1".to_string()]
@@ -1434,6 +1512,9 @@ mod tests {
         // Delete (tombstone): the record drops out of the FTS table entirely.
         mgr.sync_fts_for_record(&conn, "notes", "n1", &live("lunch plans", true))
             .unwrap();
-        assert!(mgr.fts_match(&conn, "notes", "f_alice_0", "lunch").unwrap().is_empty());
+        assert!(mgr
+            .fts_match(&conn, "notes", "f_alice_0", "lunch")
+            .unwrap()
+            .is_empty());
     }
 }

@@ -145,13 +145,13 @@ pub fn is_local_only_namespace(namespace: &str) -> bool {
     // `provider`, or `__device` (no trailing key) would otherwise slip past a
     // prefix-only check and be exported (review 061 P2).
     const LOCAL_ONLY_BUCKETS: &[&str] = &[
-        "secret",      // secret values
+        "secret", // secret values
         "secrets",
-        "provider",    // provider credentials / tokens
+        "provider", // provider credentials / tokens
         "credentials",
-        "device",      // device-local settings / window state
+        "device", // device-local settings / window state
         "__device",
-        "local",       // local window state / transient UI
+        "local", // local window state / transient UI
         "__local",
     ];
     LOCAL_ONLY_BUCKETS.iter().any(|bucket| {
@@ -383,7 +383,14 @@ impl Store {
     pub fn is_empty_target(&self) -> Result<bool> {
         // Any importable physical table with a row → not fresh. A single
         // `EXISTS`/`LIMIT 1` per table is enough (we only need presence).
-        for table in ["records", "crdt_chunks", "crdt_snapshots", "oplog", "runs", "run_logs"] {
+        for table in [
+            "records",
+            "crdt_chunks",
+            "crdt_snapshots",
+            "oplog",
+            "runs",
+            "run_logs",
+        ] {
             if table_has_any_row(&self.conn, table)? {
                 return Ok(false);
             }
@@ -514,15 +521,15 @@ fn validate_bundle_version(bundle: &Connection) -> Result<()> {
         .flatten();
     let bytes = raw.ok_or_else(|| {
         CoreError::StorageError(
-            "bundle is missing its export_format_version header; not a forge workspace export".into(),
+            "bundle is missing its export_format_version header; not a forge workspace export"
+                .into(),
         )
     })?;
-    let text = std::str::from_utf8(&bytes).map_err(|e| {
-        CoreError::StorageError(format!("export_format_version is not utf-8: {e}"))
-    })?;
-    let version: i64 = text.parse().map_err(|e| {
-        CoreError::StorageError(format!("export_format_version is malformed: {e}"))
-    })?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|e| CoreError::StorageError(format!("export_format_version is not utf-8: {e}")))?;
+    let version: i64 = text
+        .parse()
+        .map_err(|e| CoreError::StorageError(format!("export_format_version is malformed: {e}")))?;
     if version != EXPORT_FORMAT_VERSION {
         return Err(CoreError::StorageError(format!(
             "unsupported export_format_version {version}; this build understands {EXPORT_FORMAT_VERSION} \
@@ -538,7 +545,11 @@ fn validate_bundle_version(bundle: &Connection) -> Result<()> {
 fn write_meta_header(bundle: &Connection, options: &ExportOptions) -> Result<()> {
     // Deterministic key order. `set_meta` is a plain upsert into the bundle's
     // already-created `meta` table.
-    set_meta(bundle, "export_format_version", &EXPORT_FORMAT_VERSION.to_string())?;
+    set_meta(
+        bundle,
+        "export_format_version",
+        &EXPORT_FORMAT_VERSION.to_string(),
+    )?;
     set_meta(
         bundle,
         "forge_storage_schema_version",
@@ -597,7 +608,15 @@ fn copy_kv(src: &Connection, dst: &Connection) -> Result<()> {
             "INSERT INTO kv
                  (namespace, key, value, content_type, logical_version, updated_at, tombstone)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![namespace, key, value, content_type, logical_version, updated_at, tombstone],
+            params![
+                namespace,
+                key,
+                value,
+                content_type,
+                logical_version,
+                updated_at,
+                tombstone
+            ],
         )
         .map_err(map_sql)?;
     }
@@ -633,7 +652,15 @@ fn copy_oplog(src: &Connection, dst: &Connection) -> Result<()> {
             "INSERT INTO oplog
                  (op_id, actor_id, workspace_id, lamport, kind, payload, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![op_id, actor_id, workspace_id, lamport, kind, payload, created_at],
+            params![
+                op_id,
+                actor_id,
+                workspace_id,
+                lamport,
+                kind,
+                payload,
+                created_at
+            ],
         )
         .map_err(map_sql)?;
     }
@@ -713,9 +740,7 @@ fn copy_crdt_snapshots(src: &Connection, dst: &Connection) -> Result<()> {
 /// table from `crdt_chunks` so it is never trusted as input.
 fn copy_records(src: &Connection, dst: &Connection) -> Result<()> {
     let mut stmt = src
-        .prepare(
-            "SELECT collection, id, data, updated_at FROM records ORDER BY collection, id",
-        )
+        .prepare("SELECT collection, id, data, updated_at FROM records ORDER BY collection, id")
         .map_err(map_sql)?;
     let rows = stmt
         .query_map([], |row| {
@@ -898,10 +923,26 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         let mut idx = IndexManager::new();
         // Records via the CRDT write path (chunks + oplog + projection).
-        s.apply_mutation_crdt(&insert("notes", "n1", json!({"title": "Alpha", "body": "offline first"}), 1), &idx)
-            .unwrap();
-        s.apply_mutation_crdt(&insert("notes", "n2", json!({"title": "Beta", "body": "sync later"}), 2), &idx)
-            .unwrap();
+        s.apply_mutation_crdt(
+            &insert(
+                "notes",
+                "n1",
+                json!({"title": "Alpha", "body": "offline first"}),
+                1,
+            ),
+            &idx,
+        )
+        .unwrap();
+        s.apply_mutation_crdt(
+            &insert(
+                "notes",
+                "n2",
+                json!({"title": "Beta", "body": "sync later"}),
+                2,
+            ),
+            &idx,
+        )
+        .unwrap();
         s.apply_mutation_crdt(&patch("notes", "n1", json!({"pinned": true}), 3), &idx)
             .unwrap();
         s.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 4), &idx)
@@ -909,7 +950,8 @@ mod tests {
         // A record that is deleted in CRDT history (must not resurrect on import).
         s.apply_mutation_crdt(&insert("tasks", "t9", json!({"title": "Temp"}), 5), &idx)
             .unwrap();
-        s.apply_mutation_crdt(&delete("tasks", "t9", 6), &idx).unwrap();
+        s.apply_mutation_crdt(&delete("tasks", "t9", 6), &idx)
+            .unwrap();
 
         // An active value index over a stable field id (rebuilt on import).
         s.create_index(&mut idx, "notes", "f_title", CreateIndexKind::Value)
@@ -917,15 +959,34 @@ mod tests {
 
         // Portable kv: an applet manifest stand-in + ctx.storage namespace + the
         // workspace run counter (all portable workspace state).
-        s.kv_set("__forge/meta", "applet/notes", b"{\"manifest\":true}", "application/json")
+        s.kv_set(
+            "__forge/meta",
+            "applet/notes",
+            b"{\"manifest\":true}",
+            "application/json",
+        )
+        .unwrap();
+        s.kv_set("applet/notes", "draft", b"hello", "text/plain")
             .unwrap();
-        s.kv_set("applet/notes", "draft", b"hello", "text/plain").unwrap();
         s.next_counter("__forge/meta", "run_counter").unwrap();
 
         // Local-only / secret kv that must NEVER be exported.
-        s.kv_set("secret/weather", "api_key", b"sk-DO-NOT-EXPORT", "text/plain").unwrap();
-        s.kv_set("provider/openai", "token", b"tok-secret", "text/plain").unwrap();
-        s.kv_set("device/window", "geometry", b"{\"w\":800}", "application/json").unwrap();
+        s.kv_set(
+            "secret/weather",
+            "api_key",
+            b"sk-DO-NOT-EXPORT",
+            "text/plain",
+        )
+        .unwrap();
+        s.kv_set("provider/openai", "token", b"tok-secret", "text/plain")
+            .unwrap();
+        s.kv_set(
+            "device/window",
+            "geometry",
+            b"{\"w\":800}",
+            "application/json",
+        )
+        .unwrap();
         s.kv_set("local/ui", "scroll", b"42", "text/plain").unwrap();
 
         (s, idx)
@@ -943,7 +1004,10 @@ mod tests {
             logs: vec!["hello".into()],
             permissions: forge_domain::PermissionSnapshot::default(),
             outcome: RunOutcome::Completed {
-                result: AppResult { ok: true, value: json!("ok") },
+                result: AppResult {
+                    ok: true,
+                    value: json!("ok"),
+                },
             },
         }
     }
@@ -984,19 +1048,31 @@ mod tests {
         let (src, idx) = source_workspace();
         let before = projection_snapshot(&src);
 
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws_demo"))
+            .unwrap();
         let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
 
         // The imported projection — re-derived from the imported chunks — equals
         // the source projection exactly.
-        assert_eq!(projection_snapshot(&target), before, "DL-24 byte-identical projection");
+        assert_eq!(
+            projection_snapshot(&target),
+            before,
+            "DL-24 byte-identical projection"
+        );
 
         // Query results match (same live rows, deleted record stays gone).
         assert_eq!(target.list_records("notes").unwrap().len(), 2);
         assert_eq!(target.list_records("tasks").unwrap().len(), 1);
-        assert!(target.get_record("tasks", "t9").unwrap().is_none(), "deleted record not resurrected");
+        assert!(
+            target.get_record("tasks", "t9").unwrap().is_none(),
+            "deleted record not resurrected"
+        );
         // The patched field survived.
-        assert_eq!(target.get_record("notes", "n1").unwrap().unwrap().fields["pinned"], json!(true));
+        assert_eq!(
+            target.get_record("notes", "n1").unwrap().unwrap().fields["pinned"],
+            json!(true)
+        );
     }
 
     #[test]
@@ -1004,7 +1080,9 @@ mod tests {
         // The active value index must serve a query against the imported store,
         // proving indexes were rebuilt from canonical records (not copied raw).
         let (src, idx) = source_workspace();
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws_demo"))
+            .unwrap();
         let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
 
         let q = crate::Query::from_fixture_value(&json!({
@@ -1013,8 +1091,14 @@ mod tests {
         }))
         .unwrap();
         let planned = target.query_planned(&q, &idx).unwrap();
-        assert!(planned.uses_index, "the imported store's active index must serve the query");
-        assert_eq!(planned.index_id.as_deref(), Some("idx_records_notes_f_title"));
+        assert!(
+            planned.uses_index,
+            "the imported store's active index must serve the query"
+        );
+        assert_eq!(
+            planned.index_id.as_deref(),
+            Some("idx_records_notes_f_title")
+        );
     }
 
     #[test]
@@ -1023,15 +1107,24 @@ mod tests {
         // Tombstone a key so the export carries the deletion.
         src.kv_delete("applet/notes", "draft").unwrap();
 
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws_demo"))
+            .unwrap();
         let target = Store::import_workspace_in_memory(&bundle, &idx).unwrap();
 
         // Portable kv round-trips; the tombstoned key is hidden but its row exists.
         assert_eq!(
-            target.kv_get("__forge/meta", "applet/notes").unwrap().as_deref(),
+            target
+                .kv_get("__forge/meta", "applet/notes")
+                .unwrap()
+                .as_deref(),
             Some(&b"{\"manifest\":true}"[..])
         );
-        assert_eq!(target.kv_get("applet/notes", "draft").unwrap(), None, "tombstone hides the value");
+        assert_eq!(
+            target.kv_get("applet/notes", "draft").unwrap(),
+            None,
+            "tombstone hides the value"
+        );
         let tomb: i64 = target
             .connection()
             .query_row(
@@ -1043,7 +1136,10 @@ mod tests {
         assert_eq!(tomb, 1, "the tombstone row round-trips");
         // The run counter is portable workspace state.
         assert_eq!(
-            target.kv_get("__forge/meta", "run_counter").unwrap().as_deref(),
+            target
+                .kv_get("__forge/meta", "run_counter")
+                .unwrap()
+                .as_deref(),
             Some(&b"1"[..])
         );
     }
@@ -1053,7 +1149,9 @@ mod tests {
     #[test]
     fn secrets_and_device_local_kv_are_never_exported() {
         let (src, idx) = source_workspace();
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws_demo"))
+            .unwrap();
 
         // Not in the bundle file at all.
         for (ns, key) in [
@@ -1070,7 +1168,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(present, 0, "secret/device-local {ns}/{key} must NOT be in the bundle");
+            assert_eq!(
+                present, 0,
+                "secret/device-local {ns}/{key} must NOT be in the bundle"
+            );
         }
 
         // And not in the imported workspace.
@@ -1099,13 +1200,31 @@ mod tests {
         assert!(is_local_only_namespace("credentials"));
         assert!(is_local_only_namespace("__device"));
         assert!(is_local_only_namespace("__local"));
-        assert!(is_local_only_namespace("secrets/aws"), "secrets/ children stay excluded");
+        assert!(
+            is_local_only_namespace("secrets/aws"),
+            "secrets/ children stay excluded"
+        );
         // ...but portable workspace namespaces are NOT excluded.
-        assert!(!is_local_only_namespace("__forge/meta"), "applet manifests/programs are portable");
-        assert!(!is_local_only_namespace("applet/notes"), "applet ctx.storage is portable");
-        assert!(!is_local_only_namespace("localized"), "prefix must be a bucket boundary, not a substring");
-        assert!(!is_local_only_namespace("secretive"), "a longer name sharing a bucket prefix is portable");
-        assert!(!is_local_only_namespace("providers"), "providers (plural) is not the provider bucket");
+        assert!(
+            !is_local_only_namespace("__forge/meta"),
+            "applet manifests/programs are portable"
+        );
+        assert!(
+            !is_local_only_namespace("applet/notes"),
+            "applet ctx.storage is portable"
+        );
+        assert!(
+            !is_local_only_namespace("localized"),
+            "prefix must be a bucket boundary, not a substring"
+        );
+        assert!(
+            !is_local_only_namespace("secretive"),
+            "a longer name sharing a bucket prefix is portable"
+        );
+        assert!(
+            !is_local_only_namespace("providers"),
+            "providers (plural) is not the provider bucket"
+        );
     }
 
     // --- DL-24 deterministic re-export: byte-identical --------------------
@@ -1117,11 +1236,17 @@ mod tests {
 
         let a = dir.path().join("a.forgews");
         let b = dir.path().join("b.forgews");
-        src.export_workspace(&a, &ExportOptions::new("ws_demo")).unwrap();
-        src.export_workspace(&b, &ExportOptions::new("ws_demo")).unwrap();
+        src.export_workspace(&a, &ExportOptions::new("ws_demo"))
+            .unwrap();
+        src.export_workspace(&b, &ExportOptions::new("ws_demo"))
+            .unwrap();
 
         // Two exports of the same workspace produce byte-identical bundle files.
-        assert_eq!(read_file(&a), read_file(&b), "re-export must be byte-stable");
+        assert_eq!(
+            read_file(&a),
+            read_file(&b),
+            "re-export must be byte-stable"
+        );
     }
 
     #[test]
@@ -1129,8 +1254,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (src, _idx) = source_workspace();
         let p = dir.path().join("ws.forgews");
-        src.export_workspace(&p, &ExportOptions::new("ws_demo")).unwrap();
-        let err = src.export_workspace(&p, &ExportOptions::new("ws_demo")).unwrap_err();
+        src.export_workspace(&p, &ExportOptions::new("ws_demo"))
+            .unwrap();
+        let err = src
+            .export_workspace(&p, &ExportOptions::new("ws_demo"))
+            .unwrap_err();
         assert_eq!(err.code(), "StorageError");
     }
 
@@ -1141,11 +1269,16 @@ mod tests {
         let before = projection_snapshot(&src);
 
         let bundle = dir.path().join("ws.forgews");
-        src.export_workspace(&bundle, &ExportOptions::new("ws_demo")).unwrap();
+        src.export_workspace(&bundle, &ExportOptions::new("ws_demo"))
+            .unwrap();
 
         let target_path = dir.path().join("restored.db");
         let target = Store::import_workspace(&bundle, &target_path, &idx).unwrap();
-        assert_eq!(projection_snapshot(&target), before, "file round-trip preserves the projection");
+        assert_eq!(
+            projection_snapshot(&target),
+            before,
+            "file round-trip preserves the projection"
+        );
     }
 
     // --- run-log policy ---------------------------------------------------
@@ -1164,9 +1297,14 @@ mod tests {
             .unwrap();
 
         // Default policy: runs / run_logs are NOT exported.
-        let excluded = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        let excluded = src
+            .export_workspace_in_memory(&ExportOptions::new("ws"))
+            .unwrap();
         let target_x = Store::import_workspace_in_memory(&excluded, &idx).unwrap();
-        assert!(target_x.load_run("run_1").unwrap().is_none(), "runs excluded by default");
+        assert!(
+            target_x.load_run("run_1").unwrap().is_none(),
+            "runs excluded by default"
+        );
         let log_count_x: i64 = target_x
             .connection()
             .query_row("SELECT COUNT(*) FROM run_logs", [], |r| r.get(0))
@@ -1178,7 +1316,10 @@ mod tests {
             .export_workspace_in_memory(&ExportOptions::new("ws").with_run_logs())
             .unwrap();
         let target_i = Store::import_workspace_in_memory(&included, &idx).unwrap();
-        assert_eq!(target_i.load_run("run_1").unwrap().unwrap().run_id.as_str(), "run_1");
+        assert_eq!(
+            target_i.load_run("run_1").unwrap().unwrap().run_id.as_str(),
+            "run_1"
+        );
         let seqs: Vec<i64> = {
             let mut stmt = target_i
                 .connection()
@@ -1195,22 +1336,33 @@ mod tests {
     #[test]
     fn bundle_carries_the_format_version_header() {
         let (src, _idx) = source_workspace();
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws_demo")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws_demo"))
+            .unwrap();
         assert_eq!(
-            bundle_meta(&bundle, "export_format_version").unwrap().as_deref(),
+            bundle_meta(&bundle, "export_format_version")
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
         assert_eq!(
-            bundle_meta(&bundle, "forge_storage_schema_version").unwrap().as_deref(),
+            bundle_meta(&bundle, "forge_storage_schema_version")
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
-        assert_eq!(bundle_meta(&bundle, "workspace_id").unwrap().as_deref(), Some("ws_demo"));
+        assert_eq!(
+            bundle_meta(&bundle, "workspace_id").unwrap().as_deref(),
+            Some("ws_demo")
+        );
     }
 
     #[test]
     fn version_mismatch_is_a_clean_error() {
         let (src, idx) = source_workspace();
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws"))
+            .unwrap();
         // Tamper the header to a future version.
         bundle
             .connection()
@@ -1223,7 +1375,10 @@ mod tests {
             .err()
             .expect("import must reject an unsupported version");
         assert_eq!(err.code(), "StorageError");
-        assert!(format!("{err}").contains("999"), "the error names the unsupported version: {err}");
+        assert!(
+            format!("{err}").contains("999"),
+            "the error names the unsupported version: {err}"
+        );
     }
 
     #[test]
@@ -1242,7 +1397,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (src, idx) = source_workspace();
         let bundle = dir.path().join("ws.forgews");
-        src.export_workspace(&bundle, &ExportOptions::new("ws")).unwrap();
+        src.export_workspace(&bundle, &ExportOptions::new("ws"))
+            .unwrap();
         let target_path = dir.path().join("exists.db");
         // Pre-create the target file.
         Store::open(&target_path).unwrap();
@@ -1274,7 +1430,8 @@ mod tests {
         .unwrap();
 
         let bundle_path = dir.path().join("ws.forgews");
-        src.export_workspace(&bundle_path, &ExportOptions::new("ws_demo")).unwrap();
+        src.export_workspace(&bundle_path, &ExportOptions::new("ws_demo"))
+            .unwrap();
 
         let target_path = dir.path().join("target.db");
         {
@@ -1283,7 +1440,11 @@ mod tests {
             let mut target = Store::open(&target_path).unwrap();
             target.import_workspace_in_place(&bundle, &idx).unwrap();
             // Visible in the same handle that imported.
-            assert_eq!(projection_snapshot(&target), before, "import populates the live handle");
+            assert_eq!(
+                projection_snapshot(&target),
+                before,
+                "import populates the live handle"
+            );
         } // Drop both stores: the WAL flushes the committed import to disk.
 
         // Reopen the SAME file path: the imported state is durably present.
@@ -1299,11 +1460,17 @@ mod tests {
         assert!(reopened.get_record("tasks", "t9").unwrap().is_none());
         // Portable kv survived the reopen too: applet manifest + grant table.
         assert_eq!(
-            reopened.kv_get("__forge/meta", "applet/notes").unwrap().as_deref(),
+            reopened
+                .kv_get("__forge/meta", "applet/notes")
+                .unwrap()
+                .as_deref(),
             Some(&b"{\"manifest\":true}"[..])
         );
         assert_eq!(
-            reopened.kv_get("__forge/meta", "db_read_grants").unwrap().as_deref(),
+            reopened
+                .kv_get("__forge/meta", "db_read_grants")
+                .unwrap()
+                .as_deref(),
             Some(&b"{\"actor\":[\"notes\"]}"[..])
         );
     }
@@ -1313,7 +1480,9 @@ mod tests {
         // A version-mismatched bundle is refused before any table is copied, so the
         // (fresh) target is left untouched.
         let (src, idx) = source_workspace();
-        let bundle = src.export_workspace_in_memory(&ExportOptions::new("ws")).unwrap();
+        let bundle = src
+            .export_workspace_in_memory(&ExportOptions::new("ws"))
+            .unwrap();
         bundle
             .connection()
             .execute(
@@ -1324,7 +1493,10 @@ mod tests {
         let mut target = Store::open_in_memory().unwrap();
         let err = target.import_workspace_in_place(&bundle, &idx).unwrap_err();
         assert_eq!(err.code(), "StorageError");
-        assert!(target.is_empty_target().unwrap(), "a rejected import must not populate the target");
+        assert!(
+            target.is_empty_target().unwrap(),
+            "a rejected import must not populate the target"
+        );
     }
 
     // --- is_empty_target across every importable namespace (062 P1 #2) ----
@@ -1332,7 +1504,10 @@ mod tests {
     #[test]
     fn is_empty_target_true_on_a_fresh_store() {
         let s = Store::open_in_memory().unwrap();
-        assert!(s.is_empty_target().unwrap(), "a brand-new store is a fresh import target");
+        assert!(
+            s.is_empty_target().unwrap(),
+            "a brand-new store is a fresh import target"
+        );
     }
 
     #[test]
@@ -1352,31 +1527,47 @@ mod tests {
                 e
             })
             .unwrap();
-            assert!(!s.is_empty_target().unwrap(), "a projected record is importable state");
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "a projected record is importable state"
+            );
         }
         // crdt_chunks:
         {
             let s = Store::open_in_memory().unwrap();
             s.put_chunk("collection/notes", "c1", "loro", b"x").unwrap();
-            assert!(!s.is_empty_target().unwrap(), "a crdt chunk is importable state");
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "a crdt chunk is importable state"
+            );
         }
         // crdt_snapshots:
         {
             let s = Store::open_in_memory().unwrap();
-            s.put_snapshot("collection/notes", "s1", "loro", b"x", b"f").unwrap();
-            assert!(!s.is_empty_target().unwrap(), "a crdt snapshot is importable state");
+            s.put_snapshot("collection/notes", "s1", "loro", b"x", b"f")
+                .unwrap();
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "a crdt snapshot is importable state"
+            );
         }
         // oplog:
         {
             let s = Store::open_in_memory().unwrap();
             s.append_op("op1", "a", "ws", 1, "insert", b"p").unwrap();
-            assert!(!s.is_empty_target().unwrap(), "an oplog row is importable state");
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "an oplog row is importable state"
+            );
         }
         // runs + run_logs:
         {
             let s = Store::open_in_memory().unwrap();
             s.save_run(&sample_run("run_1")).unwrap();
-            assert!(!s.is_empty_target().unwrap(), "a run row is importable state");
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "a run row is importable state"
+            );
         }
         {
             let s = Store::open_in_memory().unwrap();
@@ -1387,7 +1578,10 @@ mod tests {
                     params![b"a".as_slice()],
                 )
                 .unwrap();
-            assert!(!s.is_empty_target().unwrap(), "a run_log row is importable state");
+            assert!(
+                !s.is_empty_target().unwrap(),
+                "a run_log row is importable state"
+            );
         }
     }
 
@@ -1421,16 +1615,22 @@ mod tests {
         // ONLY content is such a key is still a valid (fresh) import target — counting
         // it would wrongly refuse a genuinely importable workspace.
         let s = Store::open_in_memory().unwrap();
-        s.kv_set("secret/weather", "api_key", b"sk-x", "text/plain").unwrap();
-        s.kv_set("device/window", "geometry", b"{}", "application/json").unwrap();
+        s.kv_set("secret/weather", "api_key", b"sk-x", "text/plain")
+            .unwrap();
+        s.kv_set("device/window", "geometry", b"{}", "application/json")
+            .unwrap();
         s.kv_set("local/ui", "scroll", b"42", "text/plain").unwrap();
         assert!(
             s.is_empty_target().unwrap(),
             "a store holding only non-exportable local-only kv is still a fresh target"
         );
         // Add ONE portable key and it flips to non-fresh.
-        s.kv_set("applet/notes", "draft", b"hi", "text/plain").unwrap();
-        assert!(!s.is_empty_target().unwrap(), "a portable kv row makes it non-fresh");
+        s.kv_set("applet/notes", "draft", b"hi", "text/plain")
+            .unwrap();
+        assert!(
+            !s.is_empty_target().unwrap(),
+            "a portable kv row makes it non-fresh"
+        );
     }
 
     #[test]
@@ -1438,7 +1638,8 @@ mod tests {
         // An exported-then-tombstoned portable key is still importable state: the
         // tombstone row travels in the bundle, so a fresh target must not shadow it.
         let s = Store::open_in_memory().unwrap();
-        s.kv_set("applet/notes", "draft", b"hi", "text/plain").unwrap();
+        s.kv_set("applet/notes", "draft", b"hi", "text/plain")
+            .unwrap();
         s.kv_delete("applet/notes", "draft").unwrap();
         assert!(
             !s.is_empty_target().unwrap(),
@@ -1487,7 +1688,9 @@ mod tests {
 
         // The pinned snapshot still sees ONLY n1 (the concurrent n2 is invisible).
         let chunk_docs: i64 = snapshot
-            .query_row("SELECT COUNT(DISTINCT doc_id) FROM crdt_chunks", [], |r| r.get(0))
+            .query_row("SELECT COUNT(DISTINCT doc_id) FROM crdt_chunks", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let n1_present: i64 = snapshot
             .query_row(
@@ -1504,18 +1707,29 @@ mod tests {
             )
             .unwrap();
         drop(snapshot);
-        assert_eq!(chunk_docs, 1, "snapshot pins one doc; the concurrent write is invisible");
+        assert_eq!(
+            chunk_docs, 1,
+            "snapshot pins one doc; the concurrent write is invisible"
+        );
         assert_eq!(n1_present, 1, "the pre-write record is in the snapshot");
-        assert_eq!(n2_present, 0, "the concurrent write must not bleed into the snapshot");
+        assert_eq!(
+            n2_present, 0,
+            "the concurrent write must not bleed into the snapshot"
+        );
 
         // And the real export entry point produces a bundle that round-trips to a
         // consistent projection (n1 present, importable) — proving write_bundle's
         // snapshot does not corrupt the output.
         let bundle_path = dir.path().join("ws.forgews");
-        writer.export_workspace(&bundle_path, &ExportOptions::new("ws")).unwrap();
+        writer
+            .export_workspace(&bundle_path, &ExportOptions::new("ws"))
+            .unwrap();
         let restore_path = dir.path().join("restored.db");
         let restored = Store::import_workspace(&bundle_path, &restore_path, &idx).unwrap();
-        assert!(restored.get_record("notes", "n1").unwrap().is_some(), "n1 round-trips");
+        assert!(
+            restored.get_record("notes", "n1").unwrap().is_some(),
+            "n1 round-trips"
+        );
     }
 
     #[test]
@@ -1544,12 +1758,17 @@ mod tests {
             let mut concurrent = Store::open(&hook_path).unwrap();
             let hook_idx = IndexManager::new();
             concurrent
-                .apply_mutation_crdt(&insert("notes", "n2", json!({"title": "Beta"}), 2), &hook_idx)
+                .apply_mutation_crdt(
+                    &insert("notes", "n2", json!({"title": "Beta"}), 2),
+                    &hook_idx,
+                )
                 .unwrap();
         });
 
         let bundle_path = dir.path().join("ws.forgews");
-        exporter.export_workspace(&bundle_path, &ExportOptions::new("ws")).unwrap();
+        exporter
+            .export_workspace(&bundle_path, &ExportOptions::new("ws"))
+            .unwrap();
 
         // The bundle reflects the frozen snapshot only. n1 and n2 share the same
         // `collection/notes` doc, so the n2 write appears as a SECOND chunk on that
@@ -1573,8 +1792,14 @@ mod tests {
         // n1 — a split-brain bundle would resurrect n2 here.
         let restore_path = dir.path().join("restored.db");
         let restored = Store::import_workspace(&bundle_path, &restore_path, &idx).unwrap();
-        assert!(restored.get_record("notes", "n1").unwrap().is_some(), "n1 round-trips");
-        assert!(restored.get_record("notes", "n2").unwrap().is_none(), "n2 must be absent");
+        assert!(
+            restored.get_record("notes", "n1").unwrap().is_some(),
+            "n1 round-trips"
+        );
+        assert!(
+            restored.get_record("notes", "n2").unwrap().is_none(),
+            "n2 must be absent"
+        );
     }
 
     // --- fixtures/export descriptors (T017) ------------------------------
@@ -1605,14 +1830,21 @@ mod tests {
     #[test]
     fn tiny_fixture_agrees_with_our_format_version_and_policy() {
         let fx: TinyDescriptor = load_fixture("tiny_workspace_descriptor.json");
-        assert_eq!(fx.export_format_version, EXPORT_FORMAT_VERSION, "fixture pins our format version");
+        assert_eq!(
+            fx.export_format_version, EXPORT_FORMAT_VERSION,
+            "fixture pins our format version"
+        );
         // Default policy excludes run logs, matching the tiny fixture.
         assert!(!fx.include_run_logs);
         assert_eq!(ExportOptions::default().run_logs, RunLogPolicy::Exclude);
         // The GA-missing sections are not yet persisted tables in M0a storage, so
         // they are legitimately absent from the bundle (documented in the spec).
-        assert!(fx.missing_required_for_ga.contains(&"rbac_config".to_string()));
-        assert!(fx.missing_required_for_ga.contains(&"index_defs".to_string()));
+        assert!(fx
+            .missing_required_for_ga
+            .contains(&"rbac_config".to_string()));
+        assert!(fx
+            .missing_required_for_ga
+            .contains(&"index_defs".to_string()));
     }
 
     #[derive(serde::Deserialize)]
@@ -1623,7 +1855,10 @@ mod tests {
     #[test]
     fn run_logs_fixture_describes_the_include_policy() {
         let fx: RunLogsDescriptor = load_fixture("workspace_with_run_logs_descriptor.json");
-        assert!(fx.include_run_logs, "the debug-bundle fixture opts into run logs");
+        assert!(
+            fx.include_run_logs,
+            "the debug-bundle fixture opts into run logs"
+        );
         // Our include policy maps to the same flag.
         assert_eq!(
             ExportOptions::new("ws").with_run_logs().run_logs,
@@ -1641,7 +1876,10 @@ mod tests {
         let fx: RedactedDescriptor = load_fixture("redacted_secrets_descriptor.json");
         // The fixture's excluded kinds (secret plaintext, provider tokens, local
         // window state) all map to namespaces our guard refuses to export.
-        assert!(fx.expected_exclusions.iter().any(|e| e == "secret_plaintext"));
+        assert!(fx
+            .expected_exclusions
+            .iter()
+            .any(|e| e == "secret_plaintext"));
         assert!(is_local_only_namespace("secret/anything"));
         assert!(is_local_only_namespace("provider/anything"));
         assert!(is_local_only_namespace("local/window"));

@@ -62,6 +62,51 @@ also want a `forge/fixtures/compaction/` data-driven pack (the T039 shape), grea
 but the Rust tests are the gate.
 
 ## Result
-(codex: fill in files+lines, the public API you added, the safe-horizon model, test
-names, and the verification — `cargo test --workspace` + demo line. Flag anything
-that needed a core/domain surface you deliberately did NOT touch.)
+Implemented in `forge-storage` only.
+
+- Files:
+  - `forge/crates/storage/src/compaction.rs:18` adds `CompactionSafeHorizon`;
+    `:54` adds `CompactionOptions`; `:81` adds `CompactionReport`;
+    `:117` adds `Store::compact_history`; `:146` does the per-doc transactional
+    rewrite.
+  - `forge/crates/storage/src/lib.rs:39` exports the new module/API.
+  - `forge/crates/storage/src/crdt_write.rs:66` advances new local chunk ids past
+    compact snapshots; `:645` exposes `rebuild_projection_tx` crate-locally so
+    compaction can prove the projection invariant inside the same transaction.
+- Public API:
+  - `Store::compact_history(&mut self, &CompactionOptions, &IndexManager)
+    -> Result<CompactionReport>`.
+  - `CompactionOptions::all_peers_acked()`,
+    `CompactionOptions::with_frontiers(...)`,
+    `CompactionSafeHorizon::{RetainAll, AllPeersAcked, Frontiers(...)}`.
+- Safe-horizon model:
+  - Default is `RetainAll`, so compaction is opt-in and drops nothing.
+  - `AllPeersAcked` compacts each doc through its latest known frontier.
+  - `Frontiers` compacts each doc only through the caller-supplied oldest
+    acknowledged frontier; missing docs compact through `0`.
+  - `allow_peer_reset` explicitly opts into compacting through latest local
+    history, meaning older peers must use full-state resync instead of suffix
+    chunks.
+- DL-19/DL-21 behavior:
+  - Chunks at or below the safe horizon are folded into one `compact-NNNN` Loro
+    snapshot chunk, old chunk rows and matching oplog rows are deleted, and a
+    `history.compact` oplog row records the rewrite.
+  - Delete tombstone rows are collected only when their chunk is at or below the
+    safe horizon; the compact snapshot still carries the CRDT frontier, so stale
+    inserts from peers that already saw the delete do not resurrect the record.
+  - The transaction snapshots `records`, rewrites history, rebuilds projection +
+    indexes, and rolls back if the byte-for-byte projection changes.
+- Tests added in `forge/crates/storage/src/compaction.rs`:
+  - `compact_superseded_lww_chunks_keeps_projection_byte_identical`
+  - `tombstone_gc_after_delete_does_not_resurrect_from_old_chunk`
+  - `compaction_is_idempotent`
+  - `safe_horizon_keeps_chunks_still_needed_by_tracked_peer`
+  - `compacting_empty_history_is_noop`
+  - `tombstone_not_acked_by_safe_horizon_is_not_collected`
+  - `peer_at_tracked_frontier_converges_after_compaction`
+- Verification:
+  - `cargo test -p forge-storage` PASS (`173` unit tests + fixture suites).
+  - `cargo test --workspace` PASS.
+  - `cargo run -q -p forge-cli -- demo` PASS, printed `REPLAY IDENTICAL: true`.
+
+No core/domain/runtime/sync/ui surface was needed.

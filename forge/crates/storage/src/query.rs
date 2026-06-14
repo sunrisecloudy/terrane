@@ -406,7 +406,9 @@ fn field_ref_from_obj(obj: &serde_json::Map<String, serde_json::Value>) -> Resul
         .get("field")
         .or_else(|| obj.get("name"))
         .and_then(|f| f.as_str())
-        .ok_or_else(|| CoreError::QueryError("field reference missing 'field'/'field_id'".into()))?;
+        .ok_or_else(|| {
+            CoreError::QueryError("field reference missing 'field'/'field_id'".into())
+        })?;
     field_ref_from_name(name)
 }
 
@@ -462,7 +464,9 @@ fn parse_filter(v: &serde_json::Value) -> Result<Filter> {
                 ));
             }
             // Implicit AND over the listed sub-filters.
-            Ok(Filter::And(items.iter().map(parse_filter).collect::<Result<_>>()?))
+            Ok(Filter::And(
+                items.iter().map(parse_filter).collect::<Result<_>>()?,
+            ))
         }
         serde_json::Value::Object(obj) => {
             if let Some(items) = obj.get("and") {
@@ -1203,8 +1207,19 @@ pub fn reject_raw_sql(sql_like: &str) -> Result<()> {
     }
     // Any DDL/DML/PRAGMA keyword is outside the read-only validated subset.
     const BANNED: &[&str] = &[
-        "insert ", "update ", "delete ", "drop ", "alter ", "create ", "pragma ", "attach ",
-        "detach ", "replace ", "vacuum ", "reindex ", "truncate ",
+        "insert ",
+        "update ",
+        "delete ",
+        "drop ",
+        "alter ",
+        "create ",
+        "pragma ",
+        "attach ",
+        "detach ",
+        "replace ",
+        "vacuum ",
+        "reindex ",
+        "truncate ",
     ];
     for kw in BANNED {
         if lowered.contains(kw) {
@@ -1314,7 +1329,11 @@ mod tests {
         let q = plan(json!({"from": "tasks", "where": ["status", "=", "todo'; DROP"]}));
         let c = compile_select(&q).unwrap();
         // The dangerous value is a bound parameter, not in the SQL text.
-        assert!(!c.sql.contains("DROP"), "value must not appear in SQL: {}", c.sql);
+        assert!(
+            !c.sql.contains("DROP"),
+            "value must not appear in SQL: {}",
+            c.sql
+        );
         assert!(c.sql.contains("?"), "predicate must use a placeholder");
         assert!(c.params.iter().any(|p| p == &json!("todo'; DROP")));
     }
@@ -1350,7 +1369,11 @@ mod tests {
         );
         let qs = plan(json!({"from": "t", "where": ["status", "=", "todo"]}));
         let cs = compile_select(&qs).unwrap();
-        assert!(!cs.sql.contains("json_type"), "string eq needs no guard: {}", cs.sql);
+        assert!(
+            !cs.sql.contains("json_type"),
+            "string eq needs no guard: {}",
+            cs.sql
+        );
     }
 
     #[test]
@@ -1398,7 +1421,10 @@ mod tests {
             c.sql
         );
         // And the canonical helper agrees.
-        assert_eq!(field_id_json_path("f_dev.01_0"), "$.field_ids.\"f_dev.01_0\"");
+        assert_eq!(
+            field_id_json_path("f_dev.01_0"),
+            "$.field_ids.\"f_dev.01_0\""
+        );
     }
 
     #[test]
@@ -1510,19 +1536,29 @@ mod tests {
             env_with("e3", "v", json!(3)),
         ];
         let mut q = Query::from("t");
-        q.order_by = Some(OrderBy { field: name("v"), dir: Dir::Asc });
+        q.order_by = Some(OrderBy {
+            field: name("v"),
+            dir: Dir::Asc,
+        });
         let asc: Vec<_> = finalize_rows(rows(clone_envs(&input)), &q)
             .iter()
             .map(|r| r.id.clone())
             .collect();
         assert_eq!(asc, vec!["e1", "e3", "e_null"], "asc: nulls last");
 
-        q.order_by = Some(OrderBy { field: name("v"), dir: Dir::Desc });
+        q.order_by = Some(OrderBy {
+            field: name("v"),
+            dir: Dir::Desc,
+        });
         let desc: Vec<_> = finalize_rows(rows(clone_envs(&input)), &q)
             .iter()
             .map(|r| r.id.clone())
             .collect();
-        assert_eq!(desc, vec!["e3", "e1", "e_null"], "desc: values reversed but nulls STILL last");
+        assert_eq!(
+            desc,
+            vec!["e3", "e1", "e_null"],
+            "desc: values reversed but nulls STILL last"
+        );
     }
 
     #[test]
@@ -1535,8 +1571,14 @@ mod tests {
             env_with("b", "v", json!(1)),
         ]);
         let mut q = Query::from("t");
-        q.order_by = Some(OrderBy { field: name("id"), dir: Dir::Desc });
-        let ids: Vec<_> = finalize_rows(input, &q).iter().map(|r| r.id.clone()).collect();
+        q.order_by = Some(OrderBy {
+            field: name("id"),
+            dir: Dir::Desc,
+        });
+        let ids: Vec<_> = finalize_rows(input, &q)
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
         assert_eq!(ids, vec!["c", "b", "a"], "id desc descends by entity id");
 
         let input2 = rows(vec![
@@ -1544,8 +1586,14 @@ mod tests {
             env_with("c", "v", json!(1)),
             env_with("b", "v", json!(1)),
         ]);
-        q.order_by = Some(OrderBy { field: name("entity_id"), dir: Dir::Asc });
-        let ids2: Vec<_> = finalize_rows(input2, &q).iter().map(|r| r.id.clone()).collect();
+        q.order_by = Some(OrderBy {
+            field: name("entity_id"),
+            dir: Dir::Asc,
+        });
+        let ids2: Vec<_> = finalize_rows(input2, &q)
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
         assert_eq!(ids2, vec!["a", "b", "c"], "entity_id asc ascends");
     }
 

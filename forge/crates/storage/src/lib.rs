@@ -36,6 +36,9 @@ pub use index::{CreateIndexKind, IndexDef, IndexKind, IndexManager, IndexState};
 pub mod crdt_write;
 pub use crdt_write::{collection_doc_id, collection_of_doc, RemoteChunk, CHUNK_FORMAT, LOCAL_PEER_ID};
 
+pub mod compaction;
+pub use compaction::{CompactionOptions, CompactionReport, CompactionSafeHorizon};
+
 pub mod export;
 pub use export::{
     bundle_meta, is_local_only_namespace, ExportOptions, RunLogPolicy, EXPORT_FORMAT_VERSION,

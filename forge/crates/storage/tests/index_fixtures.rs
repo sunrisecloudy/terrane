@@ -31,8 +31,7 @@ fn load(name: &str) -> serde_json::Value {
     let path = fixtures_dir().join(name);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()))
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse fixture {}: {e}", path.display()))
 }
 
 fn seed_records(store: &Store, fixture: &serde_json::Value) {
@@ -73,7 +72,12 @@ fn expected_ids(fixture: &serde_json::Value) -> Vec<String> {
         .and_then(|r| r.as_array())
         .unwrap()
         .iter()
-        .map(|r| r.get("entity_id").and_then(|i| i.as_str()).unwrap().to_string())
+        .map(|r| {
+            r.get("entity_id")
+                .and_then(|i| i.as_str())
+                .unwrap()
+                .to_string()
+        })
         .collect()
 }
 
@@ -103,7 +107,10 @@ fn assert_outcome(name: &str, fixture: &serde_json::Value, planned: &PlannedQuer
     }
 
     // uses_index.
-    let want_uses = expected.get("uses_index").and_then(|u| u.as_bool()).unwrap();
+    let want_uses = expected
+        .get("uses_index")
+        .and_then(|u| u.as_bool())
+        .unwrap();
     assert_eq!(planned.uses_index, want_uses, "{name}: uses_index");
 
     // index_id (present only when an index is used).
@@ -133,7 +140,11 @@ fn assert_outcome(name: &str, fixture: &serde_json::Value, planned: &PlannedQuer
         "{name}: warning count"
     );
     for (got, want) in planned.warnings.iter().zip(&want_warnings) {
-        assert_eq!(got.code, want.get("code").unwrap().as_str().unwrap(), "{name}: code");
+        assert_eq!(
+            got.code,
+            want.get("code").unwrap().as_str().unwrap(),
+            "{name}: code"
+        );
         assert_eq!(
             got.collection,
             want.get("collection").unwrap().as_str().unwrap(),
@@ -228,10 +239,16 @@ fn rebuild_after_records_activates_index() {
         )
         .unwrap(),
     );
-    store.build_indexes(&mgr).expect("build (proposed builds nothing)");
+    store
+        .build_indexes(&mgr)
+        .expect("build (proposed builds nothing)");
     let proposed = store.query_planned(&q, &mgr).expect("planned proposed");
     assert!(!proposed.uses_index, "proposed index must not be used");
-    assert_eq!(proposed.ids(), expected_ids(&fx), "rows correct while proposed");
+    assert_eq!(
+        proposed.ids(),
+        expected_ids(&fx),
+        "rows correct while proposed"
+    );
 
     // rebuilding -> still not usable.
     mgr.set_state(
@@ -240,7 +257,9 @@ fn rebuild_after_records_activates_index() {
         forge_storage::IndexKind::Expression,
         IndexState::Rebuilding,
     );
-    store.build_indexes(&mgr).expect("build (rebuilding still not active)");
+    store
+        .build_indexes(&mgr)
+        .expect("build (rebuilding still not active)");
     let rebuilding = store.query_planned(&q, &mgr).expect("planned rebuilding");
     assert!(!rebuilding.uses_index, "rebuilding index must not be used");
 
@@ -251,7 +270,9 @@ fn rebuild_after_records_activates_index() {
         forge_storage::IndexKind::Expression,
         IndexState::Active,
     );
-    store.build_indexes(&mgr).expect("rebuild from canonical records -> active");
+    store
+        .build_indexes(&mgr)
+        .expect("rebuild from canonical records -> active");
     let active = store.query_planned(&q, &mgr).expect("planned active");
     assert_outcome(name, &fx, &active);
     // And the active result equals the reference full scan (records canonical).
@@ -325,7 +346,11 @@ fn manifest_lists_every_wired_case() {
     let manifest = load("manifest.json");
     let declared = manifest.get("count").and_then(|c| c.as_i64()).unwrap();
     let cases = manifest.get("cases").and_then(|c| c.as_array()).unwrap();
-    assert_eq!(declared as usize, cases.len(), "manifest count vs case list");
+    assert_eq!(
+        declared as usize,
+        cases.len(),
+        "manifest count vs case list"
+    );
     assert_eq!(declared, 7, "expected 7 dynamic-index vectors");
     for case in cases {
         let file = case.get("file").and_then(|f| f.as_str()).unwrap();
