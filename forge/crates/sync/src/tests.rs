@@ -978,6 +978,125 @@ fn migration_metadata_survives_a_relay_hop_to_the_third_peer() {
     );
 }
 
+/// Review-w9 P1 (DL-13) — the per-collection registry merge on a migration import must NOT
+/// be gated on the workspace-GLOBAL `schema_version` actually advancing. `schema_version` is
+/// ONE workspace-wide counter, but registry evolution is PER-COLLECTION: a receiver whose
+/// global version already equals the migration's target — reached via UNRELATED schema work on
+/// OTHER collections — must STILL merge the carried `registry_collection`, or it imports the
+/// migrated records while leaving its registry behind (data ahead of schema, the drift class
+/// review 143 closed). The old code merged the registry only `if advanced`, so on a store
+/// already at the target `advance_schema_version_if_newer` returned false and the merge was
+/// SKIPPED. This drives `apply_remote_chunks` directly into a store pre-set to the target.
+#[test]
+fn migration_chunk_merges_registry_even_when_receiver_already_at_target_version() {
+    use forge_domain::ActorId;
+    use forge_schema::{FieldType, SchemaChange, SchemaRegistry};
+    use forge_storage::SCHEMA_REGISTRY_KEY;
+
+    let idx = IndexManager::new();
+    let mut author = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    // The author writes one `expenses` chunk (the migrated record payload) through the real
+    // CRDT path; its bytes become the migration chunk the receiver imports.
+    author
+        .apply_mutation_crdt(&insert("expenses", "e1", json!({"amount": 10.0}), 1), &idx)
+        .unwrap();
+    let doc_id = collection_doc_id("expenses");
+
+    // The migration's target version. The RECEIVER is pre-set to this SAME version via a
+    // monotone advance — modelling a peer whose global counter already reached the target via
+    // UNRELATED schema work — so `advance_schema_version_if_newer` returns advanced=false at
+    // import (the precise trap that gated the registry merge in the buggy code).
+    const TARGET: u64 = 2;
+    receiver.advance_schema_version(TARGET).unwrap();
+    assert_eq!(receiver.schema_version().unwrap(), TARGET, "receiver pre-set to the target version");
+
+    // Build the EVOLVED `expenses` collection entry the migration carries: an `amount` float
+    // field. This is a genuine `forge_schema::CollectionDef`, serialized as the carried
+    // `registry_collection` payload `{ "name", "collection" }` the import merges.
+    let mut authored_registry = SchemaRegistry::new();
+    authored_registry
+        .apply_change(SchemaChange::AddCollection { name: "expenses".into() })
+        .unwrap();
+    authored_registry
+        .apply_change(SchemaChange::AddField {
+            collection: "expenses".into(),
+            actor: ActorId::new("alice"),
+            name: "amount".into(),
+            ty: FieldType::FloatNum,
+            indexed: false,
+            required: false,
+        })
+        .unwrap();
+    let expenses_def = authored_registry.collection("expenses").unwrap().clone();
+    let carried_registry = json!({
+        "name": "expenses",
+        "collection": serde_json::to_value(&expenses_def).unwrap(),
+    });
+
+    // PRECONDITION: the receiver does NOT yet know `expenses` — its persisted registry is empty.
+    assert!(
+        receiver.kv_get("__forge/meta", SCHEMA_REGISTRY_KEY).unwrap().is_none(),
+        "the receiver has no persisted registry before the import"
+    );
+
+    // Stage the author's chunk as a MIGRATION chunk carrying BOTH the target version AND the
+    // evolved registry entry, then import it. Because the receiver is already at TARGET, the
+    // version advance is a no-op — but the registry merge must STILL run.
+    let staged: Vec<RemoteChunk> = author
+        .get_chunks(&doc_id)
+        .unwrap()
+        .into_iter()
+        .map(|c| RemoteChunk {
+            doc_id: doc_id.clone(),
+            chunk_id: exchanged_chunk_id(&c.format, &c.payload),
+            format: c.format,
+            payload: c.payload,
+            author_actor_id: Some("peer:11".into()),
+            record_ids: vec!["e1".into()],
+            schema_version: Some(TARGET),
+            registry_collection: Some(carried_registry.clone()),
+        })
+        .collect();
+    let imported = receiver.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();
+    assert_eq!(imported, 1, "the migration chunk is imported");
+
+    // (records) The migrated record landed.
+    assert_eq!(
+        receiver.get_record("expenses", "e1").unwrap().unwrap().fields["amount"],
+        json!(10.0)
+    );
+    // (version) Unchanged — the receiver was already at the target (this is exactly why the
+    // buggy gate skipped the merge).
+    assert_eq!(
+        receiver.schema_version().unwrap(),
+        TARGET,
+        "the receiver's version stays at the target (no advance — the gate trap)"
+    );
+
+    // (registry) The CRUX: the carried `expenses` entry was MERGED into the receiver's persisted
+    // registry EVEN THOUGH the global version did not advance.
+    let persisted = receiver
+        .kv_get("__forge/meta", SCHEMA_REGISTRY_KEY)
+        .unwrap()
+        .expect("the receiver persisted a registry after merging the carried collection");
+    let merged: SchemaRegistry = serde_json::from_slice(&persisted).unwrap();
+    let merged_col = merged
+        .collection("expenses")
+        .expect("the receiver merged the carried `expenses` collection despite no global advance");
+    assert_eq!(merged_col, &expenses_def, "the merged entry equals the carried evolved collection");
+
+    // A re-import of the SAME chunk is an idempotent no-op: no new chunk, the registry unchanged.
+    let again = receiver.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();
+    assert_eq!(again, 0, "the converged re-import moves no chunk");
+    let persisted_again = receiver
+        .kv_get("__forge/meta", SCHEMA_REGISTRY_KEY)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted_again, persisted, "the re-import left the merged registry byte-identical");
+}
+
 /// Review 145 (fail-closed): a `record.remote_import` oplog row MARKED schema-affecting
 /// (`is_migration: true`) but whose `to` target is UNRECOVERABLE must be staged `malformed`
 /// so a relaying peer DENIES it rather than importing migrated data as a plain record write

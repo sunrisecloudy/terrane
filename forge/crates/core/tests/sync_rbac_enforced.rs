@@ -699,6 +699,152 @@ fn migration_chunk_authorized_for_maintainer_syncs_records_version_registry_and_
     assert_eq!(allowed.payload["decision"], json!("allow"));
 }
 
+/// Advance `core`'s workspace-GLOBAL `schema_version` to `target` by applying
+/// schema changes on an UNRELATED collection (`vendors`, distinct from the `expenses`
+/// collection the migration under test evolves) through the REAL `schema.apply_change`
+/// command. Each accepted change advances the single workspace-wide counter by one
+/// (`current + 1`), so this drives the global version forward WITHOUT ever touching the
+/// `expenses` registry entry. Returns once `core.schema_version() == target`.
+///
+/// This reproduces the precondition for the review-w9 P1 bug: a receiver whose global
+/// `schema_version` already equals the incoming migration's target — reached via work on
+/// OTHER collections — so `advance_schema_version_if_newer` returns `advanced == false`
+/// at import and the (previously gated) per-collection registry merge would be SKIPPED.
+fn bump_schema_version_with_unrelated_work(core: &mut WorkspaceCore, target: u64) {
+    assert!(
+        core.store().schema_version().unwrap() <= target,
+        "the receiver must start at or below the target before unrelated bumps"
+    );
+    // The first unrelated bump adds the `vendors` collection; each subsequent bump adds a
+    // distinct field under actor `bob` (ids `f_bob_0`, `f_bob_1`, ...), all unrelated to
+    // `expenses`/`f_alice_0`.
+    if core.store().schema_version().unwrap() < target {
+        apply_change(core, json!({ "op": "add_collection", "name": "vendors" }));
+    }
+    let mut seq = 0u64;
+    while core.store().schema_version().unwrap() < target {
+        apply_change(
+            core,
+            json!({
+                "op": "add_field",
+                "collection": "vendors",
+                "actor": "bob",
+                "name": format!("attr_{seq}"),
+                "ty": "int_num",
+                "indexed": false,
+                "required": false,
+            }),
+        );
+        seq += 1;
+    }
+    assert_eq!(
+        core.store().schema_version().unwrap(),
+        target,
+        "the receiver's global schema_version was driven to the migration target via UNRELATED work"
+    );
+}
+
+#[test]
+fn migration_merges_registry_even_when_receiver_global_version_already_at_target() {
+    // Review-w9 P1 (DL-13): the per-collection registry merge on a migration import must NOT
+    // be gated on the workspace-GLOBAL `schema_version` actually moving forward. `schema_version`
+    // is ONE workspace-wide counter, but registry evolution is PER-COLLECTION. A receiver whose
+    // global version already reached the migration's target — via UNRELATED schema work on OTHER
+    // collections — must STILL merge the carried `expenses` registry entry, or it imports the
+    // migrated records while leaving its registry behind (data ahead of schema, the exact drift
+    // class review 143 closed). The old code merged the registry only `if advanced`, so on this
+    // receiver `advance_schema_version_if_newer` returned false and the merge was skipped.
+    let (mut sender, mut receiver) = cores_with_membership(membership_full(
+        "actor-maintainer",
+        Role::Maintainer,
+        &["expenses"],
+        true,
+    ));
+    seed_and_widen_expenses(&mut sender);
+    let target = sender.store().schema_version().unwrap();
+    assert!(target > 1, "the sender authored the migration past v1");
+
+    // Pre-bump the RECEIVER's global schema_version to the migration target using UNRELATED
+    // work on `vendors`, so `advance_schema_version_if_newer` returns advanced=false at import.
+    bump_schema_version_with_unrelated_work(&mut receiver, target);
+
+    // PRECONDITION: the receiver is ALREADY at the target version but does NOT yet know the
+    // migrated `expenses` collection (the unrelated work never touched it).
+    assert_eq!(
+        receiver.store().schema_version().unwrap(),
+        target,
+        "the receiver's global version already equals the migration target BEFORE the sync"
+    );
+    assert!(
+        receiver.registry().collection("expenses").is_none(),
+        "the receiver does NOT have the migrated `expenses` collection before the sync"
+    );
+
+    let report = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(
+        report.chunks_denied, 0,
+        "the authorized migration must NOT be denied even though the receiver is already at target \
+         (report {report:?})"
+    );
+    assert!(report.total_chunks_moved() > 0, "the migration chunk moves to the receiver");
+
+    // (registry) The crux: the receiver MERGED the carried `expenses` registry entry EVEN THOUGH
+    // its global `schema_version` did not advance — the per-collection merge is no longer gated on
+    // the global advance. It now KNOWS the `expenses` collection with the WIDENED float `amount`.
+    let recv_col = receiver
+        .registry()
+        .collection("expenses")
+        .expect("the receiver merged the carried `expenses` registry entry despite no global advance");
+    let amount = recv_col
+        .field("f_alice_0")
+        .expect("the receiver's registry contains the migrated field");
+    assert_eq!(amount.name(), "amount");
+    assert_eq!(
+        *amount.ty(),
+        forge_schema::FieldType::FloatNum,
+        "the receiver's registry reflects the WIDENED type (registry synced, not stale)"
+    );
+    assert!(amount.indexed(), "the receiver's registry keeps the field indexed");
+    assert_eq!(
+        receiver.registry().collection("expenses"),
+        sender.registry().collection("expenses"),
+        "sender and receiver `expenses` registries converge"
+    );
+
+    // (index reconstruction) The receiver reconstructed the `f_amount` index from the evolved
+    // registry — proving the registry merge ran, not just the record import.
+    assert!(
+        receiver.indexes().get_expression("expenses", "f_amount").is_some(),
+        "the receiver reconstructed the f_amount index from the merged registry"
+    );
+
+    // (records) The migrated (float) record values landed.
+    let rows = query_collection(&mut receiver, "expenses");
+    assert_eq!(rows.len(), 2, "both migrated records imported: {rows:?}");
+    assert_eq!(rows[0].0, "e1");
+    assert_eq!(rows[0].1["amount"], json!(10.0), "e1 migrated to float on the receiver");
+    assert_eq!(rows[1].1["amount"], json!(20.0), "e2 migrated to float on the receiver");
+
+    // (version) The receiver's global version stays at the target — the migration did not need to
+    // advance it (it was already there), which is precisely why the buggy gate skipped the merge.
+    assert_eq!(
+        receiver.store().schema_version().unwrap(),
+        target,
+        "the receiver's global schema_version is unchanged (already at target — the gate trap)"
+    );
+
+    // A re-sync is an idempotent no-op: no chunks move, the registry is unchanged, and no error.
+    let registry_before = receiver.registry().collection("expenses").cloned();
+    let again = sender.sync_with(&mut receiver).unwrap();
+    assert_eq!(again.total_chunks_moved(), 0, "converged: the migration chunk does not re-move");
+    assert_eq!(again.chunks_denied, 0, "the converged re-sync denies nothing");
+    assert_eq!(
+        receiver.registry().collection("expenses"),
+        registry_before.as_ref(),
+        "the re-sync left the merged `expenses` registry entry byte-identical (idempotent)"
+    );
+}
+
 /// Build three empty cores A (author) → B (relay) → C (final receiver) with distinct
 /// Loro peer ids, plus the symmetric back-channel trust each pair needs so only the
 /// forward direction under test can deny. `b_trusts_a` / `c_trusts_a` decide whether the

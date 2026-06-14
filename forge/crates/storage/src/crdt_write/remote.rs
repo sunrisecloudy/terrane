@@ -225,19 +225,26 @@ pub(crate) fn import_remote_chunk_tx(
     // converged peer, or one that authored the same migration locally), never an
     // error — so a re-sync stays a pure no-op.
     if let Some(to) = schema_version {
-        // DL-13 review 143: a migration chunk ALSO carries the affected collection's
-        // evolved registry entry. Evolve the receiver's persisted `SchemaRegistry` in
-        // lockstep with the version advance — IN THIS SAME txn — so the registry never
-        // drifts behind the migrated data: after import the receiver's records,
-        // `schema_version`, AND registry all agree, and a failed import (e.g. a
-        // malformed carried entry, or a later rebuild rejection) rolls ALL of it back
-        // together. The advance is applied ONLY when the version actually moves
-        // forward, so a converged / already-migrated receiver re-merges nothing.
-        let advanced = advance_schema_version_if_newer_tx(tx, *to)?;
-        if advanced {
-            if let Some(registry_collection) = registry_collection {
-                evolve_registry_collection_tx(tx, registry_collection)?;
-            }
+        // Advance the RECEIVER's workspace-global `schema_version` toward the carried
+        // target, monotonically and idempotently (a peer already at/beyond the target is
+        // left unchanged — never an error — so a re-sync stays a pure no-op).
+        advance_schema_version_if_newer_tx(tx, *to)?;
+
+        // DL-13 review 143/145 (review-w9 P1): a migration chunk ALSO carries the
+        // affected collection's evolved registry entry; evolve the receiver's persisted
+        // `SchemaRegistry` IN THIS SAME txn so the registry never drifts behind the
+        // migrated data. This merge is keyed PER-COLLECTION and must NOT be gated on the
+        // GLOBAL `schema_version` actually moving forward: `schema_version` is one
+        // workspace-wide counter, so a receiver whose global version already reached the
+        // target via UNRELATED schema work on OTHER collections would otherwise import
+        // this collection's migrated records while skipping its registry entry — leaving
+        // data ahead of schema (the exact drift class review 143 closed). `sync_collection`
+        // is a replace-or-insert + re-validate, so applying it on a converged / already-
+        // migrated peer is a safe idempotent no-op; a malformed carried entry (or a
+        // re-validation failure) rolls the whole import back together with the chunk +
+        // version, so the receiver never persists a version ahead of its registry.
+        if let Some(registry_collection) = registry_collection {
+            evolve_registry_collection_tx(tx, registry_collection)?;
         }
     }
     Ok(true)
