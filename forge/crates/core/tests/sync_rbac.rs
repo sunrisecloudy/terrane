@@ -93,7 +93,14 @@ fn parse_envelope(incoming: &Value) -> RemoteOpEnvelope {
         resource_type,
         op: parse_op(meta["op"].as_str().expect("op")),
         collection: meta.get("collection").and_then(|v| v.as_str()).map(String::from),
-        record_id: meta.get("record_id").and_then(|v| v.as_str()).map(String::from),
+        // Fixtures spell a single `record_id`; the in-code envelope carries a list
+        // (`review 093`), so wrap a present id into a one-element list (absent =>
+        // empty list, which the metadata gate denies for a record write).
+        record_ids: meta
+            .get("record_id")
+            .and_then(|v| v.as_str())
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default(),
         schema_id: meta.get("schema_id").and_then(|v| v.as_str()).map(String::from),
         schema_version,
     }

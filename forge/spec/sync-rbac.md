@@ -94,7 +94,12 @@ changes, the receiver does the following:
 2. Compare incoming role/grant claims to the trusted entry. Any self-escalation
    is rejected.
 3. Validate envelope metadata before CRDT import: document id, resource type,
-   operation, collection, record id or schema id, and schema version.
+   operation, collection, record ids or schema id, and schema version. A record
+   write carries a **non-empty list** of touched record ids — one for a
+   single-record op, several for a legitimate multi-record transact group — and the
+   collection grant gates the op as a whole. The metadata gate rejects only a truly
+   empty / all-blank record-id list (an unknown record identity), never a valid list
+   of one OR many ids (`review 093`).
 4. Check the default role matrix for the operation.
 5. Check trusted collection grants. `*` means all collections; otherwise grants
    are exact collection names.

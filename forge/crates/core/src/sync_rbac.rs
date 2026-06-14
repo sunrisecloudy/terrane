@@ -88,8 +88,15 @@ pub struct RemoteOpEnvelope {
     pub op: RemoteOp,
     /// Target collection for record ops. `None` for schema ops.
     pub collection: Option<String>,
-    /// Target record id for record ops. `None` for schema ops.
-    pub record_id: Option<String>,
+    /// The touched record ids for a record WRITE — a NON-EMPTY list of `1..N`
+    /// concrete ids (`review 093`). A single-record op names exactly one; a
+    /// legitimate multi-record transact group names several, and the collection
+    /// grant gates the op as a whole. The metadata gate
+    /// ([`envelope_defect`]) requires at least one non-blank id for a record
+    /// write — an empty / all-blank list is the only "unknown record identity"
+    /// it denies fail-closed. Empty for schema ops and read catch-up (which name
+    /// only a collection).
+    pub record_ids: Vec<String>,
     /// Target schema id for schema ops. `None` for record ops.
     pub schema_id: Option<String>,
     /// Schema version named in the envelope metadata, if present.
@@ -353,17 +360,23 @@ pub fn authorize_remote_op(
 /// Checks, in order:
 /// - resource/op consistency (a record op must carry a `Record` resource and a
 ///   schema change must carry a `Schema` resource);
-/// - record ops name a non-empty `collection` and `record_id`;
+/// - record writes name a non-empty `collection` and at least one non-blank
+///   touched record id (a list of one OR many is valid — the collection grant
+///   gates the op as a whole, `review 093`);
 /// - schema changes name a non-empty `schema_id` and a `schema_version`.
 fn envelope_defect(env: &RemoteOpEnvelope) -> Option<String> {
     let is_empty = |s: &Option<String>| s.as_deref().map(str::trim).unwrap_or("").is_empty();
     match (env.resource_type, env.op) {
-        // Record writes / reads must target a concrete collection + record.
+        // Record writes must target a concrete collection and name at least one
+        // touched record. A list of one OR many concrete ids is well-formed
+        // (`review 093`); only a truly empty / all-blank list — an unknown record
+        // identity — is denied fail-closed, so a legitimate multi-record transact
+        // group is no longer collapsed and wrongly rejected.
         (ResourceType::Record, op) if op.is_record_write() => {
             if is_empty(&env.collection) {
                 return Some("record op missing collection in envelope metadata".to_string());
             }
-            if is_empty(&env.record_id) {
+            if env.record_ids.iter().all(|id| id.trim().is_empty()) {
                 return Some("record op missing record id in envelope metadata".to_string());
             }
             None
@@ -470,7 +483,7 @@ mod tests {
             resource_type: ResourceType::Record,
             op,
             collection: Some(collection.to_string()),
-            record_id: Some("rec-1".to_string()),
+            record_ids: vec!["rec-1".to_string()],
             schema_id: None,
             schema_version: Some(1),
         }
@@ -544,7 +557,7 @@ mod tests {
             resource_type: ResourceType::Record,
             op: RemoteOp::Insert,
             collection: None,
-            record_id: Some("rec-1".to_string()),
+            record_ids: vec!["rec-1".to_string()],
             schema_id: None,
             schema_version: Some(1),
         };
@@ -556,13 +569,16 @@ mod tests {
     }
 
     #[test]
-    fn record_write_missing_record_id_denied_fail_closed() {
+    fn record_write_empty_record_ids_denied_fail_closed() {
+        // An EMPTY record-id list names no concrete record — fail closed even for a
+        // wildcard owner (`review 093`: only a truly empty / all-blank list is the
+        // "unknown record identity" the gate denies).
         let trusted = member(Role::Owner, &["*"], true);
         let env = RemoteOpEnvelope {
             resource_type: ResourceType::Record,
             op: RemoteOp::Insert,
             collection: Some("tasks".to_string()),
-            record_id: None,
+            record_ids: vec![],
             schema_id: None,
             schema_version: Some(1),
         };
@@ -572,13 +588,49 @@ mod tests {
     }
 
     #[test]
+    fn record_write_all_blank_record_ids_denied_fail_closed() {
+        // A list of ONLY blank ids is equally unknown — also denied (`review 093`).
+        let trusted = member(Role::Owner, &["*"], true);
+        let env = RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::Insert,
+            collection: Some("tasks".to_string()),
+            record_ids: vec!["".to_string(), "   ".to_string()],
+            schema_id: None,
+            schema_version: Some(1),
+        };
+        let d = authorize_remote_op(&trusted, None, &env);
+        assert!(!d.is_allow());
+        assert!(d.reason().contains("missing record id"), "reason: {}", d.reason());
+    }
+
+    #[test]
+    fn record_write_multi_record_ids_is_well_formed_and_allowed() {
+        // A multi-record transact group carries SEVERAL concrete ids; the collection
+        // grant gates the op as a whole. It must NOT be denied as "missing record id"
+        // (`review 093`): a list of >1 id is valid metadata.
+        let trusted = member(Role::Editor, &["tasks"], false);
+        let env = RemoteOpEnvelope {
+            resource_type: ResourceType::Record,
+            op: RemoteOp::Insert,
+            collection: Some("tasks".to_string()),
+            record_ids: vec!["t1".to_string(), "t2".to_string()],
+            schema_id: None,
+            schema_version: None,
+        };
+        let d = authorize_remote_op(&trusted, None, &env);
+        assert!(d.is_allow(), "a multi-record group is well-formed: {}", d.reason());
+        assert!(d.reason().contains("db.write on tasks"));
+    }
+
+    #[test]
     fn schema_change_missing_schema_id_or_version_denied() {
         let trusted = member(Role::Maintainer, &["*"], true);
         let no_id = RemoteOpEnvelope {
             resource_type: ResourceType::Schema,
             op: RemoteOp::SchemaChange,
             collection: None,
-            record_id: None,
+            record_ids: vec![],
             schema_id: None,
             schema_version: Some(2),
         };
@@ -590,7 +642,7 @@ mod tests {
             resource_type: ResourceType::Schema,
             op: RemoteOp::SchemaChange,
             collection: None,
-            record_id: None,
+            record_ids: vec![],
             schema_id: Some("tasks".to_string()),
             schema_version: None,
         };
@@ -607,7 +659,7 @@ mod tests {
             resource_type: ResourceType::Record,
             op: RemoteOp::SchemaChange,
             collection: Some("tasks".to_string()),
-            record_id: None,
+            record_ids: vec![],
             schema_id: Some("tasks".to_string()),
             schema_version: Some(2),
         };

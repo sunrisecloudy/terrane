@@ -422,12 +422,15 @@ fn malformed_non_collection_doc_chunk_is_denied_before_import() {
 
 #[test]
 fn multi_record_transact_group_applies_and_converges() {
-    // review 092 #2 (positive regression): a MULTI-record transact group is one chunk
-    // that legitimately names SEVERAL records. The wired envelope translation must
-    // thread a concrete record id so the envelope-metadata gate accepts it — before
-    // the fix it dropped the multi-record group to no record id and the gate denied a
-    // legitimate group as "missing record id", silently breaking convergence. The
-    // group must apply (0 denied) and BOTH cores converge with all records present.
+    // review 093 (positive regression): a MULTI-record transact group is ONE chunk
+    // that legitimately names SEVERAL records. The wired envelope translation threads
+    // the FULL touched-record list through `RemoteOpEnvelope.record_ids`, so the
+    // envelope-metadata gate (which now rejects ONLY a truly empty/unknown list)
+    // accepts it and the collection grant gates the op as a whole. Before the fix the
+    // adapter collapsed any list that was not exactly one id to `record_id = None`,
+    // and the gate denied a legitimate group as "missing record id", silently breaking
+    // convergence. The group must apply (0 denied) and BOTH cores converge with all
+    // records present. The trusted sender is an editor WITH db.write on `tasks`.
     let idx = IndexManager::new();
     let (mut sender, mut receiver) =
         cores_with_membership(membership("actor-editor", Role::Editor, &["tasks"]));
@@ -449,15 +452,36 @@ fn multi_record_transact_group_applies_and_converges() {
     );
     assert!(report.total_chunks_moved() > 0, "the group chunk moves to the receiver");
 
-    // Both cores hold both records and agree (true convergence).
+    // BOTH records land (the whole list was threaded, not just the first id) and the
+    // two cores agree (true convergence).
     let recv_rows = query_tasks(&mut receiver);
     let send_rows = query_tasks(&mut sender);
     assert_eq!(recv_rows, send_rows, "cores converge after a transact group");
     assert_eq!(recv_rows.len(), 2, "both records imported: {recv_rows:?}");
     assert_eq!(recv_rows[0].0, "task-1");
+    assert_eq!(recv_rows[0].1["title"], json!("first"));
     assert_eq!(recv_rows[1].0, "task-2");
+    assert_eq!(recv_rows[1].1["title"], json!("second"));
 
-    // The allow audit named a concrete record (the first touched id), not an empty one.
+    // The chunk histories are byte-identical (true convergence, not just projection).
+    let doc = forge_storage::collection_doc_id("tasks");
+    let recv_chunks: Vec<Vec<u8>> = receiver
+        .store()
+        .get_chunks(&doc)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.payload)
+        .collect();
+    let send_chunks: Vec<Vec<u8>> = sender
+        .store()
+        .get_chunks(&doc)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.payload)
+        .collect();
+    assert_eq!(recv_chunks, send_chunks, "chunk histories converge byte-identically");
+
+    // The group was authorized (a concrete record identity was present), not denied.
     let allowed = receiver
         .events()
         .events_of_kind("sync.authorized")

@@ -1586,21 +1586,21 @@ fn authorize_incoming_op(
 /// Translate the [`forge_sync`] op envelope (recovered at the apply boundary from
 /// the origin's oplog + the chunk's `doc_id`) into the pure-decision
 /// [`RemoteOpEnvelope`] the authorizer consumes. M0b chunk sync carries only
-/// record ops; a concrete touched record id is threaded through so the
-/// envelope-metadata gate (`forge/spec/sync-rbac.md` line 90) and the audit record
-/// always name a concrete resource.
+/// record ops; the FULL list of touched record ids is threaded through so the
+/// envelope-metadata gate (`forge/spec/sync-rbac.md` line 90) sees a concrete
+/// record identity and the collection grant gates the chunk as a whole.
 ///
-/// `record_id` is the FIRST touched record id when the origin oplog named at least
-/// one — a single-record op names exactly that one, and a multi-record transact
-/// group legitimately names several, so we surface the first as the representative
-/// concrete record (the collection grant still gates the whole chunk). It is `None`
-/// only when the chunk names NO record at all (an unknown-op / record-less chunk),
-/// which the authorizer's `envelope_defect` denies fail-closed before any grant
-/// check (`review 092 #2`): a record write must carry a concrete record identity,
-/// never be coerced to an `Insert` with an empty id. The previous translation
-/// dropped a multi-record group to `None`, which the envelope-metadata gate then
-/// rejected as "missing record id" — wrongly denying a legitimate transact group;
-/// threading the first id closes that gap while keeping the record-less chunk
+/// `record_ids` is the WHOLE recovered list, trimmed and with any blank entry
+/// dropped (`review 093`): a single-record op carries exactly one; a multi-record
+/// transact group legitimately carries several, and ALL of them are surfaced — the
+/// collection grant gates the op as a whole, not a single representative record.
+/// The list is empty ONLY when the chunk names NO record at all (an unknown-op /
+/// record-less chunk), which the authorizer's `envelope_defect` denies fail-closed
+/// before any grant check (`review 092 #2`): a record write must carry a concrete
+/// record identity, never be coerced to an `Insert` with no id. An earlier
+/// translation dropped a multi-record group to a single id (or `None`), which made
+/// the envelope-metadata gate reason about only one of several touched records;
+/// threading the full list closes that gap while keeping the record-less chunk
 /// fail-closed.
 fn remote_op_envelope_from_sync(env: &forge_sync::SyncOpEnvelope) -> RemoteOpEnvelope {
     let op = match env.op {
@@ -1619,18 +1619,19 @@ fn remote_op_envelope_from_sync(env: &forge_sync::SyncOpEnvelope) -> RemoteOpEnv
         resource_type,
         op,
         collection: Some(env.collection.clone()),
-        // The first touched record id names a concrete resource for the
-        // envelope-metadata gate + audit. A single-record op has exactly one; a
-        // multi-record transact group has several (the first is representative). A
-        // chunk that names NO record (empty list) leaves this `None` so the gate
-        // denies it fail-closed instead of importing a record write with no record
-        // identity (`review 092 #2`).
-        record_id: env
+        // Thread the WHOLE touched-record list (trimmed, blank-free) so the gate
+        // gates the op as a whole. A single-record op carries one id; a
+        // multi-record transact group carries several. An empty list (a chunk that
+        // names NO record) leaves the gate to deny it fail-closed instead of
+        // importing a record write with no record identity (`review 092 #2`,
+        // `review 093`).
+        record_ids: env
             .record_ids
             .iter()
             .map(|s| s.trim())
-            .find(|s| !s.is_empty())
-            .map(String::from),
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
         schema_id: None,
         schema_version: None,
     }
@@ -2991,12 +2992,13 @@ mod seed_override_tests {
 mod remote_envelope_tests {
     //! The wired-path translation `remote_op_envelope_from_sync` must produce a
     //! pure-decision [`RemoteOpEnvelope`] that the authorizer's envelope-metadata
-    //! gate (`forge/spec/sync-rbac.md` line 90, `review 092 #2`) can accept for a
-    //! well-formed record op AND deny fail-closed for a record-less one. Before the
-    //! fix it dropped a MULTI-record transact group to `record_id: None`, which the
-    //! gate then rejected as "missing record id" — wrongly denying a legitimate
-    //! group. These tests pin the translation directly (it is private), and
-    //! cross-check the end-to-end decision through `authorize_remote_op`.
+    //! gate (`forge/spec/sync-rbac.md` line 90, `review 092 #2`/`review 093`) can
+    //! accept for a well-formed record op AND deny fail-closed for a record-less
+    //! one. The translation threads the WHOLE touched-record list: before the fix it
+    //! dropped a MULTI-record transact group to a single id (or `None`), so the gate
+    //! reasoned about only one of several touched records. These tests pin the
+    //! translation directly (it is private), and cross-check the end-to-end decision
+    //! through `authorize_remote_op`.
 
     use super::*;
     use forge_sync::{SyncOpEnvelope, SyncRecordOp, SyncResource};
@@ -3026,21 +3028,25 @@ mod remote_envelope_tests {
     fn single_record_op_threads_the_named_record_id() {
         let env = remote_op_envelope_from_sync(&sync_env(SyncRecordOp::Insert, "tasks", &["t1"]));
         assert_eq!(env.collection.as_deref(), Some("tasks"));
-        assert_eq!(env.record_id.as_deref(), Some("t1"));
+        assert_eq!(env.record_ids, vec!["t1".to_string()]);
         assert_eq!(env.op, RemoteOp::Insert);
         // A trusted owner applies it (the gate sees a concrete record id).
         assert!(authorize_remote_op(&owner(), None, &env).is_allow());
     }
 
     #[test]
-    fn multi_record_transact_group_threads_first_id_and_is_authorized() {
-        // review 092 #2 regression: a transact group names SEVERAL records. The
-        // previous translation dropped it to `record_id: None`, so the envelope
-        // gate denied a legitimate group as "missing record id". It must now thread
-        // the first concrete id and be allowed for a trusted owner.
+    fn multi_record_transact_group_threads_full_list_and_is_authorized() {
+        // review 093 regression: a transact group names SEVERAL records. The whole
+        // list must be threaded (not collapsed to one id / `None`), so the gate
+        // gates the op as a whole and a legitimate group is allowed for a trusted
+        // owner instead of being denied as "missing record id".
         let env =
             remote_op_envelope_from_sync(&sync_env(SyncRecordOp::Write, "tasks", &["t1", "t2"]));
-        assert_eq!(env.record_id.as_deref(), Some("t1"), "first touched record id is threaded");
+        assert_eq!(
+            env.record_ids,
+            vec!["t1".to_string(), "t2".to_string()],
+            "the full touched-record list is threaded, not just the first id"
+        );
         let decision = authorize_remote_op(&owner(), None, &env);
         assert!(
             decision.is_allow(),
@@ -3049,12 +3055,12 @@ mod remote_envelope_tests {
     }
 
     #[test]
-    fn record_less_chunk_has_no_record_id_and_is_denied_fail_closed() {
-        // A chunk that names NO record (empty list — an unknown-op chunk) leaves
-        // `record_id: None` so the envelope-metadata gate denies it fail-closed
+    fn record_less_chunk_has_empty_record_ids_and_is_denied_fail_closed() {
+        // A chunk that names NO record (empty list — an unknown-op chunk) yields an
+        // empty `record_ids` so the envelope-metadata gate denies it fail-closed
         // before any grant check, even for a trusted owner (`review 092 #2`).
         let env = remote_op_envelope_from_sync(&sync_env(SyncRecordOp::Write, "tasks", &[]));
-        assert!(env.record_id.is_none(), "a record-less chunk names no record");
+        assert!(env.record_ids.is_empty(), "a record-less chunk names no record");
         let decision = authorize_remote_op(&owner(), None, &env);
         assert!(!decision.is_allow(), "a record write with no record id is denied");
         assert!(
@@ -3065,22 +3071,23 @@ mod remote_envelope_tests {
     }
 
     #[test]
-    fn blank_record_ids_are_skipped_when_choosing_the_concrete_id() {
-        // Defensive: a stray empty/whitespace id in the list must not be chosen as
-        // the "concrete" record id — the gate would then deny a group that does name
-        // a real record. The first NON-blank id is threaded.
+    fn blank_record_ids_are_filtered_from_the_list() {
+        // A stray empty/whitespace id in the list must be DROPPED — the gate then
+        // sees only the concrete ids and still allows a group that names a real
+        // record (`review 093`).
         let env =
             remote_op_envelope_from_sync(&sync_env(SyncRecordOp::Write, "tasks", &["", "  ", "t9"]));
-        assert_eq!(env.record_id.as_deref(), Some("t9"));
+        assert_eq!(env.record_ids, vec!["t9".to_string()], "blank entries are filtered out");
         assert!(authorize_remote_op(&owner(), None, &env).is_allow());
     }
 
     #[test]
-    fn all_blank_record_ids_collapse_to_none_and_deny() {
-        // A list of only blank ids names no concrete record — fail closed.
+    fn all_blank_record_ids_collapse_to_empty_and_deny() {
+        // A list of only blank ids names no concrete record — they all filter out to
+        // an empty list, so the gate fails closed.
         let env =
             remote_op_envelope_from_sync(&sync_env(SyncRecordOp::Patch, "tasks", &["", "   "]));
-        assert!(env.record_id.is_none());
+        assert!(env.record_ids.is_empty());
         assert!(!authorize_remote_op(&owner(), None, &env).is_allow());
     }
 }
