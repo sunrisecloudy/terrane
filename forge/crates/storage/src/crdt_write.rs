@@ -555,11 +555,12 @@ pub struct RemoteChunk {
 /// idempotent `false` no-op, and a conflicting payload under an existing chunk id
 /// trips the append-only history-rewrite guard.
 ///
-/// This is the SINGLE remote-import code path: both [`Store::apply_remote_chunks`]
-/// and the legacy [`Store::put_chunk_from_remote`] funnel through it, so neither can
-/// emit a provenance-poor `record.remote_import` row (`review 095`). The original
-/// author and touched record ids ride on the [`RemoteChunk`], never on a divergent
-/// inline insert.
+/// This is the SINGLE remote-import code path. [`Store::apply_remote_chunks`] calls
+/// it per chunk, and the single-chunk [`Store::put_chunk_from_remote`] delegates to
+/// `apply_remote_chunks`, so EVERY public remote import funnels through here and none
+/// can emit a provenance-poor `record.remote_import` row (`review 095`) nor skip the
+/// in-transaction projection/index rebuild (`review 090 #3`). The original author and
+/// touched record ids ride on the [`RemoteChunk`], never on a divergent inline insert.
 pub(crate) fn import_remote_chunk_tx(
     tx: &rusqlite::Transaction<'_>,
     chunk: &RemoteChunk,
@@ -736,7 +737,7 @@ fn chunk_id_lamport(chunk_id: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Mutation, Query, QueryResult};
+    use crate::{CreateIndexKind, Mutation, Query, QueryResult};
     use serde_json::json;
 
     fn store() -> Store {
@@ -1069,9 +1070,17 @@ mod tests {
                 "peer:A",
                 Some("peer:C"),
                 &["t1"],
+                &idx,
             )
             .unwrap();
         assert!(imported, "a fresh chunk is newly imported");
+        // The single-chunk import rebuilt the projection too (review 090 #3): the
+        // imported record is visible, not stranded under a stale projection.
+        assert_eq!(
+            relay.get_record("tasks", "t1").unwrap().unwrap().fields["title"],
+            json!("Ship"),
+            "delegating to apply_remote_chunks materializes the record"
+        );
 
         let ops = relay.list_ops().unwrap();
         assert_eq!(ops.len(), 1);
@@ -1096,6 +1105,7 @@ mod tests {
                 "peer:A",
                 Some("peer:C"),
                 &["t1"],
+                &idx,
             )
             .unwrap();
         assert!(!again, "re-importing a present chunk is an idempotent no-op");
@@ -1123,6 +1133,7 @@ mod tests {
             "peer:origin",
             None,
             &["t9"],
+            &idx,
         )
         .unwrap();
         let ops = dst.list_ops().unwrap();
@@ -1158,6 +1169,7 @@ mod tests {
                 "peer:A",
                 Some("peer:C"),
                 &[], // no touched record id -> provenance-poor, must be rejected
+                &idx,
             )
             .unwrap_err();
         assert_eq!(err.code(), "ValidationError", "empty record_ids is rejected");
@@ -1197,6 +1209,7 @@ mod tests {
                 "peer:A",
                 Some("peer:C"),
                 &["   "], // whitespace-only id is not a real record identity
+                &idx,
             )
             .unwrap_err();
         assert_eq!(err.code(), "ValidationError", "blank record id is rejected");
@@ -1226,6 +1239,7 @@ mod tests {
                 "   ", // blank importing source
                 None,  // and no forwarded original author
                 &["t1"],
+                &idx,
             )
             .unwrap_err();
         assert_eq!(err.code(), "ValidationError", "blank author/source is rejected");
@@ -1235,6 +1249,120 @@ mod tests {
         );
         assert_eq!(total_chunk_rows(&dst), 0, "no chunk landed for a blank author");
         assert!(dst.list_ops().unwrap().is_empty(), "no oplog row for a blank author");
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_rebuilds_projection_and_indexes_atomically() {
+        // review 090 #3: the ONLY public single-chunk remote-import surface must not
+        // be an escape hatch around the DL-4 atomic invariant. Before the fix it wrote
+        // crdt_chunks + oplog but SKIPPED the projection/index rebuild, stranding the
+        // imported record under a stale `records` table (and a stale FTS index). It now
+        // delegates to `apply_remote_chunks`, so in ONE transaction the chunk lands,
+        // the records projection materializes, AND the receiver's active FTS index is
+        // rebuilt — proving there is no non-atomic public path left.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(
+            &insert("tasks", "t1", json!({"title": "offline rebuild"}), 1),
+            &idx,
+        )
+        .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        // The RECEIVER has its OWN active FTS index over tasks/f_title (review 084 #1:
+        // index metadata is per-store, not part of the synced chunk payload).
+        let mut dst = store();
+        let mut dst_idx = IndexManager::new();
+        dst.create_index(&mut dst_idx, "tasks", "f_title", CreateIndexKind::Fts)
+            .expect("create receiver fts index");
+
+        let imported = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:origin",
+                None,
+                &["t1"],
+                &dst_idx,
+            )
+            .unwrap();
+        assert!(imported, "a fresh chunk is newly imported");
+
+        // The chunk + a remote-tagged oplog row landed AND the projection materialized.
+        assert_eq!(total_chunk_rows(&dst), 1);
+        assert_eq!(dst.list_ops().unwrap().len(), 1);
+        assert_eq!(
+            dst.get_record("tasks", "t1").unwrap().unwrap().fields["title"],
+            json!("offline rebuild"),
+            "the single-chunk import materialized the record (no stale projection)"
+        );
+        // The receiver's FTS index was rebuilt by the same atomic apply, so the
+        // imported record is immediately searchable — the projection AND indexes are
+        // consistent, not just crdt_chunks + oplog.
+        assert_eq!(
+            dst_idx
+                .fts_match(dst.connection(), "tasks", "f_title", "offline")
+                .unwrap(),
+            vec!["t1".to_string()],
+            "the single-chunk import rebuilt the receiver's FTS index (review 090 #3)"
+        );
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_rolls_back_entirely_on_rebuild_failure() {
+        // review 090 #3 / 088 #1: because the single-chunk import now delegates to the
+        // atomic `apply_remote_chunks`, a chunk whose bytes the in-transaction rebuild
+        // rejects must roll the WHOLE import back — no stranded crdt_chunks row, no
+        // stranded oplog row, and the prior projection untouched.
+        let mut dst = store();
+        let idx = IndexManager::new();
+        dst.apply_mutation_crdt(&insert("tasks", "kept", json!({"title": "stays"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let chunks_before = total_chunk_rows(&dst);
+        let ops_before = dst.list_ops().unwrap();
+        let kept_before = dst.get_record("tasks", "kept").unwrap().unwrap();
+
+        // Garbage Loro bytes under a fresh network-safe id: the append-only insert
+        // accepts them (content-agnostic), but the in-transaction rebuild folds the
+        // doc's chunks through `from_updates`, which rejects the garbage and fails.
+        let err = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                "sha256:deadbeef",
+                CHUNK_FORMAT,
+                &[0xde, 0xad, 0xbe, 0xef],
+                "peer:99",
+                None,
+                &["kept"],
+                &idx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "SyncError", "garbage chunk must fail the rebuild");
+
+        // The whole single-chunk apply rolled back.
+        assert_eq!(
+            total_chunk_rows(&dst),
+            chunks_before,
+            "a failed single-chunk import must leave NO new crdt_chunks rows"
+        );
+        assert_eq!(
+            dst.list_ops().unwrap(),
+            ops_before,
+            "a failed single-chunk import must leave NO new oplog rows"
+        );
+        assert!(
+            dst.get_chunk(&doc_id, "sha256:deadbeef").unwrap().is_none(),
+            "the garbage chunk must not persist"
+        );
+        assert_eq!(
+            dst.get_record("tasks", "kept").unwrap().unwrap(),
+            kept_before,
+            "the prior record must be untouched after a rolled-back single-chunk import"
+        );
     }
 
     #[test]

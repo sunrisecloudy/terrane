@@ -1168,28 +1168,41 @@ impl Store {
     }
 
     /// Import a SINGLE CRDT chunk that arrived from a **remote peer** during sync,
-    /// in the SAME `crdt_chunks` + `oplog` shape a local write uses (DL-4: "Remote
-    /// updates follow the identical path"). The lower-level, single-chunk twin of
-    /// [`apply_remote_chunks`](Self::apply_remote_chunks): use that for a whole batch
-    /// with a projection rebuild; use this when a caller already holds the chunk's
-    /// provenance and only needs the append-only chunk + oplog row.
+    /// in the SAME `crdt_chunks` + `oplog` + `records`/index shape a local write
+    /// uses (DL-4: "Remote updates follow the identical path"). The single-chunk
+    /// convenience wrapper over [`apply_remote_chunks`](Self::apply_remote_chunks):
+    /// it stages the one chunk and **delegates to the same atomic apply engine**, so
+    /// it can NEVER leave a stale projection behind.
     ///
-    /// Local CRDT writes append a `crdt_chunks` row **and** an `oplog` row in one
-    /// transaction (see `crdt_write::write_group_crdt`). A bare [`put_chunk`] only
-    /// touches `crdt_chunks`, so a remotely-imported chunk would be invisible to the
-    /// oplog / change-feed / audit surface. This method closes that gap: in ONE
-    /// transaction it appends the chunk (append-only, idempotent) and, **only when
-    /// the chunk is newly inserted**, appends an oplog row.
+    /// ATOMIC PROJECTION CONSISTENCY (`review 090 #3`). An earlier version of this
+    /// method wrote only `crdt_chunks` + `oplog` and skipped the projection/index
+    /// rebuild — a public sync-looking escape hatch around the DL-4 atomic invariant
+    /// (`prd-merged/02-data-layer-prd.md`) that could strand committed chunk/oplog
+    /// rows under a `records` table that never saw the imported record. That footgun
+    /// is retired: this now funnels through [`apply_remote_chunks`](Self::apply_remote_chunks),
+    /// which — in ONE SQLite transaction — appends the chunk (append-only,
+    /// idempotent), appends the matching `oplog` row, and rebuilds the `records`
+    /// projection AND active physical indexes from the augmented chunk history. A
+    /// failure anywhere rolls all of it back together, so the ONLY public
+    /// remote-import surface keeps projection + indexes consistent.
+    ///
+    /// `indexes` must be the RECEIVING store's OWN [`IndexManager`](index::IndexManager)
+    /// (review 084 #1): index metadata is per-store and not part of the synced chunk
+    /// payload, so rebuilding against a foreign manager would issue index DML for
+    /// tables this store lacks (or skip the ones it has). Pass
+    /// [`IndexManager::new`](index::IndexManager::new) when none are active.
     ///
     /// Idempotence is load-bearing for sync: re-importing an already-present chunk
     /// (identical `(format, payload)` under the same `(doc_id, chunk_id)`) appends
-    /// NO new oplog row — a second sync of an already-converged pair adds nothing.
-    /// A conflicting payload under an existing chunk id is rejected exactly as the
+    /// NO new chunk and NO new oplog row — a second sync of an already-converged pair
+    /// adds nothing (it still rebuilds the projection to the identical state). A
+    /// conflicting payload under an existing chunk id is rejected exactly as the
     /// append-only [`put_chunk`] guard does (history is never rewritten).
     ///
-    /// PROVENANCE IS REQUIRED (`review 095`). This method delegates to the SAME
-    /// `import_remote_chunk_tx` engine as [`apply_remote_chunks`](Self::apply_remote_chunks),
-    /// so it CANNOT emit a provenance-poor `record.remote_import`:
+    /// PROVENANCE IS REQUIRED (`review 095`). Both this method and
+    /// [`apply_remote_chunks`](Self::apply_remote_chunks) import through the SAME
+    /// `import_remote_chunk_tx` engine, so neither can emit a provenance-poor
+    /// `record.remote_import`:
     ///
     /// - `source` is the importing peer (the relay/session peer that handed us the
     ///   chunk), recorded as the oplog `actor_id`/`source` only when the chunk was
@@ -1206,8 +1219,8 @@ impl Store {
     /// PROVENANCE IS VALIDATED AT THIS BOUNDARY (`review 096`). The spec forbids any
     /// import path from writing a provenance-poor `record.remote_import` row
     /// (`forge/spec/sync-rbac.md`), so this public API REJECTS provenance-poor input
-    /// BEFORE opening a transaction — the store is left completely unchanged on
-    /// failure (no chunk, no oplog row):
+    /// BEFORE delegating — the store is left completely unchanged on failure (no
+    /// chunk, no oplog row, no projection change):
     ///
     /// - the effective original author (`author_actor_id` when forwarded, else
     ///   `source`) must be a non-blank, trimmed peer id — a blank actor would yield a
@@ -1224,7 +1237,7 @@ impl Store {
     /// core authorization envelope instead; this single-chunk API is the public,
     /// caller-supplied surface, so the provenance floor is enforced here.
     ///
-    /// Returns `true` if the chunk (and its oplog row) was newly written, `false`
+    /// Returns `true` if the chunk (and its oplog row) was newly imported, `false`
     /// if it was already present (idempotent no-op).
     #[allow(clippy::too_many_arguments)]
     pub fn put_chunk_from_remote(
@@ -1236,11 +1249,12 @@ impl Store {
         source: &str,
         author_actor_id: Option<&str>,
         record_ids: &[&str],
+        indexes: &index::IndexManager,
     ) -> Result<bool> {
         // Reject provenance-poor input BEFORE touching the store (review 096): the
         // effective original author must be a non-blank peer id, and a record import
         // must name at least one non-blank touched record id. Validating here — ahead
-        // of `transact` — means a rejected call leaves NO chunk and NO oplog row.
+        // of the apply — means a rejected call leaves NO chunk and NO oplog row.
         let original_author = author_actor_id.unwrap_or(source).trim();
         if original_author.is_empty() {
             return Err(CoreError::ValidationError(
@@ -1257,9 +1271,10 @@ impl Store {
             ));
         }
 
-        // Build the same content + provenance unit the batch path imports, so the
-        // remote-import oplog row is byte-for-byte identical to the real sync apply
-        // (one code path: `import_remote_chunk_tx`).
+        // Build the same content + provenance unit the batch path imports, then
+        // delegate to the ONE atomic apply path so the chunk, its oplog row, AND the
+        // projection/index rebuild commit or roll back together (review 090 #3 — no
+        // stale-projection escape hatch).
         let chunk = RemoteChunk {
             doc_id: doc_id.to_string(),
             chunk_id: chunk_id.to_string(),
@@ -1268,8 +1283,10 @@ impl Store {
             author_actor_id: author_actor_id.map(str::to_string),
             record_ids: record_ids.iter().map(|s| s.to_string()).collect(),
         };
-        let source = source.to_string();
-        self.transact(move |tx| crdt_write::import_remote_chunk_tx(tx, &chunk, &source))
+        // `apply_remote_chunks` reports the number of chunks newly imported (0 or 1
+        // for a single chunk); map it back to this API's was-newly-written boolean.
+        let imported = self.apply_remote_chunks(std::slice::from_ref(&chunk), source, indexes)?;
+        Ok(imported == 1)
     }
 
     /// Read a single chunk by `(doc_id, chunk_id)`, if present.
