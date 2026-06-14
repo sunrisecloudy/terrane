@@ -79,13 +79,7 @@ impl HostContext<'_> {
         };
 
         // 3. Host-call budget (SC-2): only a permitted read consumes a slot.
-        self.files_calls_used = self.files_calls_used.saturating_add(1);
-        if self.files_calls_used > self.limits.max_host_calls {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "host-call limit exceeded: max_host_calls = {} reached (ctx.files flood)",
-                self.limits.max_host_calls
-            )));
-        }
+        self.budgets.check_files_call()?;
 
         // 4. Record/replay (CR-8). INSIDE the closure (record mode only) the host
         //    touches the live filesystem: resolve the handle root, run the
@@ -252,13 +246,7 @@ impl HostContext<'_> {
         }
 
         // 3. Host-call budget (SC-2).
-        self.files_calls_used = self.files_calls_used.saturating_add(1);
-        if self.files_calls_used > self.limits.max_host_calls {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "host-call limit exceeded: max_host_calls = {} reached (ctx.files flood)",
-                self.limits.max_host_calls
-            )));
-        }
+        self.budgets.check_files_call()?;
 
         // 4. Record/replay (CR-8). The write touches the live fs only inside the
         //    closure (record mode); on replay the recorder serves the recorded

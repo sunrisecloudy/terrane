@@ -91,13 +91,7 @@ impl HostContext<'_> {
         }
 
         // 3. Host-call budget (SC-2): only a permitted fetch consumes a slot.
-        self.net_calls_used = self.net_calls_used.saturating_add(1);
-        if self.net_calls_used > self.limits.max_host_calls {
-            return Err(CoreError::ResourceLimitExceeded(format!(
-                "host-call limit exceeded: max_host_calls = {} reached (ctx.net.fetch flood)",
-                self.limits.max_host_calls
-            )));
-        }
+        self.budgets.check_net_call()?;
 
         // 4. Record/replay (CR-8) + secret injection (SC-13). The `args` recorded
         //    into the trace are the request AS THE APPLET BUILT IT — every
