@@ -43,6 +43,15 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         // Installing/compiling an applet is a maintainer+ operation (SC-15):
         // Viewer/Auditor/Runner/Editor cannot install.
         "applet.install" => Some(&[Role::Owner, Role::Maintainer]),
+        // Lifecycle administration — enable/suspend/upgrade/uninstall an applet
+        // (CR-7) — is the same maintainer+ surface as install: an admin pauses/
+        // resumes/upgrades/removes an applet. `applet.upgrade` installs a new version
+        // over the active one, so it carries the SAME install/maintainer authority. A
+        // Viewer/Auditor (read-only/oversight) or a bare Runner/Editor cannot change
+        // an applet's durable lifecycle.
+        "applet.enable" | "applet.suspend" | "applet.upgrade" | "applet.uninstall" => {
+            Some(&[Role::Owner, Role::Maintainer])
+        }
         // Triggering execution: the run-capable roles (CR-8). Viewer/Auditor are
         // read-only/oversight and cannot run code.
         "runtime.run" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),

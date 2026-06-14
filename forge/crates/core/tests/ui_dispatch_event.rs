@@ -428,8 +428,8 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
 
     // The CONTRACT's renderer-facing code (`expect.results[0].error.code`) is NOT
     // discarded: the command surfaces it VERBATIM on the rejection event it emits
-    // (`ui.dispatch_failed` for a post-dispatch failure, `ui.dispatch_rejected` for
-    // the pre-dispatch suspended gate). All four pinned codes are produced exactly
+    // (`ui.dispatch_failed` for a post-dispatch failure, `ui.dispatch_event.rejected`
+    // for the pre-dispatch suspended gate). All four pinned codes are produced exactly
     // by the command — no remapping:
     //   - `ui.action_not_found`        — unknown handler (engine resolve marker)
     //   - `ui.applet_not_dispatchable` — suspended lifecycle gate
@@ -442,11 +442,11 @@ fn run_error_vector(name: &str, vector: &serde_json::Value) {
         .expect("every error vector pins expect.results[0].error.message_contains");
 
     // Find the rejection event the command emitted and read its renderer-facing
-    // code + message. The suspended gate emits `ui.dispatch_rejected`
-    // (dispatch_attempted == false); every other rejection emits
-    // `ui.dispatch_failed` (dispatch_attempted == true).
+    // code + message. The suspended gate emits the spec-canonical
+    // `ui.dispatch_event.rejected` (dispatch_attempted == false); every other
+    // rejection emits `ui.dispatch_failed` (dispatch_attempted == true).
     let (reject_kind, want_attempted) = if name == "suspended_applet_rejected" {
-        ("ui.dispatch_rejected", false)
+        ("ui.dispatch_event.rejected", false)
     } else {
         ("ui.dispatch_failed", true)
     };

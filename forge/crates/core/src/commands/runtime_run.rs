@@ -8,7 +8,8 @@ use forge_runtime::{record_run, Program as RuntimeProgram};
 use crate::determinism::{derive_seeds, run_seed_override, unique_run_id};
 use crate::StorageHostBridge;
 
-use super::super::WorkspaceCore;
+use super::super::{AppletLifecycle, WorkspaceCore};
+use super::lifecycle::{not_installed, LIFECYCLE_NOT_INSTALLED, LIFECYCLE_SUSPENDED};
 use super::require_applet_id;
 
 impl WorkspaceCore {
@@ -34,11 +35,28 @@ impl WorkspaceCore {
         let applet_id = require_applet_id(cmd)?;
         let input = cmd.payload.get("input").cloned().unwrap_or(serde_json::Value::Null);
         let seed_override = run_seed_override(cmd)?;
-        let installed = self
-            .load_applet(applet_id.as_str())?
-            .ok_or_else(|| {
-                CoreError::ValidationError(format!("applet {applet_id} is not installed"))
-            })?;
+
+        // Lifecycle gate (CR-7 / `forge/spec/applet-lifecycle.md`): a run is allowed
+        // ONLY for an `enabled` applet. Reject an UNINSTALLED applet (no active
+        // record) and a SUSPENDED applet BEFORE any user code starts — no host calls,
+        // no UI patches, no records touched (the `run_uninstalled_rejected` /
+        // suspend vectors). Each rejection emits a `runtime.run.rejected` audit event
+        // carrying the stable lifecycle marker so the pre-run denial is observable.
+        let installed = match self.load_applet(applet_id.as_str())? {
+            Some(installed) => installed,
+            None => {
+                let error = not_installed(applet_id.as_str());
+                self.emit_run_rejected(&applet_id, LIFECYCLE_NOT_INSTALLED, &error);
+                return Err(error);
+            }
+        };
+        if self.applet_lifecycle(applet_id.as_str())? == AppletLifecycle::Suspended {
+            let error = CoreError::ValidationError(format!(
+                "{LIFECYCLE_SUSPENDED}: applet {applet_id} is suspended; runtime.run is rejected before user code starts"
+            ));
+            self.emit_run_rejected(&applet_id, LIFECYCLE_SUSPENDED, &error);
+            return Err(error);
+        }
 
         self.events.emit(
             Some(applet_id.clone()),
@@ -198,6 +216,28 @@ impl WorkspaceCore {
             "host_call_methods": run.calls.iter().map(|c| c.method.clone()).collect::<Vec<_>>(),
             "ui_renders": ui_renders.iter().map(|r| r.tree.clone()).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Emit a `runtime.run.rejected` audit event for a run denied by the lifecycle
+    /// gate BEFORE any user code ran (CR-7). Carries the stable lifecycle
+    /// `error_code` marker plus the typed error message so a host/auditor can react
+    /// to the pre-run denial without parsing English text — the run path's analogue
+    /// of `ui.dispatch_event`'s `ui.dispatch_event.rejected`.
+    fn emit_run_rejected(
+        &mut self,
+        applet_id: &forge_domain::AppletId,
+        error_code: &str,
+        error: &CoreError,
+    ) {
+        self.events.emit(
+            Some(applet_id.clone()),
+            "runtime.run.rejected",
+            serde_json::json!({
+                "applet_id": applet_id,
+                "error_code": error_code,
+                "message": error.to_string(),
+            }),
+        );
     }
 }
 

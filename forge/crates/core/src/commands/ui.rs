@@ -239,12 +239,32 @@ impl WorkspaceCore {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        // Lifecycle gate (UI-4): a suspended applet has no live UI session, so a UI
-        // event is rejected BEFORE any handler runs and with NO state change (the
-        // `suspended_applet_rejected` vector). The flag is the TRUSTED per-applet
-        // lifecycle, read from workspace state — never from the request — so an
-        // applet cannot un-suspend itself by sending an event. We emit a
-        // `ui.dispatch_rejected` event carrying the renderer-facing code
+        // Lifecycle gate (CR-7): the durable states are checked in spec precedence —
+        // `uninstalled` (the ABSENCE of an active record) FIRST, then `suspended`
+        // (the active record's flag). This matches `runtime.run` (`runtime_run.rs`)
+        // and the spec's three durable states, so the two dispatch paths never
+        // disagree on which lifecycle error a given state yields, and it does not
+        // depend on the lifecycle flag being scrubbed on uninstall.
+        //
+        // UNINSTALLED: no active record ⇒ no dispatchable code, so the UI event is
+        // rejected BEFORE handler lookup. The rejection carries the lifecycle marker
+        // (`lifecycle.applet_not_installed`) and emits a `ui.dispatch_event.rejected`
+        // audit event with `dispatch_attempted: false` (T036 uninstalled-reject path).
+        let installed = match self.load_applet(applet_id.as_str())? {
+            Some(installed) => installed,
+            None => {
+                let error = super::lifecycle::not_installed(applet_id.as_str());
+                self.emit_dispatch_rejected(&applet_id, &action_ref, &error);
+                return Err(error);
+            }
+        };
+
+        // SUSPENDED (UI-4): an installed-but-suspended applet has no live UI session,
+        // so a UI event is rejected BEFORE any handler runs and with NO state change
+        // (the `suspended_applet_rejected` vector). The flag is the TRUSTED per-applet
+        // lifecycle, read from workspace state — never from the request — so an applet
+        // cannot un-suspend itself by sending an event. We emit a
+        // `ui.dispatch_event.rejected` event carrying the renderer-facing code
         // (`ui.applet_not_dispatchable`) with `dispatch_attempted: false`, so the
         // pre-dispatch rejection is observable to a renderer/host exactly like the
         // post-dispatch failure below (T034 `dispatch_attempted` flag).
@@ -252,23 +272,9 @@ impl WorkspaceCore {
             let error = CoreError::ValidationError(format!(
                 "ui.applet_not_dispatchable: applet {applet_id} is suspended; UI events are rejected before dispatch"
             ));
-            self.events.emit(
-                Some(applet_id.clone()),
-                "ui.dispatch_rejected",
-                serde_json::json!({
-                    "applet_id": applet_id,
-                    "action_ref": action_ref,
-                    "dispatch_attempted": false,
-                    "code": dispatch_error_code(&error),
-                    "message": error.to_string(),
-                }),
-            );
+            self.emit_dispatch_rejected(&applet_id, &action_ref, &error);
             return Err(error);
         }
-
-        let installed = self.load_applet(applet_id.as_str())?.ok_or_else(|| {
-            CoreError::ValidationError(format!("applet {applet_id} is not installed"))
-        })?;
 
         // The DIFF BASE: the applet's last-known tree (the previous render this
         // facade saw). Absent (the applet has not rendered yet) ⇒ `None`, so the
@@ -439,6 +445,41 @@ impl WorkspaceCore {
             "patches": patches_json,
         }))
     }
+
+    /// Emit the spec-canonical `ui.dispatch_event.rejected` audit event for a UI
+    /// event denied by the lifecycle gate BEFORE any handler ran (CR-7 /
+    /// `forge/spec/applet-lifecycle.md` "Events"; the `suspend_rejects_dispatch`
+    /// vector). The payload carries `dispatch_attempted: false` (the handler was not
+    /// even looked up). The stable [`dispatch_error_code`] marker
+    /// (`ui.applet_not_dispatchable` for a suspended applet,
+    /// `lifecycle.applet_not_installed` for an uninstalled one) is carried under
+    /// BOTH keys so every consumer is served:
+    ///   - `error_code` — the spec/fixture-pinned field, mirroring the run path's
+    ///     `runtime.run.rejected` so the two pre-execution rejection events name
+    ///     their code identically;
+    ///   - `code` — the renderer-facing T034 field (`forge/fixtures/ui-events`), so
+    ///     the post-dispatch `ui.dispatch_failed` event and this pre-dispatch
+    ///     rejection expose the renderer code under the same key.
+    fn emit_dispatch_rejected(
+        &mut self,
+        applet_id: &AppletId,
+        action_ref: &str,
+        error: &CoreError,
+    ) {
+        let code = dispatch_error_code(error);
+        self.events.emit(
+            Some(applet_id.clone()),
+            "ui.dispatch_event.rejected",
+            serde_json::json!({
+                "applet_id": applet_id,
+                "action_ref": action_ref,
+                "dispatch_attempted": false,
+                "error_code": code,
+                "code": code,
+                "message": error.to_string(),
+            }),
+        );
+    }
 }
 
 /// Classify a `ui.dispatch_event` rejection into its **renderer-facing error
@@ -451,6 +492,9 @@ impl WorkspaceCore {
 ///     rejected BEFORE any handler ran (the `suspended_applet_rejected` vector).
 ///     Marked by the `ui.applet_not_dispatchable:` prefix the lifecycle gate
 ///     writes.
+///   - `lifecycle.applet_not_installed` — the applet has no active record (it was
+///     uninstalled, or never installed); the event was rejected BEFORE handler
+///     lookup (CR-7). Marked by the same lifecycle prefix the run gate uses.
 ///   - `ui.action_not_found` — no handler is exported under the dispatched
 ///     `ActionRef` (the `unknown_action_rejected` vector). The engine raises a
 ///     `ValidationError` whose message is `no UI handler registered for action
@@ -476,6 +520,15 @@ fn dispatch_error_code(error: &CoreError) -> &'static str {
     match error {
         CoreError::ValidationError(msg) if msg.contains("ui.applet_not_dispatchable") => {
             "ui.applet_not_dispatchable"
+        }
+        // The CR-7 uninstalled-dispatch rejection: no active applet record, so the
+        // event was rejected BEFORE handler lookup. Surface the stable lifecycle
+        // marker (not the generic transport `ValidationError`) so a renderer gets the
+        // same kind of typed code the suspended gate yields.
+        CoreError::ValidationError(msg)
+            if msg.contains(super::lifecycle::LIFECYCLE_NOT_INSTALLED) =>
+        {
+            super::lifecycle::LIFECYCLE_NOT_INSTALLED
         }
         CoreError::ValidationError(msg) if msg.contains("no UI handler registered") => {
             "ui.action_not_found"

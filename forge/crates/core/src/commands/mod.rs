@@ -27,6 +27,7 @@ use forge_domain::{AppletId, CoreCommand, CoreError, Result};
 use super::WorkspaceCore;
 
 pub(super) mod applet;
+pub(super) mod lifecycle;
 pub(super) mod query;
 pub(super) mod replay;
 pub(super) mod runtime_run;
@@ -56,6 +57,16 @@ const COMMANDS: &[(&str, Handler)] = &[
     ("workspace.create", WorkspaceCore::cmd_workspace_create),
     ("workspace.open", WorkspaceCore::cmd_workspace_open),
     ("applet.install", WorkspaceCore::cmd_applet_install),
+    // Applet lifecycle transitions (CR-7, commands/lifecycle.rs): the enable/
+    // suspend/uninstall durable-state changes over the installed-applet record +
+    // the trusted `AppletLifecycle` flag (`applet.install` mints the enabled v1).
+    ("applet.enable", WorkspaceCore::cmd_applet_enable),
+    ("applet.suspend", WorkspaceCore::cmd_applet_suspend),
+    // `applet.upgrade` (CR-7): atomically install a new version over an active
+    // applet (compile + validate + schema additions staged; the active pointer
+    // moves to v2 only after all staged work commits; a staged failure rolls back).
+    ("applet.upgrade", WorkspaceCore::cmd_applet_upgrade),
+    ("applet.uninstall", WorkspaceCore::cmd_applet_uninstall),
     ("runtime.run", WorkspaceCore::cmd_runtime_run),
     ("runtime.replay", WorkspaceCore::cmd_runtime_replay),
     ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),

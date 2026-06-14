@@ -19,8 +19,20 @@ pub(in crate::workspace) struct InstalledApplet {
     pub(in crate::workspace) js_code: String,
     /// `forge_domain::code_hash(js_code)` — the provenance + replay key.
     pub(in crate::workspace) code_hash: String,
-    /// Monotone install version (bumps on re-install/upgrade).
+    /// Monotone install version WITHIN the current install generation (CR-7).
+    /// A fresh install starts at `version = 1`; an upgrade bumps it. Uninstall +
+    /// reinstall starts a new generation back at `version = 1` (see
+    /// [`install_generation`](InstalledApplet::install_generation)).
     pub(in crate::workspace) version: u32,
+    /// The install generation (CR-7 / `forge/spec/applet-lifecycle.md` Identity):
+    /// `1` for the first install of an `applet_id`, incremented each time the
+    /// applet is uninstalled and later installed fresh under the same id. The
+    /// version counter resets to `1` at the start of each generation, so version
+    /// identity is `(applet_id, install_generation, version, code_hash)`. Older
+    /// records (installed before lifecycle wiring) deserialize to `1` via the
+    /// serde default, so the field is backward-compatible with the meta store.
+    #[serde(default = "default_install_generation")]
+    pub(in crate::workspace) install_generation: u32,
     /// The signing/trust result recorded at install time (SC-15 / MP-4). An
     /// install that carried a verified Ed25519 package records the verified
     /// publisher + key id here so a later command can report the package's trust;
@@ -84,9 +96,26 @@ impl InstallTrust {
     }
 }
 
+/// The backward-compat default install generation for a record persisted before
+/// lifecycle wiring (`forge/spec/applet-lifecycle.md`): the first generation is
+/// `1`.
+fn default_install_generation() -> u32 {
+    1
+}
+
 /// KV key for an applet's installed record within [`META_NS`].
 pub(in crate::workspace) fn applet_key(applet_id: &str) -> String {
     format!("applet/{applet_id}")
+}
+
+/// KV key (within [`META_NS`]) for an applet's **highest install generation ever
+/// assigned**. Unlike the active applet record (which is removed on uninstall),
+/// this counter SURVIVES uninstall so a later fresh install starts a NEW
+/// generation (`forge/spec/applet-lifecycle.md`: "Reinstalling after uninstall
+/// creates a new `install_generation`"). The full key is
+/// `applet_generation/<applet_id>`.
+pub(in crate::workspace) fn applet_generation_key(applet_id: &str) -> String {
+    format!("applet_generation/{applet_id}")
 }
 
 impl WorkspaceCore {
@@ -172,22 +201,82 @@ impl WorkspaceCore {
             ))
         })?;
 
-        // Bump version if re-installing.
-        let version = self
-            .load_applet(applet_id.as_str())
-            .ok()
-            .flatten()
-            .map(|a| a.version + 1)
-            .unwrap_or(1);
+        // Lifecycle install rules (CR-7 / `forge/spec/applet-lifecycle.md`):
+        //
+        //  - The FIRST install of an `applet_id` creates `install_generation = 1`,
+        //    `version = 1`, durable state `enabled`.
+        //  - Re-installing the SAME canonical `code_hash` over the ACTIVE version is
+        //    an idempotent no-op: it returns the existing version/generation and
+        //    mints NO new version (the `reinstall_same_code_hash_noop` vector).
+        //  - Installing different code while an active version exists bumps the
+        //    version WITHIN the current generation (the M0a install-as-upgrade path).
+        //  - Installing after an uninstall starts a FRESH generation back at
+        //    `version = 1` (the `uninstall_then_install_fresh_generation` vector):
+        //    the active record was removed but the generation counter survives, so a
+        //    reinstall is `generation = highest_ever + 1`.
+        let active = self.load_applet(applet_id.as_str()).ok().flatten();
+        if let Some(existing) = &active {
+            // Idempotency requires BOTH the same `code_hash` AND the same canonical
+            // manifest over the active version (spec line 39). A same-code reinstall
+            // under a DIFFERENT manifest (e.g. tighter `limits`) is a real re-install
+            // that bumps the version and switches the active manifest — it must NOT be
+            // collapsed to a no-op (the version-pinned-replay regression test 7b).
+            let same_manifest = existing.manifest == manifest;
+            if existing.code_hash == entry_program.code_hash && same_manifest {
+                // Idempotent reinstall of the active version: same code identity AND
+                // same manifest, so nothing changes. Do NOT mint a new version, do NOT
+                // touch lifecycle.
+                self.events.emit(
+                    Some(applet_id.clone()),
+                    "applet.install.noop",
+                    serde_json::json!({
+                        "applet_id": applet_id,
+                        "install_generation": existing.install_generation,
+                        "version": existing.version,
+                        "reason": "same_manifest_and_code_hash",
+                    }),
+                );
+                return Ok(serde_json::json!({
+                    "applet_id": applet_id,
+                    "install_generation": existing.install_generation,
+                    "version": existing.version,
+                    "code_hash": existing.code_hash,
+                    "lifecycle": "enabled",
+                    "idempotent": true,
+                    "warnings": warnings,
+                    "trust": trust.to_json(),
+                }));
+            }
+        }
+
+        // Resolve `(install_generation, version)` for this install.
+        let highest_generation = self.load_applet_generation(applet_id.as_str())?;
+        let (install_generation, version) = match &active {
+            // An active version exists with DIFFERENT code → same-generation version
+            // bump (the M0a install-as-upgrade path; `applet.upgrade` is the explicit
+            // staged variant).
+            Some(existing) => (existing.install_generation, existing.version + 1),
+            // No active version. A first install is generation 1; a reinstall after
+            // uninstall is the next generation past the highest ever assigned. Either
+            // way the new generation starts at `version = 1`.
+            None => (highest_generation + 1, 1),
+        };
 
         let installed = InstalledApplet {
             manifest,
             js_code: entry_program.js_code,
             code_hash: entry_program.code_hash,
             version,
+            install_generation,
             trust: trust.clone(),
         };
         self.store_applet(applet_id.as_str(), &installed)?;
+        // Record the highest generation ever assigned so a later uninstall +
+        // reinstall mints a fresh one (the counter survives uninstall).
+        self.store_applet_generation(applet_id.as_str(), install_generation)?;
+        // A successful install is durably `enabled` (CR-7): clear any prior
+        // suspended flag left by an earlier generation under the same id.
+        self.set_applet_lifecycle(applet_id.as_str(), super::super::AppletLifecycle::Active)?;
 
         if sources.len() > 1 {
             warnings.push(format!(
@@ -201,15 +290,19 @@ impl WorkspaceCore {
             "applet.installed",
             serde_json::json!({
                 "applet_id": applet_id,
+                "install_generation": install_generation,
                 "version": version,
+                "state_after": "enabled",
                 "trust": trust.to_json(),
             }),
         );
 
         Ok(serde_json::json!({
             "applet_id": applet_id,
+            "install_generation": install_generation,
             "version": version,
             "code_hash": installed.code_hash,
+            "lifecycle": "enabled",
             "warnings": warnings,
             // SC-15: the verified trust result for this install — `unsigned`, or
             // `signed` with the verified publisher / key id (the package passed
@@ -245,5 +338,42 @@ impl WorkspaceCore {
             }
             None => Ok(None),
         }
+    }
+
+    /// Remove the ACTIVE installed applet record (CR-7 uninstall): after this the
+    /// applet is durably `uninstalled` (no active record), so `runtime.run` /
+    /// `ui.dispatch_event` / `applet.enable` / `applet.suspend` reject for that id
+    /// until a fresh install succeeds. The generation counter, run records, and
+    /// pinned replay programs are NOT touched here — only the active pointer — so
+    /// recorded runs remain replayable and a reinstall mints a fresh generation.
+    pub(in crate::workspace) fn delete_applet(&mut self, applet_id: &str) -> Result<()> {
+        self.store.kv_delete(META_NS, &applet_key(applet_id))
+    }
+
+    /// The highest install generation ever assigned to `applet_id` (0 when the id
+    /// was never installed). Persisted separately from the active applet record so
+    /// it SURVIVES uninstall and a reinstall starts the next generation
+    /// (`forge/spec/applet-lifecycle.md`).
+    pub(in crate::workspace) fn load_applet_generation(&self, applet_id: &str) -> Result<u32> {
+        match self.store.kv_get(META_NS, &applet_generation_key(applet_id))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                CoreError::StorageError(format!("applet generation deserialize failed: {e}"))
+            }),
+            None => Ok(0),
+        }
+    }
+
+    /// Persist the highest install generation ever assigned to `applet_id`. Written
+    /// on each install so a later uninstall + reinstall mints a strictly greater
+    /// generation even though the active record was removed.
+    pub(in crate::workspace) fn store_applet_generation(
+        &mut self,
+        applet_id: &str,
+        generation: u32,
+    ) -> Result<()> {
+        let bytes = serde_json::to_vec(&generation)
+            .map_err(|e| CoreError::StorageError(format!("applet generation serialize failed: {e}")))?;
+        self.store
+            .kv_set(META_NS, &applet_generation_key(applet_id), &bytes, "application/json")
     }
 }
