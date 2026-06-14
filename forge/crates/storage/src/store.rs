@@ -84,6 +84,30 @@ CREATE TABLE IF NOT EXISTS runs (
     record_json TEXT NOT NULL,
     created_at INTEGER
 );
+
+-- SC-12 durable append-only audit log. `seq` is the workspace-local monotonic
+-- ordering key (assigned from a persisted counter, not SQLite ROWID, so it
+-- replays deterministically and a caller can pin the starting sequence). There
+-- is NO UPDATE/DELETE path in code: rows are only ever APPENDED. `metadata` is
+-- redacted canonical JSON (never a secret value or a request/response body).
+CREATE TABLE IF NOT EXISTS audit_log (
+    seq           INTEGER PRIMARY KEY,
+    audit_id      TEXT NOT NULL UNIQUE,
+    logical_time  INTEGER NOT NULL,
+    producer      TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    decision      TEXT NOT NULL,
+    actor_id      TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT,
+    collection    TEXT,
+    reason        TEXT NOT NULL,
+    metadata      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_log(decision);
+CREATE INDEX IF NOT EXISTS idx_audit_resource_type ON audit_log(resource_type);
 "#;
 
 /// How long a contended write waits for the SQLite writer lock before giving up

@@ -70,6 +70,8 @@ pub use store::Store;
 /// dependency.
 pub use rusqlite::Transaction;
 
+mod audit;
+pub use audit::{audit_id_for_seq, redact_metadata, AuditQuery, AuditRecord};
 mod kv;
 pub use kv::{kv_delete_tx, kv_get_tx, kv_set_tx};
 mod migration;
