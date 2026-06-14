@@ -743,8 +743,211 @@ fn upgrade_with_identical_payload_is_rejected_not_a_spurious_v2() {
 }
 
 // ---------------------------------------------------------------------------
+// applet.upgrade: a failure INSIDE the commit transaction (after the schema
+// registry persisted, before the active pointer switched) rolls the WHOLE commit
+// back — the P1 crash-atomicity gap (lifecycle review). This distinguishes a
+// crash-atomic commit from "all writes happened to succeed": the schema addition
+// is staged + persisted FIRST inside the transaction, then the injected failure
+// fires, and the rollback must discard the persisted schema too (not just skip
+// the un-run active-pointer write). A non-transactional commit would leave the
+// `priority` field durably committed while the active pointer stayed v1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn upgrade_commit_failure_rolls_back_persisted_schema_and_pointer() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install(&mut core, todo_manifest());
+    seed_task(&mut core, "tasks/1", "existing");
+
+    // Baseline BEFORE the upgrade: v1 active, no `priority` field, one live record.
+    assert!(
+        !registry_has_field(&core, "tasks", "priority"),
+        "precondition: the v2 `priority` field is not yet in the schema"
+    );
+    let before_collections = core.registry().collections().count();
+    let before_rec = core.store().get_record("tasks", "tasks/1").unwrap().expect("record present");
+
+    // Upgrade to v2 WITH a schema addition (so the registry persist actually runs
+    // first in the commit txn) AND inject a `commit`-stage failure between that
+    // persist and the active-pointer switch.
+    let upgrade = core.handle(cmd(
+        "applet.upgrade",
+        Some("applet.todo"),
+        serde_json::json!({
+            "manifest": todo_manifest(),
+            "sources": { "src/main.ts": V2_TS },
+            "schema_additions": [{ "collection": "tasks", "field": "priority", "type": "integer" }],
+            "simulate_failure_stage": "commit",
+        }),
+    ));
+    assert!(!upgrade.ok, "the mid-commit failure must fail the upgrade");
+    let err = upgrade.error.unwrap();
+    assert!(
+        err.to_string().contains("lifecycle.upgrade_failed"),
+        "carries the upgrade-failed marker: {err}"
+    );
+    assert!(
+        err.to_string().contains("stage commit"),
+        "names the commit stage so the rollback location is observable: {err}"
+    );
+
+    // FULL rollback. (1) The active version stays v1 — a same-code reinstall of v1
+    // still reports version 1, idempotent (no spurious v2 was minted).
+    assert_eq!(core.applet_lifecycle("applet.todo").unwrap(), AppletLifecycle::Active);
+    let probe = install(&mut core, todo_manifest());
+    assert_eq!(probe["version"], serde_json::json!(1), "no v2 was committed (still v1)");
+    assert_eq!(probe["idempotent"], serde_json::json!(true), "v1 is still the active version");
+
+    // (2) The schema is UNCHANGED — both the IN-MEMORY registry and (critically)
+    // the DURABLE registry. The crux of the P1: a non-transactional commit persists
+    // the schema addition with an auto-committed `kv_set` FIRST, so even though the
+    // in-memory registry swap is skipped on failure, the DURABLE registry is left
+    // carrying `priority` under a still-v1 active pointer — exactly the split the
+    // spec forbids, and a divergence that surfaces on reopen. Reading the durable
+    // registry back (not just the in-memory copy) is what distinguishes real
+    // commit-atomicity from "the in-memory swap happened not to run".
+    assert!(
+        !registry_has_field(&core, "tasks", "priority"),
+        "the in-memory registry has no v2 field after rollback"
+    );
+    assert!(
+        !durable_registry_has_field(&core, "tasks", "priority"),
+        "the DURABLE schema addition rolled back with the failed commit (no half-applied persist)"
+    );
+    assert_eq!(
+        core.registry().collections().count(),
+        before_collections,
+        "no collection was added by the rolled-back commit"
+    );
+
+    // (3) Records unchanged, (4) version list unchanged (still only v1 program pinned).
+    let after_rec = core.store().get_record("tasks", "tasks/1").unwrap().expect("record retained");
+    assert_eq!(after_rec.fields, before_rec.fields, "records unchanged by the failed commit");
+    assert!(!after_rec.deleted, "records not tombstoned by the failed commit");
+
+    // The rejection audit names the active (unchanged) version + the commit stage;
+    // NO `applet.upgraded` event was emitted (the commit never landed).
+    let ev = core
+        .events()
+        .events_of_kind("applet.upgrade.rejected")
+        .next()
+        .expect("an applet.upgrade.rejected event");
+    assert_eq!(ev.payload["active_version"], serde_json::json!(1));
+    assert_eq!(ev.payload["failed_stage"], serde_json::json!("commit"));
+    assert_eq!(ev.payload["error_code"], serde_json::json!("lifecycle.upgrade_failed"));
+    assert_eq!(
+        core.events().events_of_kind("applet.upgraded").count(),
+        0,
+        "no upgrade committed, so no applet.upgraded event"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// applet.uninstall purge_data: a failure mid-uninstall (after some records were
+// tombstoned, before the active pointer was removed) rolls the WHOLE purge back —
+// records stay live AND the applet stays installed (lifecycle review P2). Without
+// the enclosing transaction a crash here left some records purged, others live,
+// with the applet still installed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn purge_uninstall_failure_rolls_back_tombstones_and_keeps_applet_installed() {
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    install(&mut core, todo_manifest());
+    seed_task(&mut core, "tasks/1", "one");
+    seed_task(&mut core, "tasks/2", "two");
+
+    let uninstall = core.handle(cmd(
+        "applet.uninstall",
+        Some("applet.todo"),
+        serde_json::json!({
+            "retention_policy": "purge_data",
+            "simulate_failure_stage": "uninstall.tombstone",
+        }),
+    ));
+    assert!(!uninstall.ok, "the mid-uninstall failure must fail the uninstall");
+
+    // FULL rollback: BOTH records stay live (no partial tombstoning), and the
+    // applet stays installed + active (the active-pointer removal rolled back too).
+    for id in ["tasks/1", "tasks/2"] {
+        let rec = core.store().get_record("tasks", id).unwrap().expect("record retained");
+        assert!(!rec.deleted, "{id} stays live — the purge rolled back atomically");
+        assert!(
+            !rec.extensions.contains_key("tombstone_reason"),
+            "{id} carries no purge reason (its tombstone write rolled back)"
+        );
+    }
+    // The applet stays INSTALLED — `applet.enable` is an idempotent no-op on an
+    // installed+active applet, but a typed `lifecycle.applet_not_installed`
+    // rejection once the active pointer is gone. Here it must NO-OP (still
+    // installed), proving the active-pointer removal rolled back with the tombstones.
+    let still_installed = core.handle(cmd("applet.enable", Some("applet.todo"), serde_json::json!({})));
+    assert!(
+        still_installed.ok,
+        "the applet stays installed (the active-pointer removal rolled back): {:?}",
+        still_installed.error
+    );
+    assert_eq!(core.applet_lifecycle("applet.todo").unwrap(), AppletLifecycle::Active);
+    assert_eq!(
+        core.events().events_of_kind("applet.uninstalled").count(),
+        0,
+        "no uninstall committed, so no applet.uninstalled event"
+    );
+
+    // Sanity: a clean purge_data still works AFTER the rolled-back attempt (the
+    // failed transaction left no poison), tombstoning both records this time.
+    let ok = core.handle(cmd(
+        "applet.uninstall",
+        Some("applet.todo"),
+        serde_json::json!({ "retention_policy": "purge_data" }),
+    ));
+    assert!(ok.ok, "a clean purge after the rolled-back one succeeds: {:?}", ok.error);
+    assert_eq!(ok.payload["retention"]["records_tombstoned"], serde_json::json!(2));
+    assert!(core.store().get_record("tasks", "tasks/1").unwrap().unwrap().deleted);
+    assert!(core.store().get_record("tasks", "tasks/2").unwrap().unwrap().deleted);
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// Whether the IN-MEMORY schema registry declares a field `name` on `collection`
+/// (used to assert a staged schema addition committed or rolled back).
+fn registry_has_field(core: &WorkspaceCore, collection: &str, name: &str) -> bool {
+    core.registry()
+        .collection(collection)
+        .map(|c| c.fields().iter().any(|f| f.name() == name))
+        .unwrap_or(false)
+}
+
+/// Whether the DURABLE (persisted) schema registry declares a field `name` on
+/// `collection`. Reads the serialized registry straight from the workspace KV
+/// (`__forge/meta` / `schema_registry`, the stable on-disk keys) as JSON so the
+/// assertion sees what a REOPEN would load — the only way to catch a
+/// non-transactional commit that persisted the schema addition durably while the
+/// in-memory copy stayed stale (the P1 split). Parsed as a generic `Value` so the
+/// test needs no extra crate dependency.
+fn durable_registry_has_field(core: &WorkspaceCore, collection: &str, name: &str) -> bool {
+    // `META_NS` / `SCHEMA_REGISTRY_KEY` from the core's persistence layer — stable
+    // on-disk identifiers, repeated here because they are not part of the public API.
+    let bytes = match core.store().kv_get("__forge/meta", "schema_registry").unwrap() {
+        Some(b) => b,
+        None => return false,
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    // SchemaRegistry serializes as `{ "collections": { "<name>": { "fields": [ { "name": ... } ] } } }`.
+    value
+        .get("collections")
+        .and_then(|c| c.get(collection))
+        .and_then(|c| c.get("fields"))
+        .and_then(|f| f.as_array())
+        .map(|fields| {
+            fields
+                .iter()
+                .any(|f| f.get("name").and_then(|n| n.as_str()) == Some(name))
+        })
+        .unwrap_or(false)
+}
 
 /// Seed a live `tasks` record the applet owns (collection in its `db.write`
 /// grant), directly through the store, so the uninstall retention paths have an

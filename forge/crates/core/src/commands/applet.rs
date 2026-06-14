@@ -108,6 +108,14 @@ pub(in crate::workspace) fn applet_key(applet_id: &str) -> String {
     format!("applet/{applet_id}")
 }
 
+/// Serialize an installed applet to the canonical JSON bytes persisted under
+/// [`applet_key`]. Shared by [`store_applet`](WorkspaceCore::store_applet) and
+/// its tx-scoped form so both write byte-identical records.
+fn serialize_applet(installed: &InstalledApplet) -> Result<Vec<u8>> {
+    serde_json::to_vec(installed)
+        .map_err(|e| CoreError::StorageError(format!("applet serialize failed: {e}")))
+}
+
 /// KV key (within [`META_NS`]) for an applet's **highest install generation ever
 /// assigned**. Unlike the active applet record (which is removed on uninstall),
 /// this counter SURVIVES uninstall so a later fresh install starts a NEW
@@ -312,16 +320,31 @@ impl WorkspaceCore {
     }
 
     /// Persist an installed applet (manifest + compiled program) in the reserved
-    /// meta KV namespace.
+    /// meta KV namespace. Delegates to [`store_applet_tx`](Self::store_applet_tx)
+    /// inside a single transaction so the stand-alone write and the lifecycle
+    /// commit (CR-7 `applet.upgrade`) share one SQL seam.
     pub(in crate::workspace) fn store_applet(
         &mut self,
         applet_id: &str,
         installed: &InstalledApplet,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec(installed)
-            .map_err(|e| CoreError::StorageError(format!("applet serialize failed: {e}")))?;
-        self.store
-            .kv_set(META_NS, &applet_key(applet_id), &bytes, "application/json")
+        let bytes = serialize_applet(installed)?;
+        self.store.transact(|tx| {
+            forge_storage::kv_set_tx(tx, META_NS, &applet_key(applet_id), &bytes, "application/json")
+        })
+    }
+
+    /// Persist an installed applet inside an OPEN transaction (the tx-scoped form
+    /// of [`store_applet`](Self::store_applet)), so the active-pointer switch can
+    /// commit atomically with the schema-registry persist + program pin in one
+    /// `Store::transact` closure (CR-7 commit atomicity, lifecycle review P1).
+    pub(in crate::workspace) fn store_applet_tx(
+        tx: &forge_storage::Transaction<'_>,
+        applet_id: &str,
+        installed: &InstalledApplet,
+    ) -> Result<()> {
+        let bytes = serialize_applet(installed)?;
+        forge_storage::kv_set_tx(tx, META_NS, &applet_key(applet_id), &bytes, "application/json")
     }
 
     /// Load an installed applet by id, if present.
@@ -347,7 +370,21 @@ impl WorkspaceCore {
     /// pinned replay programs are NOT touched here — only the active pointer — so
     /// recorded runs remain replayable and a reinstall mints a fresh generation.
     pub(in crate::workspace) fn delete_applet(&mut self, applet_id: &str) -> Result<()> {
-        self.store.kv_delete(META_NS, &applet_key(applet_id))
+        self.store
+            .transact(|tx| forge_storage::kv_delete_tx(tx, META_NS, &applet_key(applet_id)))
+    }
+
+    /// Remove the ACTIVE installed applet record inside an OPEN transaction (the
+    /// tx-scoped form of [`delete_applet`](Self::delete_applet)), so a
+    /// `purge_data` uninstall can tombstone owned records AND switch the active
+    /// pointer off in one atomic `Store::transact` closure (CR-7, lifecycle
+    /// review P2): a crash mid-uninstall cannot leave some records purged with the
+    /// applet still installed.
+    pub(in crate::workspace) fn delete_applet_tx(
+        tx: &forge_storage::Transaction<'_>,
+        applet_id: &str,
+    ) -> Result<()> {
+        forge_storage::kv_delete_tx(tx, META_NS, &applet_key(applet_id))
     }
 
     /// The highest install generation ever assigned to `applet_id` (0 when the id

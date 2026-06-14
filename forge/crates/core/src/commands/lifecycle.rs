@@ -125,10 +125,15 @@ impl WorkspaceCore {
         match self.stage_upgrade(cmd, &applet_id, &active) {
             Ok(staged) => {
                 // COMMIT phase — all staged work succeeded. Switch the active pointer
-                // to the new version and persist the evolved registry together. The
-                // version bumps within the SAME install generation (spec Identity);
-                // the prior version is retained for audit/replay via its existing
-                // per-run + content-addressed program pins (never overwritten).
+                // to the new version and persist the evolved registry together, in ONE
+                // SQLite transaction (CR-7 commit atomicity, lifecycle review P1): the
+                // schema-registry persist + the active-pointer switch + the program pin
+                // commit-or-roll-back as a unit, so a crash or write error mid-commit
+                // can NEVER leave the workspace with v2's schema committed but v1 still
+                // the active pointer (the split spec lines 92-94 forbid). The version
+                // bumps within the SAME install generation (spec Identity); the prior
+                // version is retained for audit/replay via its existing per-run +
+                // content-addressed program pins (never overwritten).
                 let to_version = from_version + 1;
                 let installed = InstalledApplet {
                     manifest: staged.manifest,
@@ -138,23 +143,86 @@ impl WorkspaceCore {
                     install_generation,
                     trust: staged.trust.clone(),
                 };
-                // Persist the evolved schema registry (if the upgrade added fields)
-                // BEFORE swapping the in-memory copy, mirroring `schema.apply_change`,
-                // so the durable + in-memory registries never diverge.
-                if let Some(next_registry) = &staged.next_registry {
-                    let bytes = serde_json::to_vec(next_registry).map_err(|e| {
+                // Whether to inject a TEST-ONLY failure BETWEEN the schema-registry
+                // persist and the active-pointer switch INSIDE the commit transaction,
+                // so the doc'd `simulate_failure_stage == "commit"` rolls the whole
+                // commit back (registry persist included), proving the commit is
+                // crash-atomic and not merely "all writes happened to succeed".
+                let simulate_commit = cmd
+                    .payload
+                    .get("simulate_failure_stage")
+                    .and_then(|v| v.as_str())
+                    == Some("commit");
+                // Serialize the evolved registry (if the upgrade added fields) OUTSIDE
+                // the transaction; the in-memory `self.registry` is swapped only AFTER
+                // the transaction commits, so a rollback leaves it untouched too.
+                let next_registry = staged.next_registry;
+                let registry_bytes = match &next_registry {
+                    Some(reg) => Some(serde_json::to_vec(reg).map_err(|e| {
                         CoreError::StorageError(format!("serialize schema registry: {e}"))
-                    })?;
-                    self.store
-                        .kv_set(META_NS, SCHEMA_REGISTRY_KEY, &bytes, "application/json")?;
-                    self.registry = next_registry.clone();
+                    })?),
+                    None => None,
+                };
+                let applet_id_str = applet_id.as_str();
+                let commit = self.store.transact(|tx| {
+                    // 1. Persist the evolved schema registry FIRST (if any), mirroring
+                    //    `schema.apply_change`, so the durable registry leads the active
+                    //    pointer — but now inside the same transaction as the switch.
+                    if let Some(bytes) = &registry_bytes {
+                        forge_storage::kv_set_tx(
+                            tx,
+                            META_NS,
+                            SCHEMA_REGISTRY_KEY,
+                            bytes,
+                            "application/json",
+                        )?;
+                    }
+                    // Injected mid-commit failure: AFTER the registry persisted but
+                    // BEFORE the active pointer switches. Returning `Err` here rolls the
+                    // whole transaction back — including the registry persist above — so
+                    // the workspace stays exactly v1 (the P1 the review found: this is
+                    // the window a non-transactional commit could leave half-applied).
+                    if simulate_commit {
+                        return Err(CoreError::StorageError(
+                            "simulated mid-commit failure between schema persist and active-pointer switch".into(),
+                        ));
+                    }
+                    // 2. Switch the active pointer (after the schema persist), so the
+                    //    version is observable as v2 only once the whole commit lands.
+                    Self::store_applet_tx(tx, applet_id_str, &installed)?;
+                    // 3. Pin the new version's program (content-addressed, write-once)
+                    //    so a run recorded against v2 replays even if v2 is upgraded
+                    //    again — in the SAME transaction so it never half-commits.
+                    Self::store_program_tx(tx, &installed)?;
+                    Ok(())
+                });
+                if let Err(e) = commit {
+                    // A commit failure (real or simulated) rolled the WHOLE transaction
+                    // back: the active version, schema registry, records, and pins are
+                    // unchanged (the in-memory registry is NOT swapped below — we return
+                    // here). Route through the same rejection-audit path a staged
+                    // failure uses, naming the `commit` stage, so the rollback is
+                    // observable and the typed `lifecycle.upgrade_failed` is surfaced.
+                    let error = upgrade_failed(applet_id_str, "commit", &e.to_string());
+                    self.events.emit(
+                        Some(applet_id.clone()),
+                        "applet.upgrade.rejected",
+                        serde_json::json!({
+                            "applet_id": applet_id,
+                            "active_version": from_version,
+                            "active_code_hash": from_code_hash,
+                            "failed_stage": "commit",
+                            "error_code": LIFECYCLE_UPGRADE_FAILED,
+                            "message": error.to_string(),
+                        }),
+                    );
+                    return Err(error);
                 }
-                // Switch the active pointer LAST (after compile + schema commit), so
-                // the version is observable as v2 only once all staged work landed.
-                self.store_applet(applet_id.as_str(), &installed)?;
-                // Pin the new version's program (content-addressed, write-once) so a
-                // run recorded against v2 replays even if v2 is later upgraded again.
-                self.store_program(&installed)?;
+                // The transaction committed: swap the in-memory registry to match the
+                // durable one (skipped above on rollback, where we returned early).
+                if let Some(reg) = next_registry {
+                    self.registry = reg;
+                }
                 // The lifecycle flag is deliberately left as-is (no implicit resume).
 
                 self.events.emit(
@@ -211,10 +279,14 @@ impl WorkspaceCore {
     /// on the first failure so the caller can roll back with everything untouched.
     ///
     /// The optional `simulate_failure_stage` payload injects a failure at a named
-    /// stage (`"manifest.validate"`, `"compile"`, `"schema.apply_change"`,
-    /// `"commit"`) so the rollback path is exercised end-to-end by the conformance
-    /// vectors. It is checked at the corresponding stage boundary so the failure is
-    /// observed AFTER the prior stages ran (proving they too rolled back).
+    /// stage (`"manifest.validate"`, `"compile"`, `"schema.apply_change"`) so the
+    /// rollback path is exercised end-to-end by the conformance vectors. It is
+    /// checked at the corresponding stage boundary so the failure is observed AFTER
+    /// the prior stages ran (proving they too rolled back). The `"commit"` stage is
+    /// distinct: it injects a failure INSIDE the commit transaction (between the
+    /// schema-registry persist and the active-pointer switch), exercised by
+    /// `cmd_applet_upgrade`'s commit block — NOT here, since by then staging is
+    /// done and the failure must roll back a real SQLite transaction.
     fn stage_upgrade(
         &self,
         cmd: &forge_domain::CoreCommand,
@@ -549,23 +621,51 @@ impl WorkspaceCore {
                         .filter(|r| !r.deleted)
                         .count();
                 }
+                // No data work to commit with the removal; the active-record delete is
+                // itself one transaction (delegated below).
+                self.delete_applet(applet_id.as_str())?;
             }
             RetentionPolicy::PurgeData => {
-                records_tombstoned = self.tombstone_owned_records(&owned_collections)?;
+                // Stage the tombstones (read live records OUTSIDE the transaction),
+                // then commit the tombstone writes AND the active-pointer removal in
+                // ONE `Store::transact` (CR-7, lifecycle review P2): a crash
+                // mid-uninstall can NEVER leave some records purged, others live, with
+                // the applet still installed — they land or roll back as a unit.
+                let tombstones = self.stage_owned_tombstones(&owned_collections)?;
+                records_tombstoned = tombstones.len();
+                // TEST-ONLY hook: inject a failure BETWEEN the tombstone writes and the
+                // active-pointer removal so the whole purge-uninstall rolls back
+                // (records stay live, applet stays installed), proving the atomicity.
+                let simulate_uninstall = cmd
+                    .payload
+                    .get("simulate_failure_stage")
+                    .and_then(|v| v.as_str())
+                    == Some("uninstall.tombstone");
+                let applet_id_str = applet_id.as_str();
+                self.store.transact(|tx| {
+                    for env in &tombstones {
+                        forge_storage::put_record_tx(tx, env)?;
+                    }
+                    if simulate_uninstall {
+                        return Err(CoreError::StorageError(
+                            "simulated mid-uninstall failure between tombstone writes and active-pointer removal".into(),
+                        ));
+                    }
+                    // Remove the active applet record LAST, in the SAME transaction as
+                    // the tombstones. The applet is now durably `uninstalled` — the
+                    // ABSENCE of an active record — so every lifecycle/dispatch gate
+                    // (`runtime.run`, `ui.dispatch_event`, `applet.enable`,
+                    // `applet.suspend`) rejects with `lifecycle.applet_not_installed`
+                    // BEFORE it ever consults the leftover lifecycle flag. We leave that
+                    // dormant flag untouched: a reinstall under the same id explicitly
+                    // sets `enabled` (`applet.install`), so it never inherits a stale
+                    // `suspended` state. The generation counter is likewise retained (a
+                    // reinstall mints a fresh generation past it).
+                    Self::delete_applet_tx(tx, applet_id_str)?;
+                    Ok(())
+                })?;
             }
         }
-
-        // Remove the active applet record LAST so the data work commits with the
-        // active-pointer removal (a failure above leaves the applet installed). The
-        // applet is now durably `uninstalled` — the ABSENCE of an active record — so
-        // every lifecycle/dispatch gate (`runtime.run`, `ui.dispatch_event`,
-        // `applet.enable`, `applet.suspend`) rejects with `lifecycle.applet_not_
-        // installed` BEFORE it ever consults the leftover lifecycle flag. We leave
-        // that dormant flag untouched: a reinstall under the same id explicitly sets
-        // `enabled` (`applet.install`), so it never inherits a stale `suspended`
-        // state. The generation counter is likewise retained (a reinstall mints a
-        // fresh generation past it).
-        self.delete_applet(applet_id.as_str())?;
 
         self.events.emit(
             Some(applet_id.clone()),
@@ -594,14 +694,20 @@ impl WorkspaceCore {
         }))
     }
 
-    /// Tombstone every live (non-deleted) record in `collections` with the
-    /// `applet.uninstall:purge_data` reason, returning the count tombstoned. A
-    /// tombstone is a soft delete (DL-21): the row is retained with `deleted = true`
-    /// (so the delete syncs) and carries the purge reason in its `extensions`, so an
-    /// auditor / a peer can see WHY the record was tombstoned. Already-deleted
-    /// records are skipped (idempotent).
-    fn tombstone_owned_records(&mut self, collections: &[String]) -> Result<usize> {
-        let mut tombstoned = 0usize;
+    /// STAGE the tombstones for every live (non-deleted) record in `collections`,
+    /// returning the modified envelopes WITHOUT writing them. The caller commits
+    /// them inside one `Store::transact` together with the active-pointer removal
+    /// (CR-7 purge-uninstall atomicity, lifecycle review P2), so a crash
+    /// mid-uninstall rolls the whole purge back. A tombstone is a soft delete
+    /// (DL-21): the row is retained with `deleted = true` (so the delete syncs) and
+    /// carries the purge reason in its `extensions`, so an auditor / a peer can see
+    /// WHY the record was tombstoned. Already-deleted records are skipped
+    /// (idempotent), so the staged set holds exactly the records this purge flips.
+    fn stage_owned_tombstones(
+        &self,
+        collections: &[String],
+    ) -> Result<Vec<forge_domain::RecordEnvelope>> {
+        let mut staged = Vec::new();
         for collection in collections {
             let live: Vec<String> = self
                 .store
@@ -617,12 +723,11 @@ impl WorkspaceCore {
                         "tombstone_reason".into(),
                         serde_json::json!("applet.uninstall:purge_data"),
                     );
-                    self.store.put_record(&env)?;
-                    tombstoned += 1;
+                    staged.push(env);
                 }
             }
         }
-        Ok(tombstoned)
+        Ok(staged)
     }
 }
 

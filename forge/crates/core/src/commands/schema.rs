@@ -205,7 +205,7 @@ impl WorkspaceCore {
     /// Persist the registry to the workspace file (`__forge/meta` /
     /// `schema_registry`) as serialized JSON, mirroring the `db.read` grant
     /// persistence. So a defined schema survives reopen (DL-7/DL-8).
-    fn persist_registry(&self, registry: &SchemaRegistry) -> Result<()> {
+    fn persist_registry(&mut self, registry: &SchemaRegistry) -> Result<()> {
         let bytes = serde_json::to_vec(registry)
             .map_err(|e| CoreError::StorageError(format!("serialize schema registry: {e}")))?;
         self.store

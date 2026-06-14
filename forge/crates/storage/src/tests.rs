@@ -81,7 +81,7 @@
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ws.db");
         {
-            let s = Store::open(&path).unwrap();
+            let mut s = Store::open(&path).unwrap();
             s.kv_set("ns", "k", b"v", "text/plain").unwrap();
         }
         // Re-opening the same file must not error on CREATE TABLE IF NOT EXISTS.
@@ -93,7 +93,7 @@
 
     #[test]
     fn kv_roundtrip_and_overwrite() {
-        let s = store();
+        let mut s = store();
         assert_eq!(s.kv_get("app", "k1").unwrap(), None);
         s.kv_set("app", "k1", b"hello", "text/plain").unwrap();
         assert_eq!(s.kv_get("app", "k1").unwrap().as_deref(), Some(&b"hello"[..]));
@@ -113,7 +113,7 @@
 
     #[test]
     fn kv_namespaces_are_isolated() {
-        let s = store();
+        let mut s = store();
         s.kv_set("a", "k", b"1", "text/plain").unwrap();
         s.kv_set("b", "k", b"2", "text/plain").unwrap();
         assert_eq!(s.kv_get("a", "k").unwrap().as_deref(), Some(&b"1"[..]));
@@ -122,7 +122,7 @@
 
     #[test]
     fn kv_list_prefix_sorted_and_filtered() {
-        let s = store();
+        let mut s = store();
         s.kv_set("ns", "app/b", b"1", "text/plain").unwrap();
         s.kv_set("ns", "app/a", b"1", "text/plain").unwrap();
         s.kv_set("ns", "other/x", b"1", "text/plain").unwrap();
@@ -136,7 +136,7 @@
 
     #[test]
     fn kv_list_escapes_like_metacharacters() {
-        let s = store();
+        let mut s = store();
         s.kv_set("ns", "a%b", b"1", "text/plain").unwrap();
         s.kv_set("ns", "axb", b"1", "text/plain").unwrap();
         // Prefix "a%" must match only the literal "a%b", not "axb".
@@ -146,7 +146,7 @@
 
     #[test]
     fn kv_delete_tombstones_and_hides_from_get_and_list() {
-        let s = store();
+        let mut s = store();
         s.kv_set("ns", "k", b"v", "text/plain").unwrap();
         s.kv_delete("ns", "k").unwrap();
         assert_eq!(s.kv_get("ns", "k").unwrap(), None);
@@ -169,7 +169,7 @@
 
     #[test]
     fn kv_delete_of_missing_key_is_noop() {
-        let s = store();
+        let mut s = store();
         // Should not error even though nothing matches.
         s.kv_delete("ns", "nope").unwrap();
         assert_eq!(s.kv_get("ns", "nope").unwrap(), None);
@@ -589,7 +589,7 @@
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ws.db");
         {
-            let s = Store::open(&path).unwrap();
+            let mut s = Store::open(&path).unwrap();
             s.kv_set("ns", "k", b"durable", "text/plain").unwrap();
             s.put_record(&sample_record("tasks", "rec_1", "kept")).unwrap();
             s.append_op("op1", "a", "ws", 1, "insert", b"p").unwrap();

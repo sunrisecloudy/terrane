@@ -153,16 +153,35 @@ impl WorkspaceCore {
     /// identical-manifest re-pin is also a no-op. A legacy run keyed to this hash
     /// therefore always replays against the manifest first recorded for it.
     pub(in crate::workspace) fn store_program(&mut self, installed: &InstalledApplet) -> Result<()> {
+        // Delegate to the tx-scoped form inside a single transaction so the
+        // write-once check + pin are atomic and share one SQL seam with the
+        // lifecycle commit (CR-7 `applet.upgrade`).
+        let installed = installed.clone();
+        self.store
+            .transact(|tx| Self::store_program_tx(tx, &installed))
+    }
+
+    /// Pin the content-addressed replay fallback inside an OPEN transaction (the
+    /// tx-scoped, write-once form of [`store_program`](Self::store_program)), so
+    /// the new version's program pin commits atomically with the active-pointer
+    /// switch + schema persist in one `Store::transact` closure (CR-7 commit
+    /// atomicity, lifecycle review P1). The write-once check runs against the SAME
+    /// transaction (`kv_get_tx`), so an existing fallback for this `code_hash` is
+    /// preserved consistently with a rollback of the whole commit.
+    pub(in crate::workspace) fn store_program_tx(
+        tx: &forge_storage::Transaction<'_>,
+        installed: &InstalledApplet,
+    ) -> Result<()> {
         // Write-once: if a fallback already exists for this code_hash, keep it.
         // A different manifest must not clobber the original (the stranding bug);
         // an identical one is a no-op either way.
-        if self.load_program(&installed.code_hash)?.is_some() {
+        let key = program_key(&installed.code_hash);
+        if forge_storage::kv_get_tx(tx, META_NS, &key)?.is_some() {
             return Ok(());
         }
         let bytes = serde_json::to_vec(installed)
             .map_err(|e| CoreError::StorageError(format!("program serialize failed: {e}")))?;
-        self.store
-            .kv_set(META_NS, &program_key(&installed.code_hash), &bytes, "application/json")
+        forge_storage::kv_set_tx(tx, META_NS, &key, &bytes, "application/json")
     }
 
     /// Load the program recorded for a given `code_hash`, if one was pinned.

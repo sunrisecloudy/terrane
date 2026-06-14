@@ -30,46 +30,24 @@ impl Store {
     }
 
     /// Upsert a KV value, clearing any prior tombstone and bumping the logical
-    /// version.
+    /// version. Delegates to [`kv_set_tx`] inside a single transaction so this
+    /// stand-alone write and the transaction-scoped form share one SQL seam.
     pub fn kv_set(
-        &self,
+        &mut self,
         namespace: &str,
         key: &str,
         value: &[u8],
         content_type: &str,
     ) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO kv
-                     (namespace, key, value, content_type, logical_version, updated_at, tombstone)
-                 VALUES (?1, ?2, ?3, ?4, 1, ?5, 0)
-                 ON CONFLICT(namespace, key) DO UPDATE SET
-                     value = excluded.value,
-                     content_type = excluded.content_type,
-                     logical_version = kv.logical_version + 1,
-                     updated_at = excluded.updated_at,
-                     tombstone = 0",
-                params![namespace, key, value, content_type, now_ms()],
-            )
-            .map_err(map_sql)?;
-        Ok(())
+        self.transact(|tx| kv_set_tx(tx, namespace, key, value, content_type))
     }
 
     /// Soft-delete a KV value (tombstone). The row is retained so the delete is
-    /// sync-correct and `logical_version` keeps advancing.
-    pub fn kv_delete(&self, namespace: &str, key: &str) -> Result<()> {
-        self.conn
-            .execute(
-                "UPDATE kv
-                     SET tombstone = 1,
-                         value = NULL,
-                         logical_version = logical_version + 1,
-                         updated_at = ?3
-                   WHERE namespace = ?1 AND key = ?2",
-                params![namespace, key, now_ms()],
-            )
-            .map_err(map_sql)?;
-        Ok(())
+    /// sync-correct and `logical_version` keeps advancing. Delegates to
+    /// [`kv_delete_tx`] so the stand-alone and transaction-scoped forms share one
+    /// SQL seam.
+    pub fn kv_delete(&mut self, namespace: &str, key: &str) -> Result<()> {
+        self.transact(|tx| kv_delete_tx(tx, namespace, key))
     }
 
     /// Atomically increment a persisted decimal counter stored at `(namespace,
@@ -196,6 +174,74 @@ impl Store {
         }
         Ok(out)
     }
+}
+
+// --- Transaction-scoped KV helpers (for grouped atomic writes) -------------
+//
+// The core's lifecycle commit (CR-7 `applet.upgrade` / `applet.uninstall`)
+// needs the schema-registry persist, the active-pointer switch, the program
+// pin, and the tombstones to land in ONE SQLite transaction so a crash mid-way
+// cannot leave the workspace half-upgraded (schema committed but active pointer
+// not switched). These mirror `kv_set` / `kv_get` / `kv_delete` exactly but
+// execute against an open [`rusqlite::Transaction`], so several KV writes can be
+// composed inside a single `Store::transact` closure and commit-or-roll-back
+// together. `kv_set` / `kv_delete` delegate to the `_tx` forms above.
+
+/// Read a live (non-tombstoned) KV value inside an open transaction.
+pub fn kv_get_tx(
+    tx: &rusqlite::Transaction<'_>,
+    namespace: &str,
+    key: &str,
+) -> Result<Option<Vec<u8>>> {
+    tx.query_row(
+        "SELECT value FROM kv WHERE namespace = ?1 AND key = ?2 AND tombstone = 0",
+        params![namespace, key],
+        |row| row.get::<_, Option<Vec<u8>>>(0),
+    )
+    .optional()
+    .map_err(map_sql)
+    .map(Option::flatten)
+}
+
+/// Upsert a KV value inside an open transaction, clearing any prior tombstone
+/// and bumping the logical version (the tx-scoped form of [`Store::kv_set`]).
+pub fn kv_set_tx(
+    tx: &rusqlite::Transaction<'_>,
+    namespace: &str,
+    key: &str,
+    value: &[u8],
+    content_type: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO kv
+             (namespace, key, value, content_type, logical_version, updated_at, tombstone)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, 0)
+         ON CONFLICT(namespace, key) DO UPDATE SET
+             value = excluded.value,
+             content_type = excluded.content_type,
+             logical_version = kv.logical_version + 1,
+             updated_at = excluded.updated_at,
+             tombstone = 0",
+        params![namespace, key, value, content_type, now_ms()],
+    )
+    .map_err(map_sql)?;
+    Ok(())
+}
+
+/// Soft-delete a KV value (tombstone) inside an open transaction (the tx-scoped
+/// form of [`Store::kv_delete`]).
+pub fn kv_delete_tx(tx: &rusqlite::Transaction<'_>, namespace: &str, key: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE kv
+             SET tombstone = 1,
+                 value = NULL,
+                 logical_version = logical_version + 1,
+                 updated_at = ?3
+           WHERE namespace = ?1 AND key = ?2",
+        params![namespace, key, now_ms()],
+    )
+    .map_err(map_sql)?;
+    Ok(())
 }
 
 /// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape itself)

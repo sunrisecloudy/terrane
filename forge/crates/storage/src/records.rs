@@ -119,8 +119,11 @@ pub(crate) fn materialize_field_ids(env: &mut RecordEnvelope) {
 
 // --- Transaction-scoped record helpers (for grouped mutations) -------------
 
-/// Read a record inside an open transaction.
-pub(crate) fn get_record_tx(
+/// Read a record inside an open transaction (the tx-scoped form of
+/// [`Store::get_record`]). Public so a caller composing a multi-write atomic
+/// commit (e.g. the core's CR-7 `purge_data` uninstall) can read-modify-write
+/// records inside one [`Store::transact`] closure.
+pub fn get_record_tx(
     tx: &rusqlite::Transaction<'_>,
     collection: &str,
     id: &str,
@@ -141,8 +144,12 @@ pub(crate) fn get_record_tx(
     }
 }
 
-/// Upsert a record inside an open transaction.
-pub(crate) fn put_record_tx(tx: &rusqlite::Transaction<'_>, env: &RecordEnvelope) -> Result<()> {
+/// Upsert a record inside an open transaction (the tx-scoped form of
+/// [`Store::put_record`], the projection-only write that does NOT refresh active
+/// FTS rows — use [`put_record_synced_tx`] for applet writes). Public so a caller
+/// composing a multi-write atomic commit (e.g. the core's CR-7 `purge_data`
+/// uninstall tombstoning) can write records inside one [`Store::transact`].
+pub fn put_record_tx(tx: &rusqlite::Transaction<'_>, env: &RecordEnvelope) -> Result<()> {
     let data = serde_json::to_string(env).map_err(|e| map_json("put_record_tx", e))?;
     tx.execute(
         "INSERT INTO records (collection, id, data, updated_at)

@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn kv_live_values_and_tombstones_round_trip() {
-        let (src, idx) = source_workspace();
+        let (mut src, idx) = source_workspace();
         // Tombstone a key so the export carries the deletion.
         src.kv_delete("applet/notes", "draft").unwrap();
 
@@ -633,7 +633,7 @@ mod tests {
         // review 062 P1 #1 regression — the in-memory swap reported success but lost
         // everything on reopen.
         let dir = tempfile::tempdir().unwrap();
-        let (src, idx) = source_workspace();
+        let (mut src, idx) = source_workspace();
         let before = projection_snapshot(&src);
         // Persist a grant table so a non-record namespace travels too.
         src.kv_set(
@@ -805,7 +805,7 @@ mod tests {
         // A workspace whose ONLY content is a portable __forge/meta kv entry (the
         // grants-only / kv-only case the review calls out) is NOT fresh: the grant
         // table / applet manifest would be silently shadowed by an import.
-        let grants_only = Store::open_in_memory().unwrap();
+        let mut grants_only = Store::open_in_memory().unwrap();
         grants_only
             .kv_set("__forge/meta", "db_read_grants", b"{}", "application/json")
             .unwrap();
@@ -814,7 +814,7 @@ mod tests {
             "a grants-only workspace must not pass the fresh-target check"
         );
 
-        let applet_only = Store::open_in_memory().unwrap();
+        let mut applet_only = Store::open_in_memory().unwrap();
         applet_only
             .kv_set("applet/notes", "draft", b"hello", "text/plain")
             .unwrap();
@@ -829,7 +829,7 @@ mod tests {
         // Local-only / secret namespaces never travel in a bundle, so a store whose
         // ONLY content is such a key is still a valid (fresh) import target — counting
         // it would wrongly refuse a genuinely importable workspace.
-        let s = Store::open_in_memory().unwrap();
+        let mut s = Store::open_in_memory().unwrap();
         s.kv_set("secret/weather", "api_key", b"sk-x", "text/plain")
             .unwrap();
         s.kv_set("device/window", "geometry", b"{}", "application/json")
@@ -852,7 +852,7 @@ mod tests {
     fn is_empty_target_counts_a_tombstoned_portable_kv_row() {
         // An exported-then-tombstoned portable key is still importable state: the
         // tombstone row travels in the bundle, so a fresh target must not shadow it.
-        let s = Store::open_in_memory().unwrap();
+        let mut s = Store::open_in_memory().unwrap();
         s.kv_set("applet/notes", "draft", b"hi", "text/plain")
             .unwrap();
         s.kv_delete("applet/notes", "draft").unwrap();

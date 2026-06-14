@@ -61,10 +61,19 @@ pub use export::{
 mod store;
 pub use store::Store;
 
+/// The open SQLite transaction handle [`Store::transact`] hands its closure, and
+/// the receiver type of the `*_tx` helpers (`kv_set_tx`, …). Re-exported so a
+/// caller composing several tx-scoped writes in one `transact` closure (e.g. the
+/// core's CR-7 lifecycle commit) can name it without a direct `rusqlite`
+/// dependency.
+pub use rusqlite::Transaction;
+
 mod kv;
+pub use kv::{kv_delete_tx, kv_get_tx, kv_set_tx};
 mod mutations;
 mod query_exec;
 mod records;
+pub use records::{get_record_tx, put_record_tx};
 mod records_indexed;
 mod runs;
 
@@ -77,7 +86,7 @@ pub use crdt::{ChunkRow, SnapshotRow};
 // Crate-internal helpers other storage modules (`crdt_write`, `compaction`)
 // reach as `crate::<name>`. Re-exported here so those paths stay stable after
 // the lib.rs split (/simplify #7); not part of the public API.
-pub(crate) use records::{bump_updated_at, materialize_field_ids, put_record_tx};
+pub(crate) use records::{bump_updated_at, materialize_field_ids};
 pub(crate) use store::now_ms;
 
 #[cfg(test)]
