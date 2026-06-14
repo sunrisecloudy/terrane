@@ -28,7 +28,9 @@ use crate::sync_rbac::{
 use forge_domain::{
     AppletId, CoreCommand, CoreError, CoreResponse, Manifest, Result, Role, RunId, RunRecord,
 };
-use forge_runtime::{record_run, replay, NullBridge, Program as RuntimeProgram};
+use forge_runtime::{
+    record_dispatch, record_run, replay, replay_dispatch, NullBridge, Program as RuntimeProgram,
+};
 use forge_schema::{CollectionDef, FieldDef, FieldType, SchemaChange, SchemaRegistry};
 use forge_signing::{verify_package, Package, PublisherTrust, TrustOutcome};
 use forge_storage::{
@@ -69,6 +71,27 @@ const SYNC_MEMBERSHIP_KEY: &str = "sync_membership";
 /// [`in_memory`](WorkspaceCore::in_memory) the same way the `db.read` grant table
 /// is (it mirrors [`load_db_read_grants`]).
 const SCHEMA_REGISTRY_KEY: &str = "schema_registry";
+
+/// KV key prefix (within [`META_NS`]) for an applet's **last-known UI tree** — the
+/// most recent tree the applet rendered through this facade (`runtime.run`'s last
+/// `ui.render`, then each accepted `ui.dispatch_event`). This is the DIFF BASE for
+/// the next event: `ui.dispatch_event` re-enters the applet's handler in a fresh
+/// one-shot realm, captures the handler's new tree, and diffs it against THIS
+/// stored tree to produce the next UI patch (UI-4/CR-6). Keyed per applet so two
+/// applets' interactive sessions never share a diff base; persisted so the loop
+/// survives reopening the workspace. The full key is `ui_tree/<applet_id>`.
+const UI_TREE_KEY_PREFIX: &str = "ui_tree/";
+
+/// KV key prefix (within [`META_NS`]) for an applet's **dispatch lifecycle** — the
+/// receiver-side flag that decides whether an applet may be re-entered by a UI
+/// event. An applet is `active` by default; a workspace can SUSPEND it through the
+/// trusted [`set_applet_lifecycle`](WorkspaceCore::set_applet_lifecycle) seam, after
+/// which `ui.dispatch_event` rejects every event with a typed `ui.applet_not
+/// _dispatchable` error BEFORE any handler runs and with no state change (the T034
+/// `suspended_applet_rejected` vector). Set only through the trusted seam (never a
+/// request payload), mirroring the `db.read` grant table; persisted so a suspended
+/// applet stays suspended after reopen. The full key is `lifecycle/<applet_id>`.
+const APPLET_LIFECYCLE_KEY_PREFIX: &str = "lifecycle/";
 
 /// The compiled, installed form of an applet: its manifest plus the transpiled
 /// JS the runtime executes and the canonical `code_hash` the pipeline produced.
@@ -142,6 +165,24 @@ impl InstallTrust {
             }),
         }
     }
+}
+
+/// An applet's dispatch lifecycle for the interactive UI loop (UI-4/CR-6).
+///
+/// `Active` is the default: a UI event re-enters the applet's handler. `Suspended`
+/// is a receiver-side admin state in which `ui.dispatch_event` rejects every event
+/// BEFORE any handler runs (the T034 `suspended_applet_rejected` vector) — a
+/// suspended applet has no live UI session, so dispatching into it is a typed
+/// `ui.applet_not_dispatchable` rejection with no state change. Set only through
+/// the trusted [`set_applet_lifecycle`](WorkspaceCore::set_applet_lifecycle) seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppletLifecycle {
+    /// The applet is live and re-entrant: a UI event dispatches its handler.
+    #[default]
+    Active,
+    /// The applet is suspended: a UI event is rejected before dispatch.
+    Suspended,
 }
 
 /// The workspace facade. Owns the SQLite [`Store`], a [`SchemaRegistry`], and an
@@ -363,6 +404,36 @@ impl WorkspaceCore {
         self.sync_membership.get(peer)
     }
 
+    /// Set an applet's TRUSTED dispatch lifecycle (UI-4/CR-6): `Active` (the
+    /// default, re-entrant) or `Suspended` (a UI event is rejected before any
+    /// handler runs). This is a workspace-membership/admin operation, never a
+    /// request payload — `ui.dispatch_event` reads the flag from here, so an applet
+    /// cannot un-suspend itself by sending an event (mirrors `grant_db_read` /
+    /// `set_peer_membership`, review 048/050). The flag is **persisted** to the
+    /// workspace file, so a suspended applet stays suspended after `open(...)`.
+    pub fn set_applet_lifecycle(
+        &mut self,
+        applet_id: impl AsRef<str>,
+        lifecycle: AppletLifecycle,
+    ) -> Result<()> {
+        let key = applet_lifecycle_key(applet_id.as_ref());
+        let bytes = serde_json::to_vec(&lifecycle)
+            .map_err(|e| CoreError::StorageError(format!("serialize applet lifecycle: {e}")))?;
+        self.store.kv_set(META_NS, &key, &bytes, "application/json")
+    }
+
+    /// An applet's dispatch lifecycle, defaulting to [`AppletLifecycle::Active`] for
+    /// an applet that was never explicitly suspended. Read-only access for tests /
+    /// the `ui.dispatch_event` gate.
+    pub fn applet_lifecycle(&self, applet_id: &str) -> Result<AppletLifecycle> {
+        match self.store.kv_get(META_NS, &applet_lifecycle_key(applet_id))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                CoreError::StorageError(format!("deserialize applet lifecycle: {e}"))
+            }),
+            None => Ok(AppletLifecycle::Active),
+        }
+    }
+
     /// The event sink (observability): all `run.*` / `ui.patch` events land here.
     pub fn events(&self) -> &EventSink {
         &self.events
@@ -516,6 +587,7 @@ impl WorkspaceCore {
             "applet.install" => self.cmd_applet_install(&cmd),
             "runtime.run" => self.cmd_runtime_run(&cmd),
             "runtime.replay" => self.cmd_runtime_replay(&cmd),
+            "ui.dispatch_event" => self.cmd_ui_dispatch_event(&cmd),
             "query.execute" => self.cmd_query_execute(&cmd),
             "schema.apply_change" => self.cmd_schema_apply_change(&cmd),
             "schema.validate_compatibility" => self.cmd_schema_validate_compatibility(&cmd),
@@ -820,6 +892,17 @@ impl WorkspaceCore {
 
         let summary = run_summary(&run);
         let (ok, app_result) = outcome_fields(&run);
+
+        // Persist the run's LAST rendered tree as the applet's last-known tree — the
+        // diff base for the next UI event (UI-4/CR-6). `runtime.run`'s `main` is the
+        // initial render of the interactive session; a subsequent `ui.dispatch_event`
+        // diffs its handler's new tree against this one. Only on a completed run with
+        // at least one render (a failed/no-render run leaves the prior base intact).
+        if ok {
+            if let Some(last) = ui_renders.last() {
+                self.store_ui_tree(applet_id.as_str(), &last.tree)?;
+            }
+        }
         let event_kind = if ok { "run.completed" } else { "run.failed" };
         self.events.emit(
             Some(applet_id.clone()),
@@ -897,7 +980,18 @@ impl WorkspaceCore {
 
         let program = RuntimeProgram::new(original.applet_id.clone(), installed.js_code.clone());
         let mut null = NullBridge::new();
-        let replayed = replay(&original, &program, &installed.manifest, &cmd.actor, &mut null)?;
+        // A run recorded by `ui.dispatch_event` carries a `ui.dispatch_event`
+        // envelope and was driven by re-entering a named handler (UI-4/CR-6), not
+        // `main` — so it must be replayed via the dispatch path, which recovers the
+        // recorded `(action_ref, payload)` and re-runs that handler. Replaying it via
+        // the `main` path would drive a different entrypoint and diverge. A normal
+        // `runtime.run` record has no such envelope and replays via `main` as before.
+        let is_dispatch = original.calls.iter().any(|c| c.method == "ui.dispatch_event");
+        let replayed = if is_dispatch {
+            replay_dispatch(&original, &program, &installed.manifest, &cmd.actor, &mut null)?
+        } else {
+            replay(&original, &program, &installed.manifest, &cmd.actor, &mut null)?
+        };
 
         // The strict replay check: canonical provenance on both records AND
         // byte-identical traces, surfaced as a RuntimeError on divergence.
@@ -914,6 +1008,234 @@ impl WorkspaceCore {
             "run_id": run_id,
             "fingerprint": replayed.replay_fingerprint(),
             "replays_identically": original.replays_identically(&replayed),
+        }))
+    }
+
+    /// `ui.dispatch_event` — re-enter an installed applet's handler on a UI event
+    /// and produce the next UI patch (prd-merged/05 UI-4, prd-merged/01 CR-6). This
+    /// is the keystone interactive loop through the facade: a rendered control
+    /// carried an `onTap`/`onChange` `ActionRef`; the renderer sends that ref back
+    /// with an event payload; this command dispatches the handler exported under
+    /// that name over the **same** QuickJS containment / capability gate / record
+    /// path as `runtime.run`, captures the handler's new UI tree, DIFFS it against
+    /// the applet's last-known tree to a patch, emits a `ui.patch` event, persists
+    /// the new tree as the next diff base, saves the recorded run (with the event in
+    /// its trace), and returns `{ action_ref, tree, patches }`.
+    ///
+    /// Payload: `{ applet_id, action_ref, event_payload? }`.
+    ///
+    /// Contract (T034 `forge/fixtures/ui-events`), each a typed rejection with the
+    /// applet's state + last-known tree UNCHANGED:
+    ///   - a **null/absent `action_ref`** (an event on a control with no handler) is
+    ///     a safe no-op: `{ ignored: true, patches: [] }`, no dispatch (the
+    ///     `no_handler_event_ignored` vector);
+    ///   - a **suspended applet** is rejected BEFORE any handler runs with
+    ///     `ValidationError("ui.applet_not_dispatchable: ... suspended")` (the
+    ///     `suspended_applet_rejected` vector; the lifecycle is the trusted flag set
+    ///     via [`set_applet_lifecycle`](Self::set_applet_lifecycle));
+    ///   - an **unknown `action_ref`** (no such exported handler) is the engine's
+    ///     typed `ValidationError` (the `unknown_action_rejected` vector);
+    ///   - an **invalid payload** / a **throwing handler** surfaces the handler's
+    ///     own typed error (a `ValidationError` the handler raised, or a
+    ///     `RuntimeError` for an uncaught throw) — the run record captures the
+    ///     failure (`handler_throws_prior_tree_intact` / `invalid_payload_rejected`).
+    ///
+    /// The realm is one-shot per dispatch, so a handler persists state ONLY through
+    /// `ctx.db`/`ctx.storage`; the next event reads it back. Command-level RBAC
+    /// (run-capable roles) gates entry; the applet's manifest capabilities gate each
+    /// `ctx.*` call inside the handler, exactly as a run.
+    fn cmd_ui_dispatch_event(&mut self, cmd: &CoreCommand) -> Result<serde_json::Value> {
+        let applet_id = require_applet_id(cmd)?;
+        // The dispatch key (T034): the `ActionRef` the rendered control carried. A
+        // null/absent ref means the targeted control has NO handler for this event —
+        // a safe ignored no-op, not an error (the `no_handler_event_ignored` vector).
+        let action_ref = match cmd.payload.get("action_ref") {
+            None | Some(serde_json::Value::Null) => {
+                return Ok(serde_json::json!({
+                    "applet_id": applet_id,
+                    "ignored": true,
+                    "reason": "target node has no ActionRef for this event",
+                    "patches": [],
+                }));
+            }
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(other) => {
+                return Err(CoreError::ValidationError(format!(
+                    "ui.dispatch_event `action_ref` must be a string, got {other}"
+                )))
+            }
+        };
+        let event_payload = cmd
+            .payload
+            .get("event_payload")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        // Lifecycle gate (UI-4): a suspended applet has no live UI session, so a UI
+        // event is rejected BEFORE any handler runs and with NO state change (the
+        // `suspended_applet_rejected` vector). The flag is the TRUSTED per-applet
+        // lifecycle, read from workspace state — never from the request — so an
+        // applet cannot un-suspend itself by sending an event.
+        if self.applet_lifecycle(applet_id.as_str())? == AppletLifecycle::Suspended {
+            return Err(CoreError::ValidationError(format!(
+                "ui.applet_not_dispatchable: applet {applet_id} is suspended; UI events are rejected before dispatch"
+            )));
+        }
+
+        let installed = self.load_applet(applet_id.as_str())?.ok_or_else(|| {
+            CoreError::ValidationError(format!("applet {applet_id} is not installed"))
+        })?;
+
+        // The DIFF BASE: the applet's last-known tree (the previous render this
+        // facade saw). Absent (the applet has not rendered yet) ⇒ `None`, so the
+        // first event's diff is a single root replace, exactly like `runtime.run`'s
+        // first render (UI-1).
+        let prev_tree = self.load_ui_tree(applet_id.as_str())?;
+
+        self.events.emit(
+            Some(applet_id.clone()),
+            "ui.dispatch_started",
+            serde_json::json!({
+                "applet_id": applet_id,
+                "action_ref": action_ref,
+                "code_hash": installed.code_hash,
+            }),
+        );
+
+        let program = RuntimeProgram::new(applet_id.clone(), installed.js_code.clone());
+        if program.code_hash() != installed.code_hash {
+            return Err(CoreError::RuntimeError(format!(
+                "code_hash provenance broken: runtime {} != pipeline {}",
+                program.code_hash(),
+                installed.code_hash
+            )));
+        }
+
+        // Deterministic seams derived from `(code_hash, action_ref+payload)` so a
+        // re-dispatch of the SAME event reproduces the SAME seeded time/random
+        // values — the event replays byte-identically (the `replay_determinism_
+        // same_sequence` vector). Mint a unique per-execution run id like a run.
+        let dispatch_input = serde_json::json!([action_ref, event_payload]);
+        let (random_seed, time_start) = derive_seeds(&installed.code_hash, &dispatch_input);
+        let invocation = self.next_run_counter()?;
+
+        let http_client = (self.http_client_factory)();
+        let secret_store = (self.secret_store_factory)();
+
+        // Re-enter the handler over the SAME engine path as a run: record mode,
+        // live Store-backed bridge, manifest-gated `ctx.*`. `record_dispatch` runs
+        // the handler named `action_ref` and records the `ui.dispatch_event`
+        // envelope so the event is part of the replayable trace (T034 "events ARE
+        // recorded in the run record").
+        let mut bridge = StorageHostBridge::with_http_client(
+            &mut self.store,
+            applet_id.as_str(),
+            http_client,
+        )
+        .with_secret_store(secret_store);
+        let mut run = record_dispatch(
+            &program,
+            &installed.manifest,
+            &cmd.actor,
+            &action_ref,
+            &event_payload,
+            random_seed,
+            time_start,
+            &mut bridge,
+        )?;
+        // The handler's final rendered tree (its last `ui.render`), if any. Drain
+        // before dropping the bridge so the `&mut Store` borrow is released.
+        let final_render = bridge.ui_renders.last().map(|r| r.tree.clone());
+        drop(bridge);
+
+        run.run_id = unique_run_id(&run.code_hash, invocation);
+
+        // A failed dispatch (unknown handler → ValidationError, a handler throw →
+        // RuntimeError, an invalid payload the handler rejected) is a typed
+        // rejection: persist the failed record (so the denial/throw is auditable +
+        // replayable), emit a failure event, and surface the handler's error. The
+        // last-known tree is NOT advanced — the applet's prior view stays the diff
+        // base (the error vectors' "tree_unchanged").
+        if let forge_domain::RunOutcome::Failed { error } = &run.outcome {
+            let error = error.clone();
+            self.store_run_program(run.run_id.as_str(), &installed)?;
+            self.store_program(&installed)?;
+            self.store.save_run(&run)?;
+            self.events.emit(
+                Some(applet_id.clone()),
+                "ui.dispatch_failed",
+                serde_json::json!({
+                    "applet_id": applet_id,
+                    "action_ref": action_ref,
+                    "run_id": run.run_id,
+                    "error": error,
+                }),
+            );
+            return Err(error);
+        }
+
+        // The handler completed. Its new tree is the last render; if the handler
+        // rendered nothing, the view is unchanged (an empty patch over the prior
+        // tree). Diff the new tree against the last-known tree to the next patch.
+        let new_tree = match &final_render {
+            Some(tree) => forge_ui::from_str(&tree.to_string())?,
+            None => match &prev_tree {
+                Some(prev) => prev.clone(),
+                None => {
+                    // No prior tree and no render: nothing to diff against. This is a
+                    // degenerate dispatch (a handler that neither renders nor had a
+                    // prior view); treat it as an empty-patch no-op over an empty base.
+                    self.store_run_program(run.run_id.as_str(), &installed)?;
+                    self.store_program(&installed)?;
+                    self.store.save_run(&run)?;
+                    return Ok(serde_json::json!({
+                        "applet_id": applet_id,
+                        "action_ref": action_ref,
+                        "run_id": run.run_id,
+                        "tree": serde_json::Value::Null,
+                        "patches": [],
+                    }));
+                }
+            },
+        };
+        let patches = forge_ui::diff(prev_tree.as_ref(), &new_tree);
+        let patches_json = serde_json::to_value(&patches).map_err(|e| {
+            CoreError::ValidationError(format!("ui.dispatch_event patch serialize failed: {e}"))
+        })?;
+        let tree_json = serde_json::to_value(&new_tree).map_err(|e| {
+            CoreError::ValidationError(format!("ui.dispatch_event tree serialize failed: {e}"))
+        })?;
+
+        // Persist the new tree as the next diff base BEFORE returning, so the next
+        // event in the session diffs against this one (the loop's state link).
+        self.store_ui_tree(applet_id.as_str(), &tree_json)?;
+
+        // Pin the per-run replay artifact + persist the recorded run (event in the
+        // trace) so the dispatch replays byte-identically, exactly like a run.
+        self.store_run_program(run.run_id.as_str(), &installed)?;
+        self.store_program(&installed)?;
+        self.store.save_run(&run)?;
+
+        // Emit the UI patch event — the link the renderer consumes to advance the
+        // live tree (UI-1/UI-4).
+        self.events.emit(
+            Some(applet_id.clone()),
+            "ui.patch",
+            serde_json::json!({
+                "applet_id": applet_id,
+                "action_ref": action_ref,
+                "run_id": run.run_id,
+                "tree": tree_json,
+                "patches": patches_json,
+            }),
+        );
+
+        Ok(serde_json::json!({
+            "applet_id": applet_id,
+            "action_ref": action_ref,
+            "run_id": run.run_id,
+            "tree": tree_json,
+            "patches": patches_json,
         }))
     }
 
@@ -1407,6 +1729,33 @@ impl WorkspaceCore {
             .kv_set(META_NS, &applet_key(applet_id), &bytes, "application/json")
     }
 
+    /// Persist `tree` as the applet's last-known UI tree (the diff base for the
+    /// next UI event), keyed by applet id within [`META_NS`]. Written after every
+    /// accepted render through this facade — a `runtime.run`'s last render and each
+    /// accepted `ui.dispatch_event` — so the interactive loop's diff base survives
+    /// reopening the workspace (UI-4/CR-6).
+    fn store_ui_tree(&mut self, applet_id: &str, tree: &serde_json::Value) -> Result<()> {
+        let bytes = serde_json::to_vec(tree)
+            .map_err(|e| CoreError::StorageError(format!("ui tree serialize failed: {e}")))?;
+        self.store
+            .kv_set(META_NS, &ui_tree_key(applet_id), &bytes, "application/json")
+    }
+
+    /// Load the applet's last-known UI tree (the diff base) as a [`forge_ui::Node`],
+    /// if one was recorded. `None` ⇒ the applet has not rendered through this facade
+    /// yet, so the next render's diff is a single root replace (UI-1).
+    fn load_ui_tree(&self, applet_id: &str) -> Result<Option<forge_ui::Node>> {
+        match self.store.kv_get(META_NS, &ui_tree_key(applet_id))? {
+            Some(bytes) => {
+                let node = forge_ui::from_str(std::str::from_utf8(&bytes).map_err(|e| {
+                    CoreError::StorageError(format!("ui tree is not utf-8: {e}"))
+                })?)?;
+                Ok(Some(node))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Load an installed applet by id, if present.
     fn load_applet(&self, applet_id: &str) -> Result<Option<InstalledApplet>> {
         match self.store.kv_get(META_NS, &applet_key(applet_id))? {
@@ -1880,6 +2229,18 @@ fn applet_key(applet_id: &str) -> String {
     format!("applet/{applet_id}")
 }
 
+/// KV key for an applet's last-known UI tree (the interactive diff base) within
+/// [`META_NS`]. See [`UI_TREE_KEY_PREFIX`].
+fn ui_tree_key(applet_id: &str) -> String {
+    format!("{UI_TREE_KEY_PREFIX}{applet_id}")
+}
+
+/// KV key for an applet's dispatch lifecycle flag within [`META_NS`]. See
+/// [`APPLET_LIFECYCLE_KEY_PREFIX`].
+fn applet_lifecycle_key(applet_id: &str) -> String {
+    format!("{APPLET_LIFECYCLE_KEY_PREFIX}{applet_id}")
+}
+
 /// KV key for a pinned replay program within [`META_NS`], keyed by `code_hash`.
 /// Content-addressed, so the same code reinstalled under a new applet version
 /// still maps to the one program every run that hashed to it can replay against.
@@ -2025,6 +2386,11 @@ fn authorize(cmd: &CoreCommand) -> Result<()> {
         // Triggering execution: the run-capable roles (CR-8). Viewer/Auditor are
         // read-only/oversight and cannot run code.
         "runtime.run" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),
+        // Re-entering an applet's handler on a UI event is *execution* (UI-4/CR-6):
+        // same run-capable roles as `runtime.run`. A Viewer/Auditor is read-only and
+        // cannot dispatch an event; the capability gate inside the handler then
+        // enforces the applet's manifest caps per `ctx.*` call exactly as a run does.
+        "ui.dispatch_event" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),
         // Replay is an audit/oversight operation (CR-9): Auditor/Maintainer/Owner.
         // A bare Runner can run but not replay (per commands.md).
         "runtime.replay" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),

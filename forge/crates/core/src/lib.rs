@@ -33,4 +33,4 @@ pub use sync_rbac::{
     authorize_remote_op, IncomingClaim, RemoteOp, RemoteOpEnvelope, ResourceType, SyncAuditRecord,
     SyncAuthDecision, TrustedMembership,
 };
-pub use workspace::{source_id_for, WorkspaceCore};
+pub use workspace::{source_id_for, AppletLifecycle, WorkspaceCore};
