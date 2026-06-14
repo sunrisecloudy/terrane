@@ -1225,11 +1225,15 @@ impl Store {
     /// - the effective original author (`author_actor_id` when forwarded, else
     ///   `source`) must be a non-blank, trimmed peer id — a blank actor would yield a
     ///   `record.remote_import` row attributable to no one;
-    /// - at least one non-blank touched record id must be supplied — a record import
-    ///   that names no record would make the next relay hop recover an envelope core
-    ///   policy must deny as missing a record id (`forge/crates/core/src/sync_rbac.rs`
-    ///   envelope-metadata gate). Blank entries are rejected too, so `&[""]` is no
-    ///   loophole.
+    /// - the touched `record_ids` list must be NON-EMPTY and BLANK-FREE — every entry
+    ///   must be non-blank after trim (`review 097`, strict reject-on-blank). A record
+    ///   import that names no record would make the next relay hop recover an envelope
+    ///   core policy must deny as missing a record id
+    ///   (`forge/crates/core/src/sync_rbac.rs` envelope-metadata gate), and a list that
+    ///   mixes a blank entry with a valid one (`&["", "t1"]`) would persist a
+    ///   `record.remote_import` row whose recovered ids include one naming nothing. So
+    ///   `&[]`, `&[""]`, AND `&["", "t1"]` are all rejected — there is no blank-id
+    ///   loophole, and the persisted row's ids are trimmed to their canonical form.
     ///
     /// The batch path [`apply_remote_chunks`](Self::apply_remote_chunks) is fed only by
     /// the trusted internal sync seam (`forge_sync`), whose generic transact-group /
@@ -1253,8 +1257,9 @@ impl Store {
     ) -> Result<bool> {
         // Reject provenance-poor input BEFORE touching the store (review 096): the
         // effective original author must be a non-blank peer id, and a record import
-        // must name at least one non-blank touched record id. Validating here — ahead
-        // of the apply — means a rejected call leaves NO chunk and NO oplog row.
+        // must name a non-empty, blank-free list of touched record ids. Validating
+        // here — ahead of the apply — means a rejected call leaves NO chunk and NO
+        // oplog row.
         let original_author = author_actor_id.unwrap_or(source).trim();
         if original_author.is_empty() {
             return Err(CoreError::ValidationError(
@@ -1263,10 +1268,17 @@ impl Store {
                     .into(),
             ));
         }
-        if !record_ids.iter().any(|id| !id.trim().is_empty()) {
+        // STRICT reject-on-blank contract (review 097): the list must be non-empty AND
+        // EVERY entry must be non-blank after trim. We reject any blank entry outright
+        // rather than silently filter it, so a caller cannot smuggle a blank id past
+        // the floor (`&["", "t1"]`) and persist a `record.remote_import` row that a
+        // later relay hop recovers as a record id naming nothing. `&[]` and `&[""]`
+        // both fail this same check, so there is no provenance-poor loophole.
+        if record_ids.is_empty() || record_ids.iter().any(|id| id.trim().is_empty()) {
             return Err(CoreError::ValidationError(
-                "put_chunk_from_remote: remote import names no touched record id \
-                 (would write a provenance-poor record.remote_import)"
+                "put_chunk_from_remote: remote import names no touched record id (the \
+                 record_ids list must be non-empty and contain no blank entries — \
+                 would write a provenance-poor record.remote_import)"
                     .into(),
             ));
         }
@@ -1274,14 +1286,16 @@ impl Store {
         // Build the same content + provenance unit the batch path imports, then
         // delegate to the ONE atomic apply path so the chunk, its oplog row, AND the
         // projection/index rebuild commit or roll back together (review 090 #3 — no
-        // stale-projection escape hatch).
+        // stale-projection escape hatch). The ids are trimmed on the way in so the
+        // persisted RemoteChunk carries the exact canonical record identities a
+        // downstream hop will recover (no surrounding whitespace — review 097).
         let chunk = RemoteChunk {
             doc_id: doc_id.to_string(),
             chunk_id: chunk_id.to_string(),
             format: format.to_string(),
             payload: payload.to_vec(),
             author_actor_id: author_actor_id.map(str::to_string),
-            record_ids: record_ids.iter().map(|s| s.to_string()).collect(),
+            record_ids: record_ids.iter().map(|s| s.trim().to_string()).collect(),
         };
         // `apply_remote_chunks` reports the number of chunks newly imported (0 or 1
         // for a single chunk); map it back to this API's was-newly-written boolean.

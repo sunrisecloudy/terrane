@@ -62,14 +62,21 @@ boundary forbids (`review 095`).
 The public single-chunk import API additionally **validates provenance at the
 import boundary**, BEFORE any store mutation: the effective original author (the
 forwarded author when set, else the importing source) must be a non-blank peer id,
-and a record import must name at least one non-blank touched record id. A call that
-fails either check is rejected and leaves the store completely unchanged — no chunk
-and no oplog row. This keeps a caller-supplied import from writing a provenance-poor
-row whose author or record identity is empty, which the next relay hop would
-recover as an envelope the authorizer must deny as missing a record id (`review
-096`). The internal batch path is fed only by the trusted sync seam, whose generic
-transact-group / unknown-op chunks legitimately carry no single record id and are
-gated by the receiver's authorization envelope instead.
+and a record import must name a **non-empty, blank-free** list of touched record
+ids — every id must be non-blank after trim (the **strict reject-on-blank**
+contract). An empty list, a list of only blank ids, OR a list that mixes a blank id
+with a valid one (`["", "t1"]`) is rejected outright rather than silently filtered,
+so no blank id can be smuggled past the floor. A call that fails either check is
+rejected and leaves the store completely unchanged — no chunk and no oplog row. The
+ids that do pass are persisted in canonical (trimmed) form. This keeps a
+caller-supplied import from writing a provenance-poor row whose author or record
+identity is empty (or whose recovered id list names nothing), which the next relay
+hop would recover as an envelope the authorizer must deny as missing a record id
+(`review 096`, `review 097`). The internal batch path is fed only by the trusted
+sync seam, whose generic transact-group / unknown-op chunks legitimately carry no
+single record id and are gated by the receiver's authorization envelope instead;
+that seam also trims and drops any blank entry when recovering touched record ids
+from a forwarded chunk's oplog, so every relay hop reconstructs a clean list.
 
 ## M0b scope
 

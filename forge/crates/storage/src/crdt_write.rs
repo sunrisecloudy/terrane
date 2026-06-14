@@ -1218,6 +1218,89 @@ mod tests {
     }
 
     #[test]
+    fn legacy_put_chunk_from_remote_rejects_mixed_blank_and_valid_record_ids() {
+        // review 097: the STRICT reject-on-blank contract. A list that mixes a blank
+        // entry with a valid one (`&["", "t1"]`) used to pass the "some id is
+        // non-blank" floor, then persist BOTH entries into the record.remote_import
+        // row — so the next relay hop recovered a record_ids list containing an id
+        // naming nothing. The boundary now rejects ANY blank entry outright and leaves
+        // the store completely unchanged: no blank id is ever persisted.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        let chunks_before = total_chunk_rows(&dst);
+        let ops_before = dst.list_ops().unwrap().len();
+
+        let err = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &["", "t1"], // a blank id mixed with a valid one is still rejected
+                &idx,
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "ValidationError", "a blank entry is rejected");
+        assert!(
+            err.to_string().contains("no blank entries"),
+            "error names the blank-free requirement: {err}"
+        );
+
+        // The store is byte-for-byte unchanged: not even the valid `t1` id leaked in.
+        assert_eq!(total_chunk_rows(&dst), chunks_before, "no chunk row was appended");
+        assert_eq!(dst.list_ops().unwrap().len(), ops_before, "no oplog row was appended");
+        assert!(
+            dst.get_chunk(&doc_id, &row.chunk_id).unwrap().is_none(),
+            "the rejected chunk did not land"
+        );
+    }
+
+    #[test]
+    fn legacy_put_chunk_from_remote_trims_record_ids_in_persisted_row() {
+        // review 097 positive case: a non-empty, blank-free list still imports, AND the
+        // persisted record.remote_import row carries the ids in canonical (trimmed)
+        // form, so every downstream hop recovers exactly the record identities — no
+        // surrounding whitespace.
+        let mut src = store();
+        let idx = IndexManager::new();
+        src.apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "Ship"}), 1), &idx)
+            .unwrap();
+        let doc_id = collection_doc_id("tasks");
+        let row = src.get_chunks(&doc_id).unwrap().into_iter().next().unwrap();
+
+        let mut dst = store();
+        let imported = dst
+            .put_chunk_from_remote(
+                &doc_id,
+                &row.chunk_id,
+                &row.format,
+                &row.payload,
+                "peer:A",
+                Some("peer:C"),
+                &["  t1  ", "t2"], // padded but valid ids
+                &idx,
+            )
+            .unwrap();
+        assert!(imported, "a valid non-empty list still imports");
+
+        let ops = dst.list_ops().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&ops[0].payload).unwrap();
+        assert_eq!(
+            payload["record_ids"],
+            json!(["t1", "t2"]),
+            "persisted record_ids are trimmed to canonical form, no blanks"
+        );
+    }
+
+    #[test]
     fn legacy_put_chunk_from_remote_rejects_blank_author_without_touching_store() {
         // The author-floor twin: a blank effective original author (blank `source` and
         // no `author_actor_id`) would write a remote-import row attributable to no one,

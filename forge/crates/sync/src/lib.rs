@@ -232,12 +232,21 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
     let mut out = BTreeMap::new();
     for op in store.list_ops()? {
         let payload = serde_json::from_slice::<serde_json::Value>(&op.payload).ok();
+        // Recover the touched record ids, trimming each and DROPPING blanks so the
+        // re-exported `RemoteChunk` and the core authorization envelope always get a
+        // clean, blank-free list (`review 097`). The public import boundary already
+        // refuses to persist a blank entry, so this is a belt-and-suspenders against
+        // any legacy / foreign oplog row that named one — a forwarded chunk's record
+        // identity stays canonical across every hop.
         let record_ids = payload
             .as_ref()
             .and_then(|v| {
                 v.get("record_ids").and_then(|r| r.as_array()).map(|arr| {
                     arr.iter()
-                        .filter_map(|e| e.as_str().map(String::from))
+                        .filter_map(|e| e.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
                         .collect::<Vec<_>>()
                 })
             })
