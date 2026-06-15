@@ -720,6 +720,7 @@ dependencies = [
 name = "forge-sync"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "forge-crdt",
  "forge-domain",
  "forge-schema",

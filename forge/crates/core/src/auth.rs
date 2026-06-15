@@ -143,6 +143,13 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         // mirroring `workspace.import` — a Maintainer/Editor/Viewer/Auditor/Runner
         // cannot widen (or tighten) the workspace's quotas.
         "quota.set" => Some(&[Role::Owner]),
+        // Sync packet exchange (SS-1/SS-2/SS-7). Trust provisioning is owner-only
+        // because it writes the receiver-side authority table. Export is equivalent
+        // to a workspace backup/debug read, while import mutates CRDT state and is a
+        // maintainer+ operation.
+        "sync.trust_peer" => Some(&[Role::Owner]),
+        "sync.export" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
+        "sync.import" => Some(&[Role::Owner, Role::Maintainer]),
         // Exporting the portable workspace bundle (DL-24, commands.md:
         // workspace.export → Owner, Maintainer, Auditor). The Auditor may take a
         // backup/debug bundle (including run logs by policy) without otherwise

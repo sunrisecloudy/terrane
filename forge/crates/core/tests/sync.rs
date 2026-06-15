@@ -28,13 +28,17 @@ fn owner_membership(actor: &str) -> TrustedMembership {
 /// An owner command (owner permits the `query.execute` read; no db.read grant
 /// needed for the role-derived read-all fallback).
 fn query_cmd(collection: &str) -> CoreCommand {
+    owner_cmd("query.execute", json!({ "collection": collection }))
+}
+
+fn owner_cmd(name: &str, payload: Value) -> CoreCommand {
     CoreCommand {
         request_id: RequestId::new("req"),
-        name: "query.execute".into(),
+        name: name.into(),
         applet_id: None::<AppletId>,
         actor: ActorContext::owner("dev"),
         workspace_id: WorkspaceId::new("ws"),
-        payload: json!({ "collection": collection }),
+        payload,
     }
 }
 
@@ -103,7 +107,10 @@ fn two_cores_converge_through_sync_with() {
     // diverge (the concurrent patch then targets a genuinely shared record).
     peer_a
         .store_mut()
-        .apply_mutation_crdt(&insert("shared", json!({"title": "shared", "status": "open"}), 1), &idx)
+        .apply_mutation_crdt(
+            &insert("shared", json!({"title": "shared", "status": "open"}), 1),
+            &idx,
+        )
         .unwrap();
     peer_a.sync_with(&mut peer_b).unwrap();
 
@@ -131,7 +138,10 @@ fn two_cores_converge_through_sync_with() {
 
     // Converge.
     let report = peer_a.sync_with(&mut peer_b).unwrap();
-    assert!(report.total_chunks_moved() > 0, "the first sync should move chunks");
+    assert!(
+        report.total_chunks_moved() > 0,
+        "the first sync should move chunks"
+    );
 
     // Both cores return the IDENTICAL converged set through query.execute.
     let a_rows = query_tasks(&mut peer_a);
@@ -144,12 +154,94 @@ fn two_cores_converge_through_sync_with() {
     let shared = &a_rows.iter().find(|(id, _)| id == "shared").unwrap().1;
     assert_eq!(shared["title"], json!("shared"));
     assert_eq!(shared["status"], json!("open"));
-    assert_eq!(shared["owner"], json!("a"), "peer A's concurrent field survived");
-    assert_eq!(shared["pinned"], json!(true), "peer B's concurrent field survived");
-    assert_eq!(a_rows.iter().find(|(id, _)| id == "a1").unwrap().1["title"], json!("from-a"));
-    assert_eq!(a_rows.iter().find(|(id, _)| id == "b1").unwrap().1["title"], json!("from-b"));
+    assert_eq!(
+        shared["owner"],
+        json!("a"),
+        "peer A's concurrent field survived"
+    );
+    assert_eq!(
+        shared["pinned"],
+        json!(true),
+        "peer B's concurrent field survived"
+    );
+    assert_eq!(
+        a_rows.iter().find(|(id, _)| id == "a1").unwrap().1["title"],
+        json!("from-a")
+    );
+    assert_eq!(
+        a_rows.iter().find(|(id, _)| id == "b1").unwrap().1["title"],
+        json!("from-b")
+    );
 
     // A second sync over the now-converged pair is a no-op (idempotent).
     let again = peer_a.sync_with(&mut peer_b).unwrap();
-    assert_eq!(again.total_chunks_moved(), 0, "a second sync must move no chunks");
+    assert_eq!(
+        again.total_chunks_moved(),
+        0,
+        "a second sync must move no chunks"
+    );
+}
+
+#[test]
+fn sync_export_import_commands_move_chunks_through_core_boundary() {
+    let idx = IndexManager::new();
+    let mut peer_a = WorkspaceCore::in_memory("ws-a").unwrap();
+    let mut peer_b = WorkspaceCore::in_memory("ws-b").unwrap();
+    peer_a.store_mut().set_crdt_peer_id(101);
+    peer_b.store_mut().set_crdt_peer_id(202);
+
+    peer_a
+        .store_mut()
+        .apply_mutation_crdt(
+            &insert("a1", json!({"title": "exported through command"}), 1),
+            &idx,
+        )
+        .unwrap();
+
+    let export = peer_a.handle(owner_cmd("sync.export", json!({})));
+    assert!(export.ok, "sync.export failed: {:?}", export.error);
+    let packet = export.payload["packet"].clone();
+    let source = packet["source"].as_str().expect("source").to_string();
+    assert_eq!(source, "peer:101");
+    assert_eq!(packet["chunks"].as_array().unwrap().len(), 1);
+
+    let denied = peer_b.handle(owner_cmd(
+        "sync.import",
+        json!({ "packet": packet.clone() }),
+    ));
+    assert!(
+        denied.ok,
+        "unknown-peer import should be a deny report, not a command error"
+    );
+    assert_eq!(denied.payload["chunks_imported"], json!(0));
+    assert_eq!(denied.payload["chunks_denied"], json!(1));
+    assert!(query_tasks(&mut peer_b).is_empty());
+
+    let trust = peer_b.handle(owner_cmd(
+        "sync.trust_peer",
+        json!({
+            "source": source,
+            "membership": owner_membership("actor-a")
+        }),
+    ));
+    assert!(trust.ok, "sync.trust_peer failed: {:?}", trust.error);
+
+    let imported = peer_b.handle(owner_cmd(
+        "sync.import",
+        json!({ "packet": packet.clone() }),
+    ));
+    assert!(imported.ok, "trusted import failed: {:?}", imported.error);
+    assert_eq!(imported.payload["chunks_seen"], json!(1));
+    assert_eq!(imported.payload["chunks_imported"], json!(1));
+    assert_eq!(imported.payload["chunks_denied"], json!(0));
+
+    let rows = query_tasks(&mut peer_b);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "a1");
+    assert_eq!(rows[0].1["title"], json!("exported through command"));
+
+    let again = peer_b.handle(owner_cmd("sync.import", json!({ "packet": packet })));
+    assert!(again.ok, "idempotent re-import failed: {:?}", again.error);
+    assert_eq!(again.payload["chunks_imported"], json!(0));
+    assert_eq!(again.payload["chunks_denied"], json!(0));
 }

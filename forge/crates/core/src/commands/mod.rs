@@ -35,6 +35,7 @@ pub(super) mod quota;
 pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
+pub(super) mod sync;
 pub(super) mod test_hooks;
 pub(super) mod time_travel;
 pub(super) mod ui;
@@ -101,6 +102,13 @@ const COMMANDS: &[(&str, Handler)] = &[
         WorkspaceCore::cmd_schema_validate_compatibility,
     ),
     ("schema.rebuild_indexes", WorkspaceCore::cmd_schema_rebuild_indexes),
+    // One-ABI CRDT/sync transport (SS-1/SS-2/SS-7): hosts export/import CRDT
+    // chunks through `forge_core_handle_command` instead of a second `forge_crdt_*`
+    // C surface. `sync.import` authorizes every packet chunk against trusted
+    // receiver membership before atomic storage apply.
+    ("sync.trust_peer", WorkspaceCore::cmd_sync_trust_peer),
+    ("sync.export", WorkspaceCore::cmd_sync_export),
+    ("sync.import", WorkspaceCore::cmd_sync_import),
     // Workspace quotas (DL-22, commands/quota.rs): `quota.status` REPORTS usage vs the
     // trusted limits + the approaching-limit warnings (a read, scoped to the whole
     // workspace from trusted state); `quota.set` CONFIGURES the trusted policy override

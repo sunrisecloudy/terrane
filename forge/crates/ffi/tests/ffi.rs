@@ -30,6 +30,15 @@ fn command_with_applet(name: &str, payload: serde_json::Value, applet_id: Option
     .to_string()
 }
 
+unsafe fn send_command(
+    handle: *mut forge_ffi::ForgeCoreHandle,
+    command_json: String,
+) -> CoreResponse {
+    let cmd = c(&command_json);
+    let json = take_string(forge_ffi::forge_core_handle_command(handle, cmd.as_ptr()));
+    serde_json::from_str(&json).unwrap()
+}
+
 fn demo_manifest() -> serde_json::Value {
     serde_json::json!({
         "entrypoint": "src/main.ts",
@@ -273,6 +282,109 @@ fn install_run_and_drain_events_cross_the_c_abi() {
     assert!(ui_patch["payload"]["tree"].to_string().contains("Buy milk"));
 
     unsafe { forge_ffi::forge_core_close(handle) };
+}
+
+#[test]
+fn sync_export_import_crosses_the_c_abi_without_crdt_symbols() {
+    let source_workspace = c("ws-source");
+    let target_workspace = c("ws-target");
+    let source = unsafe { forge_ffi::forge_core_open_in_memory(source_workspace.as_ptr()) };
+    let target = unsafe { forge_ffi::forge_core_open_in_memory(target_workspace.as_ptr()) };
+    assert!(!source.is_null());
+    assert!(!target.is_null());
+
+    let install = unsafe {
+        send_command(
+            source,
+            command_with_applet(
+                "applet.install",
+                serde_json::json!({
+                    "manifest": demo_manifest(),
+                    "sources": { "src/main.ts": demo_ts() }
+                }),
+                Some("app_demo"),
+            ),
+        )
+    };
+    assert!(install.ok, "{:?}", install.error);
+
+    let run = unsafe {
+        send_command(
+            source,
+            command_with_applet(
+                "runtime.run",
+                serde_json::json!({ "input": { "title": "Synced through FFI" } }),
+                Some("app_demo"),
+            ),
+        )
+    };
+    assert!(run.ok, "{:?}", run.error);
+
+    let exported = unsafe { send_command(source, command("sync.export", serde_json::json!({}))) };
+    assert!(exported.ok, "{:?}", exported.error);
+    let packet = exported.payload["packet"].clone();
+    let source_id = packet["source"].as_str().unwrap().to_string();
+    assert!(!packet["chunks"].as_array().unwrap().is_empty());
+
+    let trust = unsafe {
+        send_command(
+            target,
+            command(
+                "sync.trust_peer",
+                serde_json::json!({
+                    "source": source_id,
+                    "membership": {
+                        "actor_id": "source-peer",
+                        "role": "owner",
+                        "db_read": ["*"],
+                        "db_write": ["*"],
+                        "schema_write": true
+                    }
+                }),
+            ),
+        )
+    };
+    assert!(trust.ok, "{:?}", trust.error);
+
+    let imported = unsafe {
+        send_command(
+            target,
+            command("sync.import", serde_json::json!({ "packet": packet })),
+        )
+    };
+    assert!(imported.ok, "{:?}", imported.error);
+    assert!(imported.payload["chunks_imported"].as_u64().unwrap() > 0);
+    assert_eq!(imported.payload["chunks_denied"], serde_json::json!(0));
+
+    let query = unsafe {
+        send_command(
+            target,
+            command(
+                "query.execute",
+                serde_json::json!({ "collection": "tasks" }),
+            ),
+        )
+    };
+    assert!(query.ok, "{:?}", query.error);
+    assert_eq!(
+        query.payload["rows"][0]["fields"]["title"],
+        serde_json::json!("Synced through FFI")
+    );
+
+    let events_json = unsafe { take_string(forge_ffi::forge_core_drain_events(target)) };
+    let envelope: serde_json::Value = serde_json::from_str(&events_json).unwrap();
+    let kinds: Vec<&str> = envelope["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"sync.authorized"));
+
+    unsafe {
+        forge_ffi::forge_core_close(source);
+        forge_ffi::forge_core_close(target);
+    }
 }
 
 #[test]

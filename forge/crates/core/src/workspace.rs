@@ -956,7 +956,7 @@ impl WorkspaceCore {
     /// receiver running validation / index reconstruction / later schema changes
     /// against a stale registry. Re-derives the handles from the just-committed durable
     /// state, so it can never drift from it (mirrors [`from_store`]'s open-time load).
-    fn refresh_schema_from_store(&mut self) -> Result<()> {
+    pub(in crate::workspace) fn refresh_schema_from_store(&mut self) -> Result<()> {
         self.registry = load_schema_registry(&self.store)?;
         self.indexes = rebuild_indexes_from_registry(&self.store, &self.registry)?;
         Ok(())
@@ -1305,7 +1305,7 @@ pub fn source_id_for(loro_peer_id: u64) -> String {
 /// [`RunPolicy::workspace_policy_gate`](crate::RunPolicy::workspace_policy_gate)). A
 /// DL-13 migration chunk's schema authority is gated by the membership `schema_write`
 /// RBAC (review 143), the sync-applicable gate for the schema dimension.
-fn authorize_incoming_op(
+pub(in crate::workspace) fn authorize_incoming_op(
     membership: &std::collections::BTreeMap<String, TrustedMembership>,
     run_policy: Option<&RunPolicy>,
     events: &mut EventSink,

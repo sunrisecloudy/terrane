@@ -42,9 +42,13 @@
 //! is a no-op and a peer never overwrites another peer's history. This is exactly
 //! the "peer-scoped or content-addressed" identity the spec mandates.
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use forge_crdt::RecordsDoc;
+use forge_domain::CoreError;
 use forge_domain::Result;
-use forge_storage::{collection_of_doc, AuditRecord, IndexManager, RemoteChunk, Store, CHUNK_FORMAT};
+use forge_storage::{
+    collection_of_doc, AuditRecord, IndexManager, RemoteChunk, Store, CHUNK_FORMAT,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -104,7 +108,7 @@ struct ExchangedChunk {
 /// touched record ids). When a chunk is a foreign re-import on the origin (its
 /// oplog row is `record.remote_import`, carrying no record kind), the envelope
 /// falls back to a generic record write so the receiver still gates it as a write.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyncOpEnvelope {
     /// Always `record` in M0b (schema docs are not chunk-synced yet); kept explicit
     /// so the authorizer's resource dispatch matches `forge/spec/sync-rbac.md`.
@@ -162,13 +166,15 @@ pub struct SyncOpEnvelope {
 }
 
 /// The resource an incoming chunk targets. M0b chunk sync only carries records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SyncResource {
     Record,
 }
 
 /// The record op an incoming chunk authored, recovered from the origin oplog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SyncRecordOp {
     Insert,
     Patch,
@@ -494,6 +500,114 @@ pub struct StagedChunk {
     pub chunk: RemoteChunk,
     /// The op envelope the receiver must authorize before importing `chunk`.
     pub envelope: SyncOpEnvelope,
+}
+
+/// A transport-ready export of this store's CRDT chunk set.
+///
+/// The packet is intentionally still a Forge-core command payload, not a second C
+/// ABI: hosts move it through `forge_core_handle_command("sync.export")` and
+/// `sync.import`. Each chunk is content-addressed for network/frontier safety and
+/// carries the same SS-7 envelope metadata the in-process [`sync_stores_authorized`]
+/// path authorizes before import.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyncExportPacket {
+    /// The exporting store's sync source id, currently `peer:<loro_peer_id>`.
+    pub source: String,
+    /// All chunks known to the exporter, in deterministic doc/chunk order.
+    pub chunks: Vec<SyncWireChunk>,
+}
+
+/// One CRDT chunk plus its authorization envelope in JSON-friendly form.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyncWireChunk {
+    pub doc_id: String,
+    /// Content-addressed network-safe chunk id (`sha256:<hex>`).
+    pub chunk_id: String,
+    pub format: String,
+    /// Base64 encoding of the immutable CRDT update bytes.
+    pub payload_b64: String,
+    /// The operation metadata the receiver must authorize before import.
+    pub envelope: SyncOpEnvelope,
+}
+
+impl SyncWireChunk {
+    fn into_remote_chunk(self) -> Result<(SyncOpEnvelope, RemoteChunk)> {
+        if self.doc_id.trim().is_empty() {
+            return Err(CoreError::ValidationError(
+                "sync packet chunk doc_id must not be empty".into(),
+            ));
+        }
+        if self.chunk_id.trim().is_empty() {
+            return Err(CoreError::ValidationError(
+                "sync packet chunk chunk_id must not be empty".into(),
+            ));
+        }
+        if self.format.trim().is_empty() {
+            return Err(CoreError::ValidationError(
+                "sync packet chunk format must not be empty".into(),
+            ));
+        }
+        let payload = BASE64_STANDARD
+            .decode(self.payload_b64.as_bytes())
+            .map_err(|e| {
+                CoreError::ValidationError(format!("sync packet chunk payload_b64 is invalid: {e}"))
+            })?;
+        let chunk = RemoteChunk {
+            doc_id: self.doc_id,
+            chunk_id: self.chunk_id,
+            format: self.format,
+            payload,
+            author_actor_id: self.envelope.origin_source.clone(),
+            record_ids: self.envelope.record_ids.clone(),
+            schema_version: self.envelope.schema_version,
+            registry_collection: self.envelope.registry_collection.clone(),
+            delete_mutation_at: self.envelope.delete_mutation_at,
+        };
+        Ok((self.envelope, chunk))
+    }
+}
+
+/// Export every CRDT chunk in `store` as a JSON-serializable packet.
+///
+/// This is the one-way transport form of the in-process sync seam. The receiver may
+/// already hold some or all chunks; import is idempotent because the wire id is the
+/// same content-addressed id [`sync_stores_authorized`] would use.
+pub fn export_packet(store: &Store) -> Result<SyncExportPacket> {
+    let source = remote_source_id(store);
+    let oplog = oplog_index(store)?;
+    let mut chunks = Vec::new();
+    for doc_id in store.list_doc_ids()? {
+        for row in store.get_chunks(&doc_id)? {
+            let chunk_id = exchanged_chunk_id(&row.format, &row.payload);
+            chunks.push(SyncWireChunk {
+                envelope: envelope_for_chunk(&doc_id, &row.chunk_id, &oplog),
+                doc_id: doc_id.clone(),
+                chunk_id,
+                format: row.format,
+                payload_b64: BASE64_STANDARD.encode(row.payload),
+            });
+        }
+    }
+    Ok(SyncExportPacket { source, chunks })
+}
+
+/// Decode a transport packet into chunks paired with their authorization envelopes.
+///
+/// The caller is responsible for resolving trusted membership for `packet.source`
+/// (or `envelope.origin_source` when forwarding provenance is present) and filtering
+/// denied chunks before handing the returned [`RemoteChunk`]s to the storage apply
+/// path.
+pub fn decode_packet(packet: SyncExportPacket) -> Result<Vec<(SyncOpEnvelope, RemoteChunk)>> {
+    if packet.source.trim().is_empty() {
+        return Err(CoreError::ValidationError(
+            "sync packet source must not be empty".into(),
+        ));
+    }
+    packet
+        .chunks
+        .into_iter()
+        .map(SyncWireChunk::into_remote_chunk)
+        .collect()
 }
 
 /// Collect the chunks `from` holds for `doc_id` that `into` lacks — one direction,

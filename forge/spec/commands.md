@@ -36,6 +36,9 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 | sync.start | peer/workspace config | sync session id | Owner, Maintainer | later | CR-A2, SS-4 |
 | sync.stop | session_id | stopped status | Owner, Maintainer | later | CR-A2 |
 | sync.status | session_id? | state, frontier, conflicts | Owner, Maintainer, Auditor | later | CR-A2 |
+| sync.trust_peer | source, membership | source | Owner | M0b | CR-A2, SS-7 |
+| sync.export | none | packet { source, chunks[] } | Owner, Maintainer, Auditor | M0b | CR-A2, SS-1, SS-2 |
+| sync.import | packet | source, chunks_seen, chunks_imported, chunks_denied, docs_synced | Owner, Maintainer | M0b | CR-A2, SS-1, SS-2, SS-7 |
 | sync.invite | actor/contact, role, constraints | invite token/ref | Owner | later | CR-A2, SS-7 |
 | sync.accept_invite | invite token/ref | workspace access | Invited actor | later | CR-A2 |
 | permission.request_grant | applet_id, capability, reason | review request id | Editor, Maintainer, Owner | M0b | CR-A2, SC-6 |
