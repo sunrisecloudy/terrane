@@ -87,7 +87,7 @@ Required behavior:
 - Route UI control, bridge inspection, storage mocks, network mocks, dialog mocks, and replay operations to the runtime.
 - Compile out or hard-disable the control plane in production/release builds.
 
-See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
+See `docs/14_CODEX_CONTROL_PLUGIN.md` and `tools/codex-platform-mcp/README.md`.
 
 ## v0.4 persistence requirement
 

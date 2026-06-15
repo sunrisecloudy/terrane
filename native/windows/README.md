@@ -74,7 +74,7 @@ Remaining protocol work:
 
 - Full WebView2-backed UI automation runtime smoke still needs execution on a Windows machine.
 
-See `docs/14_CODEX_CONTROL_PLUGIN.md` and `devtools/control-plane/README.md`.
+See `docs/14_CODEX_CONTROL_PLUGIN.md` and `tools/codex-platform-mcp/README.md`.
 
 ## v0.4 persistence requirement
 

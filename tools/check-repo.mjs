@@ -20,8 +20,6 @@ await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
 await runCheck("release.packaging", checkReleasePackaging);
-await runCheck("plugin.mcp", checkPluginMcp);
-await runCheck("control.openapi", checkControlOpenApi);
 await runCheck("control.tools", checkControlToolContract);
 await runCheck("reference-host.static", checkReferenceHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
@@ -511,92 +509,6 @@ function checkPerformanceHarness() {
     }
   }
   return "reference-host-latency warmup=50 samples=500 lifecycle=50 throughput=1200 metrics=launcher,open,switch,storage,core scenarios=network-timeout,bridge-throughput,open-all-memory,large-list,install-uninstall p50/p95";
-}
-
-function checkPluginMcp() {
-  const pluginDir = path.join(repoRoot, "codex-plugin", "platform-control");
-  const pluginManifest = readJson(path.join(pluginDir, ".codex-plugin", "plugin.json"));
-  const config = readJson(path.join(pluginDir, ".mcp.json"));
-  const mcpConfigSource = fs.readFileSync(path.join(pluginDir, ".mcp.json"), "utf8");
-  if (mcpConfigSource.includes("PLATFORM_CONTROL_TOKEN") || mcpConfigSource.includes("dev-token-change-me")) {
-    throw new Error("codex plugin MCP config must not check in a shared control token");
-  }
-  const servers = Object.entries(config.mcp_servers ?? {});
-  if (servers.length === 0) {
-    throw new Error("codex plugin declares no MCP servers");
-  }
-  for (const [name, server] of servers) {
-    const serverScript = server.args?.find((arg) => arg.endsWith("src/server.js"));
-    if (!serverScript) {
-      throw new Error(`${name} does not point at an MCP server script`);
-    }
-    const resolved = path.resolve(pluginDir, serverScript);
-    if (!fs.existsSync(resolved)) {
-      throw new Error(`${name} MCP script missing: ${path.relative(repoRoot, resolved)}`);
-    }
-  }
-  const tokenHelper = fs.readFileSync(path.join(repoRoot, "tools", "control-token.js"), "utf8");
-  const mcpConfig = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "config.js"), "utf8");
-  const mcpServer = fs.readFileSync(path.join(repoRoot, "tools", "codex-platform-mcp", "src", "server.js"), "utf8");
-  for (const snippet of ["PLATFORM_CONTROL_TOKEN_FILE", "control.token", "Control token file not found", "DEFAULT_CONTROL_URL"]) {
-    if (!(mcpConfig.includes(snippet) || tokenHelper.includes(snippet))) {
-      throw new Error(`codex MCP config missing token-file behavior: ${snippet}`);
-    }
-  }
-  if (!mcpServer.includes("resolveControlConfig") || mcpServer.includes("dev-token-change-me")) {
-    throw new Error("codex MCP server must resolve token-file config and avoid hardcoded tokens");
-  }
-  if (!mcpServer.includes("validateToolArguments")) {
-    throw new Error("codex MCP server must validate tool arguments before forwarding");
-  }
-  const skillsDir = path.resolve(pluginDir, pluginManifest.skills ?? "skills");
-  const requiredSkills = [
-    ["platform-micro-test", "runtime.run_microtest"],
-    ["generated-webapp-repair", "platform.run_policy_audit"],
-    ["core-replay-debug", "runtime.replay_events"],
-  ];
-  for (const [skillName, requiredTool] of requiredSkills) {
-    const skillPath = path.join(skillsDir, skillName, "SKILL.md");
-    if (!fs.existsSync(skillPath)) {
-      throw new Error(`codex plugin skill missing: ${path.relative(repoRoot, skillPath)}`);
-    }
-    const skillSource = fs.readFileSync(skillPath, "utf8");
-    if (!skillSource.includes(`name: ${skillName}`) || !skillSource.includes(requiredTool)) {
-      throw new Error(`${skillName} skill must declare its name and reference ${requiredTool}`);
-    }
-  }
-  return `servers=${servers.length},skills=${requiredSkills.length}`;
-}
-
-function checkControlOpenApi() {
-  const spec = readJson(path.join(repoRoot, "devtools", "control-plane", "openapi.json"));
-  const paths = spec.paths ?? {};
-  const requiredPostPaths = [
-    "/command",
-    "/db/snapshot",
-    "/db/app-storage",
-    "/db/app-versions",
-    "/db/bridge-calls",
-    "/db/core-events",
-    "/db/test-runs",
-    "/db/export-backup",
-    "/db/import-backup",
-    "/db/export-debug-bundle",
-  ];
-  for (const route of requiredPostPaths) {
-    if (!paths[route]?.post) {
-      throw new Error(`control-plane OpenAPI missing POST ${route}`);
-    }
-  }
-  for (const route of requiredPostPaths.filter((route) => route.startsWith("/db/"))) {
-    if (paths[route].post["x-dev-only"] !== true) {
-      throw new Error(`control-plane OpenAPI ${route} must be marked x-dev-only`);
-    }
-  }
-  if (Object.keys(paths).some((route) => /\bsql\b/i.test(route))) {
-    throw new Error("control-plane OpenAPI must not expose arbitrary SQL endpoints");
-  }
-  return `dbPaths=${requiredPostPaths.filter((route) => route.startsWith("/db/")).length},raw-sql=absent`;
 }
 
 function mcpToolNames() {

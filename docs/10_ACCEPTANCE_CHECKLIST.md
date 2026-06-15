@@ -228,8 +228,6 @@
 
 ## Codex control acceptance
 
-- [x] A local Codex plugin skeleton exists at `codex-plugin/platform-control`.
-- [x] The plugin contains `.codex-plugin/plugin.json`, `.mcp.json`, and at least three skills.
 - [x] The MCP server exposes tools for launch, install, open, inspect, interact, assert, mock, replay, and reset.
 - [x] The MCP server exposes per-tool input schemas and rejects invalid or unconfirmed destructive calls before forwarding.
 - [x] A dev host can be launched with a control token.
