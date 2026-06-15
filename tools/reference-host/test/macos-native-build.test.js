@@ -18,48 +18,35 @@ function hasSwift() {
   }
 }
 
-function hasZig() {
+function hasCargo() {
   try {
-    execFileSync("zig", ["version"], { stdio: "ignore" });
+    execFileSync("cargo", ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 }
 
-function macosZigTarget() {
-  return process.arch === "arm64" ? "aarch64-macos" : "x86_64-macos";
-}
-
-function buildMacOSZigCore(scratch) {
-  if (!hasZig()) return null;
-  const dylibPath = path.join(scratch, "libzig_core.dylib");
+function buildMacOSForgeFfi() {
   execFileSync(
-    "zig",
+    "cargo",
     [
-      "build-lib",
-      "src/lib.zig",
-      "-dynamic",
-      "-target",
-      macosZigTarget(),
-      "-lc",
-      `-femit-bin=${dylibPath}`,
+      "build",
+      "-p",
+      "forge-ffi",
+      "--locked",
     ],
     {
-      cwd: path.join(repoRoot, "zig-core"),
-      env: {
-        ...process.env,
-        ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
-        ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
-      },
+      cwd: path.join(repoRoot, "forge"),
       stdio: "ignore",
     },
   );
+  const dylibPath = path.join(repoRoot, "forge", "target", "debug", "libforge_ffi.dylib");
   assert.equal(fs.existsSync(dylibPath), true);
   const symbols = execFileSync("nm", ["-gU", dylibPath], { encoding: "utf8" });
-  assert.match(symbols, /_core_create/);
-  assert.match(symbols, /_core_step_json/);
-  assert.match(symbols, /_core_free/);
+  assert.match(symbols, /_forge_core_open_in_memory/);
+  assert.match(symbols, /_forge_core_handle_command/);
+  assert.match(symbols, /_forge_string_free/);
   return dylibPath;
 }
 
@@ -99,17 +86,17 @@ function runOptionalLaunchSmoke({ scratch, env }) {
 test(
   "macOS native scaffold builds, passes SwiftPM tests, and optionally launches",
   {
-    skip: process.platform !== "darwin" ? "macOS SwiftPM build smoke only runs on Darwin hosts" : !hasSwift() ? "swift is not available" : false,
+    skip: process.platform !== "darwin" ? "macOS SwiftPM build smoke only runs on Darwin hosts" : !hasSwift() ? "swift is not available" : !hasCargo() ? "cargo is not available" : false,
     timeout: 120_000,
   },
   () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-macos-swiftpm-"));
     try {
-      const zigCoreDylib = buildMacOSZigCore(scratch);
+      const forgeFfiDylib = buildMacOSForgeFfi();
       const env = {
         ...process.env,
         MACOSX_DEPLOYMENT_TARGET: "13.0",
-        ...(zigCoreDylib ? { TERRANE_ZIG_CORE_DYLIB_FOR_TEST: zigCoreDylib } : {}),
+        TERRANE_FORGE_FFI_DYLIB_FOR_TEST: forgeFfiDylib,
       };
       const output = execFileSync("swift", ["test", "--scratch-path", scratch], {
         cwd: macosDir,

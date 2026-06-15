@@ -2108,9 +2108,9 @@ struct NativeHostTests {
         })
     }
 
-    @Test("core.step returns timeout when Zig core exceeds the host timeout")
-    func coreStepReturnsTimeoutWhenZigCoreExceedsHostTimeout() throws {
-        let core = ZigCoreBridge(stepTimeoutMilliseconds: 25) { _ in
+    @Test("core.step returns timeout when Forge core exceeds the host timeout")
+    func coreStepReturnsTimeoutWhenForgeCoreExceedsHostTimeout() throws {
+        let core = ForgeCoreBridge(stepTimeoutMilliseconds: 25) { _ in
             Thread.sleep(forTimeInterval: 0.4)
             return ["stateVersion": 1, "actions": []]
         }
@@ -2138,15 +2138,15 @@ struct NativeHostTests {
         #expect(jsonInt(details["timeoutMs"]) == 25)
     }
 
-    @Test("core.step returns real Zig output when a dylib is available")
-    func coreStepReturnsRealZigOutput() throws {
-        guard let dylibPath = ProcessInfo.processInfo.environment["TERRANE_ZIG_CORE_DYLIB_FOR_TEST"],
+    @Test("core.step returns real Forge output when a dylib is available")
+    func coreStepReturnsRealForgeOutput() throws {
+        guard let dylibPath = ProcessInfo.processInfo.environment["TERRANE_FORGE_FFI_DYLIB_FOR_TEST"],
               FileManager.default.fileExists(atPath: dylibPath)
         else {
             return
         }
 
-        let core = ZigCoreBridge(libraryPathOverride: dylibPath)
+        let core = ForgeCoreBridge(libraryPathOverride: dylibPath)
         #expect(core.isAvailable)
         let context = AppSandboxContext(
             appId: "task-workbench",

@@ -8,7 +8,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 test("macOS core.step enforces timeout without blocking the WebView reply path", () => {
   const macosBridge = read("native/macos/Sources/TerraneHostMac/WebBridge.swift");
-  const macosCore = read("native/macos/Sources/TerraneHostMac/ZigCoreBridge.swift");
+  const macosCore = read("native/macos/Sources/TerraneHostMac/ForgeCoreBridge.swift");
   const macosTests = read("native/macos/Tests/TerraneHostMacTests/NativeHostTests.swift");
 
   assert.match(macosBridge, /if request\.method == "core\.step" \{/);
@@ -16,9 +16,11 @@ test("macOS core.step enforces timeout without blocking the WebView reply path",
   assert.match(macosBridge, /replyHandler\(result\.asDictionary\(\), nil\)/);
   assert.match(macosCore, /stepTimeoutMilliseconds: Int = 2_000/);
   assert.match(macosCore, /DispatchQueue\.global\(qos: \.userInitiated\)\.asyncAfter\(deadline: \.now\(\) \+ \.milliseconds\(stepTimeoutMilliseconds\)\)/);
+  assert.match(macosCore, /terrane_forge_core_handle_command/);
+  assert.match(macosCore, /"name": "legacy\.core_step"/);
   assert.match(macosCore, /code: "timeout"/);
   assert.match(macosCore, /"timeoutMs": stepTimeoutMilliseconds/);
-  assert.match(macosTests, /coreStepReturnsTimeoutWhenZigCoreExceedsHostTimeout/);
+  assert.match(macosTests, /coreStepReturnsTimeoutWhenForgeCoreExceedsHostTimeout/);
 });
 
 test("Windows core.step enforces a structured host timeout around Zig DLL calls", () => {

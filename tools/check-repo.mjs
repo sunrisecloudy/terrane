@@ -866,8 +866,8 @@ function checkServerStatic() {
 function checkNativeStatic() {
   const macBridge = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "WebBridge.swift"), "utf8");
   const macHost = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "WebHostView.swift"), "utf8");
-  const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "ZigCoreBridge.swift"), "utf8");
-  const macCoreShim = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
+  const macCore = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "ForgeCoreBridge.swift"), "utf8");
+  const macCoreShim = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "CForgeCoreBridge", "CForgeCoreBridge.c"), "utf8");
   const macPackage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Package.swift"), "utf8");
   const macStorage = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformStorage.swift"), "utf8");
   const macNetwork = fs.readFileSync(path.join(repoRoot, "native", "macos", "Sources", "TerraneHostMac", "PlatformNetwork.swift"), "utf8");
@@ -1049,11 +1049,12 @@ function checkNativeStatic() {
     }
   }
   for (const snippet of [
-    "import CZigCoreBridge",
-    "TERRANE_ZIG_CORE_DYLIB",
+    "import CForgeCoreBridge",
+    "TERRANE_FORGE_FFI_DYLIB",
     "RuntimeResourceLocator.repoRootURL()",
-    "terrane_zig_core_step_json",
-    "terrane_zig_core_free_output",
+    "terrane_forge_core_handle_command",
+    "terrane_forge_core_free_string",
+    '"name": "legacy.core_step"',
     "core.step app field does not match the channel-derived app id",
     "platform_unsupported",
   ]) {
@@ -1066,13 +1067,13 @@ function checkNativeStatic() {
       throw new Error(`macOS dev-control network mocks missing reference-host timeout parity: ${snippet}`);
     }
   }
-  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
+  for (const snippet of ["dlopen", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free"]) {
     if (!macCoreShim.includes(snippet)) {
-      throw new Error(`macOS C Zig core shim missing ${snippet}`);
+      throw new Error(`macOS C Forge core shim missing ${snippet}`);
     }
   }
-  if (!macPackage.includes('.target(name: "CZigCoreBridge")') || !macPackage.includes('"CZigCoreBridge"')) {
-    throw new Error("macOS package must include the C Zig core bridge target");
+  if (!macPackage.includes('.target(name: "CForgeCoreBridge")') || !macPackage.includes('"CForgeCoreBridge"')) {
+    throw new Error("macOS package must include the C Forge core bridge target");
   }
   if (!macPackage.includes('.target(name: "CZigCrdtBridge")') || !macPackage.includes('"CZigCrdtBridge"')) {
     throw new Error("macOS package must include the C Zig CRDT bridge target");
@@ -2347,7 +2348,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=zig-dylib storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=forge-ffi storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {

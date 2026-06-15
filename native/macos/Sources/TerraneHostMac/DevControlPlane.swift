@@ -69,7 +69,7 @@ final class DevControlPlane: @unchecked Sendable {
 
     private let database: PlatformDatabase
     private let databaseURL: URL?
-    private let core = ZigCoreBridge()
+    private let core = ForgeCoreBridge()
     private let crdt = ZigCrdtBridge()
     private let signingKey: Curve25519.Signing.PrivateKey
     private let signingKeyAccount: String
@@ -1259,7 +1259,7 @@ final class DevControlPlane: @unchecked Sendable {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.replay_events events must be an array", startedAt: startedAt)
             return
         }
-        let replayCore = ZigCoreBridge()
+        let replayCore = ForgeCoreBridge()
         let context = AppSandboxContext(
             appId: appId,
             approvedPermissions: ["core.step"],
