@@ -336,6 +336,84 @@ fn math_random_is_neutralized_in_deterministic_mode() {
     assert_eq!(value["round"], serde_json::json!(3));
 }
 
+/// CR-11/CR-12 determinism (T043, review 180): the `Date` WALL-CLOCK readers are
+/// NEUTRALIZED in the deterministic realm. `Date.now()`, zero-arg `new Date()`,
+/// and `Date(...)` called as a function each read the host's wall-clock — a
+/// non-seeded, non-recordable source that breaks record/replay determinism AND
+/// diverges between engines. The realm replaces `Date` with a wrapper that THROWS
+/// on those paths (mirroring `Math.random`) while PRESERVING argument-bearing,
+/// fully-deterministic construction (`new Date(ms)`, ISO parsing) and the pure
+/// statics (`Date.parse`/`Date.UTC`). The only clock is the seeded
+/// `ctx.time.now()` seam. The global cannot be redefined back to wall-clock `Date`.
+#[test]
+fn date_wallclock_is_neutralized_in_deterministic_mode() {
+    let prog = program(
+        r#"export async function main(ctx, input) {
+            function probe(fn) {
+                try { fn(); return { threw: false, name: "none" }; }
+                catch (e) { return { threw: true, name: e.name }; }
+            }
+            // Wall-clock readers must throw.
+            const nowStatic = probe(() => Date.now());
+            const zeroArgCtor = probe(() => new Date());
+            const callAsFn = probe(() => Date());
+            // Pure, deterministic constructions must survive.
+            const fromMs = new Date(0).getTime();
+            const fromIso = new Date("2020-01-02T03:04:05.000Z").getTime();
+            const parsed = Date.parse("1970-01-01T00:00:00.000Z");
+            const utc = Date.UTC(2020, 0, 1);
+            const isInstance = (new Date(0)) instanceof Date;
+            const iso = new Date(0).toISOString();
+            // The global must not be restorable to the wall-clock Date.
+            let reLockFailed = false;
+            try {
+                Object.defineProperty(globalThis, "Date", { value: function () { return 0; } });
+                Date.now();
+            } catch (e) { reLockFailed = true; }
+            return { ok: true, value: {
+                nowThrew: nowStatic.threw, nowName: nowStatic.name,
+                zeroArgThrew: zeroArgCtor.threw,
+                callAsFnThrew: callAsFn.threw,
+                fromMs, fromIso, parsed, utc, isInstance, iso,
+                reLockFailed,
+            } };
+        }"#,
+    );
+    let mut bridge = MemoryHostBridge::new();
+    let rec = record_run(
+        &prog,
+        &small_limits_manifest(),
+        &owner(),
+        &serde_json::json!({}),
+        1,
+        0,
+        &mut bridge,
+    )
+    .unwrap();
+    let value = match rec.outcome {
+        RunOutcome::Completed { result } => result.value,
+        other => panic!("probe should complete, got {other:?}"),
+    };
+    // Every wall-clock reader throws.
+    assert_eq!(value["nowThrew"], serde_json::json!(true), "Date.now() must throw");
+    assert_eq!(value["nowName"], serde_json::json!("Error"));
+    assert_eq!(value["zeroArgThrew"], serde_json::json!(true), "new Date() must throw");
+    assert_eq!(value["callAsFnThrew"], serde_json::json!(true), "Date() as a function must throw");
+    // Deterministic constructions are preserved exactly.
+    assert_eq!(value["fromMs"], serde_json::json!(0));
+    assert_eq!(value["fromIso"], serde_json::json!(1_577_934_245_000i64));
+    assert_eq!(value["parsed"], serde_json::json!(0));
+    assert_eq!(value["utc"], serde_json::json!(1_577_836_800_000i64));
+    assert_eq!(value["isInstance"], serde_json::json!(true), "instanceof Date must hold");
+    assert_eq!(value["iso"], serde_json::json!("1970-01-01T00:00:00.000Z"));
+    // The wall-clock Date cannot be restored.
+    assert_eq!(
+        value["reLockFailed"],
+        serde_json::json!(true),
+        "the global Date must not be restorable to a wall-clock source"
+    );
+}
+
 /// The host-call flood guard (SC-2) trips before a tight `ctx.*` loop can run
 /// away: `max_host_calls` is the cap and the run is suspended with
 /// `ResourceLimitExceeded` after exactly that many calls.

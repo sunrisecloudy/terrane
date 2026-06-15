@@ -49,9 +49,16 @@ never be byte-identical on two.
 ### Determinism rules (enforced by the runtime, not trusted to the applet)
 
 - **No wall-clock.** `ctx.time.now()` is a *logical* clock seeded from `time_start`
-  that advances by one tick per read (`recorder.rs::LogicalClock`). `Date.now()` /
-  `new Date()` with no argument read wall-clock and must not be used; a portable
-  applet derives all time from `ctx.time.now()` (see `date_under_seeded_clock`).
+  that advances by one tick per read (`recorder.rs::LogicalClock`). The realm's
+  wall-clock `Date` readers are **neutralized** exactly like `Math.random` (below):
+  the engine replaces the global `Date` with a wrapper
+  (`engine.rs::disable_nondeterministic_date`, review 180) whose `Date.now()`,
+  zero-argument `new Date()`, and `Date(...)`-as-a-function paths **throw** (so a
+  wall-clock read is an observable, identical-on-every-engine error, not a silent
+  divergence), while argument-bearing constructions (`new Date(ms)`,
+  `new Date(isoString)`) — pure, deterministic arithmetic/parsing — are preserved.
+  A portable applet derives all time from `ctx.time.now()` and only ever builds
+  `Date`s from that value (see `date_under_seeded_clock`).
 - **No engine randomness.** The only randomness is `ctx.random.next()`, a seeded
   SplitMix64 stream (`recorder.rs::SplitMix64`) served from the recorder.
   `Math.random` is **neutralized** in the deterministic realm: the engine replaces
@@ -178,8 +185,12 @@ fails on any drift.
 ## 5. The harness is engine-agnostic
 
 `forge/crates/runtime/tests/conformance_engines.rs` loads the corpus and, for each
-vector, drives `record_run` (which runs `main` through the `JsEngine` trait),
-asserting:
+vector, drives it through an **injected** [`JsEngine`](../crates/runtime/src/lib.rs)
+implementation. The corpus-running body `run_corpus_through_engine(engine: &dyn
+JsEngine, …)` takes the engine as a **parameter** and threads it into the
+record/replay spine via the engine-parameterized entry points
+[`record_run_with_engine`](../crates/runtime/src/runner.rs) /
+`replay_with_engine` (which run `main(ctx, input)` through the trait), asserting:
 
 1. the produced `replay_fingerprint` is byte-identical to `expected` (the
    cross-engine contract);
@@ -187,10 +198,23 @@ asserting:
 3. record→replay is byte-identical (replay identity).
 
 Because the harness only ever touches the `JsEngine` seam, wiring a second engine
-is purely additive: implement the trait, point the harness at it, and the same
-corpus holds it to byte-identical behavior. A corpus-honesty guard asserts every
-declared `manifest.json` case is exercised, so a new vector fails the suite until
-its expectation is baked in.
+is purely additive: implement the trait and call `run_corpus_through_engine` with
+it; the unchanged corpus holds it to byte-identical behavior. This is not just a
+claim — the suite has two tests: one runs the corpus through the built-in
+`QuickJsEngine`, and `second_engine_runs_the_same_corpus_byte_identically` runs the
+**same** corpus through a *distinct* `JsEngine` type (`AdapterEngine`, reached only
+as `&dyn JsEngine`) and asserts the **same** pinned fingerprints, so a regression
+that re-hard-wired the concrete engine would fail. A corpus-honesty guard asserts
+every declared `manifest.json` case is exercised, so a new vector fails the suite
+until its expectation is baked in.
+
+> Note: only the `main(ctx, input)` entrypoint is engine-parameterized — that is
+> the deterministic-output contract CR-12 governs. The UI event-dispatch and
+> live-query notification paths stay on the concrete `QuickJsEngine` (their
+> `run_handler` entrypoint is inherent, outside the `JsEngine` trait and the
+> cross-engine corpus). Both paths share the engine-independent record-assembly
+> tail (`assemble_record` in `runner.rs`), so a record produced by either is
+> built identically.
 
 ## 6. Deferred infra: the real JavaScriptCore backend
 
@@ -210,7 +234,9 @@ this work delivers is the framework that makes adding it *safe and verifiable*:
   second engine is allowed to differ on (error `.stack`/`.message`, stack-limit
   depth) versus which it must reproduce bit-for-bit.
 
-When the JSC backend lands, it implements `JsEngine`, the harness runs the
-**unchanged** corpus against it, and any byte difference is a conformance failure
-the corpus localizes to a specific divergence area. M0b exit requires that result
-to be green on both engines.
+When the JSC backend lands, it implements `JsEngine` and is passed to
+`record_run_with_engine` / `run_corpus_through_engine` (exactly as `AdapterEngine`
+is in the §5 second-engine test); the harness runs the **unchanged** corpus against
+it, and any byte difference is a conformance failure the corpus localizes to a
+specific divergence area. M0b exit requires that result to be green on both
+engines.

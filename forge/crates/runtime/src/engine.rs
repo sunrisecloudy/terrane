@@ -1208,6 +1208,9 @@ fn install_ctx<'js>(
     // Neutralize the realm's non-seeded entropy source so deterministic mode is
     // deterministic across engines (CR-11/CR-12, T043).
     disable_nondeterministic_random(ctx)?;
+    // Neutralize the realm's wall-clock readers (`Date.now()`, `Date()`, zero-arg
+    // `new Date()`) for the same reason (CR-11/CR-12, T043, review 180).
+    disable_nondeterministic_date(ctx)?;
     Ok(())
 }
 
@@ -1255,6 +1258,93 @@ fn disable_nondeterministic_random<'js>(ctx: &Ctx<'js>) -> Result<(), rquickjs::
         })();
     "#;
     ctx.eval::<(), _>(NEUTRALIZE_MATH_RANDOM)?;
+    Ok(())
+}
+
+/// Neutralize the wall-clock readers on `Date` in the deterministic realm
+/// (prd-merged/01 CR-11, CR-12; T043; review 180).
+///
+/// The standard-library realm's `Date` exposes three ways to read the host's
+/// **wall-clock** — `Date.now()`, the zero-argument constructor `new Date()`, and
+/// `Date(...)` invoked as a plain function (which returns the current time as a
+/// string). Each is a *non-seeded*, *non-recordable* clock read: it produces a
+/// different value on every run/replay (breaking record/replay determinism) and
+/// diverges between engines (each reads its own host clock). In deterministic mode
+/// the ONLY clock is the recorder's seeded [`ctx.time.now()`](crate::RunRecorder)
+/// logical clock, so these readers are exactly the cross-engine hazards CR-12
+/// forbids (`date_under_seeded_clock` documents that a portable applet derives all
+/// time from `ctx.time.now()`).
+///
+/// We replace the global `Date` with a wrapper constructor that:
+///   * **throws** for the zero-arg `new Date()` and for `Date(...)` called as a
+///     function (the wall-clock paths) — mirroring `Math.random` (review 180): a
+///     throw makes the determinism contract observable and identical on every
+///     engine, rather than silently returning a constant that masks the bug;
+///   * **preserves** every argument-bearing construction — `new Date(ms)`,
+///     `new Date(isoString)`, `new Date(y, m, d, …)` — because those are pure,
+///     fully-deterministic arithmetic/parsing with no clock read. The wrapper
+///     forwards to the real `Date` via `Reflect.construct`, keeping the prototype
+///     chain intact so instance methods (`getTime`, `toISOString`, …) work; and
+///   * keeps the static helpers `Date.parse` / `Date.UTC` (pure, no clock) while
+///     overriding `Date.now` to throw.
+///
+/// The wrapper's prototype is the real `Date.prototype`, so `instanceof Date` and
+/// all instance methods are unaffected. The global binding is redefined
+/// non-writable / non-configurable so applet code cannot restore the wall-clock
+/// `Date`. (The conformance vector `date_under_seeded_clock` exercises the seeded
+/// path; the containment test `date_wallclock_is_neutralized_in_deterministic_mode`
+/// pins the throwing behavior and that `new Date(ms)` arithmetic survives.)
+fn disable_nondeterministic_date<'js>(ctx: &Ctx<'js>) -> Result<(), rquickjs::Error> {
+    // Done in JS so we wrap the real `Date` without marshaling a Rust closure that
+    // would need its own host-error plumbing. The thrown Error message is
+    // engine-independent text the applet can normalize.
+    const NEUTRALIZE_DATE: &str = r#"
+        (function () {
+            "use strict";
+            var RealDate = Date;
+            var WALL =
+                "Date wall-clock is disabled in deterministic mode; use ctx.time.now()";
+            // The wrapper: a real constructor that forwards argument-bearing
+            // constructions to RealDate but refuses the wall-clock paths.
+            function ForgeDate() {
+                // `Date(...)` as a plain function (not `new`) reads the wall clock
+                // and returns it as a string — refuse it.
+                if (!(this instanceof ForgeDate)) {
+                    throw new Error(WALL);
+                }
+                // Zero-arg `new Date()` reads the wall clock — refuse it.
+                if (arguments.length === 0) {
+                    throw new Error(WALL);
+                }
+                // Argument-bearing construction is pure arithmetic/parsing: forward
+                // to the real Date, preserving `new.target` so subclasses keep their
+                // prototype. `arguments` carries every supplied arg.
+                return Reflect.construct(RealDate, arguments, ForgeDate);
+            }
+            // Inherit the real Date prototype + statics so instances and
+            // `instanceof Date` behave identically (only `now` is overridden).
+            ForgeDate.prototype = RealDate.prototype;
+            Object.defineProperty(ForgeDate.prototype, "constructor", {
+                value: ForgeDate, writable: true, enumerable: false, configurable: true
+            });
+            // Pure statics survive; the wall-clock static throws.
+            ForgeDate.parse = RealDate.parse;
+            ForgeDate.UTC = RealDate.UTC;
+            Object.defineProperty(ForgeDate, "now", {
+                value: function now() { throw new Error(WALL); },
+                writable: false, enumerable: false, configurable: false
+            });
+            try {
+                Object.defineProperty(globalThis, "Date", {
+                    value: ForgeDate,
+                    writable: false,
+                    enumerable: false,
+                    configurable: false
+                });
+            } catch (e) { /* already locked: best effort */ }
+        })();
+    "#;
+    ctx.eval::<(), _>(NEUTRALIZE_DATE)?;
     Ok(())
 }
 

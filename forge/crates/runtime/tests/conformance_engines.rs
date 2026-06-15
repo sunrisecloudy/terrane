@@ -1,14 +1,26 @@
 //! CR-12 cross-engine conformance harness (T043).
 //!
 //! This is the **engine-agnostic** harness: it drives each divergence-prone
-//! vector in `forge/fixtures/conformance-engines/*.json` through the SAME
-//! [`record_run`]/[`replay`] spine — which runs `main(ctx, input)` through the
-//! [`JsEngine`](forge_runtime) trait — and asserts the observable output (return
-//! value + recorded host-call trace, captured by `RunRecord::replay_fingerprint`)
-//! is BYTE-IDENTICAL to the baked-in expectation. Any engine implementation
-//! (today QuickJS, tomorrow JavaScriptCore) is held to exactly these vectors, so
-//! the same program must produce the same deterministic output on every engine
-//! (prd-merged/01 CR-12, `forge/spec/cross-engine-conformance.md`).
+//! vector in `forge/fixtures/conformance-engines/*.json` through an injected
+//! [`JsEngine`](forge_runtime) implementation — via the engine-parameterized
+//! [`record_run_with_engine`]/[`replay_with_engine`] spine, which runs
+//! `main(ctx, input)` through the trait — and asserts the observable output
+//! (return value + recorded host-call trace, captured by
+//! `RunRecord::replay_fingerprint`) is BYTE-IDENTICAL to the baked-in
+//! expectation. The corpus-running body [`run_corpus_through_engine`] takes the
+//! engine as a `&dyn JsEngine` PARAMETER, so any engine implementation (today
+//! `QuickJsEngine`, tomorrow a real JavaScriptCore / QuickJS-WASM backend) is
+//! held to exactly these vectors and the same program must produce the same
+//! deterministic output on every engine (prd-merged/01 CR-12,
+//! `forge/spec/cross-engine-conformance.md`).
+//!
+//! Wiring a second engine is therefore purely additive: implement the
+//! [`JsEngine`] trait and call [`run_corpus_through_engine`] with it. The
+//! `second_engine_runs_the_same_corpus_byte_identically` test below proves the
+//! seam by running the **entire corpus** through a *distinct* `JsEngine` impl
+//! (`AdapterEngine`, a separate type that re-marshals through the trait) and
+//! asserting it produces the SAME pinned fingerprints — i.e. the harness is
+//! genuinely parameterized over the engine, not hard-wired to `QuickJsEngine`.
 //!
 //! Each vector additionally proves DETERMINISM end to end:
 //!   * run-to-run stability — re-recording the same vector yields the same
@@ -25,7 +37,10 @@ mod common;
 
 use common::owner;
 use forge_domain::{Capabilities, DbGrant, Limits, Manifest, RunOutcome, StorageGrant};
-use forge_runtime::{record_run, replay, MemoryHostBridge, NullBridge, Program};
+use forge_runtime::{
+    record_run_with_engine, replay_with_engine, EngineOutcome, HostContext, JsEngine,
+    MemoryHostBridge, NullBridge, Program, QuickJsEngine,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(serde::Deserialize)]
@@ -101,10 +116,18 @@ fn load_vector(case_file: &str) -> Vector {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse vector {case_file}: {e}"))
 }
 
-/// The whole corpus runs byte-identically through the engine seam, AND every
+/// Run the WHOLE corpus through the injected [`JsEngine`] (`engine`), asserting
+/// every vector is byte-identical to its pinned cross-engine expectation, that
+/// re-recording is stable, and that record→replay is identical — AND that every
 /// declared manifest case is exercised (the corpus-honesty guard).
-#[test]
-fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
+///
+/// This is the **engine-agnostic core** of the harness (CR-12): the engine is a
+/// `&dyn JsEngine` parameter, threaded into the record/replay spine via
+/// [`record_run_with_engine`] / [`replay_with_engine`], so holding a second
+/// engine (a real JavaScriptCore / QuickJS-WASM backend) to the corpus is just a
+/// matter of passing it here. `engine_label` only enriches failure messages so a
+/// divergence names the offending engine.
+fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
     let manifest_path = corpus_dir().join("manifest.json");
     let manifest: CorpusManifest = serde_json::from_str(
         &std::fs::read_to_string(&manifest_path).expect("read corpus manifest"),
@@ -142,12 +165,13 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
             v.case
         );
 
-        // 1. RECORD through the engine seam. The produced observable fingerprint
-        //    must be byte-identical to the baked-in expectation — this is the
-        //    cross-engine contract: any engine running this vector must produce
-        //    exactly this return value + host-call trace.
+        // 1. RECORD through the injected engine. The produced observable
+        //    fingerprint must be byte-identical to the baked-in expectation — this
+        //    is the cross-engine contract: ANY engine running this vector must
+        //    produce exactly this return value + host-call trace.
         let mut bridge = MemoryHostBridge::new();
-        let record = record_run(
+        let record = record_run_with_engine(
+            engine,
             &prog,
             &run_manifest,
             &owner(),
@@ -156,27 +180,28 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
             v.seeds.time_start,
             &mut bridge,
         )
-        .unwrap_or_else(|e| panic!("[{}] failed to record: {e}", v.case));
+        .unwrap_or_else(|e| panic!("[{engine_label}/{}] failed to record: {e}", v.case));
 
         // Every conformance vector is a clean, completing run (the divergence is
         // in the COMPUTED output, normalized at the boundary — never a host crash).
         assert!(
             matches!(record.outcome, RunOutcome::Completed { .. }),
-            "[{}] conformance vector must complete, got {:?}",
+            "[{engine_label}/{}] conformance vector must complete, got {:?}",
             v.case,
             record.outcome
         );
         assert_eq!(
             record.replay_fingerprint(),
             v.expected.replay_fingerprint,
-            "[{}] observable output diverged from the pinned cross-engine expectation",
+            "[{engine_label}/{}] observable output diverged from the pinned cross-engine expectation",
             v.case
         );
 
         // 2. RUN-TO-RUN STABILITY: re-recording yields the same fingerprint (no
         //    wall-clock, no unseeded randomness, deterministic ordering).
         let mut bridge2 = MemoryHostBridge::new();
-        let record2 = record_run(
+        let record2 = record_run_with_engine(
+            engine,
             &prog,
             &run_manifest,
             &owner(),
@@ -189,17 +214,17 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
         assert_eq!(
             record.replay_fingerprint(),
             record2.replay_fingerprint(),
-            "[{}] re-recording must be byte-identical (determinism)",
+            "[{engine_label}/{}] re-recording must be byte-identical (determinism)",
             v.case
         );
 
         // 3. RECORD→REPLAY IDENTITY: replaying reproduces the run byte-identically.
         let mut null = NullBridge::new();
-        let replayed = replay(&record, &prog, &run_manifest, &owner(), &mut null)
-            .unwrap_or_else(|e| panic!("[{}] failed to replay: {e}", v.case));
+        let replayed = replay_with_engine(engine, &record, &prog, &run_manifest, &owner(), &mut null)
+            .unwrap_or_else(|e| panic!("[{engine_label}/{}] failed to replay: {e}", v.case));
         assert!(
             record.replays_identically(&replayed),
-            "[{}] record→replay must be byte-identical",
+            "[{engine_label}/{}] record→replay must be byte-identical",
             v.case
         );
 
@@ -249,4 +274,55 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
         "the `normalized` equivalence class must be exactly {NORMALIZED_CASES:?} \
          (spec §3); `math_determinism_no_random` is `required_identical`"
     );
+}
+
+/// The corpus runs byte-identically through the built-in [`QuickJsEngine`] — the
+/// only engine that ships today (prd-merged/01 CR-12). This is the conformance
+/// baseline every other engine is compared against.
+#[test]
+fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
+    run_corpus_through_engine(&QuickJsEngine::new(), "QuickJsEngine");
+}
+
+/// A SECOND, distinct [`JsEngine`] implementation runs the SAME corpus and
+/// produces the SAME pinned fingerprints — proving the harness is genuinely
+/// **engine-agnostic** (the engine is a parameter, not hard-wired to
+/// `QuickJsEngine`). When a real JavaScriptCore / QuickJS-WASM backend lands it
+/// slots in exactly here: implement [`JsEngine`] and pass it to
+/// [`run_corpus_through_engine`]; the unchanged corpus holds it to byte-identical
+/// behavior (`forge/spec/cross-engine-conformance.md` §5/§6).
+///
+/// `AdapterEngine` is a separate type (not `QuickJsEngine`) whose `run` forwards
+/// through the public [`JsEngine`] trait to a `QuickJsEngine` it owns. It is a
+/// faithful in-tree stand-in for "a different engine impl": the harness only ever
+/// touches the trait object, so a passing run here means the seam — not a concrete
+/// type — carries the conformance contract. Linking an actual foreign engine is
+/// deferred infra (§6); this proves the harness is ready for it.
+#[test]
+fn second_engine_runs_the_same_corpus_byte_identically() {
+    run_corpus_through_engine(&AdapterEngine::default(), "AdapterEngine");
+}
+
+/// A distinct `JsEngine` implementation used to prove the conformance harness is
+/// engine-agnostic. It owns a `QuickJsEngine` and forwards `run` to it through the
+/// **public trait** — so from the harness's perspective it is "a second engine":
+/// a different Rust type reached only via `&dyn JsEngine`. A real foreign-engine
+/// backend (JSC) would implement `JsEngine` the same way (marshalling
+/// `serde_json::Value` in/out and forwarding `ctx.*` through the `HostContext`)
+/// and be held to the identical corpus.
+#[derive(Default)]
+struct AdapterEngine {
+    inner: QuickJsEngine,
+}
+
+impl JsEngine for AdapterEngine {
+    fn run(
+        &self,
+        program: &Program,
+        input: &serde_json::Value,
+        host: &mut HostContext<'_>,
+        limits: &Limits,
+    ) -> EngineOutcome {
+        self.inner.run(program, input, host, limits)
+    }
 }

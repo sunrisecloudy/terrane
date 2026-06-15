@@ -58,6 +58,51 @@ pub fn record_run(
     )
 }
 
+/// Like [`record_run`], but with an explicit [`JsEngine`] implementation — the
+/// **engine-agnostic** record entry point (prd-merged/01 CR-2, CR-12).
+///
+/// `record_run` drives the built-in [`QuickJsEngine`]; this variant runs the
+/// SAME record/replay spine through *any* `JsEngine`, so a second engine (a real
+/// JavaScriptCore / QuickJS-WASM backend) can be held to the cross-engine
+/// conformance corpus without restructuring the runner. The cross-engine
+/// conformance harness (`tests/conformance_engines.rs`) is parameterized over
+/// this entry point: it runs every divergence-prone vector through the engine
+/// passed here and asserts the observable output (`RunRecord::replay_fingerprint`)
+/// is byte-identical to the pinned expectation, so dropping in a new engine is
+/// purely additive (`forge/spec/cross-engine-conformance.md` §5).
+///
+/// Only the `main(ctx, input)` entrypoint is engine-parameterized (the
+/// conformance contract is about a program's deterministic output). The UI
+/// event-dispatch / live-query notification paths stay on the concrete
+/// `QuickJsEngine` (their `run_handler` entrypoint is not part of the
+/// cross-engine corpus).
+#[allow(clippy::too_many_arguments)]
+pub fn record_run_with_engine(
+    engine: &dyn JsEngine,
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    input: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    let recorder = RunRecorder::recording(seed, time_start);
+    let policy = PolicyEngine::with_context(manifest, actor, Box::new(AllowAll))?;
+    run_main(
+        engine,
+        program,
+        policy,
+        manifest.limits.clone(),
+        input,
+        seed,
+        time_start,
+        recorder,
+        bridge,
+    )
+}
+
 /// Like [`record_run`], but with an explicit [`DecisionContext`] — the
 /// workspace-policy / run-profile / platform-permission SC-10 gates
 /// ([`forge_policy::ComposedDecisionContext`]) read from **trusted** workspace /
@@ -459,11 +504,40 @@ pub fn replay(
             run.code_hash
         )));
     }
+    let engine = QuickJsEngine::new();
+    replay_with_engine(&engine, run, program, manifest, actor, bridge)
+}
+
+/// Like [`replay`], but with an explicit [`JsEngine`] implementation — the
+/// **engine-agnostic** replay entry point (the counterpart to
+/// [`record_run_with_engine`]). The cross-engine conformance harness replays
+/// each vector through the engine under test and asserts the produced record
+/// [`replays_identically`](RunRecord::replays_identically) to the recording, so
+/// record→replay byte-identity holds on every engine (CR-12,
+/// `forge/spec/cross-engine-conformance.md` §5).
+pub fn replay_with_engine(
+    engine: &dyn JsEngine,
+    run: &RunRecord,
+    program: &Program,
+    manifest: &Manifest,
+    actor: &ActorContext,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    manifest.validate()?;
+    run.validate_code_hash()?;
+    if program.code_hash() != run.code_hash {
+        return Err(CoreError::RuntimeError(format!(
+            "determinism divergence: replay program code_hash {} != recorded {}",
+            program.code_hash(),
+            run.code_hash
+        )));
+    }
     let recorder = RunRecorder::replaying(run.random_seed, run.time_start, run.calls.clone());
     let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = host_call_cap;
-    finish_run(
+    run_main(
+        engine,
         program,
         policy,
         limits,
@@ -520,14 +594,18 @@ fn replay_policy(
 /// can never be emitted (reviews 012/013/014). The evaluated permission snapshot
 /// is attached (review 009 P1 CR-9), and on replay the recorder is asserted to
 /// have consumed every recorded call (review 009 P2).
-/// How [`finish_run`] should drive the engine for this run record: the program's
-/// `main(ctx, input)`, or a UI event handler addressed by `ActionRef` with a
-/// payload (UI-4/CR-6). The two share the entire record/replay assembly below;
-/// they differ only in which engine entrypoint runs and (for the handler) the
-/// extra `ui.dispatch_event` envelope recorded around the handler's effects.
+/// How [`finish_drive`] should drive the engine for a UI-style re-entry record: a
+/// UI event handler addressed by `ActionRef` with a payload (UI-4/CR-6), or a
+/// live-query watch-callback notification (DL-16). The two share the entire
+/// record/replay assembly below; they differ only in which envelope
+/// (`ui.dispatch_event` / `db.watch.notification`) is recorded around the
+/// handler's effects.
+///
+/// The program's `main(ctx, input)` entrypoint is NOT a `Drive`: it is the
+/// engine-agnostic path ([`run_main`]) so a second engine can run it
+/// (CR-12). These handler-style entrypoints use `QuickJsEngine::run_handler`
+/// (an inherent method outside the `JsEngine` trait / cross-engine corpus).
 enum Drive<'a> {
-    /// Drive `main(ctx, input)` (the classic run/replay path).
-    Main { input: &'a serde_json::Value },
     /// Dispatch `<action_ref>(ctx, payload)` and record the dispatch envelope so
     /// the event replays identically.
     Handler {
@@ -547,19 +625,22 @@ enum Drive<'a> {
 }
 
 impl<'a> Drive<'a> {
-    /// The value recorded as the run record's `input` (the `main` input, the
-    /// dispatched event's payload, or the delivered notification). Either way it is
-    /// the second argument the driven entrypoint received, so the record round-trips
-    /// what was run.
+    /// The value recorded as the run record's `input` (the dispatched event's
+    /// payload, or the delivered notification). Either way it is the second
+    /// argument the driven entrypoint received, so the record round-trips what was
+    /// run.
     fn record_input(&self) -> serde_json::Value {
         match self {
-            Drive::Main { input } => (*input).clone(),
             Drive::Handler { payload, .. } => (*payload).clone(),
             Drive::Notification { notification, .. } => (*notification).clone(),
         }
     }
 }
 
+/// Drive `main(ctx, input)` through the built-in [`QuickJsEngine`] (the record /
+/// replay default). The engine-parameterized [`run_main`] is the seam a second
+/// engine plugs into; this is the convenience wrapper the spine's
+/// `record_run`/`replay` use.
 #[allow(clippy::too_many_arguments)]
 fn finish_run(
     program: &Program,
@@ -571,16 +652,41 @@ fn finish_run(
     recorder: RunRecorder,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
-    finish_drive(
-        program,
-        policy,
-        limits,
-        Drive::Main { input },
-        seed,
-        time_start,
-        recorder,
-        bridge,
+    let engine = QuickJsEngine::new();
+    run_main(
+        &engine, program, policy, limits, input, seed, time_start, recorder, bridge,
     )
+}
+
+/// Drive `main(ctx, input)` through an explicit [`JsEngine`] and assemble its
+/// [`RunRecord`] — the **engine-agnostic** core of record/replay (CR-2/CR-12).
+///
+/// This is the single place the cross-engine conformance contract pivots on: the
+/// `engine` argument is `&dyn JsEngine`, so the SAME record/replay assembly
+/// (policy snapshot, recorder trace, outcome folding, `RunRecord` construction)
+/// runs unchanged whether the engine is the built-in `QuickJsEngine` or a future
+/// JavaScriptCore backend. The conformance harness calls
+/// [`record_run_with_engine`] / [`replay_with_engine`], which both land here, so
+/// a second engine is held to byte-identical output by construction.
+///
+/// Only the `main` entrypoint is engine-parameterized; the UI-dispatch /
+/// notification paths ([`finish_drive`]) stay on the concrete `QuickJsEngine`
+/// because their `run_handler` entrypoint is outside the cross-engine corpus.
+#[allow(clippy::too_many_arguments)]
+fn run_main(
+    engine: &dyn JsEngine,
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    input: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+) -> Result<RunRecord> {
+    let mut host = HostContext::with_policy(policy, limits.clone(), recorder, bridge);
+    let outcome = engine.run(program, input, &mut host, &limits);
+    assemble_record(program, input.clone(), seed, time_start, outcome, host)
 }
 
 /// Drive a UI event dispatch (record or replay) and assemble its [`RunRecord`].
@@ -627,9 +733,12 @@ fn finish_drive(
     // received (run input / event payload); capture it before `drive` is consumed.
     let record_input = drive.record_input();
     let mut host = HostContext::with_policy(policy, limits.clone(), recorder, bridge);
+    // The UI-dispatch / notification entrypoints use `QuickJsEngine::run_handler`
+    // (an inherent method, outside the `JsEngine` trait / cross-engine corpus), so
+    // these paths stay on the concrete engine. The `main` path is engine-agnostic
+    // and lives in [`run_main`].
     let engine = QuickJsEngine::new();
     let outcome = match drive {
-        Drive::Main { input } => engine.run(program, input, &mut host, &limits),
         Drive::Handler { action_ref, payload } => {
             let outcome = engine.run_handler(program, action_ref, payload, &mut host, &limits);
             // Record the dispatch envelope AFTER the handler's effects so the
@@ -667,6 +776,24 @@ fn finish_drive(
         }
     };
 
+    assemble_record(program, record_input, seed, time_start, outcome, host)
+}
+
+/// Fold an [`EngineOutcome`] + the consumed [`HostContext`] into a finished
+/// [`RunRecord`]. This is the engine-independent tail shared by the `main` path
+/// ([`run_main`]) and the UI-dispatch / notification paths ([`finish_drive`]):
+/// it captures the evaluated permission snapshot (CR-9), enforces replay
+/// strictness, drains the recorder trace + logs, and builds the validated record.
+/// Centralizing it keeps every engine's record assembly identical, which is the
+/// precondition for cross-engine byte-identity (CR-12).
+fn assemble_record(
+    program: &Program,
+    record_input: serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    outcome: EngineOutcome,
+    host: HostContext<'_>,
+) -> Result<RunRecord> {
     // Capture the evaluated permission snapshot (CR-9) before consuming the host.
     let permissions = host.permission_snapshot();
     // Replay strictness (review 009 P2): a replay that ended without consuming

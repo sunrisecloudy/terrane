@@ -53,8 +53,8 @@ pub use engine::QuickJsEngine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{
     record_dispatch, record_dispatch_with_context, record_notification,
-    record_notification_with_context, record_run, record_run_with_context, replay, replay_dispatch,
-    replay_notification, run_once,
+    record_notification_with_context, record_run, record_run_with_context, record_run_with_engine,
+    replay, replay_dispatch, replay_notification, replay_with_engine, run_once,
 };
 
 // Re-export the SC-10 trusted-source gate types so a caller (forge-core) can build
