@@ -5,9 +5,17 @@ final class ForgeCoreBridge: @unchecked Sendable {
     private final class Library {
         private let bridge: OpaquePointer
 
-        init?(linked: Bool, path: String? = nil, workspaceId: String) {
+        init?(linked: Bool, path: String? = nil, databaseURL: URL, workspaceId: String) {
+            try? FileManager.default.createDirectory(
+                at: databaseURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             if linked {
-                guard let bridge = workspaceId.withCString({ terrane_forge_core_open_in_memory(nil, $0) }) else {
+                guard let bridge = databaseURL.path.withCString({ databasePointer in
+                    workspaceId.withCString { workspacePointer in
+                        terrane_forge_core_open(nil, databasePointer, workspacePointer)
+                    }
+                }) else {
                     return nil
                 }
                 self.bridge = bridge
@@ -16,8 +24,10 @@ final class ForgeCoreBridge: @unchecked Sendable {
 
             guard let path,
                   let bridge = path.withCString({ pathPointer in
-                      workspaceId.withCString { workspacePointer in
-                          terrane_forge_core_open_in_memory(pathPointer, workspacePointer)
+                      databaseURL.path.withCString { databasePointer in
+                          workspaceId.withCString { workspacePointer in
+                              terrane_forge_core_open(pathPointer, databasePointer, workspacePointer)
+                          }
                       }
                   })
             else {
@@ -144,16 +154,22 @@ final class ForgeCoreBridge: @unchecked Sendable {
     }
 
     private static func loadLibrary(libraryPathOverride: String?, workspaceId: String) -> Library? {
-        if let linked = Library(linked: true, workspaceId: workspaceId) {
+        let databaseURL = defaultDatabaseURL()
+        if let linked = Library(linked: true, databaseURL: databaseURL, workspaceId: workspaceId) {
             return linked
         }
 
         for path in candidateLibraryPaths(libraryPathOverride: libraryPathOverride) {
-            if let library = Library(linked: false, path: path, workspaceId: workspaceId) {
+            if let library = Library(linked: false, path: path, databaseURL: databaseURL, workspaceId: workspaceId) {
                 return library
             }
         }
         return nil
+    }
+
+    private static func defaultDatabaseURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("Terrane/forge-workspace.sqlite")
     }
 
     private static func candidateLibraryPaths(libraryPathOverride: String?) -> [String] {

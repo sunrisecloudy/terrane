@@ -40,10 +40,16 @@ final class ForgeCoreBridge: @unchecked Sendable {
         let workspaceId: String
         private let bridge: OpaquePointer
 
-        init?(path: String, workspaceId: String) {
+        init?(path: String, databaseURL: URL, workspaceId: String) {
+            try? FileManager.default.createDirectory(
+                at: databaseURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             guard let bridge = path.withCString({ pathPointer in
-                workspaceId.withCString { workspacePointer in
-                    terrane_forge_core_open_in_memory(pathPointer, workspacePointer)
+                databaseURL.path.withCString { databasePointer in
+                    workspaceId.withCString { workspacePointer in
+                        terrane_forge_core_open(pathPointer, databasePointer, workspacePointer)
+                    }
                 }
             }) else {
                 return nil
@@ -264,12 +270,18 @@ final class ForgeCoreBridge: @unchecked Sendable {
     }
 
     private static func loadLibrary(libraryPathOverride: String?, workspaceId: String) -> Library? {
+        let databaseURL = defaultDatabaseURL()
         for path in candidateLibraryPaths(libraryPathOverride: libraryPathOverride) {
-            if let library = Library(path: path, workspaceId: workspaceId) {
+            if let library = Library(path: path, databaseURL: databaseURL, workspaceId: workspaceId) {
                 return library
             }
         }
         return nil
+    }
+
+    private static func defaultDatabaseURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("Terrane/forge-workspace.sqlite")
     }
 
     private static func candidateLibraryPaths(libraryPathOverride: String?) -> [String] {

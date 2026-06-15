@@ -7,7 +7,7 @@ extern "C" {
 
 typedef struct TerraneForgeCore TerraneForgeCore;
 
-TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, const char *workspace_id);
+TerraneForgeCore *terrane_forge_core_open(const char *library_path, const char *database_path, const char *workspace_id);
 void terrane_forge_core_close(TerraneForgeCore *bridge);
 
 char *terrane_forge_core_handle_command(TerraneForgeCore *bridge, const char *command_json);

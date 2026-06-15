@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-typedef void *(*ForgeCoreOpenInMemoryFn)(const char *workspace_id);
+typedef void *(*ForgeCoreOpenFn)(const char *path, const char *workspace_id);
 typedef char *(*ForgeCoreHandleCommandFn)(void *core, const char *command_json);
 typedef char *(*ForgeCoreDrainEventsFn)(void *core);
 typedef char *(*ForgeCoreLastErrorFn)(void);
@@ -26,13 +26,14 @@ static const char *last_error = NULL;
 
 static TerraneForgeCore *open_with_symbols(
     void *library,
-    ForgeCoreOpenInMemoryFn open_in_memory,
+    ForgeCoreOpenFn open_core,
     ForgeCoreHandleCommandFn handle_command,
     ForgeCoreDrainEventsFn drain_events,
     ForgeCoreLastErrorFn ffi_last_error,
     ForgeCoreCloseFn close_core,
     ForgeStringFreeFn free_string,
     bool linked,
+    const char *database_path,
     const char *workspace_id
 );
 
@@ -40,23 +41,24 @@ char *terrane_forge_core_last_error(void) {
     return last_error == NULL ? NULL : (char *)last_error;
 }
 
-TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, const char *workspace_id) {
+TerraneForgeCore *terrane_forge_core_open(const char *library_path, const char *database_path, const char *workspace_id) {
     last_error = NULL;
-    if (workspace_id == NULL) {
-        last_error = "workspace_id is required";
+    if (database_path == NULL || workspace_id == NULL) {
+        last_error = "database_path and workspace_id are required";
         return NULL;
     }
 
     if (library_path == NULL) {
         return open_with_symbols(
             NULL,
-            (ForgeCoreOpenInMemoryFn)dlsym(RTLD_DEFAULT, "forge_core_open_in_memory"),
+            (ForgeCoreOpenFn)dlsym(RTLD_DEFAULT, "forge_core_open"),
             (ForgeCoreHandleCommandFn)dlsym(RTLD_DEFAULT, "forge_core_handle_command"),
             (ForgeCoreDrainEventsFn)dlsym(RTLD_DEFAULT, "forge_core_drain_events"),
             (ForgeCoreLastErrorFn)dlsym(RTLD_DEFAULT, "forge_core_last_error"),
             (ForgeCoreCloseFn)dlsym(RTLD_DEFAULT, "forge_core_close"),
             (ForgeStringFreeFn)dlsym(RTLD_DEFAULT, "forge_string_free"),
             true,
+            database_path,
             workspace_id
         );
     }
@@ -69,13 +71,14 @@ TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, co
 
     TerraneForgeCore *bridge = open_with_symbols(
         library,
-        (ForgeCoreOpenInMemoryFn)dlsym(library, "forge_core_open_in_memory"),
+        (ForgeCoreOpenFn)dlsym(library, "forge_core_open"),
         (ForgeCoreHandleCommandFn)dlsym(library, "forge_core_handle_command"),
         (ForgeCoreDrainEventsFn)dlsym(library, "forge_core_drain_events"),
         (ForgeCoreLastErrorFn)dlsym(library, "forge_core_last_error"),
         (ForgeCoreCloseFn)dlsym(library, "forge_core_close"),
         (ForgeStringFreeFn)dlsym(library, "forge_string_free"),
         false,
+        database_path,
         workspace_id
     );
     if (bridge == NULL) {
@@ -86,17 +89,18 @@ TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, co
 
 static TerraneForgeCore *open_with_symbols(
     void *library,
-    ForgeCoreOpenInMemoryFn open_in_memory,
+    ForgeCoreOpenFn open_core,
     ForgeCoreHandleCommandFn handle_command,
     ForgeCoreDrainEventsFn drain_events,
     ForgeCoreLastErrorFn ffi_last_error,
     ForgeCoreCloseFn close_core,
     ForgeStringFreeFn free_string,
     bool linked,
+    const char *database_path,
     const char *workspace_id
 ) {
     if (
-        open_in_memory == NULL ||
+        open_core == NULL ||
         handle_command == NULL ||
         drain_events == NULL ||
         ffi_last_error == NULL ||
@@ -107,14 +111,14 @@ static TerraneForgeCore *open_with_symbols(
         return NULL;
     }
 
-    void *core = open_in_memory(workspace_id);
+    void *core = open_core(database_path, workspace_id);
     if (core == NULL) {
         char *error = ffi_last_error();
         if (error != NULL) {
-            last_error = "forge_core_open_in_memory returned null; see forge_core_last_error";
+            last_error = "forge_core_open returned null; see forge_core_last_error";
             free_string(error);
         } else {
-            last_error = "forge_core_open_in_memory returned null";
+            last_error = "forge_core_open returned null";
         }
         return NULL;
     }

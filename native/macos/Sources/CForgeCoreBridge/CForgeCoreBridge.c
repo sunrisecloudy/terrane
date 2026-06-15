@@ -3,7 +3,7 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 
-typedef void *(*ForgeCoreOpenInMemoryFn)(const char *workspace_id);
+typedef void *(*ForgeCoreOpenFn)(const char *path, const char *workspace_id);
 typedef char *(*ForgeCoreHandleCommandFn)(void *core, const char *command_json);
 typedef char *(*ForgeCoreDrainEventsFn)(void *core);
 typedef char *(*ForgeCoreLastErrorFn)(void);
@@ -26,10 +26,10 @@ char *terrane_forge_core_last_error(void) {
     return last_error == NULL ? NULL : (char *)last_error;
 }
 
-TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, const char *workspace_id) {
+TerraneForgeCore *terrane_forge_core_open(const char *library_path, const char *database_path, const char *workspace_id) {
     last_error = NULL;
-    if (library_path == NULL || workspace_id == NULL) {
-        last_error = "library_path and workspace_id are required";
+    if (library_path == NULL || database_path == NULL || workspace_id == NULL) {
+        last_error = "library_path, database_path, and workspace_id are required";
         return NULL;
     }
 
@@ -39,14 +39,14 @@ TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, co
         return NULL;
     }
 
-    ForgeCoreOpenInMemoryFn open_in_memory = (ForgeCoreOpenInMemoryFn)dlsym(library, "forge_core_open_in_memory");
+    ForgeCoreOpenFn open_core = (ForgeCoreOpenFn)dlsym(library, "forge_core_open");
     ForgeCoreHandleCommandFn handle_command = (ForgeCoreHandleCommandFn)dlsym(library, "forge_core_handle_command");
     ForgeCoreDrainEventsFn drain_events = (ForgeCoreDrainEventsFn)dlsym(library, "forge_core_drain_events");
     ForgeCoreLastErrorFn ffi_last_error = (ForgeCoreLastErrorFn)dlsym(library, "forge_core_last_error");
     ForgeCoreCloseFn close_core = (ForgeCoreCloseFn)dlsym(library, "forge_core_close");
     ForgeStringFreeFn free_string = (ForgeStringFreeFn)dlsym(library, "forge_string_free");
     if (
-        open_in_memory == NULL ||
+        open_core == NULL ||
         handle_command == NULL ||
         drain_events == NULL ||
         ffi_last_error == NULL ||
@@ -58,14 +58,14 @@ TerraneForgeCore *terrane_forge_core_open_in_memory(const char *library_path, co
         return NULL;
     }
 
-    void *core = open_in_memory(workspace_id);
+    void *core = open_core(database_path, workspace_id);
     if (core == NULL) {
         char *error = ffi_last_error();
         if (error != NULL) {
-            last_error = "forge_core_open_in_memory returned null; see forge_core_last_error";
+            last_error = "forge_core_open returned null; see forge_core_last_error";
             free_string(error);
         } else {
-            last_error = "forge_core_open_in_memory returned null";
+            last_error = "forge_core_open returned null";
         }
         dlclose(library);
         return NULL;
