@@ -293,23 +293,21 @@ test(
 );
 
 test(
-  "release packaging can build the host server executable artifact",
-  {
-    skip: !hasZig() ? "zig is not available" : false,
-    timeout: 60_000,
-  },
+  "release packaging can build the Forge server executable artifact",
+  { timeout: 60_000 },
   () => {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-server-artifacts-"));
     try {
       const result = packageReleaseArtifacts({ outDir, buildServer: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
-      const serverArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "server-executable");
+      const serverArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "forge-server-executable");
       assert.equal(serverArtifacts.length, 1);
       assert.equal(manifest.artifacts.some((artifact) => artifact.id === "server" && artifact.kind === "directory"), false);
 
       const [serverArtifact] = serverArtifacts;
       assert.match(serverArtifact.target, /^(linux|macos|windows)-(arm64|x86_64)$/);
       assert.equal(serverArtifact.files.length, 1);
+      assert.equal(serverArtifact.files[0].path.endsWith(process.platform === "win32" ? "terrane-server.exe" : "terrane-server"), true);
       assert.equal(serverArtifact.files[0].sha256.length, 64);
       assert.equal(fs.existsSync(path.join(outDir, serverArtifact.files[0].path)), true);
     } finally {

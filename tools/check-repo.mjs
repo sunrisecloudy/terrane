@@ -370,7 +370,8 @@ function checkReleasePackaging() {
     "--build-native-linux",
     "--build-native-windows",
     "sha256",
-    "server-executable",
+    "forge-server-executable",
+    "forge-server",
     "native-host-app",
     "ZIG_CORE_TARGETS",
     "ios-arm64-device",
@@ -474,7 +475,7 @@ function checkReleasePackaging() {
       throw new Error(`Linux native packaged smoke missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,server-executable,macos-native-host,macos-dmg,linux-native-host,windows-native-host,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,forge-server-executable,macos-native-host,macos-dmg,linux-native-host,windows-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

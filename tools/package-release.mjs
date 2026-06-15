@@ -223,59 +223,30 @@ export function buildZigCoreArtifacts({ outDir = path.join(repoRoot, "artifacts"
 
 export function buildServerArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
   const resolvedOutDir = path.resolve(outDir);
-  const serverDir = path.join(repoRoot, "server");
+  const forgeDir = path.join(repoRoot, "forge");
   const targetId = hostServerTargetId();
   const artifactDir = path.join(resolvedOutDir, "server", targetId);
   const outputPath = path.join(artifactDir, SERVER_EXECUTABLE_NAME);
-  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-server-release-cache-"));
-  const env = {
-    ...process.env,
-    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "global"),
-    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "local"),
-  };
+  const builtBinary = path.join(forgeDir, "target", "release", process.platform === "win32" ? "forge-server.exe" : "forge-server");
 
-  try {
-    fs.mkdirSync(artifactDir, { recursive: true });
-    const moduleArgs = zigServerModuleArgs();
-    const targetArgs = serverTargetArgsForHost();
-    const optimizeArgs = ["-O", "ReleaseSafe"];
-    if (process.platform === "darwin") {
-      const objectPath = path.join(cacheRoot, "terrane-server.o");
-      execFileSync("zig", ["build-obj", ...moduleArgs, ...targetArgs, ...optimizeArgs, "-lc", `-femit-bin=${objectPath}`], {
-        cwd: serverDir,
-        env,
-        stdio: "ignore",
-      });
-      execFileSync("cc", [objectPath, "-lsqlite3", "-o", outputPath], {
-        env,
-        stdio: "ignore",
-      });
-    } else {
-      execFileSync(
-        "zig",
-        ["build-exe", ...moduleArgs, ...targetArgs, ...optimizeArgs, "-lc", "-lsqlite3", `-femit-bin=${outputPath}`],
-        {
-          cwd: serverDir,
-          env,
-          stdio: "ignore",
-        },
-      );
-    }
-    if (process.platform !== "win32") {
-      fs.chmodSync(outputPath, 0o755);
-    }
-    return [
-      {
-        id: `server-${targetId}`,
-        path: path.join("server", targetId),
-        kind: "server-executable",
-        target: targetId,
-        files: [describeFile(outputPath, path.join("server", targetId, SERVER_EXECUTABLE_NAME))],
-      },
-    ];
-  } finally {
-    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  fs.mkdirSync(artifactDir, { recursive: true });
+  execFileSync("cargo", ["build", "-p", "forge-server", "--release", "--locked"], {
+    cwd: forgeDir,
+    stdio: "ignore",
+  });
+  fs.copyFileSync(builtBinary, outputPath);
+  if (process.platform !== "win32") {
+    fs.chmodSync(outputPath, 0o755);
   }
+  return [
+    {
+      id: `server-${targetId}`,
+      path: path.join("server", targetId),
+      kind: "forge-server-executable",
+      target: targetId,
+      files: [describeFile(outputPath, path.join("server", targetId, SERVER_EXECUTABLE_NAME))],
+    },
+  ];
 }
 
 export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifacts") } = {}) {
@@ -690,16 +661,6 @@ function macOSInfoPlist() {
 </dict>
 </plist>
 `;
-}
-
-function zigServerModuleArgs() {
-  return ["--dep", "zig_core", "--dep", "zig_crdt", "-Mroot=src/main.zig", "-Mzig_core=../zig-core/src/lib.zig", "-Mzig_crdt=../zig-crdt/src/lib.zig"];
-}
-
-function serverTargetArgsForHost() {
-  if (process.platform !== "darwin") return [];
-  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  return ["-target", `${arch}-macos.15.0.0`];
 }
 
 function hostServerTargetId() {
