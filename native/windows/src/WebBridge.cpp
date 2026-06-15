@@ -115,7 +115,7 @@ json::JsonObject FaultDetailsFromJson(
 }  // namespace
 
 WebBridge::WebBridge(std::filesystem::path databasePath, HWND ownerWindow)
-    : storage_(std::move(databasePath)), dialogs_(ownerWindow) {}
+    : storage_(databasePath), dialogs_(ownerWindow), core_(std::move(databasePath)) {}
 
 std::wstring WebBridge::HandleJson(std::wstring const& body, AppSandboxContext const& context) {
   auto promise = std::make_shared<std::promise<std::wstring>>();

@@ -77,7 +77,8 @@ struct ForgeCoreBridge::StepCompletionState {
   StepCompletion completion;
 };
 
-ForgeCoreBridge::ForgeCoreBridge() {
+ForgeCoreBridge::ForgeCoreBridge(std::filesystem::path databasePath)
+    : coreDatabasePath_(CoreDatabasePath(databasePath)) {
   for (auto const& path : CandidateLibraryPaths()) {
     if (!path.empty() && Load(path)) {
       break;
@@ -230,19 +231,27 @@ std::vector<std::filesystem::path> ForgeCoreBridge::CandidateLibraryPaths() {
   };
 }
 
+std::filesystem::path ForgeCoreBridge::CoreDatabasePath(std::filesystem::path const& databasePath) {
+  auto parent = databasePath.parent_path();
+  if (parent.empty()) {
+    parent = std::filesystem::current_path();
+  }
+  return parent / L"forge-workspace.sqlite";
+}
+
 bool ForgeCoreBridge::Load(std::filesystem::path const& path) {
   HMODULE handle = LoadLibraryW(path.c_str());
   if (handle == nullptr) {
     return false;
   }
 
-  auto openInMemory = reinterpret_cast<ForgeCoreOpenInMemoryFn>(GetProcAddress(handle, "forge_core_open_in_memory"));
+  auto openCore = reinterpret_cast<ForgeCoreOpenFn>(GetProcAddress(handle, "forge_core_open"));
   auto handleCommand = reinterpret_cast<ForgeCoreHandleCommandFn>(GetProcAddress(handle, "forge_core_handle_command"));
   auto drainEvents = reinterpret_cast<ForgeCoreDrainEventsFn>(GetProcAddress(handle, "forge_core_drain_events"));
   auto lastError = reinterpret_cast<ForgeCoreLastErrorFn>(GetProcAddress(handle, "forge_core_last_error"));
   auto closeCore = reinterpret_cast<ForgeCoreCloseFn>(GetProcAddress(handle, "forge_core_close"));
   auto freeString = reinterpret_cast<ForgeStringFreeFn>(GetProcAddress(handle, "forge_string_free"));
-  if (openInMemory == nullptr ||
+  if (openCore == nullptr ||
       handleCommand == nullptr ||
       drainEvents == nullptr ||
       lastError == nullptr ||
@@ -252,7 +261,9 @@ bool ForgeCoreBridge::Load(std::filesystem::path const& path) {
     return false;
   }
 
-  void* core = openInMemory("windows-native");
+  std::filesystem::create_directories(coreDatabasePath_.parent_path());
+  auto coreDatabasePath = WideToUtf8(coreDatabasePath_.wstring());
+  void* core = openCore(coreDatabasePath.c_str(), "windows-native");
   if (core == nullptr) {
     char* error = lastError();
     if (error != nullptr) {

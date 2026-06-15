@@ -14,7 +14,7 @@ namespace terrane {
 
 class ForgeCoreBridge {
  public:
-  ForgeCoreBridge();
+  explicit ForgeCoreBridge(std::filesystem::path databasePath);
   ~ForgeCoreBridge();
 
   ForgeCoreBridge(ForgeCoreBridge const&) = delete;
@@ -26,7 +26,7 @@ class ForgeCoreBridge {
   void StepAsync(BridgeRequest request, StepCompletion completion);
 
  private:
-  using ForgeCoreOpenInMemoryFn = void* (*)(char const*);
+  using ForgeCoreOpenFn = void* (*)(char const*, char const*);
   using ForgeCoreHandleCommandFn = char* (*)(void*, char const*);
   using ForgeCoreDrainEventsFn = char* (*)(void*);
   using ForgeCoreLastErrorFn = char* (*)();
@@ -45,6 +45,7 @@ class ForgeCoreBridge {
   };
 
   static std::vector<std::filesystem::path> CandidateLibraryPaths();
+  static std::filesystem::path CoreDatabasePath(std::filesystem::path const& databasePath);
   static CoreCommandOutcome RunCoreStep(std::shared_ptr<CoreRuntime> runtime, std::string commandJson);
   static winrt::Windows::Data::Json::JsonObject ResponseForOutcome(
       BridgeRequest const& request,
@@ -60,6 +61,7 @@ class ForgeCoreBridge {
 
   std::shared_ptr<CoreRuntime> runtime_;
   std::filesystem::path loadedPath_;
+  std::filesystem::path coreDatabasePath_;
 };
 
 }  // namespace terrane

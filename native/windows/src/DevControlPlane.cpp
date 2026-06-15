@@ -6147,7 +6147,7 @@ struct DevControlPlane::Impl {
   }
 
   std::wstring RuntimeReplayEventsJson(std::wstring const& appId, json::JsonArray const& events) {
-    ForgeCoreBridge replayCore;
+    ForgeCoreBridge replayCore(databasePath);
     std::wstring rows = L"[";
     for (uint32_t index = 0; index < events.Size(); ++index) {
       if (index > 0) {

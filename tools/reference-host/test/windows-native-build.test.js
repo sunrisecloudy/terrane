@@ -83,6 +83,25 @@ test("Windows native dialogs support multi-select openFile source contract", () 
   );
 });
 
+test("Windows native Forge bridge opens a durable workspace", () => {
+  const bridge = fs.readFileSync(path.join(windowsDir, "src", "ForgeCoreBridge.cpp"), "utf8");
+  const bridgeHeader = fs.readFileSync(path.join(windowsDir, "src", "ForgeCoreBridge.h"), "utf8");
+  const webBridge = fs.readFileSync(path.join(windowsDir, "src", "WebBridge.cpp"), "utf8");
+  const devControl = fs.readFileSync(path.join(windowsDir, "src", "DevControlPlane.cpp"), "utf8");
+
+  for (const snippet of [
+    'GetProcAddress(handle, "forge_core_open")',
+    'openCore(coreDatabasePath.c_str(), "windows-native")',
+    'return parent / L"forge-workspace.sqlite"',
+  ]) {
+    assert.equal(bridge.includes(snippet), true, `Windows Forge bridge source should contain ${snippet}`);
+  }
+  assert.equal(bridge.includes("forge_core_open_in_memory"), false, "native Windows host should not open Forge in memory");
+  assert.equal(bridgeHeader.includes("explicit ForgeCoreBridge(std::filesystem::path databasePath)"), true);
+  assert.equal(webBridge.includes("core_(std::move(databasePath))"), true);
+  assert.equal(devControl.includes("ForgeCoreBridge replayCore(databasePath)"), true);
+});
+
 test(
   "Windows WebView2 host builds and optionally runs native smoke",
   {
