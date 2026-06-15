@@ -14,6 +14,7 @@ members = [
   "crates/ui",
   "crates/core",
   "crates/ffi",
+  "crates/server",
   "crates/cli",
   "crates/testkit",
 ]
@@ -43,6 +44,7 @@ forge-pipeline = { path = "crates/pipeline" }
 forge-ui = { path = "crates/ui" }
 forge-core = { path = "crates/core" }
 forge-ffi = { path = "crates/ffi" }
+forge-server = { path = "crates/server" }
 forge-testkit = { path = "crates/testkit" }
 
 [profile.dev]

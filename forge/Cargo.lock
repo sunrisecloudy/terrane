@@ -691,6 +691,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-server"
+version = "0.1.0"
+dependencies = [
+ "forge-core",
+ "forge-domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "forge-signing"
 version = "0.1.0"
 dependencies = [
