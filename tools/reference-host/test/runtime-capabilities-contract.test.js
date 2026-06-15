@@ -80,7 +80,7 @@ test("reference-host runtime.capabilities bridge response is app-scoped and sche
   }
 });
 
-test("native and server capability implementations expose app-scoped manifest capability ids", () => {
+test("native capability implementations expose app-scoped manifest capability ids", () => {
   const contracts = [
     {
       target: "macos",
@@ -154,20 +154,6 @@ test("native and server capability implementations expose app-scoped manifest ca
         "zig_core_bridge_is_available(&bridge->core)",
       ],
     },
-    {
-      target: "server",
-      source: "server/src/main.zig",
-      snippets: [
-        '\\"platform\\":\\"server\\"',
-        '\\"target\\":\\"zig-server\\"',
-        ',\\"appId\\":\\"{s}\\"',
-        '\\"storage.read\\":true',
-        '\\"storage.write\\":true',
-        '\\"storage.get\\":true',
-        '\\"storage.set\\":true',
-        '\\"runtime.capabilities\\":true',
-      ],
-    },
   ];
 
   for (const contract of contracts) {
@@ -175,6 +161,26 @@ test("native and server capability implementations expose app-scoped manifest ca
     for (const snippet of contract.snippets) {
       assert.equal(source.includes(snippet), true, `${contract.target} runtime.capabilities missing ${snippet}`);
     }
+  }
+});
+
+test("Forge server exposes the CoreCommand HTTP replacement surface", () => {
+  const sources = [
+    fs.readFileSync(path.join(repoRoot, "forge/crates/server/src/lib.rs"), "utf8"),
+    fs.readFileSync(path.join(repoRoot, "forge/crates/server/src/main.rs"), "utf8"),
+  ].join("\n");
+  const snippets = [
+    '"service": "forge-server"',
+    '("GET", "/health")',
+    '("POST", "/bridge")',
+    '("POST", "/events/drain")',
+    "let command: CoreCommand",
+    "WorkspaceCore::open",
+    "WorkspaceCore::in_memory",
+  ];
+
+  for (const snippet of snippets) {
+    assert.equal(sources.includes(snippet), true, `forge server replacement surface missing ${snippet}`);
   }
 });
 
