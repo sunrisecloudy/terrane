@@ -10,7 +10,7 @@ namespace {
 
 constexpr const char* kLogTag = "TerranePlatformCore";
 
-using ForgeCoreOpenInMemoryFn = void* (*)(const char* workspace_id);
+using ForgeCoreOpenFn = void* (*)(const char* path, const char* workspace_id);
 using ForgeCoreHandleCommandFn = char* (*)(void* core, const char* command_json);
 using ForgeCoreDrainEventsFn = char* (*)(void* core);
 using ForgeCoreLastErrorFn = char* (*)();
@@ -33,9 +33,26 @@ void free_core_string(char* value) {
   }
 }
 
-bool ensure_loaded_locked() {
+std::string jni_string(JNIEnv* env, jstring value) {
+  if (value == nullptr) {
+    return {};
+  }
+  const char* chars = env->GetStringUTFChars(value, nullptr);
+  if (chars == nullptr) {
+    return {};
+  }
+  std::string text(chars);
+  env->ReleaseStringUTFChars(value, chars);
+  return text;
+}
+
+bool ensure_loaded_locked(const std::string& database_path) {
   if (g_core != nullptr && g_handle_command != nullptr && g_free_string != nullptr) {
     return true;
+  }
+  if (database_path.empty()) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Forge database path is required");
+    return false;
   }
   if (g_load_attempted) {
     return false;
@@ -48,13 +65,13 @@ bool ensure_loaded_locked() {
     return false;
   }
 
-  auto open_in_memory = reinterpret_cast<ForgeCoreOpenInMemoryFn>(dlsym(handle, "forge_core_open_in_memory"));
+  auto open_core = reinterpret_cast<ForgeCoreOpenFn>(dlsym(handle, "forge_core_open"));
   auto handle_command = reinterpret_cast<ForgeCoreHandleCommandFn>(dlsym(handle, "forge_core_handle_command"));
   auto drain_events = reinterpret_cast<ForgeCoreDrainEventsFn>(dlsym(handle, "forge_core_drain_events"));
   auto last_error = reinterpret_cast<ForgeCoreLastErrorFn>(dlsym(handle, "forge_core_last_error"));
   auto close_core = reinterpret_cast<ForgeCoreCloseFn>(dlsym(handle, "forge_core_close"));
   auto free_string = reinterpret_cast<ForgeStringFreeFn>(dlsym(handle, "forge_string_free"));
-  if (open_in_memory == nullptr ||
+  if (open_core == nullptr ||
       handle_command == nullptr ||
       drain_events == nullptr ||
       last_error == nullptr ||
@@ -65,14 +82,14 @@ bool ensure_loaded_locked() {
     return false;
   }
 
-  void* core = open_in_memory("android-native");
+  void* core = open_core(database_path.c_str(), "android-native");
   if (core == nullptr) {
     char* error = last_error();
     if (error != nullptr) {
-      __android_log_print(ANDROID_LOG_ERROR, kLogTag, "forge_core_open_in_memory failed: %s", error);
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag, "forge_core_open failed: %s", error);
       free_string(error);
     } else {
-      __android_log_print(ANDROID_LOG_ERROR, kLogTag, "forge_core_open_in_memory returned null");
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag, "forge_core_open returned null");
     }
     dlclose(handle);
     return false;
@@ -91,28 +108,28 @@ bool ensure_loaded_locked() {
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_terrane_platform_ForgeCoreBridge_nativeIsAvailable(JNIEnv*, jobject) {
+Java_com_terrane_platform_ForgeCoreBridge_nativeIsAvailable(JNIEnv* env, jobject, jstring database_path) {
+  std::string path = jni_string(env, database_path);
   std::lock_guard<std::mutex> lock(g_core_mutex);
-  return ensure_loaded_locked() ? JNI_TRUE : JNI_FALSE;
+  return ensure_loaded_locked(path) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_terrane_platform_ForgeCoreBridge_nativeHandleCommand(JNIEnv* env, jobject, jstring command_json) {
-  if (command_json == nullptr) {
+Java_com_terrane_platform_ForgeCoreBridge_nativeHandleCommand(JNIEnv* env, jobject, jstring database_path, jstring command_json) {
+  if (database_path == nullptr || command_json == nullptr) {
+    return nullptr;
+  }
+
+  std::string path = jni_string(env, database_path);
+  std::string command = jni_string(env, command_json);
+  if (path.empty() || command.empty()) {
     return nullptr;
   }
 
   std::lock_guard<std::mutex> lock(g_core_mutex);
-  if (!ensure_loaded_locked()) {
+  if (!ensure_loaded_locked(path)) {
     return nullptr;
   }
-
-  const char* command_chars = env->GetStringUTFChars(command_json, nullptr);
-  if (command_chars == nullptr) {
-    return nullptr;
-  }
-  std::string command(command_chars);
-  env->ReleaseStringUTFChars(command_json, command_chars);
 
   char* output = g_handle_command(g_core, command.c_str());
   if (output == nullptr) {

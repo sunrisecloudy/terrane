@@ -373,7 +373,7 @@ class AndroidDevControlPlane(
         val appId = requiredToolString(args, "appId", "runtime.replay_events requires appId")
         val events = args.opt("events") as? JSONArray
             ?: throw ControlCommandException(400, "invalid_request", "runtime.replay_events events must be an array")
-        val replayCore = ForgeCoreBridge()
+        val replayCore = ForgeCoreBridge(context)
         val context = AppSandboxContext(
             appId = appId,
             storagePrefix = "$appId:",

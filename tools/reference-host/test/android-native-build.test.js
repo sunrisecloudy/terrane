@@ -610,7 +610,7 @@ test("Android debug dev control snapshots, replays, and asserts core actions", (
     "runtime.assert_core_action match must be an object",
     "core_action.not_found",
     "Expected core action was not found",
-    "ForgeCoreBridge()",
+    "ForgeCoreBridge(context)",
     "control_replay_$index",
     "AppSandboxContext(",
     "approvedPermissions = setOf(\"core.step\")",

@@ -1,10 +1,15 @@
 package com.terrane.platform
 
+import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 
-class ForgeCoreBridge {
-    fun isAvailable(): Boolean = forgeFfiLoaded && jniLoaded && runCatching { nativeIsAvailable() }.getOrDefault(false)
+class ForgeCoreBridge(context: Context) {
+    private val databasePath: String = context.getDatabasePath("forge-workspace.sqlite")
+        .also { it.parentFile?.mkdirs() }
+        .absolutePath
+
+    fun isAvailable(): Boolean = forgeFfiLoaded && jniLoaded && runCatching { nativeIsAvailable(databasePath) }.getOrDefault(false)
 
     fun step(request: BridgeRequest): String {
         if (!isAvailable()) {
@@ -44,7 +49,7 @@ class ForgeCoreBridge {
             .put("name", "legacy.core_step")
             .put("payload", payload)
 
-        val output = runCatching { nativeHandleCommand(command.toString()) }.getOrNull()
+        val output = runCatching { nativeHandleCommand(databasePath, command.toString()) }.getOrNull()
             ?: return BridgeResponse.failure(request.id, "core_error", "forge_core_handle_command failed").toString()
 
         val response = runCatching { JSONObject(output) }.getOrNull()
@@ -62,8 +67,8 @@ class ForgeCoreBridge {
         return BridgeResponse.success(request.id, result).toString()
     }
 
-    private external fun nativeIsAvailable(): Boolean
-    private external fun nativeHandleCommand(commandJson: String): String?
+    private external fun nativeIsAvailable(databasePath: String): Boolean
+    private external fun nativeHandleCommand(databasePath: String, commandJson: String): String?
 
     companion object {
         private val forgeFfiLoaded: Boolean = runCatching {
