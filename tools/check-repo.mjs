@@ -1459,6 +1459,11 @@ function checkNativeStatic() {
   if (!iosPackage.includes('.target(name: "CForgeCoreBridge")') || !iosPackage.includes('dependencies: ["CForgeCoreBridge"]')) {
     throw new Error("iOS package must include the C Forge core bridge target");
   }
+  for (const snippet of ["TERRANE_IOS_FORGE_FFI_STATICLIB", "-force_load", "forgeFfiLinkerSettings"]) {
+    if (!iosPackage.includes(snippet)) {
+      throw new Error(`iOS package missing device Forge FFI static-link hook: ${snippet}`);
+    }
+  }
   const windowsRequired = [
     [windowsHost, "SetVirtualHostNameToFolderMapping"],
     [windowsHost, "add_WebMessageReceived"],

@@ -41,6 +41,20 @@ function hasIPhoneSimulatorSdk() {
   }
 }
 
+function deviceSdkPath() {
+  return execFileSync("xcrun", ["--sdk", "iphoneos", "--show-sdk-path"], {
+    encoding: "utf8",
+  }).trim();
+}
+
+function hasIPhoneDeviceSdk() {
+  try {
+    return deviceSdkPath().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function buildIOSHost(scratchRoot) {
   const buildScratch = path.join(scratchRoot, "spm-build");
   const moduleCache = path.join(scratchRoot, "module-cache");
@@ -87,6 +101,53 @@ function buildIOSHost(scratchRoot) {
   return { buildScratch, binaryPath, output };
 }
 
+function buildIOSDeviceHost(scratchRoot, forgeFfiStaticLib) {
+  const buildScratch = path.join(scratchRoot, "spm-device-build");
+  const moduleCache = path.join(scratchRoot, "device-module-cache");
+  const output = execFileSync(
+    "swift",
+    [
+      "build",
+      "--disable-sandbox",
+      "--cache-path",
+      path.join(scratchRoot, "swift-device-cache"),
+      "--config-path",
+      path.join(scratchRoot, "swift-device-config"),
+      "--security-path",
+      path.join(scratchRoot, "swift-device-security"),
+      "--scratch-path",
+      buildScratch,
+      "--triple",
+      "arm64-apple-ios17.0",
+      "--sdk",
+      deviceSdkPath(),
+      "-Xcc",
+      `-fmodules-cache-path=${moduleCache}`,
+      "-Xswiftc",
+      "-module-cache-path",
+      "-Xswiftc",
+      moduleCache,
+      "-Xswiftc",
+      "-D",
+      "-Xswiftc",
+      "DEBUG",
+    ],
+    {
+      cwd: iosDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLANG_MODULE_CACHE_PATH: moduleCache,
+        SWIFT_MODULE_CACHE_PATH: moduleCache,
+        TERRANE_IOS_FORGE_FFI_STATICLIB: forgeFfiStaticLib,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const binaryPath = path.join(buildScratch, "arm64-apple-ios", "debug", "TerraneHostIOS");
+  return { buildScratch, binaryPath, output };
+}
+
 function buildIOSForgeFfi() {
   execFileSync(
     "cargo",
@@ -105,11 +166,32 @@ function buildIOSForgeFfi() {
   );
   const dylibPath = path.join(repoRoot, "forge", "target", "aarch64-apple-ios-sim", "debug", "libforge_ffi.dylib");
   assert.equal(fs.existsSync(dylibPath), true);
-  const symbols = execFileSync("nm", ["-gU", dylibPath], { encoding: "utf8" });
+  const symbols = execFileSync("nm", ["-gU", dylibPath], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
   assert.match(symbols, /_forge_core_open_in_memory/);
   assert.match(symbols, /_forge_core_handle_command/);
   assert.match(symbols, /_forge_string_free/);
   return dylibPath;
+}
+
+function buildIOSForgeFfiStatic() {
+  execFileSync(
+    "cargo",
+    [
+      "build",
+      "-p",
+      "forge-ffi",
+      "--locked",
+      "--target",
+      "aarch64-apple-ios",
+    ],
+    {
+      cwd: path.join(repoRoot, "forge"),
+      stdio: "ignore",
+    },
+  );
+  const libPath = path.join(repoRoot, "forge", "target", "aarch64-apple-ios", "debug", "libforge_ffi.a");
+  assert.equal(fs.existsSync(libPath), true);
+  return libPath;
 }
 
 function createSimulatorAppBundle(scratchRoot, binaryPath, forgeFfiDylibPath = null) {
@@ -656,6 +738,59 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     assert.equal(host.includes(snippet), true, `iOS host should wire dev control with ${snippet}`);
   }
 });
+
+test("iOS Package.swift exposes a device-safe Forge FFI static-link hook", () => {
+  const manifest = fs.readFileSync(path.join(iosDir, "Package.swift"), "utf8");
+  for (const snippet of [
+    "TERRANE_IOS_FORGE_FFI_STATICLIB",
+    "forgeFfiLinkerSettings",
+    ".linkedLibrary(\"sqlite3\")",
+    ".unsafeFlags",
+    "\"-force_load\"",
+    "linkerSettings: forgeFfiLinkerSettings",
+  ]) {
+    assert.equal(manifest.includes(snippet), true, `iOS package manifest should contain ${snippet}`);
+  }
+});
+
+test(
+  "iOS device build can static-link Forge FFI",
+  {
+    skip: process.env.TERRANE_IOS_DEVICE_STATIC_LINK !== "1"
+      ? "set TERRANE_IOS_DEVICE_STATIC_LINK=1 to run the iPhoneOS static-link smoke"
+      : process.platform !== "darwin"
+        ? "iOS device static-link smoke only runs on Darwin hosts"
+        : !commandWorks("swift", ["--version"])
+          ? "swift is not available"
+          : !commandWorks("cargo", ["--version"])
+            ? "cargo is not available"
+            : !hasIPhoneDeviceSdk()
+              ? "iPhoneOS SDK is not available"
+              : false,
+    timeout: 180_000,
+  },
+  () => {
+    const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-ios-device-link-"));
+    try {
+      const forgeFfiStaticPath = buildIOSForgeFfiStatic();
+      const build = buildIOSDeviceHost(scratchRoot, forgeFfiStaticPath);
+      assert.match(build.output, /Build complete!/);
+      assert.equal(fs.existsSync(build.binaryPath), true);
+
+      const fileOutput = execFileSync("file", [build.binaryPath], { encoding: "utf8" });
+      assert.match(fileOutput, /Mach-O 64-bit executable arm64/);
+      const loadCommands = execFileSync("otool", ["-l", build.binaryPath], { encoding: "utf8" });
+      assert.match(loadCommands, /platform 2/);
+      assert.match(loadCommands, /minos 17\.0/);
+      const linkedLibraries = execFileSync("otool", ["-L", build.binaryPath], { encoding: "utf8" });
+      assert.match(linkedLibraries, /UIKit\.framework\/UIKit/);
+      assert.match(linkedLibraries, /WebKit\.framework\/WebKit/);
+      assert.doesNotMatch(linkedLibraries, /libforge_ffi\.dylib/);
+    } finally {
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  },
+);
 
 test(
   "iOS native scaffold builds a simulator app bundle with runtime resources",

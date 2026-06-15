@@ -2,6 +2,18 @@
 
 import PackageDescription
 
+let forgeFfiStaticLib = Context.environment["TERRANE_IOS_FORGE_FFI_STATICLIB"]
+let forgeFfiLinkerSettings: [LinkerSetting] = [
+    .linkedLibrary("sqlite3")
+] + (forgeFfiStaticLib.map { forgeFfiStaticLib in
+    [
+        .unsafeFlags(
+            ["-Xlinker", "-force_load", "-Xlinker", forgeFfiStaticLib],
+            .when(platforms: [.iOS])
+        )
+    ]
+} ?? [])
+
 let package = Package(
     name: "TerraneHostIOS",
     platforms: [
@@ -18,9 +30,7 @@ let package = Package(
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
             ],
-            linkerSettings: [
-                .linkedLibrary("sqlite3")
-            ]
+            linkerSettings: forgeFfiLinkerSettings
         )
     ]
 )
