@@ -1,7 +1,6 @@
 use forge_domain::CoreResponse;
 use std::ffi::{CStr, CString};
 use std::ptr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn c(value: &str) -> CString {
     CString::new(value).unwrap()
@@ -195,13 +194,8 @@ fn string_free_accepts_null() {
 
 #[test]
 fn file_backed_open_round_trips_over_c_abi() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("forge-ffi-{}-{unique}.sqlite", std::process::id()));
-    let _ = std::fs::remove_file(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge-workspace.sqlite");
     let path_c = c(path.to_str().unwrap());
     let workspace = c("ws-file-ffi");
 
@@ -218,7 +212,70 @@ fn file_backed_open_round_trips_over_c_abi() {
     );
 
     unsafe { forge_ffi::forge_core_close(handle) };
-    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn file_backed_open_persists_applet_state_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge-workspace.sqlite");
+    let path_c = c(path.to_str().unwrap());
+    let workspace = c("ws-file-reopen");
+
+    {
+        let handle = unsafe { forge_ffi::forge_core_open(path_c.as_ptr(), workspace.as_ptr()) };
+        assert!(!handle.is_null());
+
+        let install = unsafe {
+            send_command(
+                handle,
+                command_with_applet(
+                    "applet.install",
+                    serde_json::json!({
+                        "manifest": demo_manifest(),
+                        "sources": { "src/main.ts": demo_ts() }
+                    }),
+                    Some("app_demo"),
+                ),
+            )
+        };
+        assert!(install.ok, "{:?}", install.error);
+
+        let run = unsafe {
+            send_command(
+                handle,
+                command_with_applet(
+                    "runtime.run",
+                    serde_json::json!({ "input": { "title": "Persistent through reopen" } }),
+                    Some("app_demo"),
+                ),
+            )
+        };
+        assert!(run.ok, "{:?}", run.error);
+
+        unsafe { forge_ffi::forge_core_close(handle) };
+    }
+
+    {
+        let handle = unsafe { forge_ffi::forge_core_open(path_c.as_ptr(), workspace.as_ptr()) };
+        assert!(!handle.is_null());
+
+        let query = unsafe {
+            send_command(
+                handle,
+                command(
+                    "query.execute",
+                    serde_json::json!({ "collection": "tasks" }),
+                ),
+            )
+        };
+        assert!(query.ok, "{:?}", query.error);
+        assert_eq!(
+            query.payload["rows"][0]["fields"]["title"],
+            serde_json::json!("Persistent through reopen")
+        );
+
+        unsafe { forge_ffi::forge_core_close(handle) };
+    }
 }
 
 #[test]
