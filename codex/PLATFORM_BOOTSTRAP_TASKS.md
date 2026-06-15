@@ -40,5 +40,5 @@
 ## Forge Server
 
 - Route HTTP requests through Forge core commands.
-- Implement `/health` and `/core/step`.
+- Implement `/health`, `/bridge`, and `/events/drain`.
 - Add contract tests using bridge fixtures.

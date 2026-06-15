@@ -275,7 +275,6 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Invalid request returns structured error.
 - Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/forge-server-build.test.js`.
 - Forge server bridge contract runs against a live `forge-server` process with `node --test --no-warnings tools/reference-host/test/forge-server-bridge-contract.test.js`.
-- API smoke for the retired v0.4 server fixture remains archived under `tests/server/` until the server deletion slice.
 
 ## 8. End-to-end tests
 

@@ -26,15 +26,16 @@
       "ok": true,
       "resultSubset": {
         "platform": "server",
-        "target": "zig-server",
+        "target": "forge-server",
         "devMode": false,
         "runtimeVersion": "0.1.0",
         "appId": "notes-lite",
         "features": {
-          "storage.read": true,
-          "network.request": true,
-          "dialog.openFile": true,
-          "notebook.read": true
+          "storage.read": false,
+          "network.request": false,
+          "dialog.openFile": false,
+          "notebook.read": false,
+          "core.step": true
         }
       }
     }
