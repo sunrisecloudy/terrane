@@ -12,7 +12,7 @@
 #include "PlatformDatabase.h"
 #include "PlatformStorage.h"
 #include "WebViewHost.h"
-#include "ZigCoreBridge.h"
+#include "ForgeCoreBridge.h"
 
 #include <algorithm>
 #include <array>
@@ -6147,7 +6147,7 @@ struct DevControlPlane::Impl {
   }
 
   std::wstring RuntimeReplayEventsJson(std::wstring const& appId, json::JsonArray const& events) {
-    ZigCoreBridge replayCore;
+    ForgeCoreBridge replayCore;
     std::wstring rows = L"[";
     for (uint32_t index = 0; index < events.Size(); ++index) {
       if (index > 0) {

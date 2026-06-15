@@ -23,10 +23,10 @@ test("macOS core.step enforces timeout without blocking the WebView reply path",
   assert.match(macosTests, /coreStepReturnsTimeoutWhenForgeCoreExceedsHostTimeout/);
 });
 
-test("Windows core.step enforces a structured host timeout around Zig DLL calls", () => {
+test("Windows core.step enforces a structured host timeout around Forge FFI calls", () => {
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
-  const windowsCore = read("native/windows/src/ZigCoreBridge.cpp");
-  const windowsCoreHeader = read("native/windows/src/ZigCoreBridge.h");
+  const windowsCore = read("native/windows/src/ForgeCoreBridge.cpp");
+  const windowsCoreHeader = read("native/windows/src/ForgeCoreBridge.h");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const windowsHostHeader = read("native/windows/src/WebViewHost.h");
 
@@ -39,6 +39,8 @@ test("Windows core.step enforces a structured host timeout around Zig DLL calls"
   assert.match(windowsCore, /std::lock_guard<std::mutex> guard\(runtime->stepMutex\)/);
   assert.match(windowsCore, /BridgeResponse::Failure\(request\.id, request\.hasId, L"timeout", L"core\.step timed out", details\)/);
   assert.match(windowsCore, /details\.Insert\(L"timeoutMs", json::JsonValue::CreateNumberValue\(kCoreStepTimeoutMs\)\)/);
+  assert.match(windowsCore, /forge_core_handle_command/);
+  assert.match(windowsCore, /L"legacy\.core_step"/);
   assert.match(windowsCoreHeader, /std::shared_ptr<CoreRuntime> runtime_/);
   assert.match(windowsBridge, /void WebBridge::HandleJsonAsync/);
   assert.match(windowsBridge, /request\.method == L"core\.step"/);
@@ -46,7 +48,7 @@ test("Windows core.step enforces a structured host timeout around Zig DLL calls"
   assert.match(windowsHost, /bridge_->HandleJsonAsync/);
   assert.match(windowsHost, /PostMessageW\(window_, kAsyncBridgeResponseMessage/);
   assert.match(windowsHostHeader, /TryHandleWindowMessage/);
-  assert.doesNotMatch(windowsCore, /int32_t code = stepJson_\(core_/);
+  assert.doesNotMatch(windowsCore, /core_step_json/);
   assert.doesNotMatch(windowsHost, /response = context\.has_value\(\)\s*\?\s*bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
 });
 

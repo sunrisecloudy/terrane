@@ -16,7 +16,7 @@ add_executable(TerraneHost WIN32
   src/PlatformDialogs.cpp
   src/PlatformNotifications.cpp
   src/PlatformNetwork.cpp
-  src/ZigCoreBridge.cpp
+  src/ForgeCoreBridge.cpp
 )
 
 target_compile_definitions(TerraneHost PRIVATE UNICODE _UNICODE NOMINMAX)
@@ -38,7 +38,7 @@ if(WIN32)
 endif()
 
 set(TERRANE_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
-set(TERRANE_ZIG_CORE_DLL "" CACHE FILEPATH "Optional prebuilt zig_core.dll to stage next to TerraneHost.exe")
+set(TERRANE_FORGE_FFI_DLL "" CACHE FILEPATH "Optional prebuilt forge_ffi.dll to stage next to TerraneHost.exe")
 add_custom_command(TARGET TerraneHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TerraneHost>/resources/runtime"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${TERRANE_REPO_ROOT}/runtime-web" "$<TARGET_FILE_DIR:TerraneHost>/resources/runtime"
@@ -48,8 +48,8 @@ add_custom_command(TARGET TerraneHost POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${TERRANE_REPO_ROOT}/db/sqlite" "$<TARGET_FILE_DIR:TerraneHost>/resources/db/sqlite"
 )
 
-if(TERRANE_ZIG_CORE_DLL)
+if(TERRANE_FORGE_FFI_DLL)
   add_custom_command(TARGET TerraneHost POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TERRANE_ZIG_CORE_DLL}" "$<TARGET_FILE_DIR:TerraneHost>/zig_core.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TERRANE_FORGE_FFI_DLL}" "$<TARGET_FILE_DIR:TerraneHost>/forge_ffi.dll"
   )
 endif()

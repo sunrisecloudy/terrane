@@ -9,7 +9,7 @@ CMakeLists.txt
 src/main.cpp
 src/WebViewHost.cpp
 src/WebBridge.cpp
-src/ZigCoreBridge.cpp
+src/ForgeCoreBridge.cpp
 src/PlatformStorage.cpp
 src/PlatformDialogs.cpp
 src/PlatformNotifications.cpp
@@ -28,16 +28,16 @@ Implemented now:
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound Win32 common file dialogs, including source/static-verified multi-select `dialog.openFile`.
 - Implements `network.request` through WinHTTP with manifest `networkPolicy` checks.
-- Loads `zig_core.dll` through `LoadLibraryW` for `core.step`, using `TERRANE_ZIG_CORE_DLL` first, the executable-adjacent packaged DLL next, and repo-local candidate paths as dev fallbacks.
-- Reports `core.step` in `runtime.capabilities` from the actual Zig DLL load status and returns structured `platform_unsupported` when the DLL is absent.
-- Windows-only release smoke coverage builds the native package, launches it from the staged artifact directory with no `TERRANE_ZIG_CORE_DLL`, and verifies executable-relative runtime/example/SQLite resources plus `zig_core.dll`-backed `core.step`.
+- Loads `forge_ffi.dll` through `LoadLibraryW` for `core.step`, using `TERRANE_FORGE_FFI_DLL` first, the executable-adjacent packaged DLL next, and repo-local Forge build outputs as dev fallbacks.
+- Reports `core.step` in `runtime.capabilities` from the actual Forge FFI DLL load status and returns structured `platform_unsupported` when the DLL is absent.
+- Windows-only release smoke coverage builds the native package, launches it from the staged artifact directory with no `TERRANE_FORGE_FFI_DLL`, and verifies executable-relative runtime/example/SQLite resources plus `forge_ffi.dll`-backed `core.step`.
 
 MVP acceptance:
 
 - Launches on Windows.
 - Initializes WebView2.
 - Loads runtime and examples from resources/local files.
-- Loads `zig_core.dll`.
+- Loads `forge_ffi.dll`.
 - Implements storage and `core.step`.
 
 

@@ -20,6 +20,21 @@ function commandWorks(command, args = ["--version"]) {
   }
 }
 
+function buildForgeFfiDll(scratch) {
+  const cargoTargetDir = path.join(scratch, "cargo-target");
+  execFileSync("cargo", ["build", "-p", "forge-ffi", "--locked"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: cargoTargetDir,
+    },
+    stdio: "ignore",
+  });
+  const forgeFfiDll = path.join(cargoTargetDir, "debug", "forge_ffi.dll");
+  assert.equal(fs.existsSync(forgeFfiDll), true, "forge_ffi.dll should exist after cargo build");
+  return forgeFfiDll;
+}
+
 function windowsPackagedNativeSmokeSkipReason() {
   if (process.platform !== "win32") return "Windows packaged native smoke only runs on Windows hosts";
   if (process.arch !== "x64") return "Windows packaged native smoke requires an x64 Windows host";
@@ -37,7 +52,7 @@ test("Windows packaged native smoke is wired to release artifacts", () => {
     "native-windows-windows-x86_64",
     'path.join(outDir, "native-apps", "windows", "windows-x86_64", "TerraneHost")',
     "runWindowsPackagedArtifactSmoke",
-    "TERRANE_ZIG_CORE_DLL",
+    "TERRANE_FORGE_FFI_DLL",
     "TERRANE_WINDOWS_SMOKE_BRIDGE_CORE_STEP_OK",
     "outside-repo-cwd",
   ]) {
@@ -75,48 +90,26 @@ test(
       ? "Windows native smoke only runs on Windows hosts"
       : !commandWorks("cmake")
         ? "cmake is not available"
-        : !commandWorks("zig", ["version"])
-          ? "zig is not available"
+        : !commandWorks("cargo", ["--version"])
+          ? "cargo is not available"
           : false,
     timeout: 180_000,
   },
   () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-smoke-"));
     try {
-      const zigCoreDll = path.join(scratch, "zig_core.dll");
-      execFileSync(
-        "zig",
-        [
-          "build-lib",
-          "src/lib.zig",
-          "--name",
-          "zig_core",
-          "-dynamic",
-          "-lc",
-          `-femit-bin=${zigCoreDll}`,
-        ],
-        {
-          cwd: path.join(repoRoot, "zig-core"),
-          env: {
-            ...process.env,
-            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
-            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
-          },
-          stdio: "ignore",
-        },
-      );
-      assert.equal(fs.existsSync(zigCoreDll), true);
+      const forgeFfiDll = buildForgeFfiDll(scratch);
 
       const buildDir = path.join(scratch, "build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_FORGE_FFI_DLL=${forgeFfiDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
       assert.notEqual(binaryPath, null, "TerraneHost.exe should exist after CMake build");
       const binaryDir = path.dirname(binaryPath);
       assert.equal(
-        fs.existsSync(path.join(binaryDir, "zig_core.dll")),
+        fs.existsSync(path.join(binaryDir, "forge_ffi.dll")),
         true,
-        "zig_core.dll should be staged next to TerraneHost.exe for package-style loading",
+        "forge_ffi.dll should be staged next to TerraneHost.exe for package-style loading",
       );
       assert.equal(
         fs.existsSync(path.join(binaryDir, "resources", "runtime", "index.html")),
@@ -186,8 +179,8 @@ test(
       ? "Windows native smoke only runs on Windows hosts"
       : !commandWorks("cmake")
         ? "cmake is not available"
-        : !commandWorks("zig", ["version"])
-          ? "zig is not available"
+        : !commandWorks("cargo", ["--version"])
+          ? "cargo is not available"
           : false,
     timeout: 180_000,
   },
@@ -250,30 +243,9 @@ test(
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-dev-control-"));
     let child = null;
     try {
-      const zigCoreDll = path.join(scratch, "zig_core.dll");
-      execFileSync(
-        "zig",
-        [
-          "build-lib",
-          "src/lib.zig",
-          "--name",
-          "zig_core",
-          "-dynamic",
-          "-lc",
-          `-femit-bin=${zigCoreDll}`,
-        ],
-        {
-          cwd: path.join(repoRoot, "zig-core"),
-          env: {
-            ...process.env,
-            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
-            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
-          },
-          stdio: "ignore",
-        },
-      );
+      const forgeFfiDll = buildForgeFfiDll(scratch);
       const buildDir = path.join(scratch, "debug-build");
-      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_ZIG_CORE_DLL=${zigCoreDll}`], { stdio: "ignore" });
+      execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, `-DTERRANE_FORGE_FFI_DLL=${forgeFfiDll}`], { stdio: "ignore" });
       execFileSync("cmake", ["--build", buildDir, "--config", "Debug"], { stdio: "ignore" });
       const binaryPath = resolveWindowsHostBinary(buildDir);
       assert.notEqual(binaryPath, null, "TerraneHost.exe should exist after Debug CMake build");
@@ -1335,7 +1307,7 @@ function runOptionalSmoke({ binaryPath, scratch }) {
   const storageValue = `windows-smoke-${process.pid}-${Date.now()}`;
   const dataHome = path.join(scratch, "data-home");
   const resultFile = path.join(scratch, "smoke-result.txt");
-  const { TERRANE_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
+  const { TERRANE_FORGE_FFI_DLL: _ignoredForgeFfiDll, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
     TERRANE_WINDOWS_SMOKE_DATA_HOME: dataHome,
@@ -1398,7 +1370,7 @@ function runWindowsPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
   const resultFile = path.join(scratch, "packaged-smoke-result.txt");
   const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
   fs.mkdirSync(outsideRepoCwd, { recursive: true });
-  const { TERRANE_ZIG_CORE_DLL: _ignoredZigCoreDll, ...smokeEnv } = process.env;
+  const { TERRANE_FORGE_FFI_DLL: _ignoredForgeFfiDll, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
     TERRANE_WINDOWS_SMOKE_DATA_HOME: path.join(scratch, "packaged-data-home"),

@@ -117,22 +117,22 @@ test("Android native host packages runtime-web under the /runtime asset path", (
 test("Windows native host stages runtime-web under the /runtime WebView2 path", () => {
   const cmake = readRepoFile("native/windows/CMakeLists.txt");
   const host = readRepoFile("native/windows/src/WebViewHost.cpp");
-  const core = readRepoFile("native/windows/src/ZigCoreBridge.cpp");
+  const core = readRepoFile("native/windows/src/ForgeCoreBridge.cpp");
 
   assertContains(cmake, 'copy_directory "${TERRANE_REPO_ROOT}/runtime-web"', "Windows CMake");
   assertContains(cmake, "resources/runtime", "Windows CMake");
   assertContains(cmake, 'copy_directory "${TERRANE_REPO_ROOT}/webapps/examples"', "Windows CMake");
   assertContains(cmake, "resources/webapps/examples", "Windows CMake");
-  assertContains(cmake, 'TERRANE_ZIG_CORE_DLL "" CACHE FILEPATH', "Windows CMake");
-  assertContains(cmake, 'copy_if_different "${TERRANE_ZIG_CORE_DLL}"', "Windows CMake");
+  assertContains(cmake, 'TERRANE_FORGE_FFI_DLL "" CACHE FILEPATH', "Windows CMake");
+  assertContains(cmake, 'copy_if_different "${TERRANE_FORGE_FFI_DLL}"', "Windows CMake");
   assertContains(host, 'webview_->Navigate(L"https://runtime.local.platform/runtime/index.html")', "Windows host");
   assertContains(host, 'resourceRoot / L"runtime" / L"index.html"', "Windows host");
   assertContains(host, 'resourceRoot / L"webapps" / L"examples"', "Windows host");
-  assertContains(core, 'EnvironmentPath(L"TERRANE_ZIG_CORE_DLL")', "Windows Zig core bridge");
-  assertContains(core, 'exeDir / L"zig_core.dll"', "Windows Zig core bridge");
+  assertContains(core, 'EnvironmentPath(L"TERRANE_FORGE_FFI_DLL")', "Windows Forge core bridge");
+  assertContains(core, 'exeDir / L"forge_ffi.dll"', "Windows Forge core bridge");
   assert.equal(
-    core.indexOf('exeDir / L"zig_core.dll"') < core.indexOf('cwd / L"zig-core" / L"zig-out"'),
+    core.indexOf('exeDir / L"forge_ffi.dll"') < core.indexOf('cwd / L"forge" / L"target" / L"debug"'),
     true,
-    "Windows Zig core bridge should prefer the executable-adjacent packaged DLL before repo-local fallbacks",
+    "Windows Forge core bridge should prefer the executable-adjacent packaged DLL before repo-local fallbacks",
   );
 });

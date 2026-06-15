@@ -893,8 +893,8 @@ function checkNativeStatic() {
   const windowsDialogs = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.cpp"), "utf8");
   const windowsNotifications = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNotifications.cpp"), "utf8");
   const windowsDialogHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformDialogs.h"), "utf8");
-  const windowsCore = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.cpp"), "utf8");
-  const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ZigCoreBridge.h"), "utf8");
+  const windowsCore = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ForgeCoreBridge.cpp"), "utf8");
+  const windowsCoreHeader = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "ForgeCoreBridge.h"), "utf8");
   const windowsStorage = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformStorage.cpp"), "utf8");
   const windowsNetwork = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "PlatformNetwork.cpp"), "utf8");
   const windowsDevControl = fs.readFileSync(path.join(repoRoot, "native", "windows", "src", "DevControlPlane.cpp"), "utf8");
@@ -1676,10 +1676,12 @@ function checkNativeStatic() {
   for (const snippet of [
     "LoadLibraryW",
     "GetProcAddress",
-    "core_step_json",
-    "core_free",
-    "TERRANE_ZIG_CORE_DLL",
-    'exeDir / L"zig_core.dll"',
+    "forge_core_open_in_memory",
+    "forge_core_handle_command",
+    "forge_string_free",
+    "TERRANE_FORGE_FFI_DLL",
+    'exeDir / L"forge_ffi.dll"',
+    'L"legacy.core_step"',
     "core.step app field does not match the channel-derived app id",
     "kCoreStepTimeoutMs = 2000",
     "std::this_thread::sleep_for(std::chrono::milliseconds(kCoreStepTimeoutMs))",
@@ -1687,18 +1689,18 @@ function checkNativeStatic() {
     'BridgeResponse::Failure(request.id, request.hasId, L"timeout", L"core.step timed out", details)',
   ]) {
     if (!windowsCore.includes(snippet)) {
-      throw new Error(`Windows Zig core bridge missing ${snippet}`);
+      throw new Error(`Windows Forge core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["bool IsAvailable() const", "CoreStepJsonFn", "CoreFreeFn", "void StepAsync", "std::shared_ptr<CoreRuntime> runtime_"]) {
+  for (const snippet of ["bool IsAvailable() const", "ForgeCoreHandleCommandFn", "ForgeStringFreeFn", "void StepAsync", "std::shared_ptr<CoreRuntime> runtime_"]) {
     if (!windowsCoreHeader.includes(snippet)) {
-      throw new Error(`Windows Zig core bridge header missing ${snippet}`);
+      throw new Error(`Windows Forge core bridge header missing ${snippet}`);
     }
   }
   if (!windowsBridge.includes("void WebBridge::HandleJsonAsync") || !windowsBridge.includes("core_.StepAsync(request")) {
     throw new Error("Windows WebBridge must dispatch core.step asynchronously");
   }
-  for (const snippet of ["winhttp", "ole32", "TERRANE_ZIG_CORE_DLL", "copy_if_different"]) {
+  for (const snippet of ["winhttp", "ole32", "TERRANE_FORGE_FFI_DLL", "copy_if_different"]) {
     if (!windowsCmake.includes(snippet)) {
       throw new Error(`Windows native bridge must link ${snippet}`);
     }
@@ -2366,7 +2368,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Forge core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=forge-ffi android.webmessage=origin-checked dialogs=activity-result core=forge-ffi";
+  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=forge-ffi linux.webkit=scheme-checked dialogs=gtk-native core=forge-ffi android.webmessage=origin-checked dialogs=activity-result core=forge-ffi";
 }
 
 function readJson(filePath) {

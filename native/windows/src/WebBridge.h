@@ -5,7 +5,7 @@
 #include "PlatformNetwork.h"
 #include "PlatformNotifications.h"
 #include "PlatformStorage.h"
-#include "ZigCoreBridge.h"
+#include "ForgeCoreBridge.h"
 
 #include <Windows.h>
 #include <functional>
@@ -53,7 +53,7 @@ class WebBridge {
   PlatformDialogs dialogs_;
   PlatformNotifications notifications_;
   PlatformNetwork network_;
-  ZigCoreBridge core_;
+  ForgeCoreBridge core_;
 };
 
 }  // namespace terrane

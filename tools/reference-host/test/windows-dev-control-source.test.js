@@ -793,7 +793,7 @@ test("Windows dev control exposes DB-backed resource and log inspection commands
     "RuntimeCoreSnapshotJson",
     "RuntimeReplayEventsJson",
     "RuntimeAssertCoreActionJson",
-    "ZigCoreBridge replayCore",
+    "ForgeCoreBridge replayCore",
     "control_replay_",
     "runtime.core_snapshot requires appId",
     "runtime.replay_events requires appId",
