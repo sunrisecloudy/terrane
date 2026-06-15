@@ -54,7 +54,9 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         }
         // Triggering execution: the run-capable roles (CR-8). Viewer/Auditor are
         // read-only/oversight and cannot run code.
-        "runtime.run" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),
+        "runtime.run" | "legacy.core_step" => {
+            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner])
+        }
         // Re-entering an applet's handler on a UI event is *execution* (UI-4/CR-6):
         // same run-capable roles as `runtime.run`. A Viewer/Auditor is read-only and
         // cannot dispatch an event; the capability gate inside the handler then

@@ -25,6 +25,7 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 | record.delete | collection, id | tombstone/op id | Role plus db.write capability | M0b | CR-A2 |
 | record.hard_purge | collection, id, policy proof | purge report | Owner only | later | CR-A2 |
 | runtime.run | applet_id, input, random_seed?, time_start? (both-or-neither; time_start ≤ i64::MAX) | run_id, result, ui patch, logs, host_call_methods | Runner, Editor, Maintainer, Owner plus caps | M0a | CR-A2, CR-8 |
+| legacy.core_step | event | legacy `{ ok, stateVersion, actions }` payload for v0.4 generated-app `core.step` bridge compatibility | Runner, Editor, Maintainer, Owner | cutover only | CR-A2, CR-A5 |
 | runtime.cancel | run_id | cancel status | Runner, Editor, Maintainer, Owner | M0b | CR-A2 |
 | runtime.replay | run_id | run record | replayed result and diff | Auditor, Maintainer, Owner | M0a | CR-A2, CR-9 |
 | runtime.replay_session | run_ids (ordered: initial run + N dispatched events) | session_fingerprint, per-event patches, final tree, replays_identically | Auditor, Maintainer, Owner | M0a | CR-A2, CR-6, CR-8 |

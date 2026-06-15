@@ -29,6 +29,7 @@ use super::WorkspaceCore;
 
 pub(super) mod applet;
 pub(super) mod audit;
+pub(super) mod legacy_core_step;
 pub(super) mod lifecycle;
 pub(super) mod query;
 pub(super) mod quota;
@@ -75,6 +76,10 @@ const COMMANDS: &[(&str, Handler)] = &[
     ("applet.upgrade", WorkspaceCore::cmd_applet_upgrade),
     ("applet.uninstall", WorkspaceCore::cmd_applet_uninstall),
     ("runtime.run", WorkspaceCore::cmd_runtime_run),
+    // Temporary v0.4 generated-app compatibility during the host cutover: native
+    // bridges still receive `core.step` from legacy webapps, but the host calls it
+    // through the Forge CoreCommand ABI as `legacy.core_step`.
+    ("legacy.core_step", WorkspaceCore::cmd_legacy_core_step),
     ("runtime.replay", WorkspaceCore::cmd_runtime_replay),
     ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),
     ("ui.dispatch_event", WorkspaceCore::cmd_ui_dispatch_event),
