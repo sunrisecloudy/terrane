@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPublicContract } from "./export-public-contract.mjs";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -96,11 +97,13 @@ export function packageReleaseArtifacts({
 
   const runtimeArchive = path.join(resolvedOutDir, "runtime-web.zip");
   const examplesArchive = path.join(resolvedOutDir, "example-webapps.zip");
+  const publicContractPath = path.join(resolvedOutDir, "public-contract.json");
   const runtimeFiles = collectFiles(path.join(repoRoot, "runtime-web"), "runtime-web");
   const exampleFiles = collectFiles(path.join(repoRoot, "webapps", "examples"), "webapps/examples");
 
   writeStoredZip(runtimeArchive, runtimeFiles);
   writeStoredZip(examplesArchive, exampleFiles);
+  fs.writeFileSync(publicContractPath, `${JSON.stringify(buildPublicContract({ root: repoRoot }), null, 2)}\n`);
 
   const zigCoreArtifacts = buildZigCore ? buildZigCoreArtifacts({ outDir: resolvedOutDir }) : [];
   const serverArtifacts = buildServer ? buildServerArtifacts({ outDir: resolvedOutDir }) : [];
@@ -148,6 +151,12 @@ export function packageReleaseArtifacts({
         relativePath: "example-webapps.zip",
         source: "webapps/examples/",
         fileCount: exampleFiles.length,
+      }),
+      describeJsonArtifact({
+        id: "public-contract",
+        filePath: publicContractPath,
+        relativePath: "public-contract.json",
+        source: "tools/export-public-contract.mjs",
       }),
       ...zigCoreArtifacts,
       ...serverArtifacts,
@@ -728,6 +737,18 @@ function describeFileArtifact({ id, archivePath, relativePath, source, fileCount
     kind: "zip",
     source,
     fileCount,
+    bytes: data.length,
+    sha256: crypto.createHash("sha256").update(data).digest("hex"),
+  };
+}
+
+function describeJsonArtifact({ id, filePath, relativePath, source }) {
+  const data = fs.readFileSync(filePath);
+  return {
+    id,
+    path: relativePath,
+    kind: "json",
+    source,
     bytes: data.length,
     sha256: crypto.createHash("sha256").update(data).digest("hex"),
   };

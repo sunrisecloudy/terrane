@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { PlatformDatabase } from "./reference-host/src/platform-database.js";
 import { examplesDir, repoRoot } from "./reference-host/src/paths.js";
 import { validatePackage } from "./reference-host/src/package-validator.js";
+import { buildPublicContract } from "./export-public-contract.mjs";
 
 const checks = [];
 
@@ -91,6 +92,13 @@ function checkSchemaFixtures() {
       count += 1;
     }
   }
+
+  const publicContractValidator = createSchemaValidator(path.join(repoRoot, "forge", "contracts"));
+  const publicContractErrors = publicContractValidator.validate(buildPublicContract(), "public-contract.schema.json");
+  if (publicContractErrors.length > 0) {
+    throw new Error(`public contract export failed public-contract.schema.json: ${publicContractErrors.slice(0, 3).join("; ")}`);
+  }
+  count += 1;
 
   return `files=${count}`;
 }
@@ -2793,6 +2801,7 @@ function walk(root) {
       entry.name === ".zig-cache" ||
       entry.name === ".build" ||
       entry.name === "build" ||
+      entry.name === "target" ||
       entry.name === "zig-out"
     ) {
       continue;

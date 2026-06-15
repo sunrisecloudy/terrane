@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/forge/contracts/public-contract.schema.json",
+  "title": "Terrane Forge Public Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "contractId",
+    "contractVersion",
+    "platformBaseline",
+    "runtimeVersion",
+    "license",
+    "provenance",
+    "generatedAppBoundary",
+    "bridge",
+    "sync",
+    "files",
+    "conformance"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "contractId": {
+      "type": "string",
+      "const": "terrane-public-contract"
+    },
+    "contractVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "platformBaseline": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtimeVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "license": {
+      "type": "string",
+      "const": "MIT"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceRepository",
+        "sourceCommit",
+        "releaseTag",
+        "generatedFrom",
+        "releaseManifestArtifactId"
+      ],
+      "properties": {
+        "sourceRepository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "releaseTag": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "generatedFrom": {
+          "type": "string",
+          "minLength": 1
+        },
+        "releaseManifestArtifactId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "generatedAppBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api",
+        "forbidden"
+      ],
+      "properties": {
+        "api": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "bridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "methods",
+        "notebookMethods",
+        "events"
+      ],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "notebookMethods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "syncableRecordKinds",
+        "nonSyncableRecordKinds",
+        "recordMappings",
+        "nonSyncableRecordMappings"
+      ],
+      "properties": {
+        "syncableRecordKinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "nonSyncableRecordKinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "recordMappings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/syncRecordMapping"
+          },
+          "minItems": 1
+        },
+        "nonSyncableRecordMappings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonSyncRecordMapping"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "docs",
+        "contracts",
+        "fixtures",
+        "tools"
+      ],
+      "properties": {
+        "docs": {
+          "$ref": "#/$defs/fileList"
+        },
+        "contracts": {
+          "$ref": "#/$defs/fileList"
+        },
+        "fixtures": {
+          "$ref": "#/$defs/fileList"
+        },
+        "tools": {
+          "$ref": "#/$defs/fileList"
+        }
+      }
+    },
+    "conformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceCheckoutRequired",
+        "commands"
+      ],
+      "properties": {
+        "sourceCheckoutRequired": {
+          "type": "boolean",
+          "const": true
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fileList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/file"
+      },
+      "minItems": 1
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventName",
+        "payload",
+        "when"
+      ],
+      "properties": {
+        "eventName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "when": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "syncRecordMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "localTables",
+        "privateAdapterResource"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "localTables": {
+          "$ref": "#/$defs/stringList"
+        },
+        "privateAdapterResource": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nonSyncRecordMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "localTables",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "localTables": {
+          "$ref": "#/$defs/stringList"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "stringList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  }
+}

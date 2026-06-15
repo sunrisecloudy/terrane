@@ -87,11 +87,13 @@ test("release packaging creates deterministic static artifact archives and manif
     const firstManifest = JSON.parse(fs.readFileSync(first.manifestPath, "utf8"));
     const firstRuntimeHash = firstManifest.artifacts.find((artifact) => artifact.id === "runtime-web").sha256;
     const firstExamplesHash = firstManifest.artifacts.find((artifact) => artifact.id === "example-webapps").sha256;
+    const firstPublicContractHash = firstManifest.artifacts.find((artifact) => artifact.id === "public-contract").sha256;
 
     const second = packageReleaseArtifacts({ outDir });
     const secondManifest = JSON.parse(fs.readFileSync(second.manifestPath, "utf8"));
     assert.equal(secondManifest.artifacts.find((artifact) => artifact.id === "runtime-web").sha256, firstRuntimeHash);
     assert.equal(secondManifest.artifacts.find((artifact) => artifact.id === "example-webapps").sha256, firstExamplesHash);
+    assert.equal(secondManifest.artifacts.find((artifact) => artifact.id === "public-contract").sha256, firstPublicContractHash);
 
     const runtimeEntries = listZipEntries(path.join(outDir, "runtime-web.zip"));
     assert.deepEqual(runtimeEntries, [...runtimeEntries].sort());
@@ -110,6 +112,14 @@ test("release packaging creates deterministic static artifact archives and manif
     assert.equal(fs.existsSync(path.join(outDir, "native-apps", "README.txt")), true);
 
     assert.equal(firstManifest.platformVersion, "0.1.0");
+    const publicContractArtifact = firstManifest.artifacts.find((artifact) => artifact.id === "public-contract");
+    assert.equal(publicContractArtifact.kind, "json");
+    assert.equal(publicContractArtifact.path, "public-contract.json");
+    assert.match(publicContractArtifact.sha256, /^[a-f0-9]{64}$/);
+    const publicContract = JSON.parse(fs.readFileSync(path.join(outDir, "public-contract.json"), "utf8"));
+    assert.equal(publicContract.contractId, "terrane-public-contract");
+    assert.equal(publicContract.files.contracts.some((file) => file.path === "forge/contracts/public-contract.schema.json"), true);
+    assert.equal(publicContract.files.docs.some((file) => file.path === "docs/35_PUBLIC_CONTRACT_EXPORT.md"), true);
     assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "zig-core-windows"), true);
     assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "server" && artifact.kind === "directory"), true);
     assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "native-apps"), true);
