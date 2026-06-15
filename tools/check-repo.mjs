@@ -974,10 +974,13 @@ function checkNativeStatic() {
       throw new Error(`macOS dev-control network mocks missing reference-host timeout parity: ${snippet}`);
     }
   }
-  for (const snippet of ["dlopen", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free"]) {
+  for (const snippet of ["dlopen", "dlsym", "forge_core_open", "forge_core_handle_command", "forge_string_free"]) {
     if (!macCoreShim.includes(snippet)) {
       throw new Error(`macOS C Forge core shim missing ${snippet}`);
     }
+  }
+  if (macCoreShim.includes("forge_core_open_in_memory")) {
+    throw new Error("macOS C Forge core shim must open a durable Forge workspace");
   }
   if (!macPackage.includes('.target(name: "CForgeCoreBridge")') || !macPackage.includes('"CForgeCoreBridge"')) {
     throw new Error("macOS package must include the C Forge core bridge target");
@@ -1445,10 +1448,13 @@ function checkNativeStatic() {
       throw new Error(`iOS core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["RTLD_DEFAULT", "dlopen", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free"]) {
+  for (const snippet of ["RTLD_DEFAULT", "dlopen", "dlsym", "forge_core_open", "forge_core_handle_command", "forge_string_free"]) {
     if (!iosCoreShim.includes(snippet)) {
       throw new Error(`iOS C Forge core shim missing ${snippet}`);
     }
+  }
+  if (iosCoreShim.includes("forge_core_open_in_memory")) {
+    throw new Error("iOS C Forge core shim must open a durable Forge workspace");
   }
   if (!iosPackage.includes('.target(name: "CForgeCoreBridge")') || !iosPackage.includes('dependencies: ["CForgeCoreBridge"]')) {
     throw new Error("iOS package must include the C Forge core bridge target");
@@ -1583,7 +1589,7 @@ function checkNativeStatic() {
   for (const snippet of [
     "LoadLibraryW",
     "GetProcAddress",
-    "forge_core_open_in_memory",
+    "forge_core_open",
     "forge_core_handle_command",
     "forge_string_free",
     "TERRANE_FORGE_FFI_DLL",
@@ -1598,6 +1604,9 @@ function checkNativeStatic() {
     if (!windowsCore.includes(snippet)) {
       throw new Error(`Windows Forge core bridge missing ${snippet}`);
     }
+  }
+  if (windowsCore.includes("forge_core_open_in_memory")) {
+    throw new Error("Windows Forge core bridge must open a durable Forge workspace");
   }
   for (const snippet of ["bool IsAvailable() const", "ForgeCoreHandleCommandFn", "ForgeStringFreeFn", "void StepAsync", "std::shared_ptr<CoreRuntime> runtime_"]) {
     if (!windowsCoreHeader.includes(snippet)) {
@@ -2006,7 +2015,7 @@ function checkNativeStatic() {
   for (const snippet of [
     "dlopen",
     "dlsym",
-    "forge_core_open_in_memory",
+    "forge_core_open",
     "forge_core_handle_command",
     "forge_string_free",
     "TERRANE_FORGE_FFI_SO",
@@ -2016,6 +2025,9 @@ function checkNativeStatic() {
     if (!linuxCore.includes(snippet)) {
       throw new Error(`Linux Forge core bridge missing ${snippet}`);
     }
+  }
+  if (linuxCore.includes("forge_core_open_in_memory")) {
+    throw new Error("Linux Forge core bridge must open a durable Forge workspace");
   }
   for (const snippet of ["libsoup-3.0", "find_library('dl'", "dl_dep"]) {
     if (!linuxMeson.includes(snippet)) {
@@ -2265,10 +2277,13 @@ function checkNativeStatic() {
       throw new Error(`Android Forge core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["dlopen(\"libforge_ffi.so\"", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free", "JNI_OnUnload"]) {
+  for (const snippet of ["dlopen(\"libforge_ffi.so\"", "dlsym", "forge_core_open", "forge_core_handle_command", "forge_string_free", "JNI_OnUnload"]) {
     if (!androidCoreJni.includes(snippet)) {
       throw new Error(`Android JNI Forge core bridge missing ${snippet}`);
     }
+  }
+  if (androidCoreJni.includes("forge_core_open_in_memory")) {
+    throw new Error("Android JNI Forge core bridge must open a durable Forge workspace");
   }
   for (const snippet of ["add_library(forge_core_jni SHARED forge_core_jni.cpp)", "target_link_libraries(forge_core_jni PRIVATE", "dl"]) {
     if (!androidCoreCmake.includes(snippet)) {
