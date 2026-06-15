@@ -24,3 +24,6 @@ forge-domain.workspace = true
 # honoring each scenario's pinned seeds via the `runtime.run` seed override
 # (review 032 finding 1) — no parallel pipeline/runtime/storage path. It needs
 # no extra dev-dependencies beyond the crate's own deps (forge-core/forge-domain).
+
+[dev-dependencies]
+forge-runtime.workspace = true

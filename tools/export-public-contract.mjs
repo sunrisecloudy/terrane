@@ -26,6 +26,7 @@ const PUBLIC_DOCS = [
   "prd-merged/DECISIONS.md",
   "forge/docs/applet-authoring-guide.md",
   "forge/docs/architecture-overview.md",
+  "forge/docs/example-applets.md",
   "forge/spec/commands.md",
   "forge/spec/conformance-vector-format.md",
   "forge/spec/cross-engine-conformance.md",

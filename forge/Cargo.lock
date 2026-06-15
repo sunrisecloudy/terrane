@@ -577,6 +577,7 @@ version = "0.1.0"
 dependencies = [
  "forge-core",
  "forge-domain",
+ "forge-runtime",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
