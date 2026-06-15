@@ -271,8 +271,6 @@ function checkCiWorkflow() {
   const workflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
   const releaseWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
   const required = [
-    "mlugg/setup-zig@v2",
-    "version: 0.15.2",
     "libsqlite3-dev",
     "working-directory: forge",
     "cargo test --workspace --locked",
@@ -342,7 +340,7 @@ function checkCiWorkflow() {
       throw new Error(`Release workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=native-jobs,sqlite=yes,core=forge-test-clippy-demo,server=forge-server-package,perf=target-enforced-smoke,release=static/forge-ffi/server/macos-native-dmg/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
+  return "node=24,native-core=forge-ffi,sqlite=yes,core=forge-test-clippy-demo,server=forge-server-package,perf=target-enforced-smoke,release=static/forge-ffi/server/macos-native-dmg/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
@@ -362,7 +360,7 @@ function checkReleasePackaging() {
     "buildMacOSNativeArtifacts",
     "createMacOSDmg",
     "buildLinuxNativeArtifacts",
-    "buildLinuxZigCoreSo",
+    "buildHostForgeFfiOutputs",
     "buildWindowsNativeArtifacts",
     "windowsWebView2SdkStatus",
     "--build-forge-ffi",
@@ -380,13 +378,14 @@ function checkReleasePackaging() {
     "libforge_ffi",
     "windows-x86_64",
     "terrane-server",
-    "TerraneHostMac.app",
+    "MACOS_HOST_BUNDLE_NAME",
     ".dmg",
     "hdiutil",
     "LINUX_HOST_EXECUTABLE_NAME",
     "LINUX_HOST_APP_DIR_NAME",
     "terrane-host",
-    "libzig_core.so",
+    "libforge_ffi.so",
+    "forge_ffi.dll",
     '"resources", "runtime"',
     '"resources", "webapps", "examples"',
     '"resources", "db", "sqlite"',
@@ -403,12 +402,12 @@ function checkReleasePackaging() {
   for (const snippet of [
     "tools/package-release.mjs --out artifacts --build-forge-ffi --build-server",
     "linux-x86_64/terrane-server",
-    "native-apps/macos/macos-arm64/TerraneHostMac.app",
+    "native-apps/macos/macos-arm64/terrane.app",
     "native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg",
     "tools/package-release.mjs --out artifacts --build-native-macos",
     "native-apps/linux/linux-x86_64/TerraneHost",
     "terrane-host",
-    "libzig_core.so",
+    "libforge_ffi.so",
     "resources/runtime/",
     "resources/webapps/examples/",
     "resources/db/sqlite/",
@@ -451,10 +450,10 @@ function checkReleasePackaging() {
     "dmg",
     "Terrane-",
     "terrane-host",
-    "libzig_core.so",
+    "libforge_ffi.so",
     "native-apps/linux/linux-x86_64/TerraneHost",
     "TerraneHost.exe",
-    "zig_core.dll",
+    "forge_ffi.dll",
     "resources/db/sqlite/001_initial.sql",
     "runtime-web/index.html",
     "webapps/examples/notes-lite/manifest.json",

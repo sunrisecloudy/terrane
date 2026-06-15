@@ -7,6 +7,7 @@ The first version should produce:
 - Forge FFI libraries for host/native targets.
 - Runtime web static assets.
 - Example webapp packages.
+- Public contract JSON for downstream private products.
 - Native host app builds.
 - Server executable.
 
@@ -20,6 +21,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run -p forge-cli -- demo
 node tools/validate-webapp-package/main.js webapps/examples/notes-lite
 node tools/package-examples/main.js
+node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json
+node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .
 ```
 
 Platform commands will vary by host OS.
@@ -34,6 +37,8 @@ Platform commands will vary by host OS.
 - Run malicious fixture rejection tests.
 - Run Forge workspace tests and clippy.
 - Run runtime JS unit tests.
+- Generate and validate the public contract export.
+- Verify public contract provenance and recorded file hashes.
 
 ### Stage 2: build
 
@@ -84,7 +89,7 @@ The release artifact packager is:
 node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the host-target Forge FFI library plus `forge_ffi.h` when `--build-forge-ffi` is passed, builds the host-native Forge server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the host-target Forge FFI library plus `forge_ffi.h` when `--build-forge-ffi` is passed, builds the host-native Forge server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libforge_ffi.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libforge_ffi.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `forge_ffi.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -96,28 +101,30 @@ artifacts/
     linux-x86_64/terrane-server
   runtime-web.zip
   example-webapps.zip
+  public-contract.json
   release-manifest.json
   native-apps/
-    macos/macos-arm64/TerraneHostMac.app/
+    macos/macos-arm64/terrane.app/
       Contents/Resources/runtime/
       Contents/Resources/webapps/examples/
       Contents/Resources/db/sqlite/
+      Contents/Frameworks/libforge_ffi.dylib
     macos/macos-arm64/Terrane-macos-arm64.dmg
     linux/linux-x86_64/TerraneHost/
       terrane-host
-      libzig_core.so
+      libforge_ffi.so
       resources/runtime/
       resources/webapps/examples/
       resources/db/sqlite/
     windows/windows-x86_64/TerraneHost/
       TerraneHost.exe
-      zig_core.dll
+      forge_ffi.dll
       resources/runtime/
       resources/webapps/examples/
       resources/db/sqlite/
 ```
 
-The macOS native app artifact path is `native-apps/macos/macos-arm64/TerraneHostMac.app` on Apple Silicon CI runners. The user-downloadable macOS release asset is `native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg`.
+The macOS native app artifact path is `native-apps/macos/macos-arm64/terrane.app` on Apple Silicon CI runners. The user-downloadable macOS release asset is `native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg`.
 
 The Linux native app artifact path is `native-apps/linux/linux-x86_64/TerraneHost` on the `ubuntu-24.04` release runner.
 
@@ -145,7 +152,7 @@ The `Release` workflow runs the same macOS packaging command for pushed `v*`
 tags or manual dispatch, uploads the DMG as a workflow artifact, and attaches
 `Terrane-*.dmg` plus `release-manifest.json` to the matching GitHub Release.
 
-The dedicated Linux native artifact job runs on `ubuntu-24.04` after installing GTK4, WebKitGTK, JSON-GLib, SQLite, libsoup, Meson, Ninja, pkg-config, and Zig:
+The dedicated Linux native artifact job runs on `ubuntu-24.04` after installing GTK4, WebKitGTK, JSON-GLib, SQLite, libsoup, Meson, Ninja, and pkg-config:
 
 ```text
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-linux
@@ -159,13 +166,15 @@ node --no-warnings tools/package-release.mjs --out artifacts --build-native-wind
 
 The Windows native smoke job also builds the release host and verifies that production/release builds reject `--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev` while writing a `native.production_guard` audit record.
 
-The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Zig toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition. It also builds the packaged Linux native artifact and launches it from outside the repo root without `TERRANE_ZIG_CORE_SO`, proving runtime resources, example apps, SQLite migrations, and `libzig_core.so` resolve relative to the executable:
+The Linux native smoke job runs through Docker so the WebKitGTK, GTK, SQLite, Meson, Ninja, Cargo toolchain, and SQLite CLI audit probe are all supplied by the checked-in container definition. It also builds the packaged Linux native artifact and launches it from outside the repo root without `TERRANE_FORGE_FFI_SO`, proving runtime resources, example apps, SQLite migrations, and `libforge_ffi.so` resolve relative to the executable:
 
 ```text
 node --no-warnings tools/run-linux-native-docker.mjs
 ```
 
 The default static packaging command without build flags still creates placeholder target directories for downstream jobs.
+
+`public-contract.json` is the machine-readable contract consumed by downstream private products such as Terrane Premium. It lists the public docs, schemas, fixtures, tools, generated-app boundary, bridge methods, syncable record kinds, and non-syncable local record kinds that define generated-app-visible behavior. Downstream products should pin this artifact or the matching release manifest hash before adapting private APIs.
 
 ## 6. Versioning
 
@@ -204,6 +213,7 @@ A future revision may add an OTA runtime patch channel for sideloaded builds. Un
 - All examples run in browser mock.
 - All platform shells tested at least manually.
 - Bridge contract fixtures pass.
+- Public contract export exists and its hash is recorded in `release-manifest.json`.
 - Security fixtures rejected.
 - Docs updated.
 - Acceptance checklist completed.

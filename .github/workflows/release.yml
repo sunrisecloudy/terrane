@@ -28,11 +28,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
       - name: Package macOS DMG
         run: node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
 
@@ -43,6 +38,7 @@ jobs:
           path: |
             artifacts/native-apps/macos/*/Terrane-*.dmg
             artifacts/release-manifest.json
+            artifacts/public-contract.json
 
       - name: Attach DMG to GitHub Release
         env:
@@ -51,4 +47,4 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Terrane $RELEASE_TAG"
-          gh release upload "$RELEASE_TAG" artifacts/native-apps/macos/*/Terrane-*.dmg artifacts/release-manifest.json --clobber
+          gh release upload "$RELEASE_TAG" artifacts/native-apps/macos/*/Terrane-*.dmg artifacts/release-manifest.json artifacts/public-contract.json --clobber

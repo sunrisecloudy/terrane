@@ -137,11 +137,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
       - name: Package macOS native release artifacts
         run: node --no-warnings tools/package-release.mjs --out artifacts --build-native-macos
 
@@ -165,11 +160,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
 
       - name: Install Linux native build dependencies
         run: |
@@ -209,11 +199,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
 
       - name: Install WebView2 SDK
         shell: pwsh
@@ -267,11 +252,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
       - name: macOS native launch smoke
         env:
           TERRANE_MACOS_SMOKE_LAUNCH: "1"
@@ -290,11 +270,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
 
       - name: iOS simulator launch smoke
         env:
@@ -329,11 +304,6 @@ jobs:
         with:
           gradle-version: 8.10.2
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
       - name: Android emulator launch smoke
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -355,11 +325,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
 
       - name: Install WebView2 SDK
         shell: pwsh

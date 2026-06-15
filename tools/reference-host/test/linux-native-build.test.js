@@ -2046,10 +2046,10 @@ test(
 
       const appDir = path.join(outDir, "native-apps", "linux", "linux-x86_64", "TerraneHost");
       const binaryPath = path.join(appDir, "terrane-host");
-      const packagedCorePath = path.join(appDir, "libzig_core.so");
+      const packagedCorePath = path.join(appDir, "libforge_ffi.so");
       for (const relativePath of [
         "terrane-host",
-        "libzig_core.so",
+        "libforge_ffi.so",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
         "resources/webapps/examples/notes-lite/manifest.json",

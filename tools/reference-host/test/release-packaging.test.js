@@ -6,9 +6,9 @@ import path from "node:path";
 import test from "node:test";
 import { listZipEntries, packageReleaseArtifacts, windowsWebView2SdkStatus } from "../../../tools/package-release.mjs";
 
-function hasZig() {
+function hasCargo() {
   try {
-    execFileSync("zig", ["version"], { stdio: "ignore" });
+    execFileSync("cargo", ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -30,6 +30,24 @@ function hasCmake() {
     return true;
   } catch {
     return false;
+  }
+}
+
+function hasHdiutilCreate() {
+  if (process.platform !== "darwin") return false;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-hdiutil-check-"));
+  try {
+    const root = path.join(scratch, "root");
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, "README.txt"), "hdiutil smoke\n");
+    execFileSync("hdiutil", ["create", "-volname", "TerraneCheck", "-srcfolder", root, "-ov", "-format", "UDZO", path.join(scratch, "check.dmg")], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -65,7 +83,7 @@ function linuxReleaseSkipReason() {
   if (process.arch !== "x64") return "Linux native release artifact currently requires an x64 Linux host";
   if (!hasMeson()) return "meson is not available";
   if (!hasNinja()) return "ninja is not available";
-  if (!hasZig()) return "zig is not available";
+  if (!hasCargo()) return "cargo is not available";
   if (!hasLinuxNativeDependencies()) return "GTK/WebKitGTK development dependencies are not available";
   return false;
 }
@@ -74,7 +92,7 @@ function windowsReleaseSkipReason() {
   if (process.platform !== "win32") return "Windows native release artifact only builds on Windows hosts";
   if (process.arch !== "x64") return "Windows native release artifact currently requires an x64 Windows host";
   if (!hasCmake()) return "cmake is not available";
-  if (!hasZig()) return "zig is not available";
+  if (!hasCargo()) return "cargo is not available";
 
   const sdkStatus = windowsWebView2SdkStatus();
   return sdkStatus.ok ? false : sdkStatus.message;
@@ -163,9 +181,11 @@ test(
       ? "macOS native release artifact only builds on Darwin hosts"
       : !hasSwift()
         ? "swift is not available"
-        : !hasZig()
-          ? "zig is not available"
-          : false,
+        : !hasCargo()
+          ? "cargo is not available"
+          : !hasHdiutilCreate()
+            ? "hdiutil create is not available"
+            : false,
     timeout: 120_000,
   },
   () => {
@@ -182,15 +202,20 @@ test(
       assert.match(nativeArtifact.target, /^macos-(arm64|x86_64)$/);
       for (const relativePath of [
         "Contents/MacOS/TerraneHostMac",
+        "Contents/Info.plist",
         "Contents/Resources/runtime/index.html",
         "Contents/Resources/webapps/examples/notes-lite/manifest.json",
         "Contents/Resources/db/sqlite/001_initial.sql",
-        "Contents/Frameworks/libzig_core.dylib",
+        "Contents/Frameworks/libforge_ffi.dylib",
       ]) {
         const manifestPath = path.join(nativeArtifact.path, relativePath).split(path.sep).join("/");
         assert.equal(nativeArtifact.files.some((file) => file.path === manifestPath && file.sha256.length === 64), true);
         assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
       }
+      assert.equal(nativeArtifact.path, `native-apps/macos/${nativeArtifact.target}/terrane.app`);
+      const infoPlist = fs.readFileSync(path.join(outDir, nativeArtifact.path, "Contents", "Info.plist"), "utf8");
+      assert.match(infoPlist, /<key>CFBundleName<\/key><string>terrane<\/string>/);
+      assert.match(infoPlist, /<key>CFBundleDisplayName<\/key><string>terrane<\/string>/);
 
       const [dmgArtifact] = dmgArtifacts;
       assert.equal(dmgArtifact.id, `native-macos-${nativeArtifact.target}-dmg`);
@@ -226,7 +251,7 @@ test(
       assert.equal(nativeArtifact.path, "native-apps/linux/linux-x86_64/TerraneHost");
       for (const relativePath of [
         "terrane-host",
-        "libzig_core.so",
+        "libforge_ffi.so",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
         "resources/webapps/examples/notes-lite/manifest.json",
@@ -241,7 +266,7 @@ test(
         assert.equal(fs.existsSync(path.join(outDir, manifestPath)), true);
       }
 
-      for (const relativePath of ["terrane-host", "libzig_core.so"]) {
+      for (const relativePath of ["terrane-host", "libforge_ffi.so"]) {
         assert.notEqual(fs.statSync(path.join(outDir, nativeArtifact.path, relativePath)).mode & 0o111, 0);
       }
     } finally {
@@ -269,7 +294,7 @@ test(
       assert.equal(nativeArtifact.path, "native-apps/windows/windows-x86_64/TerraneHost");
       for (const relativePath of [
         "TerraneHost.exe",
-        "zig_core.dll",
+        "forge_ffi.dll",
         "resources/runtime/index.html",
         "resources/webapps/examples/notes-lite/manifest.json",
         "resources/db/sqlite/001_initial.sql",

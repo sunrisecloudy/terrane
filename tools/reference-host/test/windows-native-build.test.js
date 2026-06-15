@@ -39,7 +39,7 @@ function windowsPackagedNativeSmokeSkipReason() {
   if (process.platform !== "win32") return "Windows packaged native smoke only runs on Windows hosts";
   if (process.arch !== "x64") return "Windows packaged native smoke requires an x64 Windows host";
   if (!commandWorks("cmake")) return "cmake is not available";
-  if (!commandWorks("zig", ["version"])) return "zig is not available";
+  if (!commandWorks("cargo", ["--version"])) return "cargo is not available";
   const webview2 = windowsWebView2SdkStatus();
   return webview2.ok ? false : webview2.message;
 }
@@ -150,10 +150,10 @@ test(
 
       const appDir = path.join(outDir, "native-apps", "windows", "windows-x86_64", "TerraneHost");
       const binaryPath = path.join(appDir, "TerraneHost.exe");
-      const packagedCorePath = path.join(appDir, "zig_core.dll");
+      const packagedCorePath = path.join(appDir, "forge_ffi.dll");
       for (const relativePath of [
         "TerraneHost.exe",
-        "zig_core.dll",
+        "forge_ffi.dll",
         "resources/runtime/index.html",
         "resources/runtime/runtime.js",
         "resources/webapps/examples/notes-lite/manifest.json",

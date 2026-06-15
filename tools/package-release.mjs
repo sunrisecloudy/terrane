@@ -15,7 +15,8 @@ const PLATFORM_VERSION = "0.1.0";
 const FORGE_FFI_TARGETS = ["ios", "macos", "android", "windows", "linux"];
 const SERVER_EXECUTABLE_NAME = process.platform === "win32" ? "terrane-server.exe" : "terrane-server";
 const MACOS_HOST_EXECUTABLE_NAME = "TerraneHostMac";
-const MACOS_HOST_BUNDLE_NAME = "TerraneHostMac.app";
+const MACOS_HOST_APP_NAME = "terrane";
+const MACOS_HOST_BUNDLE_NAME = `${MACOS_HOST_APP_NAME}.app`;
 const MACOS_DMG_VOLUME_NAME = "Terrane";
 const LINUX_HOST_EXECUTABLE_NAME = "terrane-host";
 const LINUX_HOST_APP_DIR_NAME = "TerraneHost";
@@ -127,25 +128,12 @@ export function buildForgeFfiArtifacts({ outDir = path.join(repoRoot, "artifacts
   const artifactDir = path.join(resolvedOutDir, "forge-ffi", target.platform, target.id);
 
   fs.mkdirSync(artifactDir, { recursive: true });
-  execFileSync("cargo", ["build", "-p", "forge-ffi", "--release", "--locked"], {
-    cwd: forgeDir,
-    stdio: "ignore",
-  });
   fs.copyFileSync(headerPath, path.join(artifactDir, "forge_ffi.h"));
-  const buildOutputDir = path.join(forgeDir, "target", "release");
-  for (const fileName of target.outputs) {
-    const sourcePath = path.join(buildOutputDir, fileName);
-    if (fs.existsSync(sourcePath)) {
-      fs.copyFileSync(sourcePath, path.join(artifactDir, fileName));
-    }
-  }
+  const { outputs } = buildHostForgeFfiOutputs({ artifactDir });
 
-  const files = ["forge_ffi.h", ...target.outputs.filter((fileName) => fs.existsSync(path.join(artifactDir, fileName)))].map((fileName) =>
+  const files = ["forge_ffi.h", ...outputs].map((fileName) =>
     describeFile(path.join(artifactDir, fileName), path.join("forge-ffi", target.platform, target.id, fileName)),
   );
-  if (files.length < 2) {
-    throw new Error(`Forge FFI build did not produce any host library outputs in ${buildOutputDir}`);
-  }
 
   return [
     {
@@ -208,8 +196,6 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
     MACOSX_DEPLOYMENT_TARGET: "13.0",
     SWIFT_MODULE_CACHE_PATH: moduleCachePath,
     SWIFTPM_MODULECACHE_OVERRIDE: moduleCachePath,
-    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
-    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
   };
 
   try {
@@ -259,7 +245,7 @@ export function buildMacOSNativeArtifacts({ outDir = path.join(repoRoot, "artifa
     fs.cpSync(path.join(repoRoot, "webapps", "examples"), path.join(resourcesDir, "webapps", "examples"), { recursive: true });
     fs.mkdirSync(path.join(resourcesDir, "db"), { recursive: true });
     fs.cpSync(path.join(repoRoot, "db", "sqlite"), path.join(resourcesDir, "db", "sqlite"), { recursive: true });
-    buildMacOSZigCoreDylib({ outputPath: path.join(frameworksDir, "libzig_core.dylib"), env });
+    buildHostForgeFfiOutputs({ artifactDir: frameworksDir, env, cargoTargetDir: path.join(cacheRoot, "cargo-target") });
 
     const dmgFileName = `Terrane-${targetId}.dmg`;
     const dmgPath = path.join(artifactDir, dmgFileName);
@@ -298,7 +284,7 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
     throw new Error("--build-native-windows currently produces windows-x86_64 artifacts and requires an x64 host");
   }
   requireCommand("cmake", ["--version"], "--build-native-windows requires CMake on PATH");
-  requireCommand("zig", ["version"], "--build-native-windows requires Zig on PATH");
+  requireCommand("cargo", ["--version"], "--build-native-windows requires Cargo on PATH");
   requireWindowsWebView2Sdk();
 
   const resolvedOutDir = path.resolve(outDir);
@@ -307,16 +293,16 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
   const artifactDir = path.join(resolvedOutDir, "native-apps", "windows", targetId, WINDOWS_HOST_APP_DIR_NAME);
   const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-windows-release-cache-"));
   const buildDir = path.join(cacheRoot, "cmake-build");
-  const zigCoreDll = path.join(cacheRoot, "zig_core.dll");
-  const env = {
-    ...process.env,
-    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
-    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
-  };
+  const forgeFfiDir = path.join(cacheRoot, "forge-ffi");
+  const env = { ...process.env };
 
   try {
-    buildWindowsZigCoreDll({ outputPath: zigCoreDll, env });
-    execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, "-DCMAKE_BUILD_TYPE=Release"], {
+    buildHostForgeFfiOutputs({ artifactDir: forgeFfiDir, env, cargoTargetDir: path.join(cacheRoot, "cargo-target") });
+    const forgeFfiDll = path.join(forgeFfiDir, "forge_ffi.dll");
+    if (!fs.existsSync(forgeFfiDll)) {
+      throw new Error("Forge FFI build did not produce forge_ffi.dll for Windows packaging");
+    }
+    execFileSync("cmake", ["-S", windowsDir, "-B", buildDir, "-DCMAKE_BUILD_TYPE=Release", `-DTERRANE_FORGE_FFI_DLL=${forgeFfiDll}`], {
       env,
       stdio: "ignore",
     });
@@ -340,12 +326,15 @@ export function buildWindowsNativeArtifacts({ outDir = path.join(repoRoot, "arti
     if (!fs.existsSync(path.join(builtResourcesDir, "db", "sqlite", "001_initial.sql"))) {
       throw new Error("Windows host Release build did not stage resources/db/sqlite/001_initial.sql");
     }
+    if (!fs.existsSync(path.join(builtAppDir, "forge_ffi.dll"))) {
+      throw new Error("Windows host Release build did not stage forge_ffi.dll");
+    }
 
     fs.rmSync(artifactDir, { recursive: true, force: true });
     fs.mkdirSync(artifactDir, { recursive: true });
     fs.copyFileSync(builtExecutable, path.join(artifactDir, WINDOWS_HOST_EXECUTABLE_NAME));
     fs.cpSync(builtResourcesDir, path.join(artifactDir, "resources"), { recursive: true });
-    fs.copyFileSync(zigCoreDll, path.join(artifactDir, "zig_core.dll"));
+    fs.copyFileSync(path.join(builtAppDir, "forge_ffi.dll"), path.join(artifactDir, "forge_ffi.dll"));
 
     return [
       {
@@ -371,7 +360,7 @@ export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifa
   requireCommand("meson", ["--version"], "--build-native-linux requires Meson on PATH");
   requireCommand("ninja", ["--version"], "--build-native-linux requires Ninja on PATH");
   requireCommand("pkg-config", ["--exists", "gtk4", "webkitgtk-6.0", "json-glib-1.0", "sqlite3", "libsoup-3.0"], "--build-native-linux requires GTK4, WebKitGTK 6.0, JSON-GLib, SQLite, and libsoup development packages");
-  requireCommand("zig", ["version"], "--build-native-linux requires Zig on PATH");
+  requireCommand("cargo", ["--version"], "--build-native-linux requires Cargo on PATH");
 
   const resolvedOutDir = path.resolve(outDir);
   const targetId = "linux-x86_64";
@@ -379,15 +368,9 @@ export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifa
   const artifactDir = path.join(resolvedOutDir, "native-apps", "linux", targetId, LINUX_HOST_APP_DIR_NAME);
   const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-release-cache-"));
   const buildDir = path.join(cacheRoot, "meson-build");
-  const zigCoreSo = path.join(cacheRoot, "libzig_core.so");
-  const env = {
-    ...process.env,
-    ZIG_GLOBAL_CACHE_DIR: path.join(cacheRoot, "zig-global"),
-    ZIG_LOCAL_CACHE_DIR: path.join(cacheRoot, "zig-local"),
-  };
+  const env = { ...process.env };
 
   try {
-    buildLinuxZigCoreSo({ outputPath: zigCoreSo, env });
     execFileSync("meson", ["setup", "--buildtype=release", buildDir, linuxDir], {
       env,
       stdio: "ignore",
@@ -406,8 +389,7 @@ export function buildLinuxNativeArtifacts({ outDir = path.join(repoRoot, "artifa
     fs.mkdirSync(artifactDir, { recursive: true });
     fs.copyFileSync(builtExecutable, path.join(artifactDir, LINUX_HOST_EXECUTABLE_NAME));
     fs.chmodSync(path.join(artifactDir, LINUX_HOST_EXECUTABLE_NAME), 0o755);
-    fs.copyFileSync(zigCoreSo, path.join(artifactDir, "libzig_core.so"));
-    fs.chmodSync(path.join(artifactDir, "libzig_core.so"), 0o755);
+    buildHostForgeFfiOutputs({ artifactDir, env, cargoTargetDir: path.join(cacheRoot, "cargo-target") });
     fs.mkdirSync(path.join(artifactDir, "resources"), { recursive: true });
     fs.cpSync(path.join(repoRoot, "runtime-web"), path.join(artifactDir, "resources", "runtime"), { recursive: true });
     fs.mkdirSync(path.join(artifactDir, "resources", "webapps"), { recursive: true });
@@ -464,77 +446,36 @@ function requireWindowsWebView2Sdk() {
   }
 }
 
-function buildMacOSZigCoreDylib({ outputPath, env }) {
-  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  execFileSync(
-    "zig",
-    [
-      "build-lib",
-      "src/lib.zig",
-      "--name",
-      "zig_core",
-      "-dynamic",
-      "-target",
-      `${arch}-macos.15.0.0`,
-      "-lc",
-      `-femit-bin=${outputPath}`,
-    ],
-    {
-      cwd: path.join(repoRoot, "zig-core"),
-      env,
-      stdio: "ignore",
-    },
-  );
-  fs.chmodSync(outputPath, 0o755);
-}
+function buildHostForgeFfiOutputs({ artifactDir, env = process.env, cargoTargetDir } = {}) {
+  const forgeDir = path.join(repoRoot, "forge");
+  const target = hostForgeFfiTarget();
+  const cargoEnv = cargoTargetDir ? { ...env, CARGO_TARGET_DIR: cargoTargetDir } : env;
 
-function buildWindowsZigCoreDll({ outputPath, env }) {
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  execFileSync(
-    "zig",
-    [
-      "build-lib",
-      "src/lib.zig",
-      "--name",
-      "zig_core",
-      "-dynamic",
-      "-target",
-      "x86_64-windows-gnu",
-      "-lc",
-      `-femit-bin=${outputPath}`,
-    ],
-    {
-      cwd: path.join(repoRoot, "zig-core"),
-      env,
-      stdio: "ignore",
-    },
-  );
-}
+  fs.mkdirSync(artifactDir, { recursive: true });
+  execFileSync("cargo", ["build", "-p", "forge-ffi", "--release", "--locked"], {
+    cwd: forgeDir,
+    env: cargoEnv,
+    stdio: "ignore",
+  });
 
-function buildLinuxZigCoreSo({ outputPath, env }) {
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  execFileSync(
-    "zig",
-    [
-      "build-lib",
-      "src/lib.zig",
-      "--name",
-      "zig_core",
-      "-dynamic",
-      "-target",
-      "x86_64-linux-gnu",
-      "-lc",
-      "-fsoname=libzig_core.so",
-      `-femit-bin=${outputPath}`,
-    ],
-    {
-      cwd: path.join(repoRoot, "zig-core"),
-      env,
-      stdio: "ignore",
-    },
-  );
-  fs.chmodSync(outputPath, 0o755);
+  const buildOutputDir = path.join(cargoTargetDir ?? path.join(forgeDir, "target"), "release");
+  const outputs = [];
+  for (const fileName of target.outputs) {
+    const sourcePath = path.join(buildOutputDir, fileName);
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+    const outputPath = path.join(artifactDir, fileName);
+    fs.copyFileSync(sourcePath, outputPath);
+    if (process.platform !== "win32" && !fileName.endsWith(".a")) {
+      fs.chmodSync(outputPath, 0o755);
+    }
+    outputs.push(fileName);
+  }
+  if (outputs.length === 0) {
+    throw new Error(`Forge FFI build did not produce any host library outputs in ${buildOutputDir}`);
+  }
+  return { target, outputs };
 }
 
 function createMacOSDmg({ appBundleDir, outputPath, volumeName }) {
@@ -588,8 +529,8 @@ function macOSInfoPlist() {
   <key>CFBundleExecutable</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
   <key>CFBundleIdentifier</key><string>dev.terrane.host.macos</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>${MACOS_HOST_EXECUTABLE_NAME}</string>
-  <key>CFBundleDisplayName</key><string>Terrane</string>
+  <key>CFBundleName</key><string>${MACOS_HOST_APP_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${MACOS_HOST_APP_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${PLATFORM_VERSION}</string>
   <key>CFBundleVersion</key><string>1</string>
