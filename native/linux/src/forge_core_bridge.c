@@ -2,7 +2,7 @@
 
 #include <dlfcn.h>
 
-typedef void *(*ForgeCoreOpenInMemoryFn)(const char *workspace_id);
+typedef void *(*ForgeCoreOpenFn)(const char *path, const char *workspace_id);
 typedef char *(*ForgeCoreHandleCommandFn)(void *core, const char *command_json);
 typedef char *(*ForgeCoreDrainEventsFn)(void *core);
 typedef char *(*ForgeCoreLastErrorFn)(void);
@@ -11,6 +11,7 @@ typedef void (*ForgeStringFreeFn)(char *value);
 
 static gchar **candidate_library_paths(void);
 static gchar *executable_dir(void);
+static gchar *forge_database_path(void);
 static gboolean load_library(ForgeCoreBridge *core, const gchar *path);
 static JsonNode *core_payload_for_request(const BridgeRequest *request);
 static JsonNode *core_command_for_request(const BridgeRequest *request);
@@ -118,19 +119,25 @@ static gchar *executable_dir(void) {
   return g_get_current_dir();
 }
 
+static gchar *forge_database_path(void) {
+  g_autofree gchar *data_dir = g_build_filename(g_get_user_data_dir(), "Terrane", NULL);
+  g_mkdir_with_parents(data_dir, 0700);
+  return g_build_filename(data_dir, "forge-workspace.sqlite", NULL);
+}
+
 static gboolean load_library(ForgeCoreBridge *core, const gchar *path) {
   void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (handle == NULL) {
     return FALSE;
   }
 
-  ForgeCoreOpenInMemoryFn open_in_memory = (ForgeCoreOpenInMemoryFn)dlsym(handle, "forge_core_open_in_memory");
+  ForgeCoreOpenFn open_core = (ForgeCoreOpenFn)dlsym(handle, "forge_core_open");
   ForgeCoreHandleCommandFn handle_command = (ForgeCoreHandleCommandFn)dlsym(handle, "forge_core_handle_command");
   ForgeCoreDrainEventsFn drain_events = (ForgeCoreDrainEventsFn)dlsym(handle, "forge_core_drain_events");
   ForgeCoreLastErrorFn last_error = (ForgeCoreLastErrorFn)dlsym(handle, "forge_core_last_error");
   ForgeCoreCloseFn close_core = (ForgeCoreCloseFn)dlsym(handle, "forge_core_close");
   ForgeStringFreeFn free_string = (ForgeStringFreeFn)dlsym(handle, "forge_string_free");
-  if (open_in_memory == NULL ||
+  if (open_core == NULL ||
       handle_command == NULL ||
       drain_events == NULL ||
       last_error == NULL ||
@@ -140,7 +147,8 @@ static gboolean load_library(ForgeCoreBridge *core, const gchar *path) {
     return FALSE;
   }
 
-  void *forge_core = open_in_memory("linux-native");
+  g_autofree gchar *database_path = forge_database_path();
+  void *forge_core = open_core(database_path, "linux-native");
   if (forge_core == NULL) {
     gchar *error = last_error();
     if (error != NULL) {
