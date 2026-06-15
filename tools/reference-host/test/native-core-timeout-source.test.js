@@ -17,7 +17,7 @@ test("macOS core.step enforces timeout without blocking the WebView reply path",
   assert.match(macosCore, /stepTimeoutMilliseconds: Int = 2_000/);
   assert.match(macosCore, /DispatchQueue\.global\(qos: \.userInitiated\)\.asyncAfter\(deadline: \.now\(\) \+ \.milliseconds\(stepTimeoutMilliseconds\)\)/);
   assert.match(macosCore, /terrane_forge_core_handle_command/);
-  assert.match(macosCore, /"name": "legacy\.core_step"/);
+  assert.match(macosCore, /name: "legacy\.core_step"/);
   assert.match(macosCore, /code: "timeout"/);
   assert.match(macosCore, /"timeoutMs": stepTimeoutMilliseconds/);
   assert.match(macosTests, /coreStepReturnsTimeoutWhenForgeCoreExceedsHostTimeout/);

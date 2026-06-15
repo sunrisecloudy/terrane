@@ -150,6 +150,25 @@ final class ForgeCoreBridge: @unchecked Sendable {
         }
     }
 
+    func smokeSyncExport() -> Bool {
+        guard let library else {
+            return false
+        }
+        do {
+            let result = try library.handle(command: commandEnvelope(
+                requestId: "macos-sync-smoke",
+                name: "sync.export",
+                payload: [:]
+            ))
+            guard let object = result as? [String: Any] else {
+                return false
+            }
+            return object["packet"] is [String: Any]
+        } catch {
+            return false
+        }
+    }
+
     private func stepWithoutTimeout(_ request: BridgeRequest) -> BridgeResponse {
         guard library != nil || testStep != nil else {
             return .failure(
@@ -215,17 +234,24 @@ final class ForgeCoreBridge: @unchecked Sendable {
     }
 
     private func coreCommand(request: BridgeRequest, payload: [String: Any]) -> [String: Any] {
+        commandEnvelope(
+            requestId: request.id ?? "macos-core-step",
+            name: "legacy.core_step",
+            payload: payload
+        )
+    }
+
+    private func commandEnvelope(requestId: String, name: String, payload: [String: Any]) -> [String: Any] {
         [
-            "request_id": request.id ?? "macos-core-step",
+            "request_id": requestId,
             "actor": [
                 "actor": "macos-host",
                 "role": "owner",
             ],
             "workspace_id": workspaceId,
-            "applet_id": nil as Any?,
-            "name": "legacy.core_step",
+            "name": name,
             "payload": payload,
-        ].compactMapValues { $0 }
+        ]
     }
 
     private func timeoutResponse(id: String?) -> BridgeResponse {

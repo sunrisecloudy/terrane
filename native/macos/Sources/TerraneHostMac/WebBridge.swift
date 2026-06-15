@@ -9,7 +9,6 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let notifications = PlatformNotifications()
     private let network = PlatformNetwork()
     private let core = ForgeCoreBridge()
-    private let crdt = ZigCrdtBridge()
     private var nativeDevMode: Bool {
 #if DEBUG
         true
@@ -170,7 +169,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
                     "notification.toast": true,
                     "network.request": true,
                     "core.step": core.isAvailable,
-                    "notebook.crdt": crdt.smokeMaterialize(),
+                    "notebook.crdt": core.smokeSyncExport(),
                     "runtime.capabilities": true,
                     "app.log": true
                 ],

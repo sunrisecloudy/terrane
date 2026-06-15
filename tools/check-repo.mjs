@@ -1054,7 +1054,8 @@ function checkNativeStatic() {
     "RuntimeResourceLocator.repoRootURL()",
     "terrane_forge_core_handle_command",
     "terrane_forge_core_free_string",
-    '"name": "legacy.core_step"',
+    '"legacy.core_step"',
+    '"sync.export"',
     "core.step app field does not match the channel-derived app id",
     "platform_unsupported",
   ]) {
@@ -1075,8 +1076,8 @@ function checkNativeStatic() {
   if (!macPackage.includes('.target(name: "CForgeCoreBridge")') || !macPackage.includes('"CForgeCoreBridge"')) {
     throw new Error("macOS package must include the C Forge core bridge target");
   }
-  if (!macPackage.includes('.target(name: "CZigCrdtBridge")') || !macPackage.includes('"CZigCrdtBridge"')) {
-    throw new Error("macOS package must include the C Zig CRDT bridge target");
+  if (macPackage.includes("CZigCrdtBridge")) {
+    throw new Error("macOS package must route CRDT/sync through Forge core, not CZigCrdtBridge");
   }
   const forbiddenAppLogPermissionChecks = [
     [macBridge, '"network.request", "core.step", "app.log"'],
@@ -2348,7 +2349,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=forge-ffi storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {
