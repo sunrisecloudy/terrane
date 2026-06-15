@@ -1900,8 +1900,8 @@ static JsonObject *core_replay_params_for_event(JsonNode *event_node) {
 }
 
 static gchar *runtime_replay_events_json(const gchar *app_id, JsonArray *events) {
-  ZigCoreBridge replay_core = {0};
-  zig_core_bridge_init(&replay_core);
+  ForgeCoreBridge replay_core = {0};
+  forge_core_bridge_init(&replay_core);
 
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -1926,7 +1926,7 @@ static gchar *runtime_replay_events_json(const gchar *app_id, JsonArray *events)
     g_hash_table_add(request.context.approved_permissions, g_strdup("core.step"));
     request.context.mount_token = g_strdup("linux-control-replay");
 
-    JsonNode *response = zig_core_bridge_step(&replay_core, &request);
+    JsonNode *response = forge_core_bridge_step(&replay_core, &request);
     JsonObject *response_object = response != NULL && JSON_NODE_HOLDS_OBJECT(response) ? json_node_get_object(response) : NULL;
 
     json_builder_begin_object(builder);
@@ -1972,7 +1972,7 @@ static gchar *runtime_replay_events_json(const gchar *app_id, JsonArray *events)
   json_builder_end_object(builder);
   gchar *text = json_builder_to_text(builder);
   g_object_unref(builder);
-  zig_core_bridge_clear(&replay_core);
+  forge_core_bridge_clear(&replay_core);
   return text;
 }
 

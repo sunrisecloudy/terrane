@@ -10,6 +10,7 @@ import { packageReleaseArtifacts } from "../../../tools/package-release.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const linuxDir = path.join(repoRoot, "native", "linux");
+const forgeDir = path.join(repoRoot, "forge");
 
 function commandWorks(command, args = ["--version"]) {
   try {
@@ -40,58 +41,50 @@ function hasLinuxNativeDependencies() {
   ]);
 }
 
-function linuxNativeSkipReason({ requireZig = false, requireSqliteCli = false } = {}) {
+function linuxNativeSkipReason({ requireCargo = false, requireSqliteCli = false } = {}) {
   if (process.platform !== "linux") return "Linux native smoke only runs on Linux hosts";
   if (!commandWorks("meson")) return "meson is not available";
   if (!commandWorks("ninja")) return "ninja is not available";
-  if (requireZig && !commandWorks("zig", ["version"])) return "zig is not available";
+  if (requireCargo && !commandWorks("cargo", ["--version"])) return "cargo is not available";
   if (requireSqliteCli && !commandWorks("sqlite3", ["-version"])) return "sqlite3 CLI is not available";
   if (!hasLinuxNativeDependencies()) return "GTK/WebKitGTK development dependencies are not available";
   return false;
 }
 
 function linuxPackagedNativeSmokeSkipReason() {
-  const baseReason = linuxNativeSkipReason({ requireZig: true });
+  const baseReason = linuxNativeSkipReason({ requireCargo: true });
   if (baseReason) return baseReason;
   if (process.env.TERRANE_LINUX_SMOKE_LAUNCH !== "1") {
     return "set TERRANE_LINUX_SMOKE_LAUNCH=1 to run packaged Linux native launch smoke";
   }
-  return false;
+  return "packaged Linux release smoke waits for the Phase 2.6 Forge packaging cutover";
+}
+
+function buildLinuxForgeFfi(scratch) {
+  const targetDir = path.join(scratch, "forge-target");
+  execFileSync("cargo", ["build", "-p", "forge-ffi", "--locked"], {
+    cwd: forgeDir,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: targetDir,
+    },
+    stdio: "ignore",
+  });
+  const forgeFfiSo = path.join(targetDir, "debug", "libforge_ffi.so");
+  assert.equal(fs.existsSync(forgeFfiSo), true);
+  return forgeFfiSo;
 }
 
 test(
   "Linux GTK/WebKitGTK host builds and optionally runs native smoke",
   {
-    skip: linuxNativeSkipReason({ requireZig: true }),
+    skip: linuxNativeSkipReason({ requireCargo: true }),
     timeout: 180_000,
   },
   () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-smoke-"));
     try {
-      const zigCoreSo = path.join(scratch, "libzig_core.so");
-      execFileSync(
-        "zig",
-        [
-          "build-lib",
-          "src/lib.zig",
-          "--name",
-          "zig_core",
-          "-dynamic",
-          "-lc",
-          "-fsoname=libzig_core.so",
-          `-femit-bin=${zigCoreSo}`,
-        ],
-        {
-          cwd: path.join(repoRoot, "zig-core"),
-          env: {
-            ...process.env,
-            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
-            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
-          },
-          stdio: "ignore",
-        },
-      );
-      assert.equal(fs.existsSync(zigCoreSo), true);
+      const forgeFfiSo = buildLinuxForgeFfi(scratch);
 
       const buildDir = path.join(scratch, "build");
       execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
@@ -99,7 +92,7 @@ test(
       const binaryPath = path.join(buildDir, "terrane-host");
       assert.equal(fs.existsSync(binaryPath), true);
 
-      runOptionalSmoke({ binaryPath, scratch, zigCoreSo });
+      runOptionalSmoke({ binaryPath, scratch, forgeFfiSo });
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }
@@ -151,37 +144,14 @@ test(
 test(
   "Linux debug dev control health is token-gated and audited",
   {
-    skip: linuxNativeSkipReason({ requireSqliteCli: true, requireZig: true }),
+    skip: linuxNativeSkipReason({ requireSqliteCli: true, requireCargo: true }),
     timeout: 180_000,
   },
   async () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-linux-dev-control-"));
     let child = null;
     try {
-      const zigCoreSo = path.join(scratch, "libzig_core.so");
-      execFileSync(
-        "zig",
-        [
-          "build-lib",
-          "src/lib.zig",
-          "--name",
-          "zig_core",
-          "-dynamic",
-          "-lc",
-          "-fsoname=libzig_core.so",
-          `-femit-bin=${zigCoreSo}`,
-        ],
-        {
-          cwd: path.join(repoRoot, "zig-core"),
-          env: {
-            ...process.env,
-            ZIG_GLOBAL_CACHE_DIR: path.join(scratch, "zig-global-cache"),
-            ZIG_LOCAL_CACHE_DIR: path.join(scratch, "zig-local-cache"),
-          },
-          stdio: "ignore",
-        },
-      );
-      assert.equal(fs.existsSync(zigCoreSo), true);
+      const forgeFfiSo = buildLinuxForgeFfi(scratch);
 
       const buildDir = path.join(scratch, "debug-build");
       execFileSync("meson", ["setup", buildDir, linuxDir], { stdio: "ignore" });
@@ -196,7 +166,7 @@ test(
         ...process.env,
         XDG_DATA_HOME: xdgDataHome,
         XDG_RUNTIME_DIR: xdgRuntimeDir,
-        TERRANE_ZIG_CORE_SO: zigCoreSo,
+        TERRANE_FORGE_FFI_SO: forgeFfiSo,
       });
       const ready = await waitForControlReady(child);
       assert.equal(ready.tokenPath, path.join(xdgRuntimeDir, "terrane", "control.token"));
@@ -2098,13 +2068,13 @@ test(
   },
 );
 
-function runOptionalSmoke({ binaryPath, scratch, zigCoreSo }) {
+function runOptionalSmoke({ binaryPath, scratch, forgeFfiSo }) {
   if (process.env.TERRANE_LINUX_SMOKE_LAUNCH !== "1") return;
   const storageKey = `notes-lite:linux-smoke-${process.pid}-${Date.now()}`;
   const storageValue = `linux-smoke-${process.pid}-${Date.now()}`;
   const baseEnv = {
     ...process.env,
-    TERRANE_ZIG_CORE_SO: zigCoreSo,
+    TERRANE_FORGE_FFI_SO: forgeFfiSo,
     TERRANE_LINUX_SMOKE_EXIT_AFTER: "1",
     XDG_DATA_HOME: path.join(scratch, "xdg-data"),
   };
@@ -2162,7 +2132,7 @@ function runPackagedArtifactSmoke({ binaryPath, scratch, appDir }) {
   const storageValue = `linux-packaged-smoke-${process.pid}-${Date.now()}`;
   const outsideRepoCwd = path.join(scratch, "outside-repo-cwd");
   fs.mkdirSync(outsideRepoCwd, { recursive: true });
-  const { TERRANE_ZIG_CORE_SO: _ignoredZigCoreSo, ...smokeEnv } = process.env;
+  const { TERRANE_FORGE_FFI_SO: _ignoredForgeFfiSo, ...smokeEnv } = process.env;
   const baseEnv = {
     ...smokeEnv,
     TERRANE_LINUX_SMOKE_EXIT_AFTER: "1",

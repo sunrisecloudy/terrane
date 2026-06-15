@@ -9,7 +9,7 @@ meson.build
 src/main.c
 src/webkit_host.c
 src/web_bridge.c
-src/zig_core_bridge.c
+src/forge_core_bridge.c
 src/platform_storage.c
 src/platform_dialogs.c
 src/platform_notifications.c
@@ -31,8 +31,8 @@ Implemented now:
 - Implements native `dialog.openFile` and `dialog.saveFile` through owner-bound GTK file chooser native dialogs.
 - Implements `network.request` through libsoup with manifest `networkPolicy` checks.
 - Loads SQLite migrations from packaged `resources/db/sqlite` before falling back to checked-in migrations.
-- Loads `libzig_core.so` through `dlopen` for `core.step`, using `TERRANE_ZIG_CORE_SO` first, then the packaged library beside `terrane-host`, then repo-local/install candidate paths.
-- Reports `core.step` in `runtime.capabilities` from the actual Zig library load status and returns structured `platform_unsupported` when the library is absent.
+- Loads `libforge_ffi.so` through `dlopen` for `core.step`, using `TERRANE_FORGE_FFI_SO` first, then the packaged library beside `terrane-host`, then repo-local/install candidate paths.
+- Reports `core.step` in `runtime.capabilities` from the actual Forge FFI library load status and returns structured `platform_unsupported` when the library is absent.
 - Starts a debug-build-only loopback dev control plane when `--terrane-dev-control` or `TERRANE_LINUX_DEV_CONTROL=1` is set, writes a per-launch `0600` control token, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, supports `platform.list_targets`, `platform.list_webapps`, static HTML `runtime.screenshot` / `runtime.query` / target interaction / wait / timer / visible-text assertion controls, static accessibility snapshot/audit/assertion controls over bundled app packages, static `runtime.run_smoke_tests`, path-guarded `runtime.run_microtest`, and path-guarded `platform.run_platform_smoke` with `micro_tests` / `test_runs` persistence, permission-checked `runtime.call_bridge` / `runtime.core_step`, direct `runtime.storage_get` / `runtime.storage_set`, confirmation-gated `runtime.storage_reset` / `platform.reset_webapp` with pre-reset snapshots, `runtime.assert_storage`, DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.network_mock_set`, `runtime.network_mock_reset`, `runtime.dialog_mock_set`, and one-shot `runtime.fault_inject`, plus safe `db.snapshot`, fixed `db.query_*`, hashed `db.export_backup` / `db.import_backup`, and `db.export_debug_bundle` inspection/export commands, and audits accepted/rejected requests to SQLite.
 
 Release packaging for the Linux host runs on Linux/x64:
@@ -41,7 +41,7 @@ Release packaging for the Linux host runs on Linux/x64:
 node --no-warnings tools/package-release.mjs --out artifacts --build-native-linux
 ```
 
-The artifact is staged at `artifacts/native-apps/linux/linux-x86_64/TerraneHost/` with `terrane-host`, `libzig_core.so`, runtime resources, example app packages, SQLite migrations, and hashed entries in `release-manifest.json`.
+The artifact is staged at `artifacts/native-apps/linux/linux-x86_64/TerraneHost/` with `terrane-host`, the native core library, runtime resources, example app packages, SQLite migrations, and hashed entries in `release-manifest.json`. The release packaging path is repointed in the dedicated Phase 2.6 packaging slice.
 
 ## Docker smoke
 
@@ -51,7 +51,7 @@ The Linux host can be built and smoke-tested from any Docker-capable development
 node --no-warnings tools/run-linux-native-docker.mjs
 ```
 
-The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Zig 0.15.2 dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke, token-gated target/webapp listing smoke, static HTML runtime UI control smoke, static accessibility snapshot/audit/assertion smoke, checked-in `runtime.run_microtest` coverage for `tests/micro/notes-lite-create-note.microtest.json`, checked-in `platform.run_platform_smoke` coverage for `tests/platform-smoke/all-example-apps.platform-smoke.json`, safe DB inspection smoke, hashed debug-bundle and portable backup export/import checks, explicit app-storage snapshot create/restore/compare checks, direct storage get/set/assert/reset controls, DB-backed bridge call inspection/assertions, log clearing, notification capture, no-console-error assertions, DB-backed core replay/snapshot/action assertions, DB-backed network/dialog mock bridge calls, arbitrary-SQL rejection check, and release-build production-guard audit check:
+The helper builds `native/linux/Dockerfile`, installs GTK4/WebKitGTK/SQLite/Meson/Rust dependencies, mounts the repo read-only at `/workspace`, and runs the runtime smoke, token-gated target/webapp listing smoke, static HTML runtime UI control smoke, static accessibility snapshot/audit/assertion smoke, checked-in `runtime.run_microtest` coverage for `tests/micro/notes-lite-create-note.microtest.json`, checked-in `platform.run_platform_smoke` coverage for `tests/platform-smoke/all-example-apps.platform-smoke.json`, safe DB inspection smoke, hashed debug-bundle and portable backup export/import checks, explicit app-storage snapshot create/restore/compare checks, direct storage get/set/assert/reset controls, DB-backed bridge call inspection/assertions, log clearing, notification capture, no-console-error assertions, DB-backed core replay/snapshot/action assertions, DB-backed network/dialog mock bridge calls, arbitrary-SQL rejection check, and release-build production-guard audit check:
 
 ```sh
 TERRANE_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js
@@ -71,7 +71,7 @@ MVP acceptance:
 - Launches on Linux with GTK4/WebKitGTK installed.
 - Loads runtime and examples from installed resources.
 - Implements storage under XDG data path.
-- Loads `libzig_core.so`.
+- Loads `libforge_ffi.so`.
 - Implements `core.step`.
 
 

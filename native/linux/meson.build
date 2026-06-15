@@ -23,7 +23,7 @@ executable('terrane-host',
     'src/platform_dialogs.c',
     'src/platform_notifications.c',
     'src/platform_network.c',
-    'src/zig_core_bridge.c',
+    'src/forge_core_bridge.c',
   ],
   dependencies: [gtk_dep, webkit_dep, json_dep, sqlite_dep, soup_dep, dl_dep],
   install: true)

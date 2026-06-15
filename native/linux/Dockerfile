@@ -1,9 +1,10 @@
 FROM ubuntu:24.04
 
 ARG TARGETARCH
-ARG ZIG_VERSION=0.15.2
+ARG RUST_VERSION=1.96.0
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -28,17 +29,11 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-  case "${TARGETARCH:-amd64}" in \
-    amd64) zig_arch="x86_64" ;; \
-    arm64) zig_arch="aarch64" ;; \
-    *) echo "Unsupported Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-  esac; \
-  curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
-  mkdir -p /opt/zig; \
-  tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
-  ln -s /opt/zig/zig /usr/local/bin/zig; \
-  rm /tmp/zig.tar.xz; \
-  zig version
+  curl -fsSL https://sh.rustup.rs -o /tmp/rustup.sh; \
+  sh /tmp/rustup.sh -y --profile minimal --default-toolchain "${RUST_VERSION}"; \
+  rm /tmp/rustup.sh; \
+  rustc --version; \
+  cargo --version
 
 WORKDIR /workspace
 

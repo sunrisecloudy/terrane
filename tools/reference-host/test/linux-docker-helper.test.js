@@ -30,11 +30,13 @@ test("Linux Docker helper defaults to the supported linux-x86_64 release target 
   assert.equal(commands.runArgs.includes(defaultPlatform), defaultPlatform !== "");
 });
 
-test("Linux native Dockerfile pins the smoke dependencies and Zig toolchain", () => {
+test("Linux native Dockerfile pins the smoke dependencies and Rust toolchain", () => {
   const dockerfile = fs.readFileSync(path.join(repoRoot, "native", "linux", "Dockerfile"), "utf8");
   for (const snippet of [
     "ubuntu:24.04",
-    "ZIG_VERSION=0.15.2",
+    "RUST_VERSION=1.96.0",
+    "https://sh.rustup.rs",
+    "cargo --version",
     "libgtk-4-dev",
     "libwebkitgtk-6.0-dev",
     "libjson-glib-dev",

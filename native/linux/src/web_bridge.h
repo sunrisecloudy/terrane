@@ -5,14 +5,14 @@
 #include "platform_network.h"
 #include "platform_notifications.h"
 #include "platform_storage.h"
-#include "zig_core_bridge.h"
+#include "forge_core_bridge.h"
 
 typedef struct {
   PlatformStorage *storage;
   PlatformDialogs dialogs;
   PlatformNotifications notifications;
   PlatformNetwork network;
-  ZigCoreBridge core;
+  ForgeCoreBridge core;
 } WebBridge;
 
 WebBridge *web_bridge_new(const gchar *database_path, GtkWindow *owner_window);

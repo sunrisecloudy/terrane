@@ -466,7 +466,7 @@ function checkReleasePackaging() {
   for (const snippet of [
     "Linux packaged native artifact launches from executable-relative resources",
     "packageReleaseArtifacts({ outDir, buildNativeLinux: true })",
-    "TERRANE_ZIG_CORE_SO",
+    "TERRANE_FORGE_FFI_SO",
     "outside-repo-cwd",
     "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_SET_OK",
     "TERRANE_LINUX_SMOKE_BRIDGE_STORAGE_GET_OK",
@@ -909,7 +909,7 @@ function checkNativeStatic() {
   const linuxDevControl = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "dev_control_plane.c"), "utf8");
   const linuxDialogs = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_dialogs.c"), "utf8");
   const linuxNotifications = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_notifications.c"), "utf8");
-  const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "zig_core_bridge.c"), "utf8");
+  const linuxCore = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "forge_core_bridge.c"), "utf8");
   const linuxStorage = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_storage.c"), "utf8");
   const linuxNetwork = fs.readFileSync(path.join(repoRoot, "native", "linux", "src", "platform_network.c"), "utf8");
   const linuxMeson = fs.readFileSync(path.join(repoRoot, "native", "linux", "meson.build"), "utf8");
@@ -2030,8 +2030,8 @@ function checkNativeStatic() {
     [linuxBridge, '"dialog.openFile"'],
     [linuxBridge, "bridge->network.db = bridge->storage == NULL ? NULL : bridge->storage->db"],
     [linuxBridge, "platform_dialogs_init(&bridge->dialogs, owner_window, bridge->storage == NULL ? NULL : bridge->storage->db)"],
-    [linuxBridge, "zig_core_bridge_init"],
-    [linuxBridge, "zig_core_bridge_is_available(&bridge->core)"],
+    [linuxBridge, "forge_core_bridge_init"],
+    [linuxBridge, "forge_core_bridge_is_available(&bridge->core)"],
     [linuxStorage, "request->context.app_id"],
     [linuxStorage, "request->context.storage_prefix"],
     [linuxStorage, "storage_prefix_failure"],
@@ -2094,9 +2094,18 @@ function checkNativeStatic() {
   if (linuxDialogs.includes("will be wired") || linuxBridge.includes('json_builder_add_boolean_value(builder, FALSE);')) {
     throw new Error("Linux dialogs must not remain placeholder stubs or disabled capabilities");
   }
-  for (const snippet of ["dlopen", "dlsym", "core_step_json", "core_free", "TERRANE_ZIG_CORE_SO", "core.step app field does not match the channel-derived app id"]) {
+  for (const snippet of [
+    "dlopen",
+    "dlsym",
+    "forge_core_open_in_memory",
+    "forge_core_handle_command",
+    "forge_string_free",
+    "TERRANE_FORGE_FFI_SO",
+    '"legacy.core_step"',
+    "core.step app field does not match the channel-derived app id",
+  ]) {
     if (!linuxCore.includes(snippet)) {
-      throw new Error(`Linux Zig core bridge missing ${snippet}`);
+      throw new Error(`Linux Forge core bridge missing ${snippet}`);
     }
   }
   for (const snippet of ["libsoup-3.0", "find_library('dl'", "dl_dep"]) {
@@ -2350,7 +2359,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=forge-ffi android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {

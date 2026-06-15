@@ -50,15 +50,16 @@ test("Windows core.step enforces a structured host timeout around Zig DLL calls"
   assert.doesNotMatch(windowsHost, /response = context\.has_value\(\)\s*\?\s*bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
 });
 
-test("Linux core.step loader prefers packaged libzig_core beside the executable", () => {
-  const linuxCore = read("native/linux/src/zig_core_bridge.c");
+test("Linux core.step loader prefers packaged libforge_ffi beside the executable", () => {
+  const linuxCore = read("native/linux/src/forge_core_bridge.c");
 
-  assert.match(linuxCore, /g_getenv\("TERRANE_ZIG_CORE_SO"\)/);
+  assert.match(linuxCore, /g_getenv\("TERRANE_FORGE_FFI_SO"\)/);
   assert.match(linuxCore, /g_file_read_link\("\/proc\/self\/exe"/);
   assert.match(linuxCore, /g_path_get_dirname/);
-  assert.match(linuxCore, /g_build_filename\(dir,\s*"libzig_core\.so",\s*NULL\)/);
+  assert.match(linuxCore, /g_build_filename\(dir,\s*"libforge_ffi\.so",\s*NULL\)/);
   assert.match(linuxCore, /dlopen\(path, RTLD_NOW \| RTLD_LOCAL\)/);
-  assert.match(linuxCore, /dlsym\(handle, "core_step_json"\)/);
+  assert.match(linuxCore, /dlsym\(handle, "forge_core_handle_command"\)/);
+  assert.match(linuxCore, /json_builder_add_string_value\(builder, "legacy\.core_step"\)/);
 });
 
 function read(relativePath) {

@@ -151,7 +151,7 @@ test("native capability implementations expose app-scoped manifest capability id
         '"storage.read"',
         '"storage.write"',
         '"runtime.capabilities"',
-        "zig_core_bridge_is_available(&bridge->core)",
+        "forge_core_bridge_is_available(&bridge->core)",
       ],
     },
   ];
