@@ -230,13 +230,21 @@ at one:
    (no `ctx.db` write, no callback run record) — and the producer command (whose own
    durable effects + run record already committed) stays **successful**. Propagating the
    callback's `ResourceLimitExceeded` out of the producer would report a *failed* run/write
-   whose triggering side effects in fact landed. The skip is a **recorded decision** (a
-   `db.watch.callback_rejected` envelope on the delivered batch, alongside a
-   `db.watch.callback_rejected` event) so replay deterministically reproduces the identical
-   skipped-callback outcome — the admission gate is a pure function of committed state. The
-   recorded decision is kept SEPARATE from the `db.watch.notification` replay stream, which
-   stays a pure notification sequence. Only the run-log **admission** denial becomes a skip;
-   any other callback error still propagates.
+   whose triggering side effects in fact landed. The skip is a **recorded decision** so
+   replay deterministically reproduces the identical skipped-callback outcome — the
+   admission gate is a pure function of committed state. The **durable** home of that
+   decision is one `watch.callback_rejected` **deny** row appended to the SC-12 append-only
+   audit log per skipped callback (carrying the watch's owning applet/actor + watch id +
+   callback id + `reason = run_logs_cap` + the EventSink `logical_time`); the durable row is
+   the source of truth replay reproduces, and it survives the producer command's return AND
+   a workspace reopen/restart. This holds for **every** notification producer that discards
+   the delivered batch — `runtime.run`, `ui.dispatch_event`, AND a time-travel `db.restore`.
+   The same skip ALSO rides a `db.watch.callback_rejected` envelope on the in-memory
+   delivered batch and a transient `db.watch.callback_rejected` event for the direct
+   batch consumers and live host observability, but those are not durable — the audit row
+   is. The recorded decision is kept SEPARATE from the `db.watch.notification` replay
+   stream, which stays a pure notification sequence. Only the run-log **admission** denial
+   becomes a skip; any other callback error still propagates.
 
 The workspace TOTAL is deliberately **not** part of the admission gate: a run that FAILS
 because its `ctx.db` write was rejected at the records boundary (above) committed **no**

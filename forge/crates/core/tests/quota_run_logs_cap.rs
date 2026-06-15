@@ -24,7 +24,7 @@
 
 use forge_core::WorkspaceCore;
 use forge_domain::{ActorContext, AppletId, CoreCommand, RequestId, WorkspaceId};
-use forge_storage::{Mutation, QuotaCategory, QuotaPolicy};
+use forge_storage::{AuditQuery, IndexManager, Mutation, QuotaCategory, QuotaPolicy};
 use serde_json::{json, Value};
 
 /// A demo applet whose `main` inserts a `tasks` record (so `runtime.run` commits an
@@ -408,6 +408,234 @@ fn admitted_run_always_persists_its_run_record() {
     assert_eq!(record_count(&core), records_before + 1, "an admitted run commits its applet write");
     // The run record is loadable (the replay source actually landed) — never dropped.
     assert!(core.store().load_run(run_id).unwrap().is_some(), "the admitted run's record is the durable replay source");
+}
+
+// ---------------------------------------------------------------------------
+// review 183 (P1): the over-cap skipped-callback decision must be DURABLE for the
+// REAL command paths (runtime.run, ui.dispatch_event, time-travel restore), which
+// DISCARD the returned `DeliveredBatch`. Before the fix the skip rode ONLY the
+// in-memory batch + a transient `db.watch.callback_rejected` event, so the decision
+// was LOST the moment the command returned / on restart — even though
+// `forge/spec/quotas.md` makes it a RECORDED decision replay must reproduce. The fix
+// persists one `watch.callback_rejected` deny row into the SC-12 durable append-only
+// audit log per skipped callback. These tests query that durable log (reopening the
+// file-backed store to prove restart-survival) AFTER the producer command discarded
+// its batch, and assert the row is present with the right actor/watch/reason.
+// ---------------------------------------------------------------------------
+
+/// The durable SC-12 audit rows recording an over-cap watch-callback skip
+/// (`action = watch.callback_rejected`, ordered by seq).
+fn durable_skip_rows(core: &WorkspaceCore) -> Vec<forge_storage::AuditRecord> {
+    core.store()
+        .query_audit(&AuditQuery::by_action("watch.callback_rejected"))
+        .unwrap()
+}
+
+/// Pin the run_logs cap so the producer command is ADMITTED (its mandatory record
+/// lands, pushing usage over the cap) but the DOWNSTREAM watcher callback re-entered
+/// during notification delivery is then SKIPPED over the cap (mirrors the review-179
+/// near-cap overshoot tests). `cap = current + headroom`.
+fn pin_one_record_headroom(core: &mut WorkspaceCore) {
+    let cap = run_logs_bytes(core) + 1;
+    pin_run_logs_cap(core, cap);
+}
+
+/// P1 (review 183): a `runtime.run` whose `main` write ENTERS a watched result admits
+/// its own producer record, then SKIPS the over-cap watcher callback — and the skip is
+/// persisted into the DURABLE audit log, surviving the discarded batch AND a store
+/// REOPEN (restart). `runtime.run` discards the `DeliveredBatch`, so the durable row is
+/// the only thing that carries the decision past command-return.
+#[test]
+fn runtime_run_over_cap_callback_skip_survives_in_durable_audit_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws-183-run").unwrap();
+        // `app`'s `main` inserts a `done:false` task (ENTERS the watch); `watcher` owns the
+        // `done = false` watch + onWatch callback whose re-entry would commit a write.
+        install(&mut core, "app", DEMO_TS);
+        install(&mut core, "watcher", WATCH_TS);
+        let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+        assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
+        assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+        // ONE record of headroom: the runtime.run producer record is admitted (then over
+        // cap), so the downstream onWatch callback admission is refused → skipped.
+        pin_one_record_headroom(&mut core);
+
+        // The producer run is admitted and SUCCEEDS; its returned batch is DISCARDED by the
+        // command path. Pre-fix, that discard lost the skip decision.
+        let resp = run_with_title(&mut core, "app", "open task");
+        assert!(resp.ok && resp.payload["ok"] == Value::Bool(true), "the producer runtime.run is admitted and succeeds: {resp:?}");
+        // The over-cap watcher callback never ran (no `ctx.db` write landed).
+        let callback_wrote = core
+            .store()
+            .list_records("tasks")
+            .unwrap()
+            .into_iter()
+            .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
+        assert!(!callback_wrote, "the over-cap watcher callback commits NO `ctx.db` write");
+
+        // The DURABLE decision is present even though the batch was discarded.
+        let rows = durable_skip_rows(&core);
+        assert_eq!(rows.len(), 1, "exactly one durable watch.callback_rejected row was appended: {rows:?}");
+        let row = &rows[0];
+        assert_eq!(row.decision, "deny", "the skip is a deny decision");
+        assert_eq!(row.actor_id, "watcher", "the durable row names the watch's owning applet as actor");
+        assert_eq!(row.resource_id.as_deref(), Some("watch:open"), "the row names the watch");
+        assert_eq!(row.metadata["reason"], json!("run_logs_cap"), "the row names the run_logs cap reason");
+        assert_eq!(row.metadata["callback"], json!("onWatch"), "the row records the callback id");
+    }
+
+    // REOPEN the file-backed workspace (simulate restart): the EventSink is gone, but the
+    // durable audit row is still queryable — the skip decision survived the process exit.
+    let core = WorkspaceCore::open(&path, "ws-183-run").unwrap();
+    let rows = durable_skip_rows(&core);
+    assert_eq!(rows.len(), 1, "the durable skip decision survives a store reopen/restart: {rows:?}");
+    assert_eq!(rows[0].actor_id, "watcher");
+    assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
+    assert_eq!(rows[0].metadata["reason"], json!("run_logs_cap"));
+}
+
+/// P1 (review 183): a `ui.dispatch_event` whose handler write ENTERS a watched result
+/// admits its own dispatch record, then SKIPS the over-cap watcher callback — and the
+/// skip is persisted into the DURABLE audit log, surviving the discarded batch AND a
+/// reopen. `ui.dispatch_event` discards the `DeliveredBatch` (and the transient event is
+/// in-memory only), so the durable row is what replay reproduces.
+#[test]
+fn ui_dispatch_over_cap_callback_skip_survives_in_durable_audit_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.forge");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws-183-ui").unwrap();
+        install(&mut core, "app", DEMO_TS);
+        install(&mut core, "watcher", WATCH_TS);
+        // Establish `app`'s render base (so ui.dispatch_event has a diff base/session) and
+        // register the `done = false` watch.
+        let base = run_with_title(&mut core, "app", "base");
+        assert!(base.ok && base.payload["ok"] == Value::Bool(true), "app main must establish a render base");
+        let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+        assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
+        assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+        pin_one_record_headroom(&mut core);
+        core.events_mut().drain();
+
+        // The dispatch's `bump` handler inserts a `done:false` task that ENTERS the watch;
+        // the dispatch is admitted, its record lands (over cap), so the onWatch callback is
+        // SKIPPED. The dispatch SUCCEEDS and discards its batch.
+        let dispatch = core.handle(cmd(
+            "ui.dispatch_event",
+            Some("app"),
+            json!({ "action_ref": "bump", "event_payload": {} }),
+        ));
+        assert!(dispatch.ok, "the near-cap ui.dispatch_event itself is admitted and succeeds: {dispatch:?}");
+        let callback_wrote = core
+            .store()
+            .list_records("tasks")
+            .unwrap()
+            .into_iter()
+            .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
+        assert!(!callback_wrote, "the over-cap watcher callback commits NO `ctx.db` write");
+
+        // The transient event is still emitted for live observability (review 179 P2
+        // regression) — but it lives only in the in-memory sink.
+        let events = core.events_mut().drain();
+        assert!(
+            events.iter().any(|e| e.kind == "db.watch.callback_rejected"
+                && e.payload["watch_id"] == json!("watch:open")
+                && e.payload["reason"] == json!("run_logs_cap")),
+            "the skipped over-cap callback still emits the transient db.watch.callback_rejected event: {events:?}"
+        );
+
+        // The DURABLE row is present after the dispatch discarded its batch AND the event
+        // buffer was drained — the decision is NOT lost with the transient batch/event.
+        let rows = durable_skip_rows(&core);
+        assert_eq!(rows.len(), 1, "exactly one durable watch.callback_rejected row was appended: {rows:?}");
+        assert_eq!(rows[0].actor_id, "watcher", "the durable row names the owning applet");
+        assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
+        assert_eq!(rows[0].metadata["reason"], json!("run_logs_cap"));
+    }
+
+    // REOPEN: the in-memory event buffer is gone, but the durable decision survives.
+    let core = WorkspaceCore::open(&path, "ws-183-ui").unwrap();
+    let rows = durable_skip_rows(&core);
+    assert_eq!(rows.len(), 1, "the durable skip decision survives a store reopen/restart: {rows:?}");
+    assert_eq!(rows[0].actor_id, "watcher");
+    assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
+}
+
+/// P1 (review 183): the time-travel `db.restore` path also persists the over-cap skip
+/// durably. `db.restore` is a command (not an applet run), so pinning the cap to exactly
+/// the current run_logs leaves NO headroom for the watcher callback re-entry: the restore
+/// re-enters the watch, the callback is SKIPPED, and the decision lands as a durable
+/// `watch.callback_rejected` row even though `cmd_db_restore` discards the batch.
+#[test]
+fn time_travel_restore_over_cap_callback_skip_persists_durably() {
+    let mut core = WorkspaceCore::in_memory("ws-183-restore").unwrap();
+    install(&mut core, "watcher", WATCH_TS);
+    // Register the `done = false` watch (its own registration run records fine).
+    let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+    assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+    // Seed `tasks/t1` with history through the CRDT path (bypasses notifications): v1 is
+    // `done:false` (IN the watch), v2 flips it to `done:true` (LEAVES the watch). Restoring
+    // to v1 re-enters the watch and would re-deliver the onWatch callback.
+    let idx = IndexManager::new();
+    core.store_mut()
+        .apply_mutation_crdt(
+            &Mutation::Insert {
+                collection: "tasks".into(),
+                id: Some("t1".into()),
+                fields: json!({ "title": "seed", "done": false }).as_object().unwrap().clone(),
+                logical_at: Some(1),
+            },
+            &idx,
+        )
+        .unwrap();
+    core.store_mut()
+        .apply_mutation_crdt(
+            &Mutation::Patch {
+                collection: "tasks".into(),
+                id: "t1".into(),
+                fields: json!({ "done": true }).as_object().unwrap().clone(),
+                logical_at: Some(2),
+            },
+            &idx,
+        )
+        .unwrap();
+
+    // Zero run-log headroom: the watcher callback re-entry triggered by the restore cannot
+    // be admitted (the restore command itself persists no run record, so it commits).
+    let cap = run_logs_bytes(&core);
+    pin_run_logs_cap(&mut core, cap);
+
+    // Restore t1 to v1 (`done:false`) through the LIVE command — this re-enters the watch
+    // and SKIPS the over-cap callback. `cmd_db_restore` discards the returned batch.
+    let resp = core.handle(cmd(
+        "db.restore",
+        None,
+        json!({ "collection": "tasks", "id": "t1", "to_version": 1, "restored_logical_at": 5 }),
+    ));
+    assert!(resp.ok, "db.restore should succeed (a downstream callback skip is not a producer failure): {:?}", resp.error);
+
+    // The over-cap callback never ran.
+    let callback_wrote = core
+        .store()
+        .list_records("tasks")
+        .unwrap()
+        .into_iter()
+        .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
+    assert!(!callback_wrote, "the over-cap watcher callback commits NO `ctx.db` write on the restore path");
+
+    // The DURABLE decision is present after the restore command discarded its batch.
+    let rows = durable_skip_rows(&core);
+    assert_eq!(rows.len(), 1, "the time-travel restore path also persists exactly one durable skip row: {rows:?}");
+    assert_eq!(rows[0].decision, "deny");
+    assert_eq!(rows[0].actor_id, "watcher", "the durable row names the owning applet");
+    assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
+    assert_eq!(rows[0].metadata["reason"], json!("run_logs_cap"));
 }
 
 /// P2: `quota.status.approaching` enumerates EVERY budget at/above the approaching

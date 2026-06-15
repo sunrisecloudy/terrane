@@ -567,18 +567,42 @@ impl WorkspaceCore {
                     // callback delivery is SKIPPED: nothing ran, so there is no callback
                     // run record and no callback write — and the producer stays
                     // successful. The notification itself was already recorded + emitted
-                    // above; we additionally RECORD the skip as a
-                    // `db.watch.callback_rejected` decision (the recorded-decision
-                    // pattern) so replay reproduces the identical skipped-callback
-                    // outcome, and emit a matching event so a host can observe the
-                    // deferred delivery. The recorded decision rides its OWN
+                    // above; we additionally RECORD the skip so replay reproduces the
+                    // identical skipped-callback outcome.
+                    //
+                    // REVIEW 183 P1 (DURABILITY): the recorded skip rode ONLY the
+                    // in-memory `DeliveredBatch.rejected_callbacks` + a transient
+                    // `db.watch.callback_rejected` event. That survives the DIRECT
+                    // `commit_and_notify` tests (the caller keeps the batch), but the REAL
+                    // command paths (`runtime.run`, `ui.dispatch_event`, time-travel
+                    // restore) DISCARD the returned batch, and the EventSink is in-memory
+                    // only — so the decision was LOST on command-return / restart even
+                    // though `forge/spec/quotas.md` makes the skip a RECORDED decision
+                    // replay must reproduce. The fix persists the skip into the SC-12
+                    // DURABLE append-only audit log: `persist_producer_audit` both APPENDS
+                    // one queryable `watch.callback_rejected` deny row (carrying the
+                    // owning applet/actor + watch id + callback id + reason + version,
+                    // stamped with the EventSink `logical_time`) AND emits the matching
+                    // transient event for live observability under that SAME deterministic
+                    // clock. The durable row is the source of truth replay reproduces; the
+                    // transient `rejected_callbacks` field + event are kept for the direct
+                    // batch consumers and host observability. The skip is a deterministic
+                    // function of the reconstructed `run_logs` state + cap (no wall clock),
+                    // so a replay/reopen reproduces the identical row. It rides its OWN
                     // `rejected_callbacks` field — NOT `recorded_calls` — so the
                     // notification replay stream stays a pure `db.watch.notification`
                     // sequence.
+                    let (owning_applet, callback_id) = self
+                        .watch_sessions
+                        .callback_for(&notification.watch_id)
+                        .map(|(a, c)| (a.to_string(), c.to_string()))
+                        .unwrap_or_default();
                     let skip_args = serde_json::json!({
                         "watch_id": notification.watch_id,
                         "version": notification.version,
                         "reason": "run_logs_cap",
+                        "applet_id": owning_applet,
+                        "callback": callback_id,
                     });
                     batch.rejected_callbacks.push(RecordedCall {
                         seq: batch.rejected_callbacks.len() as u64,
@@ -586,7 +610,28 @@ impl WorkspaceCore {
                         args: skip_args.clone(),
                         response: serde_json::json!({ "delivered": false }),
                     });
-                    self.events.emit(None, "db.watch.callback_rejected", skip_args);
+                    // Persist the skip into the SC-12 durable audit log AND emit the
+                    // transient event under one deterministic `logical_time`. The actor is
+                    // the watch's owning applet (the run that would have re-entered the
+                    // callback); the resource is the watch the callback belongs to.
+                    self.persist_producer_audit(
+                        "db.watch.callback_rejected",
+                        skip_args,
+                        "quota",
+                        "watch.callback_rejected",
+                        "deny",
+                        owning_applet.clone(),
+                        "applet",
+                        Some(notification.watch_id.clone()),
+                        None,
+                        "watch callback run could not be admitted over the run_logs cap",
+                        serde_json::json!({
+                            "watch_id": notification.watch_id,
+                            "version": notification.version,
+                            "callback": callback_id,
+                            "reason": "run_logs_cap",
+                        }),
+                    )?;
                 }
             }
 
