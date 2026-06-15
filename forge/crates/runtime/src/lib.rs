@@ -38,7 +38,7 @@ pub use files::{
 pub use host::HostContext;
 pub use net::{
     resolve_secret_headers, HttpClient, InMemorySecretStore, MockHttpClient, NetHeaderValue,
-    NetRequest, NetResponse, SecretStore,
+    NetRequest, NetResponse, SecretStore, SecretValue,
 };
 pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
 

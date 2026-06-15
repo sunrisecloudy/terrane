@@ -22,6 +22,8 @@
 //! deterministic [`RecordedCall`](forge_domain::RecordedCall) trace canonically.
 
 use forge_domain::{CoreError, Result};
+use forge_policy::HeaderValue;
+pub use forge_secrets::{InMemorySecretStore, SecretStore, SecretValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -261,79 +263,6 @@ impl HttpClient for MockHttpClient {
     }
 }
 
-/// The host's secret store: resolves a secret **by name** to its plaintext value
-/// at the HTTP edge (prd-merged/07 SC-13/SC-12, CR-3). Applet JS never calls this
-/// — it only ever names a secret in a `{ "secret_ref": "name" }` header — and the
-/// resolved value is never readable by the applet, recorded, logged, or synced.
-///
-/// This trait is **wasm-clean** by design: it has no I/O dependency. The real
-/// OS-keychain-backed implementation lives host-side (a shell, out of this
-/// crate's scope); this crate ships only the in-memory test backend
-/// [`InMemorySecretStore`]. A missing name resolves to `None`, which the host
-/// turns into the run's `CoreError` (the request is never sent).
-pub trait SecretStore {
-    /// Resolve `name` to its secret value, or `None` if the name is unknown /
-    /// revoked. Implementors must never panic and never leak the value anywhere
-    /// but this return (no logging, no trace).
-    fn resolve(&self, name: &str) -> Option<String>;
-}
-
-/// A trivial in-memory [`SecretStore`] for tests and as the fail-closed default
-/// (empty ⇒ every name is unknown ⇒ a secret_ref header is denied). The real
-/// OS-keychain backend is host-side and out of this crate's scope.
-///
-/// `Debug` is **redacted**: it prints only the secret *names*, never the values,
-/// so a `{:?}` on a bridge/store can never leak plaintext into a log (SC-13).
-#[derive(Clone, Default)]
-pub struct InMemorySecretStore {
-    secrets: BTreeMap<String, String>,
-}
-
-impl InMemorySecretStore {
-    /// An empty store: every name is unknown (the fail-closed default).
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build a store from `(name, value)` pairs (test convenience).
-    pub fn from_pairs<I, K, V>(pairs: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
-    {
-        InMemorySecretStore {
-            secrets: pairs
-                .into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
-        }
-    }
-
-    /// Insert/replace a secret (test convenience). Returns `self` for chaining.
-    pub fn with_secret(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.secrets.insert(name.into(), value.into());
-        self
-    }
-}
-
-impl SecretStore for InMemorySecretStore {
-    fn resolve(&self, name: &str) -> Option<String> {
-        self.secrets.get(name).cloned()
-    }
-}
-
-// Redacted Debug: never print secret VALUES, only the set of names. A `{:?}` on
-// a store/bridge that holds it must not be able to leak plaintext (SC-13).
-impl std::fmt::Debug for InMemorySecretStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InMemorySecretStore")
-            .field("names", &self.secrets.keys().collect::<Vec<_>>())
-            .field("values", &"<redacted>")
-            .finish()
-    }
-}
-
 /// Resolve every `secret_ref` header in `request` to its plaintext value using
 /// `store`, returning a **new** request whose headers are all literal — ready to
 /// hand to the [`HttpClient`]. The input `request` (which the recorder captured)
@@ -352,18 +281,47 @@ pub fn resolve_secret_headers(
     request: &NetRequest,
     store: &dyn SecretStore,
 ) -> Result<NetRequest> {
+    let allow_secret_headers = request
+        .headers
+        .iter()
+        .filter(|(_, value)| matches!(value, NetHeaderValue::Secret { .. }))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    resolve_secret_headers_with_allowlist(request, &allow_secret_headers, store)
+}
+
+/// Resolve `secret_ref` headers using the canonical [`forge_secrets`] injector
+/// and the destination rule's already-policy-checked `allow_secret_headers`.
+///
+/// Runtime owns the `NetRequest`/`NetHeaderValue` wire shape, while
+/// `forge-secrets` owns the redacting store/value API and host-edge injection
+/// semantics. This adapter converts between the two wire-equivalent header
+/// enums and returns a fresh literal-only [`NetRequest`] for the HTTP client.
+pub fn resolve_secret_headers_with_allowlist(
+    request: &NetRequest,
+    allow_secret_headers: &[String],
+    store: &dyn SecretStore,
+) -> Result<NetRequest> {
+    let policy_headers = request
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                NetHeaderValue::Secret { secret_ref } => HeaderValue::Secret {
+                    secret_ref: secret_ref.clone(),
+                },
+                NetHeaderValue::Literal(value) => HeaderValue::Literal(value.clone()),
+            };
+            (name.clone(), value)
+        })
+        .collect();
+    let resolved_headers =
+        forge_secrets::resolve_secret_headers(&policy_headers, allow_secret_headers, store)?;
     let mut resolved = request.clone();
-    for (name, value) in resolved.headers.iter_mut() {
-        if let NetHeaderValue::Secret { secret_ref } = value {
-            let plaintext = store.resolve(secret_ref).ok_or_else(|| {
-                // Name the SECRET REF (a non-sensitive identifier), never a value.
-                CoreError::RuntimeError(format!(
-                    "ctx.net.fetch denied: secret {secret_ref:?} for header {name:?} is not resolvable (unknown or revoked); no request was sent"
-                ))
-            })?;
-            *value = NetHeaderValue::Literal(plaintext);
-        }
-    }
+    resolved.headers = resolved_headers
+        .into_iter()
+        .map(|(name, value)| (name, NetHeaderValue::Literal(value)))
+        .collect();
     Ok(resolved)
 }
 
@@ -492,11 +450,11 @@ mod tests {
     #[test]
     fn in_memory_secret_store_resolves_known_and_misses_unknown() {
         let store = InMemorySecretStore::from_pairs([("a", "alpha"), ("b", "beta")]);
-        assert_eq!(store.resolve("a").as_deref(), Some("alpha"));
-        assert_eq!(store.resolve("b").as_deref(), Some("beta"));
-        assert_eq!(store.resolve("missing"), None);
+        assert_eq!(store.get("a").unwrap().unwrap().expose(), "alpha");
+        assert_eq!(store.get("b").unwrap().unwrap().expose(), "beta");
+        assert!(store.get("missing").unwrap().is_none());
         // The empty default resolves nothing (fail-closed).
-        assert_eq!(InMemorySecretStore::new().resolve("a"), None);
+        assert!(InMemorySecretStore::new().get("a").unwrap().is_none());
     }
 
     #[test]
@@ -557,6 +515,24 @@ mod tests {
         assert_eq!(err.code(), "RuntimeError");
         assert!(err.to_string().contains("nope"), "error names the ref: {err}");
         // The error message must not contain any resolved value (there is none).
+    }
+
+    #[test]
+    fn resolve_secret_headers_rechecks_allowlist() {
+        let store = InMemorySecretStore::new().with_secret("tok", "Bearer XYZ");
+        let mut request = NetRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/x".into(),
+            ..Default::default()
+        };
+        request
+            .headers
+            .insert("Authorization".into(), NetHeaderValue::Secret { secret_ref: "tok".into() });
+
+        let err = resolve_secret_headers_with_allowlist(&request, &[], &store).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("Authorization"));
+        assert!(!err.to_string().contains("Bearer XYZ"));
     }
 
     #[test]

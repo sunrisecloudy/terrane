@@ -665,6 +665,7 @@ dependencies = [
  "base64",
  "forge-domain",
  "forge-policy",
+ "forge-secrets",
  "forge-storage",
  "rquickjs",
  "serde",

@@ -1259,6 +1259,6 @@ mod tests {
         let mut s = store();
         let b = StorageHostBridge::new(&mut s, "app1");
         // The default store resolves nothing.
-        assert_eq!(b.secret_store().resolve("secret_weather"), None);
+        assert!(b.secret_store().get("secret_weather").unwrap().is_none());
     }
 }

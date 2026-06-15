@@ -10,7 +10,9 @@
 //! redirect/DNS facts) and redacts a denied response out of the trace.
 
 use super::HostContext;
-use crate::net::{resolve_secret_headers, NetHeaderValue, NetRequest, NetResponse};
+use crate::net::{
+    resolve_secret_headers_with_allowlist, NetHeaderValue, NetRequest, NetResponse,
+};
 use forge_domain::{CoreError, NetGrant, Result};
 use forge_policy::NetPolicy;
 
@@ -83,12 +85,15 @@ impl HostContext<'_> {
         //    caps are enforced, intact, on the response leg (step 5). A denial is
         //    recorded then propagated.
         let policy_request = to_policy_request(&request);
-        if let Err(net_err) =
-            NetPolicy::new(&self.net_allowlist_request_phase).check(&policy_request)
+        let allow_secret_headers = match NetPolicy::new(&self.net_allowlist_request_phase)
+            .allowed_secret_headers(&policy_request)
         {
-            self.recorder.record_denial("net.fetch", args, &net_err)?;
-            return Err(net_err);
-        }
+            Ok(headers) => headers,
+            Err(net_err) => {
+                self.recorder.record_denial("net.fetch", args, &net_err)?;
+                return Err(net_err);
+            }
+        };
 
         // 3. Host-call budget (SC-2): only a permitted fetch consumes a slot.
         self.budgets.check_net_call()?;
@@ -113,7 +118,11 @@ impl HostContext<'_> {
             // Resolve secret_ref headers to plaintext only now, at the HTTP edge,
             // into a fresh literal-only request the client receives. `req` (the
             // recorded shape) is untouched, so the trace keeps the secret_ref.
-            let injected = resolve_secret_headers(&req, bridge.secret_store())?;
+            let injected = resolve_secret_headers_with_allowlist(
+                &req,
+                &allow_secret_headers,
+                bridge.secret_store(),
+            )?;
             let resp = bridge.net_fetch(injected)?;
             serde_json::to_value(&resp).map_err(|e| {
                 CoreError::RuntimeError(format!("net.fetch response serialize failed: {e}"))
