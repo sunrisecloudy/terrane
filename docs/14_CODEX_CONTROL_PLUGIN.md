@@ -57,10 +57,10 @@ Codex
   -> WebView runtime dev hooks
   -> sandboxed generated app
   -> native bridge
-  -> Zig core
+  -> Forge core
 ```
 
-Codex should never call generated app APIs directly. It calls MCP tools. The MCP server calls the control plane. The control plane calls runtime/native/Zig adapters.
+Codex should never call generated app APIs directly. It calls MCP tools. The MCP server calls the control plane. The control plane calls runtime/native/Forge adapters.
 
 ## Tool groups
 
@@ -107,7 +107,7 @@ Codex should never call generated app APIs directly. It calls MCP tools. The MCP
 | `runtime.bridge_calls` | Read bridge request/response log. |
 | `runtime.clear_logs` | Clear console/bridge/event logs. |
 | `runtime.call_bridge` | Call a bridge method as a test harness, subject to manifest permissions. |
-| `runtime.core_step` | Send a test event into Zig core through the normal bridge path. |
+| `runtime.core_step` | Send a test event into Forge core through the normal bridge path. |
 | `runtime.core_snapshot` | Read deterministic core state snapshot if dev mode enables it. |
 | `runtime.event_log` | Read runtime event/action log. |
 | `runtime.replay_events` | Replay a captured event log and compare output. |

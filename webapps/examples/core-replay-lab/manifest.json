@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
-  "description": "Send events to Zig core, keep a replay log, and export the fixture.",
+  "description": "Send events to Forge core, keep a replay log, and export the fixture.",
   "contentRating": {
     "scheme": "app-store",
     "label": "4+",

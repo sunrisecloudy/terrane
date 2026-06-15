@@ -23,16 +23,14 @@ Verified delta:
 
 | Path | Status | Owner |
 |---|---|---|
-| `docs/00_PRD.md` | spec-only (v0.4) | platform |
-| `docs/01_ARCHITECTURE.md` | spec-only (v0.4) | platform |
-| `docs/02_PROJECT_STRUCTURE.md` | spec-only | platform |
+| `docs/00_PRD.md` | v1 pointer | platform |
+| `docs/01_ARCHITECTURE.md` | v1 pointer | platform |
+| `docs/02_PROJECT_STRUCTURE.md` | v1 pointer | platform |
 | `docs/03_RUNTIME_API_SPEC.md` | spec-only (v0.4) | runtime |
 | `docs/04_WEBAPP_PACKAGE_SPEC.md` | spec-only (v0.4) | runtime |
-| `docs/05_NATIVE_PLATFORM_REQUIREMENTS.md` | spec-only (v0.4) | native |
-| `docs/06_ZIG_CORE_SPEC.md` | spec-only | legacy |
+| `docs/05_NATIVE_PLATFORM_REQUIREMENTS.md` | v1 pointer | native |
 | `docs/07_SECURITY_MODEL.md` | spec-only (v0.4) | platform |
 | `docs/08_TEST_PLAN.md` | spec-only (v0.4) | qa |
-| `docs/09_CODEX_IMPLEMENTATION_PLAN.md` | spec-only | codex |
 | `docs/10_ACCEPTANCE_CHECKLIST.md` | spec-only | qa |
 | `docs/11_AI_GENERATION_PROMPTS.md` | spec-only | codex |
 | `docs/12_RELEASE_AND_CI.md` | spec-only | platform |
@@ -54,9 +52,7 @@ Verified delta:
 | `docs/28_STORAGE_AND_MIGRATIONS.md` | spec-only | platform |
 | `docs/29_BACKUP_EXPORT_IMPORT.md` | spec-only | platform |
 | `docs/30_DATABASE_TEST_PLAN.md` | spec-only | qa |
-| `docs/31_V0_4_INTEGRATION_MAP.md` | spec-only | platform |
-| `docs/32_REFERENCE_HOST_SPEC.md` | spec-only (new in v0.4 revision) | platform |
-| `docs/33_CRDT_COLLAB_NOTEBOOK_PRD.md` | spec-only (CRDT notebook slice) | platform |
+| `docs/32_REFERENCE_HOST_SPEC.md` | v1 pointer | platform |
 | `docs/34_LOCAL_FIRST_OSS_SERVER_AND_SAAS_PRD.md` | spec-only (local-first OSS/server SaaS split) | platform |
 
 ## Schemas

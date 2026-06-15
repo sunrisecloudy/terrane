@@ -98,8 +98,8 @@ Every storage key must be prefixed with the app storage prefix declared in the m
 |---|---|
 | `runtime_sessions` | A host/runtime launch or test session |
 | `bridge_calls` | Every bridge call made by generated apps in debug/test mode |
-| `core_events` | Events submitted to Zig core |
-| `core_actions` | Actions returned by Zig core |
+| `core_events` | Events submitted to Forge core |
+| `core_actions` | Actions returned by Forge core |
 | `runtime_snapshots` | Serializable snapshot/replay records |
 
 ### Testing/control

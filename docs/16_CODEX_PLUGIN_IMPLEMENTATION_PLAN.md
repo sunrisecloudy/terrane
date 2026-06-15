@@ -130,7 +130,7 @@ Implement a Codex workflow that:
 
 1. Runs a micro-test.
 2. Reads failure bundle.
-3. Determines whether the bug is generated app, runtime, bridge, native host, or Zig core.
+3. Determines whether the bug is generated app, runtime, bridge, native host, or Forge core.
 4. Patches the correct layer.
 5. Runs targeted test.
 6. Runs full relevant suite.

@@ -16,7 +16,7 @@ This document is the normative coverage map for the five bundled generated apps 
 | App | Path | Primary contract | Required capabilities | Optional capabilities | Smoke coverage |
 |---|---|---|---|---|---|
 | Notes Lite | `webapps/examples/notes-lite` | CRUD notes through storage with toast/log feedback | `storage.read`, `storage.write` | `notification.toast`, `app.log` | Empty-state render, create note, `storage.set`, toast |
-| Task Workbench | `webapps/examples/task-workbench` | Stateful task workflow backed by Zig `core.step` actions with bounded large-list rendering | `core.step`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Add task, `core.step`, `storage.set`, toast |
+| Task Workbench | `webapps/examples/task-workbench` | Stateful task workflow backed by Forge `core.step` actions with bounded large-list rendering | `core.step`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Add task, `core.step`, `storage.set`, toast |
 | File Transformer | `webapps/examples/file-transformer` | Native file open/save plus deterministic text transform | `core.step`, `dialog.openFile`, `dialog.saveFile`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Open, transform, save, `core.step`, dialog calls, `storage.set` |
 | API Dashboard | `webapps/examples/api-dashboard` | Manifest-gated network request and saved request history | `network.request`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Send request, `network.request`, `storage.set`, toast |
 | Core Replay Lab | `webapps/examples/core-replay-lab` | Core event replay log and fixture export | `core.step`, `storage.read`, `storage.write`, `dialog.saveFile` | `notification.toast`, `app.log` | Send event, export, `core.step`, `storage.set`, `dialog.saveFile`, toast |
@@ -29,7 +29,7 @@ This document is the normative coverage map for the five bundled generated apps 
 | `storage.set` | Notes Lite save, Task Workbench persist, File Transformer transform result, API Dashboard history, Core Replay Lab event log | Smoke tests assert this call for every app that mutates state |
 | `storage.remove` | Notes Lite clear-all path | Source fixture and package validation; targeted bridge fixture covers the response contract |
 | `storage.list` | Bridge fixture suite | Not required in a reference UI flow, but must stay covered by `tests/fixtures/bridge/valid-storage-list.json` |
-| `core.step` | Task Workbench, File Transformer, Core Replay Lab | Smoke tests assert `core.step`; Zig replay/unit tests verify deterministic core behavior |
+| `core.step` | Task Workbench, File Transformer, Core Replay Lab | Smoke tests assert `core.step`; Forge replay/unit tests verify deterministic core behavior |
 | `dialog.openFile` | File Transformer | Smoke test asserts the bridge call; micro-tests/golden flows provide dialog mocks |
 | `dialog.saveFile` | File Transformer, Core Replay Lab | Smoke tests assert the bridge calls; micro-tests/golden flows provide dialog mocks |
 | `notification.toast` | All five apps | Smoke tests assert toast on state-changing paths |

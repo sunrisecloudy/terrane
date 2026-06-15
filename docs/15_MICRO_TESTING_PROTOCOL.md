@@ -2,7 +2,7 @@
 
 ## Goal
 
-Give Codex and CI a deterministic way to test generated apps at the smallest useful level: DOM, runtime, bridge, storage, network, timers, and Zig core.
+Give Codex and CI a deterministic way to test generated apps at the smallest useful level: DOM, runtime, bridge, storage, network, timers, and Forge core.
 
 ## Test file shape
 

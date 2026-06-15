@@ -4,9 +4,6 @@ dist/
 coverage/
 .gradle/
 .cxx/
-.zig-cache/
-.zig-global-cache/
-zig-out/
 .build/
 artifacts/
 .env

@@ -2,7 +2,7 @@
 
 ## 1. Required v0.3 targets
 
-| Capability | reference-host | macOS WKWebView | iOS WKWebView | Android WebView | Windows WebView2 | Linux WebKitGTK | Zig server |
+| Capability | reference-host | macOS WKWebView | iOS WKWebView | Android WebView | Windows WebView2 | Linux WebKitGTK | Forge server |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | load runtime | required | required | required | required | required | required | n/a |
 | load sandboxed generated app | required | required | required | required | required | required | n/a |
@@ -60,4 +60,4 @@ Real native hosts must match reference-host contract behavior unless a documente
 
 ### Server
 
-- Server does not render WebView UI but must run app/package validation, Zig core, snapshots, replay, and bridge contract tests.
+- Server does not render WebView UI but must run app/package validation, Forge core, snapshots, replay, and bridge contract tests.

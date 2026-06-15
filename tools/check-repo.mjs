@@ -941,7 +941,7 @@ function checkNativeStatic() {
       throw new Error(`macOS dialogs missing open-file parity: ${snippet}`);
     }
   }
-  if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-zig-link")) {
+  if (macBridge.includes('"network.request": "native"') || macBridge.includes("pending-legacy-link")) {
     throw new Error("macOS runtime.capabilities must use schema-shaped booleans");
   }
   for (const snippet of ['body["method"] as? String ?? ""', 'body["params"] as? [String: Any] ?? [:]']) {
@@ -985,8 +985,7 @@ function checkNativeStatic() {
   if (!macPackage.includes('.target(name: "CForgeCoreBridge")') || !macPackage.includes('"CForgeCoreBridge"')) {
     throw new Error("macOS package must include the C Forge core bridge target");
   }
-  const retiredCrdtBridgeTarget = "C" + "Zig" + "CrdtBridge";
-  if (macPackage.includes(retiredCrdtBridgeTarget)) {
+  if (macPackage.includes("CrdtBridge")) {
     throw new Error("macOS package must route CRDT/sync through Forge core, not the retired CRDT bridge target");
   }
   const forbiddenAppLogPermissionChecks = [
@@ -2436,11 +2435,9 @@ function walk(root) {
       entry.name === ".git" ||
       entry.name === "node_modules" ||
       entry.name === ".gradle" ||
-      entry.name === ".zig-cache" ||
       entry.name === ".build" ||
       entry.name === "build" ||
-      entry.name === "target" ||
-      entry.name === "zig-out"
+      entry.name === "target"
     ) {
       continue;
     }

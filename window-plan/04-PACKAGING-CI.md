@@ -518,7 +518,7 @@ is enforced structurally in `windows.yml` (§9): the `package` job `needs:` the
 
 Mirrors the existing repo patterns (`.github/workflows/ci.yml` Windows job;
 `release.yml` macOS DMG job → artifact upload + GitHub Release) but targets the new
-`forge/` Rust workspace and the `windows/` shell — **not** the legacy v0.4 Zig/Node
+`forge/` Rust workspace and the `windows/` shell — **not** the legacy v0.4 implementation
 paths. Runner: `windows-2022` (ships VS 2022 + ARM64 toolset + Win11 SDK).
 
 ### 9.1 Job graph

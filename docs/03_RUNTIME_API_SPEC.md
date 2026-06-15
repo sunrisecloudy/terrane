@@ -2,7 +2,7 @@
 
 > **⚠️ SUPERSEDED (2026-06-12):** This document defines the v0.4 legacy WebView bridge. New v1 applet/runtime work is specified in `prd-merged/` and the Forge specs under `forge/spec/`.
 
-This document defines the JS surface the runtime exposes to generated apps and the bridge contract every host implements. Section tags **[v0.1]**/**[v0.3]**/**[v0.4]** mark the milestone in which a requirement first appeared. **[CRDT]** marks the collaborative notebook slice from docs/33.
+This document defines the JS surface the runtime exposes to generated apps and the bridge contract every host implements. Section tags **[v0.1]**/**[v0.3]**/**[v0.4]** mark the milestone in which a requirement first appeared. **[CRDT]** marks the collaborative notebook behavior now covered by Forge sync and CRDT contracts.
 
 ## 1. Generated app API **[v0.1]**
 
@@ -59,7 +59,7 @@ Generated apps may not request, override, or even read `appId` directly. Reads m
 
 ### `core.step`
 
-Runs one deterministic event through the Zig core.
+Runs one deterministic event through the Forge core.
 
 Request:
 

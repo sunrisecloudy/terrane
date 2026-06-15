@@ -162,15 +162,18 @@ export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 cargo build --release -p forge-cli --target x86_64-unknown-linux-musl
 ```
 
-### 4.2 The reproducible-builder shortcut (`cargo-zigbuild` / `cross`)
+### 4.2 The reproducible-builder shortcut (`cross`)
 
-For CI, the cleanest reproducible static build uses zig as the C cross-compiler (handles the vendored C cleanly, no musl-gcc fiddling):
+For CI, the cleanest reproducible static build can use `cross` so the linker
+toolchain is pinned inside a Docker image instead of relying on host packages:
 
 ```bash
-cargo install cargo-zigbuild         # one-time; pulls a pinned zig
-cargo zigbuild --release -p forge-cli --target x86_64-unknown-linux-musl
+cargo install cross
+cross build --release -p forge-cli --target x86_64-unknown-linux-musl
 ```
-Alternatively `cargo install cross` and `cross build --release -p forge-cli --target x86_64-unknown-linux-musl` (runs the build in a pinned Docker image — needs Docker available, which under WSL2 means Docker Desktop's WSL integration or `dockerd` inside the distro).
+
+This needs Docker available, which under WSL2 means Docker Desktop's WSL
+integration or `dockerd` inside the distro.
 
 ### 4.3 arm64
 
@@ -178,7 +181,7 @@ For Raspberry Pi / arm64 servers / Apple-silicon-Linux:
 
 ```bash
 rustup target add aarch64-unknown-linux-musl
-cargo zigbuild --release -p forge-cli --target aarch64-unknown-linux-musl
+cross build --release -p forge-cli --target aarch64-unknown-linux-musl
 ```
 
 ### 4.4 Acceptance check — static binary

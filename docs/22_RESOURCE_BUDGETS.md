@@ -117,7 +117,7 @@ Misses in any p95 are CI-failing on the affected platform.
 ### 7.3 Per-platform context
 
 - **iOS / macOS WKWebView**: bridge round-trip is dominated by JSON encode/decode and main-thread dispatch. Avoid synchronous bridges.
-- **Android WebView**: `WebMessageListener` callbacks land on a background thread; serialize to main only when touching UI. JNI calls into Zig dominate `core.step` cost.
+- **Android WebView**: `WebMessageListener` callbacks land on a background thread; serialize to main only when touching UI. JNI calls into Forge dominate `core.step` cost.
 - **WebView2**: cold start can spike if WebView2 runtime is uninstalled — measurement assumes WebView2 is installed.
 - **WebKitGTK**: GTK4 main loop interleaves UI and message dispatch; expect higher variance.
 - **Server**: HTTP overhead replaces WebView IPC; p95 is much lower.

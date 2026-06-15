@@ -4,7 +4,7 @@
   "steps": [
     "open runtime session",
     "write bridge call",
-    "step Zig core",
+    "step Forge core",
     "create runtime snapshot",
     "run smoke tests"
   ],

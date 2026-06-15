@@ -12,39 +12,39 @@ milestone (SS-1/2, forge-sync crate committed, convergence fixtures green).
 
 **Status legend:** `done` (built + tested in forge/) · `partial` (substrate
 exists, gaps remain) · `planned` (in prd-merged, not built) · `dropped`
-(legacy Zig/WebView-only; intentionally not carried — recorded, not built).
+(legacy v0.4/WebView-only; intentionally not carried - recorded, not built).
 
 **Architecture note:** the pivot (docs/00_V1_PIVOT.md) changed the *mechanism*
-(Zig→Rust, HTML→TS, WebView→QuickJS, fixed→dynamic schema), not the *feature
+(legacy core to Rust, HTML to TS, WebView to QuickJS, fixed to dynamic schema), not the *feature
 ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 ---
 
 ## Done — M0a substrate (built + tested)
 
-| Area | Status | docs source | prd-merged | forge/ |
+| Area | Status | source | prd-merged | forge/ |
 |---|---|---|---|---|
-| Deterministic core vocabulary (errors, ids, envelopes) | done | 01, 06 | CR-A1/A4 | crates/domain |
+| Deterministic core vocabulary (errors, ids, envelopes) | done | core/runtime PRDs | CR-A1/A4 | crates/domain |
 | Canonical code hashing (provenance) | done | 21 | CR-9/010 | crates/domain (hash) |
 | SQLite KV/oplog substrate + records projection | done | 27, 28 | DL-4 | crates/storage |
 | Append-only CRDT chunk history | done | 21 | DL-6 | crates/storage |
-| Loro CRDT records/text + convergence | done | 33 | DL-1/3/9 | crates/crdt |
+| Loro CRDT records/text + convergence | done | sync/data PRDs | DL-1/3/9 | crates/crdt |
 | Patch vs replace (DL-9 field preservation) | done | — | DL-9 | crates/crdt |
 | Dynamic schema registry, additive-only, stable field ids | done | 19, 27 | DL-7/8 | crates/schema |
 | Capability + minimal RBAC engine | done | 07, 20 | SC-8/10 | crates/policy |
-| QuickJS sandbox, zero ambient capability | done | 06, 07 | CR-1/2 | crates/runtime |
+| QuickJS sandbox, zero ambient capability | done | runtime/security PRDs | CR-1/2 | crates/runtime |
 | Resource limits (cpu/mem/fuel/host-call/storage/log) | done | 22 | CR-5 | crates/runtime |
 | Deterministic record/replay | done | 21 | CR-8/11 | crates/runtime |
 | TS→JS transpile (SWC, in-core, offline) | done | — | CR-14 | crates/pipeline |
 | Static policy scan (eval/Function/fetch/… reject) | done | 07 | CR-13/LM-9 | crates/pipeline |
 | Engine-level eval/Function disable (2-layer) | done | 07 | CR-13 | crates/runtime |
-| Command/event facade + spine wiring (WorkspaceCore) | done | 03, 31 | CR-A1/A2 | crates/core |
+| Command/event facade + spine wiring (WorkspaceCore) | done | runtime/core PRDs | CR-A1/A2 | crates/core |
 | StorageHostBridge (ctx.db→SQLite write, ctx.ui→patch) | done | 03 | CR-3/DL-4 | crates/core |
 | CLI harness `forge demo` + e2e proof | done | 32 | PS-5 | crates/cli |
 
 ## Done — data layer completion (post-spine)
 
-| Area | Status | docs source | prd-merged | forge/ |
+| Area | Status | source | prd-merged | forge/ |
 |---|---|---|---|---|
 | CRDT-backed record writes + projection rebuild (source of truth) | done | 27, 28 | DL-4/DL-6 | crates/storage (crdt_write), crates/core (bridge) |
 | Typed query DSL + planner + aggregates | done | 03, 27 | DL-5/DL-15 | crates/storage (query) |
@@ -56,7 +56,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 ## Done — runtime/security feature depth
 
-| Area | Status | docs source | prd-merged | forge/ |
+| Area | Status | source | prd-merged | forge/ |
 |---|---|---|---|---|
 | Network egress policy (allowlist, DNS-pin, private-network deny) | done | 24 | SC-5 | crates/policy (net, net_url) |
 | `ctx.net.fetch` applet host call + injectable HttpClient seam | done | 03, 24 | CR-3/SC-5 | crates/runtime (net), crates/core (bridge) |
@@ -66,7 +66,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 ## Done — sync milestone (in-process, SS-1/2)
 
-| Area | Status | docs source | prd-merged | forge/ |
+| Area | Status | source | prd-merged | forge/ |
 |---|---|---|---|---|
 | In-process CRDT chunk-diff sync (both-direction, content-addressed frontier) | done | 34 | SS-1/SS-2 | crates/sync |
 | Sync convergence fixtures (10 canonical scenarios, idempotence proofs) | done | 34 | SS-2 | forge/fixtures/sync/ |
@@ -74,7 +74,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 ## Done — FFI / platform binding
 
-| Area | Status | docs source | prd-merged | forge/ |
+| Area | Status | source | prd-merged | forge/ |
 |---|---|---|---|---|
 | C ABI thin layer (forge-ffi, panic catch, JSON envelope, opaque handle) | done | 05, 32 | PS-* | crates/ffi |
 | Windows C# shell skeleton (WinUI3, Forge.Core, Forge.Windows.sln) | partial | 05 | PS-* | windows/ (remote team) |
@@ -85,7 +85,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 | Area | Status | docs | prd-merged | milestone |
 |---|---|---|---|---|
-| JSC engine + cross-engine conformance suite | planned | 06 | CR-2/CR-12 | M0b |
+| JSC engine + cross-engine conformance suite | planned | runtime PRD | CR-2/CR-12 | M0b |
 | Full offline type-check (tsgo sidecar / tsc worker) | planned | — | CR-15 | M0b |
 | RBAC v0 (customizable roles enforced) | partial | 07 | SC-11 | M0b |
 | Renderer zero (minimal DOM renderer, UI contract validation) | planned | 23 | UI-13 | M0b |
@@ -106,7 +106,7 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 | Resource budgets surfaced to review UI | partial | 22 | CR-5/UI-18 | budgets enforced; UI surface planned |
 | WebSocket sync transport + server-side RBAC | planned | 34 | SS-7 | SS-1/2 done in-process; network transport deferred to M2 |
 | Home-server sync (cloud + embedded), migration | planned | 34 | SS-* | M2 |
-| CRDT collab notebook | partial | 33 | DL-2 | CRDT machinery done; notebook product layer planned |
+| CRDT collab notebook | partial | sync/data PRDs | DL-2 | CRDT machinery done; notebook product layer planned |
 | WASM lane (QuickJS-WASM + SQLite-WASM backend) | partial | — | CR-12/15 | domain/schema/policy/pipeline wasm-clean; storage/runtime native-gated; full WASM = M0a-exit gate |
 
 ## Planned — later milestones (M1+)
@@ -121,15 +121,15 @@ ambitions*. Most v0.4 features are `neutral`/`port-needed` and carry into v1.
 
 ---
 
-## Dropped — legacy Zig/WebView-only (recorded, not built)
+## Dropped - legacy v0.4/WebView-only (recorded, not built)
 
 | Area | docs | why dropped |
 |---|---|---|
-| Zig event→action core + C FFI | 06 | replaced by Rust core |
+| Legacy event-to-action core + C FFI | removed legacy core spec | replaced by Rust core |
 | Native WebView host mounting (WKWebView/WebView2/GTK/WinRT) | 05 | replaced by QuickJS realms + thin renderers |
 | Build-free HTML/CSS/vanilla-JS app packages | 04 | replaced by TS applets (SWC transpile) |
 | Fixed bridge methods (`AppRuntime.call`) | 03 | replaced by typed `ctx` host API |
-| Sandboxed iframe execution | 06 | replaced by QuickJS realm sandbox |
+| Sandboxed iframe execution | removed legacy runtime spec | replaced by QuickJS realm sandbox |
 | Five hand-written native hosts vs reference-host oracle | 05, 32 | replaced by one Rust core + generated bindings |
 | Codex platform MCP / control plugin (v0.4 shape) | 14, 16 | superseded by the Claude⇄Codex task board + v1 LLM pipeline |
 

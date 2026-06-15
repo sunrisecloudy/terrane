@@ -8,7 +8,7 @@ The Terrane v0.4 specification line (`docs/00_PRD.md` and the docs it governs) i
 
 | | v0.4 (legacy/prototype) | v1 (normative) |
 |---|---|---|
-| Core | Zig state machine + Zig server | Single Rust core (`forge-core`) |
+| Core | legacy state machine + legacy server | Single Rust core (`forge-core`) |
 | Generated apps | Build-free HTML/CSS/vanilla JS packages | TypeScript applets/scripts, SWC-transpiled |
 | Execution | Sandboxed iframe/WebView per host | QuickJS-WASM / QuickJS-native / JavaScriptCore behind a `JsEngine` trait |
 | App UI | Apps render their own HTML | Declarative component tree, native renderers |
@@ -17,7 +17,8 @@ The Terrane v0.4 specification line (`docs/00_PRD.md` and the docs it governs) i
 
 ## Status of the v0.4 line
 
-- `docs/00_PRD.md` and v0.4 specs remain in the repo as **reference for the prototype implementation**. They are no longer the target of new work.
+- `docs/00_PRD.md` remains as a stable pointer for older links. The retired
+  v0.4 implementation docs were removed or replaced by v1 pointers.
 - The v0.4 rule "no TypeScript / no build step for generated apps" **does not apply** to the v1 plan; v1 makes TypeScript authoring (with an offline in-core transpile) the core product. The v0.4 rule remains true only of the legacy webapp packages.
 - Salvage targets from v0.4 (testing discipline, fixtures, signing approach, security model, example apps as scenarios) are noted in `prd-merged/DECISIONS.md` context; the implementations are not carried forward.
 

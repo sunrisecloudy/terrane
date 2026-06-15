@@ -1,6 +1,6 @@
 # CRDT Fixture Generator
 
-Generates Loro-backed notebook CRDT conformance fixtures for `docs/33_CRDT_COLLAB_NOTEBOOK_PRD.md`.
+Generates Loro-backed notebook CRDT conformance fixtures for the Forge sync and CRDT contracts.
 
 Run from the repo root:
 

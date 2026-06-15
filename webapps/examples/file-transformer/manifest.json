@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "runtimeVersion": "0.1.0",
   "entry": "index.html",
-  "description": "Open a text file, transform content through Zig core, and save output.",
+  "description": "Open a text file, transform content through Forge core, and save output.",
   "contentRating": {
     "scheme": "app-store",
     "label": "4+",

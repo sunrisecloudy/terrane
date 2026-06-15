@@ -7,7 +7,7 @@ This tool connects Codex to the platform dev control plane over MCP stdio.
 The MCP server exposes typed tools to Codex. It should not implement business logic. It forwards tool calls to a platform control plane and normalizes results.
 
 ```text
-Codex -> MCP server -> dev control plane -> native host/runtime/Zig core
+Codex -> MCP server -> dev control plane -> native host/runtime/Forge core
 ```
 
 ## Environment

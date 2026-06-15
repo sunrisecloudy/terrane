@@ -32,7 +32,7 @@ The intended user path is a packaged macOS app from GitHub Releases:
 
 The disk image contains a macOS app bundle with the runtime, bundled example
 apps, SQLite migrations, and the Forge core library. Users should not need
-`git submodule`, Zig, Swift, Rust, or Node just to open the app.
+`git submodule`, native toolchains, Rust, or Node just to open the app.
 
 Until the first GitHub Release is published, use the local preview below.
 

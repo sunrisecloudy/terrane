@@ -4,15 +4,16 @@
 
 This document defines the product and architecture split for a local-first Terrane platform where the open-source server is embedded inside the client as a local platform engine, while the hosted SaaS remains a separate private product surface.
 
-This PRD is a product slice layered on top of the v0.4 platform baseline. The following documents remain normative and are not replaced by this PRD:
+This PRD is a product slice layered on top of the v1 Forge platform baseline. The following documents remain normative and are not replaced by this PRD:
 
-- `docs/00_PRD.md` for platform scope and milestone baseline.
-- `docs/03_RUNTIME_API_SPEC.md` for bridge methods and request shape.
-- `docs/04_WEBAPP_PACKAGE_SPEC.md` for generated app package format.
+- `prd-merged/00-master-prd.md` for platform scope and milestone baseline.
+- `prd-merged/03-sync-server-prd.md` for sync/server requirements.
+- `forge/spec/` for runtime, host, sync, and conformance details.
+- `docs/04_WEBAPP_PACKAGE_SPEC.md` for retained package-format compatibility.
 - `docs/07_SECURITY_MODEL.md` for sandbox and trust boundary.
 - `docs/17_APP_SIGNING_AND_TRUST.md` for package canonicalization and signing.
 - `docs/27_DATABASE_SCHEMA.md` for platform persistence.
-- `docs/32_REFERENCE_HOST_SPEC.md` for reference-host conformance.
+- `docs/35_PUBLIC_CONTRACT_EXPORT.md` for public contract export.
 
 ## 1. Product summary
 
@@ -91,7 +92,7 @@ The Terrane team operating hosted sync, billing, signing, distribution, moderati
 
 The current repo already has the core ingredients for this split:
 
-- `server/` is a partial Zig HTTP server with `/health`, `/core/step`, `/bridge`, package validation/install/signing helpers, token-gated control commands, safe DB inspection, SQLite persistence, snapshots, rollback, and production-mode dev-control disabling.
+- `forge/crates/server/` is the local Forge HTTP server with `/health`, `/bridge`, package validation/install/signing helpers, token-gated control commands, safe DB inspection, SQLite persistence, snapshots, rollback, and production-mode dev-control disabling.
 - `tools/reference-host/` is the reference implementation of the bridge contract and remains the conformance oracle.
 - `runtime-web/` loads generated apps into sandboxed frames and routes bridge calls through `AppRuntime.call`.
 - Native hosts already own platform services, SQLite persistence, WebView bridge dispatch, and dev-control surfaces.
@@ -208,7 +209,7 @@ local server
   validates again as the security boundary
   dispatches storage/network/dialog/mock/core/package/control methods
   persists to SQLite
-  calls Zig core via FFI where required
+  calls Forge core via FFI where required
 
 SQLite data directory
   app registry
@@ -344,7 +345,7 @@ Desktop release artifacts must include:
 - runtime-web assets;
 - generated example apps where applicable;
 - SQLite migrations;
-- Zig core library;
+- Forge core library;
 - local server executable;
 - version manifest with hashes.
 
@@ -447,7 +448,8 @@ The sync service must not silently merge records without a deterministic conflic
 
 Initial policy:
 
-- CRDT notebook data uses CRDT merge rules from the notebook PRD.
+- CRDT notebook data uses the merge rules from
+  `prd-merged/03-sync-server-prd.md` and `forge/spec/sync-protocol.md`.
 - Immutable package versions merge by content hash and version id.
 - App install state uses server-assigned revisions and may require user/admin resolution on conflict.
 - Generic app storage sync uses per-key revisions. Concurrent edits to the same key create a conflict record unless the app declares a supported merge strategy in a future manifest extension.
@@ -537,11 +539,10 @@ The public repo should contain:
 docs/
 schemas/
 runtime-web/
-server/
+forge/crates/server/
 tools/reference-host/
 tools/codex-platform-mcp/
-zig-core/
-zig-crdt/
+forge/
 native/
 webapps/examples/
 tests/
@@ -596,7 +597,7 @@ Public release artifacts:
 - local server executable;
 - runtime-web archive;
 - example app archive;
-- Zig core libraries;
+- Forge core libraries;
 - desktop client artifacts if open-sourced;
 - schemas and fixtures;
 - release manifest with hashes.

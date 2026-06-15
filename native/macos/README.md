@@ -41,7 +41,7 @@ Current implementation status:
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
 - Accepts runtime-owned bridge envelopes from the main WKWebView frame and derives native permissions/policy from the envelope app id.
 - Loads `libforge_ffi.dylib` through a small C shim for `core.step`, using `TERRANE_FORGE_FFI_DYLIB` first and then repo-local Forge build outputs.
-- Routes CRDT/sync capability checks through the Forge CoreCommand ABI (`sync.export`) instead of a separate Zig CRDT dylib.
+- Routes CRDT/sync capability checks through the Forge CoreCommand ABI (`sync.export`) instead of a separate retired CRDT dylib.
 - Reports `core.step` in `runtime.capabilities` from the actual Forge FFI library load status and returns structured `platform_unsupported` when the library is absent.
 
 

@@ -105,17 +105,17 @@ adds that support.
 
 | Need | Read |
 |---|---|
-| Product baseline | [docs/00_PRD.md](docs/00_PRD.md) |
-| Architecture | [docs/01_ARCHITECTURE.md](docs/01_ARCHITECTURE.md) |
+| Product baseline | [prd-merged/00-master-prd.md](prd-merged/00-master-prd.md) |
+| Architecture | [prd-merged/01-core-runtime-prd.md](prd-merged/01-core-runtime-prd.md) |
 | Runtime bridge | [docs/03_RUNTIME_API_SPEC.md](docs/03_RUNTIME_API_SPEC.md) |
 | Generated app format | [docs/04_WEBAPP_PACKAGE_SPEC.md](docs/04_WEBAPP_PACKAGE_SPEC.md) |
-| Native/platform rules | [docs/05_NATIVE_PLATFORM_REQUIREMENTS.md](docs/05_NATIVE_PLATFORM_REQUIREMENTS.md) |
+| Native/platform rules | [prd-merged/01-core-runtime-prd.md](prd-merged/01-core-runtime-prd.md), [forge/spec/](forge/spec/) |
 | Security model | [docs/07_SECURITY_MODEL.md](docs/07_SECURITY_MODEL.md) |
 | Test plan | [docs/08_TEST_PLAN.md](docs/08_TEST_PLAN.md) |
 | Codex control plane | [docs/14_CODEX_CONTROL_PLUGIN.md](docs/14_CODEX_CONTROL_PLUGIN.md) |
 | Repair loop | [docs/25_CODEX_REPAIR_LOOP.md](docs/25_CODEX_REPAIR_LOOP.md) |
 | Database schema | [docs/27_DATABASE_SCHEMA.md](docs/27_DATABASE_SCHEMA.md) |
-| Reference host | [docs/32_REFERENCE_HOST_SPEC.md](docs/32_REFERENCE_HOST_SPEC.md) |
+| Reference host | [tools/reference-host/](tools/reference-host/), [docs/35_PUBLIC_CONTRACT_EXPORT.md](docs/35_PUBLIC_CONTRACT_EXPORT.md) |
 | Local/SaaS split | [docs/34_LOCAL_FIRST_OSS_SERVER_AND_SAAS_PRD.md](docs/34_LOCAL_FIRST_OSS_SERVER_AND_SAAS_PRD.md) |
 
 ## Working Habits

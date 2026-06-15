@@ -8,7 +8,7 @@ Checked-in golden cases:
 - `storage-form` — form validation plus storage read/write.
 - `network-policy` — network.request through an allowlisted origin.
 - `file-dialog` — open/save dialog bridge behavior.
-- `core-step` — app calling Zig core and rendering returned actions.
+- `core-step` — app calling Forge core and rendering returned actions.
 - `large-table` — virtual-list/table behavior under resource budgets.
 
 Codex should add or update golden fixtures whenever a new runtime primitive is added.
