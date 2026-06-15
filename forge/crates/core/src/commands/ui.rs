@@ -391,33 +391,48 @@ impl WorkspaceCore {
         // regardless of how the dispatch finished).
         self.apply_watch_intents(applet_id.as_str(), &watch_intents)?;
 
+        run.run_id = unique_run_id(&run.code_hash, invocation);
+
+        // REVIEW 179 P2 (bound the overshoot to ONE record): the dispatch's OWN run
+        // record is the PRODUCER record — it must be counted/saved BEFORE any watcher
+        // callback admission, mirroring `runtime.run`'s order. `notify_committed_
+        // mutations` (below) re-enters watcher callbacks, each of which calls the
+        // pre-flight `admit_run_or_reject` gate; if a callback admission read the
+        // PRE-dispatch `run_logs` value (because the dispatch record had not landed yet)
+        // it could be admitted alongside the dispatch record, pushing `run_logs` TWO
+        // records past the cap. By persisting the dispatch run record here FIRST, the
+        // callback admission sees the dispatch record already counted, so a near-cap
+        // dispatch-with-watch overshoots by at most ONE record (the mandatory dispatch
+        // record) and the next callback/run is then rejected pre-flight.
+        //
+        // The dispatch was already ADMITTED pre-flight (`admit_run_or_reject` above), so
+        // this mandatory record ALWAYS persists now (CR-9) — the run_logs cap is the
+        // pre-flight admission gate, never a post-execution drop. This save is the SAME
+        // record the success / no-op / failed paths below previously persisted; doing it
+        // once here keeps the producer-before-callback order on every branch.
+        self.store_run_program(run.run_id.as_str(), &installed)?;
+        self.store_program(&installed)?;
+        self.store
+            .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
+
         // Deliver live-query notifications for the record writes the handler committed
         // through `ctx.db` (DL-16), on EVERY dispatch path: the handler's writes
         // already landed through the live bridge, so a watch must fire regardless of
         // whether the dispatch then succeeded, threw, or rendered nothing. Each
         // captured write is one committed-transaction notification turn (its own
-        // version, in apply order); the writes are NOT re-applied.
+        // version, in apply order); the writes are NOT re-applied. This runs AFTER the
+        // producer run record above so a watcher callback's admission counts against the
+        // already-saved dispatch record (review 179 P2).
         self.notify_committed_mutations(applet_id.as_str(), &applied_mutations)?;
-
-        run.run_id = unique_run_id(&run.code_hash, invocation);
 
         // A failed dispatch (unknown handler → ValidationError, a handler throw →
         // RuntimeError, an invalid payload the handler rejected) is a typed
-        // rejection: persist the failed record (so the denial/throw is auditable +
-        // replayable), emit a failure event, and surface the handler's error. The
-        // last-known tree is NOT advanced — the applet's prior view stays the diff
-        // base (the error vectors' "tree_unchanged").
+        // rejection: the failed record was already persisted above (so the denial/throw
+        // is auditable + replayable), so here we just emit a failure event and surface
+        // the handler's error. The last-known tree is NOT advanced — the applet's prior
+        // view stays the diff base (the error vectors' "tree_unchanged").
         if let forge_domain::RunOutcome::Failed { error } = &run.outcome {
             let error = error.clone();
-            self.store_run_program(run.run_id.as_str(), &installed)?;
-            self.store_program(&installed)?;
-            // DL-22 (review 178): the dispatch was already ADMITTED pre-flight, so the
-            // failed-dispatch run record ALWAYS persists now — it is the auditable,
-            // replayable record of the handler's denial/throw (CR-9). The run_logs cap is
-            // enforced as the pre-flight admission gate above, not here, so an admitted
-            // run never has its mandatory record dropped after the handler ran.
-            self.store
-                .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
             // The event carries BOTH the typed `CoreError` (for transport/audit)
             // AND the renderer-facing T034 code (`ui.action_not_found` for an
             // unknown handler, `runtime.handler_error` for a handler throw), so a
@@ -451,13 +466,9 @@ impl WorkspaceCore {
                     // No prior tree and no render: nothing to diff against. This is a
                     // degenerate dispatch (a handler that neither renders nor had a
                     // prior view); treat it as an empty-patch no-op over an empty base.
-                    self.store_run_program(run.run_id.as_str(), &installed)?;
-                    self.store_program(&installed)?;
-                    // DL-22 (review 178): admitted pre-flight, so the no-op dispatch run
-                    // record ALWAYS persists now (CR-9); the run_logs cap is the pre-flight
-                    // admission gate above, not a post-execution drop.
-                    self.store
-                        .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
+                    // The run record (+ its program artifacts) were already persisted up
+                    // front (review 179 P2: producer record before callback admission),
+                    // so this no-op branch just returns the empty patch.
                     return Ok(serde_json::json!({
                         "applet_id": applet_id,
                         "action_ref": action_ref,
@@ -477,18 +488,11 @@ impl WorkspaceCore {
         })?;
 
         // Persist the new tree as the next diff base BEFORE returning, so the next
-        // event in the session diffs against this one (the loop's state link).
+        // event in the session diffs against this one (the loop's state link). The run
+        // record (+ its replay artifacts) were already persisted up front (review 179
+        // P2: producer record before callback admission), so the dispatch replays
+        // byte-identically from that already-saved record.
         self.store_ui_tree(applet_id.as_str(), &tree_json)?;
-
-        // Pin the per-run replay artifact + persist the recorded run (event in the
-        // trace) so the dispatch replays byte-identically, exactly like a run.
-        // DL-22 (review 178): admitted pre-flight, so the run record ALWAYS persists now
-        // (CR-9) — the run_logs cap is enforced as the pre-flight admission gate above,
-        // never as a post-execution drop that would strand the handler's committed writes.
-        self.store_run_program(run.run_id.as_str(), &installed)?;
-        self.store_program(&installed)?;
-        self.store
-            .transact(|tx| forge_storage::Store::save_run_tx(tx, &run))?;
 
         // Emit the UI patch event — the link the renderer consumes to advance the
         // live tree (UI-1/UI-4).

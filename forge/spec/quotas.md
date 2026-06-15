@@ -210,6 +210,34 @@ admission gate may let the mandatory record push `run_logs` up to **one record p
 cap**; that bounded overshoot is acceptable because the record is mandatory and the NEXT
 run is then rejected pre-flight (so usage stays bounded at one record over).
 
+The overshoot is bounded to **exactly one** record even when an admitted run drives a
+**downstream** run (a `db.watch` callback re-entered by a notification). Two rules keep it
+at one:
+
+1. **PRODUCER record before downstream admission.** A producer command that delivers
+   live-query notifications (`runtime.run`, `ui.dispatch_event`, and a triggering
+   mutation) assigns and **saves its OWN run record BEFORE** any watcher callback is
+   admitted. So a downstream callback's pre-flight admission reads the **already-counted**
+   producer record, not the stale pre-producer usage — it cannot be admitted *alongside*
+   the producer record off the same headroom. (`ui.dispatch_event` was the gap: it
+   delivered notifications, admitting/saving a watcher callback run, *before* assigning its
+   dispatch run record, so a near-cap dispatch-with-watch could land **two** records past
+   the cap. It now saves the dispatch record first, mirroring `runtime.run`.)
+
+2. **A downstream callback admission denial is a SKIPPED delivery, not a producer
+   failure.** When a watcher callback re-entered during notification delivery cannot be
+   admitted over the `run_logs` cap, its delivery is **skipped** — the callback never runs
+   (no `ctx.db` write, no callback run record) — and the producer command (whose own
+   durable effects + run record already committed) stays **successful**. Propagating the
+   callback's `ResourceLimitExceeded` out of the producer would report a *failed* run/write
+   whose triggering side effects in fact landed. The skip is a **recorded decision** (a
+   `db.watch.callback_rejected` envelope on the delivered batch, alongside a
+   `db.watch.callback_rejected` event) so replay deterministically reproduces the identical
+   skipped-callback outcome — the admission gate is a pure function of committed state. The
+   recorded decision is kept SEPARATE from the `db.watch.notification` replay stream, which
+   stays a pure notification sequence. Only the run-log **admission** denial becomes a skip;
+   any other callback error still propagates.
+
 The workspace TOTAL is deliberately **not** part of the admission gate: a run that FAILS
 because its `ctx.db` write was rejected at the records boundary (above) committed **no**
 durable write (its records transaction rolled back), so it has no unreplayable side

@@ -218,12 +218,18 @@ fn run_logs_cap_rejects_runtime_run_and_ui_dispatch_preflight_with_no_side_effec
     assert_eq!(run_logs_bytes(&core), cap, "run_logs usage still unchanged after the dispatch rejection");
 }
 
-/// P1 (review 178): a `db.watch` callback whose re-entry cannot be admitted over the
-/// tightened `run_logs_cap` is REJECTED PRE-FLIGHT — `commit_and_notify` propagates the
-/// typed `ResourceLimitExceeded`, the callback never runs (no `ctx.db` write), and no
-/// callback run record is written.
+/// P1 (review 179): a downstream `db.watch` callback whose re-entry cannot be admitted
+/// over the tightened `run_logs_cap` is SKIPPED, NOT failed — the UPSTREAM producer (here
+/// the triggering `commit_and_notify` mutation) stays SUCCESSFUL because its own durable
+/// effects already committed, and the skipped callback is RECORDED as a
+/// `db.watch.callback_rejected` decision (replay reproduces the identical skip). The
+/// callback never runs (no `ctx.db` write) and no callback run record is written.
+///
+/// This REPLACES the review-178 behavior where the callback admission denial BUBBLED OUT
+/// of the producer, reporting a failed run/write whose triggering side effects in fact
+/// landed.
 #[test]
-fn run_logs_cap_rejects_watch_callback_preflight_with_no_side_effects() {
+fn run_logs_cap_skips_watch_callback_without_failing_producer() {
     let mut core = WorkspaceCore::in_memory("ws-rl-watch").unwrap();
     install(&mut core, "watcher", WATCH_TS);
 
@@ -240,33 +246,145 @@ fn run_logs_cap_rejects_watch_callback_preflight_with_no_side_effects() {
     let runs_before = run_record_count(&core);
 
     // A committed mutation that enters the watched result would dispatch the onWatch
-    // callback; the callback re-entry is REFUSED at the pre-flight admission gate, and the
-    // whole notify propagates the typed rejection.
+    // callback; the callback re-entry cannot be admitted over the run_logs cap. The
+    // PRODUCER mutation (`tasks/1`) still commits and `commit_and_notify` SUCCEEDS — the
+    // callback delivery is recorded as SKIPPED, not bubbled out as an error.
     let insert = Mutation::Insert {
         collection: "tasks".into(),
         id: Some("tasks/1".into()),
         fields: json!({ "title": "open task", "done": false }).as_object().unwrap().clone(),
         logical_at: Some(10),
     };
-    // `tasks/1` is the triggering write the test issues directly — it commits as part of
-    // commit_and_notify BEFORE the callback dispatch. The callback's OWN `ctx.db` write
-    // ("callback wrote") must NOT land, and no callback run record must be persisted.
-    let err = core.commit_and_notify(&insert).expect_err(
-        "the watch callback's run admission must be rejected over the run_logs cap",
+    let batch = core.commit_and_notify(&insert).expect(
+        "the producer mutation must SUCCEED — a downstream callback admission denial is a \
+         skipped delivery, not a producer failure",
     );
-    assert_eq!(err.code(), "ResourceLimitExceeded", "the callback rejection is a quota error: {err}");
-    assert!(err.to_string().contains("no data was deleted"), "carries the cleanup/export suggestion: {err}");
+
+    // The producer's own write landed (its durable effect committed).
+    let producer_wrote = core
+        .store()
+        .list_records("tasks")
+        .unwrap()
+        .into_iter()
+        .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("open task"));
+    assert!(producer_wrote, "the triggering producer write commits even when the callback is skipped");
+
+    // The callback delivery was SKIPPED (recorded), not run: the watch fired (notification
+    // delivered + recorded in the pure notification stream), but no callback ran.
+    assert!(batch.callback_runs.is_empty(), "a skipped callback never produces a callback run id");
+    // The skip is a RECORDED decision (a `db.watch.callback_rejected` envelope) so replay
+    // reproduces the identical skipped-callback outcome. It rides its OWN field, NOT the
+    // notification `recorded_calls` stream (which stays a pure db.watch.notification
+    // sequence).
+    assert_eq!(batch.rejected_callbacks.len(), 1, "exactly one over-cap callback delivery was skipped");
+    let recorded_skip = &batch.rejected_callbacks[0];
+    assert_eq!(recorded_skip.method, "db.watch.callback_rejected", "the skip is recorded as a db.watch.callback_rejected decision");
+    assert_eq!(recorded_skip.args["watch_id"], json!("watch:open"), "the recorded skip names the watch");
+    assert_eq!(recorded_skip.args["reason"], json!("run_logs_cap"), "the recorded skip names the run_logs cap");
+    assert_eq!(recorded_skip.response, json!({ "delivered": false }), "a skipped callback was NOT delivered");
+    // The notification stream itself carries ONLY db.watch.notification envelopes (the
+    // skip is NOT folded in), so replay_notification_stream stays well-formed.
+    assert!(
+        batch.recorded_calls.iter().all(|c| c.method == "db.watch.notification"),
+        "the recorded notification stream stays a pure db.watch.notification sequence"
+    );
+
     // NO unreplayable callback side effects: the callback's "callback wrote" record never
-    // landed, and no callback run record was persisted.
+    // landed, and no callback run record was persisted (the callback never ran).
     let callback_wrote = core
         .store()
         .list_records("tasks")
         .unwrap()
         .into_iter()
         .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
-    assert!(!callback_wrote, "a rejected watch callback commits NO `ctx.db` write");
-    assert_eq!(run_record_count(&core), runs_before, "a rejected watch callback persists NO run record");
-    assert!(run_logs_bytes(&core) <= cap, "run_logs usage never exceeds the cap");
+    assert!(!callback_wrote, "a skipped watch callback commits NO `ctx.db` write");
+    assert_eq!(run_record_count(&core), runs_before, "a skipped watch callback persists NO run record");
+    assert!(run_logs_bytes(&core) <= cap, "run_logs usage never exceeds the cap when the callback is skipped");
+}
+
+/// P2 (review 179): a NEAR-CAP `ui.dispatch_event` whose handler write enters a watched
+/// result admits its OWN (producer) run record, but the downstream watcher CALLBACK is
+/// then SKIPPED over the cap — so `run_logs` ends at most ONE record past the cap (the
+/// mandatory dispatch record), NOT two (the dispatch record AND a callback record both
+/// admitted off the stale pre-dispatch usage). The next run is then rejected pre-flight.
+///
+/// Before the fix the dispatch run record was assigned/saved AFTER notifications were
+/// delivered, so a watcher callback's admission read the PRE-dispatch `run_logs` value and
+/// passed alongside the dispatch record → TWO records beyond the cap. The fix saves the
+/// dispatch (producer) record BEFORE callback admission (mirroring `runtime.run`'s order),
+/// so the callback admission counts against the already-saved dispatch record and is
+/// skipped.
+#[test]
+fn ui_dispatch_with_watch_overshoots_run_logs_by_at_most_one_record() {
+    let mut core = WorkspaceCore::in_memory("ws-rl-overshoot").unwrap();
+    // `app` carries the `bump` handler (its `ctx.db.insert` of a `done:false` task ENTERS
+    // the watched result); `watcher` owns the `done = false` watch + onWatch callback.
+    install(&mut core, "app", DEMO_TS);
+    install(&mut core, "watcher", WATCH_TS);
+
+    // Establish `app`'s render base (so `ui.dispatch_event` has a diff base / session) and
+    // register the watch.
+    let main_resp = run_with_title(&mut core, "app", "base");
+    assert!(main_resp.ok && main_resp.payload["ok"] == Value::Bool(true), "app main must establish a render base");
+    let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+    assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
+    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+
+    // Pin the run_logs cap to ONE byte over the current usage: the NEXT run (the dispatch)
+    // is admitted (usage < cap), but once its mandatory run record lands, usage > cap, so a
+    // watcher callback admitted DURING notification delivery is refused — UNLESS the
+    // dispatch record were counted after the callback (the bug), in which case BOTH would
+    // be admitted off the stale usage.
+    let cap = run_logs_bytes(&core) + 1;
+    pin_run_logs_cap(&mut core, cap);
+
+    let runs_before = run_record_count(&core);
+    core.events_mut().drain();
+
+    // The dispatch's `bump` handler inserts a `done:false` task that ENTERS the watch, so a
+    // notification fires and would re-enter the watcher's onWatch callback. The dispatch is
+    // admitted; its run record is saved BEFORE the callback admission, so the callback is
+    // SKIPPED (recorded), not admitted.
+    let dispatch = core.handle(cmd(
+        "ui.dispatch_event",
+        Some("app"),
+        json!({ "action_ref": "bump", "event_payload": {} }),
+    ));
+    assert!(dispatch.ok, "the near-cap ui.dispatch_event itself is admitted and succeeds: {dispatch:?}");
+
+    // EXACTLY ONE new run record landed — the producer dispatch record. The watcher
+    // callback was skipped (no second admitted run record), so the cap overshoots by at
+    // most ONE record, not two.
+    assert_eq!(
+        run_record_count(&core),
+        runs_before + 1,
+        "the dispatch admits ONE producer record; the over-cap watcher callback is skipped (NOT a second admitted record)"
+    );
+    // The callback's `ctx.db` write never landed (it never ran).
+    let callback_wrote = core
+        .store()
+        .list_records("tasks")
+        .unwrap()
+        .into_iter()
+        .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
+    assert!(!callback_wrote, "the skipped watcher callback commits NO `ctx.db` write");
+    // The skip is observable as a `db.watch.callback_rejected` event (the recorded decision
+    // also rides the delivered batch's recorded calls for replay).
+    let events = core.events_mut().drain();
+    assert!(
+        events.iter().any(|e| e.kind == "db.watch.callback_rejected"
+            && e.payload["watch_id"] == json!("watch:open")
+            && e.payload["reason"] == json!("run_logs_cap")),
+        "the skipped over-cap callback emits db.watch.callback_rejected: {events:?}"
+    );
+
+    // The NEXT run is now rejected PRE-FLIGHT — usage is one record past the cap, so the
+    // admission gate refuses a fresh run (the overshoot stays bounded at one record).
+    let next = run_with_title(&mut core, "app", "next");
+    let (code, detail) = rejection(&next).expect("the next run must be rejected pre-flight over the run_logs cap");
+    assert_eq!(code, "ResourceLimitExceeded", "the next run's rejection is a quota error: {next:?}");
+    assert!(detail.contains("no data was deleted"), "carries the cleanup/export suggestion: {detail}");
+    assert_eq!(run_record_count(&core), runs_before + 1, "the rejected next run persists NO further run record — overshoot stays at one");
 }
 
 /// A run ADMITTED with headroom ALWAYS persists its run record — the mandatory CR-9

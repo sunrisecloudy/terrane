@@ -49,6 +49,28 @@ use super::require_applet_id;
 /// updates/deletes a watched record.
 type QueuedMutation = (String, Mutation, ResultSnapshot);
 
+/// The outcome of dispatching ONE delivered notification into its watching applet's
+/// callback (`dispatch_notification_callback`).
+enum CallbackDelivery {
+    /// The callback ran: its saved run id, plus any mutations it requested (QUEUED for
+    /// the next turn, non-reentrant).
+    Delivered {
+        run_id: forge_domain::RunId,
+        queued: Vec<QueuedMutation>,
+    },
+    /// There is no installed applet / callback to re-enter for this watch (a
+    /// substrate-only / data-driven watch): the notification is recorded but not
+    /// re-entered.
+    NoCallback,
+    /// The callback's run could NOT be admitted over the `run_logs` cap (review 179
+    /// P1): its delivery is SKIPPED, NOT an error. The producer command (the upstream
+    /// `runtime.run` / `ui.dispatch_event` / triggering mutation) stays successful —
+    /// its own durable effects + run record already committed — and the skip is a
+    /// recorded decision so replay reproduces it. Nothing ran, so there is no callback
+    /// run record and no callback write.
+    SkippedOverCap,
+}
+
 /// One delivered notification batch for a single committed mutation transaction:
 /// the canonical notifications (in watch registration order), the trace calls
 /// recorded for them (`db.watch.notification` envelopes the session replay re-serves
@@ -69,6 +91,15 @@ pub struct DeliveredBatch {
     /// saved [`RunRecord`](forge_domain::RunRecord) whose trace carries the
     /// `db.watch.notification` envelope — the replayable proof the callback ran.
     pub callback_runs: Vec<forge_domain::RunId>,
+    /// The callback deliveries SKIPPED because the workspace had no run-log budget to
+    /// admit the callback run (review 179 P1). Each is a RECORDED `db.watch.callback_
+    /// rejected` decision (the recorded-decision pattern), NOT an error: the producer
+    /// command stays successful and replay deterministically reproduces the same skip
+    /// (the admission gate is a pure function of committed state). These are kept in
+    /// their OWN field — NOT folded into `recorded_calls` — so the notification replay
+    /// stream (`replay_notification_stream`) stays a pure `db.watch.notification`
+    /// sequence. NON-admission callback errors still propagate as before.
+    pub rejected_callbacks: Vec<RecordedCall>,
     /// Mutations a watch callback requested during delivery, to be applied as the
     /// NEXT committed transaction (a later version) — never recursively inside this
     /// batch (non-reentrant delivery, T047 (a)).
@@ -520,9 +551,43 @@ impl WorkspaceCore {
             // it makes is QUEUED for the next turn (non-reentrant, T047 (a)). When no
             // such applet/callback exists (a substrate-only / data-driven watch), the
             // notification is recorded but not re-entered.
-            if let Some((run_id, queued)) = self.dispatch_notification_callback(&notification)? {
-                batch.callback_runs.push(run_id);
-                batch.queued_mutations.extend(queued);
+            match self.dispatch_notification_callback(&notification)? {
+                CallbackDelivery::Delivered { run_id, queued } => {
+                    batch.callback_runs.push(run_id);
+                    batch.queued_mutations.extend(queued);
+                }
+                CallbackDelivery::NoCallback => {}
+                CallbackDelivery::SkippedOverCap => {
+                    // Review 179 P1: the callback could not be admitted over the
+                    // `run_logs` cap, but the upstream producer (this notify turn's
+                    // triggering `runtime.run` / `ui.dispatch_event` / mutation) already
+                    // committed its OWN durable effects + run record. Failing the
+                    // producer for a DOWNSTREAM callback's admission denial would report
+                    // a failed run/write whose side effects in fact landed. Instead the
+                    // callback delivery is SKIPPED: nothing ran, so there is no callback
+                    // run record and no callback write — and the producer stays
+                    // successful. The notification itself was already recorded + emitted
+                    // above; we additionally RECORD the skip as a
+                    // `db.watch.callback_rejected` decision (the recorded-decision
+                    // pattern) so replay reproduces the identical skipped-callback
+                    // outcome, and emit a matching event so a host can observe the
+                    // deferred delivery. The recorded decision rides its OWN
+                    // `rejected_callbacks` field — NOT `recorded_calls` — so the
+                    // notification replay stream stays a pure `db.watch.notification`
+                    // sequence.
+                    let skip_args = serde_json::json!({
+                        "watch_id": notification.watch_id,
+                        "version": notification.version,
+                        "reason": "run_logs_cap",
+                    });
+                    batch.rejected_callbacks.push(RecordedCall {
+                        seq: batch.rejected_callbacks.len() as u64,
+                        method: "db.watch.callback_rejected".to_string(),
+                        args: skip_args.clone(),
+                        response: serde_json::json!({ "delivered": false }),
+                    });
+                    self.events.emit(None, "db.watch.callback_rejected", skip_args);
+                }
             }
 
             batch.notifications.push(notification);
@@ -532,37 +597,42 @@ impl WorkspaceCore {
     }
 
     /// Re-enter the watching applet's callback for one delivered notification, when
-    /// the owning applet is installed and exports the callback handler. Returns the
-    /// mutations the callback requested through `ctx.db`, to be QUEUED for the next
-    /// turn (non-reentrant, T047 (a)). `None` when there is no installed applet /
-    /// callback to re-enter (a substrate-only watch).
+    /// the owning applet is installed and exports the callback handler. Returns a
+    /// [`CallbackDelivery`]: `Delivered` (the callback ran; carries its run id + the
+    /// mutations it requested, QUEUED for the next turn — non-reentrant, T047 (a)),
+    /// `NoCallback` (no installed applet / callback to re-enter — a substrate-only
+    /// watch), or `SkippedOverCap` (the callback's run could not be admitted over the
+    /// `run_logs` cap — review 179 P1).
     ///
     /// The callback runs over the SAME engine/host/record path as a UI dispatch via
     /// [`record_notification`]; its run record is persisted (replay source) and its
     /// captured `ctx.db.watch`/`unwatch` intents fold into the workspace registry. A
     /// failed callback is surfaced as a typed error (the notification was still
-    /// recorded, so the audit trail is intact), not a panic.
+    /// recorded, so the audit trail is intact), not a panic — EXCEPT the run-log
+    /// admission denial, which is returned as `SkippedOverCap` (a recorded
+    /// skipped-delivery, NOT a failure of the upstream producer) rather than
+    /// propagated.
     fn dispatch_notification_callback(
         &mut self,
         notification: &WatchNotification,
-    ) -> Result<Option<(forge_domain::RunId, Vec<QueuedMutation>)>> {
+    ) -> Result<CallbackDelivery> {
         // Resolve the owning applet + callback handler for this watch.
         let Some((applet_id, callback)) = self
             .watch_sessions
             .callback_for(&notification.watch_id)
             .map(|(a, c)| (a.to_string(), c.to_string()))
         else {
-            return Ok(None);
+            return Ok(CallbackDelivery::NoCallback);
         };
         // Only re-enter an INSTALLED applet (an uninstalled/never-installed watch
         // owner has no code to run; the notification is still recorded). A suspended
         // applet is also not re-entered (no live session), mirroring the UI dispatch
         // gate.
         let Some(installed) = self.load_applet(&applet_id)? else {
-            return Ok(None);
+            return Ok(CallbackDelivery::NoCallback);
         };
         if self.applet_lifecycle(&applet_id)? == crate::workspace::AppletLifecycle::Suspended {
-            return Ok(None);
+            return Ok(CallbackDelivery::NoCallback);
         }
 
         // DL-22 PRE-FLIGHT ADMISSION GATE (review 178 P1): refuse to RUN the callback
@@ -571,11 +641,24 @@ impl WorkspaceCore {
         // renders/intents are applied/persisted before the run-log save, so gating the
         // MANDATORY callback run record (CR-9) AFTER it ran would strand those committed
         // writes with no run record to replay from (unreplayable side effects). Because
-        // nothing has run yet, propagating this typed `ResourceLimitExceeded` up through
-        // `commit_and_notify` leaves NO callback run record and NO callback writes. (The
-        // workspace total is NOT gated — spec/quotas.md §6.) Once admitted, the callback
-        // run record ALWAYS persists below (`save_run_tx`).
-        self.store.admit_run_or_reject()?;
+        // nothing has run yet, a rejection here leaves NO callback run record and NO
+        // callback writes. (The workspace total is NOT gated — spec/quotas.md §6.) Once
+        // admitted, the callback run record ALWAYS persists below (`save_run_tx`).
+        //
+        // REVIEW 179 P1: this admission denial is a DOWNSTREAM concern — the upstream
+        // producer (the `runtime.run` / `ui.dispatch_event` / triggering mutation that
+        // drove this notification) has already committed its own durable effects + run
+        // record. Propagating `ResourceLimitExceeded` here would bubble out of the
+        // producer command and report a FAILED run/write whose side effects in fact
+        // landed. So a run-log admission denial is NOT propagated: it becomes a
+        // `SkippedOverCap` skipped delivery the caller RECORDS (replay reproduces the
+        // identical skip). Any OTHER error from the gate still propagates.
+        if let Err(error) = self.store.admit_run_or_reject() {
+            if error.code() == "ResourceLimitExceeded" {
+                return Ok(CallbackDelivery::SkippedOverCap);
+            }
+            return Err(error);
+        }
 
         let program = forge_runtime::Program::new(
             forge_domain::AppletId::new(applet_id.clone()),
@@ -690,7 +773,10 @@ impl WorkspaceCore {
             .into_iter()
             .map(|(m, before)| (applet_id.clone(), m, before))
             .collect();
-        Ok(Some((run.run_id, queued)))
+        Ok(CallbackDelivery::Delivered {
+            run_id: run.run_id,
+            queued,
+        })
     }
 
     /// Apply a run/callback's captured live-query subscription intents
