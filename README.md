@@ -27,7 +27,7 @@ The intended user path is a packaged macOS app from GitHub Releases:
 
 1. Open the [latest Terrane release](https://github.com/sunrisecloudy/terrane/releases/latest).
 2. Download the latest macOS disk image, for example `Terrane-macos-arm64.dmg`.
-3. Open the disk image, then open or drag `TerraneHostMac.app` to Applications.
+3. Open the disk image, then open or drag `terrane.app` to Applications.
 4. Launch one of the bundled apps, such as **Notes Lite**.
 
 The disk image contains a macOS app bundle with the runtime, bundled example
@@ -160,9 +160,8 @@ public SDK yet, but the major contract surfaces are already present:
 
 - `runtime-web/` mounts generated apps in sandboxed frames and routes bridge calls.
 - `tools/reference-host/` is the Node + SQLite reference contract implementation.
-- `server/` is a Zig HTTP local engine with bridge, install, package, control, DB, snapshot, rollback, and smoke-test surfaces.
-- `zig-core/` contains deterministic event-to-action core logic.
-- `zig-crdt/` contains the collaborative notebook CRDT slice.
+- `forge/` is the Rust v1 runtime workspace, including deterministic core logic, storage, sync/CRDT, FFI, CLI, and server crates.
+- `forge/crates/server/` is the Rust HTTP local engine surface for core command and event-drain flows.
 - `native/` contains iOS, macOS, Android, Windows, and Linux host targets.
 - `webapps/examples/` contains five build-free example packages.
 - `tests/` contains bridge, mutation, DB, micro, accessibility, security, server, CRDT, and performance fixtures.

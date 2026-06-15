@@ -16,10 +16,10 @@ From `docs/10_ACCEPTANCE_CHECKLIST.md`:
 - Windows app launches.
 - WebView2 loads runtime.
 - Bridge works.
-- Zig DLL loads.
+- Forge FFI DLL loads.
 - Storage persists.
 - Debug dev control plane runtime-smoke verifies per-launch token file, loopback bind, token-gated `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and accepted/rejected audit rows.
-- Debug dev control plane runtime-smoke verifies `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` through permission-checked bridge dispatch with bridge/core DB logging.
+- Debug dev control plane runtime-smoke verifies `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` through permission-checked Forge bridge dispatch with bridge/core DB logging.
 - Debug dev control plane runtime-smoke verifies safe `db.snapshot` and fixed `db.query_*` inspection without arbitrary SQL.
 
 ## First Windows verification command
@@ -31,7 +31,7 @@ $env:TERRANE_WINDOWS_SMOKE_LAUNCH = "1"
 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js
 ```
 
-If the packaged artifact smoke is separate in your environment, also run the release/package flow that stages `resources/runtime`, `resources/webapps/examples`, `resources/db/sqlite`, and `zig_core.dll`, then launch without `TERRANE_ZIG_CORE_DLL`.
+If the packaged artifact smoke is separate in your environment, also run the release/package flow that stages `resources/runtime`, `resources/webapps/examples`, `resources/db/sqlite`, and `forge_ffi.dll`, then launch without `TERRANE_FORGE_FFI_DLL`.
 
 ## Likely Windows implementation gaps
 
@@ -55,7 +55,7 @@ These were identified from source/status review and should be checked before mar
 
 1. Run the Windows native smoke command above and record the exact failing rows.
 2. Fix launch/WebView2/runtime-load first, because it unlocks the rest of the runtime acceptance.
-3. Verify bridge/storage/Zig DLL through the real WebView2 runtime path.
+3. Verify bridge/storage/Forge FFI DLL through the real WebView2 runtime path.
 4. Extend Windows smoke assertions for dev-control auth/session/audit, `runtime.capabilities`, `runtime.call_bridge`, `runtime.core_step`, and safe DB inspection.
 5. Only check Windows rows in `docs/10_ACCEPTANCE_CHECKLIST.md` after real Windows runtime evidence exists.
 6. Update `IMPLEMENTATION_STATUS.md` in the same commit as any newly verified Windows acceptance.

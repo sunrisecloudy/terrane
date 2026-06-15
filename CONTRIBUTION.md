@@ -10,7 +10,7 @@ state.
 Prerequisites for the broadest local checks:
 
 - Node.js 22+.
-- Zig 0.15.2 for Zig core/server work.
+- Rust/Cargo for Forge core, FFI, server, and native package work.
 - SQLite support through the local runtime.
 - Docker only for Linux native smoke tests.
 - Platform SDKs only when working on a native target.
@@ -39,11 +39,11 @@ Run the reference host tests:
 node --test --no-warnings tools/reference-host/test/*.test.js
 ```
 
-Start the Zig local server:
+Start the Forge local server:
 
 ```sh
-cd server
-zig build run-server -- --port 8088
+cd forge
+cargo run -p forge-server -- --bind 127.0.0.1:8787
 ```
 
 Build static release-style artifacts:
@@ -62,7 +62,7 @@ That writes both the inspectable app bundle and the user-downloadable disk
 image:
 
 ```text
-artifacts/native-apps/macos/<target>/TerraneHostMac.app
+artifacts/native-apps/macos/<target>/terrane.app
 artifacts/native-apps/macos/<target>/Terrane-<target>.dmg
 ```
 
@@ -91,12 +91,10 @@ adds that support.
 | Path | What lives there |
 |---|---|
 | `docs/` | Normative product, runtime, security, package, DB, testing, and release specs. |
+| `forge/` | Rust v1 core, storage, sync/CRDT, FFI, CLI, and server workspace. |
 | `runtime-web/` | Browser/WebView runtime that mounts generated apps. |
-| `server/` | Zig local server and HTTP bridge/control surface. |
 | `tools/reference-host/` | Reference contract host used by tests and Codex workflows. |
 | `tools/codex-platform-mcp/` | Codex MCP bridge to the platform control plane. |
-| `zig-core/` | Deterministic core state machine and C ABI. |
-| `zig-crdt/` | Notebook CRDT package and C ABI. |
 | `native/` | iOS, macOS, Android, Windows, and Linux hosts. |
 | `webapps/examples/` | Canonical generated app packages. |
 | `tests/` | Fixtures, security mutations, micro-tests, DB tests, smoke tests, and performance checks. |
