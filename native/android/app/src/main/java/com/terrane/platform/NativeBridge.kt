@@ -21,7 +21,7 @@ class NativeBridge(
     private val storage = PlatformStorage(context)
     private val notifications = PlatformNotifications()
     private val network = PlatformNetwork(database)
-    private val core = ZigCoreBridge()
+    private val core = ForgeCoreBridge()
     private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
     private val runtimeEnvelopeFields = setOf("appId", "mountToken", "request")
     private val bridgeRequestFields = setOf("id", "method", "params", "timestamp")

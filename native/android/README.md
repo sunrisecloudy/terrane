@@ -11,16 +11,16 @@ app/build.gradle.kts
 app/src/main/AndroidManifest.xml
 app/src/main/java/.../MainActivity.kt
 app/src/main/java/.../WebBridge.kt
-app/src/main/java/.../ZigCoreBridge.kt
+app/src/main/java/.../ForgeCoreBridge.kt
 app/src/main/java/.../PlatformStorage.kt
 app/src/main/java/.../PlatformDialogs.kt
 app/src/main/java/.../PlatformNotifications.kt
 app/src/main/java/.../PlatformNetwork.kt
-app/src/main/cpp/zig_core_jni.cpp
+app/src/main/cpp/forge_core_jni.cpp
 app/src/main/assets/runtime/
 app/src/main/assets/examples/
-app/src/main/jniLibs/arm64-v8a/libzig_core.so
-app/src/main/jniLibs/x86_64/libzig_core.so
+app/src/main/jniLibs/arm64-v8a/libforge_ffi.so
+app/src/main/jniLibs/x86_64/libforge_ffi.so
 ```
 
 MVP acceptance:
@@ -43,8 +43,8 @@ Current implementation status:
 - Native bridge applies manifest-style permission checks before dispatch.
 - `network.request` uses OkHttp with manifest `networkPolicy` checks, explicit redirect validation, and request/policy timeout clamping.
 - `dialog.openFile` and `dialog.saveFile` use `ActivityResultContracts.OpenDocument`, `OpenMultipleDocuments`, and `CreateDocument` with asynchronous bridge replies.
-- `core.step` uses a JNI wrapper that loads packaged `libzig_core.so` and calls the shared Zig C ABI.
-- `runtime.capabilities` reports `core.step` from actual JNI/Zig core availability and returns structured `platform_unsupported` when unavailable.
+- `core.step` uses a JNI wrapper that loads packaged `libforge_ffi.so` and calls the Forge CoreCommand C ABI.
+- `runtime.capabilities` reports `core.step` from actual JNI/Forge FFI availability and returns structured `platform_unsupported` when unavailable.
 - Debug builds start a loopback-only dev control first slice with a private per-launch `control.token`, SQLite-audited `control_sessions` / `control_commands`, token-gated `/health`, `/control/sessions`, and `/control/command` routes, `platform.list_targets` / `platform.list_webapps` with bundled app metadata, bridge-routed `runtime.capabilities` / `runtime.call_bridge` / `runtime.core_step`, static `runtime.accessibility_snapshot` / `runtime.run_accessibility_audit` / `runtime.assert_accessibility`, fresh-core `runtime.replay_events`, DB-backed `runtime.core_snapshot` / `runtime.assert_core_action`, direct `runtime.storage_get` / `runtime.storage_set`, `runtime.assert_storage`, confirmation-gated `runtime.storage_reset` / `platform.reset_webapp`, `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, normalized `runtime.compare_snapshot`, DB-backed `runtime.resource_usage`, `runtime.event_log`, `runtime.console_logs`, `runtime.bridge_calls`, `runtime.clear_logs`, `runtime.notification_capture`, `runtime.assert_bridge_call`, `runtime.assert_no_console_errors`, DB-backed one-shot `runtime.fault_inject`, DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` / `runtime.dialog_mock_set` consumed before real network/dialog effects, expanded safe `db.snapshot`, `db.export_debug_bundle`, and portable `db.export_backup` / `db.import_backup` with persisted `backup_exports` rows, plus allowlisted safe DB inspection commands.
 
 ## Dev control plane

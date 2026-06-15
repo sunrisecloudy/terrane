@@ -916,8 +916,8 @@ function checkNativeStatic() {
   const linuxNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "linux-native-build.test.js"), "utf8");
   const androidMain = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "MainActivity.kt"), "utf8");
   const androidBridge = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "NativeBridge.kt"), "utf8");
-  const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "ZigCoreBridge.kt"), "utf8");
-  const androidCoreJni = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "zig_core_jni.cpp"), "utf8");
+  const androidCore = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "ForgeCoreBridge.kt"), "utf8");
+  const androidCoreJni = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "forge_core_jni.cpp"), "utf8");
   const androidCoreCmake = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "cpp", "CMakeLists.txt"), "utf8");
   const androidDatabase = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformDatabase.kt"), "utf8");
   const androidStorage = fs.readFileSync(path.join(repoRoot, "native", "android", "app", "src", "main", "java", "com", "terrane", "platform", "PlatformStorage.kt"), "utf8");
@@ -2344,22 +2344,29 @@ function checkNativeStatic() {
   if (androidNetwork.includes("platform_unsupported")) {
     throw new Error("Android network.request must not remain a platform_unsupported stub");
   }
-  for (const snippet of ["System.loadLibrary(\"zig_core_jni\")", "external fun nativeStep", "core.step app field does not match the channel-derived app id", "JSONObject(request.params.toString())"]) {
+  for (const snippet of [
+    "System.loadLibrary(\"forge_ffi\")",
+    "System.loadLibrary(\"forge_core_jni\")",
+    "external fun nativeHandleCommand",
+    "core.step app field does not match the channel-derived app id",
+    "JSONObject(request.params.toString())",
+    '"legacy.core_step"',
+  ]) {
     if (!androidCore.includes(snippet)) {
-      throw new Error(`Android Zig core bridge missing ${snippet}`);
+      throw new Error(`Android Forge core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["dlopen(\"libzig_core.so\"", "dlsym", "core_step_json", "core_free", "JNI_OnUnload"]) {
+  for (const snippet of ["dlopen(\"libforge_ffi.so\"", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free", "JNI_OnUnload"]) {
     if (!androidCoreJni.includes(snippet)) {
-      throw new Error(`Android JNI Zig core bridge missing ${snippet}`);
+      throw new Error(`Android JNI Forge core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["add_library(zig_core_jni SHARED zig_core_jni.cpp)", "target_link_libraries(zig_core_jni PRIVATE", "dl"]) {
+  for (const snippet of ["add_library(forge_core_jni SHARED forge_core_jni.cpp)", "target_link_libraries(forge_core_jni PRIVATE", "dl"]) {
     if (!androidCoreCmake.includes(snippet)) {
-      throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
+      throw new Error(`Android CMake Forge core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=forge-ffi android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=forge-ffi android.webmessage=origin-checked dialogs=activity-result core=forge-ffi";
 }
 
 function readJson(filePath) {

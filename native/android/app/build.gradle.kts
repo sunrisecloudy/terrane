@@ -5,7 +5,7 @@ plugins {
 
 val repoRoot = rootProject.projectDir.parentFile.parentFile
 val generatedNativeAiAssets = layout.buildDirectory.dir("generated/terrane-assets")
-val generatedZigCoreJniLibs = layout.buildDirectory.dir("generated/terrane-zig-core/jniLibs")
+val generatedForgeFfiJniLibs = layout.buildDirectory.dir("generated/terrane-forge-ffi/jniLibs")
 val syncNativeAiAssets by tasks.registering(Sync::class) {
     into(generatedNativeAiAssets)
     from(repoRoot.resolve("runtime-web")) {
@@ -18,44 +18,49 @@ val syncNativeAiAssets by tasks.registering(Sync::class) {
         into("db/sqlite")
     }
 }
-val androidZigCoreTargets = mapOf(
+val androidForgeFfiTargets = mapOf(
     "arm64-v8a" to "aarch64-linux-android",
-    "armeabi-v7a" to "arm-linux-androideabi",
-    "x86" to "x86-linux-android",
+    "armeabi-v7a" to "armv7-linux-androideabi",
+    "x86" to "i686-linux-android",
     "x86_64" to "x86_64-linux-android",
 )
-val buildAndroidZigCoreAbiTasks = androidZigCoreTargets.map { (abi, target) ->
-    val taskName = "buildAndroidZigCore${abi.replace("-", "").replace("_", "")}"
+val buildAndroidForgeFfiAbiTasks = androidForgeFfiTargets.map { (abi, target) ->
+    val taskName = "buildAndroidForgeFfi${abi.replace("-", "").replace("_", "")}"
     tasks.register<Exec>(taskName) {
-        val zigCoreDir = repoRoot.resolve("zig-core")
-        val outputDir = generatedZigCoreJniLibs.get().asFile.resolve(abi)
-        val outputFile = outputDir.resolve("libzig_core.so")
-        inputs.dir(zigCoreDir.resolve("src"))
-        inputs.property("zigTarget", target)
-        inputs.property("zigSoname", "libzig_core.so")
+        val forgeDir = repoRoot.resolve("forge")
+        val cargoTargetDir = layout.buildDirectory.dir("cargo/android/$abi").get().asFile
+        val outputDir = generatedForgeFfiJniLibs.get().asFile.resolve(abi)
+        val outputFile = outputDir.resolve("libforge_ffi.so")
+        val builtLibrary = cargoTargetDir.resolve("$target/debug/libforge_ffi.so")
+        inputs.dir(forgeDir.resolve("crates"))
+        inputs.file(forgeDir.resolve("Cargo.toml"))
+        inputs.file(forgeDir.resolve("Cargo.lock"))
+        inputs.property("cargoTarget", target)
         outputs.file(outputFile)
-        workingDir = zigCoreDir
-        environment("ZIG_GLOBAL_CACHE_DIR", layout.buildDirectory.dir("zig-cache/android/global").get().asFile.absolutePath)
-        environment("ZIG_LOCAL_CACHE_DIR", layout.buildDirectory.dir("zig-cache/android/local-$abi").get().asFile.absolutePath)
+        workingDir = forgeDir
+        environment("CARGO_TARGET_DIR", cargoTargetDir.absolutePath)
         doFirst {
             outputDir.mkdirs()
         }
-                commandLine(
-                    "zig",
-                    "build-lib",
-                    "src/lib.zig",
-                    "--name",
-                    "zig_core",
-                    "-dynamic",
-                    "-target",
-                    target,
-                    "-fsoname=libzig_core.so",
-                    "-femit-bin=${outputFile.absolutePath}",
-                )
+        commandLine(
+            "cargo",
+            "build",
+            "-p",
+            "forge-ffi",
+            "--locked",
+            "--target",
+            target,
+        )
+        doLast {
+            copy {
+                from(builtLibrary)
+                into(outputDir)
+            }
+        }
     }
 }
-val buildAndroidZigCore by tasks.registering {
-    dependsOn(buildAndroidZigCoreAbiTasks)
+val buildAndroidForgeFfi by tasks.registering {
+    dependsOn(buildAndroidForgeFfiAbiTasks)
 }
 
 android {
@@ -88,7 +93,7 @@ android {
     sourceSets {
         getByName("main") {
             assets.srcDir(generatedNativeAiAssets)
-            jniLibs.srcDir(generatedZigCoreJniLibs)
+            jniLibs.srcDir(generatedForgeFfiJniLibs)
         }
     }
 
@@ -105,7 +110,7 @@ kotlin {
 
 tasks.named("preBuild") {
     dependsOn(syncNativeAiAssets)
-    dependsOn(buildAndroidZigCore)
+    dependsOn(buildAndroidForgeFfi)
 }
 
 dependencies {

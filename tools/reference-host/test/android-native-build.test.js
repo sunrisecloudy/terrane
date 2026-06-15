@@ -18,7 +18,7 @@ function read(relativePath) {
 function commandExists(command) {
   try {
     const executable = command === "emulator" ? emulatorCommand() : command;
-    const args = command === "zig" ? ["version"] : command === "emulator" ? ["-version"] : ["--version"];
+    const args = command === "emulator" ? ["-version"] : ["--version"];
     execFileSync(executable, args, { stdio: "ignore" });
     return true;
   } catch {
@@ -610,7 +610,7 @@ test("Android debug dev control snapshots, replays, and asserts core actions", (
     "runtime.assert_core_action match must be an object",
     "core_action.not_found",
     "Expected core action was not found",
-    "ZigCoreBridge()",
+    "ForgeCoreBridge()",
     "control_replay_$index",
     "AppSandboxContext(",
     "approvedPermissions = setOf(\"core.step\")",
@@ -694,8 +694,8 @@ test(
   {
     skip: !commandExists("gradle")
       ? "gradle is not available"
-      : !commandExists("zig")
-        ? "zig is not available"
+      : !commandExists("cargo")
+        ? "cargo is not available"
         : !hasAndroidSdk()
           ? "Android SDK is not available"
           : false,
@@ -735,23 +735,23 @@ test(
 
     for (const abi of ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]) {
       assert.equal(
-        fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-zig-core", "jniLibs", abi, "libzig_core.so")),
+        fs.existsSync(path.join(androidDir, "app", "build", "generated", "terrane-forge-ffi", "jniLibs", abi, "libforge_ffi.so")),
         true,
-        `Zig core shared library should be generated for ${abi}`,
+        `Forge FFI shared library should be generated for ${abi}`,
       );
       assert.equal(
         findFiles(path.join(androidDir, "app", "build", "intermediates", "cxx", "Debug"), (filePath) =>
-          filePath.endsWith(path.join("obj", abi, "libzig_core_jni.so")),
+          filePath.endsWith(path.join("obj", abi, "libforge_core_jni.so")),
         ).length > 0,
         true,
         `JNI bridge library should build for ${abi}`,
       );
       assert.equal(
         findFiles(path.join(androidDir, "app", "build", "intermediates", "merged_native_libs", "debug"), (filePath) =>
-          filePath.endsWith(path.join("lib", abi, "libzig_core.so")),
+          filePath.endsWith(path.join("lib", abi, "libforge_ffi.so")),
         ).length > 0,
         true,
-        `Zig core shared library should be packaged for ${abi}`,
+        `Forge FFI shared library should be packaged for ${abi}`,
       );
     }
 
