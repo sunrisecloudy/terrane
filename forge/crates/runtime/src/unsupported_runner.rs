@@ -1,10 +1,10 @@
 //! Structured runtime-run stubs for native targets without a JS backend.
 //!
-//! The iOS Forge FFI cutover needs non-JS commands (`legacy.core_step`,
+//! The mobile Forge FFI cutover needs non-JS commands (`legacy.core_step`,
 //! `sync.export`, `sync.import`) to build and load through `forge-core`, but
-//! rquickjs-sys does not ship bindings for `aarch64-apple-ios-sim`. Until the
-//! planned CR-12 JavaScriptCore/alternate backend lands, runtime execution
-//! commands fail closed with `PlatformUnavailable`.
+//! rquickjs-sys does not ship bindings for the iOS simulator or Android targets.
+//! Until the planned CR-12 JavaScriptCore/alternate mobile backends land,
+//! runtime execution commands fail closed with `PlatformUnavailable`.
 
 use crate::bridge::HostBridge;
 use crate::{JsEngine, Program};

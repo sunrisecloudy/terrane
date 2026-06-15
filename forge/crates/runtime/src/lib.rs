@@ -9,9 +9,9 @@
 //!   * [`JsEngine`] — the engine trait. Target-independent so a QuickJS-WASM
 //!     backend can slot in at M0a-exit without restructuring.
 //!   * [`QuickJsEngine`] — the native rquickjs implementation
-//!     (`#[cfg(not(target_arch = "wasm32"))]`). rquickjs ships native C and does
-//!     not build for `wasm32-unknown-unknown`, so it is gated out there
-//!     (Cargo.toml `target.'cfg(not(target_arch = "wasm32"))'`).
+//!     on targets with bundled rquickjs bindings. rquickjs ships native C and
+//!     does not build for `wasm32-unknown-unknown`, and mobile native hosts use
+//!     structured `PlatformUnavailable` stubs until their CR-12 backends land.
 //!   * [`HostBridge`] — the effect seam (storage/db/ui/log); effects are
 //!     **injected**, never imported (CR-1). `time`/`random` are deterministic
 //!     seams owned by the recorder, not bridge methods (CR-11).
@@ -44,21 +44,37 @@ pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
 
 use forge_domain::{AppResult, CoreError};
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
 mod engine;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
 mod runner;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 mod unsupported_runner;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
 pub use engine::QuickJsEngine;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "ios"),
+    not(target_os = "android")
+))]
 pub use runner::{
     record_dispatch, record_dispatch_with_context, record_notification,
     record_notification_with_context, record_run, record_run_with_context, record_run_with_engine,
     replay, replay_dispatch, replay_notification, replay_with_engine, run_once,
 };
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 pub use unsupported_runner::{
     record_dispatch, record_dispatch_with_context, record_notification,
     record_notification_with_context, record_run, record_run_with_context, record_run_with_engine,

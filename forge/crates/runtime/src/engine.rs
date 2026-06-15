@@ -6,9 +6,9 @@
 //! prd-merged/07 SC-1/SC-2.
 //!
 //! **Native only**: rquickjs ships native C (QuickJS) and does not build for
-//! `wasm32-unknown-unknown`, so this whole module is `#[cfg(not(target_arch =
-//! "wasm32"))]` (gated at the `mod engine;` site in lib.rs and via the
-//! Cargo.toml target-specific dependency).
+//! every target. This module is gated at the `mod engine;` site in lib.rs and
+//! via the Cargo.toml target-specific dependency; mobile hosts without bundled
+//! rquickjs bindings use `unsupported_runner` until their CR-12 backends land.
 //!
 //! Containment model:
 //!

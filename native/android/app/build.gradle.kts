@@ -6,6 +6,46 @@ plugins {
 val repoRoot = rootProject.projectDir.parentFile.parentFile
 val generatedNativeAiAssets = layout.buildDirectory.dir("generated/terrane-assets")
 val generatedForgeFfiJniLibs = layout.buildDirectory.dir("generated/terrane-forge-ffi/jniLibs")
+val androidMinSdk = 26
+
+data class AndroidForgeFfiTarget(
+    val abi: String,
+    val rustTarget: String,
+    val clangPrefix: String,
+)
+
+fun existingEnvDir(vararg names: String): File? =
+    names.asSequence()
+        .mapNotNull { System.getenv(it)?.takeIf(String::isNotBlank)?.let(::File) }
+        .firstOrNull { it.isDirectory }
+
+fun androidSdkDir(): File? =
+    existingEnvDir("ANDROID_HOME", "ANDROID_SDK_ROOT")
+        ?: File(System.getProperty("user.home"), "Library/Android/sdk").takeIf { it.isDirectory }
+
+fun androidNdkDir(): File? =
+    existingEnvDir("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT")
+        ?: androidSdkDir()
+            ?.resolve("ndk")
+            ?.listFiles()
+            ?.filter { it.isDirectory }
+            ?.maxByOrNull { it.name }
+
+fun ndkPrebuiltBinDir(ndkDir: File): File? {
+    val os = System.getProperty("os.name").lowercase()
+    val arch = System.getProperty("os.arch").lowercase()
+    val hostTags = when {
+        os.contains("mac") && arch.contains("aarch64") -> listOf("darwin-arm64", "darwin-x86_64")
+        os.contains("mac") -> listOf("darwin-x86_64", "darwin-arm64")
+        os.contains("linux") -> listOf("linux-x86_64")
+        os.contains("windows") -> listOf("windows-x86_64")
+        else -> emptyList()
+    }
+    return hostTags
+        .map { ndkDir.resolve("toolchains/llvm/prebuilt/$it/bin") }
+        .firstOrNull { it.isDirectory }
+}
+
 val syncNativeAiAssets by tasks.registering(Sync::class) {
     into(generatedNativeAiAssets)
     from(repoRoot.resolve("runtime-web")) {
@@ -18,13 +58,15 @@ val syncNativeAiAssets by tasks.registering(Sync::class) {
         into("db/sqlite")
     }
 }
-val androidForgeFfiTargets = mapOf(
-    "arm64-v8a" to "aarch64-linux-android",
-    "armeabi-v7a" to "armv7-linux-androideabi",
-    "x86" to "i686-linux-android",
-    "x86_64" to "x86_64-linux-android",
+val androidForgeFfiTargets = listOf(
+    AndroidForgeFfiTarget("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android"),
+    AndroidForgeFfiTarget("armeabi-v7a", "armv7-linux-androideabi", "armv7a-linux-androideabi"),
+    AndroidForgeFfiTarget("x86", "i686-linux-android", "i686-linux-android"),
+    AndroidForgeFfiTarget("x86_64", "x86_64-linux-android", "x86_64-linux-android"),
 )
-val buildAndroidForgeFfiAbiTasks = androidForgeFfiTargets.map { (abi, target) ->
+val buildAndroidForgeFfiAbiTasks = androidForgeFfiTargets.map { targetSpec ->
+    val abi = targetSpec.abi
+    val target = targetSpec.rustTarget
     val taskName = "buildAndroidForgeFfi${abi.replace("-", "").replace("_", "")}"
     tasks.register<Exec>(taskName) {
         val forgeDir = repoRoot.resolve("forge")
@@ -40,6 +82,25 @@ val buildAndroidForgeFfiAbiTasks = androidForgeFfiTargets.map { (abi, target) ->
         workingDir = forgeDir
         environment("CARGO_TARGET_DIR", cargoTargetDir.absolutePath)
         doFirst {
+            val ndkDir = androidNdkDir()
+                ?: throw GradleException("Android NDK is required to build Forge FFI for $abi")
+            val ndkBinDir = ndkPrebuiltBinDir(ndkDir)
+                ?: throw GradleException("Android NDK LLVM prebuilt toolchain was not found under ${ndkDir.absolutePath}")
+            val clang = ndkBinDir.resolve("${targetSpec.clangPrefix}$androidMinSdk-clang")
+            val ar = ndkBinDir.resolve("llvm-ar")
+            if (!clang.isFile) {
+                throw GradleException("Android NDK clang was not found: ${clang.absolutePath}")
+            }
+            if (!ar.isFile) {
+                throw GradleException("Android NDK llvm-ar was not found: ${ar.absolutePath}")
+            }
+            val targetEnv = target.replace("-", "_")
+            val cargoTargetEnv = targetEnv.uppercase()
+            environment("CC_$targetEnv", clang.absolutePath)
+            environment("AR_$targetEnv", ar.absolutePath)
+            environment("CARGO_TARGET_${cargoTargetEnv}_LINKER", clang.absolutePath)
+            environment("CARGO_TARGET_${cargoTargetEnv}_AR", ar.absolutePath)
+            environment("PATH", "${ndkBinDir.absolutePath}${File.pathSeparator}${System.getenv("PATH").orEmpty()}")
             outputDir.mkdirs()
         }
         commandLine(
@@ -69,7 +130,7 @@ android {
 
     defaultConfig {
         applicationId = "com.terrane.platform"
-        minSdk = 26
+        minSdk = androidMinSdk
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"

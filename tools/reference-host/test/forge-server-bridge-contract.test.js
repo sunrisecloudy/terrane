@@ -90,7 +90,8 @@ async function stopForgeServer(started) {
 
 async function waitForJson(url, started) {
   let lastError;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
     if (started.child.exitCode != null) {
       throw new Error(`forge-server exited early:\n${started.output.join("")}`);
     }
@@ -99,7 +100,7 @@ async function waitForJson(url, started) {
       return { status: response.status, body: await response.json() };
     } catch (error) {
       lastError = error;
-      await delay(50);
+      await delay(100);
     }
   }
   throw new Error(`forge-server did not become ready: ${lastError?.message ?? "unknown"}\n${started.output.join("")}`);
