@@ -58,6 +58,6 @@ The reference coverage is exercised by:
 - `node --test --no-warnings tools/reference-host/test/test-runner.test.js` for checked-in `smoke-tests.json` and `tests/micro` execution.
 - `node --test --no-warnings tools/reference-host/test/package-validator.test.js` for manifest and generated-source policy failures.
 - `node --test --no-warnings tools/reference-host/test/security-fixtures.test.js` for runtime-denied malicious packages.
-- `node --test --no-warnings tools/reference-host/test/server-bridge-contract.test.js` for server parity with the bridge fixtures.
+- `node --test --no-warnings tools/reference-host/test/forge-server-bridge-contract.test.js` for Forge server CoreCommand bridge parity.
 
 Adding or removing an example app, permission, bridge method, smoke-test expectation, or manifest policy field must update this document and the relevant tests before the change is considered verified.

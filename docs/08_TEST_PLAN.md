@@ -273,7 +273,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - `/core/step` matches core contract.
 - Invalid request returns structured error.
 - Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/forge-server-build.test.js`.
-- Bridge fixture contract runs against a fresh Zig server database per fixture with `node --test --no-warnings tools/reference-host/test/server-bridge-contract.test.js`.
+- Forge server bridge contract runs against a live `forge-server` process with `node --test --no-warnings tools/reference-host/test/forge-server-bridge-contract.test.js`.
 - API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
 
 ## 8. End-to-end tests
