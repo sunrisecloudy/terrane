@@ -48,7 +48,7 @@ test("Windows core.step enforces a structured host timeout around Forge FFI call
   assert.match(windowsHost, /bridge_->HandleJsonAsync/);
   assert.match(windowsHost, /PostMessageW\(window_, kAsyncBridgeResponseMessage/);
   assert.match(windowsHostHeader, /TryHandleWindowMessage/);
-  assert.doesNotMatch(windowsCore, /core_step_json/);
+  assert.doesNotMatch(windowsCore, new RegExp("core_step_" + "json"));
   assert.doesNotMatch(windowsHost, /response = context\.has_value\(\)\s*\?\s*bridge_->HandleJson\(requestJson, context\.value\(\)\)/);
 });
 

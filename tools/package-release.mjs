@@ -781,7 +781,7 @@ function parseCliArgs(argv) {
       options.outDir = path.resolve(argv[(index += 1)]);
     } else if (arg === "--build-forge-ffi") {
       options.buildForgeFfi = true;
-    } else if (arg === "--build-server") {
+    } else if (arg === "--build-forge-server") {
       options.buildServer = true;
     } else if (arg === "--build-native-macos") {
       options.buildNativeMacOS = true;

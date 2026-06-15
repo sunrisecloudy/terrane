@@ -17,7 +17,7 @@ The Terrane v0.4 specification line (`docs/00_PRD.md` and the docs it governs) i
 
 ## Status of the v0.4 line
 
-- `docs/00_PRD.md` and v0.4 specs remain in the repo as **reference for the prototype implementation** (zig-core, server, runtime-web, native hosts, reference-host). They are no longer the target of new work.
+- `docs/00_PRD.md` and v0.4 specs remain in the repo as **reference for the prototype implementation**. They are no longer the target of new work.
 - The v0.4 rule "no TypeScript / no build step for generated apps" **does not apply** to the v1 plan; v1 makes TypeScript authoring (with an offline in-core transpile) the core product. The v0.4 rule remains true only of the legacy webapp packages.
 - Salvage targets from v0.4 (testing discipline, fixtures, signing approach, security model, example apps as scenarios) are noted in `prd-merged/DECISIONS.md` context; the implementations are not carried forward.
 

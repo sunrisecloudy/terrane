@@ -86,10 +86,10 @@ android emulator job:
 The release artifact packager is:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi --build-server --build-native-macos
+node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi --build-forge-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the host-target Forge FFI library plus `forge_ffi.h` when `--build-forge-ffi` is passed, builds the host-native Forge server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libforge_ffi.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libforge_ffi.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `forge_ffi.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the host-target Forge FFI library plus `forge_ffi.h` when `--build-forge-ffi` is passed, builds the host-native Forge server executable for the current CI runner when `--build-forge-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libforge_ffi.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libforge_ffi.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `forge_ffi.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
@@ -139,7 +139,7 @@ node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi
 The dedicated Linux server artifact job runs:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts --build-server
+node --no-warnings tools/package-release.mjs --out artifacts --build-forge-server
 ```
 
 The dedicated macOS native artifact job runs on `macos-latest`:
@@ -181,7 +181,7 @@ The default static packaging command without build flags still creates placehold
 Use independent but compatible versions:
 
 - Platform runtime version: `0.1.0`.
-- Zig core ABI version: `0.1.0`.
+- Forge FFI ABI version: `0.1.0`.
 - Webapp runtime target version: `0.1.0`.
 
 Generated apps declare `runtimeVersion` in manifest. Compatibility rule lives in docs/04 §8.
@@ -198,7 +198,7 @@ The WebView runtime is shipped *inside* each native host binary. There is no ove
 | Android Play Store | Host APK update via Play |
 | Windows | MSIX bundle update |
 | Linux | Distro package or AppImage update |
-| Server | Operator-driven Zig binary deployment |
+| Server | Operator-driven Forge server deployment |
 | Reference host (dev) | `git pull` + restart |
 
 When the runtime version changes, every installed generated app is re-evaluated against the new runtime semver rule (docs/04 §8). Apps that fail the rule are kept in storage but cannot mount until the user installs a compatible app version. The host shows a one-time banner listing incompatible apps after a runtime upgrade.

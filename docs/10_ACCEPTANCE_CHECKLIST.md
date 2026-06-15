@@ -7,7 +7,7 @@
 - [x] Schemas exist under `schemas/`.
 - [x] Example apps exist under `webapps/examples/`.
 - [x] Runtime web project exists.
-- [x] Zig core project exists.
+- [x] Forge core project exists.
 - [x] Native platform directories exist.
 - [x] Server project exists.
 
@@ -24,10 +24,10 @@
 - [x] Runtime shows structured errors.
 - [x] Runtime exposes `window.__APP_RUNTIME_DEVTOOLS__` only in dev/test mode.
 
-## Zig core
+## Forge core
 
-- [x] Zig core builds.
-- [x] Zig core tests pass.
+- [x] Forge core builds.
+- [x] Forge core tests pass.
 - [x] FFI API works.
 - [x] `core.step` accepts valid JSON event.
 - [x] `core.step` returns valid JSON actions.
@@ -53,7 +53,7 @@
 - [x] Runtime loads from bundle.
 - [x] Bridge works.
 - [x] Storage persists.
-- [x] Zig core step works.
+- [x] Forge core step works.
 - [x] Bundled app index exposes content ratings and enforces the iOS age gate.
 - [x] iOS bridge rejects app ids outside the bundled app index.
 - [x] `notification.toast` validates message/level params against the bridge contract.
@@ -81,7 +81,7 @@
 - [x] Storage bridge failures return structured `storage_error` responses.
 - [x] WebView content-process termination records a failed runtime session and offers a reload action.
 - [x] Dialogs work or return structured unsupported errors.
-- [x] Zig core step works.
+- [x] Forge core step works.
 - [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] `core.step` times out with structured `timeout` errors without blocking the WebView reply path.
 - [x] Production guard rejects and audits dev-only startup flags outside DEBUG builds.
@@ -106,7 +106,7 @@
 - [x] Debug dev control plane supports lifecycle target list/launch/reload and opening installed webapps into runtime sessions.
 - [x] Debug dev control plane supports `runtime.call_bridge` and `runtime.core_step` through permission-checked bridge dispatch.
 - [x] Debug dev control plane quarantines an active install after three resource-budget bridge violations in 60 seconds and restores the previous active install.
-- [x] Debug dev control plane supports `runtime.replay_events` with a fresh deterministic Zig core replay.
+- [x] Debug dev control plane supports `runtime.replay_events` with a fresh deterministic Forge core replay.
 - [x] Debug dev control plane supports `runtime.assert_storage`, `runtime.core_snapshot`, and DB-backed `runtime.assert_core_action` for storage/core-log assertions.
 - [x] Debug dev control plane captures `notification.toast` calls through `runtime.notification_capture`.
 - [x] Debug dev control plane supports DB-backed `runtime.network_mock_set` / `runtime.network_mock_reset` and `runtime.dialog_mock_set` for mock-backed bridge calls.
@@ -125,7 +125,7 @@
 - [x] Android emulator launches.
 - [x] Runtime loads from assets.
 - [x] Bridge works.
-- [x] JNI Zig core step works.
+- [x] JNI Forge core step works.
 - [x] Storage persists.
 - [x] `notification.toast` validates message/level params against the bridge contract.
 - [x] Source/static checks verify Android WebView bridge hardening: `WEB_MESSAGE_LISTENER` feature gate, single internal origin allowlist, no `addJavascriptInterface`, file-URL access disabled, release debugging disabled, and Safe Browsing enabled.
@@ -148,7 +148,7 @@
 - [ ] Windows app launches.
 - [ ] WebView2 loads runtime.
 - [ ] Bridge works.
-- [ ] Zig DLL loads.
+- [ ] Forge FFI DLL loads.
 - [ ] Storage persists.
 - [x] Source/static checks verify Windows native `dialog.openFile` supports `multiple: true` through WebView2-hosted Win32 multi-select file dialogs.
 - [ ] Debug dev control plane runtime-smoke verifies per-launch token file, loopback bind, token-gated `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and accepted/rejected audit rows.
@@ -171,7 +171,7 @@
 - [x] Runtime loads resources.
 - [x] Bridge works.
 - [x] `notification.toast` validates message/level params against the bridge contract.
-- [x] Zig shared library loads.
+- [x] Forge FFI shared library loads.
 - [x] Storage persists.
 - [x] Production guard rejects and audits dev-only startup flags in release builds.
 - [x] Debug dev control plane writes a 0600 per-launch token file, binds to loopback, token-gates `GET /health` plus session create/snapshot/events/capabilities/command/end routes, and audits accepted/rejected requests.
@@ -192,16 +192,17 @@
 - [x] Debug dev control plane Docker-smoke verifies `db.export_debug_bundle` returns a hashed Linux debug bundle and persists a `backup_exports` row.
 - [x] Debug dev control plane Docker-smoke verifies portable `db.export_backup` / `db.import_backup` over fixed app/package/storage tables and records export/import rows in `backup_exports`.
 - [x] Debug dev control plane Docker-smoke verifies explicit `platform.create_snapshot`, confirmation-gated `platform.restore_snapshot`, and normalized `runtime.compare_snapshot` over app-storage runtime snapshots with persisted `runtime_snapshots` rows and audit evidence.
-- [x] Linux native release package includes runtime, example app, SQLite migration, and Zig core resources.
+- [x] Linux native release package includes runtime, example app, SQLite migration, and Forge FFI resources.
 - [x] Linux native release artifact launches from its packaged directory without repo-root resource assumptions.
-- [x] Linux packaged host resolves runtime resources, app resources, migrations, and `libzig_core.so` relative to the executable.
+- [x] Linux packaged host resolves runtime resources, app resources, migrations, and `libforge_ffi.so` relative to the executable.
 
 ### Server
 
 - [x] Server starts.
 - [x] `/health` works.
-- [x] `/core/step` works.
-- [x] Contract tests pass.
+- [x] `/bridge` routes Forge `CoreCommand` requests.
+- [x] `/events/drain` works.
+- [x] Forge server contract tests pass.
 
 ## Security
 
@@ -216,7 +217,7 @@
 
 ## Tests
 
-- [x] Zig tests pass.
+- [x] Forge tests pass.
 - [x] Runtime unit tests pass.
 - [x] Package validator tests pass.
 - [x] Bridge contract tests pass.

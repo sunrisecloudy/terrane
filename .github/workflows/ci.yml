@@ -114,7 +114,7 @@ jobs:
           sudo apt-get install -y libsqlite3-dev
 
       - name: Package server release artifacts
-        run: node --no-warnings tools/package-release.mjs --out artifacts --build-server
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-forge-server
 
       - name: Upload server release artifacts
         if: always()

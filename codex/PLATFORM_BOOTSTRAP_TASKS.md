@@ -5,7 +5,7 @@
 - Create WKWebView app.
 - Copy runtime and examples into bundle resources.
 - Add `WebBridge` to receive JSON bridge messages.
-- Add `ZigCoreBridge` wrapping `core_step_json`.
+- Add `ForgeCoreBridge` wrapping `forge_core_handle_command`.
 - Implement storage in Application Support.
 - Implement `notification.toast` as runtime fallback first.
 - Add simulator smoke test.
@@ -15,7 +15,7 @@
 - Create WebView Activity.
 - Copy runtime and examples into assets.
 - Add bridge with strict JSON dispatch.
-- Add JNI wrapper for Zig core.
+- Add JNI wrapper for Forge FFI.
 - Implement storage in internal app files.
 - Add emulator smoke test.
 
@@ -24,7 +24,7 @@
 - Create WebView2 host.
 - Load runtime from resources/local folder.
 - Implement `WebMessageReceived` dispatch.
-- Load Zig DLL.
+- Load Forge FFI DLL.
 - Store app data under LocalAppData.
 - Add launch smoke test.
 
@@ -33,12 +33,12 @@
 - Create GTK4 window with WebKitGTK WebView.
 - Load runtime from resources.
 - Use user content manager script message handler.
-- Load Zig shared library.
+- Load Forge FFI shared library.
 - Store app data under XDG data path.
 - Add launch smoke test.
 
-## Server Zig
+## Forge Server
 
-- Directly import core modules.
+- Route HTTP requests through Forge core commands.
 - Implement `/health` and `/core/step`.
 - Add contract tests using bridge fixtures.

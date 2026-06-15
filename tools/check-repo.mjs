@@ -287,7 +287,7 @@ function checkCiWorkflow() {
     "forge-ffi-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-forge-ffi",
     "server-release-artifacts",
-    "tools/package-release.mjs --out artifacts --build-server",
+    "tools/package-release.mjs --out artifacts --build-forge-server",
     "macos-native-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-native-macos",
     "linux-native-release-artifacts",
@@ -364,7 +364,7 @@ function checkReleasePackaging() {
     "buildWindowsNativeArtifacts",
     "windowsWebView2SdkStatus",
     "--build-forge-ffi",
-    "--build-server",
+    "--build-forge-server",
     "--build-native-macos",
     "--build-native-linux",
     "--build-native-windows",
@@ -400,7 +400,7 @@ function checkReleasePackaging() {
     }
   }
   for (const snippet of [
-    "tools/package-release.mjs --out artifacts --build-forge-ffi --build-server",
+    "tools/package-release.mjs --out artifacts --build-forge-ffi --build-forge-server",
     "linux-x86_64/terrane-server",
     "native-apps/macos/macos-arm64/terrane.app",
     "native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg",
@@ -645,21 +645,16 @@ function checkControlToolContract() {
   ]
     .map((relativePath) => fs.readFileSync(path.join(repoRoot, relativePath), "utf8"))
     .join("\n");
-  const serverSource = fs.readFileSync(path.join(repoRoot, "server", "src", "main.zig"), "utf8");
   const referenceMissing = toolNames.filter((name) => !referenceHostSource.includes(`"${name}"`));
-  const serverMissing = toolNames.filter((name) => !serverSource.includes(`"${name}"`));
   if (referenceMissing.length > 0) {
     throw new Error(`reference host missing MCP tools: ${referenceMissing.join(", ")}`);
-  }
-  if (serverMissing.length > 0) {
-    throw new Error(`server missing MCP tools: ${serverMissing.join(", ")}`);
   }
   for (const snippet of ["inputSchemaFor", "validateToolArguments", "CONFIRM_TRUE", "platform.uninstall_webapp", "runtime.storage_set"]) {
     if (!contractSource.includes(snippet)) {
       throw new Error(`MCP tool contract missing typed argument support: ${snippet}`);
     }
   }
-  return `tools=${toolNames.length},schema=fixed,args=validated,reference-host=covered,server=covered`;
+  return `tools=${toolNames.length},schema=fixed,args=validated,reference-host=covered,forge-server=separate-core-command-surface`;
 }
 
 function checkReferenceHostStatic() {

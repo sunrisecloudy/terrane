@@ -4,7 +4,7 @@
 
 The platform has four main test surfaces:
 
-1. **Zig core** — deterministic logic and FFI safety.
+1. **Forge core** — deterministic logic and FFI safety.
 2. **Web runtime** — sandbox, permissions, bridge, validators, UI launcher.
 3. **Native shells** — WebView loading, native bridge, platform service implementations.
 4. **Generated webapps** — package validity, smoke tests, permission behavior, runtime compatibility.
@@ -13,7 +13,7 @@ The platform has four main test surfaces:
 
 ```text
 High volume:
-  Zig unit tests
+  Forge Rust unit tests
   JS runtime unit tests
   schema validation tests
   bridge contract tests
@@ -131,7 +131,7 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
   "expectedByPlatform": {
     "server": {
       "ok": true,
-      "resultSubset": { "target": "zig-server" }
+      "resultSubset": { "target": "forge-server" }
     }
   },
   "platforms": ["reference-host", "macos", "ios-simulator", "android-emulator", "windows", "linux", "server"]
@@ -140,7 +140,7 @@ Every contract fixture under `tests/fixtures/bridge/` validates against `schemas
 
 `expectedByPlatform` is only for intentional platform-identity differences such as `runtime.capabilities.target` or for a host that rejects an invalid fixture earlier than bridge dispatch. Otherwise fixtures use `expected` and every target must match the reference host.
 
-The runtime capabilities contract is also covered by `tools/reference-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target, checks each native implementation exposes the channel-derived `appId`, build/runtime-derived `devMode`, plus manifest-level `storage.read` / `storage.write` capability IDs, and verifies the Forge server CoreCommand HTTP replacement surface without reading the retired Zig server source.
+The runtime capabilities contract is also covered by `tools/reference-host/test/runtime-capabilities-contract.test.js`, which validates schema-shaped capability fixtures for every target, checks each native implementation exposes the channel-derived `appId`, build/runtime-derived `devMode`, plus manifest-level `storage.read` / `storage.write` capability IDs, and verifies the Forge server CoreCommand HTTP replacement surface without reading the retired v0.4 server source.
 
 Development-only runtime hooks are covered by `tools/reference-host/test/runtime-web.test.js`, which verifies `window.__APP_RUNTIME_DEVTOOLS__` exposes snapshot/query/bridge/console/storage/core/reset helpers in dev/test mode and is absent outside dev/test mode.
 
@@ -195,11 +195,11 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Storage persists across relaunch.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
-- Core step returns real Zig output.
+- Core step returns real Forge output.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Local simulator build/package smoke runs with `node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` on macOS hosts with Xcode.
-- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `TERRANE_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` when CoreSimulator and Zig are available.
+- Runtime-load, WK bridge, storage-persistence, persisted bridge/core log rows, and `core.step` launch smoke runs with `TERRANE_IOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/ios-native-build.test.js` when CoreSimulator and Forge FFI artifacts are available.
 
 ### macOS
 
@@ -218,7 +218,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside DEBUG builds.
 - Local build and native SwiftPM tests run with `node --test --no-warnings tools/reference-host/test/macos-native-build.test.js` on macOS hosts.
-- When Zig is available, the local SwiftPM test builds a temporary macOS `libzig_core.dylib` and verifies native `core.step` returns real Zig actions.
+- Local SwiftPM tests verify native `core.step` through the packaged Forge FFI bridge.
 - Debug app launch smoke runs with `TERRANE_MACOS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/macos-native-build.test.js`.
 
 ### Android
@@ -232,7 +232,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - JNI core step works for arm64 and x86_64 debug builds.
 - Permission denied path works.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
-- Local debug APK/JNI/resource/Zig-core packaging build smoke runs with `node --test --no-warnings tools/reference-host/test/android-native-build.test.js` when Gradle, Zig, and the Android SDK are available.
+- Local debug APK/JNI/resource/Forge FFI packaging build smoke runs with `node --test --no-warnings tools/reference-host/test/android-native-build.test.js` when Gradle, Rust, and the Android SDK are available.
 - Full emulator smoke runs with `TERRANE_ANDROID_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/android-native-build.test.js`; it boots or attaches to an AVD, installs the APK, verifies runtime asset load, bridge-backed SQLite storage across force-stop/relaunch, persisted bridge/core log rows, and JNI-backed `core.step`.
 
 ### Windows
@@ -245,11 +245,11 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Storage bridge prepare/step failures return structured `storage_error` responses.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
-- Zig DLL loads.
+- Forge FFI DLL loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
-- Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Zig, and the Windows SDK available; it also builds the release host, verifies audited rejection of dev-only startup flags, and builds/launches the packaged artifact from outside the repo root with executable-relative runtime/example/SQLite resources plus `zig_core.dll`.
-- Full Windows smoke runs with `TERRANE_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `zig_core.dll`.
+- Local Windows build smoke runs with `node --test --no-warnings tools/reference-host/test/windows-native-build.test.js` on Windows hosts with CMake, a C++ toolchain/WebView2 SDK, Rust, and the Windows SDK available; it also builds the release host, verifies audited rejection of dev-only startup flags, and builds/launches the packaged artifact from outside the repo root with executable-relative runtime/example/SQLite resources plus `forge_ffi.dll`.
+- Full Windows smoke runs with `TERRANE_WINDOWS_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/windows-native-build.test.js`; it launches the WebView2 host, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebView2 bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), and `core.step` through `forge_ffi.dll`.
 
 ### Linux
 
@@ -260,21 +260,22 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - Storage bridge prepare/step failures return structured `storage_error` responses.
 - Native storage rejects writes over manifest `resourceBudget.maxStorageBytes`.
 - Native bridge rejects calls over `resourceBudget.maxBridgeCallsPerMinute` and network requests over `resourceBudget.maxNetworkRequestsPerMinute`.
-- Zig shared library loads.
+- Forge FFI shared library loads.
 - Native `app.log` validates level/message and enforces manifest `resourceBudget.maxLogLinesPerMinute`.
 - Production guard rejects and audits dev-only startup flags (`--control-plane-port`, `--allow-runtime-mismatch`, and `--allow-unsigned-dev`) outside debug builds.
-- Local Linux build smoke runs with `node --test --no-warnings tools/reference-host/test/linux-native-build.test.js` when Meson, Zig, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
-- Full Linux smoke runs with `TERRANE_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), `core.step` through `libzig_core.so`, and the debug-only loopback dev control `GET /health` plus session create/snapshot/events/capabilities/command/end routes with token-file auth, accepted/rejected SQLite audit rows, and permission-checked `runtime.call_bridge` / `runtime.core_step` command dispatch.
+- Local Linux build smoke runs with `node --test --no-warnings tools/reference-host/test/linux-native-build.test.js` when Meson, Rust, GTK4, WebKitGTK, JSON-GLib, SQLite, and libsoup development dependencies are available.
+- Full Linux smoke runs with `TERRANE_LINUX_SMOKE_LAUNCH=1 node --test --no-warnings tools/reference-host/test/linux-native-build.test.js`; it launches the GTK/WebKitGTK host under an available display or `xvfb-run`, verifies runtime load, a generated app `AppRuntime.call("storage.get")` through the WebKitGTK bridge, bridge-backed SQLite storage across relaunch, persisted `bridge_calls`, `core_events`, and `core_actions` rows, fixed bridge methods (`storage.list`, `storage.remove`, `notification.toast`, `app.log`, `runtime.capabilities`, and manifest-denied `network.request`), `core.step` through `libforge_ffi.so`, and the debug-only loopback dev control `GET /health` plus session create/snapshot/events/capabilities/command/end routes with token-file auth, accepted/rejected SQLite audit rows, and permission-checked `runtime.call_bridge` / `runtime.core_step` command dispatch.
 
 ### Server
 
 - Server starts.
 - `/health` returns success.
-- `/core/step` matches core contract.
+- `/bridge` accepts Forge `CoreCommand` requests and routes `legacy.core_step` through Forge core.
+- `/events/drain` returns queued Forge core events.
 - Invalid request returns structured error.
 - Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/forge-server-build.test.js`.
 - Forge server bridge contract runs against a live `forge-server` process with `node --test --no-warnings tools/reference-host/test/forge-server-bridge-contract.test.js`.
-- API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
+- API smoke for the retired v0.4 server fixture remains archived under `tests/server/` until the server deletion slice.
 
 ## 8. End-to-end tests
 
@@ -395,20 +396,20 @@ Every bug should become one of:
 
 ```text
 Ubuntu:
-  Zig core tests
+  Forge workspace tests
   server tests
   runtime unit tests
   package validation
   Linux shell build/smoke if dependencies installed
 
 macOS:
-  Zig core macOS build
+  Forge FFI macOS build
   iOS simulator smoke
   macOS app smoke
   runtime tests
 
 Windows:
-  Zig core Windows build
+  Forge FFI Windows build
   Windows shell build
   WebView2 smoke
 
@@ -440,7 +441,7 @@ which verifies unique tool names, per-tool JSON Schema input definitions,
 safe database tool exposure, and MCP-boundary argument validation including
 `confirm: true` gates for destructive calls. `tools/codex-platform-mcp/test/server.test.js`
 verifies invalid tool arguments are rejected before any control-plane request is forwarded.
-Reference-host, Zig server, and macOS control-plane coverage also rejects destructive
+Reference-host and macOS control-plane coverage also reject destructive
 `platform.reset_webapp` / `runtime.storage_reset` requests without `confirm: true`
 before allowing the confirmed reset path.
 Reference-host console inspection is covered by `tools/reference-host/test/control-utilities.test.js`
@@ -458,8 +459,8 @@ bridge calls are read back from persisted bridge rows through `runtime.notificat
 | Generated app contract | Package shape, manifest, smoke-tests, bridge method usage | package validator |
 | Micro UI | Selector-level DOM interactions inside one generated app | Codex MCP / control plane |
 | Bridge contract | Request/response schema, permission denial, logging | Codex MCP / host tests |
-| Zig core contract | Event -> action determinism, replay, error handling | Zig tests + Codex MCP |
-| Host integration | Native bridge to runtime and Zig | platform-specific tests |
+| Forge core contract | Event -> action determinism, replay, error handling | Cargo tests + Codex MCP |
+| Host integration | Native bridge to runtime and Forge FFI | platform-specific tests |
 | Cross-platform smoke | Load each example app on every host | Codex MCP orchestration |
 | Fault injection | offline network, storage failure, permission denial, timer advance | Codex MCP |
 

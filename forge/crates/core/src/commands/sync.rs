@@ -1,6 +1,6 @@
 //! Host-callable CRDT sync transport commands.
 //!
-//! Phase 1.2 of the legacy cutover folds the old native `zig-crdt` bridge into
+//! Phase 1.2 of the legacy cutover folds the old native sync bridge into
 //! the single `forge_core_handle_command` ABI. Hosts exchange `sync.export`
 //! packets and apply them with `sync.import`; the import path authorizes each
 //! chunk with the same SS-7 gate as in-process `WorkspaceCore::sync_with`.

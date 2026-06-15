@@ -1,8 +1,8 @@
 //! `legacy.core_step` — temporary v0.4 `core.step` compatibility over the v1
 //! [`CoreCommand`](forge_domain::CoreCommand) ABI.
 //!
-//! This command exists only for the legacy-removal cutover: native hosts can stop
-//! loading `libzig_core` and instead route the still-live generated-app
+//! This command exists only for the legacy-removal cutover: native hosts route
+//! the still-live generated-app
 //! `core.step` bridge method through `forge_core_handle_command`. The returned
 //! payload preserves the old generated-app-visible shape
 //! `{ ok, stateVersion, actions }` so host ABI migration does not also require a
