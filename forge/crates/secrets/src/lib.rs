@@ -41,6 +41,7 @@
 use forge_domain::{CoreError, Result};
 use forge_policy::HeaderValue;
 use std::collections::BTreeMap;
+use std::sync::RwLock;
 
 /// A resolved secret value. The wrapper exists so the value is **never** printed:
 /// its [`Debug`] and [`Display`] redact to `<secret:REDACTED>`, so a secret can
@@ -116,9 +117,9 @@ pub trait SecretStore {
 /// keychain backend is shell-side and out of M0a scope; this backend keeps the
 /// crate self-contained and lets tests assert the injector end-to-end without any
 /// OS dependency. It is fully writable (`store`/`delete` mutate the map).
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 pub struct InMemorySecretStore {
-    secrets: std::cell::RefCell<BTreeMap<String, SecretValue>>,
+    secrets: RwLock<BTreeMap<String, SecretValue>>,
 }
 
 impl InMemorySecretStore {
@@ -138,30 +139,75 @@ impl InMemorySecretStore {
             .into_iter()
             .map(|(k, v)| (k.into(), SecretValue::new(v)))
             .collect();
-        InMemorySecretStore { secrets: std::cell::RefCell::new(map) }
+        InMemorySecretStore { secrets: RwLock::new(map) }
     }
 
     /// Seed/overwrite a secret (test/dev convenience; mirrors `store`).
     pub fn insert(&self, name: impl Into<String>, value: impl Into<String>) {
         self.secrets
-            .borrow_mut()
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(name.into(), SecretValue::new(value));
+    }
+
+    /// Seed/overwrite a secret and return `self` (builder-style test/dev
+    /// convenience used by runtime/core fixtures).
+    pub fn with_secret(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.insert(name, value);
+        self
+    }
+}
+
+impl Clone for InMemorySecretStore {
+    fn clone(&self) -> Self {
+        let secrets = self
+            .secrets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        InMemorySecretStore {
+            secrets: RwLock::new(secrets),
+        }
     }
 }
 
 impl SecretStore for InMemorySecretStore {
     fn get(&self, name: &str) -> Result<Option<SecretValue>> {
-        Ok(self.secrets.borrow().get(name).cloned())
+        let secrets = self.secrets.read().map_err(|_| {
+            CoreError::RuntimeError("secret store lock poisoned while reading".to_string())
+        })?;
+        Ok(secrets.get(name).cloned())
     }
 
     fn store(&self, name: &str, value: SecretValue) -> Result<()> {
-        self.secrets.borrow_mut().insert(name.to_string(), value);
+        let mut secrets = self.secrets.write().map_err(|_| {
+            CoreError::RuntimeError("secret store lock poisoned while writing".to_string())
+        })?;
+        secrets.insert(name.to_string(), value);
         Ok(())
     }
 
     fn delete(&self, name: &str) -> Result<()> {
-        self.secrets.borrow_mut().remove(name);
+        let mut secrets = self.secrets.write().map_err(|_| {
+            CoreError::RuntimeError("secret store lock poisoned while deleting".to_string())
+        })?;
+        secrets.remove(name);
         Ok(())
+    }
+}
+
+/// Redacted Debug: names are useful for tests/diagnostics, values are never
+/// printed (SC-13).
+impl std::fmt::Debug for InMemorySecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secrets = self
+            .secrets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f.debug_struct("InMemorySecretStore")
+            .field("names", &secrets.keys().collect::<Vec<_>>())
+            .field("values", &"<redacted>")
+            .finish()
     }
 }
 
