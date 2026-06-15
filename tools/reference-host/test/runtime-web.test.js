@@ -458,6 +458,92 @@ test("runtime uses host app index with content ratings when available", async ()
   }
 });
 
+test("runtime exposes native host mode for AppKit sidebar mounting", async () => {
+  const manifestsById = new Map([
+    [
+      "notes-lite",
+      {
+        ...defaultRuntimeManifest(),
+        id: "notes-lite",
+        name: "Notes Lite",
+        description: "Storage fixture.",
+        storagePrefix: "notes-lite:",
+      },
+    ],
+    [
+      "task-workbench",
+      {
+        ...defaultRuntimeManifest(),
+        id: "task-workbench",
+        name: "Task Workbench",
+        description: "Native sidebar target.",
+        storagePrefix: "task-workbench:",
+      },
+    ],
+  ]);
+  const appIndex = {
+    source: "macos-bundled",
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Storage fixture." },
+      { id: "task-workbench", name: "Task Workbench", version: "0.1.0", description: "Native sidebar target." },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, manifestsById });
+  try {
+    await loadRuntime(harness);
+    assert.equal(typeof harness.parentWindow.TerraneRuntimeHost.mountApp, "function");
+
+    const result = await vm.runInContext(
+      'window.TerraneRuntimeHost.setHostMode(true); window.TerraneRuntimeHost.mountApp("task-workbench")',
+      harness.parentContext,
+    );
+    await flushAsync();
+
+    assert.equal(result.ok, true);
+    assert.equal(result.appId, "task-workbench");
+    assert.equal(harness.document.body.classList.contains("native-host-mode"), true);
+    assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), "task-workbench");
+    const frame = harness.document.getElementById("app-frame-wrap").children[0];
+    assert.ok(frame, "native host mount should create an app iframe");
+    assert.equal(frame.title, "Task Workbench");
+    assert.match(frame.srcdoc, /\/webapps\/examples\/task-workbench\/app\.js/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime native host mount rejects unknown app ids", async () => {
+  const manifestsById = new Map([
+    [
+      "notes-lite",
+      {
+        ...defaultRuntimeManifest(),
+        id: "notes-lite",
+        name: "Notes Lite",
+        description: "Storage fixture.",
+        storagePrefix: "notes-lite:",
+      },
+    ],
+  ]);
+  const appIndex = {
+    source: "macos-bundled",
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Storage fixture." },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, manifestsById });
+  try {
+    await loadRuntime(harness);
+    await assert.rejects(
+      vm.runInContext('window.TerraneRuntimeHost.mountApp("missing-app")', harness.parentContext),
+      /Unknown Terrane app: missing-app/,
+    );
+    assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), null);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime can mount every bundled app in a sandboxed frame", async () => {
   const manifestsById = new Map(
     runtimeExampleAppIds.map((appId) => [
@@ -831,6 +917,7 @@ function createWindow() {
 
 function createDocument(createFrameWindow) {
   const elements = new Map();
+  const body = new FakeElement("body");
   for (const id of [
     "active-description",
     "active-title",
@@ -845,6 +932,7 @@ function createDocument(createFrameWindow) {
     elements.set(id, new FakeElement(id === "reload-app" || id === "refresh-apps" || id === "clear-debug" ? "button" : "div"));
   }
   return {
+    body,
     createElement(tagName) {
       const element = new FakeElement(tagName);
       if (tagName === "iframe") {
@@ -904,7 +992,24 @@ class FakeElement {
   get classList() {
     return {
       add: (name) => {
-        this.className = `${this.className} ${name}`.trim();
+        if (!this.className.split(/\s+/).includes(name)) {
+          this.className = `${this.className} ${name}`.trim();
+        }
+      },
+      contains: (name) => this.className.split(/\s+/).includes(name),
+      remove: (name) => {
+        this.className = this.className.split(/\s+/).filter((part) => part && part !== name).join(" ");
+      },
+      toggle: (name, force) => {
+        const shouldAdd = force === undefined ? !this.className.split(/\s+/).includes(name) : Boolean(force);
+        if (shouldAdd) {
+          if (!this.className.split(/\s+/).includes(name)) {
+            this.className = `${this.className} ${name}`.trim();
+          }
+        } else {
+          this.className = this.className.split(/\s+/).filter((part) => part && part !== name).join(" ");
+        }
+        return shouldAdd;
       },
     };
   }

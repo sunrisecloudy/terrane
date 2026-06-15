@@ -1,9 +1,11 @@
 import AppKit
 import SQLite3
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
-    private var hostView: WebHostView?
+    private var shellController: NativeShellViewController?
+    private var sidebarToggleAccessory: SidebarToggleAccessoryController?
 #if DEBUG
     private var controlPlane: DevControlPlane?
 #endif
@@ -30,24 +32,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 #endif
 
-        let hostView = WebHostView()
-        self.hostView = hostView
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 820),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Terrane"
-        window.center()
-        window.contentView = hostView
-        window.makeKeyAndOrderFront(nil)
-        self.window = window
+        showMainWindow()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if flag, let window {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            showMainWindow()
+        }
+        return true
+    }
+
+    private func showMainWindow() {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let shellController = NativeShellViewController()
+        self.shellController = shellController
+
+        let window = NSWindow(
+            contentRect: NativeWindowConfiguration.initialContentRect(),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Terrane"
+        window.isReleasedWhenClosed = false
+        NativeWindowConfiguration.apply(to: window)
+        window.contentViewController = shellController
+        let sidebarToggleAccessory = SidebarToggleAccessoryController(shellController: shellController)
+        window.addTitlebarAccessoryViewController(sidebarToggleAccessory)
+        self.sidebarToggleAccessory = sidebarToggleAccessory
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.window = window
+    }
+}
+
+final class SidebarToggleAccessoryController: NSTitlebarAccessoryViewController {
+    private weak var shellController: NativeShellViewController?
+    private let button = NSButton()
+
+    init(shellController: NativeShellViewController) {
+        self.shellController = shellController
+        super.init(nibName: nil, bundle: nil)
+        layoutAttribute = .left
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 34, height: 28))
+        button.frame = NSRect(x: 4, y: 2, width: 26, height: 24)
+        button.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Show or hide sidebar")
+        button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        button.bezelStyle = .toolbar
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.target = self
+        button.action = #selector(toggleSidebar)
+        button.toolTip = "Show or Hide Sidebar"
+        root.addSubview(button)
+        view = root
+    }
+
+    @objc private func toggleSidebar() {
+        shellController?.toggleSidebar()
+    }
+}
+
+enum NativeWindowConfiguration {
+    static let preferredContentSize = NSSize(width: 1080, height: 720)
+    static let minimumContentSize = NSSize(width: 860, height: 560)
+
+    static func initialContentRect(screen: NSScreen? = NSScreen.main) -> NSRect {
+        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        return initialContentRect(visibleFrame: visibleFrame)
+    }
+
+    static func initialContentRect(visibleFrame: NSRect) -> NSRect {
+        let margin: CGFloat = 64
+        let maxWidth = max(minimumContentSize.width, visibleFrame.width - margin)
+        let maxHeight = max(minimumContentSize.height, visibleFrame.height - margin)
+        let size = NSSize(
+            width: min(preferredContentSize.width, maxWidth),
+            height: min(preferredContentSize.height, maxHeight)
+        )
+        return NSRect(origin: .zero, size: size)
+    }
+
+    @MainActor
+    static func apply(to window: NSWindow) {
+        window.minSize = minimumContentSize
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.toolbarStyle = .unified
     }
 }
 

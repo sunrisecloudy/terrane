@@ -15,6 +15,12 @@ body {
   min-height: 100vh;
 }
 
+body.native-host-mode {
+  background: #ffffff;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
 button {
   border: 1px solid #bcc5d7;
   border-radius: 6px;
@@ -175,6 +181,34 @@ button:disabled {
   font-size: 12px;
 }
 
+.native-host-mode .topbar,
+.native-host-mode .sidebar,
+.native-host-mode .workspace-toolbar,
+.native-host-mode .debug-panel {
+  display: none;
+}
+
+.native-host-mode .layout {
+  display: block;
+  min-height: 100vh;
+}
+
+.native-host-mode .workspace {
+  height: 100vh;
+  padding: 0;
+}
+
+.native-host-mode .frame-wrap {
+  border: 0;
+  border-radius: 0;
+  min-height: 100vh;
+}
+
+.native-host-mode .frame-wrap iframe {
+  height: 100vh;
+  min-height: 100vh;
+}
+
 @media (max-width: 760px) {
   .layout {
     grid-template-columns: 1fr;
@@ -195,6 +229,10 @@ button:disabled {
 @media (prefers-color-scheme: dark) {
   :root {
     color: #e5e7eb;
+    background: #0f172a;
+  }
+
+  body.native-host-mode {
     background: #0f172a;
   }
 

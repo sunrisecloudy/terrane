@@ -10,11 +10,15 @@ final class WebHostView: NSView, WKNavigationDelegate {
     private let reloadButton = NSButton(title: "Reload", target: nil, action: nil)
     private var runtimeSessionId = RuntimeCrashRecovery.newSessionId()
     private var runtimeReady = false
+    private var nativeHostModeEnabled: Bool
+    private var pendingNativeAppId: String?
+    var onNativeRuntimeError: ((String) -> Void)?
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect = .zero, nativeHostModeEnabled: Bool = true) {
         let bridge = WebBridge()
         self.bridge = bridge
         self.crashRecovery = RuntimeCrashRecovery()
+        self.nativeHostModeEnabled = nativeHostModeEnabled
 
         let contentController = WKUserContentController()
         contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "TerranePlatformBridge")
@@ -64,6 +68,21 @@ final class WebHostView: NSView, WKNavigationDelegate {
         webView.load(URLRequest(url: RuntimeResourceLocator.runtimeIndexURL()))
     }
 
+    func mountApp(id appId: String) {
+        pendingNativeAppId = appId
+        applyNativeRuntimeState()
+    }
+
+    func setNativeHostModeEnabled(_ enabled: Bool) {
+        nativeHostModeEnabled = enabled
+        applyNativeRuntimeState()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        runtimeReady = true
+        applyNativeRuntimeState()
+    }
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         let crash = crashRecovery.recordWebContentProcessTerminated(
             sessionId: runtimeSessionId,
@@ -107,6 +126,53 @@ final class WebHostView: NSView, WKNavigationDelegate {
         runtimeReady = false
         runtimeSessionId = RuntimeCrashRecovery.newSessionId()
         loadRuntime()
+    }
+
+    private func applyNativeRuntimeState() {
+        guard runtimeReady else { return }
+        let script = Self.nativeRuntimeUpdateScript(
+            appId: pendingNativeAppId,
+            nativeHostModeEnabled: nativeHostModeEnabled
+        )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await webView.callAsyncJavaScript(
+                    script,
+                    arguments: [:],
+                    in: nil,
+                    contentWorld: .page
+                )
+            } catch {
+                let message = "Terrane native runtime host update failed: \(error.localizedDescription)"
+                fputs("\(message)\n", stderr)
+                onNativeRuntimeError?(message)
+            }
+        }
+    }
+
+    private static func nativeRuntimeUpdateScript(appId: String?, nativeHostModeEnabled: Bool) -> String {
+        var statements = [
+            "const host = window.TerraneRuntimeHost;",
+            "if (!host) { throw new Error('TerraneRuntimeHost is unavailable'); }",
+            "host.setHostMode(\(nativeHostModeEnabled ? "true" : "false"));"
+        ]
+        if let appId {
+            statements.append("await host.mountApp(\(Self.javascriptStringLiteral(appId)));")
+        }
+        statements.append("return { ok: true };")
+        return statements.joined(separator: "\n")
+    }
+
+    private static func javascriptStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value]),
+              let arrayLiteral = String(data: data, encoding: .utf8),
+              arrayLiteral.first == "[",
+              arrayLiteral.last == "]"
+        else {
+            return "\"\""
+        }
+        return String(arrayLiteral.dropFirst().dropLast())
     }
 }
 

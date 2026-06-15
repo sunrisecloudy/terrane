@@ -87,7 +87,8 @@
   });
 
   installRuntimeDevtools();
-  loadApps();
+  const appsReady = loadApps();
+  installTerraneRuntimeHost();
 
   async function loadApps() {
     setStatus("Loading apps");
@@ -102,6 +103,48 @@
     apps = loaded;
     renderAppList();
     setStatus("Ready");
+    return apps;
+  }
+
+  function installTerraneRuntimeHost() {
+    window.TerraneRuntimeHost = {
+      activeAppId() {
+        return activeApp ? activeApp.id : null;
+      },
+      apps() {
+        return apps.map(function (app) {
+          return {
+            id: app.id,
+            name: app.name,
+            version: app.version,
+            description: app.description,
+          };
+        });
+      },
+      async mountApp(appId) {
+        await appsReady;
+        const app = apps.find(function (candidate) {
+          return candidate.id === appId;
+        });
+        if (!app) {
+          throw new Error(`Unknown Terrane app: ${appId}`);
+        }
+        await mountApp(app);
+        return { ok: true, appId: app.id };
+      },
+      async reload() {
+        if (!activeApp) return { ok: false, reason: "no-active-app" };
+        await mountApp(activeApp);
+        return { ok: true, appId: activeApp.id };
+      },
+      setHostMode(enabled) {
+        const active = enabled === true;
+        if (document.body && document.body.classList) {
+          document.body.classList.toggle("native-host-mode", active);
+        }
+        return { ok: true, enabled: active };
+      },
+    };
   }
 
   async function fetchAppIndex() {

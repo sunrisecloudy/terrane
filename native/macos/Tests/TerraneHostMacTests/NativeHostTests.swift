@@ -33,6 +33,30 @@ struct NativeHostTests {
         #expect(RuntimeResourceLocator.fileURL(forRuntimeURL: escapedURL) == nil)
     }
 
+    @Test("native app catalog loads bundled generated apps")
+    func nativeAppCatalogLoadsBundledApps() throws {
+        let apps = try MacAppCatalog().loadBundledApps()
+        let ids = Set(apps.map(\.id))
+
+        #expect(ids.contains("notes-lite"))
+        #expect(ids.contains("task-workbench"))
+        let notesLite = try #require(apps.first(where: { $0.id == "notes-lite" }))
+        #expect(notesLite.name == "Notes Lite")
+        #expect(notesLite.version == "0.1.0")
+        #expect(notesLite.contentRatingLabel == "4+")
+        #expect(!notesLite.description.isEmpty)
+    }
+
+    @Test("native window starts at a Finder-scale content size")
+    func nativeWindowStartsAtFinderScaleContentSize() throws {
+        let wideScreen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let compactScreen = NSRect(x: 0, y: 0, width: 920, height: 620)
+
+        #expect(NativeWindowConfiguration.initialContentRect(visibleFrame: wideScreen).size == NSSize(width: 1080, height: 720))
+        #expect(NativeWindowConfiguration.initialContentRect(visibleFrame: compactScreen).size == NSSize(width: 860, height: 560))
+        #expect(NativeWindowConfiguration.minimumContentSize == NSSize(width: 860, height: 560))
+    }
+
     @Test("runtime crash recovery records a failed session and reload offer")
     func runtimeCrashRecoveryRecordsFailedSessionAndReloadOffer() throws {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
