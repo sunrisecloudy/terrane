@@ -174,7 +174,7 @@ test("Forge server exposes the CoreCommand HTTP replacement surface", () => {
     '("GET", "/health")',
     '("POST", "/bridge")',
     '("POST", "/events/drain")',
-    "let command: CoreCommand",
+    "let mut command: CoreCommand",
     "WorkspaceCore::open",
     "WorkspaceCore::in_memory",
   ];
