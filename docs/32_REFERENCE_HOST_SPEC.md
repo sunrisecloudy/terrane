@@ -1,5 +1,7 @@
 # Reference Host Spec
 
+> **⚠️ SUPERSEDED (2026-06-12):** This document describes the v0.4 reference-host contract. The Forge cutover keeps useful tests but the live v1 contract is in `prd-merged/` and `forge/spec/`.
+
 ## 1. Purpose
 
 The reference host is the **reference implementation** of the bridge contract. Every native shell and the server are diffed against it; if the reference host says a method returns `{"value":[]}`, every other host must return the same bytes for the same input.

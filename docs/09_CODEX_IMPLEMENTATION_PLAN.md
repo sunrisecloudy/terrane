@@ -1,5 +1,7 @@
 # Codex Implementation Plan
 
+> **⚠️ SUPERSEDED (2026-06-12):** This was the v0.4 Zig/WebView implementation plan. New implementation work follows `prd-merged/` and the Forge task ledger.
+
 ## 1. Implementation principle
 
 Build the platform in thin vertical slices. Do not generate all platforms in full at once. First prove the contract in the reference host (the reference implementation), then port the same contract to the Zig server, then to one desktop shell, then to the remaining shells.

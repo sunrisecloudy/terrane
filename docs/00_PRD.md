@@ -14,12 +14,12 @@
 
 | Version | Theme | Status |
 |---|---|---|
-| v0.1 | Cross-platform shells, Zig core, fixed bridge, 5 example apps | normative |
-| v0.2 | Codex control plugin + dev control plane | normative |
-| v0.3 | Signing, immutable installs, rollback, capabilities, resource budgets, network policy, accessibility, snapshots | normative |
-| v0.4 | Formal SQLite/Postgres persistence layer, install/version transactions, backup/export/import | normative |
+| v0.1 | Cross-platform shells, Zig core, fixed bridge, 5 example apps | superseded legacy |
+| v0.2 | Codex control plugin + dev control plane | superseded legacy |
+| v0.3 | Signing, immutable installs, rollback, capabilities, resource budgets, network policy, accessibility, snapshots | superseded legacy |
+| v0.4 | Formal SQLite/Postgres persistence layer, install/version transactions, backup/export/import | superseded legacy |
 
-The current PRD is v0.4. All sections below that mention earlier milestones are still required at v0.4; they are tagged to show when the requirement first appeared.
+This PRD was the v0.4 line. It is retained as historical context for legacy paths only; all new work follows `prd-merged/` and the Forge workspace.
 
 ## 0.2 Feature → Milestone matrix
 

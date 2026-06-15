@@ -1,5 +1,7 @@
 # Architecture
 
+> **⚠️ SUPERSEDED (2026-06-12):** This document describes the v0.4 legacy WebView/Zig prototype. The normative v1 architecture is `prd-merged/` plus the Rust Forge workspace under `forge/`.
+
 ## 1. System layers
 
 ```text

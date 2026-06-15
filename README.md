@@ -31,7 +31,7 @@ The intended user path is a packaged macOS app from GitHub Releases:
 4. Launch one of the bundled apps, such as **Notes Lite**.
 
 The disk image contains a macOS app bundle with the runtime, bundled example
-apps, SQLite migrations, and Zig core library. Users should not need
+apps, SQLite migrations, and the Forge core library. Users should not need
 `git submodule`, Zig, Swift, Rust, or Node just to open the app.
 
 Until the first GitHub Release is published, use the local preview below.
@@ -96,7 +96,7 @@ The mental model for the running app is:
 Generated app package
   -> runtime-web sandbox
   -> reference-host bridge
-  -> SQLite storage, policy checks, tests, and Zig core behavior
+  -> SQLite storage, policy checks, tests, and Forge core behavior
 ```
 
 Terrane is still an active implementation/spec repository, not a stable public
@@ -197,14 +197,14 @@ runtime-web
         |
         v
 Host bridge
-  native bridge or Zig local server
+  native bridge or Forge local server
         |
         v
 Platform services
   SQLite storage, dialogs, notifications, network policy, logs
         |
         v
-Zig core
+Forge core
   deterministic event -> action state machines
 ```
 

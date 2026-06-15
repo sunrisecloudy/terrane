@@ -1,5 +1,7 @@
 # Zig Core Spec
 
+> **⚠️ SUPERSEDED (2026-06-12):** The Zig core was removed in the Forge cutover. This file is retained only as historical v0.4 reference; current core behavior is implemented in `forge/` and specified by `prd-merged/`.
+
 ## 1. Core responsibility
 
 Zig core owns deterministic application logic. It accepts events and returns actions.

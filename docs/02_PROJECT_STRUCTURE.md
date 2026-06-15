@@ -1,5 +1,7 @@
 # Project Structure
 
+> **⚠️ SUPERSEDED (2026-06-12):** This document describes the v0.4 legacy repository shape. The normative v1 implementation lives in `forge/`; retained Zig paths below are historical reference only.
+
 ## Recommended monorepo tree
 
 ```text

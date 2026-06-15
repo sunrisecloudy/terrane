@@ -17,6 +17,7 @@ Verified delta:
 
 - `native/linux/`: Source/static checks plus Docker dev-control smoke verify debug dev-control package lifecycle routing for `platform.validate_package`, `platform.run_policy_audit`, `platform.sign_webapp_package`, `platform.install_webapp_package`, and `platform.open_webapp`, including repo-root package guards, package policy checks, Ed25519-shaped signing metadata, transactional app registry/package/report rows, and runtime-session creation for opened installed apps. Installed-package WebKit mounting remains follow-up work.
 - `native/windows/`: Source/static checks verify debug dev-control migration command routing for `platform.migration_dry_run` and `platform.migration_apply`, backed by fixed SQLite helpers over app migration, migration run, runtime snapshot, and app storage tables. Windows runtime execution remains unchecked.
+- `native/ios/` and `native/android/`: Forge FFI/native bridge paths are wired, but applet JS execution remains unavailable on mobile until the CR-12 engine work lands (`JavaScriptCore` for Apple platforms and the planned mobile engine conformance path). Mobile `runtime.run` returns a structured `PlatformUnavailable` rather than silently skipping execution.
 
 ## Documents
 

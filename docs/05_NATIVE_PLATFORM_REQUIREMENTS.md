@@ -1,5 +1,7 @@
 # Native Platform Requirements
 
+> **⚠️ SUPERSEDED (2026-06-12):** This document describes v0.4 legacy native hosts and Zig artifacts. Current v1 native integration uses the Rust Forge FFI/server surfaces.
+
 This document is normative for **v0.4**. Each native host must satisfy the bridge contract in docs/03 and the storage contract in docs/27/28.
 
 ## 1. Shared platform contract **[v0.1]**
