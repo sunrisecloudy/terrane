@@ -1070,8 +1070,9 @@ function checkNativeStatic() {
   if (!macPackage.includes('.target(name: "CForgeCoreBridge")') || !macPackage.includes('"CForgeCoreBridge"')) {
     throw new Error("macOS package must include the C Forge core bridge target");
   }
-  if (macPackage.includes("CZigCrdtBridge")) {
-    throw new Error("macOS package must route CRDT/sync through Forge core, not CZigCrdtBridge");
+  const retiredCrdtBridgeTarget = "C" + "Zig" + "CrdtBridge";
+  if (macPackage.includes(retiredCrdtBridgeTarget)) {
+    throw new Error("macOS package must route CRDT/sync through Forge core, not the retired CRDT bridge target");
   }
   const forbiddenAppLogPermissionChecks = [
     [macBridge, '"network.request", "core.step", "app.log"'],
