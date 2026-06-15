@@ -32,7 +32,7 @@ Low volume but required:
   performance tests
 ```
 
-## 3. Zig core tests
+## 3. Forge core tests
 
 ### Unit tests
 
@@ -45,13 +45,13 @@ Low volume but required:
 
 ### FFI tests
 
-- `core_create` returns non-null.
-- `core_destroy` handles valid core pointer.
-- `core_step_json` returns valid UTF-8 JSON.
-- `core_free` releases output buffer.
+- `forge_core_open` / `forge_core_open_in_memory` return non-null handles.
+- `forge_core_close` handles valid core pointers.
+- `forge_core_handle_command` returns valid UTF-8 JSON.
+- `forge_string_free` releases output strings.
 - Invalid JSON returns structured logical error.
 - Oversized input returns safe error.
-- Local Zig core build smoke runs with `node --test --no-warnings tools/reference-host/test/zig-core-build.test.js`, which executes `zig test` and builds native static/shared libraries. On macOS it pins `macos.15.0.0` to avoid the local Zig build-runner Darwin 26 linker issue.
+- Local Forge FFI build smoke runs with `node --test --no-warnings tools/reference-host/test/forge-ffi-build.test.js`, which runs the Forge FFI crate tests and builds native release static/shared libraries.
 
 ### Property/fuzz tests
 
@@ -61,7 +61,7 @@ Low volume but required:
 
 ### Memory tests
 
-- Repeated create/step/free/destroy loop.
+- Repeated open/command/free/close loop.
 - Large output buffer free.
 - Error output buffer free.
 
@@ -272,7 +272,7 @@ The reference host (docs/32) is the reference. Every other platform must match i
 - `/health` returns success.
 - `/core/step` matches core contract.
 - Invalid request returns structured error.
-- Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/server-zig-build.test.js`.
+- Source compile/executable smoke runs with `node --test --no-warnings tools/reference-host/test/forge-server-build.test.js`.
 - Bridge fixture contract runs against a fresh Zig server database per fixture with `node --test --no-warnings tools/reference-host/test/server-bridge-contract.test.js`.
 - API smoke runs against a local server process with `mdok run tests/server/server-api-smoke.md`.
 
