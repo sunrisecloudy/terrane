@@ -1,6 +1,8 @@
 use forge_domain::CoreResponse;
 use std::ffi::{CStr, CString};
 use std::ptr;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 fn c(value: &str) -> CString {
     CString::new(value).unwrap()
@@ -136,6 +138,139 @@ fn drain_events_returns_json_envelope() {
     let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(envelope["ok"], serde_json::json!(true));
     assert_eq!(envelope["events"], serde_json::json!([]));
+
+    unsafe { forge_ffi::forge_core_close(handle) };
+}
+
+#[test]
+fn closed_handle_returns_structured_errors_and_close_is_idempotent() {
+    let workspace = c("ws-ffi");
+    let handle = unsafe { forge_ffi::forge_core_open_in_memory(workspace.as_ptr()) };
+    assert!(!handle.is_null());
+
+    unsafe {
+        forge_ffi::forge_core_close(handle);
+        forge_ffi::forge_core_close(handle);
+    }
+
+    let cmd = c(&command("workspace.open", serde_json::json!({})));
+    let json = unsafe { take_string(forge_ffi::forge_core_handle_command(handle, cmd.as_ptr())) };
+    let response: CoreResponse = serde_json::from_str(&json).unwrap();
+    assert!(!response.ok);
+    assert_eq!(response.error.unwrap().code(), "ValidationError");
+
+    let events_json = unsafe { take_string(forge_ffi::forge_core_drain_events(handle)) };
+    let envelope: serde_json::Value = serde_json::from_str(&events_json).unwrap();
+    assert_eq!(envelope["ok"], serde_json::json!(false));
+    assert_eq!(
+        envelope["error"]["kind"],
+        serde_json::json!("ValidationError")
+    );
+}
+
+#[test]
+fn close_can_race_with_command_calls_without_dangling_the_handle() {
+    let workspace = c("ws-ffi");
+    let handle = unsafe { forge_ffi::forge_core_open_in_memory(workspace.as_ptr()) };
+    assert!(!handle.is_null());
+
+    let raw_handle = handle as usize;
+    let barrier = Arc::new(Barrier::new(2));
+    let command_barrier = Arc::clone(&barrier);
+    let command_thread = thread::spawn(move || {
+        command_barrier.wait();
+        let handle = raw_handle as *mut forge_ffi::ForgeCoreHandle;
+        for _ in 0..64 {
+            let response =
+                unsafe { send_command(handle, command("workspace.open", serde_json::json!({}))) };
+            if !response.ok {
+                assert_eq!(response.error.unwrap().code(), "ValidationError");
+            }
+        }
+    });
+
+    let close_barrier = Arc::clone(&barrier);
+    let close_handle = raw_handle;
+    let close_thread = thread::spawn(move || {
+        close_barrier.wait();
+        let handle = close_handle as *mut forge_ffi::ForgeCoreHandle;
+        unsafe { forge_ffi::forge_core_close(handle) };
+    });
+
+    command_thread.join().unwrap();
+    close_thread.join().unwrap();
+}
+
+#[test]
+fn close_can_race_with_drain_events_without_dangling_the_handle() {
+    let workspace = c("ws-ffi");
+    let handle = unsafe { forge_ffi::forge_core_open_in_memory(workspace.as_ptr()) };
+    assert!(!handle.is_null());
+
+    let raw_handle = handle as usize;
+    let barrier = Arc::new(Barrier::new(2));
+    let drain_barrier = Arc::clone(&barrier);
+    let drain_thread = thread::spawn(move || {
+        drain_barrier.wait();
+        let handle = raw_handle as *mut forge_ffi::ForgeCoreHandle;
+        for _ in 0..64 {
+            let json = unsafe { take_string(forge_ffi::forge_core_drain_events(handle)) };
+            let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if envelope["ok"] != serde_json::json!(true) {
+                assert_eq!(
+                    envelope["error"]["kind"],
+                    serde_json::json!("ValidationError")
+                );
+            }
+        }
+    });
+
+    let close_barrier = Arc::clone(&barrier);
+    let close_handle = raw_handle;
+    let close_thread = thread::spawn(move || {
+        close_barrier.wait();
+        let handle = close_handle as *mut forge_ffi::ForgeCoreHandle;
+        unsafe { forge_ffi::forge_core_close(handle) };
+    });
+
+    drain_thread.join().unwrap();
+    close_thread.join().unwrap();
+}
+
+#[test]
+fn command_and_drain_events_are_serialized_on_one_handle() {
+    let workspace = c("ws-ffi");
+    let handle = unsafe { forge_ffi::forge_core_open_in_memory(workspace.as_ptr()) };
+    assert!(!handle.is_null());
+
+    let raw_handle = handle as usize;
+    let barrier = Arc::new(Barrier::new(3));
+    let command_barrier = Arc::clone(&barrier);
+    let command_thread = thread::spawn(move || {
+        command_barrier.wait();
+        let handle = raw_handle as *mut forge_ffi::ForgeCoreHandle;
+        for _ in 0..64 {
+            let response =
+                unsafe { send_command(handle, command("workspace.open", serde_json::json!({}))) };
+            assert!(response.ok, "{:?}", response.error);
+        }
+    });
+
+    let drain_handle = raw_handle;
+    let drain_barrier = Arc::clone(&barrier);
+    let drain_thread = thread::spawn(move || {
+        drain_barrier.wait();
+        let handle = drain_handle as *mut forge_ffi::ForgeCoreHandle;
+        for _ in 0..64 {
+            let json = unsafe { take_string(forge_ffi::forge_core_drain_events(handle)) };
+            let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(envelope["ok"], serde_json::json!(true));
+        }
+    });
+
+    barrier.wait();
+    command_thread.join().unwrap();
+    drain_thread.join().unwrap();
 
     unsafe { forge_ffi::forge_core_close(handle) };
 }

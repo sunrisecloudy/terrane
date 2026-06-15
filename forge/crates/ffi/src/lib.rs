@@ -13,6 +13,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
+use std::sync::Mutex;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -21,7 +22,10 @@ thread_local! {
 /// Opaque handle owned by the C ABI caller.
 #[repr(C)]
 pub struct ForgeCoreHandle {
-    core: WorkspaceCore,
+    // The tombstone handle intentionally remains allocated after
+    // `forge_core_close`. That lets racing or duplicate native calls fail closed
+    // without dereferencing freed Rust memory across the FFI boundary.
+    core: Mutex<Option<WorkspaceCore>>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +48,14 @@ fn ffi_request_id() -> RequestId {
 
 fn panic_error() -> CoreError {
     CoreError::RuntimeError("panic caught at forge-ffi boundary".to_string())
+}
+
+fn poisoned_handle_error() -> CoreError {
+    CoreError::RuntimeError("core handle lock is poisoned".to_string())
+}
+
+fn closed_handle_error() -> CoreError {
+    CoreError::ValidationError("core handle is closed".to_string())
 }
 
 fn serialize_json<T: Serialize>(value: &T) -> String {
@@ -127,7 +139,9 @@ unsafe fn read_c_string(ptr: *const c_char, name: &str) -> Result<String, CoreEr
 fn open_in_memory_inner(workspace_id: *const c_char) -> Result<*mut ForgeCoreHandle, CoreError> {
     let workspace_id = unsafe { read_c_string(workspace_id, "workspace_id") }?;
     let core = WorkspaceCore::in_memory(workspace_id)?;
-    Ok(Box::into_raw(Box::new(ForgeCoreHandle { core })))
+    Ok(Box::into_raw(Box::new(ForgeCoreHandle {
+        core: Mutex::new(Some(core)),
+    })))
 }
 
 fn open_inner(
@@ -142,7 +156,9 @@ fn open_inner(
     }
     let workspace_id = unsafe { read_c_string(workspace_id, "workspace_id") }?;
     let core = WorkspaceCore::open(Path::new(&path), workspace_id)?;
-    Ok(Box::into_raw(Box::new(ForgeCoreHandle { core })))
+    Ok(Box::into_raw(Box::new(ForgeCoreHandle {
+        core: Mutex::new(Some(core)),
+    })))
 }
 
 fn handle_command_inner(handle: *mut ForgeCoreHandle, command_json: *const c_char) -> String {
@@ -165,7 +181,15 @@ fn handle_command_inner(handle: *mut ForgeCoreHandle, command_json: *const c_cha
         }
     };
 
-    let response = unsafe { &mut (*handle).core }.handle(command);
+    let mut core = match unsafe { &*handle }.core.lock() {
+        Ok(core) => core,
+        Err(_) => return response_error_json(poisoned_handle_error()),
+    };
+    let Some(core) = core.as_mut() else {
+        return response_error_json(closed_handle_error());
+    };
+
+    let response = core.handle(command);
     response_json(response)
 }
 
@@ -175,7 +199,15 @@ fn drain_events_inner(handle: *mut ForgeCoreHandle) -> String {
             "core handle is null".to_string(),
         ));
     }
-    let events = unsafe { &mut (*handle).core }.events_mut().drain();
+    let mut core = match unsafe { &*handle }.core.lock() {
+        Ok(core) => core,
+        Err(_) => return drain_error_json(poisoned_handle_error()),
+    };
+    let Some(core) = core.as_mut() else {
+        return drain_error_json(closed_handle_error());
+    };
+
+    let events = core.events_mut().drain();
     drain_json(events)
 }
 
@@ -292,16 +324,28 @@ pub extern "C" fn forge_core_last_error() -> *mut c_char {
 ///
 /// # Safety
 ///
-/// `handle`, when non-null, must be a pointer returned by this library and must
-/// be closed at most once.
+/// `handle`, when non-null, must be a pointer returned by this library. Closing
+/// is idempotent: the workspace core is dropped at most once, and later calls
+/// fail closed with structured errors.
 #[no_mangle]
 pub unsafe extern "C" fn forge_core_close(handle: *mut ForgeCoreHandle) {
     if handle.is_null() {
         return;
     }
-    if catch_unwind(AssertUnwindSafe(|| unsafe { drop(Box::from_raw(handle)) })).is_err() {
-        let error = panic_error();
-        set_last_error(&error);
+    match catch_unwind(AssertUnwindSafe(|| -> Result<(), CoreError> {
+        let core = match unsafe { &*handle }.core.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => return Err(poisoned_handle_error()),
+        };
+        drop(core);
+        Ok(())
+    })) {
+        Ok(Ok(())) => clear_last_error(),
+        Ok(Err(error)) => set_last_error(&error),
+        Err(_) => {
+            let error = panic_error();
+            set_last_error(&error);
+        }
     }
 }
 
