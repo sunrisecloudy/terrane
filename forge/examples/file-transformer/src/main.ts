@@ -10,9 +10,7 @@ export async function main(ctx: AppContext, input: TransformInput): Promise<AppR
   const name = input.name ?? "sample";
   const outputPath = input.outputPath ?? "out/sample.txt";
   const bytesBase64 = input.bytesBase64 ?? "Rm9yZ2UgZmlsZSB0cmFuc2Zvcm0K";
-  const files = (ctx as any).files;
-
-  const write = await files.write({
+  const write = await ctx.files.write({
     handle: "workspace_data",
     path: outputPath,
     bytes_base64: bytesBase64,

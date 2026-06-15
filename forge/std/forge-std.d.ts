@@ -34,6 +34,8 @@ declare module "@forge/std" {
   export interface AppContext {
     db: Db;
     storage: Storage;
+    net: Net;
+    files: Files;
     ui: Ui;
     time: TimeApi;
     random: RandomApi;
@@ -112,6 +114,71 @@ declare module "@forge/std" {
     set(key: string, value: string): Promise<void>;
     delete(key: string): Promise<void>;
     list(prefix: string): Promise<string[]>;
+  }
+
+  /**
+   * Deterministic network egress surface. The runtime capability-checks every
+   * request against the manifest `net` grant before consulting the host client;
+   * replay serves the recorded response and never opens the network.
+   * PRD refs: CR-3, CR-8, SC-5, SC-8.
+   */
+  export interface Net {
+    fetch(request: NetRequest): Promise<NetResponse>;
+  }
+
+  export interface NetRequest {
+    method: string;
+    url: string;
+    headers?: { [key: string]: string | { secret_ref: string } };
+    body?: string;
+    content_type?: string;
+    response_content_type?: string;
+    timeout_ms?: number;
+  }
+
+  export interface NetResponse {
+    status: number;
+    body?: string;
+    content_type?: string;
+    final_url?: string;
+  }
+
+  /**
+   * Deterministic sandboxed file surface. Handles are trusted host grants, never
+   * native paths; replay serves recorded bytes and never touches the live file
+   * system.
+   * PRD refs: CR-3, CR-8, SC-8, SC-12.
+   */
+  export interface Files {
+    read(request: FileReadRequest): Promise<FileReadResponse>;
+    write(request: FileWriteRequest): Promise<FileWriteResponse>;
+  }
+
+  export interface FileReadRequest {
+    handle: string;
+    path: string;
+    encoding?: "base64";
+  }
+
+  export interface FileReadResponse {
+    path: string;
+    bytes_base64: string;
+    size: number;
+    content_type?: string;
+  }
+
+  export interface FileWriteRequest {
+    handle: string;
+    path: string;
+    bytes_base64: string;
+    content_type?: string;
+    mode?: "create_or_truncate";
+  }
+
+  export interface FileWriteResponse {
+    path: string;
+    written_bytes: number;
+    version?: string;
   }
 
   /**

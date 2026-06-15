@@ -7,8 +7,7 @@ type ApiInput = {
 export async function main(ctx: AppContext, input: ApiInput): Promise<AppResult> {
   const path = input.path ?? "weather";
   const url = `https://api.example.com/public/${path}`;
-  const net = (ctx as any).net;
-  const response = await net.fetch({
+  const response = await ctx.net.fetch({
     method: "GET",
     url,
     response_content_type: "application/json"
