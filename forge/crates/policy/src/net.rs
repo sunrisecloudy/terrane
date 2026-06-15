@@ -215,6 +215,21 @@ impl<'a> NetPolicy<'a> {
         Ok(())
     }
 
+    /// Return the matched rule's `allow_secret_headers` after running the same
+    /// SC-5 decision as [`check`](Self::check). The runtime feeds this to the
+    /// host-edge secret injector's defense-in-depth allowlist.
+    pub fn allowed_secret_headers(&self, request: &NetRequest) -> Result<Vec<String>> {
+        self.check(request)?;
+        let target = ParsedUrl::parse(&request.url).map_err(|e| {
+            CoreError::PermissionDenied(format!(
+                "net.fetch denied: invalid url {:?}: {e}",
+                request.url
+            ))
+        })?;
+        let rule = self.match_full_rule(request, &target)?;
+        Ok(rule.allow_secret_headers.clone())
+    }
+
     /// Parse every redirect-chain hop into a [`ParsedUrl`], failing closed on a
     /// malformed hop URL. Order is preserved (origin first, final hop last).
     fn parse_redirect_hops(&self, request: &NetRequest) -> Result<Vec<ParsedUrl>> {
@@ -235,10 +250,19 @@ impl<'a> NetPolicy<'a> {
     /// original request against `target`. `Ok` if some rule grants it; otherwise
     /// the first rule's denial reason (or a generic "no rule covers" message).
     fn match_full_request(&self, request: &NetRequest, target: &ParsedUrl) -> Result<()> {
+        self.match_full_rule(request, target).map(|_| ())
+    }
+
+    /// Return the first rule that fully grants the original request.
+    fn match_full_rule<'rule>(
+        &'rule self,
+        request: &NetRequest,
+        target: &ParsedUrl,
+    ) -> Result<&'rule NetRule> {
         let mut last_reason: Option<CoreError> = None;
         for rule in self.allowlist.rules() {
             match self.rule_matches(rule, request, target) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(rule),
                 Err(reason) => last_reason = Some(reason),
             }
         }
@@ -545,6 +569,20 @@ mod tests {
             HeaderValue::Secret { secret_ref: "s".into() },
         );
         assert!(check_net(&g, &r).is_ok());
+    }
+
+    #[test]
+    fn allowed_secret_headers_returns_the_matching_rule_only() {
+        let mut first = rule("GET", "https://api.example.com/private/*");
+        first.allow_secret_headers = vec!["Authorization".into()];
+        let mut second = rule("GET", "https://cdn.example.com/public/*");
+        second.allow_secret_headers = vec!["X-Api-Key".into()];
+        let g = grant(vec![first, second]);
+
+        let headers = NetPolicy::new(&g)
+            .allowed_secret_headers(&req("GET", "https://cdn.example.com/public/asset"))
+            .unwrap();
+        assert_eq!(headers, vec!["X-Api-Key".to_string()]);
     }
 
     // --- SC-5 redirect re-check (review 069 P1) ------------------------------
