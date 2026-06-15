@@ -18,11 +18,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -31,13 +26,17 @@ jobs:
       - name: Repository checks
         run: node --no-warnings tools/check-repo.mjs
 
-      - name: Zig core tests
-        working-directory: zig-core
-        run: zig build test
+      - name: Forge workspace tests
+        working-directory: forge
+        run: cargo test --workspace --locked
 
-      - name: Zig server tests
-        working-directory: server
-        run: zig build test
+      - name: Forge workspace clippy
+        working-directory: forge
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Forge replay demo
+        working-directory: forge
+        run: cargo run -p forge-cli -- demo
 
       - name: Reference host tests
         working-directory: tools/reference-host
@@ -71,8 +70,8 @@ jobs:
           name: static-release-artifacts
           path: artifacts/
 
-  zig-core-release-artifacts:
-    name: Zig Core Release Artifacts
+  forge-ffi-release-artifacts:
+    name: Forge FFI Release Artifacts
     runs-on: macos-latest
     timeout-minutes: 15
 
@@ -85,19 +84,14 @@ jobs:
         with:
           node-version: 24
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - name: Package Forge FFI release artifacts
+        run: node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi
 
-      - name: Package Zig core release artifacts
-        run: node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core
-
-      - name: Upload Zig core release artifacts
+      - name: Upload Forge FFI release artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zig-core-release-artifacts
+          name: forge-ffi-release-artifacts
           path: artifacts/
 
   server-release-artifacts:
@@ -113,11 +107,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
 
       - name: Install server build dependencies
         run: |

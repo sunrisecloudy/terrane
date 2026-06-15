@@ -274,9 +274,10 @@ function checkCiWorkflow() {
     "mlugg/setup-zig@v2",
     "version: 0.15.2",
     "libsqlite3-dev",
-    "working-directory: zig-core",
-    "working-directory: server",
-    "zig build test",
+    "working-directory: forge",
+    "cargo test --workspace --locked",
+    "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "cargo run -p forge-cli -- demo",
     "tools/check-repo.mjs",
     "tools/reference-host",
     "tests/performance/reference-host-latency.mjs --warmup 5 --samples 20 --out performance_runs --enforce-targets",
@@ -285,8 +286,8 @@ function checkCiWorkflow() {
     "tools/codex-platform-mcp",
     "tools/package-release.mjs --out artifacts",
     "static-release-artifacts",
-    "zig-core-release-artifacts",
-    "tools/package-release.mjs --out artifacts --build-zig-core",
+    "forge-ffi-release-artifacts",
+    "tools/package-release.mjs --out artifacts --build-forge-ffi",
     "server-release-artifacts",
     "tools/package-release.mjs --out artifacts --build-server",
     "macos-native-release-artifacts",
@@ -341,7 +342,7 @@ function checkCiWorkflow() {
       throw new Error(`Release workflow missing ${snippet}`);
     }
   }
-  return "node=24,zig=0.15.2,sqlite=yes,core=zig-test,server=zig-test,perf=target-enforced-smoke,release=static/zig-core/server/macos-native-dmg/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
+  return "node=24,zig=native-jobs,sqlite=yes,core=forge-test-clippy-demo,server=forge-server-package,perf=target-enforced-smoke,release=static/forge-ffi/server/macos-native-dmg/linux-native/windows-native,native=linux-docker/macos/ios/android/windows-smoke";
 }
 
 function checkReleasePackaging() {
@@ -356,7 +357,7 @@ function checkReleasePackaging() {
     "example-webapps.zip",
     "release-manifest.json",
     "writeStoredZip",
-    "buildZigCoreArtifacts",
+    "buildForgeFfiArtifacts",
     "buildServerArtifacts",
     "buildMacOSNativeArtifacts",
     "createMacOSDmg",
@@ -364,7 +365,7 @@ function checkReleasePackaging() {
     "buildLinuxZigCoreSo",
     "buildWindowsNativeArtifacts",
     "windowsWebView2SdkStatus",
-    "--build-zig-core",
+    "--build-forge-ffi",
     "--build-server",
     "--build-native-macos",
     "--build-native-linux",
@@ -373,10 +374,11 @@ function checkReleasePackaging() {
     "forge-server-executable",
     "forge-server",
     "native-host-app",
-    "ZIG_CORE_TARGETS",
-    "ios-arm64-device",
+    "FORGE_FFI_TARGETS",
+    "hostForgeFfiTarget",
+    "forge_ffi.h",
+    "libforge_ffi",
     "windows-x86_64",
-    "zig_core.lib",
     "terrane-server",
     "TerraneHostMac.app",
     ".dmg",
@@ -399,7 +401,7 @@ function checkReleasePackaging() {
     }
   }
   for (const snippet of [
-    "tools/package-release.mjs --out artifacts --build-zig-core --build-server",
+    "tools/package-release.mjs --out artifacts --build-forge-ffi --build-server",
     "linux-x86_64/terrane-server",
     "native-apps/macos/macos-arm64/TerraneHostMac.app",
     "native-apps/macos/macos-arm64/Terrane-macos-arm64.dmg",
@@ -437,13 +439,14 @@ function checkReleasePackaging() {
   }
   for (const snippet of [
     "listZipEntries",
-    "buildZigCore: true",
+    "buildForgeFfi: true",
     "buildServer: true",
     "buildNativeMacOS: true",
     "linuxReleaseSkipReason",
     "buildNativeLinux: true",
     "buildNativeWindows: true",
-    "server-executable",
+    "forge-ffi-library",
+    "forge-server-executable",
     "native-host-app",
     "dmg",
     "Terrane-",
@@ -475,7 +478,7 @@ function checkReleasePackaging() {
       throw new Error(`Linux native packaged smoke missing ${snippet}`);
     }
   }
-  return "artifacts=runtime-web.zip,example-webapps.zip,zig-core-libs,forge-server-executable,macos-native-host,macos-dmg,linux-native-host,windows-native-host,manifest";
+  return "artifacts=runtime-web.zip,example-webapps.zip,forge-ffi-libs,forge-server-executable,macos-native-host,macos-dmg,linux-native-host,windows-native-host,manifest";
 }
 
 function checkPerformanceHarness() {

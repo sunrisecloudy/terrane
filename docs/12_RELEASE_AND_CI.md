@@ -4,7 +4,7 @@
 
 The first version should produce:
 
-- Zig core libraries for all platform targets.
+- Forge FFI libraries for host/native targets.
 - Runtime web static assets.
 - Example webapp packages.
 - Native host app builds.
@@ -15,8 +15,9 @@ The first version should produce:
 Suggested commands:
 
 ```text
-zig build -Dtarget=native test
-zig build -Dtarget=native run-server
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo run -p forge-cli -- demo
 node tools/validate-webapp-package/main.js webapps/examples/notes-lite
 node tools/package-examples/main.js
 ```
@@ -31,14 +32,13 @@ Platform commands will vary by host OS.
 - Validate example manifests.
 - Run package validator against examples.
 - Run malicious fixture rejection tests.
-- Run Zig core tests.
+- Run Forge workspace tests and clippy.
 - Run runtime JS unit tests.
 
 ### Stage 2: build
 
-- Build Zig core native target.
-- Cross-build Zig libraries where feasible.
-- Build server.
+- Build Forge FFI library artifacts.
+- Build Forge server.
 - Build runtime package.
 - Build native shells where CI OS supports them.
 
@@ -53,20 +53,20 @@ Platform commands will vary by host OS.
 
 ```text
 ubuntu-24.04:
-  Zig core tests
-  server tests
+  Forge workspace tests
+  Forge server tests
   runtime tests
   package validator
   Linux native release artifact package on ubuntu-24.04
   Docker-backed Linux shell build, release production-guard audit, and WebKitGTK smoke on ubuntu-24.04
 
 macos-latest:
-  Zig core macOS/iOS build
+  Forge FFI macOS artifact build
   macOS shell build
   iOS simulator smoke
 
 windows-2022:
-  Zig core Windows build
+  Forge FFI Windows build
   Windows shell build on windows-2022
   Windows native release artifact package on windows-2022
   WebView2 smoke with the pinned WebView2 SDK package
@@ -81,23 +81,17 @@ android emulator job:
 The release artifact packager is:
 
 ```text
-node --no-warnings tools/package-release.mjs --out artifacts --build-zig-core --build-server --build-native-macos
+node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi --build-server --build-native-macos
 ```
 
-It produces deterministic archives for the build-free runtime and example packages, builds the target-specific Zig core libraries listed in docs/05 §8 when Zig is available, builds the host-native Zig server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
+It produces deterministic archives for the build-free runtime and example packages, builds the host-target Forge FFI library plus `forge_ffi.h` when `--build-forge-ffi` is passed, builds the host-native Forge server executable for the current CI runner when `--build-server` is passed, builds a macOS `.app` host bundle plus a user-downloadable `.dmg` with runtime/example/database resources and `libzig_core.dylib` when `--build-native-macos` is passed on macOS, builds a Linux host app directory with runtime/example/database resources and `libzig_core.so` when `--build-native-linux` is passed on Linux, builds a Windows host app directory with runtime/example/database resources and `zig_core.dll` when `--build-native-windows` is passed on Windows, and writes a manifest that records hashes plus the target-specific directories populated by platform CI jobs.
 
 ```text
 artifacts/
-  zig-core/
-    ios/ios-arm64-device/libzig_core.a
-    ios/ios-arm64-simulator/libzig_core.a
-    macos/macos-arm64/libzig_core.a
-    macos/macos-x86_64/libzig_core.a
-    android/android-arm64-v8a/libzig_core.so
-    android/android-x86_64/libzig_core.so
-    windows/windows-x86_64/zig_core.dll
-    windows/windows-x86_64/zig_core.lib
-    linux/linux-x86_64/libzig_core.so
+  forge-ffi/
+    macos/macos-arm64/forge_ffi.h
+    macos/macos-arm64/libforge_ffi.dylib
+    macos/macos-arm64/libforge_ffi.a
   server/
     linux-x86_64/terrane-server
   runtime-web.zip
@@ -128,6 +122,12 @@ The macOS native app artifact path is `native-apps/macos/macos-arm64/TerraneHost
 The Linux native app artifact path is `native-apps/linux/linux-x86_64/TerraneHost` on the `ubuntu-24.04` release runner.
 
 The Windows native app artifact path is `native-apps/windows/windows-x86_64/TerraneHost` on the `windows-2022` release runner.
+
+The dedicated Forge FFI artifact job runs:
+
+```text
+node --no-warnings tools/package-release.mjs --out artifacts --build-forge-ffi
+```
 
 The dedicated Linux server artifact job runs:
 

@@ -106,7 +106,7 @@ test("release packaging creates deterministic static artifact archives and manif
     assert.ok(exampleEntries.includes("webapps/examples/task-workbench/app.js"));
 
     for (const target of ["ios", "macos", "android", "windows", "linux"]) {
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", target, "README.txt")), true);
+      assert.equal(fs.existsSync(path.join(outDir, "forge-ffi", target, "README.txt")), true);
     }
     assert.equal(fs.existsSync(path.join(outDir, "server", "README.txt")), true);
     assert.equal(fs.existsSync(path.join(outDir, "native-apps", "README.txt")), true);
@@ -120,7 +120,7 @@ test("release packaging creates deterministic static artifact archives and manif
     assert.equal(publicContract.contractId, "terrane-public-contract");
     assert.equal(publicContract.files.contracts.some((file) => file.path === "forge/contracts/public-contract.schema.json"), true);
     assert.equal(publicContract.files.docs.some((file) => file.path === "docs/35_PUBLIC_CONTRACT_EXPORT.md"), true);
-    assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "zig-core-windows"), true);
+    assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "forge-ffi-windows"), true);
     assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "server" && artifact.kind === "directory"), true);
     assert.equal(firstManifest.artifacts.some((artifact) => artifact.id === "native-apps"), true);
   } finally {
@@ -129,33 +129,27 @@ test("release packaging creates deterministic static artifact archives and manif
 });
 
 test(
-  "release packaging can build Zig core libraries for platform artifact targets",
-  {
-    skip: !hasZig() ? "zig is not available" : false,
-    timeout: 60_000,
-  },
+  "release packaging can build the Forge FFI library artifact",
+  { timeout: 60_000 },
   () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-zig-artifacts-"));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "terrane-release-forge-ffi-artifacts-"));
     try {
-      const result = packageReleaseArtifacts({ outDir, buildZigCore: true });
+      const result = packageReleaseArtifacts({ outDir, buildForgeFfi: true });
       const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
-      const coreArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "zig-core-library");
-      assert.equal(coreArtifacts.length, 8);
+      const ffiArtifacts = manifest.artifacts.filter((artifact) => artifact.kind === "forge-ffi-library");
+      assert.equal(ffiArtifacts.length, 1);
 
-      for (const artifact of coreArtifacts) {
-        assert.equal(fs.existsSync(path.join(outDir, artifact.path, "zig_core.h")), true);
-        assert.equal(artifact.files.some((file) => file.path.endsWith("zig_core.h") && file.sha256.length === 64), true);
+      const [ffiArtifact] = ffiArtifacts;
+      assert.match(ffiArtifact.target, /^(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)$/);
+      assert.equal(fs.existsSync(path.join(outDir, ffiArtifact.path, "forge_ffi.h")), true);
+      assert.equal(ffiArtifact.files.some((file) => file.path.endsWith("forge_ffi.h") && file.sha256.length === 64), true);
+
+      const libraryFiles = ffiArtifact.files.filter((file) => !file.path.endsWith("forge_ffi.h"));
+      assert.equal(libraryFiles.length > 0, true);
+      for (const file of libraryFiles) {
+        assert.match(file.sha256, /^[a-f0-9]{64}$/);
+        assert.equal(fs.existsSync(path.join(outDir, file.path)), true);
       }
-
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "ios", "ios-arm64-device", "libzig_core.a")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "ios", "ios-arm64-simulator", "libzig_core.a")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "macos", "macos-arm64", "libzig_core.a")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "macos", "macos-x86_64", "libzig_core.a")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "android", "android-arm64-v8a", "libzig_core.so")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "android", "android-x86_64", "libzig_core.so")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "linux", "linux-x86_64", "libzig_core.so")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.dll")), true);
-      assert.equal(fs.existsSync(path.join(outDir, "zig-core", "windows", "windows-x86_64", "zig_core.lib")), true);
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
