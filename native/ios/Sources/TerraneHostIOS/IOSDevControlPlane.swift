@@ -1889,7 +1889,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
         guard let events = args["events"] as? [Any] else {
             throw CommandError(status: 400, code: "invalid_request", message: "runtime.replay_events events must be an array")
         }
-        let replayCore = ZigCoreBridge()
+        let replayCore = ForgeCoreBridge()
         let replay = events.enumerated().map { index, event -> [String: Any] in
             let request = BridgeRequest(
                 body: [
@@ -3098,7 +3098,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
                 "dialog.saveFile": true,
                 "notification.toast": true,
                 "network.request": true,
-                "core.step": ZigCoreBridge().isAvailable,
+                "core.step": ForgeCoreBridge().isAvailable,
                 "runtime.capabilities": true,
                 "app.log": true
             ],

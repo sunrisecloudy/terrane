@@ -879,8 +879,8 @@ function checkNativeStatic() {
   const iosDialogs = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformDialogs.swift"), "utf8");
   const iosDevControl = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "IOSDevControlPlane.swift"), "utf8");
   const iosNativeBuildTest = fs.readFileSync(path.join(repoRoot, "tools", "reference-host", "test", "ios-native-build.test.js"), "utf8");
-  const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "ZigCoreBridge.swift"), "utf8");
-  const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CZigCoreBridge", "CZigCoreBridge.c"), "utf8");
+  const iosCore = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "ForgeCoreBridge.swift"), "utf8");
+  const iosCoreShim = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "CForgeCoreBridge", "CForgeCoreBridge.c"), "utf8");
   const iosPackage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Package.swift"), "utf8");
   const iosStorage = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformStorage.swift"), "utf8");
   const iosNetwork = fs.readFileSync(path.join(repoRoot, "native", "ios", "Sources", "TerraneHostIOS", "PlatformNetwork.swift"), "utf8");
@@ -1363,7 +1363,7 @@ function checkNativeStatic() {
     "core_action.not_found",
     "Expected core action was not found",
     "control_replay_",
-    "ZigCoreBridge()",
+    "ForgeCoreBridge()",
     "safeDbCoreEvents",
     "safeDbCoreActions",
     "parsedCoreRows",
@@ -1524,12 +1524,13 @@ function checkNativeStatic() {
     throw new Error("iOS dialogs must not remain placeholder stubs or disabled capabilities");
   }
   for (const snippet of [
-    "import CZigCoreBridge",
-    "Library(linked: true)",
-    "TERRANE_ZIG_CORE_DYLIB",
+    "import CForgeCoreBridge",
+    "Library(linked: true",
+    "TERRANE_FORGE_FFI_DYLIB",
     "RuntimeResourceLocator.repoRootURL()",
-    "terrane_zig_core_step_json",
-    "terrane_zig_core_free_output",
+    "terrane_forge_core_handle_command",
+    "terrane_forge_core_free_string",
+    '"legacy.core_step"',
     "core.step app field does not match the channel-derived app id",
     "platform_unsupported",
   ]) {
@@ -1537,13 +1538,13 @@ function checkNativeStatic() {
       throw new Error(`iOS core bridge missing ${snippet}`);
     }
   }
-  for (const snippet of ["RTLD_DEFAULT", "dlopen", "dlsym", "core_step_json", "core_free", "ZigCoreBuffer"]) {
+  for (const snippet of ["RTLD_DEFAULT", "dlopen", "dlsym", "forge_core_open_in_memory", "forge_core_handle_command", "forge_string_free"]) {
     if (!iosCoreShim.includes(snippet)) {
-      throw new Error(`iOS C Zig core shim missing ${snippet}`);
+      throw new Error(`iOS C Forge core shim missing ${snippet}`);
     }
   }
-  if (!iosPackage.includes('.target(name: "CZigCoreBridge")') || !iosPackage.includes('dependencies: ["CZigCoreBridge"]')) {
-    throw new Error("iOS package must include the C Zig core bridge target");
+  if (!iosPackage.includes('.target(name: "CForgeCoreBridge")') || !iosPackage.includes('dependencies: ["CForgeCoreBridge"]')) {
+    throw new Error("iOS package must include the C Forge core bridge target");
   }
   const windowsRequired = [
     [windowsHost, "SetVirtualHostNameToFolderMapping"],
@@ -2349,7 +2350,7 @@ function checkNativeStatic() {
       throw new Error(`Android CMake Zig core bridge missing ${snippet}`);
     }
   }
-  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=linked-or-dylib windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
+  return "macos.capabilities=schema-shaped core=forge-ffi crdt=forge-core storage=context-enforced dialogs=openfile-multiple-accept-maxbytes ios.webbridge=context-enforced dialogs=document-picker core=forge-ffi windows.webview2=origin-checked dialogs=common-dialogs core=zig-dll linux.webkit=scheme-checked dialogs=gtk-native core=zig-so android.webmessage=origin-checked dialogs=activity-result core=jni-so";
 }
 
 function readJson(filePath) {

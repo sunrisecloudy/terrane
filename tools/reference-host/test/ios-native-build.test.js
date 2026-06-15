@@ -87,49 +87,39 @@ function buildIOSHost(scratchRoot) {
   return { buildScratch, binaryPath, output };
 }
 
-function buildIOSZigCore(scratchRoot) {
-  const dylibPath = path.join(scratchRoot, "libzig_core.dylib");
+function buildIOSForgeFfi() {
   execFileSync(
-    "zig",
+    "cargo",
     [
-      "build-lib",
-      "src/lib.zig",
-      "-dynamic",
-      "-target",
-      "aarch64-ios-simulator",
-      "-lc",
-      "-L",
-      path.join(simulatorSdkPath(), "usr", "lib"),
-      `-femit-bin=${dylibPath}`,
+      "build",
+      "-p",
+      "forge-ffi",
+      "--locked",
+      "--target",
+      "aarch64-apple-ios-sim",
     ],
     {
-      cwd: path.join(repoRoot, "zig-core"),
-      env: {
-        ...process.env,
-        ZIG_GLOBAL_CACHE_DIR: path.join(scratchRoot, "zig-global-cache"),
-        ZIG_LOCAL_CACHE_DIR: path.join(scratchRoot, "zig-local-cache"),
-      },
+      cwd: path.join(repoRoot, "forge"),
       stdio: "ignore",
     },
   );
+  const dylibPath = path.join(repoRoot, "forge", "target", "aarch64-apple-ios-sim", "debug", "libforge_ffi.dylib");
   assert.equal(fs.existsSync(dylibPath), true);
-  const loadCommands = execFileSync("otool", ["-l", dylibPath], { encoding: "utf8" });
-  assert.match(loadCommands, /platform 7/);
   const symbols = execFileSync("nm", ["-gU", dylibPath], { encoding: "utf8" });
-  assert.match(symbols, /_core_create/);
-  assert.match(symbols, /_core_step_json/);
-  assert.match(symbols, /_core_free/);
+  assert.match(symbols, /_forge_core_open_in_memory/);
+  assert.match(symbols, /_forge_core_handle_command/);
+  assert.match(symbols, /_forge_string_free/);
   return dylibPath;
 }
 
-function createSimulatorAppBundle(scratchRoot, binaryPath, zigCoreDylibPath = null) {
+function createSimulatorAppBundle(scratchRoot, binaryPath, forgeFfiDylibPath = null) {
   const appBundle = path.join(scratchRoot, "TerraneHostIOS.app");
   fs.mkdirSync(appBundle, { recursive: true });
   fs.copyFileSync(binaryPath, path.join(appBundle, "TerraneHostIOS"));
   fs.chmodSync(path.join(appBundle, "TerraneHostIOS"), 0o755);
-  if (zigCoreDylibPath) {
-    const bundledCorePath = path.join(appBundle, "libzig_core.dylib");
-    fs.copyFileSync(zigCoreDylibPath, bundledCorePath);
+  if (forgeFfiDylibPath) {
+    const bundledCorePath = path.join(appBundle, "libforge_ffi.dylib");
+    fs.copyFileSync(forgeFfiDylibPath, bundledCorePath);
     fs.chmodSync(bundledCorePath, 0o755);
     execFileSync("codesign", ["--force", "--sign", "-", bundledCorePath], { stdio: "ignore" });
   }
@@ -557,7 +547,7 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "core_action.not_found",
     "Expected core action was not found",
     "control_replay_",
-    "ZigCoreBridge()",
+    "ForgeCoreBridge()",
     "safeDbCoreEvents",
     "safeDbCoreActions",
     "parsedCoreRows",
@@ -676,8 +666,8 @@ test(
         ? "swift is not available"
         : process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" && !commandWorks("xcrun", ["simctl", "help"])
           ? "simctl is not available"
-          : process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" && !commandWorks("zig", ["version"])
-            ? "zig is not available"
+          : process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" && !commandWorks("cargo", ["--version"])
+            ? "cargo is not available"
             : !hasIPhoneSimulatorSdk()
               ? "iPhone simulator SDK is not available"
               : false,
@@ -700,8 +690,8 @@ test(
       assert.match(linkedLibraries, /WebKit\.framework\/WebKit/);
       assert.match(linkedLibraries, /libsqlite3\.dylib/);
 
-      const zigCoreDylibPath = process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" ? buildIOSZigCore(scratchRoot) : null;
-      const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath, zigCoreDylibPath);
+      const forgeFfiDylibPath = process.env.TERRANE_IOS_SMOKE_LAUNCH === "1" ? buildIOSForgeFfi() : null;
+      const appBundle = createSimulatorAppBundle(scratchRoot, build.binaryPath, forgeFfiDylibPath);
       assert.equal(fs.existsSync(path.join(appBundle, "runtime", "index.html")), true);
       for (const appId of exampleAppIds) {
         for (const fileName of ["manifest.json", "index.html", "styles.css", "app.js"]) {
@@ -709,8 +699,8 @@ test(
         }
       }
       assert.equal(fs.existsSync(path.join(appBundle, "db", "sqlite", "001_initial.sql")), true);
-      if (zigCoreDylibPath) {
-        assert.equal(fs.existsSync(path.join(appBundle, "libzig_core.dylib")), true);
+      if (forgeFfiDylibPath) {
+        assert.equal(fs.existsSync(path.join(appBundle, "libforge_ffi.dylib")), true);
       }
 
       if (process.env.TERRANE_IOS_SMOKE_LAUNCH === "1") {

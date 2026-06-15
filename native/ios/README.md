@@ -8,8 +8,8 @@ The scaffold is a SwiftPM/UIKit/WKWebView host module that mirrors the macOS bri
 App.swift
 WebHostView.swift
 WebBridge.swift
-ZigCoreBridge.swift
-CZigCoreBridge/
+ForgeCoreBridge.swift
+CForgeCoreBridge/
 PlatformStorage.swift
 PlatformDialogs.swift
 PlatformNotifications.swift
@@ -27,8 +27,8 @@ Implemented now:
 - Applies native-side permission checks before dispatching bridge calls.
 - Persists `storage.*` through SQLite `app_storage(app_id, key, value_json)`.
 - Implements `network.request` through ephemeral `URLSession` with manifest `networkPolicy` checks.
-- Loads statically linked Zig core symbols when present and falls back to `libzig_core.dylib` for simulator/dev `core.step`, using `TERRANE_ZIG_CORE_DYLIB` first.
-- Reports `core.step` in `runtime.capabilities` from the actual Zig core link/load status and returns structured `platform_unsupported` when unavailable.
+- Loads statically linked Forge FFI symbols when present and falls back to `libforge_ffi.dylib` for simulator/dev `core.step`, using `TERRANE_FORGE_FFI_DYLIB` first.
+- Reports `core.step` in `runtime.capabilities` from the actual Forge FFI link/load status and returns structured `platform_unsupported` when unavailable.
 - Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
 - Includes a DEBUG simulator-only loopback dev-control first slice with per-launch token-file auth, a token-gated `GET /health` endpoint, lightweight session/control routes, and SQLite `control_sessions` / `control_commands` auditing when launched with `--terrane-dev-control`.
 - Debug simulator smoke can verify all five bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.

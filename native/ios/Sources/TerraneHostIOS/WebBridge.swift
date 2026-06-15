@@ -11,7 +11,7 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
     private let dialogs = PlatformDialogs()
     private let notifications = PlatformNotifications()
     private let network = PlatformNetwork()
-    private let core = ZigCoreBridge()
+    private let core = ForgeCoreBridge()
     private var nativeDevMode: Bool {
 #if DEBUG
         true

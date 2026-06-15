@@ -44,14 +44,22 @@ pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
 
 use forge_domain::{AppResult, CoreError};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 mod engine;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 mod runner;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "ios")]
+mod unsupported_runner;
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 pub use engine::QuickJsEngine;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
 pub use runner::{
+    record_dispatch, record_dispatch_with_context, record_notification,
+    record_notification_with_context, record_run, record_run_with_context, record_run_with_engine,
+    replay, replay_dispatch, replay_notification, replay_with_engine, run_once,
+};
+#[cfg(target_os = "ios")]
+pub use unsupported_runner::{
     record_dispatch, record_dispatch_with_context, record_notification,
     record_notification_with_context, record_run, record_run_with_context, record_run_with_engine,
     replay, replay_dispatch, replay_notification, replay_with_engine, run_once,

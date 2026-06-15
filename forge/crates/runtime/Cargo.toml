@@ -17,10 +17,11 @@ thiserror.workspace = true
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 # rquickjs ships a native C library (QuickJS) and does NOT build for
-# wasm32-unknown-unknown (prd-merged/09 M0a; reviews 002/003/004). Gate it to
-# native targets so the JsEngine trait + all pure record/replay logic stay
-# wasm32-clean. The QuickJsEngine impl is #[cfg(not(target_arch = "wasm32"))].
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# wasm32-unknown-unknown (prd-merged/09 M0a; reviews 002/003/004), nor does
+# rquickjs-sys ship pre-generated bindings for the iOS simulator targets used by
+# the native host cutover. Gate it to targets with the built-in QuickJS backend;
+# iOS exports structured PlatformUnavailable stubs until CR-12/JSC lands.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
 rquickjs = "0.12"
 
 [dev-dependencies]

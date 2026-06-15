@@ -11,10 +11,10 @@ let package = Package(
         .executable(name: "TerraneHostIOS", targets: ["TerraneHostIOS"])
     ],
     targets: [
-        .target(name: "CZigCoreBridge"),
+        .target(name: "CForgeCoreBridge"),
         .executableTarget(
             name: "TerraneHostIOS",
-            dependencies: ["CZigCoreBridge"],
+            dependencies: ["CForgeCoreBridge"],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
             ],
