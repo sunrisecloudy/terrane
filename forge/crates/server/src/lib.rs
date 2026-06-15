@@ -301,4 +301,36 @@ mod tests {
         assert!(!body.ok);
         assert_eq!(body.error.unwrap().code(), "ValidationError");
     }
+
+    #[test]
+    fn file_backed_server_opens_workspace_and_handles_bridge() {
+        let path = std::env::temp_dir().join(format!(
+            "forge-server-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let server = ForgeServer::open(&path, "ws").unwrap();
+            assert!(path.exists());
+            let body = serde_json::to_vec(&owner_command("workspace.open", serde_json::json!({})))
+                .unwrap();
+            let response = server.handle_http("POST", "/bridge", &body);
+            assert_eq!(response.status, 200);
+            let body: CoreResponse = serde_json::from_slice(&response.body).unwrap();
+            assert!(body.ok, "{:?}", body.error);
+        }
+
+        {
+            let server = ForgeServer::open(&path, "ws").unwrap();
+            let response = server.handle_http("GET", "/health", b"");
+            assert_eq!(response.status, 200);
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
 }
