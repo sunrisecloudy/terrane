@@ -9,11 +9,13 @@ use forge_core::WorkspaceCore;
 use forge_domain::{CoreCommand, CoreError, CoreEvent, CoreResponse, RequestId};
 use serde::Serialize;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -22,10 +24,26 @@ thread_local! {
 /// Opaque handle owned by the C ABI caller.
 #[repr(C)]
 pub struct ForgeCoreHandle {
-    // The tombstone handle intentionally remains allocated after
-    // `forge_core_close`. That lets racing or duplicate native calls fail closed
-    // without dereferencing freed Rust memory across the FFI boundary.
+    _private: [u8; 0],
+}
+
+struct HandleState {
     core: Mutex<Option<WorkspaceCore>>,
+}
+
+// SAFETY: the FFI crate is the only constructor for `HandleState`, and it only
+// exposes `WorkspaceCore::open` / `in_memory` with the default host factories.
+// Every access to the core goes through this mutex; `forge_core_close` removes
+// the registry entry before waiting on the same mutex, so no two FFI calls can
+// touch the workspace concurrently and late calls cannot reach reclaimed state.
+unsafe impl Send for HandleState {}
+unsafe impl Sync for HandleState {}
+
+static NEXT_HANDLE_ID: AtomicUsize = AtomicUsize::new(1);
+static HANDLE_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<HandleState>>>> = OnceLock::new();
+
+fn handle_registry() -> &'static Mutex<HashMap<usize, Arc<HandleState>>> {
+    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Serialize)]
@@ -56,6 +74,58 @@ fn poisoned_handle_error() -> CoreError {
 
 fn closed_handle_error() -> CoreError {
     CoreError::ValidationError("core handle is closed".to_string())
+}
+
+fn exhausted_handles_error() -> CoreError {
+    CoreError::ResourceLimitExceeded("exhausted FFI handle ids".to_string())
+}
+
+fn handle_id(handle: *mut ForgeCoreHandle) -> Result<usize, CoreError> {
+    if handle.is_null() {
+        return Err(CoreError::ValidationError(
+            "core handle is null".to_string(),
+        ));
+    }
+    Ok(handle as usize)
+}
+
+fn allocate_handle(core: WorkspaceCore) -> Result<*mut ForgeCoreHandle, CoreError> {
+    let id = NEXT_HANDLE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| exhausted_handles_error())?;
+    let state = Arc::new(HandleState {
+        core: Mutex::new(Some(core)),
+    });
+
+    let mut registry = handle_registry()
+        .lock()
+        .map_err(|_| poisoned_handle_error())?;
+    if registry.insert(id, state).is_some() {
+        return Err(CoreError::RuntimeError(
+            "allocated duplicate FFI handle id".to_string(),
+        ));
+    }
+    Ok(id as *mut ForgeCoreHandle)
+}
+
+fn get_handle_state(handle: *mut ForgeCoreHandle) -> Result<Arc<HandleState>, CoreError> {
+    let id = handle_id(handle)?;
+    let registry = handle_registry()
+        .lock()
+        .map_err(|_| poisoned_handle_error())?;
+    registry.get(&id).cloned().ok_or_else(closed_handle_error)
+}
+
+fn remove_handle_state(
+    handle: *mut ForgeCoreHandle,
+) -> Result<Option<Arc<HandleState>>, CoreError> {
+    let id = handle_id(handle)?;
+    let mut registry = handle_registry()
+        .lock()
+        .map_err(|_| poisoned_handle_error())?;
+    Ok(registry.remove(&id))
 }
 
 fn serialize_json<T: Serialize>(value: &T) -> String {
@@ -139,9 +209,7 @@ unsafe fn read_c_string(ptr: *const c_char, name: &str) -> Result<String, CoreEr
 fn open_in_memory_inner(workspace_id: *const c_char) -> Result<*mut ForgeCoreHandle, CoreError> {
     let workspace_id = unsafe { read_c_string(workspace_id, "workspace_id") }?;
     let core = WorkspaceCore::in_memory(workspace_id)?;
-    Ok(Box::into_raw(Box::new(ForgeCoreHandle {
-        core: Mutex::new(Some(core)),
-    })))
+    allocate_handle(core)
 }
 
 fn open_inner(
@@ -156,18 +224,10 @@ fn open_inner(
     }
     let workspace_id = unsafe { read_c_string(workspace_id, "workspace_id") }?;
     let core = WorkspaceCore::open(Path::new(&path), workspace_id)?;
-    Ok(Box::into_raw(Box::new(ForgeCoreHandle {
-        core: Mutex::new(Some(core)),
-    })))
+    allocate_handle(core)
 }
 
 fn handle_command_inner(handle: *mut ForgeCoreHandle, command_json: *const c_char) -> String {
-    if handle.is_null() {
-        return response_error_json(CoreError::ValidationError(
-            "core handle is null".to_string(),
-        ));
-    }
-
     let command_json = match unsafe { read_c_string(command_json, "command_json") } {
         Ok(json) => json,
         Err(error) => return response_error_json(error),
@@ -181,7 +241,11 @@ fn handle_command_inner(handle: *mut ForgeCoreHandle, command_json: *const c_cha
         }
     };
 
-    let mut core = match unsafe { &*handle }.core.lock() {
+    let state = match get_handle_state(handle) {
+        Ok(state) => state,
+        Err(error) => return response_error_json(error),
+    };
+    let mut core = match state.core.lock() {
         Ok(core) => core,
         Err(_) => return response_error_json(poisoned_handle_error()),
     };
@@ -194,12 +258,11 @@ fn handle_command_inner(handle: *mut ForgeCoreHandle, command_json: *const c_cha
 }
 
 fn drain_events_inner(handle: *mut ForgeCoreHandle) -> String {
-    if handle.is_null() {
-        return drain_error_json(CoreError::ValidationError(
-            "core handle is null".to_string(),
-        ));
-    }
-    let mut core = match unsafe { &*handle }.core.lock() {
+    let state = match get_handle_state(handle) {
+        Ok(state) => state,
+        Err(error) => return drain_error_json(error),
+    };
+    let mut core = match state.core.lock() {
         Ok(core) => core,
         Err(_) => return drain_error_json(poisoned_handle_error()),
     };
@@ -333,7 +396,10 @@ pub unsafe extern "C" fn forge_core_close(handle: *mut ForgeCoreHandle) {
         return;
     }
     match catch_unwind(AssertUnwindSafe(|| -> Result<(), CoreError> {
-        let core = match unsafe { &*handle }.core.lock() {
+        let Some(state) = remove_handle_state(handle)? else {
+            return Ok(());
+        };
+        let core = match state.core.lock() {
             Ok(mut slot) => slot.take(),
             Err(_) => return Err(poisoned_handle_error()),
         };
@@ -363,4 +429,29 @@ pub unsafe extern "C" fn forge_string_free(value: *mut c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
         drop(CString::from_raw(value));
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn active_handle_count() -> usize {
+        handle_registry().lock().unwrap().len()
+    }
+
+    #[test]
+    fn close_reclaims_the_registry_handle_shell() {
+        let before = active_handle_count();
+        let workspace = CString::new("ffi-registry-reclaim").unwrap();
+        let handle = unsafe { forge_core_open_in_memory(workspace.as_ptr()) };
+        assert!(!handle.is_null());
+        assert_eq!(active_handle_count(), before + 1);
+
+        unsafe { forge_core_close(handle) };
+        assert_eq!(active_handle_count(), before);
+
+        unsafe { forge_core_close(handle) };
+        assert_eq!(active_handle_count(), before);
+    }
 }
