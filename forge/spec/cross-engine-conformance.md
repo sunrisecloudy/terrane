@@ -5,10 +5,13 @@
 > harness `forge/crates/runtime/tests/conformance_engines.rs`, plus the realm
 > determinism hardening in `forge-runtime` (`src/engine.rs`).
 
-prd-merged/01-core-runtime-prd.md **CR-12**: *"Cross-engine conformance: the SAME
-program run via `main(ctx, input)` must produce BYTE-IDENTICAL deterministic
-output — the return value AND the recorded host-call trace — across JS engines.
-This is an M0b-exit / release blocker."*
+prd-merged/01-core-runtime-prd.md **CR-12** scopes this release gate to the
+covered vector set: the M0b corpus pins byte-identical `main(ctx, input)`
+behavior for JS-language divergence areas, deterministic seams, and run/replay
+fingerprints through the engine-agnostic `JsEngine` harness. It does not yet
+claim complete host-API, UI event-dispatch, live-query notification, or
+resource-limit-mode coverage; those vectors become release-blocking as they are
+promoted into this suite.
 
 This is the contract that makes the engine **pluggable** (CR-2). The runtime runs
 applets through the [`JsEngine`](../crates/runtime/src/lib.rs) trait; today the
@@ -238,5 +241,6 @@ When the JSC backend lands, it implements `JsEngine` and is passed to
 `record_run_with_engine` / `run_corpus_through_engine` (exactly as `AdapterEngine`
 is in the §5 second-engine test); the harness runs the **unchanged** corpus against
 it, and any byte difference is a conformance failure the corpus localizes to a
-specific divergence area. M0b exit requires that result to be green on both
-engines.
+specific divergence area. M0b exit requires the covered corpus to be green on
+every wired engine target; broader host/API/limit/UI coverage becomes blocking as
+those vectors are added to the suite.

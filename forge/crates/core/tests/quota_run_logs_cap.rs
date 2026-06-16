@@ -572,68 +572,91 @@ fn ui_dispatch_over_cap_callback_skip_survives_in_durable_audit_log() {
 /// `watch.callback_rejected` row even though `cmd_db_restore` discards the batch.
 #[test]
 fn time_travel_restore_over_cap_callback_skip_persists_durably() {
-    let mut core = WorkspaceCore::in_memory("ws-183-restore").unwrap();
-    install(&mut core, "watcher", WATCH_TS);
-    // Register the `done = false` watch (its own registration run records fine).
-    let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
-    assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
-    assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge.sqlite");
+    {
+        let mut core = WorkspaceCore::open(&path, "ws-183-restore").unwrap();
+        install(&mut core, "watcher", WATCH_TS);
+        // Register the `done = false` watch (its own registration run records fine).
+        let watch_resp = core.handle(cmd("runtime.run", Some("watcher"), json!({ "input": {} })));
+        assert!(watch_resp.ok, "watch registration run must succeed: {:?}", watch_resp.error);
+        assert_eq!(core.active_watch_ids(), vec!["watch:open".to_string()]);
 
-    // Seed `tasks/t1` with history through the CRDT path (bypasses notifications): v1 is
-    // `done:false` (IN the watch), v2 flips it to `done:true` (LEAVES the watch). Restoring
-    // to v1 re-enters the watch and would re-deliver the onWatch callback.
-    let idx = IndexManager::new();
-    core.store_mut()
-        .apply_mutation_crdt(
-            &Mutation::Insert {
-                collection: "tasks".into(),
-                id: Some("t1".into()),
-                fields: json!({ "title": "seed", "done": false }).as_object().unwrap().clone(),
-                logical_at: Some(1),
-            },
-            &idx,
-        )
-        .unwrap();
-    core.store_mut()
-        .apply_mutation_crdt(
-            &Mutation::Patch {
-                collection: "tasks".into(),
-                id: "t1".into(),
-                fields: json!({ "done": true }).as_object().unwrap().clone(),
-                logical_at: Some(2),
-            },
-            &idx,
-        )
-        .unwrap();
+        // Seed `tasks/t1` with history through the CRDT path (bypasses notifications): v1
+        // is `done:false` (IN the watch), v2 flips it to `done:true` (LEAVES the watch).
+        // Restoring to v1 re-enters the watch and would re-deliver the onWatch callback.
+        let idx = IndexManager::new();
+        core.store_mut()
+            .apply_mutation_crdt(
+                &Mutation::Insert {
+                    collection: "tasks".into(),
+                    id: Some("t1".into()),
+                    fields: json!({ "title": "seed", "done": false })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    logical_at: Some(1),
+                },
+                &idx,
+            )
+            .unwrap();
+        core.store_mut()
+            .apply_mutation_crdt(
+                &Mutation::Patch {
+                    collection: "tasks".into(),
+                    id: "t1".into(),
+                    fields: json!({ "done": true }).as_object().unwrap().clone(),
+                    logical_at: Some(2),
+                },
+                &idx,
+            )
+            .unwrap();
 
-    // Zero run-log headroom: the watcher callback re-entry triggered by the restore cannot
-    // be admitted (the restore command itself persists no run record, so it commits).
-    let cap = run_logs_bytes(&core);
-    pin_run_logs_cap(&mut core, cap);
+        // Zero run-log headroom: the watcher callback re-entry triggered by the restore
+        // cannot be admitted (the restore command itself persists no run record, so it
+        // commits).
+        let cap = run_logs_bytes(&core);
+        pin_run_logs_cap(&mut core, cap);
 
-    // Restore t1 to v1 (`done:false`) through the LIVE command — this re-enters the watch
-    // and SKIPS the over-cap callback. `cmd_db_restore` discards the returned batch.
-    let resp = core.handle(cmd(
-        "db.restore",
-        None,
-        json!({ "collection": "tasks", "id": "t1", "to_version": 1, "restored_logical_at": 5 }),
-    ));
-    assert!(resp.ok, "db.restore should succeed (a downstream callback skip is not a producer failure): {:?}", resp.error);
+        // Restore t1 to v1 (`done:false`) through the LIVE command — this re-enters the
+        // watch and SKIPS the over-cap callback. `cmd_db_restore` discards the returned
+        // batch.
+        let resp = core.handle(cmd(
+            "db.restore",
+            None,
+            json!({ "collection": "tasks", "id": "t1", "to_version": 1, "restored_logical_at": 5 }),
+        ));
+        assert!(resp.ok, "db.restore should succeed (a downstream callback skip is not a producer failure): {:?}", resp.error);
 
-    // The over-cap callback never ran.
-    let callback_wrote = core
-        .store()
-        .list_records("tasks")
-        .unwrap()
-        .into_iter()
-        .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
-    assert!(!callback_wrote, "the over-cap watcher callback commits NO `ctx.db` write on the restore path");
+        // The over-cap callback never ran.
+        let callback_wrote = core
+            .store()
+            .list_records("tasks")
+            .unwrap()
+            .into_iter()
+            .any(|r| r.fields.get("title").and_then(|v| v.as_str()) == Some("callback wrote"));
+        assert!(!callback_wrote, "the over-cap watcher callback commits NO `ctx.db` write on the restore path");
 
-    // The DURABLE decision is present after the restore command discarded its batch.
+        // The DURABLE decision is present after the restore command discarded its batch.
+        let rows = durable_skip_rows(&core);
+        assert_eq!(rows.len(), 1, "the time-travel restore path also persists exactly one durable skip row: {rows:?}");
+        assert_eq!(rows[0].decision, "deny");
+        assert_eq!(rows[0].actor_id, "watcher", "the durable row names the owning applet");
+        assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
+        assert_eq!(rows[0].metadata["reason"], json!("run_logs_cap"));
+    }
+
+    // REOPEN: the transient event/batch is gone, but the restore-path durable audit
+    // decision survives exactly like the runtime.run and ui.dispatch_event cases.
+    let core = WorkspaceCore::open(&path, "ws-183-restore").unwrap();
     let rows = durable_skip_rows(&core);
-    assert_eq!(rows.len(), 1, "the time-travel restore path also persists exactly one durable skip row: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the restore-path durable skip decision survives reopen: {rows:?}"
+    );
     assert_eq!(rows[0].decision, "deny");
-    assert_eq!(rows[0].actor_id, "watcher", "the durable row names the owning applet");
+    assert_eq!(rows[0].actor_id, "watcher");
     assert_eq!(rows[0].resource_id.as_deref(), Some("watch:open"));
     assert_eq!(rows[0].metadata["reason"], json!("run_logs_cap"));
 }
