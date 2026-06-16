@@ -51,6 +51,7 @@ impl Manifest {
             )));
         }
         self.limits.validate()?;
+        self.capabilities.validate()?;
         self.compatibility.validate()?;
         Ok(())
     }
@@ -261,6 +262,12 @@ impl Default for Capabilities {
     }
 }
 
+impl Capabilities {
+    pub fn validate(&self) -> crate::Result<()> {
+        self.net.validate()
+    }
+}
+
 /// Per-applet KV scope. Glob-ish prefixes, e.g. `app/*`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StorageGrant {
@@ -301,6 +308,13 @@ impl NetGrant {
     /// The rules, in declaration order.
     pub fn rules(&self) -> &[NetRule] {
         &self.0
+    }
+
+    pub fn validate(&self) -> crate::Result<()> {
+        for rule in &self.0 {
+            rule.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -351,6 +365,28 @@ pub struct NetRule {
     /// header may be attached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_secret_headers: Vec<String>,
+}
+
+impl NetRule {
+    pub fn validate(&self) -> crate::Result<()> {
+        let Some((scheme, _rest)) = self.url.split_once("://") else {
+            return Err(crate::CoreError::ValidationError(format!(
+                "net rule url must be absolute scheme://host/path, got {:?}",
+                self.url
+            )));
+        };
+        if !is_supported_net_scheme(scheme) {
+            return Err(crate::CoreError::ValidationError(format!(
+                "net rule url scheme {:?} is not supported; only http and https are allowed",
+                scheme
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub fn is_supported_net_scheme(scheme: &str) -> bool {
+    scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
 }
 
 /// The applet's handle-scoped filesystem grants (`ctx.files`).
@@ -680,6 +716,25 @@ mod tests {
         // Optional/empty constraints are omitted from the wire form (clean JSON).
         assert!(!s.contains("max_response_bytes"), "unset cap omitted: {s}");
         assert!(s.contains("allow_secret_headers"), "set field present: {s}");
+    }
+
+    #[test]
+    fn net_rule_with_unsupported_scheme_is_validation_error() {
+        let mut m: Manifest = serde_json::from_str(r#"{
+            "entrypoint": "src/main.ts",
+            "capabilities": {
+                "net": [
+                    { "method": "GET", "url": "ftp://api.example.com/files/*" }
+                ]
+            }
+        }"#)
+        .unwrap();
+        let err = m.validate().unwrap_err();
+        assert_eq!(err.code(), "ValidationError");
+        assert!(err.to_string().contains("scheme"), "{err}");
+
+        m.capabilities.net.0[0].url = "https://api.example.com/files/*".into();
+        m.validate().unwrap();
     }
 
     // --- Files capability grant (CR-3 / spec/files.md) ----------------------

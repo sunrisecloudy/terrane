@@ -107,8 +107,8 @@ fn t011_literal_vectors_match_expect() {
         assert_vector(case, &vector);
         checked += 1;
     }
-    // 25 total − 3 runtime-DNS = 22 literal vectors.
-    assert_eq!(checked, 22, "expected 22 literal vectors, checked {checked}");
+    // 27 total - 3 runtime-DNS = 24 literal vectors.
+    assert_eq!(checked, 24, "expected 24 literal vectors, checked {checked}");
 }
 
 #[test]
@@ -139,11 +139,11 @@ fn t011_runtime_dns_vectors_handled_best_effort() {
 }
 
 #[test]
-fn every_listed_case_file_exists_and_count_is_25() {
+fn every_listed_case_file_exists_and_count_is_27() {
     let suite = suite();
-    assert_eq!(suite["count"].as_u64(), Some(25), "manifest count is 25");
+    assert_eq!(suite["count"].as_u64(), Some(27), "manifest count is 27");
     let cases = suite["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 25, "25 case entries");
+    assert_eq!(cases.len(), 27, "27 case entries");
     for entry in cases {
         let file = entry["file"].as_str().unwrap();
         let path = fixtures_dir().join(file);

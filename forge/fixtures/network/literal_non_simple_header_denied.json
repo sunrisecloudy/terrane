@@ -1,0 +1,19 @@
+{
+  "case": "literal_non_simple_header_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "https://api.example.com/private/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/private/me",
+    "headers": {
+      "X-Api-Key": "literal-token"
+    }
+  },
+  "expect": "deny",
+  "reason": "custom literal headers require an explicit policy model; fail closed in M0a",
+  "requires_runtime_dns": false
+}

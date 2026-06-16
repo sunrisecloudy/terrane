@@ -38,7 +38,7 @@
 //! `requires_runtime_dns`; the data-driven test asserts those separately.
 
 use crate::net_url::{host_is_private_literal, ParsedUrl};
-use forge_domain::{CoreError, NetGrant, NetRule, Result};
+use forge_domain::{is_supported_net_scheme, CoreError, NetGrant, NetRule, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -108,6 +108,17 @@ fn is_secret_header_name(name: &str) -> bool {
     SECRET_HEADERS.contains(&lower.as_str())
 }
 
+fn is_simple_literal_header_name(name: &str) -> bool {
+    const SIMPLE_HEADERS: &[&str] = &[
+        "accept",
+        "accept-language",
+        "content-language",
+        "content-type",
+    ];
+    let lower = name.to_ascii_lowercase();
+    SIMPLE_HEADERS.contains(&lower.as_str())
+}
+
 /// The network egress policy engine (SC-5). Built from a manifest's [`NetGrant`]
 /// allowlist; [`check`](NetPolicy::check) decides one request.
 #[derive(Debug, Clone)]
@@ -157,6 +168,12 @@ impl<'a> NetPolicy<'a> {
         let target = ParsedUrl::parse(&request.url).map_err(|e| {
             CoreError::PermissionDenied(format!("net.fetch denied: invalid url {:?}: {e}", request.url))
         })?;
+        if !is_supported_net_scheme(&target.scheme) {
+            return Err(CoreError::PermissionDenied(format!(
+                "net.fetch denied: unsupported url scheme {:?}; only http and https are allowed",
+                target.scheme
+            )));
+        }
 
         // SC-5 private-network deny: the request host, every redirect hop, and
         // every literal DNS answer must not be a private/loopback/metadata
@@ -175,17 +192,7 @@ impl<'a> NetPolicy<'a> {
             }
         }
 
-        // Secret-bearing literal headers are denied outright: a secret must go
-        // through the host's secret-injection policy, never embedded as a literal.
-        for (name, value) in &request.headers {
-            if let HeaderValue::Literal(_) = value {
-                if is_secret_header_name(name) {
-                    return Err(CoreError::PermissionDenied(format!(
-                        "net.fetch denied: secret-like header {name:?} carries a literal value; route secrets through the secret-injection policy (allow_secret_headers), not a literal"
-                    )));
-                }
-            }
-        }
+        validate_literal_headers(request)?;
 
         // The original request must match a rule on the full constraint set
         // (request side + response-side size/content-type caps). Find the first
@@ -341,6 +348,18 @@ impl<'a> NetPolicy<'a> {
                 rule.url
             ))
         })?;
+        if !is_supported_net_scheme(&pattern.scheme) {
+            return Err(CoreError::PermissionDenied(format!(
+                "net.fetch denied: unsupported net rule scheme {:?}; only http and https are allowed",
+                pattern.scheme
+            )));
+        }
+        if !is_supported_net_scheme(&target.scheme) {
+            return Err(CoreError::PermissionDenied(format!(
+                "net.fetch denied: unsupported url scheme {:?}; only http and https are allowed",
+                target.scheme
+            )));
+        }
 
         // SC-8: wildcard hosts are forbidden in v1. A rule host containing `*`
         // is invalid and matches nothing.
@@ -451,6 +470,24 @@ fn deny_private_target(host: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_literal_headers(request: &NetRequest) -> Result<()> {
+    for (name, value) in &request.headers {
+        if let HeaderValue::Literal(_) = value {
+            if is_secret_header_name(name) {
+                return Err(CoreError::PermissionDenied(format!(
+                    "net.fetch denied: secret-like header {name:?} carries a literal value; route secrets through the secret-injection policy (allow_secret_headers), not a literal"
+                )));
+            }
+            if !is_simple_literal_header_name(name) {
+                return Err(CoreError::PermissionDenied(format!(
+                    "net.fetch denied: literal header {name:?} is not allowed by the net policy; only simple literal headers are permitted without an explicit manifest constraint"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the rule's scheme rejects the request's scheme.
 ///
 /// - an `https` rule requires an `https` request (no http downgrade);
@@ -556,6 +593,31 @@ mod tests {
             .insert("Authorization".into(), HeaderValue::Literal("Bearer x".into()));
         let err = check_net(&g, &r).unwrap_err();
         assert_eq!(err.code(), "PermissionDenied");
+    }
+
+    #[test]
+    fn literal_non_simple_header_is_denied() {
+        let g = grant(vec![rule("GET", "https://api.example.com/private/*")]);
+        let mut r = req("GET", "https://api.example.com/private/me");
+        r.headers
+            .insert("X-Api-Key".into(), HeaderValue::Literal("literal-key".into()));
+        let err = check_net(&g, &r).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("literal header"), "{err}");
+
+        let mut simple = req("GET", "https://api.example.com/private/me");
+        simple
+            .headers
+            .insert("Accept".into(), HeaderValue::Literal("application/json".into()));
+        assert!(check_net(&g, &simple).is_ok());
+    }
+
+    #[test]
+    fn unsupported_scheme_rule_and_request_are_denied() {
+        let g = grant(vec![rule("GET", "ftp://api.example.com/public/*")]);
+        let err = check_net(&g, &req("GET", "ftp://api.example.com/public/file")).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("unsupported"), "{err}");
     }
 
     #[test]

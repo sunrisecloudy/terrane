@@ -1,0 +1,16 @@
+{
+  "case": "unsupported_scheme_denied",
+  "allowlist": [
+    {
+      "method": "GET",
+      "url": "ftp://api.example.com/files/*"
+    }
+  ],
+  "request": {
+    "method": "GET",
+    "url": "ftp://api.example.com/files/readme.txt"
+  },
+  "expect": "deny",
+  "reason": "net policy only supports http and https schemes",
+  "requires_runtime_dns": false
+}
