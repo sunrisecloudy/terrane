@@ -170,8 +170,11 @@ impl HostContext<'_> {
         //    secret-bearing request might otherwise expose downstream — never
         //    persists in the RunRecord. The call's recorded `args` still carry only
         //    the request's `secret_ref` (never a resolved value).
-        let response_policy_request = to_response_policy_request(&request, &response);
-        if let Err(net_err) = NetPolicy::new(&self.net_allowlist).check(&response_policy_request) {
+        let response_policy_check = to_response_policy_request(&request, &response)
+            .and_then(|response_policy_request| {
+                NetPolicy::new(&self.net_allowlist).check(&response_policy_request)
+            });
+        if let Err(net_err) = response_policy_check {
             // Review 153: by here the request's secret_ref headers were already
             // RESOLVED and SENT over the wire (step 4 resolved them inside the
             // closure, before this response-leg check). A secret that crossed the
@@ -351,28 +354,52 @@ pub(super) fn request_phase_allowlist(full: &NetGrant) -> NetGrant {
 fn to_response_policy_request(
     request: &NetRequest,
     response: &NetResponse,
-) -> forge_policy::NetRequest {
-    // Fold `final_url` (the URL the response actually came from) into the
-    // policy-checked redirect hops so it is **bound to the allowlist** even when a
-    // client reports it with an empty or truncated `redirect_chain` (review 074 #1).
-    // Without this, a client that follows redirects and returns
-    // `final_url = https://evil.example.net/...` but no chain would pass the
-    // response-leg redirect check. Appending it (when it isn't already the last
-    // hop) makes the policy re-run the full request-side gates against the real
-    // final destination — fail-closed.
-    let mut redirect_chain = response.redirect_chain.clone();
-    if let Some(final_url) = &response.final_url {
-        if redirect_chain.last() != Some(final_url) {
-            redirect_chain.push(final_url.clone());
-        }
-    }
-    forge_policy::NetRequest {
+) -> Result<forge_policy::NetRequest> {
+    validate_response_redirect_shape(request, response)?;
+    Ok(forge_policy::NetRequest {
         response_bytes: Some(response.body_bytes()),
         response_content_type: response.content_type.clone(),
-        redirect_chain,
+        redirect_chain: response.redirect_chain.clone(),
         dns_answers: response.dns_answers.clone(),
         ..to_policy_request(request)
+    })
+}
+
+fn validate_response_redirect_shape(request: &NetRequest, response: &NetResponse) -> Result<()> {
+    let chain = &response.redirect_chain;
+    let Some(final_url) = &response.final_url else {
+        if chain.is_empty() {
+            return Ok(());
+        }
+        return Err(CoreError::PermissionDenied(
+            "net.fetch denied: redirect_chain is present without final_url".into(),
+        ));
+    };
+    if chain.is_empty() {
+        return Err(CoreError::PermissionDenied(
+            "net.fetch denied: final_url is present without redirect_chain".into(),
+        ));
     }
+    if chain.len() < 2 {
+        return Err(CoreError::PermissionDenied(
+            "net.fetch denied: redirect_chain must include origin and final hop".into(),
+        ));
+    }
+    if chain.first() != Some(&request.url) {
+        return Err(CoreError::PermissionDenied(format!(
+            "net.fetch denied: redirect_chain first hop {:?} does not match request url {:?}",
+            chain.first(),
+            request.url
+        )));
+    }
+    if chain.last() != Some(final_url) {
+        return Err(CoreError::PermissionDenied(format!(
+            "net.fetch denied: redirect_chain last hop {:?} does not match final_url {:?}",
+            chain.last(),
+            final_url
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -737,23 +764,22 @@ mod tests {
         assert!(err.to_string().contains("redirect hop"), "{err}");
     }
 
-    /// Review 074 #1: a client that lands on an unallowlisted final URL but reports
-    /// an EMPTY `redirect_chain` (only `final_url`) must still be denied — the
-    /// response leg folds `final_url` into the policy-checked hops.
+    /// Review 075 P2: a client that reports `final_url` without the redirect chain
+    /// must be denied as inconsistent metadata rather than repaired.
     #[test]
-    fn net_fetch_final_url_to_unallowlisted_host_is_denied_without_a_chain() {
+    fn net_fetch_final_url_without_redirect_chain_is_denied_as_inconsistent() {
         use crate::net::{MockHttpClient, NetResponse};
         let manifest = manifest_with_net(
             NetGrant(vec![get_rule("https://api.example.com/public/*")]),
             100,
         );
         let actor = ActorContext::owner("dev");
-        // Followed a redirect to evil but reports NO chain — only the final_url.
+        // Followed a redirect but reports NO chain — only the final_url.
         let response = NetResponse {
             status: 200,
             body: Some(r#"{"ok":true}"#.into()),
             content_type: Some("application/json".into()),
-            final_url: Some("https://evil.example.net/public/asset".into()),
+            final_url: Some("https://cdn.example.com/public/asset".into()),
             redirect_chain: vec![],
             ..Default::default()
         };
@@ -769,7 +795,113 @@ mod tests {
         let err = host
             .net_fetch(req("https://api.example.com/public/asset"))
             .unwrap_err();
-        assert_eq!(err.code(), "PermissionDenied", "final_url must be policy-bound: {err}");
+        assert_eq!(err.code(), "PermissionDenied", "final_url must be chain-bound: {err}");
+        assert!(err.to_string().contains("final_url"), "{err}");
+    }
+
+    /// Review 075 P2: do not repair a truncated chain. `[origin] + final_url=cdn`
+    /// used to be appended into `[origin, cdn]` and allowed when both hosts were
+    /// allowlisted, hiding any omitted middle hop.
+    #[test]
+    fn net_fetch_truncated_redirect_chain_to_allowlisted_final_url_is_denied() {
+        use crate::net::{MockHttpClient, NetResponse};
+        let manifest = manifest_with_net(
+            NetGrant(vec![
+                get_rule("https://api.example.com/public/*"),
+                get_rule("https://cdn.example.com/public/*"),
+            ]),
+            100,
+        );
+        let actor = ActorContext::owner("dev");
+        let response = NetResponse {
+            status: 200,
+            body: Some(r#"{"ok":true}"#.into()),
+            content_type: Some("application/json".into()),
+            final_url: Some("https://cdn.example.com/public/asset".into()),
+            redirect_chain: vec!["https://api.example.com/public/asset".into()],
+            ..Default::default()
+        };
+        let mut bridge =
+            MemoryHostBridge::with_http_client(Box::new(MockHttpClient::new(response)));
+        let mut host = HostContext::new(
+            &manifest,
+            &actor,
+            RunRecorder::recording(1, 0),
+            &mut bridge,
+        )
+        .unwrap();
+        let err = host
+            .net_fetch(req("https://api.example.com/public/asset"))
+            .unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("origin and final"), "{err}");
+    }
+
+    #[test]
+    fn to_response_policy_request_rejects_inconsistent_redirect_shapes() {
+        use crate::net::NetResponse;
+        let request = req("https://api.example.com/public/asset");
+
+        let no_redirect = NetResponse {
+            status: 200,
+            body: Some(r#"{"ok":true}"#.into()),
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        assert!(to_response_policy_request(&request, &no_redirect).is_ok());
+
+        let valid = NetResponse {
+            status: 200,
+            body: Some(r#"{"ok":true}"#.into()),
+            content_type: Some("application/json".into()),
+            final_url: Some("https://cdn.example.com/public/asset".into()),
+            redirect_chain: vec![
+                "https://api.example.com/public/asset".into(),
+                "https://cdn.example.com/public/asset".into(),
+            ],
+            ..Default::default()
+        };
+        assert!(to_response_policy_request(&request, &valid).is_ok());
+
+        let cases = [
+            NetResponse {
+                status: 200,
+                redirect_chain: vec![
+                    "https://api.example.com/public/asset".into(),
+                    "https://cdn.example.com/public/asset".into(),
+                ],
+                ..Default::default()
+            },
+            NetResponse {
+                status: 200,
+                final_url: Some("https://cdn.example.com/public/asset".into()),
+                redirect_chain: vec!["https://api.example.com/public/asset".into()],
+                ..Default::default()
+            },
+            NetResponse {
+                status: 200,
+                final_url: Some("https://cdn.example.com/public/asset".into()),
+                redirect_chain: vec![
+                    "https://evil.example.net/public/asset".into(),
+                    "https://cdn.example.com/public/asset".into(),
+                ],
+                ..Default::default()
+            },
+            NetResponse {
+                status: 200,
+                final_url: Some("https://cdn.example.com/public/asset".into()),
+                redirect_chain: vec![
+                    "https://api.example.com/public/asset".into(),
+                    "https://evil.example.net/public/asset".into(),
+                ],
+                ..Default::default()
+            },
+        ];
+
+        for response in cases {
+            let err = to_response_policy_request(&request, &response).unwrap_err();
+            assert_eq!(err.code(), "PermissionDenied");
+        }
     }
 
     /// A host that resolves (dns_answers) to a private IP is denied after the
