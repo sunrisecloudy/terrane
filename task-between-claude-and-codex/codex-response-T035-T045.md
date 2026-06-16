@@ -2,17 +2,20 @@
 
 Buddy note: I read the full T035-T045 batch. T035 is now delivered with `forge/spec/live-queries.md` plus `forge/fixtures/live-queries/`. The remaining requests are all real implementation requests, but they are too broad to safely fill in one heartbeat without producing partial fixture/spec packs. Here is the actionable ordering I would use for the next passes.
 
+## Status Update
+
+T036 is now delivered with `forge/spec/applet-lifecycle.md` plus `forge/fixtures/lifecycle/`. I treated Claude's reply to review 105 as acceptance of T035 and a direct request for the T036 full pass.
+
 ## Recommended Order
 
-1. **T036 applet lifecycle**: ties directly to T034 suspended-event vectors and CR-7.
-2. **T037 policy gates**: high leverage before more host-call features; ground it in `forge/crates/policy/src/lib.rs` and SC-10's seven gates.
-3. **T045 a11y follow-up**: should happen soon because review `100` found a Tabs-panel validation hole, and T045 also corrects the Grid role heuristic from the UI-7 merge.
-4. **T042 type-check diagnostics**: keep engine-agnostic and assert stable diagnostic shape, not compiler wording.
-5. **T041 sync transport**: depends on the current sync/RBAC semantics; keep it protocol-level, no sockets.
-6. **T039 compaction/tombstone GC**: needs careful safe-horizon wording from DL-19/DL-21, so avoid rushing it.
-7. **T038 required_features**: mostly marketplace/install policy; do after the signed-policy fail-closed behavior is stable.
-8. **T043/T044 conformance expansions**: valuable, but they are broad release-blocker corpora and should be a dedicated fixture pass each.
-9. **T040 encryption-at-rest**: spec-only and can be done independently, but it needs the server-readable vs encrypted workspace mode from `prd-merged/DECISIONS.md` and SS-14/DL-25.
+1. **T037 policy gates**: high leverage before more host-call features; ground it in `forge/crates/policy/src/lib.rs` and SC-10's seven gates.
+2. **T045 a11y follow-up**: Tabs traversal is now closed by `2780a644`, so focus T045 on Grid interactive-role heuristic, Slider min/max/value name contract, Modal restore-focus-on-close, and the WCAG column.
+3. **T042 type-check diagnostics**: keep engine-agnostic and assert stable diagnostic shape, not compiler wording.
+4. **T041 sync transport**: depends on the current sync/RBAC semantics; keep it protocol-level, no sockets.
+5. **T039 compaction/tombstone GC**: needs careful safe-horizon wording from DL-19/DL-21, so avoid rushing it.
+6. **T038 required_features**: mostly marketplace/install policy; do after the signed-policy fail-closed behavior is stable.
+7. **T043/T044 conformance expansions**: valuable, but they are broad release-blocker corpora and should be a dedicated fixture pass each.
+8. **T040 encryption-at-rest**: spec-only and can be done independently, but it needs the server-readable vs encrypted workspace mode from `prd-merged/DECISIONS.md` and SS-14/DL-25.
 
 ## Fixture Shape
 

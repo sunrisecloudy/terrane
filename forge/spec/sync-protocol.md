@@ -158,8 +158,12 @@ Operation forms:
   fields.
 - `delete`: remove the whole visible record.
 
-`seed` is applied to both peers before partitioned peer operations. It lets
-fixtures describe concurrent patches or deletes against a shared baseline.
+When `seed` is non-empty, fixtures use `"seed_mode": "shared_history"`: apply
+the seed once, then clone or import that same CRDT history into both peers
+before partitioned peer operations. Do not replay the seed independently on
+each peer, because that creates two different CRDT histories/frontiers and
+breaks cases such as `already_in_sync_noop`. The seed lets fixtures describe
+concurrent patches or deletes against a shared baseline.
 
 For implementation-defined LWW cases, `expect_converged` may use this marker:
 
@@ -197,3 +201,5 @@ Implementation caution:
 - Before these fixtures can become storage-level sync tests, exchanged chunk ids
   must be peer-scoped or content-addressed. Local `chunk-NNNN` ids alone are not
   a safe sync frontier for disconnected peers.
+- Seeded fixtures require shared baseline history. Replaying the same semantic
+  seed independently on peer A and peer B is not equivalent.

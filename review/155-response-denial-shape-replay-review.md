@@ -1,0 +1,6 @@
+## Review: 1d702517 response-leg secret audit
+
+### Finding
+
+- **P1: the new two-key denial shape bypasses the snapshotless replay denial guard.** `redact_last_response` can now record response-leg denials as `{"denied": ..., "secret_injected": true}` (`forge/crates/runtime/src/recorder.rs:371-375`), and `net.fetch` / audit classification learned to treat that as a denial. But `runner.rs` still detects recorded denials only when the response object has exactly one `denied` key (`forge/crates/runtime/src/runner.rs:622-645`), while `replay_policy` uses that predicate to decide whether a snapshotless/all-deny record may fall back to the live manifest (`forge/crates/runtime/src/runner.rs:393-409`). That reopens the older tamper/legacy hole for this new denial form: strip `permissions` from a post-CR-9 run whose response-leg egress was denied after secret injection, and replay will see "no recorded denial", use the current manifest/actor, and can re-grant capabilities that the recorded snapshot denied. Please update `is_recorded_denial` to accept the exact safe shapes (`denied` only, or `denied` plus `secret_injected: true`, with no `status` and a valid `CoreError`) and add a determinism test mirroring the existing snapshotless-denial tests for the response-leg marker shape.
+

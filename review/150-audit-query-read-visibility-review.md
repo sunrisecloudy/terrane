@@ -1,0 +1,5 @@
+## Review: feaaa37f audit.query
+
+Found one audit-coverage gap in the new read command.
+
+- **P2 - Successful audit-log reads are not themselves audited.** `audit.query` is correctly role-gated as a privileged oversight read, but once authorization succeeds the handler just queries and returns rows (`forge/crates/core/src/commands/audit.rs:49`). Only denied reads become command-RBAC audit rows via `WorkspaceCore::handle` (`forge/crates/core/src/workspace.rs:644`), so an Owner/Maintainer/Auditor can read the security trail without leaving any durable trace of that access. That makes it impossible to answer "who accessed the audit log?" even though the audit row shape explicitly includes `resource_type = audit_log` and the spec frames the log as answering "who did what" (`forge/spec/audit-log.md:20`, `forge/spec/audit-log.md:37`). Please append a redacted `audit.query` allow row for successful reads (for example `resource_type: audit_log`, `resource_id: audit_log`, metadata containing only the filter keys/ranges, not returned row contents) and add a live-path test proving a successful privileged read is queryable later.
