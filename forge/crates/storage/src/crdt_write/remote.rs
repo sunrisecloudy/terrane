@@ -4,7 +4,7 @@
 //! (review 088 #1 / 090 #3 / 092 #1/#2).
 
 use super::chunk_storage::OptionalRow;
-use super::oplog::{append_op_tx, chunk_id_lamport, OplogPayload};
+use super::oplog::{append_op_tx, next_op_lamport_tx, OplogPayload};
 use super::rebuild::rebuild_projection_tx;
 use crate::index::IndexManager;
 use crate::kv::{kv_get_tx, kv_set_tx};
@@ -241,7 +241,8 @@ pub(crate) fn import_remote_chunk_tx(
 
     // One oplog row in the SAME transaction, tagged remote (DL-4 parity). op_id
     // mirrors the local path: `(doc_id)#(chunk_id)`, unique because chunk ids are
-    // unique per doc. The lamport is derived from a local `chunk-NNNN` id, else 0.
+    // unique per doc. The lamport is receiver-local and workspace-global, while
+    // the origin chunk frontier is preserved separately in the payload.
     //
     // The recorded `source` is the chunk's ORIGINAL author: `author_actor_id` when
     // the chunk was itself forwarded (the importing `source` is only a relay that
@@ -253,7 +254,7 @@ pub(crate) fn import_remote_chunk_tx(
     // gates the ORIGINAL actor and names a concrete record (`review 092 #1/#2`).
     let op_id = format!("{doc_id}#{chunk_id}");
     let logical_frontier = *logical_frontier;
-    let lamport = logical_frontier.unwrap_or_else(|| chunk_id_lamport(chunk_id));
+    let lamport = next_op_lamport_tx(tx)?;
     let original_author = author_actor_id.as_deref().unwrap_or(source);
     // Same `OplogPayload` builder as the local write path so the payload schema
     // cannot skew across the two sites; the remote variant carries `source` (the

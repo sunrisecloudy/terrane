@@ -8,9 +8,9 @@
 //! The substrate already records the change feed: every mutation appends one
 //! immutable `crdt_chunks` row (the CRDT op, the source of truth) AND one `oplog`
 //! row carrying the WHO (`actor_id`/`source`), the WHAT (the op `kind` +
-//! `record_ids`), and a `(lamport, op_id)` total order matching write order
-//! ([`crate::crdt_write::oplog`]). A chunk's frontier — `chunk_id_lamport(chunk_id)`,
-//! e.g. `chunk-0007 → 7` — is the per-doc **version**: importing the chunks with
+//! `record_ids`), and a `(lamport, op_id)` total order matching write order.
+//! A chunk's frontier — its `chunk-NNNN` sequence, e.g. `chunk-0007 -> 7` — is
+//! the per-doc **version**: importing the chunks with
 //! frontier ≤ `v` into a fresh [`RecordsDoc`] reconstructs the record state *as of*
 //! `v` (DL-6 rebuild-by-replay, bounded by the frontier). The WHEN is the
 //! reconstructed envelope's `updated_at` — the externally-supplied LOGICAL

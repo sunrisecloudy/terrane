@@ -1,10 +1,13 @@
 //! Oplog metadata for the CRDT write path (DL-4): the logical-mutation `kind`
-//! string, the tx-scoped oplog-row append, and the chunk→lamport derivation that
-//! keeps the oplog's `(lamport, op_id)` total order matching write order.
+//! string, the tx-scoped oplog-row append, and the workspace-global oplog lamport
+//! allocator.
 
 use crate::{map_json, map_sql, now_ms, Mutation};
-use forge_domain::Result;
+use forge_domain::{CoreError, Result};
 use rusqlite::params;
+
+const OPLOG_META_NS: &str = "__local/oplog";
+const OPLOG_LAMPORT_KEY: &str = "oplog_lamport";
 
 /// The single source of truth for the `oplog.payload` JSON written by BOTH the
 /// local group-write path ([`super::mutation`]) and the remote-import path
@@ -271,6 +274,28 @@ pub(super) fn oplog_kind(m: &Mutation) -> &'static str {
     }
 }
 
+/// Allocate the next workspace-global oplog lamport inside the open write
+/// transaction. Chunk ids stay per-doc (`chunk-0001` can exist in every
+/// collection), but oplog order is workspace-wide, so consecutive writes to
+/// different collection docs still sort in commit order.
+pub(super) fn next_op_lamport_tx(tx: &rusqlite::Transaction<'_>) -> Result<u64> {
+    let current = crate::kv::kv_get_tx(tx, OPLOG_META_NS, OPLOG_LAMPORT_KEY)?
+        .map(|bytes| crate::errors::parse_counter_value(&bytes))
+        .transpose()?
+        .unwrap_or(0);
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| CoreError::StorageError("oplog lamport overflowed u64".into()))?;
+    crate::kv::kv_set_tx(
+        tx,
+        OPLOG_META_NS,
+        OPLOG_LAMPORT_KEY,
+        next.to_string().as_bytes(),
+        "text/plain",
+    )?;
+    Ok(next)
+}
+
 /// Append one oplog row inside an open transaction (the DL-4 write metadata that
 /// identifies the logical mutation, its doc id, and the chunk it produced). The
 /// `op_id` is `(doc_id)#(chunk_id)`, unique because chunk ids are unique per doc.
@@ -292,14 +317,4 @@ pub(super) fn append_op_tx(
     )
     .map_err(map_sql)?;
     Ok(())
-}
-
-/// Derive a monotone-ish lamport for the oplog from the chunk sequence number, so
-/// the oplog's `(lamport, op_id)` total order matches write order without a
-/// separate clock. `chunk-0007` → lamport 7. Malformed ids fall back to 0.
-pub(super) fn chunk_id_lamport(chunk_id: &str) -> u64 {
-    chunk_id
-        .strip_prefix("chunk-")
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(0)
 }

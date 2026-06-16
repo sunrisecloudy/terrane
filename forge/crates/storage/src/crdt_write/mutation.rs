@@ -5,7 +5,7 @@
 
 use super::chunk_storage::{next_chunk_id, put_chunk_tx};
 use super::crdt_encoding::{envelope_from_doc, load_doc_tx, write_envelope_to_doc};
-use super::oplog::{append_op_tx, chunk_id_lamport, oplog_kind, OplogPayload};
+use super::oplog::{append_op_tx, next_op_lamport_tx, oplog_kind, OplogPayload};
 use super::rebuild::materialize_record_into_projection;
 use crate::index::IndexManager;
 use crate::{Mutation, Store};
@@ -384,7 +384,7 @@ fn write_collection_bucket_tx(
         delete_mutation_at(leaves),
     )
     .encode("oplog payload encode")?;
-    append_op_tx(tx, &op_id, "local", "local", chunk_id_lamport(&chunk_id), kind, &op_payload)?;
+    append_op_tx(tx, &op_id, "local", "local", next_op_lamport_tx(tx)?, kind, &op_payload)?;
 
     // 10. Materialize each touched record into the projection from the post-mutation
     //     CRDT state (FTS-synced so indexes stay correct).
@@ -499,7 +499,7 @@ pub(crate) fn migrate_collection_records_crdt_tx(
         &op_id,
         "local",
         "local",
-        chunk_id_lamport(&chunk_id),
+        next_op_lamport_tx(tx)?,
         crate::migration::MIGRATION_OP_KIND,
         &op_payload,
     )?;

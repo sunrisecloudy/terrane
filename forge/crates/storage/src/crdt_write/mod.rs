@@ -163,6 +163,33 @@ mod tests {
     }
 
     #[test]
+    fn oplog_lamports_are_workspace_global_across_collection_docs() {
+        let mut s = store();
+        let idx = IndexManager::new();
+        s.apply_mutation_crdt(&insert("zulu", "z1", json!({"title": "First"}), 1), &idx)
+            .unwrap();
+        s.apply_mutation_crdt(&insert("alpha", "a1", json!({"title": "Second"}), 2), &idx)
+            .unwrap();
+
+        // Chunk ids remain per collection doc.
+        assert_eq!(s.get_chunks(&collection_doc_id("zulu")).unwrap()[0].chunk_id, "chunk-0001");
+        assert_eq!(s.get_chunks(&collection_doc_id("alpha")).unwrap()[0].chunk_id, "chunk-0001");
+
+        // Oplog lamports are workspace-global, so list_ops preserves write order
+        // even though both docs produced a first chunk. With per-doc lamports both
+        // rows were `(lamport=1, op_id=collection/*#chunk-0001)`, so lexical op_id
+        // order incorrectly put alpha before zulu.
+        let ops = s.list_ops().unwrap();
+        let ids: Vec<_> = ops.iter().map(|op| op.op_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["collection/zulu#chunk-0001", "collection/alpha#chunk-0001"]
+        );
+        assert_eq!(ops[0].lamport, 1);
+        assert_eq!(ops[1].lamport, 2);
+    }
+
+    #[test]
     fn oplog_payload_bytes_are_pinned_for_local_and_remote_paths() {
         // The unified `OplogPayload` builder (oplog.rs) must reproduce the prior
         // hand-built JSON byte-for-byte. The two shapes legitimately differ — a
