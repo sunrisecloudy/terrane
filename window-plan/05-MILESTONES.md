@@ -219,7 +219,7 @@ dotnet test ..\Forge.Windows.sln -c Release
    - runs `dotnet test` (W0 hello-core, W1 golden fixtures, W2 spine smoke headless where possible),
    - runs the **renderer conformance kit** (UI-14): golden trees + scripted-interaction + screenshot tests shared with every renderer; **behavioral divergence is release-blocking** (same bar as CR-12),
    - builds + signs the MSIX, runs a packaged smoke launch.
-4. **Conformance gate wiring (PS-4):** engine conformance is the core's (`forge` CI already runs the CR-12 suite); the Windows shell additionally must pass **renderer kit (UI-14)**, **data fixtures (DL/09)** loadability of a shared workspace file, and a **platform smoke of the demo workspace** (W2 reproduced in CI/headless + one manual on-device run).
+4. **Conformance gate wiring (PS-4):** engine conformance is the core's covered-vector CR-12 harness; the Windows shell reruns it for QuickJS-native and additionally must pass **renderer kit (UI-14)**, **data fixtures (DL/09)** loadability of a shared workspace file, and a **platform smoke of the demo workspace** (W2 reproduced in CI/headless + one manual on-device run).
 
 ### Acceptance gate (W5 exit — the milestone that says "ship-candidate")
 - `windows.yml` is **green** on `main`: build + bindings-diff + `dotnet test` + conformance kit + signed MSIX build + packaged smoke.

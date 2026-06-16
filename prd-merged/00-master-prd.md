@@ -60,7 +60,7 @@ The first deliverable is not a platform app — it is the **complete vertical sl
 
 ### v1.x (fast follow)
 - **Windows desktop app** (WinUI 3/C# shell, QuickJS engine).
-- iOS/iPadOS app (JavaScriptCore — already conformance-tested since day one), then Android (QuickJS).
+- iOS/iPadOS app (JavaScriptCore — held to the covered CR-12 engine vectors as it lands), then Android (QuickJS).
 - Developer SDK + CLI (the M0 harness, productized).
 - Marketplace GA: ratings, reviews, package signing.
 
@@ -82,7 +82,7 @@ The first deliverable is not a platform app — it is the **complete vertical sl
 │                    forge-core (Rust, single codebase)                │
 │  • Command/Event/Stream API (versioned; the shell contract)         │
 │  • JsEngine trait: JavaScriptCore (Apple) + QuickJS (rquickjs       │
-│    native / QuickJS-WASM web) — dual-engine conformance from day 1  │
+│    native / QuickJS-WASM web) — covered-vector conformance gate     │
 │  • Capability sandbox + RBAC policy engine + resource limits        │
 │  • Data engine: Loro CRDT ⇄ SQLite KV/oplog + dynamic relational    │
 │    schema + projection + FTS + dynamic indexes                      │
@@ -122,13 +122,13 @@ App Store builds route subscriptions through IAP; desktop direct sales avoid the
 | Milestone | Contents | Exit criteria |
 |---|---|---|
 | **M0a** Executable spine (4–5 wks) | The jewel, headless: TS → SWC → QuickJS-WASM → Rust capability ctx → SQLite write → UI tree patch → deterministic replay, all offline; CLI harness speaking the real shell API | Spine demo green in CI on macOS/Linux **and WASM**; identical replay on both; kill-during-write torture passes |
-| **M0b** Conformance & template (4–5 wks) | JSC engine + cross-engine conformance suite; full offline pipeline (type-check, repair loop, LM Studio); RBAC v0; in-process client↔server sync; **renderer zero** (DOM); fixture framework | Full loop (install→run→store→sync→render-tree→event→patch) green on both engines; renderer zero drives a demo applet; data survives schema change |
+| **M0b** Conformance & template (4–5 wks) | JSC engine + cross-engine conformance suite; full offline pipeline (type-check, repair loop, LM Studio); RBAC v0; in-process client↔server sync; **renderer zero** (DOM); fixture framework | QuickJS full loop (install→run→store→sync→render-tree→event→patch) green; covered CR-12 vectors green on every wired engine; renderer zero drives a demo applet; data survives schema change |
 | **M1** macOS alpha | SwiftUI shell + JSC engine + native renderer (conformance-kit validated), local-only, cloud + LM Studio LLM, offline pipeline | 20 internal users build real applets; renderer conformance green |
 | **M2** Sync beta | Embedded server GA-quality + managed cloud sync, workspaces, RBAC, presence, invites, file-level time travel | 2-device + 2-user 7-day soak, zero divergence; desktop hosts a browser client |
 | **M3** Web client | WASM core, OPFS (IndexedDB fallback), PWA, QuickJS-WASM workers, web renderer (renderer zero lineage) | Same workspace usable browser-only, offline after first load |
 | **M4** Local LLM + marketplace beta | In-core local model manager; marketplace server: publisher auth, source-visible installs, self-host mirror | Family workspace runs zero-cloud; package install→inspect→run loop works |
 | **M5** GA | Billing, export/import GA, support, security audit, docs, public file-format spec | Pen-test passed (incl. sandbox escape + injection corpus); SLOs met 30 days; all 09 gates green |
-| **M6** Windows → iOS → Android → SDK | Windows WinUI shell; iOS (JSC already conformant); Android; SDK/CLI beta | Renderer + engine conformance per platform; App Store approval |
+| **M6** Windows → iOS → Android → SDK | Windows WinUI shell; iOS (JSC passes covered CR-12 vectors); Android; SDK/CLI beta | Renderer + engine conformance per platform; App Store approval |
 
 ## 12. Top risks
 
@@ -137,7 +137,7 @@ App Store builds route subscriptions through IAP; desktop direct sales avoid the
 | iOS App Store rule 2.5.2 (downloaded code) | High | JavaScriptCore execution path (sanctioned) chosen from day one; user-created, source-visible/editable code framing; no public marketplace inside the iOS app at launch; review-safety mode documented (PRD 07 §9). |
 | CRDT document growth / sync cost | High | Per-doc granularity + sharding, shallow snapshots, compaction policy, size budgets (PRD 02 §7). |
 | LLM unit cost vs. consumer price | High | Local-model routing for small tasks; per-applet token budgets; BYOK tier (PRD 04 §6). |
-| Dual-engine (JSC + QuickJS) divergence | Med-High | Conformance suite from week one; fuel/limit semantics enforced in the shared host shim, not engines; divergence = release blocker (PRD 01 CR-12). |
+| Dual-engine (JSC + QuickJS) divergence | Med-High | CR-12 starts with the JS-language/determinism corpus and grows host/API coverage as vectors land; divergence in covered vectors = release blocker. |
 | Dynamic relational layer becomes a database project | Med | Narrow SQL/DSL subset, rebuildable indexes, compatibility fixtures, explicit non-goals (PRD 02). |
 | Headless-first drifts from real UI needs | Med | Renderer zero by week ~3; golden-tree + interaction conformance kit; UI contract changes gated on renderer-zero validation (PRD 05). |
 | Offline type-check weight on web/mobile | Med | SWC strip is always instant; full `tsc` lazy-loaded in a worker (web) / bundled (mobile); applets are small so check latency is bounded; measured as a perf gate (PRD 09). |

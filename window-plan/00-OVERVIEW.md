@@ -243,8 +243,8 @@ afterthought (PS-14 lists it explicitly). Details in §9 and the packaging doc.
 
 A Windows build is not shippable until **all four** gates are green — the same bar every shell clears:
 
-1. **Engine conformance (CR-12):** QuickJS-native passes the cross-engine suite **on Windows** (same suite
-   that runs on macOS/Linux). No Windows-specific JS divergence.
+1. **Engine conformance (CR-12):** QuickJS-native passes the covered `conformance-engines` corpus **on Windows**
+   (same covered-vector suite that runs on macOS/Linux). No Windows-specific JS divergence in those vectors.
 2. **Renderer conformance kit (UI-14):** golden trees + scripted-interaction + screenshot tests pass against
    the WinUI renderer. Behavioral divergence from the reference is **release-blocking**. The golden corpus
    already exists at `crates/ui/tests/golden/` — the WinUI renderer is validated against it.

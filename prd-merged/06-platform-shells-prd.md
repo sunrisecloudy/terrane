@@ -40,7 +40,7 @@ All shells are thin: native UX chrome + renderer (PRD 05) + platform services, o
 
 ## 7. iOS / iPadOS (v1.x — after Windows decision, M6)
 
-- **PS-16** Swift/SwiftUI shell; **JavaScriptCore engine — already conformance-tested since M0 (D4)**, which converts the biggest porting risk into a renderer + platform-services task.
+- **PS-16** Swift/SwiftUI shell; **JavaScriptCore engine held to the covered CR-12 engine vectors as it lands (D4)**, converting the biggest engine risk into an explicit conformance gate alongside renderer + platform-services work.
 - **PS-17** App Store 2.5.2 posture (F-06 + P-03 risk controls, PRD 07 §9): JSC execution path; applets are user-created, **source-visible and editable**; execution is user-requested; no hidden background code execution; no dynamic native code, no JIT dependency claims beyond JSC itself, public APIs only; **no public marketplace inside the iOS app at launch**; review-safety mode documented; TestFlight long-beta + PWA contingency (PS-10 already gives full iOS-Safari functionality).
 - **PS-18** Mobile constraints: BGTaskScheduler best-effort sync with honest staleness UI; push via cloud relay for invites/mentions; on-device local models deferred (route local tier to home server); iPad split view first-class (P-03). Target: iOS 17+.
 

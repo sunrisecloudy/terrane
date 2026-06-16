@@ -19,8 +19,8 @@ Deliverables: crate skeleton (CR §2); command/event API spec v0; SQLite physica
 **Exit:** the spine demo runs headlessly in CI on macOS/Linux **and as a WASM target**; same run replays identically on both; kill-during-write torture passes.
 
 ### M0b — Conformance & template (target 4–5 wks)
-Turn the spine into the platform template. Deliverables: **JSC engine implementation + cross-engine conformance suite** (CR-12; JSC remains a day-one M0 commitment — it lands here, weeks after the spine, not at iOS time); full type-check stage (tsgo sidecar) + repair loop with mocked provider + LM Studio adapter; RBAC engine v0; dynamic indexes; in-process client↔server sync with partition simulation; **renderer zero** (UI-13); threat model doc; compatibility fixture framework.
-**Exit:** full loop (install → generate → run → store → sync → render-tree → event → patch) green on macOS/Linux/WASM and **both engines**; demo applet drives renderer zero; data survives schema change; prompt-to-run works offline with LM Studio.
+Turn the spine into the platform template. Deliverables: **JSC engine implementation + cross-engine conformance suite** (CR-12 starts with the `conformance-engines` JS-language/determinism corpus; JSC remains an M0 commitment — it lands here, weeks after the spine, not at iOS time); full type-check stage (tsgo sidecar) + repair loop with mocked provider + LM Studio adapter; RBAC engine v0; dynamic indexes; in-process client↔server sync with partition simulation; **renderer zero** (UI-13); threat model doc; compatibility fixture framework.
+**Exit:** full QuickJS loop (install → generate → run → store → sync → render-tree → event → patch) green on macOS/Linux/WASM; covered CR-12 vectors green on every wired engine; demo applet drives renderer zero; data survives schema change; prompt-to-run works offline with LM Studio.
 
 ### M1 — macOS alpha
 SwiftUI shell + JSC + native renderer (conformance-kit validated), local-only, cloud + local LLM, editor/permission/review surfaces (UI §B).
@@ -49,11 +49,11 @@ Per PRD 06 §6–8; SDK/CLI private beta (harness productized).
 ## 2. Test layers (P-13, normative)
 
 - **Unit:** domain validation; RBAC/capability decisions; schema compatibility; query planner; envelope encode/decode; manifest validation; host-API policy checks.
-- **Integration:** workspace create/open/export/import; transpile → policy scan → sandbox run (both engines); SQLite transaction rollback; index rebuild/resume; Loro snapshot/chunk persistence; AI patch/test/fix loop with mocked provider; secret resolution with mocked keychain; client↔server sync in-process.
+- **Integration:** workspace create/open/export/import; transpile → policy scan → sandbox run through the QuickJS spine plus covered engine vectors; SQLite transaction rollback; index rebuild/resume; Loro snapshot/chunk persistence; AI patch/test/fix loop with mocked provider; secret resolution with mocked keychain; client↔server sync in-process.
 - **Property:** CRDT convergence under randomized edit order; unknown-field preservation through old-client writes; index rows ≡ canonical records; query results ≡ reference scan; **permission monotonicity**; deterministic replay identity.
 - **Fuzz:** workspace file parser; envelope parser; query parser; host-call bridge; sync message parser; package manifest parser; **unknown-component UI fuzz** (UI-6).
 - **Security:** sandbox-escape corpus; forbidden globals; prototype pollution; host-call argument fuzzing; SSRF/private-IP attempts; secret leakage scans; malicious package fixtures; malicious collaborator operations; injection corpus (LM-16).
-- **Conformance (the template):** engine suite (CR-12: QuickJS-native, QuickJS-WASM, JSC); renderer kit (UI-14: golden trees + interactions + screenshots); cross-platform: same fixture opens everywhere, same deterministic run → same result, export A → import B.
+- **Conformance (the template):** engine suite (CR-12: the `conformance-engines` corpus on QuickJS-native plus the adapter harness today; QuickJS-WASM/JSC added as wired engines); renderer kit (UI-14: golden trees + interactions + screenshots); cross-platform: same fixture opens everywhere, same deterministic run → same result, export A → import B.
 
 ## 3. Compatibility fixture suite (versioned forever, never deleted)
 
@@ -79,7 +79,7 @@ Power-loss simulation during writes (1,000 cycles, zero corruption); cancel runt
 3. Non-convergent CRDT test.
 4. Workspace file corruption under simulated crash.
 5. Secret leak into logs, sync payloads, or model context.
-6. Engine or renderer conformance divergence.
+6. Engine or renderer divergence within the covered conformance suites.
 7. iOS hidden code-execution path.
 8. Marketplace package runnable before source/permissions visible.
 9. Permission-monotonicity property failure.

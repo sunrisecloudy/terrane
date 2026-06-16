@@ -236,12 +236,12 @@ command, not an OS process kill.
 
 **Acceptance checks (§4):**
 - `cargo build -p forge-runtime --target x86_64-pc-windows-msvc` and `...aarch64-pc-windows-msvc`
-  both succeed; the hostile-applet corpus (`forge/corpus/`) runs green on both via
-  `forge-cli` cross-built, proving the engine + limits behave identically to macOS/Linux.
+	  both succeed; the hostile-applet corpus (`forge/corpus/`) runs green on both via
+	  `forge-cli` cross-built, proving runtime containment and limit behavior on Windows.
 - `runtime.replay` of a recorded run produces byte-identical output on Windows vs the macOS
-  reference (CR-12 cross-platform determinism), gating against any MSVC float/locale divergence.
+	  reference, gating against any MSVC float/locale divergence in the replay surface.
 - A `forge-runtime` Windows CI job is added so engine regressions are caught (mirrors the
-  cross-engine conformance suite CR-12; the Windows job runs QuickJS-native).
+	  covered-vector CR-12 suite for QuickJS-native and keeps broader limit parity in runtime/platform conformance).
 
 ---
 

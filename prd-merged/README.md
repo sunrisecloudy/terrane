@@ -2,7 +2,7 @@
 
 Merged from `local_first_util_2/` (Forge pack) and `local_first_utility_prd_pack/` (Utility pack) on 2026-06-12, resolving all conflicts via stakeholder decisions recorded in [DECISIONS.md](DECISIONS.md).
 
-**Strategy in one line:** build the complete vertical slice headless first (CLI harness + renderer zero + dual-engine conformance suites) so every platform shell is a thin, conformance-tested renderer over one Rust core.
+**Strategy in one line:** build the complete vertical slice headless first (CLI harness + renderer zero + conformance suites that start with covered engine vectors and expand per platform) so every platform shell is a thin, conformance-tested renderer over one Rust core.
 
 | File | Contents |
 |---|---|

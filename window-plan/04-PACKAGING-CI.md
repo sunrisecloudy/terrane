@@ -490,11 +490,13 @@ absent.
 PS-4 + CR-12 + UI-14 make conformance **release-blocking**. A package is not
 publishable unless, on the actual built artifacts:
 
-1. **Engine conformance (CR-12):** the seed vectors in
-   `forge/fixtures/conformance/*.json` (format in
-   `forge/spec/conformance-vector-format.md`) run on QuickJS-native **inside the
-   Windows dll** and produce byte-identical `RunRecord` fingerprints. Exercised by
-   `cargo test --workspace` (the testkit suite) on the Windows runner.
+1. **Engine conformance (CR-12):** the covered vectors in
+	   `forge/fixtures/conformance-engines/*.json` (format in
+	   `forge/spec/conformance-vector-format.md`) run on QuickJS-native **inside the
+	   Windows dll** and produce byte-identical `RunRecord` fingerprints. The broader
+	   `forge/fixtures/conformance/*.json` files remain runtime/host-API seed vectors
+	   unless promoted into the engine-agnostic CR-12 harness. Exercised by the
+	   `forge-runtime` conformance tests on the Windows runner.
 2. **Renderer conformance (UI-14):** the golden trees under
    `forge/crates/ui/tests/golden/` (e.g. `roundtrip_*`, `diff_*`, `unknown_*`) are
    replayed through the **C# WinUI renderer** by the `Forge.Conformance` runner
@@ -645,8 +647,8 @@ jobs:
           dotnet run -c Release --project windows/Forge.Conformance -- `
             --golden forge/crates/ui/tests/golden `
             --enforce
-      # Engine conformance (CR-12) already ran inside `cargo test --workspace`
-      # on the x64 core job; this job re-asserts the renderer half.
+	      # Covered-vector engine conformance (CR-12) already ran inside the Rust
+	      # runtime tests on the x64 core job; this job re-asserts the renderer half.
 
   # ---------- 3. Build the WinUI app per arch ----------
   build-app:
@@ -760,8 +762,8 @@ jobs:
   matching PS-14. arm64 is **built every run** but **tested on x64** (the runner is
   x64; arm64 binaries can't execute there). Native arm64 test execution is deferred
   to a self-hosted/Windows-arm64 runner — tracked as a risk in `05-MILESTONES.md`.
-- **Conformance is a hard `needs:` gate** — `build-app` cannot start until both
-  engine vectors (in `cargo test --workspace`) and renderer golden trees pass (§8).
+	- **Conformance is a hard `needs:` gate** — `build-app` cannot start until both
+	  covered CR-12 engine vectors and renderer golden trees pass (§8).
 - **Signing only on tags** (release), using **OIDC/Key Vault secrets** — no `.pfx`
   in the repo. PR builds produce unsigned, dev-sideloaded bundles for smoke.
 - **`forge demo` smoke** reuses the exact spine acceptance the headless CLI already
@@ -823,8 +825,8 @@ A reviewer/implementer confirms W5 (`05-MILESTONES.md`) is met when **all** hold
    files exist (§3.3).
 2. **Core green:** `cargo test --workspace` passes and `forge demo` exits `0` on the
    Windows runner (§3.5).
-3. **Conformance gate:** the `conformance` job passes — engine vectors
-   (`forge/fixtures/conformance/*.json`) byte-identical on the Windows dll **and**
+3. **Conformance gate:** the `conformance` job passes — covered CR-12 engine vectors
+	   (`forge/fixtures/conformance-engines/*.json`) byte-identical on the Windows dll **and**
    all golden trees in `forge/crates/ui/tests/golden/` (including `unknown_*` UI-6
    fallback) match through the C# renderer (§8). `build-app` does not run unless
    this passes.

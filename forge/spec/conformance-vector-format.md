@@ -2,7 +2,7 @@
 
 Source of record: `prd-merged/01-core-runtime-prd.md` CR-12 plus the current `RunRecord` and `RecordedCall` contracts in `forge/crates/domain/src/run.rs`.
 
-Conformance vectors are engine-independent descriptions of one observable applet behavior. The same vector must run on QuickJS-native, QuickJS-WASM, and JavaScriptCore once those engines are wired. A conformance run is successful only when the produced `RunRecord` matches the expected observable shape under the vector's declared tolerance.
+Conformance vectors are engine-independent descriptions of one observable applet behavior. The same vector must run on QuickJS-native, QuickJS-WASM, and JavaScriptCore once those engines are wired. A conformance run is successful only when the produced `RunRecord` matches the expected observable shape under the vector's declared tolerance. The current CR-12 engine corpus is the `forge/fixtures/conformance-engines/` JS-language/determinism slice; broader host-API, UI-dispatch, live-query, and limit vectors use this format as they are promoted into the cross-engine gate.
 
 ## JSON Shape
 
@@ -94,8 +94,8 @@ Fields that may legitimately differ:
 
 ## Limit Tolerance
 
-Host-call budget vectors can be exact because budget accounting lives in the shared Rust host shim. CPU and memory limit vectors are release-critical but may need `error_code_only` while QuickJS-WASM and JSC are being wired: the portable requirement is `ResourceLimitExceeded`, no host crash, no successful completion, and no unexpected host effects. Once every engine reports a stable detail string and stop point, those vectors should graduate to `byte_identical`.
+Host-call budget vectors can be exact because budget accounting lives in the shared Rust host shim. CPU and memory limit vectors are release-critical once promoted into the CR-12 harness, but may need `error_code_only` while QuickJS-WASM and JSC are being wired: the portable requirement is `ResourceLimitExceeded`, no host crash, no successful completion, and no unexpected host effects. Current limit vectors outside `conformance-engines` remain runtime conformance seeds until they are wired through the engine-agnostic harness. Once every engine reports a stable detail string and stop point, those vectors should graduate to `byte_identical`.
 
 ## Seed Fixtures
 
-Seed vectors live in `forge/fixtures/conformance/*.json`. They cover pure compute, each current `ctx.*` namespace, deterministic seams, shared host-call limits, engine CPU/memory containment, and compile-time forbidden-construct rejection.
+Seed vectors live in `forge/fixtures/conformance/*.json`. They cover pure compute, current `ctx.*` namespaces, deterministic seams, shared host-call limits, engine CPU/memory containment, and compile-time forbidden-construct rejection for the runtime conformance suite. They are not automatically part of CR-12 until each vector is wired through the engine-agnostic cross-engine harness with a portable tolerance.
