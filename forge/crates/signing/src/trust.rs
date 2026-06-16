@@ -268,7 +268,8 @@ fn parse_rfc3339(s: &str) -> Result<Instant, String> {
     if !(1..=12).contains(&month) {
         return Err(format!("{s:?} month {month} out of range"));
     }
-    if !(1..=31).contains(&day) {
+    let max_day = days_in_month(year, month);
+    if day < 1 || day > max_day {
         return Err(format!("{s:?} day {day} out of range"));
     }
     if hour > 23 {
@@ -307,7 +308,10 @@ fn parse_rfc3339(s: &str) -> Result<Instant, String> {
 
     // Offset: `Z`/`z` (UTC) or `±hh:mm`.
     let offset_minutes: i64 = match bytes.get(idx) {
-        Some(b'Z') | Some(b'z') => 0,
+        Some(b'Z') | Some(b'z') => {
+            idx += 1;
+            0
+        }
         Some(sign @ (b'+' | b'-')) => {
             let oh = num(idx + 1..idx + 3)?;
             sep(idx + 3, b':')?;
@@ -315,6 +319,7 @@ fn parse_rfc3339(s: &str) -> Result<Instant, String> {
             if oh > 23 || om > 59 {
                 return Err(format!("{s:?} offset out of range"));
             }
+            idx += 6;
             let mag = oh * 60 + om;
             if *sign == b'-' {
                 -mag
@@ -324,6 +329,9 @@ fn parse_rfc3339(s: &str) -> Result<Instant, String> {
         }
         _ => return Err(format!("{s:?} is missing a 'Z' or numeric UTC offset")),
     };
+    if idx != bytes.len() {
+        return Err(format!("{s:?} has trailing characters after the UTC offset"));
+    }
 
     // Days since a proleptic year-0 epoch (Howard Hinnant's days_from_civil).
     let y = if month <= 2 { year - 1 } else { year };
@@ -338,6 +346,20 @@ fn parse_rfc3339(s: &str) -> Result<Instant, String> {
     seconds -= offset_minutes * 60;
 
     Ok(Instant { seconds, nanos })
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Read a required manifest string, attributing a missing field to the
@@ -540,6 +562,20 @@ mod tests {
         // Garbage is rejected.
         assert!(parse_rfc3339("2026/06/13 00:00:00").is_err());
         assert!(parse_rfc3339("").is_err());
+    }
+
+    #[test]
+    fn rfc3339_parser_rejects_impossible_calendar_dates() {
+        assert!(parse_rfc3339("2026-02-31T00:00:00Z").is_err());
+        assert!(parse_rfc3339("2026-04-31T00:00:00Z").is_err());
+        assert!(parse_rfc3339("2026-02-29T00:00:00Z").is_err());
+        assert!(parse_rfc3339("2028-02-29T00:00:00Z").is_ok());
+    }
+
+    #[test]
+    fn rfc3339_parser_rejects_trailing_junk_after_offset() {
+        assert!(parse_rfc3339("2026-01-01T00:00:00Zjunk").is_err());
+        assert!(parse_rfc3339("2026-01-01T00:00:00+01:00junk").is_err());
     }
 
     #[test]
