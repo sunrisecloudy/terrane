@@ -36,7 +36,7 @@
 mod common;
 
 use common::owner;
-use forge_domain::{Capabilities, DbGrant, Limits, Manifest, RunOutcome, StorageGrant};
+use forge_domain::{AppResult, Capabilities, DbGrant, Limits, Manifest, RunOutcome, StorageGrant};
 use forge_runtime::{
     record_run_with_engine, replay_with_engine, EngineOutcome, HostContext, JsEngine,
     MemoryHostBridge, NullBridge, Program, QuickJsEngine,
@@ -301,6 +301,80 @@ fn conformance_engines_corpus_is_byte_identical_and_deterministic() {
 #[test]
 fn second_engine_runs_the_same_corpus_byte_identically() {
     run_corpus_through_engine(&AdapterEngine::default(), "AdapterEngine");
+}
+
+#[test]
+fn record_and_replay_use_the_injected_engine() {
+    let engine = SentinelEngine;
+    let manifest = conformance_manifest();
+    let program = Program::new(
+        "app_sentinel",
+        "export async function main() { return { engine: 'quickjs' }; }",
+    );
+    let input = serde_json::json!({ "from": "test" });
+
+    let mut bridge = MemoryHostBridge::new();
+    let record = record_run_with_engine(
+        &engine,
+        &program,
+        &manifest,
+        &owner(),
+        &input,
+        7,
+        11,
+        &mut bridge,
+    )
+    .unwrap();
+    assert_sentinel_record(&record, &program, &input);
+
+    let mut null = NullBridge::new();
+    let replayed = replay_with_engine(&engine, &record, &program, &manifest, &owner(), &mut null)
+        .unwrap();
+    assert_sentinel_record(&replayed, &program, &input);
+    assert!(
+        record.replays_identically(&replayed),
+        "sentinel record and replay should be byte-identical"
+    );
+}
+
+fn assert_sentinel_record(
+    record: &forge_domain::RunRecord,
+    program: &Program,
+    input: &serde_json::Value,
+) {
+    match &record.outcome {
+        RunOutcome::Completed { result } => {
+            assert!(result.ok);
+            assert_eq!(result.value["engine"], serde_json::json!("sentinel"));
+            assert_eq!(result.value["code_hash"], serde_json::json!(program.code_hash()));
+            assert_eq!(result.value["input"], *input);
+        }
+        other => panic!("sentinel engine should complete, got {other:?}"),
+    }
+}
+
+struct SentinelEngine;
+
+impl JsEngine for SentinelEngine {
+    fn run(
+        &self,
+        program: &Program,
+        input: &serde_json::Value,
+        _host: &mut HostContext<'_>,
+        _limits: &Limits,
+    ) -> EngineOutcome {
+        EngineOutcome {
+            result: Ok(AppResult {
+                ok: true,
+                value: serde_json::json!({
+                    "engine": "sentinel",
+                    "code_hash": program.code_hash(),
+                    "input": input,
+                }),
+            }),
+            logs: vec!["sentinel-engine".to_string()],
+        }
+    }
 }
 
 /// A distinct `JsEngine` implementation used to prove the conformance harness is
