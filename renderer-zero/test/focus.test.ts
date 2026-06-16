@@ -79,9 +79,11 @@ function leafNode(ann: Annotation): Record<string, unknown> {
     case "Tabs":
       return { type: "Tabs", ...(ann.name ? { ariaLabel: ann.name } : {}), tabs: [], panels: [] };
     case "Grid":
-      // Interactivity is reconstructed from structure below (a Grid with cell
-      // children is the spec's `grid`); leave the marker off here.
-      return { type: "Grid", children: [] };
+      return {
+        type: "Grid",
+        ...(ann.role === "grid" ? { interactive: true } : {}),
+        children: [],
+      };
     default:
       return { type: ann.type };
   }
@@ -118,13 +120,6 @@ function buildTree(screen: Screen): Node {
     const key = childKeyFor(parent);
     const arr = (parent[key] ??= []) as unknown[];
     arr.push(node);
-  }
-  // A Grid with cell children is interactive (`grid`); mark it so the renderer
-  // emits `grid` rather than `group`, matching `is_interactive_grid`.
-  for (const node of byPath.values()) {
-    if (node["type"] === "Grid" && Array.isArray(node["children"]) && node["children"].length > 0) {
-      node["columns"] = (node["children"] as unknown[]).length;
-    }
   }
   // Synthesize Tabs `tabs` descriptors from the focus_order's Tab stops: each
   // Tab stop at [...tabsPath, i] becomes the i-th descriptor of the Tabs node at

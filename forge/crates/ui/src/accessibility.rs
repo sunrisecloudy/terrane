@@ -185,8 +185,8 @@ fn unknown_accessibility(
         // catalog members, NOT the UI-6 unknown fallback: they expose a grouping
         // role and an OPTIONAL `ariaLabel` (no name when absent), and never the
         // raw JSON. (`Stack` is a typed node handled in `Node::accessibility`;
-        // `Grid` arrives here as a UI-6 fallback.) Grid is `grid` when
-        // interactive (has cells/columns), else a plain `group`; Card/Scroll
+        // `Grid` arrives here as a UI-6 fallback.) Grid is `grid` only when
+        // explicitly interactive/data-grid, else a plain `group`; Card/Scroll
         // become `region` once labelled.
         "Grid" => {
             let role = if is_interactive_grid(props) {
@@ -306,19 +306,17 @@ fn optional_aria_named(role: &'static str, aria: Option<&str>) -> Accessibility 
 
 /// Whether a `Grid` is interactive enough to expose the `grid` role rather than
 /// a plain `group` (`spec/accessibility.md`: "group/grid when interactive").
-/// Heuristic over the verbatim props: an explicit `interactive`/`selectable`
-/// flag, or a declared column/row structure.
+/// A declared `columns`/`rows` structure is layout-only; promotion to `grid`
+/// requires an explicit `interactive`, `selectable`, or data-grid signal.
 fn is_interactive_grid(props: &serde_json::Map<String, serde_json::Value>) -> bool {
-    props
-        .get("interactive")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-        || props
-            .get("selectable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        || props.contains_key("columns")
-        || props.contains_key("rows")
+    bool_prop(props, "interactive")
+        || bool_prop(props, "selectable")
+        || bool_prop(props, "dataGrid")
+        || bool_prop(props, "data-grid")
+}
+
+fn bool_prop(props: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    props.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 /// The ARIA role for a known-by-name form control (`spec/accessibility.md`).

@@ -56,7 +56,11 @@ test("typed catalog role/name emission (UI-7 spec table)", () => {
 
 test("extended @forge/std catalog role/name (UI-6 fallback, accessibility.rs)", () => {
   const cases: [Node, string, string | null][] = [
-    [{ type: "Grid", columns: 3 } as unknown as Node, "grid", null],
+    [{ type: "Grid", columns: 3 } as unknown as Node, "group", null],
+    [{ type: "Grid", rows: 2 } as unknown as Node, "group", null],
+    [{ type: "Grid", columns: 3, interactive: true } as unknown as Node, "grid", null],
+    [{ type: "Grid", rows: 2, selectable: true } as unknown as Node, "grid", null],
+    [{ type: "Grid", columns: 3, dataGrid: true } as unknown as Node, "grid", null],
     [{ type: "Grid" } as unknown as Node, "group", null],
     [{ type: "Card", ariaLabel: "Profile" } as unknown as Node, "region", "Profile"],
     [{ type: "Card" } as unknown as Node, "group", null],
@@ -140,15 +144,8 @@ test("a11y golden representative_screen: rendered roles match annotations", () =
   const data = readJson<Record<string, Screen>>(join(A11Y_DIR, "representative_screen.json"));
   let checked = 0;
   for (const [screenName, screen] of Object.entries(data)) {
-    // A node is a container with child annotations iff some annotation's path is
-    // exactly one level deeper. Pass that fact in so Grid interactivity (group
-    // vs grid) is reconstructed from structure, mirroring `is_interactive_grid`.
-    const hasChildren = (path: number[]): boolean =>
-      screen.annotations.some(
-        (a) => a.path.length === path.length + 1 && path.every((p, i) => a.path[i] === p),
-      );
     for (const ann of screen.annotations) {
-      const node = nodeForAnnotation(ann, hasChildren(ann.path));
+      const node = nodeForAnnotation(ann);
       if (node === null) continue; // type the renderer cannot reconstruct standalone
       const el = render(node);
       assert.equal(
@@ -163,10 +160,9 @@ test("a11y golden representative_screen: rendered roles match annotations", () =
 });
 
 /** Build a representative node carrying the annotation's accessible name so the
- * renderer derives the annotated role/name. `hasCells` reconstructs container
- * interactivity (a Grid with interactive cells is the spec's `grid`, an empty
- * one is a `group`). `null` for types not standalone-reconstructable. */
-function nodeForAnnotation(ann: Annotation, hasCells: boolean): Node | null {
+ * renderer derives the annotated role/name. `null` for types not
+ * standalone-reconstructable. */
+function nodeForAnnotation(ann: Annotation): Node | null {
   const name = ann.name ?? "";
   switch (ann.type) {
     case "Stack":
@@ -184,9 +180,9 @@ function nodeForAnnotation(ann: Annotation, hasCells: boolean): Node | null {
     case "Tabs":
       return { type: "Tabs", ...(ann.name ? { ariaLabel: ann.name } : {}) } as unknown as Node;
     case "Grid":
-      // An interactive grid (declares columns/cells) is `grid`; an empty one is
-      // a plain `group` — mirrors `is_interactive_grid` in accessibility.rs.
-      return (hasCells ? { type: "Grid", columns: 2 } : { type: "Grid" }) as unknown as Node;
+      return (
+        ann.role === "grid" ? { type: "Grid", interactive: true } : { type: "Grid" }
+      ) as unknown as Node;
     default:
       return null;
   }

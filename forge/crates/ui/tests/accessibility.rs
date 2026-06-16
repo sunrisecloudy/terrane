@@ -142,9 +142,21 @@ fn structural_catalog_components_emit_their_spec_roles_not_the_unknown_fallback(
     assert_eq!(ax(&grid).role.as_str(), "group");
     assert_eq!(ax(&grid).name, None);
 
-    // An interactive grid (declared columns) upgrades to the `grid` role.
-    let interactive = from_str(r#"{"type":"Grid","columns":3,"children":[]}"#).unwrap();
+    // Layout-only column/row hints stay a plain group; role grid requires an
+    // explicit interactive/data-grid signal.
+    let layout_columns = from_str(r#"{"type":"Grid","columns":3,"children":[]}"#).unwrap();
+    assert_eq!(ax(&layout_columns).role.as_str(), "group");
+    let layout_rows = from_str(r#"{"type":"Grid","rows":2,"children":[]}"#).unwrap();
+    assert_eq!(ax(&layout_rows).role.as_str(), "group");
+    let interactive =
+        from_str(r#"{"type":"Grid","columns":3,"interactive":true,"children":[]}"#).unwrap();
     assert_eq!(ax(&interactive).role.as_str(), "grid");
+    let selectable =
+        from_str(r#"{"type":"Grid","rows":2,"selectable":true,"children":[]}"#).unwrap();
+    assert_eq!(ax(&selectable).role.as_str(), "grid");
+    let data_grid =
+        from_str(r#"{"type":"Grid","columns":3,"dataGrid":true,"children":[]}"#).unwrap();
+    assert_eq!(ax(&data_grid).role.as_str(), "grid");
 
     // Card/Scroll are a plain group until labelled, then a region.
     let card = from_str(r#"{"type":"Card","children":[]}"#).unwrap();

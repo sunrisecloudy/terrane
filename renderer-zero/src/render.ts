@@ -277,12 +277,12 @@ function isDecorative(props: UnknownNode): boolean {
   return props["decorative"] === true;
 }
 
-/** Whether a Grid is interactive enough for the `grid` role (accessibility.rs). */
+/** Whether a Grid explicitly opts into the interactive/data-grid role (accessibility.rs). */
 function isInteractiveGrid(props: UnknownNode): boolean {
   return (
     props["interactive"] === true ||
     props["selectable"] === true ||
-    "columns" in props ||
-    "rows" in props
+    props["dataGrid"] === true ||
+    props["data-grid"] === true
   );
 }
