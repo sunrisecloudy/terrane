@@ -125,7 +125,7 @@ The string is UTF-8 encoded, LF newlines only, no trailing newline after the las
 | Hash | Computed over |
 |---|---|
 | `manifestHash` | canonical JSON bytes of `manifest.json` |
-| `contentHash` | SHA-256 of the concatenation, in sorted-path order, of (path "\n" SHA-256(file_bytes) "\n") for every file in the package |
+| `contentHash` | SHA-256 of the concatenation, in sorted-path order, of (path NUL SHA-256(file_bytes) "\n") for every file in the package |
 | `permissionsHash` | canonical JSON bytes of `manifest.permissions` (sorted ascending) |
 | `policyHash` | canonical JSON bytes of `{ "resourceBudget", "networkPolicy", "capabilities" }` from the manifest |
 
@@ -133,13 +133,20 @@ The string is UTF-8 encoded, LF newlines only, no trailing newline after the las
 
 Implement deterministic canonicalization before hashing:
 
-1. Normalize paths to forward-slash relative paths.
-2. Reject path traversal (`..`) and absolute paths.
-3. Sort object keys in JSON ascending by Unicode code point.
-4. Normalize line endings to `\n`.
-5. Sort file records by path ascending.
-6. Strip BOM from text files.
-7. Hash exact bytes after normalization.
+1. Sort object keys in JSON ascending by Unicode code point.
+2. Sort file records by logical package path ascending.
+3. For each file record, hash the verbatim packaged file bytes to a
+   `sha256:`-prefixed lowercase digest.
+4. Build the `contentHash` input as `path`, a single NUL byte, the recomputed
+   per-file digest, and LF for each sorted file record.
+5. Hash exact bytes after this framing; the signing verifier does not rewrite
+   line endings or strip BOMs.
+
+Package validation remains responsible for path safety before install: paths
+must be forward-slash relative package paths and must not contain traversal
+segments or absolute roots. Those checks are separate from the signed
+`contentHash` byte framing so independent signers can reproduce the same
+preimage exactly.
 
 Canonical JSON serialization uses:
 
