@@ -18,6 +18,51 @@
 
 use forge_domain::{CoreError, RecordedCall, Result};
 
+pub(crate) const DENIAL_MARKER_KEY: &str = "__forge_denial";
+pub(crate) const DENIAL_ERROR_KEY: &str = "denied";
+pub(crate) const SECRET_INJECTED_KEY: &str = "secret_injected";
+
+pub(crate) fn denial_response(error: &CoreError, secret_injected: bool) -> serde_json::Value {
+    let mut response = serde_json::Map::new();
+    response.insert(DENIAL_MARKER_KEY.to_string(), serde_json::Value::Bool(true));
+    response.insert(DENIAL_ERROR_KEY.to_string(), serde_json::json!(error));
+    if secret_injected {
+        response.insert(SECRET_INJECTED_KEY.to_string(), serde_json::Value::Bool(true));
+    }
+    serde_json::Value::Object(response)
+}
+
+pub(crate) fn marked_denial_error(response: &serde_json::Value) -> Option<CoreError> {
+    let obj = response.as_object()?;
+    if obj.get(DENIAL_MARKER_KEY).and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let denied = obj.get(DENIAL_ERROR_KEY)?;
+    let error = serde_json::from_value::<CoreError>(denied.clone()).ok()?;
+    let allowed_shape = obj.iter().all(|(key, value)| match key.as_str() {
+        DENIAL_MARKER_KEY | DENIAL_ERROR_KEY => true,
+        SECRET_INJECTED_KEY => value.is_boolean(),
+        _ => false,
+    });
+    allowed_shape.then_some(error)
+}
+
+pub(crate) fn legacy_denial_error(response: &serde_json::Value) -> Option<CoreError> {
+    let obj = response.as_object()?;
+    let denied = obj.get(DENIAL_ERROR_KEY)?;
+    let error = serde_json::from_value::<CoreError>(denied.clone()).ok()?;
+    let legacy_shape = obj.iter().all(|(key, value)| match key.as_str() {
+        DENIAL_ERROR_KEY => true,
+        SECRET_INJECTED_KEY => value.is_boolean(),
+        _ => false,
+    });
+    legacy_shape.then_some(error)
+}
+
+pub(crate) fn recorded_denial_error(response: &serde_json::Value) -> Option<CoreError> {
+    marked_denial_error(response).or_else(|| legacy_denial_error(response))
+}
+
 /// Which direction the recorder is operating in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -316,17 +361,18 @@ impl RunRecorder {
     /// [`host_call`](Self::host_call); this records the attempt as a deterministic
     /// error response so the denial is part of the replayable record.
     ///
-    /// The recorded `response` is `{"denied": <CoreError JSON>}`. In replay mode
-    /// the call is consumed like any other (method/args must match) and the error
-    /// is reconstructed from the recorded response, so replay reproduces the exact
-    /// denial without consulting the live policy/bridge.
+    /// The recorded `response` carries the reserved `__forge_denial: true` marker
+    /// plus `denied: <CoreError JSON>`. In replay mode the call is consumed like
+    /// any other (method/args must match) and the error is reconstructed from the
+    /// recorded response, so replay reproduces the exact denial without consulting
+    /// the live policy/bridge.
     pub fn record_denial(
         &mut self,
         method: &str,
         args: serde_json::Value,
         error: &CoreError,
     ) -> Result<()> {
-        let response = serde_json::json!({ "denied": error });
+        let response = denial_response(error, false);
         match self.mode {
             Mode::Record => {
                 let seq = self.next_seq();
@@ -351,8 +397,9 @@ impl RunRecorder {
     /// persist in the trace, and (for a secret-bearing request) no resolved secret
     /// must leak through a recorded response. The call's `args` (which hold only
     /// the request's `secret_ref`, never a value) are left untouched, so the
-    /// secret_ref still appears in the trace while the response becomes
-    /// `{"denied": <CoreError JSON>}` — identical in shape to a call-gate denial.
+    /// secret_ref still appears in the trace while the response becomes a marked
+    /// denial carrying `denied: <CoreError JSON>` — identical in shape to a
+    /// call-gate denial.
     ///
     /// `secret_injected` (review 153) distinguishes a response-leg denial from a
     /// request-gate denial: by the time this runs, the secret_ref headers were
@@ -362,19 +409,16 @@ impl RunRecorder {
     /// `secret_injected: true` marker is preserved alongside `denied` so the audit
     /// builder can still emit the `secret.use` row for a secret that DID cross the
     /// trust boundary — it carries no value, only the boolean fact that injection
-    /// happened. When `false` the shape stays the single-key `{"denied": …}` form,
-    /// byte-identical to a call-gate denial (no marker to perturb existing traces).
+    /// happened. When `false` the shape stays byte-identical to a call-gate denial
+    /// (no extra `secret_injected` marker to perturb traces that did not send a
+    /// secret).
     ///
     /// No-op if there is no produced call yet. In replay mode the recorded entry
     /// is already denial-shaped (it was recorded redacted), so calling this again
     /// just rewrites it to the same denial shape — idempotent.
     pub fn redact_last_response(&mut self, error: &CoreError, secret_injected: bool) {
         if let Some(last) = self.produced.last_mut() {
-            last.response = if secret_injected {
-                serde_json::json!({ "denied": error, "secret_injected": true })
-            } else {
-                serde_json::json!({ "denied": error })
-            };
+            last.response = denial_response(error, secret_injected);
         }
     }
 

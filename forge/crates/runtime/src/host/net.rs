@@ -13,6 +13,7 @@ use super::HostContext;
 use crate::net::{
     resolve_secret_headers_with_allowlist, NetHeaderValue, NetRequest, NetResponse,
 };
+use crate::recorder::recorded_denial_error;
 use forge_domain::{CoreError, NetGrant, Result};
 use forge_policy::NetPolicy;
 
@@ -135,23 +136,12 @@ impl HostContext<'_> {
         // `NetResponse`. Reconstruct the original denial here and surface it, so
         // replay reports the SAME error byte-identically instead of failing to
         // decode the redacted entry as a `NetResponse` (review 077). A real recorded
-        // response is a full `NetResponse` (always carries `status`); the redaction
-        // shape carries a `denied` key plus AT MOST a non-sensitive `secret_injected`
-        // marker (review 153), and never a `status`. So a `denied` key without a
-        // `status` is unambiguously the redaction shape (a `NetResponse` could not
-        // produce it).
-        if let Some(denied) = response_json.get("denied") {
-            let is_denial_shape = response_json
-                .as_object()
-                .is_some_and(|o| !o.contains_key("status"));
-            if is_denial_shape {
-                let err: CoreError = serde_json::from_value(denied.clone()).map_err(|e| {
-                    CoreError::RuntimeError(format!(
-                        "net.fetch recorded denial decode failed: {e}"
-                    ))
-                })?;
-                return Err(err);
-            }
+        // response is a full `NetResponse` (always carries `status`); current
+        // redactions carry the reserved `__forge_denial: true` marker, and legacy
+        // redactions used the same `denied`/`secret_injected` shape without that
+        // marker. Both are control metadata, not user response bytes, for net.fetch.
+        if let Some(err) = recorded_denial_error(&response_json) {
+            return Err(err);
         }
         let response = serde_json::from_value::<NetResponse>(response_json).map_err(|e| {
             CoreError::RuntimeError(format!("net.fetch response decode failed: {e}"))

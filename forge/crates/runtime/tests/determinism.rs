@@ -885,28 +885,26 @@ fn snapshotless_legacy_failed_run_replays_its_recorded_failure_not_a_denial() {
     );
 }
 
-/// Review 035 P2: the legacy-fallback denial gate must key on the *exact* recorded
-/// denial shape — `{"denied": <CoreError>}` — not on the mere presence of a
-/// `"denied"` key. `ctx.storage.get`/`ctx.db.get`/`ctx.db.list` replay arbitrary
-/// user JSON, so a legitimate snapshotless legacy run that reads a stored value
-/// like `{ "denied": false }` and then fails for an app reason must STILL fall back
-/// to the manifest and replay its recorded success-then-failure. The looser
-/// "any object with a `denied` key" gate mis-classified that user data as a recorded
-/// denial and routed the run through the all-deny default, replaying it as a
-/// spurious permission failure.
+/// Review 035/037 P2: the legacy-fallback denial gate must key on the reserved
+/// trace marker, not on marker-less user JSON that happens to look like the old
+/// `{"denied": <CoreError>}` denial shape. `ctx.storage.get`/`ctx.db.get`/
+/// `ctx.db.list` replay arbitrary user JSON, so a legitimate snapshotless legacy
+/// run that reads such a stored value and then fails for an app reason must STILL
+/// fall back to the manifest and replay its recorded success-then-failure.
 #[test]
 fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorded_denial() {
     use forge_domain::{CoreError, PermissionSnapshot, RunRecord};
 
-    // The program stores a benign user object whose *value* contains a `denied`
-    // field (a perfectly legal app payload), reads it back (so the recorded
-    // `storage.get` response is exactly `{"denied": false}`), then fails for an
-    // app reason. This is the collision case from review 035.
+    // The program stores a benign user object whose *value* is exactly the old
+    // marker-less denial shape, reads it back, then fails for an app reason. This
+    // is the collision case from review 037.
     let prog = program(
         r#"export async function main(ctx, input) {
-            await ctx.storage.set("app/flags", { denied: false }); // legal user data
-            const got = await ctx.storage.get("app/flags");        // recorded resp == {"denied":false}
-            if (got.denied !== false) { throw new Error("unexpected"); }
+            await ctx.storage.set("app/flags", {
+                denied: { kind: "PermissionDenied", detail: "user payload" }
+            }); // legal user data
+            const got = await ctx.storage.get("app/flags"); // old denial-shaped user data
+            if (got.denied.kind !== "PermissionDenied") { throw new Error("unexpected"); }
             throw new Error("boom");                                // then fail for an app reason
         }"#,
     );
@@ -932,8 +930,14 @@ fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorde
     assert!(recorded_error.to_string().contains("boom"), "{recorded_error}");
 
     // Precondition that makes this test meaningful: a recorded read response IS the
-    // literal `{"denied": false}` user object — the value that the looser gate
-    // misread as a recorded policy denial.
+    // old marker-less `{"denied": <CoreError>}` shape — the value that the old
+    // exact-shape gate misread as a recorded policy denial.
+    let user_denial = serde_json::json!({
+        "denied": {
+            "kind": "PermissionDenied",
+            "detail": "user payload"
+        }
+    });
     let read_back = recorded
         .calls
         .iter()
@@ -941,13 +945,14 @@ fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorde
         .expect("the storage.get is recorded");
     assert_eq!(
         read_back.response,
-        serde_json::json!({ "denied": false }),
-        "the recorded read response carries a user `denied` field"
+        user_denial,
+        "the recorded read response carries old denial-shaped user data"
     );
-    // It is NOT a serialized CoreError, so it must not be treated as a denial.
+    // Its nested value IS a serialized CoreError, but the response lacks the
+    // reserved trace marker, so it must not be treated as a current denial.
     assert!(
-        serde_json::from_value::<CoreError>(serde_json::json!({ "denied": false })).is_err(),
-        "user `{{denied:false}}` is not a CoreError"
+        serde_json::from_value::<CoreError>(read_back.response["denied"].clone()).is_ok(),
+        "precondition: user data is CoreError-shaped"
     );
 
     // Simulate a PRE-CR-9 record: drop `permissions` so it loads all-deny default.
@@ -958,7 +963,7 @@ fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorde
     assert!(!legacy.is_completed(), "the legacy record still failed");
 
     // Replay under the granting manifest. Because no recorded call is a *real*
-    // denial (the `{"denied":false}` read is user data, not a CoreError), the
+    // denial (the marker-less CoreError-shaped read is user data), the
     // manifest fallback must engage: the allowed host calls replay and the ORIGINAL
     // RuntimeError("boom") is reproduced — NOT a spurious PermissionDenied.
     let mut null = NullBridge::new();
@@ -977,7 +982,7 @@ fn snapshotless_legacy_failure_after_userdata_with_denied_field_is_not_a_recorde
     }
     assert_eq!(
         recorded.calls, replayed.calls,
-        "the legacy run's host-call trace (incl. the `{{denied:false}}` read) must replay identically"
+        "the legacy run's host-call trace (incl. old denial-shaped user data) must replay identically"
     );
     assert!(
         !matches!(replayed.outcome, RunOutcome::Failed { error: CoreError::PermissionDenied(_) }),
