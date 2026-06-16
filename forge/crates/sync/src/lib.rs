@@ -95,6 +95,10 @@ struct ExchangedChunk {
     /// chunk back to the origin's oplog row (`doc_id#local_id`) to recover the op
     /// kind + touched record ids — the SS-7 authorization envelope metadata.
     local_id: String,
+    /// The origin store's logical frontier for this chunk. Local chunks derive it
+    /// from `chunk-NNNN` / `compact-NNNN`; relayed content-addressed imports recover
+    /// it from their `record.remote_import` oplog payload.
+    logical_frontier: Option<u64>,
 }
 
 /// The semantic envelope describing the logical op a chunk carries, derived at the
@@ -222,11 +226,19 @@ fn frontier_for_doc(store: &Store, doc_id: &str) -> Result<BTreeMap<String, Exch
                 id,
                 format: row.format,
                 payload: row.payload,
+                logical_frontier: chunk_frontier(&row.chunk_id),
                 local_id: row.chunk_id,
             },
         );
     }
     Ok(out)
+}
+
+fn chunk_frontier(chunk_id: &str) -> Option<u64> {
+    chunk_id
+        .strip_prefix("chunk-")
+        .or_else(|| chunk_id.strip_prefix("compact-"))
+        .and_then(|n| n.parse::<u64>().ok())
 }
 
 /// What the origin store's oplog recorded for one chunk: the op `kind`, the touched
@@ -280,6 +292,10 @@ struct OplogEntry {
     /// delete), so the delete WHEN survives every hop just like the author/record ids.
     /// `None` for an insert/update/patch row (whose WHEN rides its surviving envelope).
     delete_mutation_at: Option<i64>,
+    /// The logical frontier of the origin chunk. Relayed remote-import rows carry this
+    /// explicitly because their stored chunk ids are content-addressed and cannot be
+    /// parsed as local `chunk-NNNN` / `compact-NNNN` frontiers.
+    logical_frontier: Option<u64>,
 }
 
 /// Index the origin store's oplog by its op id (`doc_id#local_chunk_id`) → the
@@ -383,6 +399,9 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
         let delete_mutation_at = payload
             .as_ref()
             .and_then(|v| v.get("mutation_at").and_then(serde_json::Value::as_i64));
+        let logical_frontier = payload
+            .as_ref()
+            .and_then(|v| v.get("logical_frontier").and_then(serde_json::Value::as_u64));
         out.insert(
             op.op_id,
             OplogEntry {
@@ -394,6 +413,7 @@ fn oplog_index(store: &Store) -> Result<BTreeMap<String, OplogEntry>> {
                 registry_collection,
                 migration_meta_unrecoverable,
                 delete_mutation_at,
+                logical_frontier,
             },
         );
     }
@@ -476,6 +496,18 @@ fn envelope_for_chunk(
     }
 }
 
+fn logical_frontier_for_chunk(
+    doc_id: &str,
+    local_id: &str,
+    oplog: &BTreeMap<String, OplogEntry>,
+) -> Option<u64> {
+    chunk_frontier(local_id).or_else(|| {
+        oplog
+            .get(&format!("{doc_id}#{local_id}"))
+            .and_then(|entry| entry.logical_frontier)
+    })
+}
+
 /// Map an oplog `kind` string to the record op the authorizer gates. Anything that
 /// is not a recognized single-record op (transact group, remote re-import) maps to
 /// the generic [`Write`](SyncRecordOp::Write) so it is still authorized as a write.
@@ -526,6 +558,8 @@ pub struct SyncWireChunk {
     pub format: String,
     /// Base64 encoding of the immutable CRDT update bytes.
     pub payload_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_frontier: Option<u64>,
     /// The operation metadata the receiver must authorize before import.
     pub envelope: SyncOpEnvelope,
 }
@@ -562,6 +596,7 @@ impl SyncWireChunk {
             schema_version: self.envelope.schema_version,
             registry_collection: self.envelope.registry_collection.clone(),
             delete_mutation_at: self.envelope.delete_mutation_at,
+            logical_frontier: self.logical_frontier,
         };
         Ok((self.envelope, chunk))
     }
@@ -579,12 +614,14 @@ pub fn export_packet(store: &Store) -> Result<SyncExportPacket> {
     for doc_id in store.list_doc_ids()? {
         for row in store.get_chunks(&doc_id)? {
             let chunk_id = exchanged_chunk_id(&row.format, &row.payload);
+            let logical_frontier = logical_frontier_for_chunk(&doc_id, &row.chunk_id, &oplog);
             chunks.push(SyncWireChunk {
                 envelope: envelope_for_chunk(&doc_id, &row.chunk_id, &oplog),
                 doc_id: doc_id.clone(),
                 chunk_id,
                 format: row.format,
                 payload_b64: BASE64_STANDARD.encode(row.payload),
+                logical_frontier,
             });
         }
     }
@@ -632,6 +669,8 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
             continue; // frontier already covers this chunk — nothing to send
         }
         let envelope = envelope_for_chunk(doc_id, &chunk.local_id, &oplog);
+        let logical_frontier = logical_frontier_for_chunk(doc_id, &chunk.local_id, &oplog)
+            .or(chunk.logical_frontier);
         // Carry the chunk's ORIGINAL-author provenance (the original author recovered
         // when `from` only relayed this chunk, plus the touched record ids) INTO the
         // RemoteChunk, so `from`'s import oplog row — and therefore the next relay
@@ -656,6 +695,7 @@ fn missing_chunks_for_doc(into: &Store, from: &Store, doc_id: &str) -> Result<Ve
                 // delete's WHEN and its monotone restore clock counts the imported delete
                 // — never stamping an omitted restore before the synced delete it undid.
                 delete_mutation_at: envelope.delete_mutation_at,
+                logical_frontier,
             },
             envelope,
         });

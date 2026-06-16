@@ -16,7 +16,9 @@
 //!    one-directional catch-up, and an empty-peer catch-up.
 
 use super::*;
-use forge_storage::{collection_doc_id, CreateIndexKind, IndexManager, Mutation, Store};
+use forge_storage::{
+    collection_doc_id, CompactionOptions, CreateIndexKind, IndexManager, Mutation, Store,
+};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -327,6 +329,16 @@ fn insert(collection: &str, id: &str, fields: Value, at: i64) -> Mutation {
     }
 }
 
+/// A minimal patch mutation for the unit tests.
+fn patch(collection: &str, id: &str, fields: Value, at: i64) -> Mutation {
+    Mutation::Patch {
+        collection: collection.into(),
+        id: id.into(),
+        fields: fields.as_object().expect("object").clone(),
+        logical_at: Some(at),
+    }
+}
+
 #[test]
 fn second_sync_moves_no_chunks() {
     let idx = IndexManager::new();
@@ -520,6 +532,7 @@ fn forwarded_chunk_with_unrecoverable_origin_is_staged_malformed() {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         })
         .collect();
     // The relay imports the chunk with an EMPTY source string: its `record.remote_import`
@@ -885,6 +898,7 @@ fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it()
         .into_iter()
         .map(|c| {
             let exchanged = exchanged_chunk_id(&c.format, &c.payload);
+            let logical_frontier = chunk_frontier(&c.chunk_id);
             RemoteChunk {
                 doc_id: doc_id.clone(),
                 chunk_id: exchanged.clone(),
@@ -896,6 +910,7 @@ fn synced_late_delete_carries_mutation_at_so_receiver_restore_clock_exceeds_it()
                 registry_collection: None,
                 // The delete's WHEN rides ONLY the chunk the author's delete oplog row named.
                 delete_mutation_at: delete_when.get(&c.chunk_id).copied(),
+                logical_frontier,
             }
         })
         .collect();
@@ -1043,6 +1058,53 @@ fn delete_when_for_chunks(
         }
     }
     out
+}
+
+#[test]
+fn compact_snapshot_sync_envelope_carries_record_ids() {
+    let idx = IndexManager::new();
+    let mut source = Store::open_in_memory().unwrap().with_crdt_peer_id(11);
+    let mut receiver = Store::open_in_memory().unwrap().with_crdt_peer_id(22);
+
+    source
+        .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+        .unwrap();
+    source
+        .apply_mutation_crdt(&patch("tasks", "t1", json!({"title": "B"}), 2), &idx)
+        .unwrap();
+    source
+        .compact_history(&CompactionOptions::all_peers_acked(), &idx)
+        .unwrap();
+
+    let mut seen = Vec::new();
+    let report = sync_stores_authorized(&mut source, &idx, &mut receiver, &idx, |_src, env, _audit| {
+        seen.push((
+            env.collection.clone(),
+            env.record_ids.clone(),
+            env.op,
+        ));
+        !env.record_ids.is_empty()
+    })
+    .unwrap();
+
+    assert_eq!(report.chunks_a_to_b, 1);
+    assert_eq!(
+        seen,
+        vec![(
+            "tasks".to_string(),
+            vec!["t1".to_string()],
+            SyncRecordOp::Write,
+        )],
+        "compact snapshot must authorize as a record write with concrete ids"
+    );
+    assert_eq!(
+        receiver
+            .get_record("tasks", "t1")
+            .unwrap()
+            .unwrap()
+            .fields["title"],
+        json!("B")
+    );
 }
 
 /// Review 139 (P1) — DL-13 migration chunks must SYNC to peers and advance the
@@ -1291,6 +1353,7 @@ fn migration_chunk_merges_registry_even_when_receiver_already_at_target_version(
             schema_version: Some(TARGET),
             registry_collection: Some(carried_registry.clone()),
             delete_mutation_at: None,
+            logical_frontier: None,
         })
         .collect();
     let imported = receiver.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();
@@ -1358,6 +1421,7 @@ fn migration_chunk(
         schema_version: Some(to_version),
         registry_collection: Some(carried_registry),
         delete_mutation_at: None,
+        logical_frontier: None,
     }
 }
 
@@ -1668,6 +1732,7 @@ fn relay_row_marked_migration_without_recoverable_target_is_staged_malformed() {
             schema_version: Some(0),
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         })
         .collect();
     relay.apply_remote_chunks(&staged, "peer:11", &idx).unwrap();

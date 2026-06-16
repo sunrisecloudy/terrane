@@ -71,6 +71,11 @@ pub(super) struct OplogPayload {
     /// for an insert/update/patch (whose WHEN is read off the surviving envelope) so
     /// those rows stay byte-identical to before. Emitted as `mutation_at`.
     mutation_at: Option<i64>,
+    /// Present on REMOTE-import rows when the stored chunk id is network/content
+    /// addressed rather than a local `chunk-NNNN`/`compact-NNNN` id. This preserves the
+    /// origin's logical chunk frontier so compaction, retention, and oplog ordering can
+    /// reason about the imported chunk without deriving meaning from its content hash.
+    logical_frontier: Option<u64>,
 }
 
 impl OplogPayload {
@@ -101,6 +106,7 @@ impl OplogPayload {
             registry_collection: None,
             remote_is_migration: false,
             mutation_at,
+            logical_frontier: None,
         }
     }
 
@@ -139,6 +145,7 @@ impl OplogPayload {
             registry_collection,
             remote_is_migration: false,
             mutation_at: None,
+            logical_frontier: None,
         }
     }
 
@@ -177,6 +184,7 @@ impl OplogPayload {
         schema_version: Option<u64>,
         registry_collection: Option<serde_json::Value>,
         mutation_at: Option<i64>,
+        logical_frontier: Option<u64>,
     ) -> Self {
         OplogPayload {
             doc_id: doc_id.to_string(),
@@ -194,6 +202,7 @@ impl OplogPayload {
             // surface the imported delete's WHEN — recovered just like a local delete.
             // `None` for a non-delete import keeps the row bytes unchanged.
             mutation_at,
+            logical_frontier,
         }
     }
 
@@ -232,6 +241,12 @@ impl OplogPayload {
             // monotone restore clock recover it here. Emitted ONLY for a delete; an
             // insert/update/patch row omits the key, byte-identical to before.
             map.insert("mutation_at".into(), mutation_at.into());
+        }
+        if let Some(logical_frontier) = self.logical_frontier {
+            // The origin's local logical chunk frontier for a content-addressed remote
+            // import. Compaction recovers this when the stored chunk id itself is not
+            // parseable as `chunk-NNNN`/`compact-NNNN`.
+            map.insert("logical_frontier".into(), logical_frontier.into());
         }
         if let Some(registry_collection) = &self.registry_collection {
             // The affected collection's evolved registry entry; the sync seam reads it

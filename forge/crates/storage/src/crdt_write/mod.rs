@@ -212,6 +212,7 @@ mod tests {
             schema_version: Some(2),
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         };
         let mut relay = store();
         relay
@@ -435,6 +436,7 @@ mod tests {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         }
     }
 
@@ -639,6 +641,7 @@ mod tests {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         };
 
         let mut dst = store();
@@ -1238,6 +1241,7 @@ mod tests {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         };
 
         let err = dst
@@ -1348,6 +1352,7 @@ mod tests {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         };
 
         let mut dst = store();

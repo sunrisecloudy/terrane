@@ -178,6 +178,11 @@ pub struct RemoteChunk {
     /// remote-import row bytes unchanged. Rides the oplog METADATA, never the
     /// content-addressed chunk id, so convergence + chunk identity are untouched.
     pub delete_mutation_at: Option<i64>,
+    /// The origin store's logical chunk frontier for this update, when the receiving
+    /// store persists it under a network/content-addressed chunk id. Local chunks can
+    /// recover this from `chunk-NNNN` / `compact-NNNN`; remote imports need it carried
+    /// explicitly so compaction and retention can fold imported history safely.
+    pub logical_frontier: Option<u64>,
 }
 
 /// Import ONE remote chunk inside an open transaction: append-only insert into
@@ -208,6 +213,7 @@ pub(crate) fn import_remote_chunk_tx(
         schema_version,
         registry_collection,
         delete_mutation_at,
+        logical_frontier,
     } = chunk;
     let existing: Option<(String, Vec<u8>)> = tx
         .query_row(
@@ -246,7 +252,8 @@ pub(crate) fn import_remote_chunk_tx(
     // author and record identity across the next relay hop, so the receiver still
     // gates the ORIGINAL actor and names a concrete record (`review 092 #1/#2`).
     let op_id = format!("{doc_id}#{chunk_id}");
-    let lamport = chunk_id_lamport(chunk_id);
+    let logical_frontier = *logical_frontier;
+    let lamport = logical_frontier.unwrap_or_else(|| chunk_id_lamport(chunk_id));
     let original_author = author_actor_id.as_deref().unwrap_or(source);
     // Same `OplogPayload` builder as the local write path so the payload schema
     // cannot skew across the two sites; the remote variant carries `source` (the
@@ -277,6 +284,7 @@ pub(crate) fn import_remote_chunk_tx(
         *schema_version,
         registry_collection.clone(),
         *delete_mutation_at,
+        logical_frontier,
     )
     .encode("remote oplog payload encode")?;
     append_op_tx(

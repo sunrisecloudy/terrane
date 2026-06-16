@@ -197,6 +197,7 @@ impl Store {
             // single-chunk surface has no origin oplog to recover it from, so it carries
             // `None` (the imported row then omits `mutation_at`, unchanged from before).
             delete_mutation_at: None,
+            logical_frontier: None,
         };
         // `apply_remote_chunks` reports the number of chunks newly imported (0 or 1
         // for a single chunk); map it back to this API's was-newly-written boolean.

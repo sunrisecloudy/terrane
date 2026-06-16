@@ -279,7 +279,9 @@ fn compact_doc_tx(
         report.snapshot_chunks_written += 1;
     }
 
+    let foldable_ids: BTreeSet<String> = foldable.iter().map(|c| c.chunk_id.clone()).collect();
     let removable_ids: BTreeSet<String> = removable.iter().map(|c| c.chunk_id.clone()).collect();
+    let compact_record_ids = record_ids_for_chunks(tx, doc_id, &foldable_ids)?;
     let removed_delete_ops = count_delete_ops_for_chunks(tx, doc_id, &removable_ids)?;
     for chunk_id in &removable_ids {
         tx.execute(
@@ -294,7 +296,14 @@ fn compact_doc_tx(
         report.oplog_rows_removed += removed;
     }
 
-    insert_compaction_op_tx(tx, doc_id, &compact_id, compact_to, &removable_ids)?;
+    insert_compaction_op_tx(
+        tx,
+        doc_id,
+        &compact_id,
+        compact_to,
+        &removable_ids,
+        &compact_record_ids,
+    )?;
     report.docs_compacted += 1;
     report.chunks_removed += removable_ids.len();
     report.tombstones_compacted += removed_delete_ops;
@@ -316,6 +325,7 @@ fn list_doc_ids_tx(tx: &rusqlite::Transaction<'_>) -> Result<Vec<String>> {
 }
 
 fn list_chunks_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<Vec<ChunkForCompaction>> {
+    let remote_frontiers = logical_frontiers_from_oplog_tx(tx, doc_id)?;
     let mut stmt = tx
         .prepare(
             "SELECT chunk_id, format, payload FROM crdt_chunks
@@ -325,8 +335,9 @@ fn list_chunks_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<Vec<Ch
     let rows = stmt
         .query_map(params![doc_id], |row| {
             let chunk_id: String = row.get(0)?;
+            let frontier = chunk_frontier(&chunk_id).or_else(|| remote_frontiers.get(&chunk_id).copied());
             Ok(ChunkForCompaction {
-                frontier: chunk_frontier(&chunk_id),
+                frontier,
                 chunk_id,
                 format: row.get(1)?,
                 payload: row.get(2)?,
@@ -339,6 +350,39 @@ fn list_chunks_tx(tx: &rusqlite::Transaction<'_>, doc_id: &str) -> Result<Vec<Ch
         if chunk.format == CHUNK_FORMAT {
             out.push(chunk);
         }
+    }
+    Ok(out)
+}
+
+fn logical_frontiers_from_oplog_tx(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+) -> Result<BTreeMap<String, u64>> {
+    let mut stmt = tx
+        .prepare("SELECT payload FROM oplog")
+        .map_err(map_sql)?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(map_sql)?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let payload = row.map_err(map_sql)?;
+        let Some(value) = serde_json::from_slice::<serde_json::Value>(&payload).ok() else {
+            continue;
+        };
+        if value.get("doc_id").and_then(serde_json::Value::as_str) != Some(doc_id) {
+            continue;
+        }
+        let Some(chunk_id) = value.get("chunk_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(frontier) = value
+            .get("logical_frontier")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        out.insert(chunk_id.to_string(), frontier);
     }
     Ok(out)
 }
@@ -390,12 +434,47 @@ fn count_delete_ops_for_chunks(
     Ok(count)
 }
 
+fn record_ids_for_chunks(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    chunk_ids: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let mut out = BTreeSet::new();
+    for chunk_id in chunk_ids {
+        let op_id = format!("{doc_id}#{chunk_id}");
+        let payload = tx
+            .query_row(
+                "SELECT payload FROM oplog WHERE op_id = ?1",
+                params![op_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(map_sql)?;
+        let Some(payload) = payload else {
+            continue;
+        };
+        let Some(value) = serde_json::from_slice::<serde_json::Value>(&payload).ok() else {
+            continue;
+        };
+        let Some(ids) = value.get("record_ids").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for id in ids {
+            if let Some(id) = id.as_str().map(str::trim).filter(|id| !id.is_empty()) {
+                out.insert(id.to_string());
+            }
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
 fn insert_compaction_op_tx(
     tx: &rusqlite::Transaction<'_>,
     doc_id: &str,
     compact_id: &str,
     compact_to: u64,
     removed: &BTreeSet<String>,
+    record_ids: &[String],
 ) -> Result<()> {
     let op_id = format!("{doc_id}#{compact_id}");
     let payload = serde_json::to_vec(&serde_json::json!({
@@ -404,6 +483,7 @@ fn insert_compaction_op_tx(
         "kind": "history.compact",
         "compact_to": compact_to,
         "removed_chunks": removed.iter().collect::<Vec<_>>(),
+        "record_ids": record_ids,
     }))
     .map_err(|e| map_json("compaction oplog payload encode", e))?;
     tx.execute(
@@ -510,18 +590,57 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter(|row| chunk_frontier(&row.chunk_id).is_some_and(|n| n > frontier))
-            .map(|row| RemoteChunk {
-                doc_id: doc_id.to_string(),
-                chunk_id: row.chunk_id,
-                format: row.format,
-                payload: row.payload,
-                author_actor_id: None,
-                record_ids: Vec::new(),
-                schema_version: None,
-                registry_collection: None,
-                delete_mutation_at: None,
+            .map(|row| {
+                let logical_frontier = chunk_frontier(&row.chunk_id);
+                RemoteChunk {
+                    doc_id: doc_id.to_string(),
+                    chunk_id: row.chunk_id,
+                    format: row.format,
+                    payload: row.payload,
+                    author_actor_id: None,
+                    record_ids: Vec::new(),
+                    schema_version: None,
+                    registry_collection: None,
+                    delete_mutation_at: None,
+                    logical_frontier,
+                }
             })
             .collect()
+    }
+
+    fn content_addressed_remote_chunks(s: &Store, doc_id: &str) -> Vec<RemoteChunk> {
+        s.get_chunks(doc_id)
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                let logical_frontier = chunk_frontier(&row.chunk_id);
+                RemoteChunk {
+                    doc_id: doc_id.to_string(),
+                    chunk_id: format!(
+                        "sha256:test-frontier-{}",
+                        logical_frontier.unwrap_or_default()
+                    ),
+                    format: row.format,
+                    payload: row.payload,
+                    author_actor_id: Some("peer:author".into()),
+                    record_ids: vec!["t1".into()],
+                    schema_version: None,
+                    registry_collection: None,
+                    delete_mutation_at: None,
+                    logical_frontier,
+                }
+            })
+            .collect()
+    }
+
+    fn op_payload(s: &Store, op_id: &str) -> serde_json::Value {
+        let op = s
+            .list_ops()
+            .unwrap()
+            .into_iter()
+            .find(|op| op.op_id == op_id)
+            .unwrap_or_else(|| panic!("op {op_id} exists"));
+        serde_json::from_slice(&op.payload).unwrap()
     }
 
     #[test]
@@ -568,6 +687,46 @@ mod tests {
     }
 
     #[test]
+    fn compaction_folds_content_addressed_remote_chunks_by_logical_frontier() {
+        let mut author = store();
+        let mut receiver = store();
+        let idx = IndexManager::new();
+        let doc_id = collection_doc_id("tasks");
+
+        author
+            .apply_mutation_crdt(&insert("tasks", "t1", json!({"title": "A"}), 1), &idx)
+            .unwrap();
+        author
+            .apply_mutation_crdt(&patch("tasks", "t1", json!({"title": "B"}), 2), &idx)
+            .unwrap();
+        let remote = content_addressed_remote_chunks(&author, &doc_id);
+        receiver
+            .apply_remote_chunks(&remote, "peer:relay", &idx)
+            .unwrap();
+        let before = projection_snapshot(&receiver);
+        assert!(
+            receiver
+                .get_chunks(&doc_id)
+                .unwrap()
+                .iter()
+                .all(|row| chunk_frontier(&row.chunk_id).is_none()),
+            "the receiver stores imported chunks under content-addressed ids"
+        );
+
+        let report = receiver
+            .compact_history(&CompactionOptions::all_peers_acked(), &idx)
+            .unwrap();
+
+        assert_eq!(projection_snapshot(&receiver), before);
+        assert_eq!(report.docs_compacted, 1);
+        assert_eq!(report.chunks_removed, 2);
+        assert_eq!(substrate_snapshot(&receiver).0, vec!["compact-0002".to_string()]);
+        let payload = op_payload(&receiver, &format!("{doc_id}#compact-0002"));
+        assert_eq!(payload["record_ids"], json!(["t1"]));
+        assert_eq!(payload["compact_to"], json!(2));
+    }
+
+    #[test]
     fn tombstone_gc_after_delete_does_not_resurrect_from_old_chunk() {
         let mut s = store();
         let idx = IndexManager::new();
@@ -594,6 +753,7 @@ mod tests {
             schema_version: None,
             registry_collection: None,
             delete_mutation_at: None,
+            logical_frontier: None,
         };
         s.apply_remote_chunks(&[stale], "peer:relay", &idx).unwrap();
         assert!(
