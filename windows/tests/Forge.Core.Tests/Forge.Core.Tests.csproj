@@ -6,6 +6,12 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <ForgeWorkspaceRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..\..\..\'))</ForgeWorkspaceRoot>
+    <ForgeFfiTarget>x86_64-pc-windows-msvc</ForgeFfiTarget>
+    <ForgeFfiProfile Condition="'$(Configuration)' == 'Release'">release</ForgeFfiProfile>
+    <ForgeFfiProfile Condition="'$(ForgeFfiProfile)' == ''">debug</ForgeFfiProfile>
+    <ForgeFfiReleaseFlag Condition="'$(Configuration)' == 'Release'">--release</ForgeFfiReleaseFlag>
+    <ForgeFfiDll>$(ForgeWorkspaceRoot)forge\target\$(ForgeFfiTarget)\$(ForgeFfiProfile)\forge_ffi.dll</ForgeFfiDll>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,9 +27,8 @@
     </PackageReference>
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="..\..\..\forge\target\x86_64-pc-windows-msvc\debug\forge_ffi.dll" Link="forge_ffi.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\forge\target\x86_64-pc-windows-msvc\debug\forge_ffi.dll')" />
-    <None Include="..\..\..\forge\target\debug\forge_ffi.dll" Link="forge_ffi.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\..\forge\target\debug\forge_ffi.dll')" />
-  </ItemGroup>
+  <Target Name="BuildForgeFfiForTests" BeforeTargets="VSTest" Condition="'$(OS)' == 'Windows_NT'">
+    <Exec WorkingDirectory="$(ForgeWorkspaceRoot)forge" Command="cargo build -p forge-ffi --locked --target $(ForgeFfiTarget) $(ForgeFfiReleaseFlag)" />
+    <Copy SourceFiles="$(ForgeFfiDll)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
-
