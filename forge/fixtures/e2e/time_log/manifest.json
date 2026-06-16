@@ -11,7 +11,8 @@
       "read": [],
       "write": []
     },
-    "ui": true
+    "ui": true,
+    "time": true
   },
   "limits": {
     "wall_ms": 3000,

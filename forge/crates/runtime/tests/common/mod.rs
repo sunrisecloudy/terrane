@@ -34,6 +34,8 @@ pub fn spine_manifest() -> Manifest {
                 write: vec!["tasks".into()],
             },
             ui: true,
+            time: true,
+            random: true,
             // The spine demo does not use net; an empty net grant = no network.
             ..Capabilities::default()
         },

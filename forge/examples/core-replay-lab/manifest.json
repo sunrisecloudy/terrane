@@ -19,7 +19,9 @@
         "replay_events"
       ]
     },
-    "ui": true
+    "ui": true,
+    "time": true,
+    "random": true
   },
   "limits": {
     "wall_ms": 3000,

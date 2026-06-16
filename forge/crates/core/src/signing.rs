@@ -208,8 +208,9 @@ fn bind_signature_to_sources(
 ///
 /// This crate cannot *derive* a forge-domain [`Manifest`] from the signed package
 /// manifest: the signed shape (prd-merged/08 MP-4 — `appId`, `permissions[]`,
-/// `capabilities.{storage,db}.{read,write}`, `capabilities.ui`, `networkPolicy`,
-/// `resourceBudget`) carries no `min_api`, so a clean conversion is impossible.
+/// `capabilities.{storage,db}.{read,write}`, `capabilities.ui/time/random`,
+/// `networkPolicy`, `resourceBudget`) carries no `min_api`, so a clean
+/// conversion is impossible.
 /// Instead we take option (b) — **reject on mismatch**: the policy-bearing fields
 /// the publisher signed must match the install manifest EXACTLY. A mismatch is
 /// surfaced like any other signature failure (a `ValidationError`), so the
@@ -221,7 +222,7 @@ fn bind_signature_to_sources(
 ///     identity must not bless a DIFFERENT local applet id (review 083 #1);
 ///   - `capabilities.storage.read` / `.write` (as a set);
 ///   - `capabilities.db.read` / `.write` (as a set);
-///   - `capabilities.ui` (bool — signed `true`/absent is permissive in M0a);
+///   - `capabilities.ui` / `.time` / `.random` (bools);
 ///   - the WHOLE normalized net rule (method, url, `max_response_bytes`,
 ///     `max_body_bytes`, `timeout_ms`, request/response content types,
 ///     `allow_secret_headers`) — a signed install must not loosen a cap or add a
@@ -329,18 +330,21 @@ fn bind_signature_to_manifest(
         }
     }
 
-    // --- ui: a signed `ui: false` must not be installed as `ui: true` ---------
-    // (absent signed `ui` is treated as granted, matching the M0a manifest
-    // default where an absent `capabilities.ui` grants UI).
-    let signed_ui = signed_caps
-        .and_then(|c| c.get("ui"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
-    if signed_ui != install.capabilities.ui {
-        return reject(format!(
-            "ui grant {} differs from the signed {signed_ui}",
-            install.capabilities.ui
-        ));
+    // --- boolean capabilities: absent means not granted ----------------------
+    for (name, install_grant) in [
+        ("ui", install.capabilities.ui),
+        ("time", install.capabilities.time),
+        ("random", install.capabilities.random),
+    ] {
+        let signed_grant = signed_caps
+            .and_then(|c| c.get(name))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if signed_grant != install_grant {
+            return reject(format!(
+                "{name} grant {install_grant} differs from the signed {signed_grant}"
+            ));
+        }
     }
 
     // --- network egress: the WHOLE normalized net rule set must match (review
@@ -515,9 +519,10 @@ fn signed_string_set<'a>(
 /// for unsigned/already-installed manifests.
 ///
 /// The known-key sets are the exact shapes the rest of this bind interprets:
-///   - `capabilities`: `storage`, `db`, `ui`, `net`, `files` (and `storage`/`db`
-///     each carry only `read`/`write`; `files` carries `read`/`write` arrays of
-///     [`FileRule`](forge_domain::FileRule)-shaped entries);
+///   - `capabilities`: `storage`, `db`, `ui`, `time`, `random`, `net`, `files`
+///     (and `storage`/`db` each carry only `read`/`write`; `files` carries
+///     `read`/`write` arrays of [`FileRule`](forge_domain::FileRule)-shaped
+///     entries);
 ///   - each `networkPolicy.allow[]` rule: the [`NetRule`](forge_domain::NetRule)
 ///     fields the policy engine enforces;
 ///   - `resourceBudget`: the six enforced limit keys.
@@ -592,7 +597,7 @@ fn reject_unknown_signed_policy_fields(
     check_object(
         "capabilities",
         signed_caps,
-        &["storage", "db", "ui", "net", "files"],
+        &["storage", "db", "ui", "time", "random", "net", "files"],
     )?;
     if let Some(caps) = signed_caps {
         for ns in ["storage", "db"] {

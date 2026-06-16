@@ -24,7 +24,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"time.now\",\"response\":1700000000000,\"seq\":0}],\"code_hash\":\"sha256:d5d9caeb37563fbdd5c7fee3b65c636394b46fe10b8adb9967fbb2c6f16747b0\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"epochMs\":1700000000000,\"iso\":\"2023-11-14T22:13:20.000Z\",\"month\":10,\"plusDayIso\":\"2023-11-15T22:13:20.000Z\",\"year\":2023}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":3,\"time_start\":1700000000000}"
+    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"time.now\",\"response\":1700000000000,\"seq\":0}],\"code_hash\":\"sha256:d5d9caeb37563fbdd5c7fee3b65c636394b46fe10b8adb9967fbb2c6f16747b0\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"epochMs\":1700000000000,\"iso\":\"2023-11-14T22:13:20.000Z\",\"month\":10,\"plusDayIso\":\"2023-11-15T22:13:20.000Z\",\"year\":2023}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"time\":true,\"ui\":true},\"max_host_calls\":100},\"random_seed\":3,\"time_start\":1700000000000}"
   },
   "input": {},
   "kind": "runtime",
@@ -38,7 +38,8 @@
         "read": [],
         "write": []
       },
-      "ui": true
+      "ui": true,
+      "time": true
     },
     "deterministic": true,
     "entrypoint": "inline.js",

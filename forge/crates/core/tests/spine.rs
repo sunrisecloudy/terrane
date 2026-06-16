@@ -767,7 +767,13 @@ fn same_input_reruns_share_seeds_but_persist_separately() {
         "entrypoint": "src/main.ts",
         "min_api": "forge-api@0.1",
         "deterministic": true,
-        "capabilities": { "storage": { "read": [], "write": [] }, "db": { "read": [], "write": [] }, "ui": true },
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "time": true,
+            "random": true
+        },
         "limits": {
             "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
             "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
@@ -815,7 +821,13 @@ fn runtime_run_honors_explicit_seed_override_and_still_replays() {
         "entrypoint": "src/main.ts",
         "min_api": "forge-api@0.1",
         "deterministic": true,
-        "capabilities": { "storage": { "read": [], "write": [] }, "db": { "read": [], "write": [] }, "ui": true },
+        "capabilities": {
+            "storage": { "read": [], "write": [] },
+            "db": { "read": [], "write": [] },
+            "ui": true,
+            "time": true,
+            "random": true
+        },
         "limits": {
             "wall_ms": 3000, "fuel": 10000000, "memory_bytes": 67108864,
             "max_host_calls": 10000, "storage_bytes": 10485760, "log_bytes": 262144
@@ -831,6 +843,12 @@ fn runtime_run_honors_explicit_seed_override_and_still_replays() {
         serde_json::json!({ "input": {}, "random_seed": 7, "time_start": 500 }),
     ));
     assert!(resp.ok, "seeded run must succeed: {:?}", resp.error);
+    assert_eq!(
+        resp.payload["ok"],
+        serde_json::json!(true),
+        "seeded run payload must complete: {}",
+        resp.payload
+    );
     let run_id = resp.payload["run_id"].as_str().unwrap().to_string();
     let rec = core.store().load_run(&run_id).unwrap().unwrap();
     assert_eq!(rec.random_seed, 7, "explicit random_seed must be recorded");

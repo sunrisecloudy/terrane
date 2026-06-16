@@ -21,7 +21,8 @@
         "read": [],
         "write": []
       },
-      "ui": true
+      "ui": true,
+      "time": true
     },
     "limits": {
       "wall_ms": 3000,
@@ -59,7 +60,7 @@
         }
       }
     },
-    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"time.now\",\"response\":9000,\"seq\":0},{\"args\":null,\"method\":\"time.now\",\"response\":9001,\"seq\":1}],\"code_hash\":\"sha256:9f4428ce505be7e7cffe718ce9e5f2f0e4cb2e30a4a0ba0d866011bc21e0146a\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"delta\":1,\"first\":9000,\"second\":9001}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":5,\"time_start\":9000}"
+    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"time.now\",\"response\":9000,\"seq\":0},{\"args\":null,\"method\":\"time.now\",\"response\":9001,\"seq\":1}],\"code_hash\":\"sha256:9f4428ce505be7e7cffe718ce9e5f2f0e4cb2e30a4a0ba0d866011bc21e0146a\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"delta\":1,\"first\":9000,\"second\":9001}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"time\":true,\"ui\":true},\"max_host_calls\":100},\"random_seed\":5,\"time_start\":9000}"
   },
   "tolerance": {
     "mode": "byte_identical",

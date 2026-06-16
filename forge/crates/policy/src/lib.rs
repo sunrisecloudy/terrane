@@ -426,8 +426,9 @@ impl DecisionContext for ComposedDecisionContext {
 ///
 /// It owns the per-category allowance state so that the *non-ambient seams*
 /// (time/random/ui) are routed through the **same** decision path as
-/// storage/db: each is a default-granted but revocable, counted allowance, not
-/// an unconditional `Ok` (prd-merged/07 zero-ambient; review 006 P1).
+/// storage/db: each must be requested by the manifest, then remains revocable
+/// and counted like any other host call (prd-merged/07 zero-ambient; review
+/// 006 P1).
 #[derive(Debug, Clone)]
 struct CapabilityCheck {
     /// Requested grants, cloned so revocation can mutate without touching the
@@ -435,10 +436,8 @@ struct CapabilityCheck {
     /// SC-9/CR-4).
     capabilities: Capabilities,
     /// Per-category runtime allowance. `true` = currently granted, `false` =
-    /// revoked (CR-4). Seam categories (time/random/ui) start granted so the
-    /// deterministic seams are available by default — but as an explicit,
-    /// revocable allowance routed through this same path, never an ambient
-    /// bypass.
+    /// revoked (CR-4). A true bit is not itself a grant; the manifest request
+    /// below must still pass for the call to proceed.
     allowed: [bool; CATEGORY_COUNT],
 }
 
@@ -517,11 +516,26 @@ impl CapabilityCheck {
                     ))
                 }
             }
-            // Deterministic seams (prd-merged/01 CR-3 `time`/`random`,
-            // prd-merged/07 zero-ambient): default-granted but revocable. The
-            // revocation check above already enforces CR-4; reaching here means
-            // the allowance is live, so the seam is permitted.
-            HostCall::Time | HostCall::Random => Ok(()),
+            HostCall::Time => {
+                if self.capabilities.time {
+                    Ok(())
+                } else {
+                    Err(CoreError::PermissionDenied(
+                        "time capability not granted in manifest (capabilities.time = false)"
+                            .to_string(),
+                    ))
+                }
+            }
+            HostCall::Random => {
+                if self.capabilities.random {
+                    Ok(())
+                } else {
+                    Err(CoreError::PermissionDenied(
+                        "random capability not granted in manifest (capabilities.random = false)"
+                            .to_string(),
+                    ))
+                }
+            }
         }
     }
 }
@@ -643,8 +657,8 @@ impl PolicyEngine {
     /// [`check`](Self::check) of a call in `cat` is denied with
     /// `PermissionDenied`, even though the manifest still nominally grants it.
     /// This applies uniformly to the time/random/ui seams: revoking `Time`
-    /// denies the next `ctx.time.now()`, proving they are revocable allowances
-    /// and not ambient (review 006 P1).
+    /// denies the next manifest-granted `ctx.time.now()`, proving the seam is
+    /// revocable after grant and not ambient (review 006 P1).
     pub fn revoke(&mut self, cat: Category) {
         self.capability.revoke(cat);
     }
@@ -926,6 +940,8 @@ mod tests {
                 write: db_write.iter().map(|s| s.to_string()).collect(),
             },
             ui,
+            time: true,
+            random: true,
             // The capability-engine tests don't exercise net; an empty net grant
             // keeps these manifests "no network" (net is gated by NetPolicy, a
             // separate decision path from this CapabilityCheck).
@@ -1146,21 +1162,41 @@ mod tests {
         assert!(err.to_string().contains("ui"), "{err}");
     }
 
-    // --- Non-ambient seams: granted-by-default, revocable (review 006 P1) ---
+    fn caps_without_seams(ui: bool) -> Capabilities {
+        Capabilities {
+            ui,
+            ..Capabilities::default()
+        }
+    }
+
+    // --- Non-ambient seams: explicit grants, revocable (review 006 P1) -------
 
     #[test]
     fn seams_allowed_when_granted() {
-        // Time/Random are routed through the capability decision path as a
-        // default-granted allowance — allowed while granted.
+        // Time/Random are routed through the capability decision path and are
+        // allowed only because this test manifest explicitly grants them.
         let mut e = engine(caps(&[], &[], &[], &[], false), owner());
         assert!(e.check(&HostCall::Time).is_ok());
         assert!(e.check(&HostCall::Random).is_ok());
     }
 
     #[test]
+    fn seams_denied_when_not_granted() {
+        let mut e = engine(caps_without_seams(false), owner());
+
+        let err = e.check(&HostCall::Time).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("time"), "{err}");
+
+        let err = e.check(&HostCall::Random).unwrap_err();
+        assert_eq!(err.code(), "PermissionDenied");
+        assert!(err.to_string().contains("random"), "{err}");
+    }
+
+    #[test]
     fn time_seam_denied_when_revoked() {
-        // The seam is a REVOCABLE allowance, not an ambient capability: revoking
-        // it denies the next call (zero-ambient, prd-merged/07).
+        // The seam is a REVOCABLE explicit grant, not an ambient capability:
+        // revoking it denies the next call (zero-ambient, prd-merged/07).
         let mut e = engine(caps(&[], &[], &[], &[], false), owner());
         assert!(e.check(&HostCall::Time).is_ok());
         e.revoke(Category::Time);
@@ -1695,8 +1731,8 @@ mod tests {
 
     #[test]
     fn budget_counts_seam_calls_too() {
-        // Time/Random are granted-by-default capability-wise but still count
-        // toward the flood guard.
+        // Time/Random are explicit manifest capabilities and still count toward
+        // the flood guard.
         let mut e = PolicyEngine::new(&manifest_with(caps(&[], &[], &[], &[], true), 2), &owner())
             .unwrap();
         assert!(e.check(&HostCall::Time).is_ok());

@@ -209,7 +209,7 @@ pub fn version_at_least(have: &str, need: &str) -> bool {
 /// Capability grants. Each is action + resource + constraints
 /// (prd-merged/07 SC-8). M0a models the spine subset; net/files/secrets/etc.
 /// land in later milestones but the shape is here so manifests don't churn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Capabilities {
     /// Storage KV scopes the applet may read/write (`ctx.storage`).
     #[serde(default)]
@@ -217,9 +217,19 @@ pub struct Capabilities {
     /// Collections the applet may read/write via `ctx.db` (prd-merged/02 DL-18).
     #[serde(default)]
     pub db: DbGrant,
-    /// Whether the applet may emit UI trees (`ctx.ui`). Always allowed in M0a.
-    #[serde(default = "default_true")]
+    /// Whether the applet may emit UI trees (`ctx.ui`). Default false: UI is a
+    /// manifest-requested capability, never ambient.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub ui: bool,
+    /// Whether the applet may read the deterministic logical clock
+    /// (`ctx.time.now`). Default false: the seam is deterministic but still a
+    /// manifest-requested host capability.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub time: bool,
+    /// Whether the applet may read the deterministic seeded RNG
+    /// (`ctx.random.next`). Default false: seeded randomness is explicit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub random: bool,
     /// Network egress allowlist for `ctx.net.fetch` (prd-merged/07 SC-8 `net`
     /// namespace, SC-5 egress policy). Default empty → **no network**: an applet
     /// that lists no `net` rules cannot reach the network at all. Each rule is a
@@ -242,24 +252,8 @@ pub struct Capabilities {
     pub files: FilesGrant,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-impl Default for Capabilities {
-    fn default() -> Self {
-        // `ui` defaults to true so an absent `capabilities` object (which serde
-        // fills via `Capabilities::default()`) still grants UI in M0a, matching
-        // the field-level `#[serde(default = "default_true")]`. `net` defaults to
-        // empty (no network) so an absent `capabilities` object grants zero net.
-        Capabilities {
-            storage: StorageGrant::default(),
-            db: DbGrant::default(),
-            ui: true,
-            net: NetGrant::default(),
-            files: FilesGrant::default(),
-        }
-    }
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Capabilities {
@@ -565,7 +559,9 @@ mod tests {
         // Only entrypoint provided; everything else defaults.
         let m: Manifest = serde_json::from_str(r#"{"entrypoint":"src/main.ts"}"#).unwrap();
         assert_eq!(m.min_api, "forge-api@0.1");
-        assert!(m.capabilities.ui);
+        assert!(!m.capabilities.ui);
+        assert!(!m.capabilities.time);
+        assert!(!m.capabilities.random);
         assert_eq!(m.limits, Limits::default());
         // An absent `compatibility` is the empty floor: no min app version, no
         // required features — so the package installs on any client (MP-8).
@@ -698,8 +694,10 @@ mod tests {
         assert_eq!(rules[0].method, "POST");
         assert_eq!(rules[0].max_body_bytes, Some(4096));
         assert_eq!(rules[0].request_content_types, vec!["application/json".to_string()]);
-        // A `net` grant does not disturb the M0a ui-default.
-        assert!(m.capabilities.ui);
+        // A `net` grant does not implicitly grant unrelated capabilities.
+        assert!(!m.capabilities.ui);
+        assert!(!m.capabilities.time);
+        assert!(!m.capabilities.random);
     }
 
     #[test]
@@ -791,8 +789,10 @@ mod tests {
         assert_eq!(files.write.len(), 1);
         assert_eq!(files.read[0].handle, "workspace_data");
         assert_eq!(files.write[0].path_glob, "drafts/*.txt");
-        // A `files` grant does not disturb the M0a ui-default.
-        assert!(m.capabilities.ui);
+        // A `files` grant does not implicitly grant unrelated capabilities.
+        assert!(!m.capabilities.ui);
+        assert!(!m.capabilities.time);
+        assert!(!m.capabilities.random);
     }
 
     #[test]

@@ -21,7 +21,8 @@
         "read": [],
         "write": []
       },
-      "ui": true
+      "ui": true,
+      "random": true
     },
     "limits": {
       "wall_ms": 3000,
@@ -58,7 +59,7 @@
         }
       }
     },
-    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"random.next\",\"response\":0.3898297483912715,\"seq\":0},{\"args\":null,\"method\":\"random.next\",\"response\":0.5878868636679984,\"seq\":1}],\"code_hash\":\"sha256:fb9a7c06b8e686dd57a0b8fbc50269b55d778ea86b3ba339c9ecf72a9527a8a9\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"first\":0.3898297483912715,\"second\":0.5878868636679984}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":7,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[{\"args\":null,\"method\":\"random.next\",\"response\":0.3898297483912715,\"seq\":0},{\"args\":null,\"method\":\"random.next\",\"response\":0.5878868636679984,\"seq\":1}],\"code_hash\":\"sha256:fb9a7c06b8e686dd57a0b8fbc50269b55d778ea86b3ba339c9ecf72a9527a8a9\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"first\":0.3898297483912715,\"second\":0.5878868636679984}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"random\":true,\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":7,\"time_start\":100}"
   },
   "tolerance": {
     "mode": "byte_identical",

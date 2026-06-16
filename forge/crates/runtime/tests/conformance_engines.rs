@@ -53,6 +53,7 @@ struct Vector {
     case: String,
     equivalence: String,
     source: Source,
+    manifest: Manifest,
     seeds: Seeds,
     expected: Expected,
 }
@@ -139,7 +140,6 @@ fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
         manifest.cases.len()
     );
 
-    let run_manifest = conformance_manifest();
     let mut ran = 0usize;
     // The only two vectors whose observable is a host-normalized projection of an
     // engine-defined shape (error `.message`/`.stack`, stack-limit depth). Every
@@ -153,6 +153,10 @@ fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
 
     for case_file in &manifest.cases {
         let v = load_vector(case_file);
+        v.manifest
+            .validate()
+            .unwrap_or_else(|e| panic!("[{engine_label}/{}] invalid manifest: {e}", v.case));
+        let run_manifest = &v.manifest;
         let prog = Program::new(forge_domain::AppletId::new("app_conformance"), &v.source.body);
 
         // The fixture's codeHash must match the program's canonical hash (the
@@ -173,7 +177,7 @@ fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
         let record = record_run_with_engine(
             engine,
             &prog,
-            &run_manifest,
+            run_manifest,
             &owner(),
             &serde_json::json!({}),
             v.seeds.random_seed,
@@ -203,7 +207,7 @@ fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
         let record2 = record_run_with_engine(
             engine,
             &prog,
-            &run_manifest,
+            run_manifest,
             &owner(),
             &serde_json::json!({}),
             v.seeds.random_seed,
@@ -220,7 +224,7 @@ fn run_corpus_through_engine(engine: &dyn JsEngine, engine_label: &str) {
 
         // 3. RECORD→REPLAY IDENTITY: replaying reproduces the run byte-identically.
         let mut null = NullBridge::new();
-        let replayed = replay_with_engine(engine, &record, &prog, &run_manifest, &owner(), &mut null)
+        let replayed = replay_with_engine(engine, &record, &prog, run_manifest, &owner(), &mut null)
             .unwrap_or_else(|e| panic!("[{engine_label}/{}] failed to replay: {e}", v.case));
         assert!(
             record.replays_identically(&replayed),
