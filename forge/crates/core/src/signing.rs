@@ -634,14 +634,20 @@ fn reject_unknown_signed_policy_fields(
         }
     }
 
-    // networkPolicy.allow[] — each rule must carry only known NetRule fields.
-    if let Some(allow) = signed
-        .get("networkPolicy")
-        .and_then(|n| n.get("allow"))
-        .and_then(serde_json::Value::as_array)
-    {
-        for rule in allow {
-            check_object("networkPolicy.allow[]", Some(rule), NET_RULE_KEYS)?;
+    // networkPolicy — only the allowlist shape this core enforces is allowed.
+    check_object("networkPolicy", signed.get("networkPolicy"), &["allow"])?;
+    if let Some(network_policy) = signed.get("networkPolicy") {
+        if let Some(allow_value) = network_policy.get("allow") {
+            let allow = allow_value.as_array().ok_or_else(|| {
+                CoreError::ValidationError(
+                    "install manifest does not match the signed package manifest: the signed \
+                     package's networkPolicy.allow is not an array (review 086 #1)"
+                        .into(),
+                )
+            })?;
+            for rule in allow {
+                check_object("networkPolicy.allow[]", Some(rule), NET_RULE_KEYS)?;
+            }
         }
     }
 

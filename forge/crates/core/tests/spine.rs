@@ -2511,6 +2511,40 @@ fn a_signed_package_with_an_unsupported_budget_field_is_refused() {
 }
 
 #[test]
+fn a_signed_package_with_an_unsupported_network_policy_field_is_refused() {
+    // review 086 #1 follow-up: unknown signed fields beside `networkPolicy.allow`
+    // must fail closed too. This re-signs a valid package over an otherwise
+    // enforceable manifest that carries one future/tighter `networkPolicy` field.
+    // Crypto and integrity all pass; the refusal proves the signed-install binder
+    // does not normalize the future constraint away and report Signed.
+    let mut core = WorkspaceCore::in_memory("ws1").unwrap();
+    let fixture = load_signing_fixture("valid_signature.json");
+    let mut signed_manifest = fixture["package"]["manifest"].clone();
+    signed_manifest["networkPolicy"]["futureConstraint"] = serde_json::json!(true);
+    let signature = resign_package_manifest(signed_manifest, None);
+
+    let resp = core.handle(cmd(
+        "applet.install",
+        Some(SIGNED_APP_ID),
+        serde_json::json!({
+            "manifest": signed_fixture_manifest(),
+            "sources": sources_from_fixture(&fixture),
+            "signature": signature,
+        }),
+    ));
+    assert!(
+        !resp.ok,
+        "a signed package declaring an unsupported networkPolicy field must be refused"
+    );
+    let err = resp.error.expect("must carry an error");
+    assert_eq!(err.code(), "ValidationError");
+    assert!(
+        err.to_string().contains("networkPolicy") && err.to_string().contains("futureConstraint"),
+        "the refusal names the unsupported networkPolicy field: {err}"
+    );
+}
+
+#[test]
 fn a_signed_package_with_an_unsupported_net_capability_field_is_refused() {
     // review 089 #1: the sibling budget test (review 086 #1) only pinned the
     // `resourceBudget` and `networkPolicy.allow[]` paths, so a future/tighter net
@@ -3015,13 +3049,24 @@ fn resign_package(
     compatibility: serde_json::Value,
     source_override: Option<&str>,
 ) -> serde_json::Value {
-    use base64::{engine::general_purpose::STANDARD as B64, Engine};
-    use ed25519_dalek::{Signer, SigningKey};
-
     // The fixture's signed package gives us a valid base manifest + signed file.
     let fixture = load_signing_fixture("valid_signature.json");
     let mut manifest = fixture["package"]["manifest"].clone();
     manifest["compatibility"] = compatibility;
+    resign_package_manifest(manifest, source_override)
+}
+
+/// Re-sign a `valid_signature`-shaped package with an arbitrary edited manifest.
+/// Used for signed-policy regressions where the install manifest intentionally
+/// cannot represent the future field being signed.
+fn resign_package_manifest(
+    manifest: serde_json::Value,
+    source_override: Option<&str>,
+) -> serde_json::Value {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let fixture = load_signing_fixture("valid_signature.json");
 
     // The one signed file becomes the install/upgrade source (so the sources bind
     // passes). `source_override` swaps the body to mint a fresh `code_hash` for the
