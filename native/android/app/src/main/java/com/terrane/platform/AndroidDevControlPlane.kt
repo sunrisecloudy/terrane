@@ -2086,7 +2086,7 @@ class AndroidDevControlPlane(
     companion object {
         private const val tag = "TerraneAndroidDevControl"
         private const val androidRuntimeVersion = "0.1.0"
-        private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
+        private val knownBundledAppIds = listOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner")
         private val snapshotTypes = setOf("bug-report", "pre-install", "pre-migration", "post-test", "golden", "manual", "debug-bundle")
         private val snapshotCompareSkipFields = setOf("createdAt", "snapshotId", "updated_at", "updatedAt")
         private val knownBridgeMethods = setOf(

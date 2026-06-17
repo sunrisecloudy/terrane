@@ -1,0 +1,40 @@
+[
+  {
+    "name": "add calendar event",
+    "steps": [
+      {
+        "type": "fill",
+        "selector": "[data-testid=\"calendar-event-title-input\"]",
+        "value": "Design review"
+      },
+      {
+        "type": "fill",
+        "selector": "[data-testid=\"calendar-event-date-input\"]",
+        "value": "2026-06-16"
+      },
+      {
+        "type": "fill",
+        "selector": "[data-testid=\"calendar-event-start-input\"]",
+        "value": "10:30"
+      },
+      {
+        "type": "select",
+        "selector": "[data-testid=\"calendar-event-duration-input\"]",
+        "value": "45"
+      },
+      {
+        "type": "click",
+        "selector": "[data-testid=\"add-calendar-event-button\"]"
+      }
+    ],
+    "expected": {
+      "textIncludes": "Design review",
+      "bridgeCallsInclude": [
+        "core.step",
+        "storage.set",
+        "notification.toast",
+        "app.log"
+      ]
+    }
+  }
+]

@@ -1,7 +1,7 @@
 {
   "id": "all-example-apps-cross-platform-smoke",
   "platforms": ["reference-host", "macos", "linux", "windows", "android-emulator", "ios-simulator"],
-  "apps": ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"],
+  "apps": ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"],
   "stepsPerApp": [
     { "tool": "platform.open_webapp", "args": { "appId": "${appId}" } },
     { "tool": "runtime.wait_for", "args": { "kind": "idle" } },

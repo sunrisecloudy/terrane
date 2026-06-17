@@ -6,7 +6,8 @@ enum BundledAppCatalog {
         "task-workbench",
         "file-transformer",
         "api-dashboard",
-        "core-replay-lab"
+        "core-replay-lab",
+        "calendar-planner"
     ]
 
     static func appIndexData() -> Data {

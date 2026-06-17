@@ -1,10 +1,10 @@
 # Example App API Coverage
 
-This document is the normative coverage map for the five bundled generated apps required by `docs/00_PRD.md` G6. The apps are fixtures, not demos outside the contract: when a bridge method, manifest capability, smoke-test behavior, or policy invariant changes, this file must be updated in the same change.
+This document is the normative coverage map for the six bundled generated apps required by `docs/00_PRD.md` G6. The apps are fixtures, not demos outside the contract: when a bridge method, manifest capability, smoke-test behavior, or policy invariant changes, this file must be updated in the same change.
 
 ## Coverage Invariants
 
-- The bundled set is exactly `notes-lite`, `task-workbench`, `file-transformer`, `api-dashboard`, and `core-replay-lab`.
+- The bundled set is exactly `notes-lite`, `task-workbench`, `file-transformer`, `api-dashboard`, `core-replay-lab`, and `calendar-planner`.
 - Each app is build-free HTML/CSS/vanilla JavaScript and ships `manifest.json`, `index.html`, `styles.css`, `app.js`, and `smoke-tests.json`.
 - Each app calls platform features only through `AppRuntime.call(method, params)`.
 - Each app declares every bridge permission it uses in `manifest.permissions` and `manifest.capabilities`.
@@ -20,21 +20,22 @@ This document is the normative coverage map for the five bundled generated apps 
 | File Transformer | `webapps/examples/file-transformer` | Native file open/save plus deterministic text transform | `core.step`, `dialog.openFile`, `dialog.saveFile`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Open, transform, save, `core.step`, dialog calls, `storage.set` |
 | API Dashboard | `webapps/examples/api-dashboard` | Manifest-gated network request and saved request history | `network.request`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Send request, `network.request`, `storage.set`, toast |
 | Core Replay Lab | `webapps/examples/core-replay-lab` | Core event replay log and fixture export | `core.step`, `storage.read`, `storage.write`, `dialog.saveFile` | `notification.toast`, `app.log` | Send event, export, `core.step`, `storage.set`, `dialog.saveFile`, toast |
+| Calendar Planner | `webapps/examples/calendar-planner` | Local-first month planner and agenda backed by storage plus Forge core events | `core.step`, `storage.read`, `storage.write` | `notification.toast`, `app.log` | Add event, `core.step`, `storage.set`, toast, app log |
 
 ## Bridge Method Matrix
 
 | Bridge method | Covered by | Required evidence |
 |---|---|---|
-| `storage.get` | Notes Lite load, Task Workbench load, API Dashboard load, Core Replay Lab load | Source calls plus example load/smoke tests |
-| `storage.set` | Notes Lite save, Task Workbench persist, File Transformer transform result, API Dashboard history, Core Replay Lab event log | Smoke tests assert this call for every app that mutates state |
+| `storage.get` | Notes Lite load, Task Workbench load, API Dashboard load, Core Replay Lab load, Calendar Planner load | Source calls plus example load/smoke tests |
+| `storage.set` | Notes Lite save, Task Workbench persist, File Transformer transform result, API Dashboard history, Core Replay Lab event log, Calendar Planner event save | Smoke tests assert this call for every app that mutates state |
 | `storage.remove` | Notes Lite clear-all path | Source fixture and package validation; targeted bridge fixture covers the response contract |
 | `storage.list` | Bridge fixture suite | Not required in a reference UI flow, but must stay covered by `tests/fixtures/bridge/valid-storage-list.json` |
-| `core.step` | Task Workbench, File Transformer, Core Replay Lab | Smoke tests assert `core.step`; Forge replay/unit tests verify deterministic core behavior |
+| `core.step` | Task Workbench, File Transformer, Core Replay Lab, Calendar Planner | Smoke tests assert `core.step`; Forge replay/unit tests verify deterministic core behavior |
 | `dialog.openFile` | File Transformer | Smoke test asserts the bridge call; micro-tests/golden flows provide dialog mocks |
 | `dialog.saveFile` | File Transformer, Core Replay Lab | Smoke tests assert the bridge calls; micro-tests/golden flows provide dialog mocks |
-| `notification.toast` | All five apps | Smoke tests assert toast on state-changing paths |
+| `notification.toast` | All six apps | Smoke tests assert toast on state-changing paths |
 | `network.request` | API Dashboard | Smoke test asserts the bridge call against manifest-allowed source code; micro-tests/golden flows provide network mocks |
-| `app.log` | Notes Lite and optional support in all manifests | Source fixture plus bridge contract; not every smoke path must assert a log line |
+| `app.log` | Notes Lite, Calendar Planner, and optional support in all manifests | Source fixture plus bridge contract; calendar smoke asserts the call |
 | `runtime.capabilities` | Runtime/host contract, not generated app UI | Covered by runtime capability fixtures and host bridge tests |
 
 ## Policy Coverage

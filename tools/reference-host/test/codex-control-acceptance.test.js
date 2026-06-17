@@ -10,6 +10,7 @@ const exampleApps = [
   ["file-transformer", "file-transformer-title"],
   ["api-dashboard", "api-dashboard-title"],
   ["core-replay-lab", "core-replay-title"],
+  ["calendar-planner", "calendar-planner-title"],
 ];
 
 test("Codex control plane installs, opens, drives, mocks, and inspects examples", async () => {

@@ -1670,6 +1670,7 @@ struct NativeHostTests {
 
         let microtests = [
             ("tests/micro/api-dashboard-network.microtest.json", "api-dashboard-network"),
+            ("tests/micro/calendar-planner-core-storage.microtest.json", "calendar-planner-core-storage"),
             ("tests/micro/core-replay-lab.microtest.json", "core-replay-lab-determinism"),
             ("tests/micro/file-transformer-dialog-core.microtest.json", "file-transformer-dialog-core"),
             ("tests/micro/notes-lite-create-note.microtest.json", "notes-lite-create-note"),

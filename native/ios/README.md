@@ -32,14 +32,14 @@ Implemented now:
 - Reports `core.step` in `runtime.capabilities` from the actual Forge FFI link/load status and returns structured `platform_unsupported` when unavailable.
 - Implements native `dialog.openFile` and `dialog.saveFile` through `UIDocumentPickerViewController` with asynchronous bridge replies.
 - Includes a DEBUG simulator-only loopback dev-control first slice with per-launch token-file auth, a token-gated `GET /health` endpoint, lightweight session/control routes, and SQLite `control_sessions` / `control_commands` auditing when launched with `--terrane-dev-control`.
-- Debug simulator smoke can verify all five bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.
+- Debug simulator smoke can verify all six bundled example app ids through host-derived `runtime.capabilities` bridge dispatch.
 - Debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 
 MVP acceptance:
 
 - Launches in iOS simulator.
 - Loads `runtime/index.html` from app resources.
-- Lists and launches all five bundled example apps.
+- Lists and launches all six bundled example apps.
 - Routes `AppRuntime.call` requests through Swift bridge.
 - Implements storage and `core.step`.
 - Returns structured errors for unsupported methods.

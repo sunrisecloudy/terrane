@@ -8,7 +8,7 @@ import { validatePackage, validateSourceSnippet } from "../src/package-validator
 
 test("all canonical example packages validate", () => {
   const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
-  assert.deepEqual(apps.sort(), ["api-dashboard", "core-replay-lab", "file-transformer", "notes-lite", "task-workbench"]);
+  assert.deepEqual(apps.sort(), ["api-dashboard", "calendar-planner", "core-replay-lab", "file-transformer", "notes-lite", "task-workbench"]);
 
   for (const app of apps) {
     const result = validatePackage(path.join(examplesDir, app));

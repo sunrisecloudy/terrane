@@ -50,6 +50,17 @@ fn every_forge_example_installs_runs_and_replays() {
             input: serde_json::json!({ "event": "example.run" }),
             collections: &["replay_events"],
         },
+        ExampleCase {
+            id: "calendar-planner",
+            input: serde_json::json!({
+                "title": "Design review",
+                "date": "2026-06-16",
+                "start": "10:30",
+                "durationMinutes": 45,
+                "notes": "Review local-first calendar fixture"
+            }),
+            collections: &["calendar_events"],
+        },
     ];
 
     let disk_examples: Vec<String> = std::fs::read_dir(examples_dir())

@@ -27,7 +27,7 @@ MVP acceptance:
 
 - Launches on Android emulator.
 - Loads runtime from assets.
-- Lists and launches all five examples.
+- Lists and launches all six examples.
 - Implements storage and JNI `core.step`.
 - Implements native file open/save dialogs through Android activity result contracts.
 

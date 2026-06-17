@@ -152,6 +152,7 @@ test("Linux dev control exposes target and webapp listing controls", () => {
     "notes-lite",
     "task-workbench",
     "api-dashboard",
+    "calendar-planner",
     "bundled",
     "installed",
   ]) {

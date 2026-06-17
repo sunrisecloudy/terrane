@@ -10,6 +10,7 @@ const exampleApps = [
   ["file-transformer", "file-transformer-title"],
   ["api-dashboard", "api-dashboard-title"],
   ["core-replay-lab", "core-replay-title"],
+  ["calendar-planner", "calendar-planner-title"],
 ];
 
 test("all bundled example apps validate, install, open, snapshot, and smoke-test", async () => {

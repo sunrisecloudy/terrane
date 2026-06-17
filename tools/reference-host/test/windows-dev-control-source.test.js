@@ -143,6 +143,7 @@ test("Windows dev control health route is debug-only, loopback-bound, token-gate
     "\\\"installed\\\":false",
     "notes-lite",
     "task-workbench",
+    "calendar-planner",
     "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version",
     "runtime.storage_get",
     "runtime.storage_set",

@@ -23,7 +23,7 @@ const DESKTOP_TARGETS_MS = {
   storage_set_1kib: { p50: 10, p95: 40 },
   core_step_trivial: { p50: 5, p95: 20 },
 };
-const EXAMPLE_APP_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+const EXAMPLE_APP_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 
 export async function runReferenceHostLatencyBenchmark({
   warmup = DEFAULT_WARMUP,

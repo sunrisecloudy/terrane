@@ -1,0 +1,33 @@
+{
+  "entrypoint": "src/main.ts",
+  "min_api": "forge-api@0.1",
+  "deterministic": true,
+  "capabilities": {
+    "storage": {
+      "read": [
+        "app/*"
+      ],
+      "write": [
+        "app/*"
+      ]
+    },
+    "db": {
+      "read": [
+        "calendar_events"
+      ],
+      "write": [
+        "calendar_events"
+      ]
+    },
+    "ui": true,
+    "time": true
+  },
+  "limits": {
+    "wall_ms": 3000,
+    "fuel": 10000000,
+    "memory_bytes": 67108864,
+    "max_host_calls": 100,
+    "storage_bytes": 1048576,
+    "log_bytes": 65536
+  }
+}

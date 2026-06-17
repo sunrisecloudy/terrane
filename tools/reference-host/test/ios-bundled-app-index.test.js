@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const exampleIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+const exampleIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 
 test("bundled example manifests expose App Store content ratings", () => {
   for (const appId of exampleIds) {

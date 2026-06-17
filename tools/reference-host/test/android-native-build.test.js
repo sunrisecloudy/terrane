@@ -176,6 +176,7 @@ test("Android debug dev control exposes target and webapp listing controls", () 
     "notes-lite",
     "task-workbench",
     "api-dashboard",
+    "calendar-planner",
     "bundled",
     "installed",
     "SELECT a.id, a.name, a.status, a.active_install_id, a.active_version, a.data_version",

@@ -8,7 +8,7 @@ import { MessageChannel } from "node:worker_threads";
 
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
-const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 const generatedAppCsp = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
@@ -329,7 +329,7 @@ test("runtime launcher, sandbox, bridge calls, debug log, and structured errors 
   const harness = createRuntimeHarness({ manifestsById });
   try {
     const frame = await mountFirstApp(harness);
-    assert.equal(harness.document.getElementById("app-list").children.length, 5);
+    assert.equal(harness.document.getElementById("app-list").children.length, runtimeExampleAppIds.length);
     assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
     assert.equal(frame.attributes.get("allow"), "");
     assert.equal(frame.attributes.get("csp"), generatedAppCsp);

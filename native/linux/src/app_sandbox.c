@@ -43,7 +43,7 @@ static gboolean app_id_is_safe_path_segment(const gchar *app_id) {
 }
 
 gboolean app_sandbox_is_known_example_app_id(const gchar *app_id) {
-  const gchar *known[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"};
+  const gchar *known[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"};
   for (gsize index = 0; index < G_N_ELEMENTS(known); ++index) {
     if (g_strcmp0(app_id, known[index]) == 0) {
       return TRUE;

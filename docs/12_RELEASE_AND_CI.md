@@ -228,7 +228,7 @@ Required jobs:
 - `validate:schemas` — validate manifests, bridge schemas, micro-test files, and control protocol schemas.
 - `test:runtime-headless` — run runtime tests in a browser/WebView-compatible environment.
 - `test:mcp-contract` — run the MCP server against a fake control-plane server.
-- `test:micro-examples` — run micro-tests for the five example webapps against the reference host.
+- `test:micro-examples` — run micro-tests for the six example webapps against the reference host.
 - `test:desktop-smoke` — launch at least one desktop host and run all example app smoke tests.
 
 Optional/manual jobs:

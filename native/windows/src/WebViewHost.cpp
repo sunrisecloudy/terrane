@@ -63,7 +63,7 @@ bool HasOnlyRuntimeEnvelopeFields(json::JsonObject const& body) {
 }
 
 bool IsKnownExampleAppId(std::wstring const& appId) {
-  for (auto const* candidate : {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab"}) {
+  for (auto const* candidate : {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab", L"calendar-planner"}) {
     if (appId == candidate) {
       return true;
     }

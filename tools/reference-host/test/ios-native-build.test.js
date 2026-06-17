@@ -16,7 +16,7 @@ const smokeStorageResetMarker = "TERRANE_IOS_SMOKE_STORAGE_RESET_OK";
 const smokeCoreStepMarker = "TERRANE_IOS_SMOKE_CORE_STEP_OK";
 const smokeAllExamplesMarker = "TERRANE_IOS_SMOKE_ALL_EXAMPLES_OK";
 const smokeMarkerFile = "terrane-ios-smoke-runtime-loaded.txt";
-const exampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+const exampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 
 function commandWorks(command, args) {
   try {

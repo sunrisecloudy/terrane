@@ -57,7 +57,7 @@
 - [x] Bundled app index exposes content ratings and enforces the iOS age gate.
 - [x] iOS bridge rejects app ids outside the bundled app index.
 - [x] `notification.toast` validates message/level params against the bridge contract.
-- [x] iOS simulator app bundle build verifies all five bundled example apps include manifest, HTML, CSS, and JS resources; debug simulator smoke includes an all-example bridge capability probe when launch smoke is enabled.
+- [x] iOS simulator app bundle build verifies all six bundled example apps include manifest, HTML, CSS, and JS resources; debug simulator smoke includes an all-example bridge capability probe when launch smoke is enabled.
 - [x] iOS debug simulator smoke verifies native storage reset creates a manual pre-reset `runtime_snapshots` row and clears storage through the real bridge.
 - [x] Source/static checks verify iOS DEBUG simulator dev control first slice starts only in dev mode, binds a loopback token-gated `GET /health` endpoint, writes a 0600 per-launch control token file, and persists accepted/rejected SQLite audit rows.
 - [x] Source/static checks verify iOS DEBUG simulator dev control exposes lightweight session/control routes for `platform.list_targets`, `platform.list_webapps`, bridge-routed `runtime.capabilities`, `runtime.call_bridge`, and `runtime.core_step` with runtime session persistence.
@@ -231,7 +231,7 @@
 - [x] The MCP server exposes tools for launch, install, open, inspect, interact, assert, mock, replay, and reset.
 - [x] The MCP server exposes per-tool input schemas and rejects invalid or unconfirmed destructive calls before forwarding.
 - [x] A dev host can be launched with a control token.
-- [x] Codex can install and open all five example webapps through the control plane.
+- [x] Codex can install and open all six example webapps through the control plane.
 - [x] Codex can click/type/assert inside generated apps using `data-testid` selectors.
 - [x] Codex can inspect `app.log`-backed console logs, bridge calls, runtime events, storage, and core action logs.
 - [x] Codex can mock at least one network response and one file dialog result.

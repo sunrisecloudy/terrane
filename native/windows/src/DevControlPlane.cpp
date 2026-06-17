@@ -195,8 +195,8 @@ std::filesystem::path RuntimeResourceRoot() {
   return RepoRoot();
 }
 
-std::array<wchar_t const*, 5> BundledWebappIds() {
-  return {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab"};
+std::array<wchar_t const*, 6> BundledWebappIds() {
+  return {L"notes-lite", L"task-workbench", L"file-transformer", L"api-dashboard", L"core-replay-lab", L"calendar-planner"};
 }
 
 bool ContainsAppId(std::vector<std::wstring> const& appIds, std::wstring const& appId) {

@@ -160,7 +160,7 @@ Implement the Terrane v0.1 according to the documentation in docs/.
 Start with the smallest vertical slice:
 1. Forge core fake `core.step` with tests.
 2. Web runtime launcher with browser mock bridge.
-3. Load the five example apps.
+3. Load the six example apps.
 4. Validate manifests and enforce permissions.
 5. Add server core.step endpoint.
 6. Then add native shells one platform at a time.

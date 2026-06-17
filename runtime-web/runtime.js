@@ -1,5 +1,5 @@
 (function () {
-  const FALLBACK_EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"];
+  const FALLBACK_EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
   const appList = document.getElementById("app-list");
   const statusEl = document.getElementById("runtime-status");
   const frameWrap = document.getElementById("app-frame-wrap");

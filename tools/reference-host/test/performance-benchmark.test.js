@@ -53,10 +53,11 @@ test("reference-host performance benchmark reports p50 and p95 latency", async (
 
   const memory = report.scenarios.find((scenario) => scenario.id === "open_all_examples_memory");
   assert.equal(memory.ok, true);
-  assert.equal(memory.appCount, 5);
-  assert.equal(memory.sessionDelta, 5);
+  assert.equal(memory.appCount, 6);
+  assert.equal(memory.sessionDelta, 6);
   assert.deepEqual(memory.openedAppIds.sort(), [
     "api-dashboard",
+    "calendar-planner",
     "core-replay-lab",
     "file-transformer",
     "notes-lite",

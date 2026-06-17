@@ -1,0 +1,144 @@
+{
+  "id": "calendar-planner-core-storage",
+  "description": "Create a calendar event through core.step, persist it, and verify it renders in the agenda.",
+  "targetApps": [
+    "calendar-planner"
+  ],
+  "platforms": [
+    "reference-host",
+    "macos",
+    "linux",
+    "windows",
+    "android-emulator",
+    "ios-simulator"
+  ],
+  "setup": [
+    {
+      "tool": "platform.validate_package",
+      "args": {
+        "path": "webapps/examples/calendar-planner"
+      }
+    },
+    {
+      "tool": "platform.sign_webapp_package",
+      "args": {
+        "path": "webapps/examples/calendar-planner"
+      }
+    },
+    {
+      "tool": "platform.install_webapp_package",
+      "args": {
+        "path": "webapps/examples/calendar-planner"
+      }
+    },
+    {
+      "tool": "platform.open_webapp",
+      "args": {
+        "appId": "calendar-planner"
+      }
+    },
+    {
+      "tool": "runtime.wait_for",
+      "args": {
+        "kind": "idle"
+      }
+    },
+    {
+      "tool": "runtime.capabilities",
+      "args": {}
+    }
+  ],
+  "steps": [
+    {
+      "tool": "runtime.assert_visible",
+      "args": {
+        "text": "Calendar Planner"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "calendar-event-title-input",
+        "value": "Design review"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "calendar-event-date-input",
+        "value": "2026-06-16"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "calendar-event-start-input",
+        "value": "10:30"
+      }
+    },
+    {
+      "tool": "runtime.set_value",
+      "args": {
+        "testId": "calendar-event-duration-input",
+        "value": "45"
+      }
+    },
+    {
+      "tool": "runtime.click",
+      "args": {
+        "testId": "add-calendar-event-button"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "core.step"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "storage.set"
+      }
+    },
+    {
+      "tool": "runtime.assert_bridge_call",
+      "args": {
+        "method": "app.log"
+      }
+    },
+    {
+      "tool": "runtime.assert_text",
+      "args": {
+        "text": "Design review"
+      }
+    },
+    {
+      "tool": "runtime.assert_no_console_errors",
+      "args": {}
+    }
+  ],
+  "teardown": [
+    {
+      "tool": "runtime.resource_usage",
+      "args": {}
+    },
+    {
+      "tool": "runtime.run_accessibility_audit",
+      "args": {}
+    },
+    {
+      "tool": "platform.create_snapshot",
+      "args": {
+        "type": "post-test"
+      }
+    },
+    {
+      "tool": "platform.reset_webapp",
+      "args": {
+        "appId": "calendar-planner",
+        "confirm": true
+      }
+    }
+  ]
+}

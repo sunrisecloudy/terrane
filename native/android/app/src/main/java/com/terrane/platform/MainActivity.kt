@@ -21,7 +21,7 @@ import java.io.IOException
 import java.io.InputStream
 
 class MainActivity : ComponentActivity() {
-    private val exampleAppIds = setOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab")
+    private val exampleAppIds = setOf("notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner")
     private lateinit var webView: WebView
     private lateinit var bridge: NativeBridge
     private lateinit var dialogs: PlatformDialogs

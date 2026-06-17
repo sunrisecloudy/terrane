@@ -1199,7 +1199,7 @@ static gchar *platform_list_webapps_json(DevControlPlane *plane, gboolean includ
   }
   sqlite3_finalize(statement);
 
-  const gchar *bundled_ids[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab"};
+  const gchar *bundled_ids[] = {"notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"};
   for (gsize index = 0; index < G_N_ELEMENTS(bundled_ids); index++) {
     append_bundled_webapp(builder, bundled_ids[index], installed_ids);
   }

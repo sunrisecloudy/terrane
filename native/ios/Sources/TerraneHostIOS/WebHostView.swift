@@ -336,7 +336,7 @@ private struct AllExampleAppsSmoke {
           if (!bridge || typeof bridge.postMessage !== "function") {
             throw new Error("TerranePlatformBridge is unavailable");
           }
-          const appIds = ["notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"];
+          const appIds = ["notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab","calendar-planner"];
           function request(appId, id, method, params) {
             return { appId, mountToken: "ios-smoke-" + appId, request: { id, method, params: params || {} } };
           }

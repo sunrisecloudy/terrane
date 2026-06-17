@@ -1044,7 +1044,7 @@ function checkNativeStatic() {
     [iosBridge, "approvedPermissions.contains(permission)"],
     [iosHost, "--terrane-smoke-all-examples"],
     [iosHost, "AllExampleAppsSmoke"],
-    [iosHost, '"notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab"'],
+    [iosHost, '"notes-lite","task-workbench","file-transformer","api-dashboard","core-replay-lab","calendar-planner"'],
     [iosHost, "#if targetEnvironment(simulator)"],
     [iosHost, "IOSDevControlPlane.enabledFromProcess(bridge: bridge)"],
     [iosHost, "devControlPlane?.start()"],
