@@ -796,6 +796,10 @@ test("runtime exposes native host Engine Room view for AppKit sidebar", async ()
     assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), null);
     assert.equal(harness.document.getElementById("engine-room-status").textContent, "Ready");
     const text = elementText(harness.document.getElementById("engine-room-sections"));
+    assert.match(text, /All 12/);
+    assert.match(text, /Runtime 2/);
+    assert.match(text, /Activity 4/);
+    assert.match(text, /Raw JSON/);
     for (const heading of ["Overview", "Apps", "Storage/DB", "Bridge/API Calls", "Network", "Logs/Telemetry", "Core/Replay", "Permissions/Policy", "Tests/Control", "CRDT", "Sync"]) {
       assert.match(text, new RegExp(heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }

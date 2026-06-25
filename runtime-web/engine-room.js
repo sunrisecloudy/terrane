@@ -1,22 +1,34 @@
 (function () {
   const engineRoomPreferenceKey = "terrane.engineRoom.visible";
   const engineRoomSectionOrder = [
-    ["overview", "Overview"],
-    ["apps", "Apps"],
-    ["database", "Storage/DB"],
-    ["storage", "Storage Rows"],
-    ["bridgeCalls", "Bridge/API Calls"],
-    ["network", "Network"],
-    ["logs", "Logs/Telemetry"],
-    ["core", "Core/Replay"],
-    ["permissions", "Permissions/Policy"],
-    ["tests", "Tests/Control"],
-    ["crdt", "CRDT"],
+    { key: "overview", title: "Overview", group: "runtime" },
+    { key: "apps", title: "Apps", group: "runtime" },
+    { key: "database", title: "Storage/DB", group: "data" },
+    { key: "storage", title: "Storage Rows", group: "data" },
+    { key: "bridgeCalls", title: "Bridge/API Calls", group: "activity" },
+    { key: "network", title: "Network", group: "activity" },
+    { key: "logs", title: "Logs/Telemetry", group: "activity" },
+    { key: "core", title: "Core/Replay", group: "activity" },
+    { key: "permissions", title: "Permissions/Policy", group: "policy" },
+    { key: "tests", title: "Tests/Control", group: "quality" },
+    { key: "crdt", title: "CRDT", group: "sync" },
+    { key: "sync", title: "Sync", group: "sync" },
+  ];
+  const engineRoomGroups = [
+    ["all", "All"],
+    ["runtime", "Runtime"],
+    ["data", "Data"],
+    ["activity", "Activity"],
+    ["policy", "Policy"],
+    ["quality", "Quality"],
     ["sync", "Sync"],
   ];
 
   function create(deps) {
     const dom = deps.dom;
+    let activeGroup = "all";
+    let filterText = "";
+    let currentSnapshot = null;
 
     function showEngineRoom() {
       const activeMount = deps.getActiveMount();
@@ -64,22 +76,37 @@
       setStatus("Loading");
       try {
         const activeApp = deps.getActiveApp();
-        const currentSnapshot = await snapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
-        dom.sections.textContent = "";
-        dom.sections.appendChild(renderSummary(currentSnapshot));
-        for (const [key, title] of engineRoomSectionOrder) {
-          const value = currentSnapshot[key] ?? emptySection(key);
-          dom.sections.appendChild(renderCard(title, value, summarizeSection(key, value)));
-        }
+        currentSnapshot = await snapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
+        renderSnapshotContent();
         setStatus("Ready");
       } catch (error) {
         dom.sections.textContent = "";
-        dom.sections.appendChild(renderCard("Error", {
+        dom.sections.appendChild(renderCard({ key: "error", title: "Error", group: "runtime" }, {
           code: "engine_room_snapshot_failed",
           message: error && error.message ? error.message : String(error),
         }, [["Status", "Failed"]]));
         setStatus("Error");
       }
+    }
+
+    function renderSnapshotContent() {
+      if (!dom.sections || !currentSnapshot) return;
+      dom.sections.textContent = "";
+      dom.sections.appendChild(renderSummary(currentSnapshot));
+      dom.sections.appendChild(renderToolbar());
+      const grid = deps.element("div", "engine-room-grid");
+      let rendered = 0;
+      for (const section of engineRoomSectionOrder) {
+        const value = currentSnapshot[section.key] ?? emptySection(section.key);
+        const summaryRows = summarizeSection(section.key, value);
+        if (!matchesActiveView(section, value, summaryRows)) continue;
+        grid.appendChild(renderCard(section, value, summaryRows));
+        rendered += 1;
+      }
+      if (rendered === 0) {
+        grid.appendChild(renderEmptyResult());
+      }
+      dom.sections.appendChild(grid);
     }
 
     async function snapshot(options) {
@@ -199,6 +226,38 @@
       return summary;
     }
 
+    function renderToolbar() {
+      const toolbar = deps.element("div", "engine-room-toolbar");
+      toolbar.setAttribute("data-testid", "engine-room-toolbar");
+      const search = deps.element("input", "engine-room-filter");
+      search.setAttribute("type", "search");
+      search.setAttribute("placeholder", "Filter");
+      search.setAttribute("aria-label", "Filter Engine Room sections");
+      search.value = filterText;
+      search.addEventListener("input", function (event) {
+        filterText = String(event.target.value || "").trim().toLowerCase();
+        renderSnapshotContent();
+      });
+      toolbar.appendChild(search);
+
+      const tabs = deps.element("div", "engine-room-tabs");
+      tabs.setAttribute("role", "tablist");
+      for (const [group, label] of engineRoomGroups) {
+        const button = deps.element("button", group === activeGroup ? "engine-room-tab active" : "engine-room-tab");
+        button.setAttribute("type", "button");
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-selected", group === activeGroup ? "true" : "false");
+        button.textContent = `${label} ${groupCount(group)}`;
+        button.addEventListener("click", function () {
+          activeGroup = group;
+          renderSnapshotContent();
+        });
+        tabs.appendChild(button);
+      }
+      toolbar.appendChild(tabs);
+      return toolbar;
+    }
+
     function metric(label, value) {
       const item = deps.element("div", "engine-room-metric");
       item.appendChild(deps.element("span", "", label));
@@ -275,12 +334,19 @@
       }
     }
 
-    function renderCard(title, value, summaryRows) {
+    function renderCard(section, value, summaryRows) {
       const card = deps.element("article", "engine-room-card");
-      card.setAttribute("data-testid", `engine-room-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
+      card.setAttribute("data-testid", `engine-room-${section.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
       const header = deps.element("div", "engine-room-card-header");
-      header.appendChild(deps.element("h3", "", title));
-      header.appendChild(deps.element("span", "engine-room-card-count", sectionCountLabel(value)));
+      const titleWrap = deps.element("div", "engine-room-card-title");
+      titleWrap.appendChild(deps.element("h3", "", section.title));
+      titleWrap.appendChild(deps.element("span", "engine-room-card-group", groupLabel(section.group)));
+      header.appendChild(titleWrap);
+      const state = sectionState(value);
+      const badges = deps.element("div", "engine-room-card-badges");
+      badges.appendChild(deps.element("span", `engine-room-state ${state.className}`, state.label));
+      badges.appendChild(deps.element("span", "engine-room-card-count", sectionCountLabel(value)));
+      header.appendChild(badges);
       card.appendChild(header);
       const summary = deps.element("dl", "engine-room-facts");
       for (const [label, factValue] of summaryRows || []) {
@@ -295,6 +361,59 @@
       details.appendChild(deps.element("pre", "", JSON.stringify(value, null, 2)));
       card.appendChild(details);
       return card;
+    }
+
+    function renderEmptyResult() {
+      const empty = deps.element("div", "engine-room-empty-result");
+      empty.appendChild(deps.element("strong", "", "No matching sections"));
+      empty.appendChild(deps.element("span", "", "Try another filter or section group."));
+      return empty;
+    }
+
+    function matchesActiveView(section, value, summaryRows) {
+      if (activeGroup !== "all" && section.group !== activeGroup) return false;
+      if (!filterText) return true;
+      const haystack = [
+        section.title,
+        groupLabel(section.group),
+        JSON.stringify(summaryRows),
+        JSON.stringify(value),
+      ].join(" ").toLowerCase();
+      return haystack.includes(filterText);
+    }
+
+    function groupCount(group) {
+      if (!currentSnapshot) return 0;
+      return engineRoomSectionOrder.filter(function (section) {
+        if (group !== "all" && section.group !== group) return false;
+        const value = currentSnapshot[section.key] ?? emptySection(section.key);
+        return matchesTextOnly(section, value, summarizeSection(section.key, value));
+      }).length;
+    }
+
+    function matchesTextOnly(section, value, summaryRows) {
+      if (!filterText) return true;
+      const haystack = [
+        section.title,
+        groupLabel(section.group),
+        JSON.stringify(summaryRows),
+        JSON.stringify(value),
+      ].join(" ").toLowerCase();
+      return haystack.includes(filterText);
+    }
+
+    function groupLabel(group) {
+      const found = engineRoomGroups.find(function (entry) {
+        return entry[0] === group;
+      });
+      return found ? found[1] : group;
+    }
+
+    function sectionState(value) {
+      if (value && value.code) return { label: "Error", className: "error" };
+      const count = countRows(value);
+      if (count > 0) return { label: "Active", className: "active" };
+      return { label: "Empty", className: "empty" };
     }
 
     function sectionCountLabel(value) {

@@ -71,6 +71,55 @@
   overflow-wrap: anywhere;
 }
 
+.engine-room-toolbar {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.engine-room-filter {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #18202f;
+  font: inherit;
+  min-height: 36px;
+  min-width: 0;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.engine-room-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.engine-room-tab {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #334155;
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.engine-room-tab.active {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+}
+
+.engine-room-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
 .engine-room-card {
   border: 1px solid #d8dee8;
   border-radius: 8px;
@@ -87,16 +136,53 @@
   justify-content: space-between;
 }
 
+.engine-room-card-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
 .engine-room-card h3 {
   margin: 0;
 }
 
-.engine-room-card-count {
+.engine-room-card-group {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.engine-room-card-badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.engine-room-card-count,
+.engine-room-state {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
   border-radius: 999px;
   padding: 4px 8px;
   white-space: nowrap;
+}
+
+.engine-room-state.active {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.engine-room-state.empty {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.engine-room-state.error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
 }
 
 .engine-room-facts {
@@ -156,6 +242,22 @@
   word-break: break-word;
 }
 
+.engine-room-empty-result {
+  background: #ffffff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #64748b;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  padding: 28px;
+  text-align: center;
+}
+
+.engine-room-empty-result strong {
+  color: #334155;
+}
+
 .engine-room-mode .layout {
   display: none;
 }
@@ -188,12 +290,27 @@
 
 @media (prefers-color-scheme: dark) {
   .engine-room-card,
+  .engine-room-empty-result,
   .engine-room-metric {
     background: #111827;
     border-color: #334155;
   }
 
+  .engine-room-filter,
+  .engine-room-tab {
+    background: #182033;
+    border-color: #334155;
+    color: #e5e7eb;
+  }
+
+  .engine-room-tab.active {
+    background: #0f766e;
+    border-color: #5eead4;
+    color: #ffffff;
+  }
+
   .engine-room-metric strong,
+  .engine-room-empty-result strong,
   .engine-room-fact dd {
     color: #e5e7eb;
   }
@@ -211,5 +328,15 @@
   .engine-room-card pre {
     background: #0f172a;
     border-color: #334155;
+  }
+}
+
+@media (max-width: 760px) {
+  .engine-room-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .engine-room-tabs {
+    justify-content: flex-start;
   }
 }
