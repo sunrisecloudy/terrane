@@ -526,6 +526,7 @@ button:disabled {
 }
 
 .native-host-mode.engine-room-mode .engine-room-panel {
+  display: block;
   height: 100vh;
   overflow: auto;
   padding: 22px 24px;

@@ -804,6 +804,14 @@ test("runtime exposes native host Engine Room view for AppKit sidebar", async ()
   }
 });
 
+test("runtime CSS shows Engine Room panel in native host mode", () => {
+  const css = fs.readFileSync(path.join(rootDir, "runtime-web", "styles.css"), "utf8");
+  assert.match(
+    css,
+    /\.native-host-mode\.engine-room-mode\s+\.engine-room-panel\s*\{[^}]*display:\s*block;/s,
+  );
+});
+
 test("runtime native host mount rejects unknown app ids", async () => {
   const manifestsById = new Map([
     [
