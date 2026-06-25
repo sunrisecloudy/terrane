@@ -606,6 +606,90 @@ export class ReferenceHost {
     };
   }
 
+  engineRoomSnapshot(args = {}) {
+    const appId = typeof args.appId === "string" && args.appId ? args.appId : null;
+    const snapshot = this.database.snapshot();
+    const appFilter = (row) => !appId || row.app_id === appId || row.appId === appId || row.id === appId;
+    const bridgeCalls = this.database.queryBridgeCalls(appId);
+    const coreEvents = this.database.queryCoreEvents(appId);
+    const coreActions = this.database.queryCoreActions(appId);
+    const testRuns = this.database.queryTestRuns(appId);
+    const appStorage = appId
+      ? this.database.queryAppStorage(appId)
+      : this.database.all("SELECT app_id, key, value_json, updated_at FROM app_storage ORDER BY app_id, key");
+    const apps = (snapshot.apps ?? []).filter(appFilter);
+    const appVersions = appId
+      ? this.database.queryAppVersions(appId)
+      : this.database.all("SELECT * FROM app_versions ORDER BY app_id, created_at");
+    const networkRows = bridgeCalls.filter((row) => row.method === "network.request");
+    const logRows = this.database.queryConsoleLogs(appId);
+    const tableCounts = Object.fromEntries(
+      Object.entries(snapshot).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]),
+    );
+
+    return {
+      generatedAt: new Date().toISOString(),
+      overview: {
+        source: "reference-host",
+        platform: "reference-host",
+        target: "reference-host",
+        appId,
+        health: this.health(),
+        capabilities: referenceHostCapabilities(appId),
+        resourceUsage: appId ? this.database.resourceUsage(appId) : null,
+      },
+      apps: {
+        rows: apps,
+        versions: appVersions,
+        installed: this.listWebapps({ includeUninstalled: true }).apps.filter((app) => !appId || app.appId === appId || app.id === appId),
+      },
+      database: {
+        type: this.dbFile === ":memory:" ? "sqlite-memory" : "sqlite-file",
+        path: this.dbFile,
+        tables: Object.keys(snapshot).sort(),
+        tableCounts,
+      },
+      storage: { rows: appStorage },
+      bridgeCalls: { rows: bridgeCalls },
+      network: {
+        rows: networkRows,
+        mocks: (snapshot.network_mocks ?? []).filter(appFilter),
+      },
+      logs: {
+        appLogRows: logRows,
+        runtimeSessions: (snapshot.runtime_sessions ?? []).filter(appFilter),
+        telemetry: { crashReporting: "not-configured" },
+      },
+      core: {
+        events: coreEvents,
+        actions: coreActions,
+        snapshots: (snapshot.runtime_snapshots ?? []).filter(appFilter),
+      },
+      permissions: {
+        rows: (snapshot.app_permissions ?? []).filter(appFilter),
+        installReports: (snapshot.app_install_reports ?? []).filter(appFilter),
+      },
+      tests: {
+        runs: testRuns,
+        controlSessions: snapshot.control_sessions ?? [],
+        controlCommands: snapshot.control_commands ?? [],
+      },
+      crdt: {
+        notebooks: (snapshot.crdt_notebooks ?? []).filter(appFilter),
+        documents: (snapshot.crdt_documents ?? []).filter(appFilter),
+        updates: (snapshot.crdt_updates ?? []).filter(appFilter),
+        heads: (snapshot.crdt_heads ?? []).filter(appFilter),
+        actors: (snapshot.crdt_actors ?? []).filter(appFilter),
+        permissions: (snapshot.crdt_permissions ?? []).filter(appFilter),
+        proposals: (snapshot.crdt_proposals ?? []).filter(appFilter),
+      },
+      sync: {
+        cursors: (snapshot.crdt_sync_cursors ?? []).filter(appFilter),
+        server: { status: "not-attached" },
+      },
+    };
+  }
+
   activeRuntimePackage(appId) {
     this.verifyInstalledApp(appId);
     const pkg = this.database.activeInstallPackage(appId);
@@ -635,6 +719,8 @@ export class ReferenceHost {
         return { ok: true, target: args.target ?? "reference-host", status: "reloaded" };
       case "runtime.capabilities":
         return referenceHostCapabilities(args.appId ?? null);
+      case "engineRoom.snapshot":
+        return this.engineRoomSnapshot(args);
       case "platform.validate_package":
         return this.validatePackage(packagePathArg(args));
       case "platform.sign_webapp_package":
@@ -850,6 +936,11 @@ export class ReferenceHost {
           );
         }
         return sendJson(res, 200, await this.dispatchBridge(body, { appId, sessionId, mountToken }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/engine-room/snapshot") {
+        const body = await readBodyJson(req);
+        return sendJson(res, 200, controlResponse(this.engineRoomSnapshot(body ?? {})));
       }
 
       const sessionRoute = parseControlSessionRoute(url.pathname);

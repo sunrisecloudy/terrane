@@ -269,9 +269,10 @@ db.query_bridge_calls
 db.query_core_events
 db.query_test_runs
 db.export_debug_bundle
+engineRoom.snapshot
 ```
 
-These tools are read-only except `db.export_debug_bundle`, which creates an export/debug artifact. They must not expose arbitrary SQL. Unsafe SQL can exist only behind a separate explicit unsafe dev-mode setting and must not be enabled by default.
+These tools are read-only except `db.export_debug_bundle`, which creates an export/debug artifact. `engineRoom.snapshot` composes the same safe fixed-table data into app/debug sections. They must not expose arbitrary SQL. Unsafe SQL can exist only behind a separate explicit unsafe dev-mode setting and must not be enabled by default.
 
 The DB tools let Codex verify micro-level behavior that is hard to see from DOM alone:
 

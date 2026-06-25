@@ -230,6 +230,8 @@ final class DevControlPlane: @unchecked Sendable {
             sendAccepted(connection, parsed, startedAt: startedAt, result: dbQueryTestRuns(args: parsed.jsonBody ?? [:]))
         case ("POST", "/db/export-debug-bundle"):
             sendAccepted(connection, parsed, startedAt: startedAt, result: exportDebugBundle())
+        case ("POST", "/engine-room/snapshot"):
+            sendAccepted(connection, parsed, startedAt: startedAt, result: engineRoomSnapshot(args: parsed.jsonBody ?? [:]))
         case ("GET", "/apps"):
             sendAccepted(connection, parsed, startedAt: startedAt, result: listWebapps(includeUninstalled: false))
         default:
@@ -488,6 +490,8 @@ final class DevControlPlane: @unchecked Sendable {
             handleImportBackup(connection, request, args: args, startedAt: startedAt)
         case "db.export_debug_bundle":
             sendAccepted(connection, request, startedAt: startedAt, result: exportDebugBundle())
+        case "engineRoom.snapshot":
+            sendAccepted(connection, request, startedAt: startedAt, result: engineRoomSnapshot(args: args))
         default:
             sendRejected(
                 connection,
@@ -1768,6 +1772,118 @@ final class DevControlPlane: @unchecked Sendable {
                 filterColumn: "app_id",
                 filterValue: args["appId"] as? String
             ),
+        ]
+    }
+
+    private func engineRoomSnapshot(args: [String: Any]) -> [String: Any] {
+        let appId = args["appId"] as? String
+        let snapshot = dbSnapshotResult()
+        let bridgeRows = dbQueryBridgeCalls(args: args)["rows"] as? [[String: Any]] ?? []
+        let coreRows = dbQueryCoreEvents(args: args)["rows"] as? [[String: Any]] ?? []
+        let testRows = dbQueryTestRuns(args: args)["rows"] as? [[String: Any]] ?? []
+        let storageRows = dbQueryAppStorage(args: args)["rows"] as? [[String: Any]] ?? []
+        let appRows = snapshot["apps"] as? [[String: Any]] ?? []
+        let appVersions = dbQueryAppVersions(args: args)["rows"] as? [[String: Any]] ?? []
+        let runtimeSessions = snapshot["runtime_sessions"] as? [[String: Any]] ?? []
+        let runtimeSnapshots = snapshot["runtime_snapshots"] as? [[String: Any]] ?? []
+        let controlSessions = snapshot["control_sessions"] as? [[String: Any]] ?? []
+        let controlCommands = snapshot["control_commands"] as? [[String: Any]] ?? []
+        let networkRows = bridgeRows.filter { ($0["method"] as? String) == "network.request" }
+        let logRows = bridgeRows.filter { ($0["method"] as? String) == "app.log" }
+
+        return [
+            "generatedAt": Self.now(),
+            "overview": [
+                "source": "macos-dev-control",
+                "platform": "macos",
+                "target": "macos",
+                "appId": appId.map { $0 as Any } ?? NSNull(),
+                "controlSessionId": controlSessionId,
+                "runtimeSessionId": (activeRuntimeSessionId.map { $0 as Any } ?? NSNull()) as Any,
+                "activeAppId": (activeAppId.map { $0 as Any } ?? NSNull()) as Any,
+                "sessionStatus": sessionStatus,
+                "capabilities": runtimeCapabilities(appId: appId),
+                "resourceUsage": resourceUsage(appId: appId),
+            ],
+            "apps": [
+                "rows": appRows,
+                "versions": appVersions,
+                "installed": listWebapps(includeUninstalled: true)["apps"] ?? [],
+            ],
+            "database": [
+                "type": "sqlite",
+                "path": databaseURL?.path ?? "default",
+                "tables": snapshot.keys.sorted(),
+                "tableCounts": snapshot.mapValues { value in
+                    (value as? [[String: Any]])?.count ?? 0
+                },
+            ],
+            "storage": [
+                "rows": storageRows,
+            ],
+            "bridgeCalls": [
+                "rows": bridgeRows,
+            ],
+            "network": [
+                "rows": networkRows,
+                "mocks": tableRows(
+                    table: "network_mocks",
+                    columns: ["mock_id", "session_id", "app_id", "method", "url_pattern", "enabled", "created_at"],
+                    orderBy: "created_at",
+                    filterColumn: "app_id",
+                    filterValue: appId
+                ),
+            ],
+            "logs": [
+                "appLogRows": logRows,
+                "runtimeSessions": runtimeSessions,
+                "telemetry": ["crashReporting": "not-configured"],
+            ],
+            "core": [
+                "events": coreRows,
+                "actions": tableRows(
+                    table: "core_actions",
+                    columns: ["action_id", "event_id", "session_id", "app_id", "action_json", "created_at"],
+                    orderBy: "created_at",
+                    filterColumn: "app_id",
+                    filterValue: appId
+                ),
+                "snapshots": runtimeSnapshots,
+            ],
+            "permissions": [
+                "rows": tableRows(
+                    table: "app_permissions",
+                    columns: ["install_id", "app_id", "permission", "requested", "approved", "approved_at", "reason"],
+                    orderBy: "permission",
+                    filterColumn: "app_id",
+                    filterValue: appId
+                ),
+                "installReports": tableRows(
+                    table: "app_install_reports",
+                    columns: ["report_id", "app_id", "install_id", "status", "validation_json", "security_json", "permissions_json", "compatibility_json", "smoke_test_json", "created_at"],
+                    orderBy: "created_at",
+                    filterColumn: "app_id",
+                    filterValue: appId
+                ),
+            ],
+            "tests": [
+                "runs": testRows,
+                "controlSessions": controlSessions,
+                "controlCommands": controlCommands,
+            ],
+            "crdt": [
+                "notebooks": tableRows(table: "crdt_notebooks", columns: ["app_id", "notebook_id", "title", "status", "created_by", "created_at", "updated_at"], orderBy: "updated_at", filterColumn: "app_id", filterValue: appId),
+                "documents": tableRows(table: "crdt_documents", columns: ["app_id", "notebook_id", "version", "content_hash", "created_at"], orderBy: "created_at", filterColumn: "app_id", filterValue: appId),
+                "updates": tableRows(table: "crdt_updates", columns: ["update_id", "app_id", "notebook_id", "seq", "actor_id", "status", "error_code", "created_at"], orderBy: "created_at", filterColumn: "app_id", filterValue: appId),
+                "heads": tableRows(table: "crdt_heads", columns: ["app_id", "notebook_id", "version", "frontier_json", "content_hash", "updated_at"], orderBy: "updated_at", filterColumn: "app_id", filterValue: appId),
+                "actors": tableRows(table: "crdt_actors", columns: ["app_id", "actor_id", "actor_kind", "display_name", "created_at", "updated_at"], orderBy: "updated_at", filterColumn: "app_id", filterValue: appId),
+                "permissions": tableRows(table: "crdt_permissions", columns: ["app_id", "notebook_id", "actor_id", "permission", "granted", "granted_at"], orderBy: "granted_at", filterColumn: "app_id", filterValue: appId),
+                "proposals": tableRows(table: "crdt_proposals", columns: ["proposal_id", "app_id", "notebook_id", "actor_id", "status", "created_at", "updated_at"], orderBy: "created_at", filterColumn: "app_id", filterValue: appId),
+            ],
+            "sync": [
+                "cursors": tableRows(table: "crdt_sync_cursors", columns: ["app_id", "notebook_id", "actor_id", "last_seen_update_id", "frontier_json", "updated_at"], orderBy: "updated_at", filterColumn: "app_id", filterValue: appId),
+                "server": ["status": "not-attached"],
+            ],
         ]
     }
 

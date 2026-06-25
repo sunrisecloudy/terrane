@@ -17,6 +17,12 @@
 
     <main class="layout">
       <aside class="sidebar" aria-label="Installed apps">
+        <div id="engine-room-entry" class="engine-room-entry" data-testid="engine-room-entry" hidden>
+          <p class="eyebrow">Inspect</p>
+          <button id="open-engine-room" class="app-button engine-room-button" data-testid="open-engine-room-button" title="Open Engine Room">
+            <strong>Engine Room</strong><span>Raw app and platform data</span>
+          </button>
+        </div>
         <div class="sidebar-header">
           <h2>Apps</h2>
           <button id="refresh-apps" data-testid="refresh-apps-button" title="Refresh apps">Refresh</button>
@@ -67,6 +73,20 @@
         </div>
         <div id="premium-apps-list" class="marketplace-apps-list premium-apps-list" data-testid="premium-apps-list"></div>
       </section>
+    </section>
+
+    <section id="engine-room-panel" class="engine-room-panel" aria-label="Engine Room">
+      <div class="engine-room-header">
+        <div>
+          <p class="eyebrow">Engine Room</p>
+          <h2>Debug Inspector</h2>
+        </div>
+        <div class="engine-room-actions">
+          <span class="engine-room-status" id="engine-room-status" data-testid="engine-room-status">Hidden</span>
+          <button id="refresh-engine-room" data-testid="refresh-engine-room-button" title="Refresh Engine Room snapshot">Refresh</button>
+        </div>
+      </div>
+      <div id="engine-room-sections" class="engine-room-sections" data-testid="engine-room-sections"></div>
     </section>
 
     <section class="debug-panel" aria-label="Bridge debug log">

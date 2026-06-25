@@ -214,6 +214,42 @@ test("reference-host exposes common control utility tools", async () => {
   }
 });
 
+test("reference-host Engine Room snapshot groups read-only app and platform data", async () => {
+  const host = new ReferenceHost();
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    await host.runControlCommand("platform.open_webapp", { appId: "notes-lite" });
+    await host.runControlCommand("runtime.storage_set", {
+      appId: "notes-lite",
+      key: "notes-lite:engine-room",
+      value: { ok: true },
+    });
+    await host.runControlCommand("runtime.call_bridge", {
+      appId: "notes-lite",
+      method: "app.log",
+      params: { level: "info", message: "Engine Room probe" },
+    });
+
+    const snapshot = await host.runControlCommand("engineRoom.snapshot", { appId: "notes-lite" });
+
+    assert.equal(snapshot.overview.source, "reference-host");
+    assert.equal(snapshot.overview.appId, "notes-lite");
+    assert.equal(snapshot.apps.rows.some((row) => row.id === "notes-lite"), true);
+    assert.equal(snapshot.storage.rows.some((row) => row.key === "notes-lite:engine-room"), true);
+    assert.equal(snapshot.bridgeCalls.rows.some((row) => row.method === "storage.set"), true);
+    assert.equal(snapshot.logs.appLogRows.some((row) => row.message === "Engine Room probe"), true);
+    assert.equal(snapshot.database.tableCounts.app_storage >= 1, true);
+    assert.deepEqual(snapshot.sync.server, { status: "not-attached" });
+
+    await assert.rejects(
+      () => host.runControlCommand("engineRoom.reset", { appId: "notes-lite" }),
+      /Unknown control tool/,
+    );
+  } finally {
+    host.close();
+  }
+});
+
 test("reference-host exposes app.log rows as console logs and asserts error logs", async () => {
   const host = new ReferenceHost();
   try {

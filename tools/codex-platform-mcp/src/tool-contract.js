@@ -72,6 +72,7 @@ export const TOOL_NAMES = [
   "db.export_backup",
   "db.import_backup",
   "db.export_debug_bundle",
+  "engineRoom.snapshot",
 ];
 
 const STRING = { type: "string", minLength: 1 };
@@ -197,6 +198,7 @@ const TOOL_INPUT_SCHEMAS = new Map([
   ["db.export_backup", schema({ appId: STRING })],
   ["db.import_backup", schema({ backup: OBJECT }, { required: ["backup"] })],
   ["db.export_debug_bundle", schema({ appId: STRING })],
+  ["engineRoom.snapshot", schema({ appId: STRING, limit: NUMBER })],
 ]);
 
 export function toolDefinitions() {

@@ -132,6 +132,8 @@ button:disabled {
 
 .marketplace-header,
 .marketplace-section-header,
+.engine-room-header,
+.engine-room-actions,
 .marketplace-actions,
 .premium-app-card,
 .premium-app-meta,
@@ -148,6 +150,20 @@ button:disabled {
 
 .marketplace-header h2 {
   margin: 0;
+}
+
+.engine-room-entry {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.engine-room-entry[hidden] {
+  display: none;
+}
+
+.engine-room-button {
+  width: 100%;
 }
 
 .marketplace-section {
@@ -330,6 +346,67 @@ button:disabled {
   outline-offset: 2px;
 }
 
+.engine-room-panel {
+  display: none;
+  padding: 18px;
+}
+
+.engine-room-header {
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 14px;
+}
+
+.engine-room-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.engine-room-status {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #475569;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.engine-room-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.engine-room-card {
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.engine-room-card h3 {
+  margin: 0 0 8px;
+}
+
+.engine-room-card pre {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.engine-room-mode .layout {
+  display: none;
+}
+
+.engine-room-mode .engine-room-panel {
+  display: block;
+}
+
 .workspace-toolbar {
   margin-bottom: 12px;
 }
@@ -391,6 +468,7 @@ button:disabled {
 .native-host-mode .sidebar,
 .native-host-mode .workspace-toolbar,
 .native-host-mode .marketplace-panel,
+.native-host-mode .engine-room-panel,
 .native-host-mode .debug-panel {
   display: none;
 }
@@ -441,6 +519,23 @@ button:disabled {
 .native-host-mode.marketplace-mode .premium-apps-list {
   margin: 0 auto;
   max-width: 1040px;
+}
+
+.native-host-mode.engine-room-mode .layout {
+  display: none;
+}
+
+.native-host-mode.engine-room-mode .engine-room-panel {
+  height: 100vh;
+  overflow: auto;
+  padding: 22px 24px;
+}
+
+.native-host-mode.engine-room-mode .engine-room-header,
+.native-host-mode.engine-room-mode .engine-room-sections {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 1100px;
 }
 
 @media (max-width: 760px) {
@@ -514,6 +609,16 @@ button:disabled {
     background: #182033;
     border-color: #5eead4;
     color: #5eead4;
+  }
+
+  .engine-room-card {
+    background: #111827;
+    border-color: #334155;
+  }
+
+  .engine-room-card pre {
+    background: #0f172a;
+    border-color: #334155;
   }
 
   .app-button.active {

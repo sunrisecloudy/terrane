@@ -33,6 +33,56 @@ struct NativeHostTests {
         #expect(RuntimeResourceLocator.fileURL(forRuntimeURL: escapedURL) == nil)
     }
 
+    @Test("runtime resource locator recognizes the native Engine Room snapshot endpoint")
+    func runtimeResourceLocatorRecognizesEngineRoomSnapshotEndpoint() throws {
+        let snapshotURL = URL(string: "app-runtime://runtime/engine-room/snapshot")!
+        #expect(RuntimeResourceLocator.isEngineRoomSnapshotURL(snapshotURL))
+        #expect(RuntimeResourceLocator.fileURL(forRuntimeURL: snapshotURL) == nil)
+    }
+
+    @Test("native Engine Room snapshot includes bundled apps and database state")
+    func nativeEngineRoomSnapshotIncludesBundledAppsAndDatabaseState() throws {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("terrane-engine-room-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        let dbURL = tempDir.appendingPathComponent("platform.sqlite")
+        let context = AppSandboxContext(
+            appId: "notes-lite",
+            approvedPermissions: ["storage.read", "storage.write"],
+            networkPolicy: [],
+            denyPrivateNetwork: true,
+            mountToken: "engine-room-test"
+        )
+        let storage = PlatformStorage(databaseURL: dbURL)
+        let write = storage.set(BridgeRequest(
+            id: "engine-room-storage-set",
+            method: "storage.set",
+            params: ["key": "notes-lite:debug", "value": ["title": "Visible at start"]],
+            context: context
+        ))
+        #expect(write.ok)
+
+        let provider = NativeEngineRoomSnapshotProvider(databaseURL: dbURL)
+        let snapshot = provider.snapshot(appId: nil, limit: 10)
+        let overview = try #require(snapshot["overview"] as? [String: Any])
+        #expect(overview["source"] as? String == "macos-runtime-scheme")
+
+        let apps = try #require(snapshot["apps"] as? [String: Any])
+        let installed = try #require(apps["installed"] as? [[String: Any]])
+        #expect(installed.contains { ($0["appId"] as? String) == "notes-lite" })
+
+        let storageSection = try #require(snapshot["storage"] as? [String: Any])
+        let rows = try #require(storageSection["rows"] as? [[String: Any]])
+        #expect(rows.contains { ($0["app_id"] as? String) == "notes-lite" && ($0["key"] as? String) == "notes-lite:debug" })
+
+        let database = try #require(snapshot["database"] as? [String: Any])
+        let counts = try #require(database["tableCounts"] as? [String: Int])
+        #expect((counts["app_storage"] ?? 0) >= 1)
+    }
+
     @Test("native app catalog loads bundled generated apps")
     func nativeAppCatalogLoadsBundledApps() throws {
         let apps = try MacAppCatalog().loadBundledApps()
@@ -100,6 +150,44 @@ struct NativeHostTests {
 
         #expect(script.contains("host.setHostMode(true);"))
         #expect(script.contains(#"await host.mountApp("premium-todo");"#))
+        #expect(!script.contains("host.showMarketplace"))
+        #expect(!script.contains("host.showEngineRoom"))
+    }
+
+    @Test("Engine Room preference is visible by default and persists when hidden")
+    func engineRoomPreferencePersistsVisibility() throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: NativeShellPreferences.engineRoomVisibleKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: NativeShellPreferences.engineRoomVisibleKey)
+            } else {
+                defaults.removeObject(forKey: NativeShellPreferences.engineRoomVisibleKey)
+            }
+        }
+
+        defaults.removeObject(forKey: NativeShellPreferences.engineRoomVisibleKey)
+        #expect(NativeShellPreferences.isEngineRoomVisible == true)
+
+        NativeShellPreferences.setEngineRoomVisible(false)
+        #expect(NativeShellPreferences.isEngineRoomVisible == false)
+
+        NativeShellPreferences.setEngineRoomVisible(true)
+        #expect(NativeShellPreferences.isEngineRoomVisible == true)
+    }
+
+    @MainActor
+    @Test("native runtime script can open Engine Room without mounting an app")
+    func nativeRuntimeScriptCanOpenEngineRoomWithoutMountingApp() throws {
+        let script = WebHostView.nativeRuntimeUpdateScript(
+            appId: nil,
+            showEngineRoom: true,
+            nativeHostModeEnabled: true
+        )
+
+        #expect(script.contains("host.setHostMode(true);"))
+        #expect(script.contains("await host.showEngineRoom();"))
+        #expect(!script.contains("host.mountApp"))
         #expect(!script.contains("host.showMarketplace"))
     }
 

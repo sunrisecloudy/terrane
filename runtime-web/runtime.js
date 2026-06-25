@@ -5,6 +5,11 @@
   const frameWrap = document.getElementById("app-frame-wrap");
   const activeTitle = document.getElementById("active-title");
   const activeDescription = document.getElementById("active-description");
+  const engineRoomEntry = document.getElementById("engine-room-entry");
+  const openEngineRoomButton = document.getElementById("open-engine-room");
+  const refreshEngineRoomButton = document.getElementById("refresh-engine-room");
+  const engineRoomSections = document.getElementById("engine-room-sections");
+  const engineRoomStatus = document.getElementById("engine-room-status");
   const reloadButton = document.getElementById("reload-app");
   const refreshButton = document.getElementById("refresh-apps");
   const refreshPremiumButton = document.getElementById("refresh-premium-catalog");
@@ -57,8 +62,32 @@
   const devMockCoreEvents = [];
   const consoleEntries = [];
   const minuteMs = 60 * 1000;
+  const engineRoomPreferenceKey = "terrane.engineRoom.visible";
+  const engineRoomSectionOrder = [
+    ["overview", "Overview"],
+    ["apps", "Apps"],
+    ["database", "Storage/DB"],
+    ["storage", "Storage Rows"],
+    ["bridgeCalls", "Bridge/API Calls"],
+    ["network", "Network"],
+    ["logs", "Logs/Telemetry"],
+    ["core", "Core/Replay"],
+    ["permissions", "Permissions/Policy"],
+    ["tests", "Tests/Control"],
+    ["crdt", "CRDT"],
+    ["sync", "Sync"],
+  ];
 
   refreshButton.addEventListener("click", loadApps);
+  applyEngineRoomPreference();
+  if (openEngineRoomButton) {
+    openEngineRoomButton.addEventListener("click", showEngineRoom);
+  }
+  if (refreshEngineRoomButton) {
+    refreshEngineRoomButton.addEventListener("click", function () {
+      renderEngineRoomSnapshot();
+    });
+  }
   if (refreshPremiumButton) {
     refreshPremiumButton.addEventListener("click", function () {
       loadPremiumCatalog();
@@ -162,6 +191,19 @@
         await appsReady;
         showMarketplace();
         return { ok: true, view: "marketplace" };
+      },
+      async showEngineRoom() {
+        await appsReady;
+        showEngineRoom();
+        return { ok: true, view: "engine-room" };
+      },
+      setEngineRoomVisible(visible) {
+        setEngineRoomPreference(visible === true);
+        return { ok: true, visible: engineRoomVisible() };
+      },
+      async engineRoomSnapshot(options) {
+        await appsReady;
+        return engineRoomSnapshot(options || {});
       },
       async reload() {
         if (!activeApp) return { ok: false, reason: "no-active-app" };
@@ -588,6 +630,7 @@
     activeApp = app;
     activeMount = mount;
     document.body.classList.remove("marketplace-mode");
+    document.body.classList.remove("engine-room-mode");
     renderAppList();
     reloadButton.disabled = false;
     activeTitle.textContent = app.name;
@@ -631,8 +674,182 @@
     frameWrap.textContent = "";
     frameWrap.appendChild(element("div", "empty-state", "Marketplace is open."));
     document.body.classList.add("marketplace-mode");
+    document.body.classList.remove("engine-room-mode");
     setStatus("Marketplace");
     loadPremiumCatalog();
+  }
+
+  function showEngineRoom() {
+    if (activeMount) {
+      portsByMountToken.delete(activeMount.mountToken);
+    }
+    activeApp = null;
+    activeMount = null;
+    activeFrame = null;
+    renderAppList();
+    reloadButton.disabled = true;
+    activeTitle.textContent = "Engine Room";
+    activeDescription.textContent = "Inspect raw app and platform debug data.";
+    frameWrap.textContent = "";
+    frameWrap.appendChild(element("div", "empty-state", "Engine Room is open."));
+    document.body.classList.remove("marketplace-mode");
+    document.body.classList.add("engine-room-mode");
+    setStatus("Engine Room");
+    renderEngineRoomSnapshot();
+  }
+
+  function applyEngineRoomPreference() {
+    const visible = engineRoomVisible();
+    if (engineRoomEntry) engineRoomEntry.hidden = !visible;
+  }
+
+  function engineRoomVisible() {
+    try {
+      return window.localStorage?.getItem(engineRoomPreferenceKey) !== "false";
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function setEngineRoomPreference(visible) {
+    try {
+      if (visible) window.localStorage?.setItem(engineRoomPreferenceKey, "true");
+      else window.localStorage?.setItem(engineRoomPreferenceKey, "false");
+    } catch (_) {
+      // Preference persistence is best-effort in embedded test/runtime contexts.
+    }
+    applyEngineRoomPreference();
+  }
+
+  async function renderEngineRoomSnapshot() {
+    if (!engineRoomSections) return;
+    setEngineRoomStatus("Loading");
+    try {
+      const snapshot = await engineRoomSnapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
+      engineRoomSections.textContent = "";
+      for (const [key, title] of engineRoomSectionOrder) {
+        engineRoomSections.appendChild(renderEngineRoomCard(title, snapshot[key] ?? emptyEngineRoomSection(key)));
+      }
+      setEngineRoomStatus("Ready");
+    } catch (error) {
+      engineRoomSections.textContent = "";
+      engineRoomSections.appendChild(renderEngineRoomCard("Error", {
+        code: "engine_room_snapshot_failed",
+        message: error && error.message ? error.message : String(error),
+      }));
+      setEngineRoomStatus("Error");
+    }
+  }
+
+  async function engineRoomSnapshot(options) {
+    const hostSnapshot = await fetchHostEngineRoomSnapshot(options);
+    if (hostSnapshot) return hostSnapshot;
+    return runtimeEngineRoomSnapshot(options || {});
+  }
+
+  async function fetchHostEngineRoomSnapshot(options) {
+    try {
+      const response = await fetchJson("/engine-room/snapshot", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(options || {}),
+      });
+      return response && response.ok === true && response.result ? response.result : response;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function runtimeEngineRoomSnapshot(options) {
+    const appId = options && typeof options.appId === "string" ? options.appId : null;
+    const appRecords = apps.map(function (app) {
+      return {
+        id: app.id,
+        name: app.name,
+        version: app.version,
+        description: app.description,
+        contentRating: app.contentRating || null,
+        permissions: app.permissions || [],
+        capabilities: app.capabilities || [],
+        resourceBudget: app.resourceBudget || {},
+        networkPolicy: app.networkPolicy || {},
+        storagePrefix: app.storagePrefix || null,
+      };
+    });
+    const bridgeRows = bridgeLog ? Array.from(bridgeLog.children || []).map(function (row) {
+      return { text: row.textContent || "" };
+    }) : [];
+    const storage = [];
+    for (const [storageAppId, records] of devMockStorageByApp.entries()) {
+      if (appId && storageAppId !== appId) continue;
+      for (const [key, value] of records.entries()) {
+        storage.push({ appId: storageAppId, key, value });
+      }
+    }
+    const coreEvents = devMockCoreEvents.filter(function (entry) {
+      return !appId || entry.appId === appId;
+    });
+    const networkRows = bridgeRows.filter(function (entry) {
+      return entry.text.includes("network.request");
+    });
+    const logRows = consoleEntries.filter(function (entry) {
+      return !appId || entry.appId === appId;
+    });
+    return {
+      generatedAt: new Date().toISOString(),
+      overview: {
+        source: "runtime-web",
+        activeAppId: activeApp ? activeApp.id : null,
+        runtimeVersion: "0.1.0",
+        devMode: window.__APP_RUNTIME_DEV_MOCK__ === true,
+        engineRoomVisible: engineRoomVisible(),
+        hostMode: document.body.classList.contains("native-host-mode"),
+        limits: {
+          maxBridgeCallsPerMinute: 600,
+        },
+      },
+      apps: {
+        installed: appId ? appRecords.filter((app) => app.id === appId) : appRecords,
+        premium: window.TerraneRuntimeHost ? window.TerraneRuntimeHost.premiumApps() : [],
+      },
+      database: {
+        type: "runtime-memory",
+        tableCounts: {
+          app_storage: storage.length,
+          bridge_calls: bridgeRows.length,
+          core_events: coreEvents.length,
+        },
+      },
+      storage: { rows: storage },
+      bridgeCalls: { rows: bridgeRows },
+      network: { rows: networkRows, mocks: [] },
+      logs: { console: logRows, telemetry: { crashReporting: "not-configured" } },
+      core: { events: coreEvents, actions: [], snapshots: [] },
+      permissions: {
+        apps: appRecords.map(function (app) {
+          return { appId: app.id, permissions: app.permissions, networkPolicy: app.networkPolicy, resourceBudget: app.resourceBudget };
+        }),
+      },
+      tests: { runs: [], controlSessions: [], controlCommands: [] },
+      crdt: emptyEngineRoomSection("crdt"),
+      sync: emptyEngineRoomSection("sync"),
+    };
+  }
+
+  function emptyEngineRoomSection(name) {
+    return { status: "empty", rows: [], name };
+  }
+
+  function renderEngineRoomCard(title, value) {
+    const card = element("article", "engine-room-card");
+    card.setAttribute("data-testid", `engine-room-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
+    card.appendChild(element("h3", "", title));
+    card.appendChild(element("pre", "", JSON.stringify(value, null, 2)));
+    return card;
+  }
+
+  function setEngineRoomStatus(value) {
+    if (engineRoomStatus) engineRoomStatus.textContent = value;
   }
 
   function notifyNativeActiveAppChanged(appId) {

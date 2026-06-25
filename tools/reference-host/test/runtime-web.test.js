@@ -737,6 +737,73 @@ test("runtime exposes native host marketplace view for AppKit sidebar", async ()
   }
 });
 
+test("runtime shows Engine Room by default and can hide it from persisted preference", async () => {
+  const storage = new Map();
+  const harness = createRuntimeHarness({ localStorage: storage });
+  try {
+    await loadRuntime(harness);
+    assert.equal(harness.document.getElementById("engine-room-entry").hidden, false);
+
+    harness.parentWindow.TerraneRuntimeHost.setEngineRoomVisible(false);
+
+    assert.equal(storage.get("terrane.engineRoom.visible"), "false");
+    assert.equal(harness.document.getElementById("engine-room-entry").hidden, true);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime exposes native host Engine Room view for AppKit sidebar", async () => {
+  const appIndex = {
+    source: "macos-bundled",
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Storage fixture." },
+    ],
+  };
+  const engineRoomSnapshot = {
+    generatedAt: "2026-06-25T00:00:00.000Z",
+    overview: { source: "reference-host", activeAppId: "notes-lite" },
+    apps: { rows: [{ id: "notes-lite", name: "Notes Lite" }] },
+    database: { type: "sqlite-memory", tableCounts: { app_storage: 1 } },
+    storage: { rows: [{ app_id: "notes-lite", key: "notes-lite:title", value_json: "\"hello\"" }] },
+    bridgeCalls: { rows: [] },
+    network: { rows: [] },
+    logs: { appLogRows: [], telemetry: { crashReporting: "not-configured" } },
+    core: { events: [], actions: [], snapshots: [] },
+    permissions: { rows: [] },
+    tests: { runs: [], controlSessions: [], controlCommands: [] },
+    crdt: { notebooks: [] },
+    sync: { cursors: [], server: { status: "not-attached" } },
+  };
+  const storage = new Map([["terrane.engineRoom.visible", "true"]]);
+  const harness = createRuntimeHarness({ appIndex, engineRoomSnapshot, localStorage: storage });
+  try {
+    await loadRuntime(harness);
+    assert.equal(typeof harness.parentWindow.TerraneRuntimeHost.showEngineRoom, "function");
+    assert.equal(harness.document.getElementById("engine-room-entry").hidden, false);
+
+    const result = await vm.runInContext(
+      'window.TerraneRuntimeHost.setHostMode(true); window.TerraneRuntimeHost.showEngineRoom()',
+      harness.parentContext,
+    );
+    await flushAsync();
+
+    assert.equal(result.ok, true);
+    assert.equal(result.view, "engine-room");
+    assert.equal(harness.document.body.classList.contains("native-host-mode"), true);
+    assert.equal(harness.document.body.classList.contains("engine-room-mode"), true);
+    assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), null);
+    assert.equal(harness.document.getElementById("engine-room-status").textContent, "Ready");
+    const text = elementText(harness.document.getElementById("engine-room-sections"));
+    for (const heading of ["Overview", "Apps", "Storage/DB", "Bridge/API Calls", "Network", "Logs/Telemetry", "Core/Replay", "Permissions/Policy", "Tests/Control", "CRDT", "Sync"]) {
+      assert.match(text, new RegExp(heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+    assert.match(text, /notes-lite:title/);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime native host mount rejects unknown app ids", async () => {
   const manifestsById = new Map([
     [
@@ -1046,6 +1113,7 @@ function createRuntimeHarness(options = {}) {
   parentWindow.__APP_RUNTIME_DEV_MOCK__ = options.devMock === true;
   parentWindow.__APP_RUNTIME_DEVTOOLS_ENABLED__ = options.devtools === true;
   parentWindow.location = options.location ?? { hostname: "runtime.local.platform", search: "" };
+  parentWindow.localStorage = localStorageFromMap(options.localStorage ?? new Map());
   parentWindow.dispatchMessage = function (event) {
     parentWindow.dispatch("message", event);
   };
@@ -1056,6 +1124,8 @@ function createRuntimeHarness(options = {}) {
     bridgeRequests: [],
     manifest: options.manifest ?? defaultRuntimeManifest(),
     manifestsById: options.manifestsById ?? null,
+    engineRoomSnapshot: options.engineRoomSnapshot ?? null,
+    engineRoomRequests: 0,
     premiumCatalog: options.premiumCatalog ?? null,
     premiumCatalogRequests: [],
   };
@@ -1070,6 +1140,7 @@ function createRuntimeHarness(options = {}) {
     crypto: webcrypto,
     document,
     fetch: (url, options) => fakeFetch(url, options, fetchState),
+    localStorage: parentWindow.localStorage,
     setInterval,
     setTimeout,
     window: parentWindow,
@@ -1152,15 +1223,20 @@ function createDocument(createFrameWindow) {
     "app-list",
     "bridge-log",
     "clear-debug",
+    "engine-room-entry",
+    "engine-room-sections",
+    "engine-room-status",
     "free-apps-list",
+    "open-engine-room",
     "premium-apps-list",
     "premium-marketplace-status",
+    "refresh-engine-room",
     "refresh-premium-catalog",
     "refresh-apps",
     "reload-app",
     "runtime-status",
   ]) {
-    elements.set(id, new FakeElement(id === "reload-app" || id === "refresh-apps" || id === "clear-debug" ? "button" : "div"));
+    elements.set(id, new FakeElement(id === "reload-app" || id === "refresh-apps" || id === "clear-debug" || id === "open-engine-room" || id === "refresh-engine-room" ? "button" : "div"));
   }
   return {
     body,
@@ -1286,6 +1362,11 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     if (state.premiumCatalog) return jsonResponse(state.premiumCatalog);
     return notFoundResponse();
   }
+  if (url === "/engine-room/snapshot") {
+    state.engineRoomRequests = (state.engineRoomRequests || 0) + 1;
+    if (state.engineRoomSnapshot) return jsonResponse({ ok: true, result: state.engineRoomSnapshot });
+    return notFoundResponse();
+  }
   const manifestMatch = url.match(/^\/webapps\/examples\/([^/]+)\/manifest\.json$/);
   if (manifestMatch) {
     const manifest = state.manifestsById?.get(manifestMatch[1]) ?? state.manifest ?? defaultRuntimeManifest();
@@ -1307,6 +1388,20 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     });
   }
   throw new Error(`Unexpected fetch URL in runtime harness: ${url}`);
+}
+
+function localStorageFromMap(storage) {
+  return {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
 }
 
 function elementText(element) {

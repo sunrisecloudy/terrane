@@ -61,6 +61,7 @@ final class NativeShellViewController: NSSplitViewController {
     private let workspaceController = NativeWorkspaceViewController()
     private let catalog: MacAppCatalog
     private var sidebarItem: NSSplitViewItem?
+    var onEngineRoomVisibilityChanged: ((Bool) -> Void)?
 
     init(catalog: MacAppCatalog = MacAppCatalog()) {
         self.catalog = catalog
@@ -100,12 +101,16 @@ final class NativeShellViewController: NSSplitViewController {
             return
         }
         sidebarController.updateApps(apps)
+        sidebarController.setEngineRoomVisible(NativeShellPreferences.isEngineRoomVisible)
         workspaceController.updateApps(apps)
         workspaceController.onRuntimeSelectedApp = { [weak sidebarController] appId in
             sidebarController?.select(appId: appId)
         }
         sidebarController.onSelectMarketplace = { [weak self] in
             self?.workspaceController.showMarketplace()
+        }
+        sidebarController.onSelectEngineRoom = { [weak self] in
+            self?.workspaceController.showEngineRoom()
         }
         sidebarController.onSelectApp = { [weak self] app in
             self?.workspaceController.select(app)
@@ -123,18 +128,29 @@ final class NativeShellViewController: NSSplitViewController {
         guard let sidebarItem else { return }
         sidebarItem.animator().isCollapsed.toggle()
     }
+
+    func setEngineRoomVisible(_ visible: Bool) {
+        NativeShellPreferences.setEngineRoomVisible(visible)
+        sidebarController.setEngineRoomVisible(visible)
+        workspaceController.setEngineRoomVisible(visible)
+        onEngineRoomVisibilityChanged?(visible)
+    }
 }
 
 final class NativeSidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     var onSelectMarketplace: (() -> Void)?
+    var onSelectEngineRoom: (() -> Void)?
     var onSelectApp: ((MacAppCatalogItem) -> Void)?
 
     private var apps: [MacAppCatalogItem] = []
+    private var isEngineRoomVisible = false
     private var suppressSelectionCallback = false
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
     private let marketplaceTitleField = NSTextField(labelWithString: "Marketplace")
     private let marketplaceButton = SidebarActionButton(title: "Marketplace", symbolName: "storefront")
+    private let engineRoomTitleField = NSTextField(labelWithString: "Inspect")
+    private let engineRoomButton = SidebarActionButton(title: "Engine Room", symbolName: "wrench.and.screwdriver")
     private let titleField = NSTextField(labelWithString: "Apps")
 
     override func loadView() {
@@ -151,6 +167,14 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
 
         marketplaceButton.target = self
         marketplaceButton.action = #selector(selectMarketplace)
+
+        engineRoomTitleField.font = .systemFont(ofSize: 11, weight: .semibold)
+        engineRoomTitleField.textColor = .secondaryLabelColor
+        engineRoomTitleField.stringValue = engineRoomTitleField.stringValue.uppercased()
+        engineRoomTitleField.maximumNumberOfLines = 1
+
+        engineRoomButton.target = self
+        engineRoomButton.action = #selector(selectEngineRoom)
 
         titleField.font = .systemFont(ofSize: 11, weight: .semibold)
         titleField.textColor = .secondaryLabelColor
@@ -175,6 +199,8 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         scrollView.hasVerticalScroller = true
         root.addSubview(marketplaceTitleField)
         root.addSubview(marketplaceButton)
+        root.addSubview(engineRoomTitleField)
+        root.addSubview(engineRoomButton)
         root.addSubview(titleField)
         root.addSubview(scrollView)
 
@@ -201,9 +227,29 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
             width: max(0, view.bounds.width - horizontalInset * 2),
             height: rowHeight
         )
+        engineRoomTitleField.isHidden = !isEngineRoomVisible
+        engineRoomButton.isHidden = !isEngineRoomVisible
+        let titleBaselineY: CGFloat
+        if isEngineRoomVisible {
+            engineRoomTitleField.frame = NSRect(
+                x: horizontalInset + 7,
+                y: max(0, marketplaceButton.frame.minY - sectionGap - sectionHeight),
+                width: max(0, view.bounds.width - horizontalInset * 2 - 14),
+                height: sectionHeight
+            )
+            engineRoomButton.frame = NSRect(
+                x: horizontalInset,
+                y: max(0, engineRoomTitleField.frame.minY - rowHeight - 6),
+                width: max(0, view.bounds.width - horizontalInset * 2),
+                height: rowHeight
+            )
+            titleBaselineY = engineRoomButton.frame.minY - sectionGap - sectionHeight
+        } else {
+            titleBaselineY = marketplaceButton.frame.minY - sectionGap - sectionHeight
+        }
         titleField.frame = NSRect(
             x: horizontalInset + 7,
-            y: max(0, marketplaceButton.frame.minY - sectionGap - sectionHeight),
+            y: max(0, titleBaselineY),
             width: max(0, view.bounds.width - horizontalInset * 2 - 14),
             height: sectionHeight
         )
@@ -220,9 +266,18 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         tableView.reloadData()
     }
 
+    func setEngineRoomVisible(_ visible: Bool) {
+        isEngineRoomVisible = visible
+        if !visible, engineRoomButton.isSelectedForSidebar {
+            engineRoomButton.isSelectedForSidebar = false
+        }
+        view.needsLayout = true
+    }
+
     func select(appId: String) {
         guard let index = apps.firstIndex(where: { $0.id == appId }) else { return }
         marketplaceButton.isSelectedForSidebar = false
+        engineRoomButton.isSelectedForSidebar = false
         suppressSelectionCallback = true
         tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         suppressSelectionCallback = false
@@ -232,6 +287,14 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
     func selectMarketplaceRow() {
         tableView.deselectAll(nil)
         marketplaceButton.isSelectedForSidebar = true
+        engineRoomButton.isSelectedForSidebar = false
+    }
+
+    func selectEngineRoomRow() {
+        guard isEngineRoomVisible else { return }
+        tableView.deselectAll(nil)
+        marketplaceButton.isSelectedForSidebar = false
+        engineRoomButton.isSelectedForSidebar = true
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -251,12 +314,18 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         let row = tableView.selectedRow
         guard row >= 0, row < apps.count else { return }
         marketplaceButton.isSelectedForSidebar = false
+        engineRoomButton.isSelectedForSidebar = false
         onSelectApp?(apps[row])
     }
 
     @objc private func selectMarketplace() {
         selectMarketplaceRow()
         onSelectMarketplace?()
+    }
+
+    @objc private func selectEngineRoom() {
+        selectEngineRoomRow()
+        onSelectEngineRoom?()
     }
 }
 
@@ -379,6 +448,7 @@ final class NativeWorkspaceViewController: NSViewController {
     private enum Selection {
         case app(MacAppCatalogItem)
         case marketplace
+        case engineRoom
     }
 
     private let headerView = NSView()
@@ -470,6 +540,23 @@ final class NativeWorkspaceViewController: NSViewController {
         webHostView.showMarketplace()
     }
 
+    func showEngineRoom() {
+        guard NativeShellPreferences.isEngineRoomVisible else { return }
+        selection = .engineRoom
+        titleField.stringValue = "Engine Room"
+        descriptionField.stringValue = "Inspect raw app and platform debug data."
+        descriptionField.textColor = .secondaryLabelColor
+        reloadButton.isEnabled = true
+        webHostView.showEngineRoom()
+    }
+
+    func setEngineRoomVisible(_ visible: Bool) {
+        if !visible, case .engineRoom = selection {
+            selection = nil
+            reloadButton.isEnabled = false
+        }
+    }
+
     func showEmptyState() {
         selection = nil
         titleField.stringValue = "No bundled apps found"
@@ -512,6 +599,10 @@ final class NativeWorkspaceViewController: NSViewController {
             descriptionField.stringValue = "Browse Terrane Premium apps from the Premium server."
             descriptionField.textColor = .secondaryLabelColor
             webHostView.showMarketplace()
+        case .engineRoom:
+            descriptionField.stringValue = "Inspect raw app and platform debug data."
+            descriptionField.textColor = .secondaryLabelColor
+            webHostView.showEngineRoom()
         case nil:
             return
         }

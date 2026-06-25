@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var shellController: NativeShellViewController?
     private var sidebarToggleAccessory: SidebarToggleAccessoryController?
+    private var engineRoomMenuItem: NSMenuItem?
 #if DEBUG
     private var controlPlane: DevControlPlane?
 #endif
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 #endif
 
         showMainWindow()
+        configureMainMenu()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -76,6 +78,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
+        shellController.onEngineRoomVisibilityChanged = { [weak self] visible in
+            self?.engineRoomMenuItem?.state = visible ? .on : .off
+        }
+    }
+
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit Terrane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        let engineRoomItem = NSMenuItem(title: "Engine Room", action: #selector(toggleEngineRoomVisibility(_:)), keyEquivalent: "e")
+        engineRoomItem.keyEquivalentModifierMask = [.command, .shift]
+        engineRoomItem.target = self
+        engineRoomItem.state = NativeShellPreferences.isEngineRoomVisible ? .on : .off
+        viewMenu.addItem(engineRoomItem)
+        engineRoomMenuItem = engineRoomItem
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func toggleEngineRoomVisibility(_ sender: Any?) {
+        let visible = !NativeShellPreferences.isEngineRoomVisible
+        shellController?.setEngineRoomVisible(visible)
+        engineRoomMenuItem?.state = visible ? .on : .off
     }
 
     func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
@@ -90,6 +122,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defaultFrame: newFrame,
             screenVisibleFrame: window.screen?.visibleFrame
         )
+    }
+}
+
+enum NativeShellPreferences {
+    static let engineRoomVisibleKey = "terrane.engineRoom.visible"
+
+    static var isEngineRoomVisible: Bool {
+        guard UserDefaults.standard.object(forKey: engineRoomVisibleKey) != nil else {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: engineRoomVisibleKey)
+    }
+
+    static func setEngineRoomVisible(_ visible: Bool) {
+        UserDefaults.standard.set(visible, forKey: engineRoomVisibleKey)
     }
 }
 

@@ -50,6 +50,6 @@ Mobile simulator/emulator adapters can come later.
 
 Add safe DB inspection tools:
 
-- DB: `db.snapshot`, `db.query_app_storage`, `db.query_app_versions`, `db.query_bridge_calls`, `db.query_core_events`, `db.query_test_runs`, `db.export_debug_bundle`.
+- DB: `db.snapshot`, `db.query_app_storage`, `db.query_app_versions`, `db.query_bridge_calls`, `db.query_core_events`, `db.query_test_runs`, `db.export_debug_bundle`, `engineRoom.snapshot`.
 
 These tools forward to the dev control plane. They must not execute arbitrary SQL by default.

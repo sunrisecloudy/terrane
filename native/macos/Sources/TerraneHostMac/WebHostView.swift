@@ -14,6 +14,7 @@ final class WebHostView: NSView, WKNavigationDelegate {
     private var nativeHostModeEnabled: Bool
     private var pendingNativeAppId: String?
     private var pendingMarketplaceView = false
+    private var pendingEngineRoomView = false
     var onNativeRuntimeError: ((String) -> Void)?
     var onNativeAppMounted: ((String) -> Void)?
 
@@ -79,12 +80,21 @@ final class WebHostView: NSView, WKNavigationDelegate {
     func mountApp(id appId: String) {
         pendingNativeAppId = appId
         pendingMarketplaceView = false
+        pendingEngineRoomView = false
         applyNativeRuntimeState()
     }
 
     func showMarketplace() {
         pendingNativeAppId = nil
         pendingMarketplaceView = true
+        pendingEngineRoomView = false
+        applyNativeRuntimeState()
+    }
+
+    func showEngineRoom() {
+        pendingNativeAppId = nil
+        pendingMarketplaceView = false
+        pendingEngineRoomView = true
         applyNativeRuntimeState()
     }
 
@@ -148,6 +158,7 @@ final class WebHostView: NSView, WKNavigationDelegate {
         let script = Self.nativeRuntimeUpdateScript(
             appId: pendingNativeAppId,
             showMarketplace: pendingMarketplaceView,
+            showEngineRoom: pendingEngineRoomView,
             nativeHostModeEnabled: nativeHostModeEnabled
         )
         Task { @MainActor [weak self] in
@@ -167,13 +178,15 @@ final class WebHostView: NSView, WKNavigationDelegate {
         }
     }
 
-    static func nativeRuntimeUpdateScript(appId: String?, showMarketplace: Bool = false, nativeHostModeEnabled: Bool) -> String {
+    static func nativeRuntimeUpdateScript(appId: String?, showMarketplace: Bool = false, showEngineRoom: Bool = false, nativeHostModeEnabled: Bool) -> String {
         var statements = [
             "const host = window.TerraneRuntimeHost;",
             "if (!host) { throw new Error('TerraneRuntimeHost is unavailable'); }",
             "host.setHostMode(\(nativeHostModeEnabled ? "true" : "false"));"
         ]
-        if showMarketplace {
+        if showEngineRoom {
+            statements.append("await host.showEngineRoom();")
+        } else if showMarketplace {
             statements.append("await host.showMarketplace();")
         } else if let appId {
             statements.append("await host.mountApp(\(Self.javascriptStringLiteral(appId)));")
@@ -270,10 +283,20 @@ window.parent.postMessage({type:"runtime.ready_for_port"},"*");
 """
 
 final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
+    private let engineRoom = NativeEngineRoomSnapshotProvider()
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let requestURL = urlSchemeTask.request.url,
-              let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: requestURL)
-        else {
+        guard let requestURL = urlSchemeTask.request.url else {
+            urlSchemeTask.didFailWithError(RuntimeResourceError.notFound)
+            return
+        }
+
+        if RuntimeResourceLocator.isEngineRoomSnapshotURL(requestURL) {
+            sendEngineRoomSnapshot(urlSchemeTask, requestURL: requestURL)
+            return
+        }
+
+        guard let fileURL = RuntimeResourceLocator.fileURL(forRuntimeURL: requestURL) else {
             urlSchemeTask.didFailWithError(RuntimeResourceError.notFound)
             return
         }
@@ -298,6 +321,37 @@ final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    private func sendEngineRoomSnapshot(_ urlSchemeTask: WKURLSchemeTask, requestURL: URL) {
+        let requestBody = urlSchemeTask.request.httpBody.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        } ?? [:]
+        let snapshot = engineRoom.snapshot(
+            appId: requestBody["appId"] as? String,
+            limit: requestBody["limit"] as? Int
+        )
+        let envelope: [String: Any] = ["ok": true, "result": snapshot]
+
+        guard JSONSerialization.isValidJSONObject(envelope),
+              let data = try? JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
+        else {
+            urlSchemeTask.didFailWithError(RuntimeResourceError.jsonEncodingFailed)
+            return
+        }
+
+        let response = HTTPURLResponse(
+            url: requestURL,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: [
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Length": "\(data.count)"
+            ]
+        )!
+        urlSchemeTask.didReceive(response)
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
+    }
 
     private static func data(for fileURL: URL, requestURL: URL) throws -> Data {
         let data = try Data(contentsOf: fileURL)
@@ -385,6 +439,10 @@ enum RuntimeResourceLocator {
     static func isGeneratedAppIndexURL(_ url: URL) -> Bool {
         let logicalPath = logicalResourcePath(for: url)
         return logicalPath.hasPrefix("webapps/examples/") && logicalPath.hasSuffix("/index.html")
+    }
+
+    static func isEngineRoomSnapshotURL(_ url: URL) -> Bool {
+        url.scheme == scheme && url.host == "runtime" && logicalResourcePath(for: url) == "engine-room/snapshot"
     }
 
     static func exampleAppDirectoryURL(for appId: String) -> URL? {
@@ -491,5 +549,11 @@ enum RuntimeResourceError {
         domain: NSURLErrorDomain,
         code: NSURLErrorFileDoesNotExist,
         userInfo: [NSLocalizedDescriptionKey: "Runtime resource was not found"]
+    )
+
+    static let jsonEncodingFailed = NSError(
+        domain: NSURLErrorDomain,
+        code: NSURLErrorCannotParseResponse,
+        userInfo: [NSLocalizedDescriptionKey: "Engine Room snapshot could not be encoded"]
     )
 }
