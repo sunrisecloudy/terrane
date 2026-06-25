@@ -75,10 +75,56 @@
   align-items: start;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   position: sticky;
   top: 0;
   z-index: 2;
+}
+
+.engine-room-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.engine-room-scope {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.engine-room-scope-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.engine-room-select {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #18202f;
+  font: inherit;
+  max-width: 200px;
+  min-height: 36px;
+  padding: 0 8px;
+}
+
+.engine-room-tools {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.engine-room-tool {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #334155;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 0 10px;
 }
 
 .engine-room-filter {
@@ -86,11 +132,11 @@
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   color: #18202f;
+  flex: 1 1 160px;
   font: inherit;
   min-height: 36px;
   min-width: 0;
   padding: 0 10px;
-  width: 100%;
 }
 
 .engine-room-tabs {
@@ -218,16 +264,104 @@
   overflow-wrap: anywhere;
 }
 
+.engine-room-tables {
+  display: grid;
+  gap: 12px;
+}
+
+.engine-room-table-block {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.engine-room-table-caption {
+  align-items: center;
+  color: #475569;
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  text-transform: uppercase;
+}
+
+.engine-room-table-count {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  font-weight: 600;
+  padding: 1px 7px;
+}
+
+.engine-room-table-wrap,
+.engine-room-table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.engine-room-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+
+.engine-room-table th,
+.engine-room-table td {
+  border-bottom: 1px solid #e2e8f0;
+  max-width: 240px;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.engine-room-table th {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.engine-room-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.engine-room-cell-empty {
+  color: #94a3b8;
+}
+
+.engine-room-cell-time {
+  color: #475569;
+}
+
+.engine-room-cell-json {
+  color: #0f766e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.engine-room-table-more {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .engine-room-raw {
   border-top: 1px solid #e2e8f0;
   padding-top: 10px;
 }
 
 .engine-room-raw summary {
+  align-items: center;
   color: #0f766e;
   cursor: pointer;
+  display: flex;
   font-weight: 700;
+  gap: 8px;
   list-style-position: inside;
+}
+
+.engine-room-raw summary .engine-room-tool {
+  margin-left: auto;
 }
 
 .engine-room-card pre {
@@ -297,10 +431,26 @@
   }
 
   .engine-room-filter,
+  .engine-room-select,
+  .engine-room-tool,
   .engine-room-tab {
     background: #182033;
     border-color: #334155;
     color: #e5e7eb;
+  }
+
+  .engine-room-table th,
+  .engine-room-table td {
+    border-color: #334155;
+  }
+
+  .engine-room-table-count {
+    background: #1f2937;
+    border-color: #334155;
+  }
+
+  .engine-room-cell-json {
+    color: #5eead4;
   }
 
   .engine-room-tab.active {

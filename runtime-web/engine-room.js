@@ -24,11 +24,100 @@
     ["sync", "Sync"],
   ];
 
+  // Canonical runtime constants. Hosts may override these in their snapshot
+  // overview; the runtime fallback reads from here so the values live in one
+  // place instead of being duplicated across runtime.js.
+  const RUNTIME_VERSION = "0.1.0";
+  const MAX_BRIDGE_CALLS_PER_MINUTE = 600;
+  // Per-table display caps. Snapshots already bound row counts host-side; these
+  // keep a single oversized collection from dominating the panel.
+  const ROW_DISPLAY_LIMIT = 25;
+  const MAX_TABLE_COLUMNS = 6;
+
+  // Declarative bridge between the two snapshot shapes (rich host SQLite vs.
+  // thin in-memory runtime fallback) and the renderer. Each collection lists
+  // the candidate field names in priority order, so a single resolver
+  // (pickArray) absorbs the drift instead of scattering `??` fallbacks.
+  const engineRoomCollections = {
+    apps: [
+      { label: "Installed", fields: ["installed"], preferred: ["id", "appId", "name", "version"] },
+      { label: "Registry", fields: ["rows"], preferred: ["id", "app_id", "name", "version", "status"] },
+      { label: "Versions", fields: ["versions"], preferred: ["app_id", "version", "status", "trust_level"] },
+      // Premium apps come from the runtime marketplace, not the local host, so
+      // this collection is runtime-only and absent from host snapshots.
+      { label: "Premium", fields: ["premium"], preferred: ["id", "name", "version"], optional: true },
+    ],
+    database: [
+      { label: "Table counts", fields: ["__tableCounts"], preferred: ["table", "rows"] },
+    ],
+    storage: [
+      { label: "Storage rows", fields: ["rows"], preferred: ["app_id", "appId", "key", "value", "value_json", "updated_at"] },
+    ],
+    bridgeCalls: [
+      { label: "Bridge calls", fields: ["rows"], preferred: ["created_at", "app_id", "method", "params_json", "result_json", "error_json", "text"] },
+    ],
+    network: [
+      { label: "Requests", fields: ["rows"], preferred: ["created_at", "app_id", "method", "params_json", "text"] },
+      { label: "Mocks", fields: ["mocks"], preferred: ["app_id", "method", "url"] },
+    ],
+    logs: [
+      { label: "App logs", fields: ["appLogRows", "console"], preferred: ["createdAt", "created_at", "appId", "app_id", "level", "message"] },
+      { label: "Runtime sessions", fields: ["runtimeSessions"], preferred: ["app_id", "started_at", "status"] },
+    ],
+    core: [
+      { label: "Events", fields: ["events"], preferred: ["created_at", "appId", "app_id", "type", "name"] },
+      { label: "Actions", fields: ["actions"], preferred: ["created_at", "app_id", "type", "name"] },
+      { label: "Snapshots", fields: ["snapshots"], preferred: ["snapshot_id", "app_id", "type", "created_at"] },
+    ],
+    permissions: [
+      { label: "Permissions", fields: ["rows", "apps"], preferred: ["appId", "app_id", "permissions", "networkPolicy"] },
+      { label: "Install reports", fields: ["installReports"], preferred: ["app_id", "status", "created_at"] },
+    ],
+    tests: [
+      { label: "Test runs", fields: ["runs"], preferred: ["app_id", "status", "created_at"] },
+      { label: "Control sessions", fields: ["controlSessions"], preferred: ["control_session_id", "app_id", "created_at"] },
+      { label: "Control commands", fields: ["controlCommands"], preferred: ["control_session_id", "tool", "created_at"] },
+    ],
+    crdt: [
+      { label: "Notebooks", fields: ["notebooks"], preferred: ["notebook_id", "app_id", "created_at"] },
+      { label: "Documents", fields: ["documents"], preferred: ["document_id", "app_id"] },
+      { label: "Updates", fields: ["updates"], preferred: ["app_id", "actor", "created_at"] },
+      { label: "Actors", fields: ["actors"], preferred: ["app_id", "actor"] },
+      { label: "Proposals", fields: ["proposals"], preferred: ["app_id", "status"] },
+    ],
+    sync: [
+      { label: "Cursors", fields: ["cursors"], preferred: ["app_id", "cursor", "updated_at"] },
+    ],
+  };
+
+  const columnLabels = {
+    app_id: "App",
+    appId: "App",
+    value_json: "Value",
+    params_json: "Params",
+    result_json: "Result",
+    error_json: "Error",
+    bridge_call_id: "Call ID",
+    control_session_id: "Session",
+    snapshot_id: "Snapshot",
+    notebook_id: "Notebook",
+    document_id: "Document",
+    created_at: "Created",
+    updated_at: "Updated",
+    started_at: "Started",
+    activated_at: "Activated",
+    createdAt: "Created",
+    updatedAt: "Updated",
+    networkPolicy: "Network policy",
+  };
+
   function create(deps) {
     const dom = deps.dom;
     let activeGroup = "all";
     let filterText = "";
     let currentSnapshot = null;
+    let selectedAppId = null;
+    let appOptions = [];
 
     function showEngineRoom() {
       const activeMount = deps.getActiveMount();
@@ -76,7 +165,9 @@
       setStatus("Loading");
       try {
         const activeApp = deps.getActiveApp();
-        currentSnapshot = await snapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
+        const appId = selectedAppId || (activeApp ? activeApp.id : null);
+        currentSnapshot = await snapshot({ appId, limit: 50 });
+        if (!selectedAppId) captureAppOptions(currentSnapshot);
         renderSnapshotContent();
         setStatus("Ready");
       } catch (error) {
@@ -151,7 +242,7 @@
       for (const [storageAppId, records] of deps.devMockStorageByApp.entries()) {
         if (appId && storageAppId !== appId) continue;
         for (const [key, value] of records.entries()) {
-          storage.push({ appId: storageAppId, key, value });
+          storage.push({ app_id: storageAppId, key, value });
         }
       }
       const coreEvents = deps.devMockCoreEvents.filter(function (entry) {
@@ -169,16 +260,18 @@
         overview: {
           source: "runtime-web",
           activeAppId: activeApp ? activeApp.id : null,
-          runtimeVersion: "0.1.0",
+          runtimeVersion: RUNTIME_VERSION,
           devMode: window.__APP_RUNTIME_DEV_MOCK__ === true,
           engineRoomVisible: isVisible(),
           hostMode: document.body.classList.contains("native-host-mode"),
           limits: {
-            maxBridgeCallsPerMinute: 600,
+            maxBridgeCallsPerMinute: MAX_BRIDGE_CALLS_PER_MINUTE,
           },
         },
         apps: {
           installed: appId ? appRecords.filter((app) => app.id === appId) : appRecords,
+          rows: appId ? appRecords.filter((app) => app.id === appId) : appRecords,
+          versions: [],
           premium: deps.premiumApps(),
         },
         database: {
@@ -192,12 +285,13 @@
         storage: { rows: storage },
         bridgeCalls: { rows: bridgeRows },
         network: { rows: networkRows, mocks: [] },
-        logs: { console: logRows, telemetry: { crashReporting: "not-configured" } },
+        logs: { appLogRows: logRows, runtimeSessions: [], telemetry: { crashReporting: "not-configured" } },
         core: { events: coreEvents, actions: [], snapshots: [] },
         permissions: {
-          apps: appRecords.map(function (app) {
+          rows: appRecords.map(function (app) {
             return { appId: app.id, permissions: app.permissions, networkPolicy: app.networkPolicy, resourceBudget: app.resourceBudget };
           }),
+          installReports: [],
         },
         tests: { runs: [], controlSessions: [], controlCommands: [] },
         crdt: emptySection("crdt"),
@@ -218,19 +312,25 @@
       const bridgeCalls = currentSnapshot.bridgeCalls || {};
       const logs = currentSnapshot.logs || {};
       summary.appendChild(metric("Source", overview.source || "local runtime"));
-      summary.appendChild(metric("Active app", overview.activeAppId || overview.appId || "none"));
-      summary.appendChild(metric("Apps", String(countItems(apps.rows) + countItems(apps.installed))));
+      summary.appendChild(metric("Scope", selectedAppId || overview.activeAppId || overview.appId || "all apps"));
+      summary.appendChild(metric("Apps", String(countItems(pickArray(apps, ["installed", "rows"])))));
       summary.appendChild(metric("DB rows", String(sumTableCounts(database.tableCounts))));
       summary.appendChild(metric("Bridge calls", String(countItems(bridgeCalls.rows))));
-      summary.appendChild(metric("Logs", String(countItems(logs.appLogRows) + countItems(logs.console))));
+      summary.appendChild(metric("Logs", String(countItems(pickArray(logs, ["appLogRows", "console"])))));
+      summary.appendChild(metric("Updated", relativeTime(currentSnapshot.generatedAt)));
       return summary;
     }
 
     function renderToolbar() {
       const toolbar = deps.element("div", "engine-room-toolbar");
       toolbar.setAttribute("data-testid", "engine-room-toolbar");
+
+      const controls = deps.element("div", "engine-room-controls");
+      controls.appendChild(renderAppSelect());
+
       const search = deps.element("input", "engine-room-filter");
       search.setAttribute("type", "search");
+      search.setAttribute("data-testid", "engine-room-filter");
       search.setAttribute("placeholder", "Filter");
       search.setAttribute("aria-label", "Filter Engine Room sections");
       search.value = filterText;
@@ -238,7 +338,9 @@
         filterText = String(event.target.value || "").trim().toLowerCase();
         renderSnapshotContent();
       });
-      toolbar.appendChild(search);
+      controls.appendChild(search);
+      controls.appendChild(renderToolbarActions());
+      toolbar.appendChild(controls);
 
       const tabs = deps.element("div", "engine-room-tabs");
       tabs.setAttribute("role", "tablist");
@@ -296,7 +398,7 @@
         return [["Requests", countItems(value.rows)], ["Mocks", countItems(value.mocks)]];
       case "logs":
         return [
-          ["App logs", countItems(value.appLogRows) + countItems(value.console)],
+          ["App logs", countItems(pickArray(value, ["appLogRows", "console"]))],
           ["Runtime sessions", countItems(value.runtimeSessions)],
           ["Crash reporting", value.telemetry?.crashReporting || "not configured"],
         ];
@@ -308,7 +410,7 @@
         ];
       case "permissions":
         return [
-          ["Permission rows", countItems(value.rows)],
+          ["Permission rows", countItems(pickArray(value, ["rows", "apps"]))],
           ["Install reports", countItems(value.installReports)],
         ];
       case "tests":
@@ -356,8 +458,15 @@
         summary.appendChild(row);
       }
       card.appendChild(summary);
+      const tables = renderCollectionTables(section, value);
+      if (tables) card.appendChild(tables);
       const details = deps.element("details", "engine-room-raw");
-      details.appendChild(deps.element("summary", "", "Raw JSON"));
+      const rawSummary = deps.element("summary");
+      rawSummary.appendChild(deps.element("span", "", "Raw JSON"));
+      rawSummary.appendChild(copyButton("Copy", function () {
+        copyText(JSON.stringify(value, null, 2));
+      }));
+      details.appendChild(rawSummary);
       details.appendChild(deps.element("pre", "", JSON.stringify(value, null, 2)));
       card.appendChild(details);
       return card;
@@ -444,6 +553,259 @@
       }, 0);
     }
 
+    function pickArray(value, fields) {
+      if (!value || typeof value !== "object") return [];
+      for (const field of fields) {
+        if (Array.isArray(value[field])) return value[field];
+      }
+      return [];
+    }
+
+    function captureAppOptions(snapshotValue) {
+      const apps = snapshotValue && snapshotValue.apps ? snapshotValue.apps : {};
+      const seen = new Set();
+      const options = [];
+      for (const app of pickArray(apps, ["installed", "rows"])) {
+        const id = app && (app.id || app.appId || app.app_id);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        options.push({ id, name: app.name || id });
+      }
+      appOptions = options;
+    }
+
+    function renderAppSelect() {
+      const wrap = deps.element("label", "engine-room-scope");
+      wrap.appendChild(deps.element("span", "engine-room-scope-label", "App"));
+      const select = deps.element("select", "engine-room-select");
+      select.setAttribute("data-testid", "engine-room-app-select");
+      select.setAttribute("aria-label", "Scope Engine Room to an app");
+      appendOption(select, "", "All apps", selectedAppId);
+      for (const option of appOptions) {
+        appendOption(select, option.id, option.name, selectedAppId);
+      }
+      select.value = selectedAppId || "";
+      select.addEventListener("change", function (event) {
+        selectedAppId = String(event.target.value || "") || null;
+        renderSnapshot();
+      });
+      wrap.appendChild(select);
+      return wrap;
+    }
+
+    function appendOption(select, value, label, current) {
+      const option = deps.element("option", "", label);
+      option.setAttribute("value", value);
+      if ((current || "") === value) option.setAttribute("selected", "selected");
+      select.appendChild(option);
+    }
+
+    function renderToolbarActions() {
+      const actions = deps.element("div", "engine-room-tools");
+      actions.appendChild(copyButton("Copy snapshot", function () {
+        if (currentSnapshot) copyText(JSON.stringify(currentSnapshot, null, 2));
+      }));
+      const download = deps.element("button", "engine-room-tool");
+      download.setAttribute("type", "button");
+      download.setAttribute("data-testid", "engine-room-download");
+      download.textContent = "Download";
+      download.addEventListener("click", downloadSnapshot);
+      actions.appendChild(download);
+      return actions;
+    }
+
+    function copyButton(label, handler) {
+      const button = deps.element("button", "engine-room-tool");
+      button.setAttribute("type", "button");
+      button.textContent = label;
+      button.addEventListener("click", function (event) {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        handler();
+      });
+      return button;
+    }
+
+    function copyText(text) {
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text);
+        }
+      } catch (_) {
+        // Clipboard access is best-effort; ignore when unavailable or blocked.
+      }
+    }
+
+    function downloadSnapshot() {
+      if (!currentSnapshot) return;
+      const text = JSON.stringify(currentSnapshot, null, 2);
+      try {
+        if (typeof Blob === "undefined" || typeof URL === "undefined" || !URL.createObjectURL) {
+          copyText(text);
+          return;
+        }
+        const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `engine-room-${(selectedAppId || "all").replace(/[^a-z0-9_-]+/gi, "-")}.json`;
+        if (typeof anchor.click === "function") anchor.click();
+        if (URL.revokeObjectURL) URL.revokeObjectURL(url);
+      } catch (_) {
+        copyText(text);
+      }
+    }
+
+    function renderCollectionTables(section, value) {
+      const collections = engineRoomCollections[section.key];
+      if (!collections) return null;
+      const wrap = deps.element("div", "engine-room-tables");
+      let rendered = 0;
+      for (const collection of collections) {
+        const rows = collectionRows(collection, value);
+        if (!rows.length) continue;
+        wrap.appendChild(renderRowTable(collection, rows));
+        rendered += 1;
+      }
+      return rendered > 0 ? wrap : null;
+    }
+
+    function collectionRows(collection, value) {
+      if (collection.fields[0] === "__tableCounts") {
+        const counts = value && value.tableCounts;
+        if (!counts || typeof counts !== "object") return [];
+        return Object.keys(counts)
+          .filter(function (table) {
+            return typeof counts[table] === "number" && counts[table] > 0;
+          })
+          .map(function (table) {
+            return { table, rows: counts[table] };
+          });
+      }
+      return pickArray(value, collection.fields);
+    }
+
+    function renderRowTable(collection, rows) {
+      const block = deps.element("div", "engine-room-table-block");
+      const caption = deps.element("div", "engine-room-table-caption");
+      caption.appendChild(deps.element("span", "", collection.label));
+      caption.appendChild(deps.element("span", "engine-room-table-count", String(rows.length)));
+      block.appendChild(caption);
+
+      const shown = rows.slice(0, ROW_DISPLAY_LIMIT);
+      const columns = deriveColumns(shown, collection.preferred);
+      const table = deps.element("table", "engine-room-table");
+      const thead = deps.element("thead");
+      const headRow = deps.element("tr");
+      for (const column of columns) {
+        headRow.appendChild(deps.element("th", "", columnLabel(column)));
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = deps.element("tbody");
+      for (const row of shown) {
+        const tr = deps.element("tr");
+        for (const column of columns) {
+          const td = deps.element("td", "engine-room-cell");
+          td.appendChild(formatCell(readField(row, column), column));
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      block.appendChild(table);
+      if (rows.length > shown.length) {
+        block.appendChild(deps.element("div", "engine-room-table-more", `+${rows.length - shown.length} more rows`));
+      }
+      return block;
+    }
+
+    function readField(row, column) {
+      if (column === "__value") return row;
+      return row ? row[column] : undefined;
+    }
+
+    function deriveColumns(rows, preferred) {
+      const seen = new Set();
+      const order = [];
+      let scalarOnly = true;
+      for (const row of rows) {
+        if (row && typeof row === "object" && !Array.isArray(row)) {
+          scalarOnly = false;
+          for (const key of Object.keys(row)) {
+            if (!seen.has(key)) {
+              seen.add(key);
+              order.push(key);
+            }
+          }
+        }
+      }
+      if (scalarOnly || order.length === 0) return ["__value"];
+      const columns = [];
+      for (const key of preferred || []) {
+        if (seen.has(key) && !columns.includes(key)) columns.push(key);
+      }
+      for (const key of order) {
+        if (!columns.includes(key)) columns.push(key);
+      }
+      return columns.slice(0, MAX_TABLE_COLUMNS);
+    }
+
+    function columnLabel(column) {
+      if (column === "__value") return "Value";
+      if (columnLabels[column]) return columnLabels[column];
+      return column
+        .replace(/_/g, " ")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/^./, function (char) {
+          return char.toUpperCase();
+        });
+    }
+
+    function isTimestampColumn(column) {
+      return /(_at|At)$/.test(column) || column === "generatedAt";
+    }
+
+    function formatCell(value, column) {
+      if (value === null || value === undefined || value === "") {
+        return deps.element("span", "engine-room-cell-empty", "—");
+      }
+      if (typeof value === "string" && isTimestampColumn(column)) {
+        const node = deps.element("span", "engine-room-cell-time", relativeTime(value));
+        node.setAttribute("title", value);
+        return node;
+      }
+      if (typeof value === "object") {
+        const json = JSON.stringify(value);
+        const node = deps.element("code", "engine-room-cell-json", truncate(json, 80));
+        if (json.length > 80) node.setAttribute("title", json);
+        return node;
+      }
+      const text = String(value);
+      const node = deps.element("span", "", truncate(text, 120));
+      if (text.length > 120) node.setAttribute("title", text);
+      return node;
+    }
+
+    function relativeTime(iso) {
+      if (!iso) return "unknown";
+      const then = Date.parse(iso);
+      if (Number.isNaN(then)) return String(iso);
+      const seconds = Math.round((Date.now() - then) / 1000);
+      if (seconds < 0) return "just now";
+      if (seconds < 5) return "just now";
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.round(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function truncate(text, max) {
+      return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+    }
+
     function setStatus(value) {
       if (dom.status) dom.status.textContent = value;
     }
@@ -458,5 +820,17 @@
     };
   }
 
-  window.TerraneEngineRoom = { create };
+  window.TerraneEngineRoom = {
+    create,
+    // Canonical snapshot contract: the section keys (and their collections) the
+    // renderer understands. Both the host snapshot and the runtime fallback are
+    // expected to conform to this shape.
+    sectionKeys: engineRoomSectionOrder.map(function (section) {
+      return section.key;
+    }),
+    groups: engineRoomGroups.map(function (group) {
+      return group[0];
+    }),
+    collections: engineRoomCollections,
+  };
 })();
