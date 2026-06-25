@@ -42,14 +42,31 @@
       <div class="marketplace-header">
         <div>
           <p class="eyebrow">Marketplace</p>
-          <h2>Premium Apps</h2>
+          <h2>Apps Marketplace</h2>
         </div>
         <div class="marketplace-actions">
           <span class="marketplace-status" id="premium-marketplace-status" data-testid="premium-marketplace-status">Static fallback</span>
           <button id="refresh-premium-catalog" data-testid="refresh-premium-catalog-button" title="Refresh Premium catalog">Refresh</button>
         </div>
       </div>
-      <div id="premium-apps-list" class="premium-apps-list" data-testid="premium-apps-list"></div>
+      <section class="marketplace-section" aria-label="Free apps">
+        <div class="marketplace-section-header">
+          <div>
+            <p class="eyebrow">Included</p>
+            <h3>Free Apps</h3>
+          </div>
+        </div>
+        <div id="free-apps-list" class="marketplace-apps-list" data-testid="free-apps-list"></div>
+      </section>
+      <section class="marketplace-section" aria-label="Premium apps">
+        <div class="marketplace-section-header">
+          <div>
+            <p class="eyebrow">Premium</p>
+            <h3>Premium Apps</h3>
+          </div>
+        </div>
+        <div id="premium-apps-list" class="marketplace-apps-list premium-apps-list" data-testid="premium-apps-list"></div>
+      </section>
     </section>
 
     <section class="debug-panel" aria-label="Bridge debug log">

@@ -100,6 +100,13 @@ final class NativeShellViewController: NSSplitViewController {
             return
         }
         sidebarController.updateApps(apps)
+        workspaceController.updateApps(apps)
+        workspaceController.onRuntimeSelectedApp = { [weak sidebarController] appId in
+            sidebarController?.select(appId: appId)
+        }
+        sidebarController.onSelectMarketplace = { [weak self] in
+            self?.workspaceController.showMarketplace()
+        }
         sidebarController.onSelectApp = { [weak self] app in
             self?.workspaceController.select(app)
         }
@@ -119,11 +126,15 @@ final class NativeShellViewController: NSSplitViewController {
 }
 
 final class NativeSidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    var onSelectMarketplace: (() -> Void)?
     var onSelectApp: ((MacAppCatalogItem) -> Void)?
 
     private var apps: [MacAppCatalogItem] = []
+    private var suppressSelectionCallback = false
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
+    private let marketplaceTitleField = NSTextField(labelWithString: "Marketplace")
+    private let marketplaceButton = SidebarActionButton(title: "Marketplace", symbolName: "storefront")
     private let titleField = NSTextField(labelWithString: "Apps")
 
     override func loadView() {
@@ -132,6 +143,14 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         root.blendingMode = .behindWindow
         root.state = .active
         root.isEmphasized = false
+
+        marketplaceTitleField.font = .systemFont(ofSize: 11, weight: .semibold)
+        marketplaceTitleField.textColor = .secondaryLabelColor
+        marketplaceTitleField.stringValue = marketplaceTitleField.stringValue.uppercased()
+        marketplaceTitleField.maximumNumberOfLines = 1
+
+        marketplaceButton.target = self
+        marketplaceButton.action = #selector(selectMarketplace)
 
         titleField.font = .systemFont(ofSize: 11, weight: .semibold)
         titleField.textColor = .secondaryLabelColor
@@ -154,6 +173,8 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         scrollView.documentView = tableView
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        root.addSubview(marketplaceTitleField)
+        root.addSubview(marketplaceButton)
         root.addSubview(titleField)
         root.addSubview(scrollView)
 
@@ -165,9 +186,24 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         let horizontalInset: CGFloat = 10
         let topInset: CGFloat = 20
         let sectionHeight: CGFloat = 18
-        titleField.frame = NSRect(
+        let rowHeight: CGFloat = 28
+        let sectionGap: CGFloat = 14
+
+        marketplaceTitleField.frame = NSRect(
             x: horizontalInset + 7,
             y: max(0, view.bounds.height - topInset - sectionHeight),
+            width: max(0, view.bounds.width - horizontalInset * 2 - 14),
+            height: sectionHeight
+        )
+        marketplaceButton.frame = NSRect(
+            x: horizontalInset,
+            y: max(0, marketplaceTitleField.frame.minY - rowHeight - 6),
+            width: max(0, view.bounds.width - horizontalInset * 2),
+            height: rowHeight
+        )
+        titleField.frame = NSRect(
+            x: horizontalInset + 7,
+            y: max(0, marketplaceButton.frame.minY - sectionGap - sectionHeight),
             width: max(0, view.bounds.width - horizontalInset * 2 - 14),
             height: sectionHeight
         )
@@ -175,7 +211,7 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
             x: horizontalInset,
             y: 12,
             width: max(0, view.bounds.width - horizontalInset * 2),
-            height: max(0, view.bounds.height - topInset - sectionHeight - 18)
+            height: max(0, titleField.frame.minY - 18)
         )
     }
 
@@ -186,8 +222,16 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
 
     func select(appId: String) {
         guard let index = apps.firstIndex(where: { $0.id == appId }) else { return }
+        marketplaceButton.isSelectedForSidebar = false
+        suppressSelectionCallback = true
         tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        suppressSelectionCallback = false
         tableView.scrollRowToVisible(index)
+    }
+
+    func selectMarketplaceRow() {
+        tableView.deselectAll(nil)
+        marketplaceButton.isSelectedForSidebar = true
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -203,9 +247,83 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !suppressSelectionCallback else { return }
         let row = tableView.selectedRow
         guard row >= 0, row < apps.count else { return }
+        marketplaceButton.isSelectedForSidebar = false
         onSelectApp?(apps[row])
+    }
+
+    @objc private func selectMarketplace() {
+        selectMarketplaceRow()
+        onSelectMarketplace?()
+    }
+}
+
+final class SidebarActionButton: NSButton {
+    var isSelectedForSidebar = false {
+        didSet {
+            needsDisplay = true
+            titleLabel.textColor = isSelectedForSidebar ? .alternateSelectedControlTextColor : .labelColor
+            iconView.contentTintColor = isSelectedForSidebar ? .alternateSelectedControlTextColor : .secondaryLabelColor
+        }
+    }
+
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+
+    init(title: String, symbolName: String) {
+        super.init(frame: .zero)
+        isBordered = false
+        self.title = ""
+        attributedTitle = NSAttributedString(string: "")
+        attributedAlternateTitle = NSAttributedString(string: "")
+        imagePosition = .noImage
+        focusRingType = .none
+        setButtonType(.momentaryChange)
+        setAccessibilityLabel(title)
+
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        iconView.contentTintColor = .secondaryLabelColor
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+
+        addSubview(iconView)
+        addSubview(titleLabel)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if isSelectedForSidebar {
+            NSColor.controlAccentColor.setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let iconSize: CGFloat = 18
+        let inset: CGFloat = 7
+        iconView.frame = NSRect(
+            x: inset,
+            y: floor((bounds.height - iconSize) / 2),
+            width: iconSize,
+            height: iconSize
+        )
+        titleLabel.frame = NSRect(
+            x: iconView.frame.maxX + 7,
+            y: floor((bounds.height - 17) / 2),
+            width: max(0, bounds.width - iconView.frame.maxX - 14),
+            height: 17
+        )
     }
 }
 
@@ -258,12 +376,19 @@ final class AppSidebarCellView: NSTableCellView {
 }
 
 final class NativeWorkspaceViewController: NSViewController {
+    private enum Selection {
+        case app(MacAppCatalogItem)
+        case marketplace
+    }
+
     private let headerView = NSView()
     private let titleField = NSTextField(labelWithString: "No app selected")
     private let descriptionField = NSTextField(labelWithString: "Choose an app from the sidebar.")
     private let reloadButton = NSButton(title: "Reload", target: nil, action: nil)
     private let webHostView = WebHostView(nativeHostModeEnabled: true)
-    private var selectedApp: MacAppCatalogItem?
+    private var selection: Selection?
+    private var appsById: [String: MacAppCatalogItem] = [:]
+    var onRuntimeSelectedApp: ((String) -> Void)?
 
     override func loadView() {
         let root = NSView()
@@ -290,6 +415,9 @@ final class NativeWorkspaceViewController: NSViewController {
         reloadButton.isEnabled = false
         webHostView.onNativeRuntimeError = { [weak self] message in
             self?.showRuntimeError(message)
+        }
+        webHostView.onNativeAppMounted = { [weak self] appId in
+            self?.showRuntimeMountedApp(appId: appId)
         }
 
         headerView.addSubview(titleField)
@@ -321,7 +449,7 @@ final class NativeWorkspaceViewController: NSViewController {
     }
 
     func select(_ app: MacAppCatalogItem) {
-        selectedApp = app
+        selection = .app(app)
         titleField.stringValue = app.name
         descriptionField.stringValue = app.description
         descriptionField.textColor = .secondaryLabelColor
@@ -329,8 +457,21 @@ final class NativeWorkspaceViewController: NSViewController {
         webHostView.mountApp(id: app.id)
     }
 
+    func updateApps(_ apps: [MacAppCatalogItem]) {
+        appsById = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+    }
+
+    func showMarketplace() {
+        selection = .marketplace
+        titleField.stringValue = "Marketplace"
+        descriptionField.stringValue = "Browse Terrane Premium apps from the Premium server."
+        descriptionField.textColor = .secondaryLabelColor
+        reloadButton.isEnabled = true
+        webHostView.showMarketplace()
+    }
+
     func showEmptyState() {
-        selectedApp = nil
+        selection = nil
         titleField.stringValue = "No bundled apps found"
         descriptionField.stringValue = "Terrane could not find bundled generated apps."
         descriptionField.textColor = .secondaryLabelColor
@@ -338,7 +479,7 @@ final class NativeWorkspaceViewController: NSViewController {
     }
 
     func showCatalogError(_ error: Error) {
-        selectedApp = nil
+        selection = nil
         titleField.stringValue = "Could not load bundled apps"
         descriptionField.stringValue = error.localizedDescription
         descriptionField.textColor = .systemRed
@@ -348,13 +489,31 @@ final class NativeWorkspaceViewController: NSViewController {
     private func showRuntimeError(_ message: String) {
         descriptionField.stringValue = message
         descriptionField.textColor = .systemRed
-        reloadButton.isEnabled = selectedApp != nil
+        reloadButton.isEnabled = selection != nil
+    }
+
+    private func showRuntimeMountedApp(appId: String) {
+        guard let app = appsById[appId] else { return }
+        selection = .app(app)
+        titleField.stringValue = app.name
+        descriptionField.stringValue = app.description
+        descriptionField.textColor = .secondaryLabelColor
+        reloadButton.isEnabled = true
+        onRuntimeSelectedApp?(app.id)
     }
 
     @objc private func reloadSelectedApp() {
-        guard let selectedApp else { return }
-        descriptionField.stringValue = selectedApp.description
-        descriptionField.textColor = .secondaryLabelColor
-        webHostView.mountApp(id: selectedApp.id)
+        switch selection {
+        case .app(let selectedApp):
+            descriptionField.stringValue = selectedApp.description
+            descriptionField.textColor = .secondaryLabelColor
+            webHostView.mountApp(id: selectedApp.id)
+        case .marketplace:
+            descriptionField.stringValue = "Browse Terrane Premium apps from the Premium server."
+            descriptionField.textColor = .secondaryLabelColor
+            webHostView.showMarketplace()
+        case nil:
+            return
+        }
     }
 }

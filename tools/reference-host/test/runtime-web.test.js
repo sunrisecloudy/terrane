@@ -528,6 +528,11 @@ test("runtime loads configured Premium catalog and renders metadata as text", as
 
     assert.deepEqual(harness.fetchState.premiumCatalogRequests, ["/premium/catalog.json"]);
     assert.equal(harness.document.getElementById("premium-marketplace-status").textContent, "Premium catalog");
+    const freeAppsList = harness.document.getElementById("free-apps-list");
+    assert.equal(freeAppsList.children.length, 1);
+    assert.match(elementText(freeAppsList), /Notes Lite/);
+    assert.match(elementText(freeAppsList), /Free/);
+    assert.match(elementText(freeAppsList), /Open/);
     const premiumAppsList = harness.document.getElementById("premium-apps-list");
     assert.equal(premiumAppsList.children.length, 1);
     assert.equal(elementHasHtml(premiumAppsList, "<img"), false);
@@ -668,6 +673,65 @@ test("runtime exposes native host mode for AppKit sidebar mounting", async () =>
     assert.ok(frame, "native host mount should create an app iframe");
     assert.equal(frame.title, "Task Workbench");
     assert.match(frame.srcdoc, /\/webapps\/examples\/task-workbench\/app\.js/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime exposes native host marketplace view for AppKit sidebar", async () => {
+  const appIndex = {
+    source: "macos-bundled",
+    marketplace: { premiumCatalogUrl: "/premium/catalog.json" },
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Storage fixture." },
+    ],
+  };
+  const premiumCatalog = {
+    source: "terrane-premium",
+    apps: [
+      {
+        id: "premium-todo",
+        name: "Premium Todo",
+        subtitle: "Hosted sync",
+        summary: "Encrypted tasks, sync, and backups.",
+        benefits: ["Sync across Mac devices"],
+        requiredPlan: "Individual Premium or Team",
+        entitlementFeatures: ["sync", "backups"],
+        serverRequired: true,
+        publisher: "Terrane Premium",
+        category: "Productivity",
+      },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, premiumCatalog });
+  try {
+    await loadRuntime(harness);
+    assert.equal(typeof harness.parentWindow.TerraneRuntimeHost.showMarketplace, "function");
+
+    const result = await vm.runInContext(
+      'window.TerraneRuntimeHost.setHostMode(true); window.TerraneRuntimeHost.showMarketplace()',
+      harness.parentContext,
+    );
+    await flushAsync();
+
+    assert.equal(result.ok, true);
+    assert.equal(result.view, "marketplace");
+    assert.equal(harness.document.body.classList.contains("native-host-mode"), true);
+    assert.equal(harness.document.body.classList.contains("marketplace-mode"), true);
+    assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), null);
+    assert.equal(harness.document.getElementById("premium-marketplace-status").textContent, "Premium catalog");
+    assert.match(elementText(harness.document.getElementById("free-apps-list")), /Notes Lite/);
+    assert.match(elementText(harness.document.getElementById("free-apps-list")), /Open/);
+    assert.match(elementText(harness.document.getElementById("premium-apps-list")), /Premium Todo/);
+    assert.equal(harness.document.getElementById("app-frame-wrap").children[0].textContent, "Marketplace is open.");
+
+    findElementByTestId(harness.document.getElementById("free-apps-list"), "marketplace-open-notes-lite").dispatch("click");
+    await flushAsync();
+
+    assert.equal(harness.document.body.classList.contains("marketplace-mode"), false);
+    assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), "notes-lite");
+    const frame = harness.document.getElementById("app-frame-wrap").children[0];
+    assert.equal(frame.title, "Notes Lite");
   } finally {
     harness.close();
   }
@@ -1088,6 +1152,7 @@ function createDocument(createFrameWindow) {
     "app-list",
     "bridge-log",
     "clear-debug",
+    "free-apps-list",
     "premium-apps-list",
     "premium-marketplace-status",
     "refresh-premium-catalog",
@@ -1256,6 +1321,16 @@ function elementHasHtml(element, needle) {
   if (!element) return false;
   if ((element.innerHTML || "").includes(needle)) return true;
   return Array.from(element.children || []).some((child) => elementHasHtml(child, needle));
+}
+
+function findElementByTestId(element, testId) {
+  if (!element) return null;
+  if (element.dataset?.testid === testId || element.attributes?.get("data-testid") === testId) return element;
+  for (const child of element.children || []) {
+    const match = findElementByTestId(child, testId);
+    if (match) return match;
+  }
+  return null;
 }
 
 function defaultRuntimeManifest() {

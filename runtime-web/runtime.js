@@ -8,6 +8,7 @@
   const reloadButton = document.getElementById("reload-app");
   const refreshButton = document.getElementById("refresh-apps");
   const refreshPremiumButton = document.getElementById("refresh-premium-catalog");
+  const freeAppsList = document.getElementById("free-apps-list");
   const premiumAppsList = document.getElementById("premium-apps-list");
   const premiumMarketplaceStatus = document.getElementById("premium-marketplace-status");
   const clearDebugButton = document.getElementById("clear-debug");
@@ -113,6 +114,7 @@
     }
     apps = loaded;
     renderAppList();
+    renderFreeAppCatalog();
     setStatus("Ready");
     return apps;
   }
@@ -156,6 +158,11 @@
         await mountApp(app);
         return { ok: true, appId: app.id };
       },
+      async showMarketplace() {
+        await appsReady;
+        showMarketplace();
+        return { ok: true, view: "marketplace" };
+      },
       async reload() {
         if (!activeApp) return { ok: false, reason: "no-active-app" };
         await mountApp(activeApp);
@@ -195,15 +202,18 @@
         const catalog = normalizePremiumCatalog(rawCatalog, "premium-server", "Premium catalog");
         premiumCatalog = catalog.apps.length ? catalog : fallbackPremiumCatalog();
         renderPremiumCatalog(premiumCatalog, premiumCatalog === catalog ? "Premium catalog" : "Static fallback");
+        renderFreeAppCatalog();
         return premiumCatalog;
       } catch (_) {
         premiumCatalog = fallbackPremiumCatalog();
         renderPremiumCatalog(premiumCatalog, "Static fallback");
+        renderFreeAppCatalog();
         return premiumCatalog;
       }
     }
     premiumCatalog = fallbackPremiumCatalog();
     renderPremiumCatalog(premiumCatalog, "Static fallback");
+    renderFreeAppCatalog();
     return premiumCatalog;
   }
 
@@ -375,6 +385,54 @@
     setPremiumStatus(statusLabel || catalog.sourceLabel || "Premium catalog");
   }
 
+  function renderFreeAppCatalog() {
+    if (!freeAppsList) return;
+    freeAppsList.textContent = "";
+    const premiumIds = new Set((premiumCatalog?.apps || []).map(function (app) {
+      return app.id;
+    }));
+    const freeApps = apps.filter(function (app) {
+      return app && app.id && !premiumIds.has(app.id);
+    });
+    if (!freeApps.length) {
+      freeAppsList.appendChild(element("div", "empty-state", "No free apps available."));
+      return;
+    }
+    for (const app of freeApps) {
+      freeAppsList.appendChild(renderFreeAppCard(app));
+    }
+  }
+
+  function renderFreeAppCard(app) {
+    const card = element("article", "premium-app-card marketplace-app-card free-app-card");
+    card.setAttribute("data-testid", `free-app-${app.id}`);
+
+    const icon = element("div", "premium-app-icon free-app-icon", appInitials(app.name));
+    card.appendChild(icon);
+
+    const body = element("div", "premium-app-body");
+    const topline = element("div", "premium-app-topline");
+    const title = element("div", "premium-app-title");
+    title.appendChild(element("h3", "", app.name));
+    title.appendChild(element("p", "", `${app.id} - Included with Terrane`));
+    topline.appendChild(title);
+    const action = element("button", "marketplace-app-action", "Open");
+    action.type = "button";
+    action.setAttribute("data-testid", `marketplace-open-${app.id}`);
+    action.setAttribute("aria-label", `Open ${app.name}`);
+    action.addEventListener("click", function () {
+      mountApp(app);
+    });
+    topline.appendChild(action);
+    body.appendChild(topline);
+
+    body.appendChild(element("p", "premium-app-summary", app.description || "Bundled local Terrane app."));
+    body.appendChild(renderFreeAppMeta(app));
+    body.appendChild(renderFreeAppPills(app));
+    card.appendChild(body);
+    return card;
+  }
+
   function renderPremiumAppCard(app) {
     const card = element("article", "premium-app-card");
     card.setAttribute("data-testid", `premium-app-${app.id}`);
@@ -389,8 +447,22 @@
     title.appendChild(element("p", "", `${app.subtitle} - ${app.publisher}`));
     topline.appendChild(title);
     const price = element("span", "premium-app-price", app.price);
-    price.setAttribute("aria-label", `${app.name} availability`);
-    topline.appendChild(price);
+    const installedApp = apps.find(function (candidate) {
+      return candidate.id === app.id;
+    });
+    if (installedApp) {
+      const action = element("button", "marketplace-app-action premium-app-action", "Open");
+      action.type = "button";
+      action.setAttribute("data-testid", `marketplace-open-${app.id}`);
+      action.setAttribute("aria-label", `Open ${app.name}`);
+      action.addEventListener("click", function () {
+        mountApp(installedApp);
+      });
+      topline.appendChild(action);
+    } else {
+      price.setAttribute("aria-label", `${app.name} availability`);
+      topline.appendChild(price);
+    }
     body.appendChild(topline);
 
     body.appendChild(element("p", "premium-app-summary", app.summary));
@@ -399,6 +471,23 @@
     body.appendChild(renderPremiumPills(app));
     card.appendChild(body);
     return card;
+  }
+
+  function renderFreeAppMeta(app) {
+    const meta = element("dl", "premium-app-meta");
+    addPremiumMeta(meta, "Plan", "Free");
+    addPremiumMeta(meta, "Version", safeText(app.version, "0.1.0", 32));
+    addPremiumMeta(meta, "Age", app.contentRating && app.contentRating.label ? app.contentRating.label : "4+");
+    addPremiumMeta(meta, "Works With", `Terrane Runtime ${safeText(app.runtimeVersion, "0.1+", 32)}`);
+    return meta;
+  }
+
+  function renderFreeAppPills(app) {
+    const pills = element("div", "premium-app-pills");
+    for (const item of ["Free", "Installed"].concat(safeTextList(app.permissions, 4, 40))) {
+      if (item) pills.appendChild(element("span", "premium-app-pill", item));
+    }
+    return pills;
   }
 
   function renderPremiumBenefits(app) {
@@ -498,10 +587,12 @@
     };
     activeApp = app;
     activeMount = mount;
+    document.body.classList.remove("marketplace-mode");
     renderAppList();
     reloadButton.disabled = false;
     activeTitle.textContent = app.name;
     activeDescription.textContent = app.description;
+    notifyNativeActiveAppChanged(app.id);
     setStatus(`Mounting ${app.id}`);
 
     const html = rewritePackageResourceUrls(app.id, await fetchText(`/webapps/examples/${app.id}/index.html`));
@@ -524,6 +615,34 @@
     }
     frameWrap.appendChild(frame);
     setStatus(`Mounted ${app.id}`);
+  }
+
+  function showMarketplace() {
+    if (activeMount) {
+      portsByMountToken.delete(activeMount.mountToken);
+    }
+    activeApp = null;
+    activeMount = null;
+    activeFrame = null;
+    renderAppList();
+    reloadButton.disabled = true;
+    activeTitle.textContent = "Marketplace";
+    activeDescription.textContent = "Browse Terrane Premium apps.";
+    frameWrap.textContent = "";
+    frameWrap.appendChild(element("div", "empty-state", "Marketplace is open."));
+    document.body.classList.add("marketplace-mode");
+    setStatus("Marketplace");
+    loadPremiumCatalog();
+  }
+
+  function notifyNativeActiveAppChanged(appId) {
+    const handler = window.webkit?.messageHandlers?.TerraneNativeShell;
+    if (!handler || typeof handler.postMessage !== "function") return;
+    try {
+      handler.postMessage({ type: "active_app_changed", appId: appId });
+    } catch (_) {
+      // Native shell notifications are best-effort UI synchronization only.
+    }
   }
 
   function usesWebKitNativeAppFrames() {

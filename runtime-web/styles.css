@@ -131,6 +131,7 @@ button:disabled {
 }
 
 .marketplace-header,
+.marketplace-section-header,
 .marketplace-actions,
 .premium-app-card,
 .premium-app-meta,
@@ -149,6 +150,24 @@ button:disabled {
   margin: 0;
 }
 
+.marketplace-section {
+  display: grid;
+  gap: 10px;
+}
+
+.marketplace-section + .marketplace-section {
+  margin-top: 22px;
+}
+
+.marketplace-section-header {
+  align-items: end;
+  justify-content: space-between;
+}
+
+.marketplace-section-header h3 {
+  margin: 0;
+}
+
 .marketplace-actions {
   align-items: center;
   flex-wrap: wrap;
@@ -163,6 +182,7 @@ button:disabled {
   padding: 6px 10px;
 }
 
+.marketplace-apps-list,
 .premium-apps-list {
   display: grid;
   gap: 10px;
@@ -187,6 +207,10 @@ button:disabled {
   font-weight: 700;
   height: 58px;
   justify-content: center;
+}
+
+.free-app-icon {
+  background: #2563eb;
 }
 
 .premium-app-body {
@@ -294,6 +318,18 @@ button:disabled {
   padding: 6px 10px;
 }
 
+.marketplace-app-action {
+  align-self: flex-start;
+  border-color: #0f766e;
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.marketplace-app-action:focus-visible {
+  outline: 2px solid #5eead4;
+  outline-offset: 2px;
+}
+
 .workspace-toolbar {
   margin-bottom: 12px;
 }
@@ -354,6 +390,7 @@ button:disabled {
 .native-host-mode .topbar,
 .native-host-mode .sidebar,
 .native-host-mode .workspace-toolbar,
+.native-host-mode .marketplace-panel,
 .native-host-mode .debug-panel {
   display: none;
 }
@@ -377,6 +414,33 @@ button:disabled {
 .native-host-mode .frame-wrap iframe {
   height: 100vh;
   min-height: 100vh;
+}
+
+.native-host-mode.marketplace-mode .layout {
+  display: none;
+}
+
+.native-host-mode.marketplace-mode .marketplace-panel {
+  display: block;
+  height: 100vh;
+  overflow: auto;
+  padding: 22px 24px;
+}
+
+.native-host-mode.marketplace-mode .marketplace-header {
+  margin: 0 auto 16px;
+  max-width: 1040px;
+}
+
+.native-host-mode.marketplace-mode .marketplace-section {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 1040px;
+}
+
+.native-host-mode.marketplace-mode .premium-apps-list {
+  margin: 0 auto;
+  max-width: 1040px;
 }
 
 @media (max-width: 760px) {
@@ -444,6 +508,12 @@ button:disabled {
   .premium-app-pill {
     background: #1f2937;
     border-color: #334155;
+  }
+
+  .marketplace-app-action {
+    background: #182033;
+    border-color: #5eead4;
+    color: #5eead4;
   }
 
   .app-button.active {

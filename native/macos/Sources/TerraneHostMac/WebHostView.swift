@@ -4,6 +4,7 @@ import WebKit
 final class WebHostView: NSView, WKNavigationDelegate {
     private let webView: WKWebView
     private let bridge: WebBridge
+    private let nativeShellMessageHandler: NativeShellMessageHandler
     private let crashRecovery: RuntimeCrashRecovery
     private let crashBanner = NSView(frame: .zero)
     private let crashLabel = NSTextField(labelWithString: "Runtime was interrupted")
@@ -12,16 +13,20 @@ final class WebHostView: NSView, WKNavigationDelegate {
     private var runtimeReady = false
     private var nativeHostModeEnabled: Bool
     private var pendingNativeAppId: String?
+    private var pendingMarketplaceView = false
     var onNativeRuntimeError: ((String) -> Void)?
+    var onNativeAppMounted: ((String) -> Void)?
 
     init(frame frameRect: NSRect = .zero, nativeHostModeEnabled: Bool = true) {
         let bridge = WebBridge()
         self.bridge = bridge
+        self.nativeShellMessageHandler = NativeShellMessageHandler()
         self.crashRecovery = RuntimeCrashRecovery()
         self.nativeHostModeEnabled = nativeHostModeEnabled
 
         let contentController = WKUserContentController()
         contentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "TerranePlatformBridge")
+        contentController.add(nativeShellMessageHandler, name: "TerraneNativeShell")
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController
@@ -32,6 +37,9 @@ final class WebHostView: NSView, WKNavigationDelegate {
         super.init(frame: frameRect)
 
         webView.navigationDelegate = self
+        nativeShellMessageHandler.onActiveAppChanged = { [weak self] appId in
+            self?.onNativeAppMounted?(appId)
+        }
         addSubview(webView)
         configureCrashBanner()
         loadRuntime()
@@ -70,6 +78,13 @@ final class WebHostView: NSView, WKNavigationDelegate {
 
     func mountApp(id appId: String) {
         pendingNativeAppId = appId
+        pendingMarketplaceView = false
+        applyNativeRuntimeState()
+    }
+
+    func showMarketplace() {
+        pendingNativeAppId = nil
+        pendingMarketplaceView = true
         applyNativeRuntimeState()
     }
 
@@ -132,6 +147,7 @@ final class WebHostView: NSView, WKNavigationDelegate {
         guard runtimeReady else { return }
         let script = Self.nativeRuntimeUpdateScript(
             appId: pendingNativeAppId,
+            showMarketplace: pendingMarketplaceView,
             nativeHostModeEnabled: nativeHostModeEnabled
         )
         Task { @MainActor [weak self] in
@@ -151,13 +167,15 @@ final class WebHostView: NSView, WKNavigationDelegate {
         }
     }
 
-    private static func nativeRuntimeUpdateScript(appId: String?, nativeHostModeEnabled: Bool) -> String {
+    static func nativeRuntimeUpdateScript(appId: String?, showMarketplace: Bool = false, nativeHostModeEnabled: Bool) -> String {
         var statements = [
             "const host = window.TerraneRuntimeHost;",
             "if (!host) { throw new Error('TerraneRuntimeHost is unavailable'); }",
             "host.setHostMode(\(nativeHostModeEnabled ? "true" : "false"));"
         ]
-        if let appId {
+        if showMarketplace {
+            statements.append("await host.showMarketplace();")
+        } else if let appId {
             statements.append("await host.mountApp(\(Self.javascriptStringLiteral(appId)));")
         }
         statements.append("return { ok: true };")
@@ -173,6 +191,24 @@ final class WebHostView: NSView, WKNavigationDelegate {
             return "\"\""
         }
         return String(arrayLiteral.dropFirst().dropLast())
+    }
+}
+
+@MainActor
+private final class NativeShellMessageHandler: NSObject, WKScriptMessageHandler {
+    var onActiveAppChanged: ((String) -> Void)?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame,
+              let body = message.body as? [String: Any],
+              body["type"] as? String == "active_app_changed",
+              let appId = body["appId"] as? String,
+              !appId.isEmpty,
+              appId.count <= 128
+        else {
+            return
+        }
+        onActiveAppChanged?(appId)
     }
 }
 

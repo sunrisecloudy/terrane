@@ -2,7 +2,7 @@ import AppKit
 import SQLite3
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var shellController: NativeShellViewController?
     private var sidebarToggleAccessory: SidebarToggleAccessoryController?
@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let shellController = NativeShellViewController()
         self.shellController = shellController
 
-        let window = NSWindow(
+        let window = TerraneWindow(
             contentRect: NativeWindowConfiguration.initialContentRect(),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Terrane"
         window.isReleasedWhenClosed = false
+        window.delegate = self
         NativeWindowConfiguration.apply(to: window)
         window.contentViewController = shellController
         let sidebarToggleAccessory = SidebarToggleAccessoryController(shellController: shellController)
@@ -75,6 +76,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
+    }
+
+    func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
+        NativeWindowConfiguration.fullScreenContentSize(
+            proposedSize: proposedSize,
+            screenFrame: window.screen?.frame
+        )
+    }
+
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        NativeWindowConfiguration.zoomedFrame(
+            defaultFrame: newFrame,
+            screenVisibleFrame: window.screen?.visibleFrame
+        )
+    }
+}
+
+final class TerraneWindow: NSWindow {
+    override func zoom(_ sender: Any?) {
+        applyTerraneZoom()
+    }
+
+    override func performZoom(_ sender: Any?) {
+        applyTerraneZoom()
+    }
+
+    private func applyTerraneZoom() {
+        setFrame(
+            NativeWindowConfiguration.toggledZoomFrame(
+                currentFrame: frame,
+                screenVisibleFrame: screen?.visibleFrame
+            ),
+            display: true,
+            animate: true
+        )
     }
 }
 
@@ -116,6 +152,7 @@ final class SidebarToggleAccessoryController: NSTitlebarAccessoryViewController 
 enum NativeWindowConfiguration {
     static let preferredContentSize = NSSize(width: 1080, height: 720)
     static let minimumContentSize = NSSize(width: 860, height: 560)
+    static let collectionBehavior: NSWindow.CollectionBehavior = [.fullScreenNone]
 
     static func initialContentRect(screen: NSScreen? = NSScreen.main) -> NSRect {
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
@@ -133,9 +170,45 @@ enum NativeWindowConfiguration {
         return NSRect(origin: .zero, size: size)
     }
 
+    static func fullScreenContentSize(proposedSize: NSSize, screenFrame: NSRect?) -> NSSize {
+        guard let screenFrame,
+              screenFrame.width > proposedSize.width,
+              screenFrame.height > proposedSize.height
+        else {
+            return proposedSize
+        }
+        return screenFrame.size
+    }
+
+    static func zoomedFrame(defaultFrame: NSRect, screenVisibleFrame: NSRect?) -> NSRect {
+        guard let screenVisibleFrame,
+              screenVisibleFrame.width > defaultFrame.width || screenVisibleFrame.height > defaultFrame.height
+        else {
+            return defaultFrame
+        }
+        return screenVisibleFrame
+    }
+
+    static func toggledZoomFrame(currentFrame: NSRect, screenVisibleFrame: NSRect?) -> NSRect {
+        guard let screenVisibleFrame else {
+            return currentFrame
+        }
+        if abs(currentFrame.width - screenVisibleFrame.width) < 1,
+           abs(currentFrame.height - screenVisibleFrame.height) < 1 {
+            var restored = initialContentRect(visibleFrame: screenVisibleFrame)
+            restored.origin = NSPoint(
+                x: screenVisibleFrame.midX - (restored.width / 2),
+                y: screenVisibleFrame.midY - (restored.height / 2)
+            )
+            return restored
+        }
+        return screenVisibleFrame
+    }
+
     @MainActor
     static func apply(to window: NSWindow) {
         window.minSize = minimumContentSize
+        window.collectionBehavior = collectionBehavior
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
