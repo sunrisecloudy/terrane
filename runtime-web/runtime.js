@@ -727,8 +727,10 @@
     try {
       const snapshot = await engineRoomSnapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
       engineRoomSections.textContent = "";
+      engineRoomSections.appendChild(renderEngineRoomSummary(snapshot));
       for (const [key, title] of engineRoomSectionOrder) {
-        engineRoomSections.appendChild(renderEngineRoomCard(title, snapshot[key] ?? emptyEngineRoomSection(key)));
+        const value = snapshot[key] ?? emptyEngineRoomSection(key);
+        engineRoomSections.appendChild(renderEngineRoomCard(title, value, summarizeEngineRoomSection(key, value)));
       }
       setEngineRoomStatus("Ready");
     } catch (error) {
@@ -840,12 +842,147 @@
     return { status: "empty", rows: [], name };
   }
 
-  function renderEngineRoomCard(title, value) {
+  function renderEngineRoomSummary(snapshot) {
+    const summary = element("section", "engine-room-summary");
+    summary.setAttribute("data-testid", "engine-room-summary");
+    const overview = snapshot.overview || {};
+    const database = snapshot.database || {};
+    const apps = snapshot.apps || {};
+    const bridgeCalls = snapshot.bridgeCalls || {};
+    const logs = snapshot.logs || {};
+    summary.appendChild(engineRoomMetric("Source", overview.source || "local runtime"));
+    summary.appendChild(engineRoomMetric("Active app", overview.activeAppId || overview.appId || "none"));
+    summary.appendChild(engineRoomMetric("Apps", String(countEngineRoomItems(apps.rows) + countEngineRoomItems(apps.installed))));
+    summary.appendChild(engineRoomMetric("DB rows", String(sumTableCounts(database.tableCounts))));
+    summary.appendChild(engineRoomMetric("Bridge calls", String(countEngineRoomItems(bridgeCalls.rows))));
+    summary.appendChild(engineRoomMetric("Logs", String(countEngineRoomItems(logs.appLogRows) + countEngineRoomItems(logs.console))));
+    return summary;
+  }
+
+  function engineRoomMetric(label, value) {
+    const item = element("div", "engine-room-metric");
+    item.appendChild(element("span", "", label));
+    item.appendChild(element("strong", "", String(value == null ? "unknown" : value)));
+    return item;
+  }
+
+  function summarizeEngineRoomSection(key, value) {
+    switch (key) {
+    case "overview":
+      return [
+        ["Source", value.source || "runtime"],
+        ["Active app", value.activeAppId || value.appId || "none"],
+        ["Runtime", value.runtimeVersion || "unknown"],
+        ["Mode", value.devMode ? "developer" : "normal"],
+      ];
+    case "apps":
+      return [
+        ["Installed apps", countEngineRoomItems(value.installed)],
+        ["Registry rows", countEngineRoomItems(value.rows)],
+        ["Versions", countEngineRoomItems(value.versions)],
+        ["Package files", countEngineRoomItems(value.packageFiles)],
+      ];
+    case "database":
+      return [
+        ["Type", value.type || "unknown"],
+        ["Path", value.path || "in-memory"],
+        ["Integrity", value.integrity || "not checked"],
+        ["Total rows", sumTableCounts(value.tableCounts)],
+      ];
+    case "storage":
+      return [["Storage rows", countEngineRoomItems(value.rows)]];
+    case "bridgeCalls":
+      return [["Recent calls", countEngineRoomItems(value.rows)]];
+    case "network":
+      return [["Requests", countEngineRoomItems(value.rows)], ["Mocks", countEngineRoomItems(value.mocks)]];
+    case "logs":
+      return [
+        ["App logs", countEngineRoomItems(value.appLogRows) + countEngineRoomItems(value.console)],
+        ["Runtime sessions", countEngineRoomItems(value.runtimeSessions)],
+        ["Crash reporting", value.telemetry?.crashReporting || "not configured"],
+      ];
+    case "core":
+      return [
+        ["Events", countEngineRoomItems(value.events)],
+        ["Actions", countEngineRoomItems(value.actions)],
+        ["Snapshots", countEngineRoomItems(value.snapshots)],
+      ];
+    case "permissions":
+      return [
+        ["Permission rows", countEngineRoomItems(value.rows)],
+        ["Install reports", countEngineRoomItems(value.installReports)],
+      ];
+    case "tests":
+      return [
+        ["Test runs", countEngineRoomItems(value.runs)],
+        ["Control sessions", countEngineRoomItems(value.controlSessions)],
+        ["Control commands", countEngineRoomItems(value.controlCommands)],
+      ];
+    case "crdt":
+      return [
+        ["Notebooks", countEngineRoomItems(value.notebooks)],
+        ["Updates", countEngineRoomItems(value.updates)],
+        ["Actors", countEngineRoomItems(value.actors)],
+        ["Proposals", countEngineRoomItems(value.proposals)],
+      ];
+    case "sync":
+      return [
+        ["Cursors", countEngineRoomItems(value.cursors)],
+        ["Server", value.server?.status || "not attached"],
+      ];
+    default:
+      return [["Status", value.status || "available"]];
+    }
+  }
+
+  function renderEngineRoomCard(title, value, summaryRows) {
     const card = element("article", "engine-room-card");
     card.setAttribute("data-testid", `engine-room-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
-    card.appendChild(element("h3", "", title));
-    card.appendChild(element("pre", "", JSON.stringify(value, null, 2)));
+    const header = element("div", "engine-room-card-header");
+    header.appendChild(element("h3", "", title));
+    header.appendChild(element("span", "engine-room-card-count", engineRoomSectionCountLabel(value)));
+    card.appendChild(header);
+    const summary = element("dl", "engine-room-facts");
+    for (const [label, factValue] of summaryRows || []) {
+      const row = element("div", "engine-room-fact");
+      row.appendChild(element("dt", "", label));
+      row.appendChild(element("dd", "", String(factValue == null ? "unknown" : factValue)));
+      summary.appendChild(row);
+    }
+    card.appendChild(summary);
+    const details = element("details", "engine-room-raw");
+    details.appendChild(element("summary", "", "Raw JSON"));
+    details.appendChild(element("pre", "", JSON.stringify(value, null, 2)));
+    card.appendChild(details);
     return card;
+  }
+
+  function engineRoomSectionCountLabel(value) {
+    const count = countEngineRoomRows(value);
+    if (count === 0) return "No rows";
+    if (count === 1) return "1 row";
+    return `${count} rows`;
+  }
+
+  function countEngineRoomRows(value) {
+    if (!value || typeof value !== "object") return 0;
+    if (Array.isArray(value)) return value.length;
+    let total = 0;
+    for (const item of Object.values(value)) {
+      if (Array.isArray(item)) total += item.length;
+    }
+    return total;
+  }
+
+  function countEngineRoomItems(value) {
+    return Array.isArray(value) ? value.length : 0;
+  }
+
+  function sumTableCounts(value) {
+    if (!value || typeof value !== "object") return 0;
+    return Object.values(value).reduce(function (total, count) {
+      return total + (typeof count === "number" ? count : 0);
+    }, 0);
   }
 
   function setEngineRoomStatus(value) {
