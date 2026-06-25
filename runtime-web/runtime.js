@@ -62,30 +62,52 @@
   const devMockCoreEvents = [];
   const consoleEntries = [];
   const minuteMs = 60 * 1000;
-  const engineRoomPreferenceKey = "terrane.engineRoom.visible";
-  const engineRoomSectionOrder = [
-    ["overview", "Overview"],
-    ["apps", "Apps"],
-    ["database", "Storage/DB"],
-    ["storage", "Storage Rows"],
-    ["bridgeCalls", "Bridge/API Calls"],
-    ["network", "Network"],
-    ["logs", "Logs/Telemetry"],
-    ["core", "Core/Replay"],
-    ["permissions", "Permissions/Policy"],
-    ["tests", "Tests/Control"],
-    ["crdt", "CRDT"],
-    ["sync", "Sync"],
-  ];
+  const engineRoom = window.TerraneEngineRoom.create({
+    clearActiveMount() {
+      activeApp = null;
+      activeMount = null;
+      activeFrame = null;
+    },
+    consoleEntries,
+    devMockCoreEvents,
+    devMockStorageByApp,
+    dom: {
+      activeDescription,
+      activeTitle,
+      bridgeLog,
+      entry: engineRoomEntry,
+      frameWrap,
+      reloadButton,
+      sections: engineRoomSections,
+      status: engineRoomStatus,
+    },
+    element,
+    fetchJson,
+    getActiveApp() {
+      return activeApp;
+    },
+    getActiveMount() {
+      return activeMount;
+    },
+    getApps() {
+      return apps;
+    },
+    portsByMountToken,
+    premiumApps() {
+      return window.TerraneRuntimeHost ? window.TerraneRuntimeHost.premiumApps() : [];
+    },
+    renderAppList,
+    setStatus,
+  });
 
   refreshButton.addEventListener("click", loadApps);
-  applyEngineRoomPreference();
+  engineRoom.applyPreference();
   if (openEngineRoomButton) {
-    openEngineRoomButton.addEventListener("click", showEngineRoom);
+    openEngineRoomButton.addEventListener("click", engineRoom.showEngineRoom);
   }
   if (refreshEngineRoomButton) {
     refreshEngineRoomButton.addEventListener("click", function () {
-      renderEngineRoomSnapshot();
+      engineRoom.renderSnapshot();
     });
   }
   if (refreshPremiumButton) {
@@ -194,16 +216,16 @@
       },
       async showEngineRoom() {
         await appsReady;
-        showEngineRoom();
+        engineRoom.showEngineRoom();
         return { ok: true, view: "engine-room" };
       },
       setEngineRoomVisible(visible) {
-        setEngineRoomPreference(visible === true);
-        return { ok: true, visible: engineRoomVisible() };
+        engineRoom.setVisible(visible === true);
+        return { ok: true, visible: engineRoom.isVisible() };
       },
       async engineRoomSnapshot(options) {
         await appsReady;
-        return engineRoomSnapshot(options || {});
+        return engineRoom.snapshot(options || {});
       },
       async reload() {
         if (!activeApp) return { ok: false, reason: "no-active-app" };
@@ -677,316 +699,6 @@
     document.body.classList.remove("engine-room-mode");
     setStatus("Marketplace");
     loadPremiumCatalog();
-  }
-
-  function showEngineRoom() {
-    if (activeMount) {
-      portsByMountToken.delete(activeMount.mountToken);
-    }
-    activeApp = null;
-    activeMount = null;
-    activeFrame = null;
-    renderAppList();
-    reloadButton.disabled = true;
-    activeTitle.textContent = "Engine Room";
-    activeDescription.textContent = "Inspect raw app and platform debug data.";
-    frameWrap.textContent = "";
-    frameWrap.appendChild(element("div", "empty-state", "Engine Room is open."));
-    document.body.classList.remove("marketplace-mode");
-    document.body.classList.add("engine-room-mode");
-    setStatus("Engine Room");
-    renderEngineRoomSnapshot();
-  }
-
-  function applyEngineRoomPreference() {
-    const visible = engineRoomVisible();
-    if (engineRoomEntry) engineRoomEntry.hidden = !visible;
-  }
-
-  function engineRoomVisible() {
-    try {
-      return window.localStorage?.getItem(engineRoomPreferenceKey) !== "false";
-    } catch (_) {
-      return true;
-    }
-  }
-
-  function setEngineRoomPreference(visible) {
-    try {
-      if (visible) window.localStorage?.setItem(engineRoomPreferenceKey, "true");
-      else window.localStorage?.setItem(engineRoomPreferenceKey, "false");
-    } catch (_) {
-      // Preference persistence is best-effort in embedded test/runtime contexts.
-    }
-    applyEngineRoomPreference();
-  }
-
-  async function renderEngineRoomSnapshot() {
-    if (!engineRoomSections) return;
-    setEngineRoomStatus("Loading");
-    try {
-      const snapshot = await engineRoomSnapshot({ appId: activeApp ? activeApp.id : null, limit: 50 });
-      engineRoomSections.textContent = "";
-      engineRoomSections.appendChild(renderEngineRoomSummary(snapshot));
-      for (const [key, title] of engineRoomSectionOrder) {
-        const value = snapshot[key] ?? emptyEngineRoomSection(key);
-        engineRoomSections.appendChild(renderEngineRoomCard(title, value, summarizeEngineRoomSection(key, value)));
-      }
-      setEngineRoomStatus("Ready");
-    } catch (error) {
-      engineRoomSections.textContent = "";
-      engineRoomSections.appendChild(renderEngineRoomCard("Error", {
-        code: "engine_room_snapshot_failed",
-        message: error && error.message ? error.message : String(error),
-      }));
-      setEngineRoomStatus("Error");
-    }
-  }
-
-  async function engineRoomSnapshot(options) {
-    const hostSnapshot = await fetchHostEngineRoomSnapshot(options);
-    if (hostSnapshot) return hostSnapshot;
-    return runtimeEngineRoomSnapshot(options || {});
-  }
-
-  async function fetchHostEngineRoomSnapshot(options) {
-    try {
-      const response = await fetchJson("/engine-room/snapshot", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(options || {}),
-      });
-      return response && response.ok === true && response.result ? response.result : response;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function runtimeEngineRoomSnapshot(options) {
-    const appId = options && typeof options.appId === "string" ? options.appId : null;
-    const appRecords = apps.map(function (app) {
-      return {
-        id: app.id,
-        name: app.name,
-        version: app.version,
-        description: app.description,
-        contentRating: app.contentRating || null,
-        permissions: app.permissions || [],
-        capabilities: app.capabilities || [],
-        resourceBudget: app.resourceBudget || {},
-        networkPolicy: app.networkPolicy || {},
-        storagePrefix: app.storagePrefix || null,
-      };
-    });
-    const bridgeRows = bridgeLog ? Array.from(bridgeLog.children || []).map(function (row) {
-      return { text: row.textContent || "" };
-    }) : [];
-    const storage = [];
-    for (const [storageAppId, records] of devMockStorageByApp.entries()) {
-      if (appId && storageAppId !== appId) continue;
-      for (const [key, value] of records.entries()) {
-        storage.push({ appId: storageAppId, key, value });
-      }
-    }
-    const coreEvents = devMockCoreEvents.filter(function (entry) {
-      return !appId || entry.appId === appId;
-    });
-    const networkRows = bridgeRows.filter(function (entry) {
-      return entry.text.includes("network.request");
-    });
-    const logRows = consoleEntries.filter(function (entry) {
-      return !appId || entry.appId === appId;
-    });
-    return {
-      generatedAt: new Date().toISOString(),
-      overview: {
-        source: "runtime-web",
-        activeAppId: activeApp ? activeApp.id : null,
-        runtimeVersion: "0.1.0",
-        devMode: window.__APP_RUNTIME_DEV_MOCK__ === true,
-        engineRoomVisible: engineRoomVisible(),
-        hostMode: document.body.classList.contains("native-host-mode"),
-        limits: {
-          maxBridgeCallsPerMinute: 600,
-        },
-      },
-      apps: {
-        installed: appId ? appRecords.filter((app) => app.id === appId) : appRecords,
-        premium: window.TerraneRuntimeHost ? window.TerraneRuntimeHost.premiumApps() : [],
-      },
-      database: {
-        type: "runtime-memory",
-        tableCounts: {
-          app_storage: storage.length,
-          bridge_calls: bridgeRows.length,
-          core_events: coreEvents.length,
-        },
-      },
-      storage: { rows: storage },
-      bridgeCalls: { rows: bridgeRows },
-      network: { rows: networkRows, mocks: [] },
-      logs: { console: logRows, telemetry: { crashReporting: "not-configured" } },
-      core: { events: coreEvents, actions: [], snapshots: [] },
-      permissions: {
-        apps: appRecords.map(function (app) {
-          return { appId: app.id, permissions: app.permissions, networkPolicy: app.networkPolicy, resourceBudget: app.resourceBudget };
-        }),
-      },
-      tests: { runs: [], controlSessions: [], controlCommands: [] },
-      crdt: emptyEngineRoomSection("crdt"),
-      sync: emptyEngineRoomSection("sync"),
-    };
-  }
-
-  function emptyEngineRoomSection(name) {
-    return { status: "empty", rows: [], name };
-  }
-
-  function renderEngineRoomSummary(snapshot) {
-    const summary = element("section", "engine-room-summary");
-    summary.setAttribute("data-testid", "engine-room-summary");
-    const overview = snapshot.overview || {};
-    const database = snapshot.database || {};
-    const apps = snapshot.apps || {};
-    const bridgeCalls = snapshot.bridgeCalls || {};
-    const logs = snapshot.logs || {};
-    summary.appendChild(engineRoomMetric("Source", overview.source || "local runtime"));
-    summary.appendChild(engineRoomMetric("Active app", overview.activeAppId || overview.appId || "none"));
-    summary.appendChild(engineRoomMetric("Apps", String(countEngineRoomItems(apps.rows) + countEngineRoomItems(apps.installed))));
-    summary.appendChild(engineRoomMetric("DB rows", String(sumTableCounts(database.tableCounts))));
-    summary.appendChild(engineRoomMetric("Bridge calls", String(countEngineRoomItems(bridgeCalls.rows))));
-    summary.appendChild(engineRoomMetric("Logs", String(countEngineRoomItems(logs.appLogRows) + countEngineRoomItems(logs.console))));
-    return summary;
-  }
-
-  function engineRoomMetric(label, value) {
-    const item = element("div", "engine-room-metric");
-    item.appendChild(element("span", "", label));
-    item.appendChild(element("strong", "", String(value == null ? "unknown" : value)));
-    return item;
-  }
-
-  function summarizeEngineRoomSection(key, value) {
-    switch (key) {
-    case "overview":
-      return [
-        ["Source", value.source || "runtime"],
-        ["Active app", value.activeAppId || value.appId || "none"],
-        ["Runtime", value.runtimeVersion || "unknown"],
-        ["Mode", value.devMode ? "developer" : "normal"],
-      ];
-    case "apps":
-      return [
-        ["Installed apps", countEngineRoomItems(value.installed)],
-        ["Registry rows", countEngineRoomItems(value.rows)],
-        ["Versions", countEngineRoomItems(value.versions)],
-        ["Package files", countEngineRoomItems(value.packageFiles)],
-      ];
-    case "database":
-      return [
-        ["Type", value.type || "unknown"],
-        ["Path", value.path || "in-memory"],
-        ["Integrity", value.integrity || "not checked"],
-        ["Total rows", sumTableCounts(value.tableCounts)],
-      ];
-    case "storage":
-      return [["Storage rows", countEngineRoomItems(value.rows)]];
-    case "bridgeCalls":
-      return [["Recent calls", countEngineRoomItems(value.rows)]];
-    case "network":
-      return [["Requests", countEngineRoomItems(value.rows)], ["Mocks", countEngineRoomItems(value.mocks)]];
-    case "logs":
-      return [
-        ["App logs", countEngineRoomItems(value.appLogRows) + countEngineRoomItems(value.console)],
-        ["Runtime sessions", countEngineRoomItems(value.runtimeSessions)],
-        ["Crash reporting", value.telemetry?.crashReporting || "not configured"],
-      ];
-    case "core":
-      return [
-        ["Events", countEngineRoomItems(value.events)],
-        ["Actions", countEngineRoomItems(value.actions)],
-        ["Snapshots", countEngineRoomItems(value.snapshots)],
-      ];
-    case "permissions":
-      return [
-        ["Permission rows", countEngineRoomItems(value.rows)],
-        ["Install reports", countEngineRoomItems(value.installReports)],
-      ];
-    case "tests":
-      return [
-        ["Test runs", countEngineRoomItems(value.runs)],
-        ["Control sessions", countEngineRoomItems(value.controlSessions)],
-        ["Control commands", countEngineRoomItems(value.controlCommands)],
-      ];
-    case "crdt":
-      return [
-        ["Notebooks", countEngineRoomItems(value.notebooks)],
-        ["Updates", countEngineRoomItems(value.updates)],
-        ["Actors", countEngineRoomItems(value.actors)],
-        ["Proposals", countEngineRoomItems(value.proposals)],
-      ];
-    case "sync":
-      return [
-        ["Cursors", countEngineRoomItems(value.cursors)],
-        ["Server", value.server?.status || "not attached"],
-      ];
-    default:
-      return [["Status", value.status || "available"]];
-    }
-  }
-
-  function renderEngineRoomCard(title, value, summaryRows) {
-    const card = element("article", "engine-room-card");
-    card.setAttribute("data-testid", `engine-room-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`);
-    const header = element("div", "engine-room-card-header");
-    header.appendChild(element("h3", "", title));
-    header.appendChild(element("span", "engine-room-card-count", engineRoomSectionCountLabel(value)));
-    card.appendChild(header);
-    const summary = element("dl", "engine-room-facts");
-    for (const [label, factValue] of summaryRows || []) {
-      const row = element("div", "engine-room-fact");
-      row.appendChild(element("dt", "", label));
-      row.appendChild(element("dd", "", String(factValue == null ? "unknown" : factValue)));
-      summary.appendChild(row);
-    }
-    card.appendChild(summary);
-    const details = element("details", "engine-room-raw");
-    details.appendChild(element("summary", "", "Raw JSON"));
-    details.appendChild(element("pre", "", JSON.stringify(value, null, 2)));
-    card.appendChild(details);
-    return card;
-  }
-
-  function engineRoomSectionCountLabel(value) {
-    const count = countEngineRoomRows(value);
-    if (count === 0) return "No rows";
-    if (count === 1) return "1 row";
-    return `${count} rows`;
-  }
-
-  function countEngineRoomRows(value) {
-    if (!value || typeof value !== "object") return 0;
-    if (Array.isArray(value)) return value.length;
-    let total = 0;
-    for (const item of Object.values(value)) {
-      if (Array.isArray(item)) total += item.length;
-    }
-    return total;
-  }
-
-  function countEngineRoomItems(value) {
-    return Array.isArray(value) ? value.length : 0;
-  }
-
-  function sumTableCounts(value) {
-    if (!value || typeof value !== "object") return 0;
-    return Object.values(value).reduce(function (total, count) {
-      return total + (typeof count === "number" ? count : 0);
-    }, 0);
-  }
-
-  function setEngineRoomStatus(value) {
-    if (engineRoomStatus) engineRoomStatus.textContent = value;
   }
 
   function notifyNativeActiveAppChanged(appId) {

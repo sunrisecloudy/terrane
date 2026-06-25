@@ -17,6 +17,14 @@ struct NativeHostTests {
         let runtimeScript = try #require(RuntimeResourceLocator.fileURL(forRuntimeURL: runtimeScriptURL))
         #expect(runtimeScript.path.hasSuffix("runtime-web/runtime.js"))
         #expect(RuntimeResourceLocator.mimeType(for: runtimeScript) == "text/javascript")
+        let engineRoomScriptURL = URL(string: "app-runtime://runtime/runtime/engine-room.js")!
+        let engineRoomScript = try #require(RuntimeResourceLocator.fileURL(forRuntimeURL: engineRoomScriptURL))
+        #expect(engineRoomScript.path.hasSuffix("runtime-web/engine-room.js"))
+        #expect(RuntimeResourceLocator.mimeType(for: engineRoomScript) == "text/javascript")
+        let engineRoomStylesURL = URL(string: "app-runtime://runtime/runtime/engine-room.css")!
+        let engineRoomStyles = try #require(RuntimeResourceLocator.fileURL(forRuntimeURL: engineRoomStylesURL))
+        #expect(engineRoomStyles.path.hasSuffix("runtime-web/engine-room.css"))
+        #expect(RuntimeResourceLocator.mimeType(for: engineRoomStyles) == "text/css")
 
         let manifestURL = URL(string: "app-runtime://runtime/webapps/examples/notes-lite/manifest.json")!
         let manifest = try #require(RuntimeResourceLocator.fileURL(forRuntimeURL: manifestURL))

@@ -7,6 +7,7 @@ import vm from "node:vm";
 import { MessageChannel } from "node:worker_threads";
 
 const rootDir = path.resolve(import.meta.dirname, "../../..");
+const engineRoomPath = path.join(rootDir, "runtime-web/engine-room.js");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
 const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 const generatedAppCsp = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
@@ -805,7 +806,7 @@ test("runtime exposes native host Engine Room view for AppKit sidebar", async ()
 });
 
 test("runtime CSS shows Engine Room panel in native host mode", () => {
-  const css = fs.readFileSync(path.join(rootDir, "runtime-web", "styles.css"), "utf8");
+  const css = fs.readFileSync(path.join(rootDir, "runtime-web", "engine-room.css"), "utf8");
   assert.match(
     css,
     /\.native-host-mode\.engine-room-mode\s+\.engine-room-panel\s*\{[^}]*display:\s*block;/s,
@@ -1071,7 +1072,9 @@ test("runtime emits app.error when a sandbox posts a bridge request outside its 
 });
 
 async function loadRuntime(harness) {
+  const engineRoomSource = fs.readFileSync(engineRoomPath, "utf8");
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
+  vm.runInContext(engineRoomSource, harness.parentContext);
   vm.runInContext(runtimeSource, harness.parentContext);
 
   await flushAsync();
