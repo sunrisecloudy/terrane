@@ -6,34 +6,87 @@ struct MacAppCatalogItem: Equatable {
     let version: String
     let description: String
     let contentRatingLabel: String?
+    let isPremium: Bool
 }
 
 final class MacAppCatalog {
     func loadBundledApps() throws -> [MacAppCatalogItem] {
-        guard let examplesDirectory = RuntimeResourceLocator.examplesDirectoryURL() else {
-            return []
-        }
-        let entries = try FileManager.default.contentsOfDirectory(
-            at: examplesDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-
         var apps: [MacAppCatalogItem] = []
-        for appDirectory in entries {
-            guard (try? appDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-                continue
+        var seenIds = Set<String>()
+
+        // Bundled (free) apps are the primary catalog and are always flat (one directory
+        // per app); a read failure here is surfaced to the shell as a catalog error.
+        if let examplesDirectory = RuntimeResourceLocator.examplesDirectoryURL() {
+            for item in try Self.loadApps(in: examplesDirectory, maxDepth: 1) where seenIds.insert(item.id).inserted {
+                apps.append(item)
             }
-            do {
-                apps.append(try Self.readManifest(at: appDirectory.appendingPathComponent("manifest.json")))
-            } catch {
-                fputs("Terrane skipped bundled app manifest \(appDirectory.lastPathComponent): \(error)\n", stderr)
+        }
+
+        // Premium apps are an optional dev/host seam and may be nested under product
+        // folders (e.g. hold-dear/admin), so scan a couple of levels deep. Absence or read
+        // errors are non-fatal so the public host stays usable without a Premium checkout.
+        if let premiumDirectory = RuntimeResourceLocator.premiumAppsDirectoryURL() {
+            let premiumApps = (try? Self.loadApps(in: premiumDirectory, maxDepth: 2)) ?? []
+            for item in premiumApps where seenIds.insert(item.id).inserted {
+                apps.append(item)
             }
         }
 
         return apps.sorted { left, right in
             left.name.localizedStandardCompare(right.name) == .orderedAscending
         }
+    }
+
+    private static func loadApps(in directory: URL, maxDepth: Int) throws -> [MacAppCatalogItem] {
+        let topLevel = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        var appDirectories: [URL] = []
+        for child in topLevel where isDirectory(child) && child.lastPathComponent != "node_modules" {
+            collectAppDirectories(in: child, depth: 1, maxDepth: maxDepth, into: &appDirectories)
+        }
+
+        var apps: [MacAppCatalogItem] = []
+        for appDirectory in appDirectories.sorted(by: { $0.path < $1.path }) {
+            let manifestURL = appDirectory.appendingPathComponent("manifest.json")
+            do {
+                let item = try readManifest(at: manifestURL)
+                // Record where this app id actually lives so the resource layer can serve
+                // it even when the id differs from the directory path.
+                AppDirectoryRegistry.shared.register(appId: item.id, directory: appDirectory)
+                apps.append(item)
+            } catch {
+                fputs("Terrane skipped app manifest \(appDirectory.lastPathComponent): \(error)\n", stderr)
+            }
+        }
+        return apps
+    }
+
+    /// Collects directories that directly contain a `manifest.json`, descending up to
+    /// `maxDepth` levels. A directory that is itself an app is not descended into.
+    private static func collectAppDirectories(in directory: URL, depth: Int, maxDepth: Int, into result: inout [URL]) {
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent("manifest.json").path) {
+            result.append(directory)
+            return
+        }
+        guard depth < maxDepth else { return }
+        guard let children = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+        for child in children where isDirectory(child) && child.lastPathComponent != "node_modules" {
+            collectAppDirectories(in: child, depth: depth + 1, maxDepth: maxDepth, into: &result)
+        }
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
     private static func readManifest(at manifestURL: URL) throws -> MacAppCatalogItem {
@@ -51,7 +104,8 @@ final class MacAppCatalog {
             name: name,
             version: manifest["version"] as? String ?? "",
             description: manifest["description"] as? String ?? "",
-            contentRatingLabel: rating?["label"] as? String
+            contentRatingLabel: rating?["label"] as? String,
+            isPremium: manifest["premium"] as? Bool ?? false
         )
     }
 }
@@ -138,11 +192,16 @@ final class NativeShellViewController: NSSplitViewController {
 }
 
 final class NativeSidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private enum SidebarRow: Equatable {
+        case header(String)
+        case app(MacAppCatalogItem)
+    }
+
     var onSelectMarketplace: (() -> Void)?
     var onSelectEngineRoom: (() -> Void)?
     var onSelectApp: ((MacAppCatalogItem) -> Void)?
 
-    private var apps: [MacAppCatalogItem] = []
+    private var rows: [SidebarRow] = []
     private var isEngineRoomVisible = false
     private var suppressSelectionCallback = false
     private let tableView = NSTableView()
@@ -151,7 +210,6 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
     private let marketplaceButton = SidebarActionButton(title: "Marketplace", symbolName: "storefront")
     private let engineRoomTitleField = NSTextField(labelWithString: "Inspect")
     private let engineRoomButton = SidebarActionButton(title: "Engine Room", symbolName: "wrench.and.screwdriver")
-    private let titleField = NSTextField(labelWithString: "Apps")
 
     override func loadView() {
         let root = NSVisualEffectView()
@@ -176,11 +234,6 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         engineRoomButton.target = self
         engineRoomButton.action = #selector(selectEngineRoom)
 
-        titleField.font = .systemFont(ofSize: 11, weight: .semibold)
-        titleField.textColor = .secondaryLabelColor
-        titleField.stringValue = titleField.stringValue.uppercased()
-        titleField.maximumNumberOfLines = 1
-
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("apps"))
         column.title = "Apps"
         tableView.addTableColumn(column)
@@ -188,6 +241,7 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         tableView.rowHeight = 28
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.style = .sourceList
+        tableView.floatsGroupRows = false
         tableView.dataSource = self
         tableView.delegate = self
         tableView.backgroundColor = .clear
@@ -201,7 +255,6 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         root.addSubview(marketplaceButton)
         root.addSubview(engineRoomTitleField)
         root.addSubview(engineRoomButton)
-        root.addSubview(titleField)
         root.addSubview(scrollView)
 
         view = root
@@ -229,7 +282,7 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
         )
         engineRoomTitleField.isHidden = !isEngineRoomVisible
         engineRoomButton.isHidden = !isEngineRoomVisible
-        let titleBaselineY: CGFloat
+        let lastActionButtonMinY: CGFloat
         if isEngineRoomVisible {
             engineRoomTitleField.frame = NSRect(
                 x: horizontalInset + 7,
@@ -243,26 +296,34 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
                 width: max(0, view.bounds.width - horizontalInset * 2),
                 height: rowHeight
             )
-            titleBaselineY = engineRoomButton.frame.minY - sectionGap - sectionHeight
+            lastActionButtonMinY = engineRoomButton.frame.minY
         } else {
-            titleBaselineY = marketplaceButton.frame.minY - sectionGap - sectionHeight
+            lastActionButtonMinY = marketplaceButton.frame.minY
         }
-        titleField.frame = NSRect(
-            x: horizontalInset + 7,
-            y: max(0, titleBaselineY),
-            width: max(0, view.bounds.width - horizontalInset * 2 - 14),
-            height: sectionHeight
-        )
+        // The "Apps" / "Premium Apps" section headers now live inside the table as
+        // group rows, so the list starts directly below the action buttons.
+        let scrollTop = max(0, lastActionButtonMinY - sectionGap)
         scrollView.frame = NSRect(
             x: horizontalInset,
             y: 12,
             width: max(0, view.bounds.width - horizontalInset * 2),
-            height: max(0, titleField.frame.minY - 18)
+            height: max(0, scrollTop - 12)
         )
     }
 
     func updateApps(_ apps: [MacAppCatalogItem]) {
-        self.apps = apps
+        let freeApps = apps.filter { !$0.isPremium }
+        let premiumApps = apps.filter { $0.isPremium }
+        var rows: [SidebarRow] = []
+        if !freeApps.isEmpty {
+            rows.append(.header("Apps"))
+            rows.append(contentsOf: freeApps.map(SidebarRow.app))
+        }
+        if !premiumApps.isEmpty {
+            rows.append(.header("Premium Apps"))
+            rows.append(contentsOf: premiumApps.map(SidebarRow.app))
+        }
+        self.rows = rows
         tableView.reloadData()
     }
 
@@ -275,7 +336,10 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
     }
 
     func select(appId: String) {
-        guard let index = apps.firstIndex(where: { $0.id == appId }) else { return }
+        guard let index = rows.firstIndex(where: { row in
+            if case .app(let app) = row { return app.id == appId }
+            return false
+        }) else { return }
         marketplaceButton.isSelectedForSidebar = false
         engineRoomButton.isSelectedForSidebar = false
         suppressSelectionCallback = true
@@ -298,24 +362,48 @@ final class NativeSidebarViewController: NSViewController, NSTableViewDataSource
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        apps.count
+        rows.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let identifier = NSUserInterfaceItemIdentifier("app-cell")
-        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? AppSidebarCellView
-            ?? AppSidebarCellView(identifier: identifier)
-        cell.configure(with: apps[row])
-        return cell
+        switch rows[row] {
+        case .header(let title):
+            let identifier = NSUserInterfaceItemIdentifier("section-header")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? SidebarSectionHeaderView
+                ?? SidebarSectionHeaderView(identifier: identifier)
+            cell.configure(title: title)
+            return cell
+        case .app(let app):
+            let identifier = NSUserInterfaceItemIdentifier("app-cell")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? AppSidebarCellView
+                ?? AppSidebarCellView(identifier: identifier)
+            cell.configure(with: app)
+            return cell
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        if case .header = rows[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        if case .app = rows[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .header = rows[row] { return 24 }
+        return 28
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelectionCallback else { return }
         let row = tableView.selectedRow
-        guard row >= 0, row < apps.count else { return }
+        guard row >= 0, row < rows.count, case .app(let app) = rows[row] else { return }
         marketplaceButton.isSelectedForSidebar = false
         engineRoomButton.isSelectedForSidebar = false
-        onSelectApp?(apps[row])
+        onSelectApp?(app)
     }
 
     @objc private func selectMarketplace() {
@@ -393,6 +481,41 @@ final class SidebarActionButton: NSButton {
             width: max(0, bounds.width - iconView.frame.maxX - 14),
             height: 17
         )
+    }
+}
+
+final class SidebarSectionHeaderView: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+
+        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        addSubview(titleLabel)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func layout() {
+        super.layout()
+        // Match the inset of the Marketplace / Inspect labels above the list.
+        titleLabel.frame = NSRect(
+            x: 7,
+            y: max(0, bounds.height - 16),
+            width: max(0, bounds.width - 14),
+            height: 14
+        )
+    }
+
+    func configure(title: String) {
+        titleLabel.stringValue = title.uppercased()
     }
 }
 

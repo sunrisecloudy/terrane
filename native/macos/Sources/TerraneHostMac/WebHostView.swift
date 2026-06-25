@@ -397,6 +397,30 @@ final class RuntimeSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 }
 
+/// Maps an app id to the directory that actually holds its files. Required because a
+/// Premium app's id (e.g. `hold-dear-admin`) can differ from its on-disk path
+/// (`hold-dear/admin`), so the `<dir>/<id>` convention alone cannot locate it. The
+/// catalog populates this during its scan; resource resolution consults it first and
+/// falls back to the convention for flat apps that were never registered.
+final class AppDirectoryRegistry: @unchecked Sendable {
+    static let shared = AppDirectoryRegistry()
+
+    private var directoriesById: [String: URL] = [:]
+    private let lock = NSLock()
+
+    func register(appId: String, directory: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        directoriesById[appId] = directory
+    }
+
+    func directory(for appId: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return directoriesById[appId]
+    }
+}
+
 enum RuntimeResourceLocator {
     static let scheme = "app-runtime"
 
@@ -429,6 +453,33 @@ enum RuntimeResourceLocator {
         ])
     }
 
+    /// Optional directory of Premium apps, supplied by a dev/host seam rather than a
+    /// dependency on the private Premium repo. Resolved from `TERRANE_PREMIUM_APPS_DIR`
+    /// first (dev side-by-side checkout), then a `webapps/premium` bundle resource for
+    /// packaged hosts. Returns nil when no Premium apps are available, leaving the host
+    /// fully functional with only the bundled (free) catalog.
+    static func premiumAppsDirectoryURL() -> URL? {
+        firstExistingDirectory([
+            premiumAppsOverrideURL(),
+            Bundle.main.resourceURL?.appendingPathComponent("webapps/premium")
+        ])
+    }
+
+    private static func premiumAppsOverrideURL() -> URL? {
+        guard let path = ProcessInfo.processInfo.environment["TERRANE_PREMIUM_APPS_DIR"],
+              !path.trimmingCharacters(in: .whitespaces).isEmpty
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    }
+
+    /// Directories searched, in order, when resolving a generated app by id or path.
+    /// Bundled examples take precedence; Premium apps fill in when present.
+    static func appSearchDirectories() -> [URL] {
+        [examplesDirectoryURL(), premiumAppsDirectoryURL()].compactMap { $0 }
+    }
+
     static func sqliteMigrationsDirectoryURL() -> URL? {
         firstExistingDirectory([
             Bundle.main.resourceURL?.appendingPathComponent("db/sqlite"),
@@ -447,9 +498,15 @@ enum RuntimeResourceLocator {
 
     static func exampleAppDirectoryURL(for appId: String) -> URL? {
         guard isSafePathSegment(appId) else { return nil }
-        guard let examplesDirectory = examplesDirectoryURL() else { return nil }
-        let appDirectory = examplesDirectory.appendingPathComponent(appId)
-        return directoryExists(at: appDirectory) ? appDirectory : nil
+        if let registered = AppDirectoryRegistry.shared.directory(for: appId),
+           directoryExists(at: registered) {
+            return registered
+        }
+        for base in appSearchDirectories() {
+            let appDirectory = base.appendingPathComponent(appId)
+            if directoryExists(at: appDirectory) { return appDirectory }
+        }
+        return nil
     }
 
     static func exampleManifestURL(for appId: String) -> URL? {
@@ -479,8 +536,14 @@ enum RuntimeResourceLocator {
 
         if logicalPath.hasPrefix("webapps/examples/") {
             let relative = String(logicalPath.dropFirst("webapps/examples/".count))
-            guard let examplesDirectory = examplesDirectoryURL() else { return nil }
-            let fileURL = examplesDirectory.appendingPathComponent(relative)
+            // `relative` is "<appId>/<path...>"; resolve the app directory by id (which
+            // honors the registry for nested apps) and append the in-app path.
+            let parts = relative.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let first = parts.first, !first.isEmpty else { return nil }
+            let appId = String(first)
+            let subPath = parts.count > 1 ? String(parts[1]) : ""
+            guard let appDirectory = exampleAppDirectoryURL(for: appId) else { return nil }
+            let fileURL = subPath.isEmpty ? appDirectory : appDirectory.appendingPathComponent(subPath)
             return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
         }
 

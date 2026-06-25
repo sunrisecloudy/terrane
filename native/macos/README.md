@@ -43,6 +43,19 @@ Current implementation status:
 - Loads `libforge_ffi.dylib` through a small C shim for `core.step`, using `TERRANE_FORGE_FFI_DYLIB` first and then repo-local Forge build outputs.
 - Routes CRDT/sync capability checks through the Forge CoreCommand ABI (`sync.export`) instead of a separate retired CRDT dylib.
 - Reports `core.step` in `runtime.capabilities` from the actual Forge FFI library load status and returns structured `platform_unsupported` when the library is absent.
+- Splits the sidebar into an `Apps` section (bundled examples) and a `Premium Apps` section, driven by a `"premium": true` flag in each app manifest.
+
+### Premium apps (optional dev seam)
+
+The sidebar's `Premium Apps` section is fed by an optional apps directory so the public host never depends on the private Premium repo. Point it at a side-by-side checkout for development:
+
+```sh
+TERRANE_PREMIUM_APPS_DIR=../terrane-premium/apps swift run
+```
+
+When the variable is unset (the default), the host loads only the bundled free apps and the `Premium Apps` section is hidden. App files for premium apps are served through the same `app-runtime://` resource layer, and the runtime mounts them on demand, so no entry in the static example index is required.
+
+Premium apps may be nested under product folders (e.g. `hold-dear/admin`). The catalog walks a couple of levels deep for any directory containing a `manifest.json`, and records each app id's real directory so apps whose id differs from their path (e.g. `hold-dear-admin` at `hold-dear/admin`) still resolve and mount.
 
 
 ## Dev control plane

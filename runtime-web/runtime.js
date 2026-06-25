@@ -170,6 +170,29 @@
     return apps;
   }
 
+  // Loads an app that is not in the static example index — e.g. a Premium app the
+  // native host surfaced through its own catalog and serves via the host resource
+  // layer. That layer is the source of truth for availability, so a missing or
+  // mismatched manifest simply yields null and the caller reports an unknown app.
+  async function loadAppOnDemand(appId) {
+    if (typeof appId !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(appId)) {
+      return null;
+    }
+    try {
+      const manifest = await fetchJson(`/webapps/examples/${appId}/manifest.json`);
+      if (!manifest || manifest.id !== appId) {
+        return null;
+      }
+      const app = { ...manifest };
+      if (!apps.some((candidate) => candidate.id === appId)) {
+        apps.push(app);
+      }
+      return app;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function installTerraneRuntimeHost() {
     window.TerraneRuntimeHost = {
       activeAppId() {
@@ -200,9 +223,12 @@
       },
       async mountApp(appId) {
         await appsReady;
-        const app = apps.find(function (candidate) {
+        let app = apps.find(function (candidate) {
           return candidate.id === appId;
         });
+        if (!app) {
+          app = await loadAppOnDemand(appId);
+        }
         if (!app) {
           throw new Error(`Unknown Terrane app: ${appId}`);
         }
