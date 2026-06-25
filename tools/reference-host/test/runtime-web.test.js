@@ -809,6 +809,118 @@ test("runtime exposes native host Engine Room view for AppKit sidebar", async ()
   }
 });
 
+test("Engine Room renders row tables, an app scope selector, and export tools", async () => {
+  const appIndex = {
+    source: "macos-bundled",
+    apps: [{ id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Storage fixture." }],
+  };
+  const engineRoomSnapshot = {
+    generatedAt: "2026-06-26T00:00:00.000Z",
+    overview: { source: "reference-host", appId: null },
+    apps: { rows: [{ id: "notes-lite", name: "Notes Lite" }], versions: [], installed: [{ id: "notes-lite", name: "Notes Lite" }] },
+    database: { type: "sqlite-memory", tableCounts: { app_storage: 1, bridge_calls: 1 } },
+    storage: { rows: [{ app_id: "notes-lite", key: "notes-lite:title", value_json: "\"hello\"", updated_at: "2026-06-26T00:00:00.000Z" }] },
+    bridgeCalls: { rows: [{ app_id: "notes-lite", method: "storage.set", created_at: "2026-06-26T00:00:00.000Z" }] },
+    network: { rows: [], mocks: [] },
+    logs: { appLogRows: [], runtimeSessions: [], telemetry: { crashReporting: "not-configured" } },
+    core: { events: [], actions: [], snapshots: [] },
+    permissions: { rows: [], installReports: [] },
+    tests: { runs: [], controlSessions: [], controlCommands: [] },
+    crdt: { notebooks: [] },
+    sync: { cursors: [], server: { status: "not-attached" } },
+  };
+  const storage = new Map([["terrane.engineRoom.visible", "true"]]);
+  const harness = createRuntimeHarness({ appIndex, engineRoomSnapshot, localStorage: storage });
+  try {
+    await loadRuntime(harness);
+    await vm.runInContext("window.TerraneRuntimeHost.showEngineRoom()", harness.parentContext);
+    await flushAsync();
+
+    const sections = harness.document.getElementById("engine-room-sections");
+    const text = elementText(sections);
+    // Storage rows now render as a real table with derived column headers,
+    // not just a raw JSON blob.
+    assert.match(text, /App Key Value Updated/);
+    assert.match(text, /notes-lite:title/);
+
+    // App scope selector lists the installed app alongside the "All apps" default.
+    const select = findElementByTestId(sections, "engine-room-app-select");
+    assert.ok(select, "expected an app scope selector");
+    assert.equal(select.children.some((option) => option.textContent === "All apps"), true);
+    assert.equal(select.children.some((option) => option.textContent === "Notes Lite"), true);
+
+    // Copy + download tools are available.
+    assert.ok(findElementByTestId(sections, "engine-room-download"), "expected a download control");
+  } finally {
+    harness.close();
+  }
+});
+
+test("Engine Room filter narrows visible sections", async () => {
+  const storage = new Map([["terrane.engineRoom.visible", "true"]]);
+  const harness = createRuntimeHarness({
+    engineRoomSnapshot: {
+      generatedAt: "2026-06-26T00:00:00.000Z",
+      overview: { source: "reference-host", appId: null },
+      apps: { rows: [], versions: [], installed: [] },
+      database: { type: "sqlite-memory", tableCounts: {} },
+      storage: { rows: [{ app_id: "notes-lite", key: "notes-lite:title", value_json: "\"hi\"" }] },
+      bridgeCalls: { rows: [] },
+      network: { rows: [], mocks: [] },
+      logs: { appLogRows: [], telemetry: {} },
+      core: { events: [], actions: [], snapshots: [] },
+      permissions: { rows: [], installReports: [] },
+      tests: { runs: [], controlSessions: [], controlCommands: [] },
+      crdt: { notebooks: [] },
+      sync: { cursors: [], server: { status: "not-attached" } },
+    },
+    localStorage: storage,
+  });
+  try {
+    await loadRuntime(harness);
+    await vm.runInContext("window.TerraneRuntimeHost.showEngineRoom()", harness.parentContext);
+    await flushAsync();
+
+    const sections = harness.document.getElementById("engine-room-sections");
+    assert.match(elementText(sections), /Permissions\/Policy/);
+
+    const filter = findElementByTestId(sections, "engine-room-filter");
+    assert.ok(filter, "expected a filter input");
+    filter.value = "storage";
+    filter.dispatch("input");
+
+    const filtered = elementText(harness.document.getElementById("engine-room-sections"));
+    assert.match(filtered, /Storage Rows/);
+    assert.doesNotMatch(filtered, /Permissions\/Policy/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime fallback snapshot conforms to the Engine Room section contract", async () => {
+  const harness = createRuntimeHarness({ localStorage: new Map() });
+  try {
+    await loadRuntime(harness);
+    // No host snapshot endpoint is configured, so this exercises the in-memory
+    // runtime fallback path.
+    const snapshot = await vm.runInContext(
+      "window.TerraneRuntimeHost.engineRoomSnapshot({})",
+      harness.parentContext,
+    );
+    const contract = harness.parentWindow.TerraneEngineRoom;
+    assert.equal(snapshot.overview.source, "runtime-web");
+    for (const key of contract.sectionKeys) {
+      assert.equal(key in snapshot, true, `runtime snapshot is missing section "${key}"`);
+    }
+    // The runtime fallback emits canonical field names so the renderer's
+    // primary lookups (not just aliases) resolve.
+    assert.ok(Array.isArray(snapshot.logs.appLogRows));
+    assert.ok(Array.isArray(snapshot.permissions.rows));
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime CSS shows Engine Room panel in native host mode", () => {
   const css = fs.readFileSync(path.join(rootDir, "runtime-web", "engine-room.css"), "utf8");
   assert.match(

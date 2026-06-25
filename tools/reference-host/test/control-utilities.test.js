@@ -2,9 +2,23 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
 import { TOOL_NAMES } from "../../codex-platform-mcp/src/tool-contract.js";
 import { ReferenceHost } from "../src/reference-host.js";
 import { examplesDir } from "../src/paths.js";
+
+// Load the renderer's canonical snapshot contract (the section keys + the row
+// collections it reads) by executing the browser IIFE against a minimal window.
+function loadEngineRoomContract() {
+  const source = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../runtime-web/engine-room.js"),
+    "utf8",
+  );
+  const sandbox = { window: {} };
+  vm.runInNewContext(source, sandbox);
+  return sandbox.window.TerraneEngineRoom;
+}
 
 test("reference-host command switch covers every MCP tool name", () => {
   const source = fs.readFileSync(new URL("../src/reference-host.js", import.meta.url), "utf8");
@@ -245,6 +259,41 @@ test("reference-host Engine Room snapshot groups read-only app and platform data
       () => host.runControlCommand("engineRoom.reset", { appId: "notes-lite" }),
       /Unknown control tool/,
     );
+  } finally {
+    host.close();
+  }
+});
+
+test("reference-host Engine Room snapshot conforms to the renderer contract", async () => {
+  const contract = loadEngineRoomContract();
+  const host = new ReferenceHost();
+  try {
+    host.installPackage(path.join(examplesDir, "notes-lite"));
+    await host.runControlCommand("platform.open_webapp", { appId: "notes-lite" });
+
+    const snapshot = await host.runControlCommand("engineRoom.snapshot", {});
+
+    // Every section the renderer knows how to draw must exist in the host snapshot.
+    for (const key of contract.sectionKeys) {
+      assert.equal(key in snapshot, true, `host snapshot is missing section "${key}"`);
+    }
+
+    // Every row collection the renderer resolves must be present under at least
+    // one of its candidate field names (or be the synthetic table-counts view),
+    // so the host shape and the renderer stay in lockstep.
+    for (const [sectionKey, collections] of Object.entries(contract.collections)) {
+      const section = snapshot[sectionKey];
+      assert.equal(typeof section, "object", `section "${sectionKey}" must be an object`);
+      for (const collection of collections) {
+        if (collection.optional) continue;
+        if (collection.fields[0] === "__tableCounts") {
+          assert.equal(typeof section.tableCounts, "object", `section "${sectionKey}" must expose tableCounts`);
+          continue;
+        }
+        const resolved = collection.fields.some((field) => Array.isArray(section[field]));
+        assert.equal(resolved, true, `section "${sectionKey}" collection "${collection.label}" resolved no array field`);
+      }
+    }
   } finally {
     host.close();
   }
